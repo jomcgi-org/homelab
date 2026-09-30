@@ -1077,6 +1077,9 @@ def drain_cycle() -> dict:
     # context=Context() forces a root trace so cycles running for tens of
     # minutes do not attach to short-lived enqueue traces.
     with tracer.start_as_current_span("drain.cycle", context=Context()) as span:
+        quota_attributes = _quota_span_attributes()
+        if quota_attributes:
+            set_attributes(span, quota_attributes)
         settings = pin_drainer_settings()
         if not settings["enabled"]:
             set_attributes(

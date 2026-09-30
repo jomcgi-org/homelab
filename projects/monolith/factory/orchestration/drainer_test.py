@@ -1199,6 +1199,86 @@ def test_disabled_cycle_still_emits_a_cycle_span(monkeypatch):
     assert spans[0].attributes["drain.outcome"] == "disabled"
 
 
+def _stub_live_quota(monkeypatch):
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda: {
+            "available": True,
+            "providers": {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 42,
+                    "exhausted": False,
+                    "windows": [{"name": "primary", "used_percent": 24}],
+                },
+                "claude": {
+                    "observed": True,
+                    "age_seconds": 3,
+                    "exhausted": True,
+                    "windows": [{"name": "5h", "used_percent": 100}],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        _QUOTA_SPAN_ATTRIBUTES_STEP.__wrapped__,
+    )
+
+
+def test_cycle_span_carries_quota_age_when_disabled(monkeypatch):
+    _stub_live_quota(monkeypatch)
+    settings = SETTINGS | {"enabled": False}
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+
+    result = drainer.drain_cycle.__wrapped__()
+
+    assert result == {"status": "disabled", "processed": 0}
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.quota.codex.age_seconds"] == 42.0
+    assert spans[0].attributes["drain.quota.claude.age_seconds"] == 3.0
+
+
+def test_cycle_span_carries_quota_age_when_queue_is_empty(monkeypatch):
+    _stub_live_quota(monkeypatch)
+
+    result, *_rest = _run(monkeypatch, [])
+
+    assert result == {"status": "complete", "processed": 0}
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.quota.codex.age_seconds"] == 42.0
+    assert spans[0].attributes["drain.quota.claude.age_seconds"] == 3.0
+
+
+def test_cycle_span_carries_quota_age_on_a_normal_cycle(monkeypatch):
+    _stub_live_quota(monkeypatch)
+
+    result, *_rest = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert spans[0].attributes["drain.quota.codex.age_seconds"] == 42.0
+    assert spans[0].attributes["drain.quota.claude.age_seconds"] == 3.0
+
+
+def test_cycle_span_omits_quota_when_helper_returns_empty(monkeypatch):
+    result, *_rest = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+    )
+
+    assert result == {"status": "complete", "processed": 1}
+    spans = _spans_named("drain.cycle")
+    assert len(spans) == 1
+    assert not any(name.startswith("drain.quota.") for name in spans[0].attributes)
+
+
 def test_claim_step_span_lives_inside_the_step_body(monkeypatch, admission_database):
     import agent.routine_jobs as routine_jobs
 

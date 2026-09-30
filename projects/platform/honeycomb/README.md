@@ -73,7 +73,7 @@ to the live value before running `--apply`.
 | `agent-turns-none-successful-codex.yaml` | `monolith-backend` | yes |
 | `agent-turns-none-successful-claude.yaml` | `monolith-backend` | yes |
 | `agent-turns-none-successful-muse.yaml` | `monolith-backend` | yes |
-| `codex-quota-observation-stale.yaml` | `monolith-backend` | no, see below |
+| `codex-quota-observation-stale.yaml` | `monolith-backend` | yes |
 | `egress-proxy-request-denied.yaml` | `k8s-logs` | no, logs not shipped yet |
 | `embervm-control-plane-errors.yaml` | `k8s-logs` | no, logs not shipped yet |
 | `kargo-promotion-failed.yaml` | `k8s-logs` | no, logs not shipped yet |
@@ -91,12 +91,6 @@ columns against real events, fix the files if they differ, set
 
 These need instrumentation before they can alert.
 
-- **Codex quota age.** `drain.quota.codex.age_seconds` is set only on
-  `drain.job` spans (28 in the 7 days to 2026-09-30). An idle or wedged
-  drainer writes nothing, so a staleness trigger cannot fire when it should.
-  Set the same attribute on every `drain.cycle` span (about every 16 minutes)
-  in `projects/monolith/factory/orchestration/drainer.py`, then enable
-  `codex-quota-observation-stale.yaml` unchanged (#6508).
 - **Per-model-family turn success.** Now queryable: `agent_sessions.deliver`
   records `agent.model`, `agent.model_family` (`codex`, `claude`, `muse` for
   Spark, `pi` for pi-spark, `unknown` when unrecognized) and

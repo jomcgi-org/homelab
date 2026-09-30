@@ -267,6 +267,7 @@ def test_daily_cap_no_holder_path_defers_atomically_and_remains_schedulable(
         lambda: {"stranded": 0, "retired": 0},
     )
     monkeypatch.setattr(drainer, "cancel_drainer_reservation", lambda *_args: True)
+    monkeypatch.setattr(drainer, "_quota_span_attributes", lambda: {})
     monkeypatch.setattr(
         drainer, "finish_drainer_job", drainer.finish_drainer_job.__wrapped__
     )
