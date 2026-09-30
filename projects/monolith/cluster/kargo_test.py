@@ -62,7 +62,7 @@ def test_plans_the_stage_template_for_the_exact_version():
     assert body == {
         "apiVersion": "kargo.akuity.io/v1alpha1",
         "kind": "Promotion",
-        "metadata": {"generateName": "prod.", "namespace": "kargo-embervm"},
+        "metadata": {"generateName": "prod-", "namespace": "kargo-embervm"},
         "spec": {
             "stage": "prod",
             "freight": "f1",
