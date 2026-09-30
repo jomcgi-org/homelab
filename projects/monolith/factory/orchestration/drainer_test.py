@@ -2818,6 +2818,7 @@ def test_kg_provider_walled_applies_the_drainer_floor(monkeypatch):
                 "grant_inventory_complete": True,
                 "grant_inventory_valid": True,
                 "age_seconds": 30.0,
+                "headline_used_percent": used,
                 "windows": [
                     {
                         "name": "primary",
@@ -2835,6 +2836,86 @@ def test_kg_provider_walled_applies_the_drainer_floor(monkeypatch):
     assert walled is True and "below_floor 25" in reason
     monkeypatch.setattr(model_pool, "quota_summary", lambda: confirmed(50.0))
     assert _KG_PROVIDER_WALLED() == (False, "confirmed_available")
+
+
+def _kg_rolled(first: tuple[float, float], second: tuple[float, float]) -> dict:
+    """Two Codex grants as (primary, secondary) used percents, rolled up."""
+    from factory.orchestration import model_pool
+
+    def grant(name: str, primary: float, secondary: float) -> dict:
+        return {
+            "grant": name,
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "headline_used_percent": primary,
+            "age_seconds": 30.0,
+            "resets_at": None,
+            "windows": [
+                {
+                    "name": "primary",
+                    "used_percent": primary,
+                    "resets_at": None,
+                    "usable": True,
+                },
+                {
+                    "name": "secondary",
+                    "used_percent": secondary,
+                    "resets_at": None,
+                    "usable": True,
+                },
+            ],
+        }
+
+    grants = {
+        "codex-cluster": grant("codex-cluster", *first),
+        "codex-b": grant("codex-b", *second),
+    }
+    return model_pool.rollup_grants({}, grants, grants_complete=True)
+
+
+def test_kg_provider_walled_spills_to_the_roomier_grant(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    # One grant is under the floor on its primary window, the other has room.
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: _kg_rolled((80.0, 30.0), (30.0, 30.0))
+    )
+    assert _KG_PROVIDER_WALLED() == (False, "all_grants_confirmed_available")
+
+
+def test_kg_provider_walled_floor_ignores_the_weekly_window(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    # Every headline window has room; one weekly window is under the floor.
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: _kg_rolled((10.0, 80.0), (10.0, 30.0))
+    )
+    assert _KG_PROVIDER_WALLED() == (False, "all_grants_confirmed_available")
+
+
+def test_kg_provider_walled_defers_when_every_grant_is_below_the_floor(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: _kg_rolled((80.0, 30.0), (85.0, 30.0))
+    )
+    assert _KG_PROVIDER_WALLED() == (True, "below_floor 25 remaining 20")
+
+
+def test_kg_provider_walled_still_vetoes_an_exhausted_grant(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    # No floor applies to the veto: a fully used grant blocks KG on its own.
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: _kg_rolled((100.0, 30.0), (30.0, 30.0))
+    )
+    walled, reason = _KG_PROVIDER_WALLED()
+    assert walled is True and "codex-cluster" in reason
 
 
 def test_kg_provider_requires_confirmed_observation(monkeypatch):
