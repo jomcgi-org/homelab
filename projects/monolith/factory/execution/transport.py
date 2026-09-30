@@ -1358,8 +1358,22 @@ class EmberVmShimTransport:
         invocation = _DeliveryInvocation()
         invocation_token = _delivery_invocation.set(invocation)
         try:
-            with tracer.start_as_current_span("agent_sessions.deliver"):
-                return await self._deliver(
+            with tracer.start_as_current_span("agent_sessions.deliver") as span:
+                # Telemetry only: record which model ran so per-family
+                # Honeycomb triggers can split on agent.model_family. agent.model
+                # is omitted when model is None (OTel rejects None values);
+                # agent.model_family uses model_family() verbatim, so None maps
+                # to "claude" and unknown names map to "unknown" instead of
+                # breaking delivery.
+                normalized = agent_sessions.normalize_model(model)
+                if normalized is not None:
+                    span.set_attribute("agent.model", normalized)
+                try:
+                    family = model_family(model)
+                except ValueError:
+                    family = "unknown"
+                span.set_attribute("agent.model_family", family)
+                turn, used = await self._deliver(
                     ember,
                     cli_session_id,
                     message,
@@ -1378,6 +1392,11 @@ class EmberVmShimTransport:
                     dispatch_count=dispatch_count,
                     receipt_claim_owner=receipt_claim_owner,
                 )
+                if turn.terminal_reason is not None:
+                    span.set_attribute(
+                        "agent.terminal_reason", turn.terminal_reason
+                    )
+                return turn, used
         except Exception as exc:
             if not invocation.attempted:
                 raise EmberTurnNotInvoked(str(exc)) from exc

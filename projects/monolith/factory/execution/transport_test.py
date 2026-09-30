@@ -1024,6 +1024,80 @@ def test_deliver_extracts_actual_model_from_guest_response(monkeypatch):
     assert turn.model == "claude-fable-5"
 
 
+def _deliver_span():
+    spans = [
+        span
+        for span in _EXPORTER.get_finished_spans()
+        if span.name == "agent_sessions.deliver"
+    ]
+    assert len(spans) == 1
+    return spans[0]
+
+
+@pytest.mark.parametrize(
+    ("model", "family"), [("sol", "codex"), ("sonnet", "claude")]
+)
+def test_deliver_span_records_model_family_and_terminal_reason(
+    monkeypatch, model, family
+):
+    async def handler(request):
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello", model
+        )
+    )
+
+    attributes = dict(_deliver_span().attributes)
+    assert attributes["agent.model"] == model
+    assert attributes["agent.model_family"] == family
+    assert attributes["agent.terminal_reason"] == "completed"
+
+
+@pytest.mark.parametrize("model", ["bogus-model", None])
+def test_deliver_span_unknown_or_missing_model_does_not_raise(
+    monkeypatch, model
+):
+    async def handler(request):
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello", model
+        )
+    )
+
+    attributes = dict(_deliver_span().attributes)
+    if model is None:
+        assert "agent.model" not in attributes
+        assert attributes["agent.model_family"] == "claude"
+    else:
+        assert attributes["agent.model"] == model
+        assert attributes["agent.model_family"] == "unknown"
+    assert attributes["agent.terminal_reason"] == "completed"
+
+
+def test_deliver_span_omits_terminal_reason_when_none(monkeypatch):
+    async def handler(request):
+        payload = {"result": "ok", "session_id": "cli-2"}
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None), "cli-1", "hello", "sol"
+        )
+    )
+
+    attributes = dict(_deliver_span().attributes)
+    assert attributes["agent.model"] == "sol"
+    assert attributes["agent.model_family"] == "codex"
+    assert "agent.terminal_reason" not in attributes
+
+
 @pytest.mark.parametrize(
     ("reasoning", "expected_thinking"), [(True, "high"), (False, "off")]
 )
