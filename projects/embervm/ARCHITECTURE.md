@@ -1827,7 +1827,6 @@ this table when the work ships or the issue closes without it.
 | OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, default-off pending staged live acceptance |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | CP-to-noded mTLS built default off on both sides (#5757, #5758), rest not started |
-| A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
 | A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
 | A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | gated on a diagnostic gap |
 | Brick scratch survives Spot replacement | section 11 | #5773 | gated on a measured recovery gap |

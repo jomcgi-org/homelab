@@ -327,6 +327,22 @@ def test_role_floor_walls_only_the_floored_role(monkeypatch):
     )
 
 
+def test_drainer_floor_yields_before_workers(monkeypatch):
+    monkeypatch.setenv(
+        "SWARM_QUOTA_FLOORS", '{"codex": {"worker": 10, "drainer": 25}}'
+    )
+    quota = {"codex": {"headline_used_percent": 80.0, "age_seconds": 5.0}}
+    assert model_pool.availability("luna", quota, "drainer") == (
+        False,
+        "below_floor 25 remaining 20",
+    )
+    assert model_pool.availability("luna", quota, "worker") == (
+        True,
+        "available",
+    )
+    assert model_pool.floor_for("codex", "drainer") == 25.0
+
+
 def test_malformed_floors_apply_nothing(monkeypatch):
     monkeypatch.setenv("SWARM_QUOTA_FLOORS", "{nope")
     assert model_pool.quota_floors() == {}

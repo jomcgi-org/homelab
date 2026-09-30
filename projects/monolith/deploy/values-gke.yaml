@@ -100,12 +100,19 @@ swarm:
   # implement_, integrate_ and correct_ nodes. Both spill from sol below 10
   # percent Codex remaining. claude.conductor covers the planner, which
   # spills from opus to sol below 25 percent Claude remaining, so planning
-  # never starves Claude review, which pauses at 85 percent used. The
-  # reviewer and refine roles carry no floor.
+  # never starves Claude review, which pauses at 85 percent used.
+  # codex.drainer covers the work-queue drainer (provider_walled and the KG
+  # check), judged on the least-used Codex grant: while any grant has room
+  # the drainer keeps claiming and the egress sidecar carries each
+  # connection to the roomier grant. Below 25 percent on every grant it
+  # defers claims rather than switching model, so the drainer yields first,
+  # workers next, the planner last. The reviewer and refine roles carry no
+  # floor.
   quotaFloors:
     codex:
       worker: 10
       implement: 10
+      drainer: 25
     claude:
       conductor: 25
 
