@@ -889,3 +889,10 @@ def test_every_role_default_is_a_cli_effort_level():
 
 def test_sonnet_stays_below_the_judgment_floor():
     assert "sonnet" not in model_pool.JUDGMENT_MODELS
+
+
+def test_grant_observation_state_shares_one_freshness_reading():
+    assert model_pool.grant_observation_state({"age_seconds": 12.0}) == "fresh"
+    assert model_pool.grant_observation_state({"age_seconds": 5000.0}) == "stale"
+    for age in (None, True, -1.0, float("nan"), float("inf"), "10"):
+        assert model_pool.grant_observation_state({"age_seconds": age}) == "unknown"

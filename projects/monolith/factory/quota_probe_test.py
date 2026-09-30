@@ -241,6 +241,172 @@ def test_total_deadline_cancels_stalled_creation(db, monkeypatch):
     assert probe.claim(payload(observed=False)) is None
 
 
+def codex_grant(age, used=10.0, exhausted=False, observed=True):
+    return {
+        "provider": "codex",
+        "observed": observed,
+        "exhausted": exhausted,
+        "status": "ok",
+        "age_seconds": age,
+        "windows": [{"name": "primary", "used_percent": used}],
+    }
+
+
+def codex_payload(grants, available=True):
+    base = payload(observed=False)
+    base["available"] = available
+    base["grants"] = grants
+    base["grants_complete"] = True
+    base["grants_valid"] = True
+    return base
+
+
+@pytest.fixture
+def luna_model(monkeypatch):
+    monkeypatch.setattr(probe, "_codex_probe_model", lambda: "luna")
+
+
+def test_codex_probe_fires_into_all_stale_pool(db, luna_model):
+    grants = {
+        "codex-b": codex_grant(130422.0),
+        "codex-cluster": codex_grant(3062.0),
+    }
+    key = probe.codex_claim(codex_payload(grants))
+    assert key is not None
+    assert key.startswith(probe.CODEX_PREFIX)
+
+
+def test_codex_probe_skips_fresh_grant(db, luna_model):
+    grants = {
+        "codex-b": codex_grant(130422.0),
+        "codex-cluster": codex_grant(12.0),
+    }
+    assert probe.codex_claim(codex_payload(grants)) is None
+
+
+def test_codex_probe_skips_all_exhausted_pool(db, luna_model):
+    flagged = {
+        "codex-b": codex_grant(5000.0, exhausted=True),
+        "codex-cluster": codex_grant(6000.0, exhausted=True),
+    }
+    assert probe.codex_claim(codex_payload(flagged)) is None
+    spent = {
+        "codex-b": codex_grant(5000.0, used=99.0),
+        "codex-cluster": codex_grant(6000.0, used=98.0),
+    }
+    assert probe.codex_claim(codex_payload(spent)) is None
+
+
+def test_codex_probe_skips_broken_broker_and_unobserved_pool(db, luna_model):
+    grants = {"codex-b": codex_grant(5000.0)}
+    assert probe.codex_claim(codex_payload(grants, available=False)) is None
+    assert probe.codex_claim(codex_payload({})) is None
+    assert probe.codex_claim(payload(observed=False)) is None
+    unobserved = {"codex-b": codex_grant(5000.0, observed=False)}
+    assert probe.codex_claim(codex_payload(unobserved)) is None
+
+
+def test_codex_probe_rate_limits_to_one_per_window(db, monkeypatch, luna_model):
+    grants = {"codex-b": codex_grant(5000.0)}
+    assert probe.codex_claim(codex_payload(grants)) is not None
+    assert probe.codex_claim(codex_payload(grants)) is None
+    monkeypatch.setattr(probe.controls, "_now", lambda: NOW + timedelta(seconds=899))
+    assert probe.codex_claim(codex_payload(grants)) is None
+    monkeypatch.setattr(probe.controls, "_now", lambda: NOW + timedelta(seconds=900))
+    assert probe.codex_claim(codex_payload(grants)) is not None
+
+
+def test_codex_unresolved_blocks_only_codex_probe(db, luna_model):
+    with Session(db) as session:
+        session.add(
+            AgentSession(
+                local_session_id=probe.CODEX_PREFIX + "old",
+                workspace="<guest>",
+                branch="main",
+                status="running",
+            )
+        )
+        session.commit()
+    grants = {"codex-b": codex_grant(5000.0)}
+    assert probe.codex_claim(codex_payload(grants)) is None
+    assert probe.claim(payload(observed=False)) is not None
+
+
+def test_claude_unresolved_does_not_block_codex_probe(db, luna_model):
+    with Session(db) as session:
+        session.add(
+            AgentSession(
+                local_session_id=probe.PREFIX + "old",
+                workspace="<guest>",
+                branch="main",
+                status="running",
+            )
+        )
+        session.commit()
+    grants = {"codex-b": codex_grant(5000.0)}
+    assert probe.codex_claim(codex_payload(grants)) is not None
+
+
+def test_codex_tick_sends_unpinned_luna_probe(db, monkeypatch, luna_model):
+    from factory.execution import execution_api, provider_quota
+
+    stale = codex_payload({"codex-b": codex_grant(5000.0)})
+    fresh = codex_payload({"codex-b": codex_grant(5.0)})
+    calls = []
+
+    async def fetch(**kwargs):
+        return fresh if calls else stale
+
+    async def run(prompt, **kwargs):
+        calls.append((prompt, kwargs))
+        return "OK"
+
+    async def sleep(_):
+        pass
+
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota", fetch)
+    monkeypatch.setattr(execution_api, "run_synthetic_session", run)
+    monkeypatch.setattr(probe.asyncio, "sleep", sleep)
+    asyncio.run(probe.codex_tick())
+    assert len(calls) == 1
+    assert calls[0][1]["model"] == "luna"
+    assert calls[0][1]["read_timeout"] == 120
+    assert calls[0][1]["session_key"].startswith(probe.CODEX_PREFIX)
+    with Session(db) as session:
+        actions = session.exec(
+            select(FactoryAudit.action).order_by(FactoryAudit.id)
+        ).all()
+    assert actions == [probe.CODEX_STARTED_ACTION, probe.CODEX_OBSERVED_ACTION]
+
+
+def test_codex_tick_records_missing_observation(db, monkeypatch, luna_model):
+    from factory.execution import execution_api, provider_quota
+
+    stale = codex_payload({"codex-b": codex_grant(5000.0)})
+    calls = []
+
+    async def fetch(**kwargs):
+        return stale
+
+    async def run(prompt, **kwargs):
+        calls.append((prompt, kwargs))
+        return "OK"
+
+    async def sleep(_):
+        pass
+
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota", fetch)
+    monkeypatch.setattr(execution_api, "run_synthetic_session", run)
+    monkeypatch.setattr(probe.asyncio, "sleep", sleep)
+    asyncio.run(probe.codex_tick())
+    assert len(calls) == 1
+    with Session(db) as session:
+        actions = session.exec(
+            select(FactoryAudit.action).order_by(FactoryAudit.id)
+        ).all()
+    assert actions == [probe.CODEX_STARTED_ACTION, probe.CODEX_NO_OBSERVATION_ACTION]
+
+
 @pytest.mark.parametrize("prefix", [probe.PREFIX, "synthetic:factory-review:"])
 def test_unconfirmed_cleanup_blocks_until_exact_guest_confirmed(
     db, monkeypatch, prefix

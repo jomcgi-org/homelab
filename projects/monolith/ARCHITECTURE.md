@@ -577,6 +577,23 @@ failure surface.
 (see: /projects/monolith/agent/routine_jobs.py)
 (see: /projects/monolith/chart/values.yaml)
 
+**Why.** KG admission stays fail-closed on unconfirmed Codex capacity: the gate
+needs at least one fresh permitting grant observation, and a stale grant is
+unselectable rather than unconfirmed because the egress ranker tries fresh
+usable grants before stale ones. That alone still wedges an all-stale pool,
+since the deferral stops the very traffic that would refresh an observation.
+The Codex freshness probe closes the loop with one minimal unpinned Luna
+request when no observed grant is fresh and at least one is not exhausted.
+It is unpinned because no per-request grant selector exists in the token
+broker or the egress proxy, and adding guest-to-sidecar plumbing for one
+would be new security-sensitive surface for a reversible default. It is sound
+because the ranker never prefers a stale grant while a fresh usable one
+exists, so the probe lands on the best usable grant and refreshes it either
+way, while unknown, unobserved, and exhausted capacity still defer without
+spending a request.
+(see: /projects/monolith/factory/quota_probe.py)
+(see: /projects/monolith/factory/orchestration/model_pool.py)
+
 The agent console is served at `/agents` on the private hostname as an
 inbox-first surface: rows state the ask, a run view draws the plan, decision
 records and walkthrough, a knowledge extraction queue lane shows the drainer's

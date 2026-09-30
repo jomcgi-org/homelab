@@ -364,13 +364,14 @@ def _confirmed_view_availability(
     return True, "confirmed_available"
 
 
-def _grant_stale_note(view: dict) -> str | None:
-    """Note a stale grant observation, or None when it is not provably stale.
+def grant_observation_state(view: dict) -> str:
+    """Freshness of one grant observation: "fresh", "stale" or "unknown".
 
-    Only a readable, finite, non-negative age past the freshness bound counts
-    as stale. Anything else (missing, NaN, negative) cannot prove staleness,
-    so the view stays on the fail-closed path: it is evaluated as-is and its
-    unknown age vetoes admission there.
+    Only a readable, finite, non-negative age decides: at or below the
+    freshness bound it is fresh, past the bound it is stale, anything else
+    (missing, NaN, negative) is unknown and stays on the fail-closed path.
+    Shared by the KG admission gate and the Codex freshness probe so both
+    read staleness the same way.
     """
     age = view.get("age_seconds")
     if (
@@ -379,10 +380,24 @@ def _grant_stale_note(view: dict) -> str | None:
         or not math.isfinite(float(age))
         or float(age) < 0.0
     ):
-        return None
+        return "unknown"
     if float(age) > max_quota_age_seconds():
-        return f"stale_observation age {age:g}"
-    return None
+        return "stale"
+    return "fresh"
+
+
+def _grant_stale_note(view: dict) -> str | None:
+    """Note a stale grant observation, or None when it is not provably stale.
+
+    Only a readable, finite, non-negative age past the freshness bound counts
+    as stale. Anything else (missing, NaN, negative) cannot prove staleness,
+    so the view stays on the fail-closed path: it is evaluated as-is and its
+    unknown age vetoes admission there.
+    """
+    if grant_observation_state(view) != "stale":
+        return None
+    age = view.get("age_seconds")
+    return f"stale_observation age {age:g}"
 
 
 def confirmed_availability(
