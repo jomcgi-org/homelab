@@ -147,6 +147,17 @@ def test_imported_trigger_is_kept():
     assert "jomcgi.dev /health composite unhealthy" in names
 
 
+def test_hub_probe_absence_stays_staged_and_scoped():
+    specs = {s.name: s for s in load_specs(DEFAULT_SPEC_DIR)}
+    probe = specs["jomcgi.dev /health probe absent"]
+    assert not probe.enabled
+    assert probe.query["filters"] == [
+        {"column": "http.url", "op": "=", "value": "https://jomcgi.dev/health"},
+        {"column": "deployment.environment", "op": "=", "value": "homelab-hub"},
+        {"column": "httpcheck.status", "op": "exists"},
+    ]
+
+
 def test_log_triggers_stay_disabled_until_logs_land():
     for s in load_specs(DEFAULT_SPEC_DIR):
         if s.dataset == "k8s-logs":

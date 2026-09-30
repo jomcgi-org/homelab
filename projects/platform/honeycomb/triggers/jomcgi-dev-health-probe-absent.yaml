@@ -1,8 +1,7 @@
 # Absence companion to jomcgi-dev-health.yaml (#6507): the composite trigger
 # evaluates only received metrics, so it stays silent when the probe itself is
-# disabled or dead. Run sync.py --apply for this spec only after hub
-# httpcheck.status datapoints for https://jomcgi.dev/health arrive in the
-# metrics dataset, or it pages immediately on the empty window.
+# disabled or dead. Keep the trigger disabled until hub httpcheck.status
+# datapoints arrive and operational checks confirm the alert behavior.
 name: jomcgi.dev /health probe absent
 dataset: metrics
 description: >-
@@ -10,11 +9,12 @@ description: >-
   exports httpcheck.status to the metrics dataset. The composite trigger
   evaluates only received metrics, so a disabled or dead probe leaves it
   silent instead of paging. This trigger covers that gap: it fires when the
-  COUNT of datapoints for http.url https://jomcgi.dev/health over the
-  trailing 15 minutes is 0 across two consecutive 5-minute evaluations. The
-  15-minute window with two required evaluations tolerates brief cloudflared
+  COUNT of hub httpcheck.status datapoints for http.url
+  https://jomcgi.dev/health over the trailing 15 minutes is 0 across two
+  consecutive 5-minute evaluations. The 15-minute window with two required
+  evaluations tolerates brief cloudflared
   QUIC/UDP blips that cause momentary total ingress loss.
-enabled: true
+enabled: false
 frequency: 300
 alert_type: on_change
 threshold:
@@ -33,3 +33,8 @@ query:
     - column: http.url
       op: "="
       value: https://jomcgi.dev/health
+    - column: deployment.environment
+      op: "="
+      value: homelab-hub
+    - column: httpcheck.status
+      op: exists
