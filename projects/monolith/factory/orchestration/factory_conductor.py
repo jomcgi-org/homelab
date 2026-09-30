@@ -7012,8 +7012,14 @@ def _supervise_cessation(task: dict, dbos) -> None:
 
 
 def tick() -> None:
+    from factory.orchestration import uncertain_tasks
     from factory.orchestration.factory_controls import status
     from factory.orchestration.factory_intake import admit_next
+
+    # First, before any early return: the uncertain-task snapshot span must
+    # land every cycle, including idle and disabled ones, so the Honeycomb
+    # trigger on its age column sees a continuous signal. It never raises.
+    uncertain_tasks.emit_uncertain_task_snapshot()
 
     snapshot = status()
     if snapshot["state"] == "disabled":
