@@ -50,15 +50,18 @@ export function selectionForFocus(focusId) {
 /**
  * Map a touched (cited) note entry to its citation state label.
  *
- * `disputed` wins over the verification state. Legacy vault notes are not agent
- * facts, so `legacy`, null, missing and any unknown state yield no label and
- * keep the plain chip.
+ * `invalidated` wins over `disputed`, which wins over the verification state
+ * (matching `markClass` in the factory model). An invalidated fact stays in the
+ * public view until the publisher unpublishes it, so it must not look like
+ * legacy content. Legacy vault notes are not agent facts, so `legacy`, null,
+ * missing and any unknown state yield no label and keep the plain chip.
  *
  * @param {{ verification_state?: string | null, disputed?: boolean } | null | undefined} entry
- * @returns {"disputed" | "verified" | "unverified" | null}
+ * @returns {"invalidated" | "disputed" | "verified" | "unverified" | null}
  */
 export function citationStateLabel(entry) {
-  if (entry?.disputed === true) return "disputed";
   const state = entry?.verification_state;
+  if (state === "invalidated") return "invalidated";
+  if (entry?.disputed === true) return "disputed";
   return state === "verified" || state === "unverified" ? state : null;
 }

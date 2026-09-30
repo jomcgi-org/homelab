@@ -125,6 +125,22 @@ describe("applyFrame (turn-state reducer)", () => {
     expect("disputed" in s.touched[3]).toBe(false);
   });
 
+  it("node_touched keeps an invalidated state", () => {
+    let s = initialTurnState();
+    s = applyFrame(s, {
+      type: "node_touched",
+      data: {
+        id: 5,
+        title: "E",
+        verification_state: "invalidated",
+        disputed: false,
+      },
+    });
+    expect(s.touched).toEqual([
+      { id: 5, title: "E", verification_state: "invalidated", disputed: false },
+    ]);
+  });
+
   it("node_touched arrives before tokens and survives the token stream", () => {
     let s = initialTurnState();
     s = applyFrame(s, { type: "node_touched", data: { id: 1, title: "A" } });

@@ -65,6 +65,19 @@ describe("citationStateLabel", () => {
     expect(citationStateLabel({ id: 1, disputed: true })).toBe("disputed");
   });
 
+  it("labels invalidated, ahead of disputed", () => {
+    expect(
+      citationStateLabel({ id: 1, verification_state: "invalidated" }),
+    ).toBe("invalidated");
+    expect(
+      citationStateLabel({
+        id: 1,
+        verification_state: "invalidated",
+        disputed: true,
+      }),
+    ).toBe("invalidated");
+  });
+
   it("gives no label for legacy, null, missing or unknown states", () => {
     expect(
       citationStateLabel({ id: 1, verification_state: "legacy" }),
