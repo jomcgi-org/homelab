@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  citationStateLabel,
   freshChatState,
   initialGraphSelection,
   selectionForFocus,
@@ -40,5 +41,39 @@ describe("graph selection", () => {
   it("selects the focused node when a chip passes its id", () => {
     expect(selectionForFocus("note-42")).toBe("note-42");
     expect(selectionForFocus(0)).toBe(0);
+  });
+});
+
+describe("citationStateLabel", () => {
+  it("labels verified and unverified facts", () => {
+    expect(citationStateLabel({ id: 1, verification_state: "verified" })).toBe(
+      "verified",
+    );
+    expect(
+      citationStateLabel({ id: 1, verification_state: "unverified" }),
+    ).toBe("unverified");
+  });
+
+  it("lets disputed win over the verification state", () => {
+    expect(
+      citationStateLabel({
+        id: 1,
+        verification_state: "verified",
+        disputed: true,
+      }),
+    ).toBe("disputed");
+    expect(citationStateLabel({ id: 1, disputed: true })).toBe("disputed");
+  });
+
+  it("gives no label for legacy, null, missing or unknown states", () => {
+    expect(citationStateLabel({ id: 1, verification_state: "legacy" })).toBeNull();
+    expect(citationStateLabel({ id: 1, verification_state: null })).toBeNull();
+    expect(citationStateLabel({ id: 1, title: "old" })).toBeNull();
+    expect(citationStateLabel({ id: 1, verification_state: "weird" })).toBeNull();
+    expect(
+      citationStateLabel({ id: 1, verification_state: "legacy", disputed: false }),
+    ).toBeNull();
+    expect(citationStateLabel(null)).toBeNull();
+    expect(citationStateLabel(undefined)).toBeNull();
   });
 });

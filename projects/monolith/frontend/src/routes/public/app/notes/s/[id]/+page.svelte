@@ -11,6 +11,7 @@
   import { renderMarkdown } from "$lib/components/notes/markdown.js";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
   import { forkChatSession } from "$lib/public/chat/admission.js";
+  import { citationStateLabel } from "$lib/public/chat/chat-state.js";
 
   let { data } = $props();
 
@@ -106,8 +107,11 @@
                 <div class="turn-touched">
                   <span class="turn-touched-label">BASED ON</span>
                   {#each m.touched as n}
+                    {@const state = citationStateLabel(n)}
                     <span class="touched-chip"
-                      >{n.title || "untitled note"}</span
+                      >{n.title || "untitled note"}{#if state}<span
+                          class="chip-state chip-state--{state}">{state}</span
+                        >{/if}</span
                     >
                   {/each}
                 </div>
@@ -432,6 +436,25 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Citation state: visible text, so it never relies on colour alone. */
+  .chip-state {
+    margin-left: 6px;
+    padding-left: 6px;
+    border-left: 1.5px solid var(--ink);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .chip-state--unverified {
+    font-style: italic;
+  }
+  .chip-state--disputed {
+    padding-right: 4px;
+    background: var(--ink);
+    color: var(--paper);
   }
 
   .share-foot {

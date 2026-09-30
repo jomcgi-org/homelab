@@ -19,9 +19,13 @@
     streamChatMessage,
     initialTurnState,
     applyFrame,
+    touchedEntry,
     CHARACTER_LIMIT,
   } from "$lib/public/chat/stream.js";
-  import { freshChatState } from "$lib/public/chat/chat-state.js";
+  import {
+    freshChatState,
+    citationStateLabel,
+  } from "$lib/public/chat/chat-state.js";
 
   let { data } = $props();
 
@@ -132,7 +136,7 @@
       for (const n of msg.touched ?? []) {
         const id = n?.id;
         if (id === undefined || id === null || map.has(id)) continue;
-        map.set(id, { id, title: n.title ?? "" });
+        map.set(id, touchedEntry(n));
       }
     }
     return map;
@@ -276,7 +280,7 @@
     const id = frame.data?.id;
     if (id === undefined || id === null || touchedMap.has(id)) return;
     const next = new Map(touchedMap);
-    next.set(id, { id, title: frame.data?.title ?? "" });
+    next.set(id, touchedEntry(frame.data));
     touchedMap = next;
   }
 
@@ -648,12 +652,20 @@
                     <div class="turn-touched">
                       <span class="turn-touched-label">BASED ON</span>
                       {#each m.touched as n}
+                        {@const state = citationStateLabel(n)}
                         <button
                           type="button"
                           class="touched-chip"
+                          aria-label={state
+                            ? `${n.title || "untitled note"}, ${state}`
+                            : undefined}
                           onclick={() => showGraph(n.id)}
                         >
                           {n.title || "untitled note"}
+                          {#if state}<span
+                              class="chip-state chip-state--{state}"
+                              aria-hidden="true">{state}</span
+                            >{/if}
                         </button>
                       {/each}
                     </div>
@@ -1471,6 +1483,25 @@
       background 120ms ease,
       transform 120ms ease,
       box-shadow 120ms ease;
+  }
+  /* Citation state: visible text, so it never relies on colour alone. The
+     disputed label is inverted so it reads differently from the other two. */
+  .chip-state {
+    margin-left: 6px;
+    padding-left: 6px;
+    border-left: 1.5px solid var(--ink);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .chip-state--unverified {
+    font-style: italic;
+  }
+  .chip-state--disputed {
+    padding-right: 4px;
+    background: var(--ink);
+    color: var(--paper);
   }
   .touched-chip:hover {
     background: var(--accent);

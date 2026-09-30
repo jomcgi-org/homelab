@@ -46,3 +46,19 @@ export function initialGraphSelection() {
 export function selectionForFocus(focusId) {
   return focusId == null ? null : focusId;
 }
+
+/**
+ * Map a touched (cited) note entry to its citation state label.
+ *
+ * `disputed` wins over the verification state. Legacy vault notes are not agent
+ * facts, so `legacy`, null, missing and any unknown state yield no label and
+ * keep the plain chip.
+ *
+ * @param {{ verification_state?: string | null, disputed?: boolean } | null | undefined} entry
+ * @returns {"disputed" | "verified" | "unverified" | null}
+ */
+export function citationStateLabel(entry) {
+  if (entry?.disputed === true) return "disputed";
+  const state = entry?.verification_state;
+  return state === "verified" || state === "unverified" ? state : null;
+}
