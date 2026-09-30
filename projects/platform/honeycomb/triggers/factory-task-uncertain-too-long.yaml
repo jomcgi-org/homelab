@@ -1,8 +1,6 @@
-# Disabled: factory.tasks.oldest_uncertain_age_seconds starts flowing in
-# Honeycomb only after the conductor change that emits the
-# factory.tasks.snapshot span ships and the leader reconciler ticks with it.
-# Enable (set enabled: true) once the attribute is confirmed present on
-# factory.tasks.snapshot spans in the monolith-backend dataset.
+# Enabled 2026-09-30 (#6510): factory.tasks.snapshot spans carrying
+# factory.tasks.oldest_uncertain_age_seconds arrive in monolith-backend on
+# every conductor tick since the PR #6519 rollout (first span about 06:10 UTC).
 name: Factory task uncertain too long
 dataset: monolith-backend
 description: >-
@@ -16,7 +14,7 @@ description: >-
   forward. The snapshot span is emitted every tick on purpose: an attribute
   that only appears on work spans goes silent exactly when the loop stops
   emitting, which is the failure this trigger exists to catch.
-enabled: false
+enabled: true
 frequency: 900
 alert_type: on_change
 threshold:
