@@ -167,9 +167,7 @@ def provider_walled() -> tuple[bool, str]:
     try:
         from factory.orchestration.model_pool import availability, quota_summary
 
-        ok, reason = availability(
-            DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE
-        )
+        ok, reason = availability(DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE)
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
     except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
