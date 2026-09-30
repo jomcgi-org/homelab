@@ -4788,9 +4788,27 @@ defmodule Embervm.SessionManagerTest do
 
     created = create_persistence_session(ctx, workload: "wl-archive-failed")
     parked = park_session(ctx, created)
+
+    # The draining instance reports the lineage, so the drain archive has an
+    # owner to dial (a miss keeps the volume without dialing at all).
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-dead"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-dead",
+      pod_uid: "pod-dead",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [%{lineage_id: parked.lineage_id, workload: parked.workload}],
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 5_000_001
+    })
+
     assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
     assert_receive {:archive_failed, lineage_id}, 1_000
     assert lineage_id == parked.lineage_id
+    NodeCapacity.drop(ctx.cap_table, {"node-4", "pod-dead"})
 
     # A rollback may disable persistence after the volume was created. Cleanup
     # follows the artifact, not the current flag, and terminalization still wins.
@@ -4882,6 +4900,76 @@ defmodule Embervm.SessionManagerTest do
     dials = Agent.get(dialed, & &1.dials)
     assert "node-4/pod-owner" in dials
     refute "node-4" in dials
+  end
+
+  # #6499: dial_for_session_volume fails OPEN to the bare node_id when no
+  # instance reports the lineage. Dialing that is a guaranteed :unknown_node on
+  # the fleet, and a different instance on the node cannot archive a lineage it
+  # does not hold on disk, so the miss must keep the volume without dialing.
+  test "drain keeps a parked lineage no instance reports, without dialing the bare node" do
+    parent = self()
+    {:ok, dialed} = Agent.start_link(fn -> %{strict: false, dials: []} end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(dialed) end)
+
+    strict_channel_fun = fn node ->
+      strict? =
+        Agent.get_and_update(dialed, fn st -> {st.strict, %{st | dials: [node | st.dials]}} end)
+
+      cond do
+        not strict? -> {:ok, :fake_channel}
+        is_binary(node) and String.match?(node, ~r{\A[^/]+/[^/]+\z}) -> {:ok, {:channel, node}}
+        true -> {:error, :unknown_node}
+      end
+    end
+
+    ctx =
+      start_stack(
+        channel_fun: strict_channel_fun,
+        prime_fun: fake_prime_fun("vm-archive-orphan"),
+        archive_volume_fun: fn channel, request ->
+          send(parent, {:archived, channel, request.lineage_id})
+          {:ok, %{skipped: false}}
+        end
+      )
+
+    created = create_persistence_session(ctx, workload: "wl-archive-orphan")
+    parked = park_session(ctx, created)
+    assert parked.volume_node_id == "node-4"
+
+    # A co-located instance that does NOT report this lineage: it is dialable,
+    # but it is not the owner, so it must not be dialed in the owner's place.
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-other"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-other",
+      pod_uid: "pod-other",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [],
+      session_volumes: [%{lineage_id: "some-other-lineage", workload: parked.workload}],
+      live_vms: 0,
+      max_live_vms: 8,
+      updated_at: 5_000_001
+    })
+
+    Agent.update(dialed, fn _ -> %{strict: true, dials: []} end)
+
+    log =
+      capture_log(fn ->
+        assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
+        refute_receive {:archived, _, _}, 500
+      end)
+
+    assert log =~ "embervm drain archive skipped, no instance reports the lineage; keeping volume"
+    refute log =~ "embervm session workspace archive failed"
+
+    dials = Agent.get(dialed, & &1.dials)
+    refute "node-4" in dials
+    refute "node-4/pod-other" in dials
+
+    assert {:ok, %{state: :parked, volume_node_id: "node-4", lineage_id: lineage_id}} =
+             SessionStore.get(ctx.store, parked.session_id)
+    assert lineage_id == parked.lineage_id
   end
 
   test "a failed departure eviction append is retried to one durable terminal timestamp" do

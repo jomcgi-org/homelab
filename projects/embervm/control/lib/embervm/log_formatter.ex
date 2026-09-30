@@ -97,7 +97,10 @@ defmodule Embervm.LogFormatter do
     :bases_kept_current_unverified,
     :total_candidates,
     :shown,
-    :hidden
+    :hidden,
+    # Session workspace volume lifecycle (drain archive, retirement).
+    :lineage_id,
+    :dial_id
   ]
 
   @doc """

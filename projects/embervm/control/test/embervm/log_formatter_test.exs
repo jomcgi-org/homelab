@@ -34,6 +34,18 @@ defmodule Embervm.LogFormatterTest do
     assert decoded["task_id"] == "task-1"
   end
 
+  test "renders session volume lineage and dial metadata" do
+    decoded =
+      event("embervm drain archive skipped", %{node_id: "node-4", lineage_id: "lin-1", dial_id: "node-4/pod-a"})
+      |> Embervm.LogFormatter.format(%{})
+      |> IO.iodata_to_binary()
+      |> :json.decode()
+
+    assert decoded["node_id"] == "node-4"
+    assert decoded["lineage_id"] == "lin-1"
+    assert decoded["dial_id"] == "node-4/pod-a"
+  end
+
   test "does not emit an ID for a valid non-recording remote span" do
     previous = OpenTelemetry.Ctx.get_current()
     remote = :otel_tracer.from_remote_span(0x1234, 0x5678, 1)
