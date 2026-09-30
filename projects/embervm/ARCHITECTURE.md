@@ -1431,6 +1431,10 @@ as a mechanism to rely on; revocation at the validator is the control.
 
 Muse 1.0.3-R2198.1 was verified on 2026-09-10 to trust only its bundled
 roots (1.4.1-R4503.1 keeps the same settings surface; re-confirm live).
+A 2026-09-30 capture run of 1.4.1-R4503.1 under the shim's settings showed
+every api.meta.ai request (catalog GET, turn POSTs) carrying the Bearer
+Authorization header the presence-keyed swap needs, with no other hosts and
+no telemetry traffic, so the api.meta.ai entry needs no injectAlwaysPaths.
 Its adapter therefore uses an `http://` base URL on the sidecar's
 plaintext lane rather than the CA-backed HTTPS interception lane: the guest
 to sidecar hop is a host-local vsock, the sidecar injects the credential
