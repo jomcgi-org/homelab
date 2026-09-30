@@ -123,6 +123,14 @@ defmodule Embervm.BrickController do
   UP steps (scaling desired past a scheduler that cannot place is runaway) and
   blocks DOWN steps for the idle window after the episode clears.
 
+  ## decision trace
+
+  Every tick emits one `embervm.brick.decision` span per class (see
+  `decision_attributes/1`), including ticks that change nothing: at max, a
+  fleet-full wait, the up cooldown, denials below the threshold, a skipped
+  scale-down, an unreadable `/scale`, and a floor-overflow suppression. The
+  replica-change log line only covers ticks that move a count.
+
   ## catalog-derived floors
 
   Every reconcile derives a per-class minimum from the workload catalog through
@@ -534,44 +542,51 @@ defmodule Embervm.BrickController do
           name = class_name(class)
 
           if MapSet.member?(st.floor_overflow, name) do
+            trace_decision(st, class, %{trace: %{reason: :floor_overflow}}, :suppressed, nil, fl)
             {os, fl, st}
           else
             {plan, st} = plan_class(st, class, now)
+            {acting, outcome, st} = apply_plan(st, name, plan, now)
 
-            case apply_plan(st, name, plan, now) do
-              {nil, st} ->
-                # A failed live-scale read leaves both replicas and fleet-full
-                # bookkeeping untouched for this class.
-                os =
-                  case Map.fetch(st.over_since, name) do
-                    {:ok, since} -> Map.put(os, name, since)
-                    :error -> os
-                  end
+            {os, fl, st} =
+              case acting do
+                nil ->
+                  # A failed live-scale read leaves both replicas and fleet-full
+                  # bookkeeping untouched for this class.
+                  os =
+                    case Map.fetch(st.over_since, name) do
+                      {:ok, since} -> Map.put(os, name, since)
+                      :error -> os
+                    end
 
-                fl = if MapSet.member?(st.flagged, name), do: MapSet.put(fl, name), else: fl
-                {os, fl, st}
+                  fl = if MapSet.member?(st.flagged, name), do: MapSet.put(fl, name), else: fl
+                  {os, fl, st}
 
-              {acting, st} ->
-                reg = Map.get(registered, name, 0)
+                acting ->
+                  reg = Map.get(registered, name, 0)
 
-                if acting > reg do
-                  since = Map.get(st.over_since, name, now)
-                  os = Map.put(os, name, since)
+                  if acting > reg do
+                    since = Map.get(st.over_since, name, now)
+                    os = Map.put(os, name, since)
 
-                  if now - since >= st.fleet_full_after_ms do
-                    maybe_flag(st, name, acting, reg)
+                    if now - since >= st.fleet_full_after_ms do
+                      maybe_flag(st, name, acting, reg)
 
-                    {os, MapSet.put(fl, name),
-                     %{st | last_full_at: Map.put(st.last_full_at, name, now)}}
+                      {os, MapSet.put(fl, name),
+                       %{st | last_full_at: Map.put(st.last_full_at, name, now)}}
+                    else
+                      {os, fl, st}
+                    end
                   else
+                    # Caught up (or over-provisioned): clear any prior over-window and flag.
+                    maybe_unflag(st, name)
                     {os, fl, st}
                   end
-                else
-                  # Caught up (or over-provisioned): clear any prior over-window and flag.
-                  maybe_unflag(st, name)
-                  {os, fl, st}
-                end
-            end
+              end
+
+            written = if outcome == :written, do: acting
+            trace_decision(st, class, plan, outcome, written, fl)
+            {os, fl, st}
           end
         end
       )
@@ -591,7 +606,9 @@ defmodule Embervm.BrickController do
     name = class_name(class)
 
     if state.mode == :off do
-      {%{target: class_static_target(class), current: nil, decision: nil}, state}
+      target = class_static_target(class)
+      {%{target: target, current: nil, decision: nil, trace: %{reason: :static, target: target}},
+       state}
     else
       case read_current(state, name) do
         {:ok, current} ->
@@ -603,14 +620,19 @@ defmodule Embervm.BrickController do
             # Raising a ceiling authorizes headroom, it does not consume it on
             # the same reconciliation tick. The existing replica decision sees
             # the new ceiling on the next tick.
-            {%{target: current, current: current, decision: nil}, state}
+            {%{
+               target: current,
+               current: current,
+               decision: nil,
+               trace: %{reason: :ceiling_moved, target: current}
+             }, state}
           else
             state = maybe_signal_ceiling_exhausted(state, class, current)
             execute(state, class, current, now)
           end
 
         :error ->
-          {:skip, state}
+          {%{skip: true, trace: %{reason: :read_failed}}, state}
       end
     end
   end
@@ -626,36 +648,64 @@ defmodule Embervm.BrickController do
   # the decision retries as soon as a replica is safely removable).
   defp execute(state, class, current, now) do
     name = class_name(class)
-    {target, reason} = desired(current, signals(state, class, now))
+    signals = signals(state, class, now)
+    {target, reason} = desired(current, signals)
+    # What the decision span reports: the autoscale target and reason even when
+    # the mode or the victim rail means nothing is written.
+    trace = %{reason: reason, target: target, min: signals.min, max: signals.max}
 
     cond do
       state.mode == :observe ->
         {%{
            target: class_static_target(class),
            current: current,
-           decision: decision(current, target, reason, false)
+           decision: decision(current, target, reason, false),
+           trace: trace
          }, state}
 
       target > current ->
-        {%{target: target, current: current, decision: decision(current, target, reason, true)}, state}
+        {%{
+           target: target,
+           current: current,
+           decision: decision(current, target, reason, true),
+           trace: trace
+         }, state}
 
       target < current and state.mode == :full ->
         case prepare_scale_down(state, name) do
           :ok ->
-            {%{target: target, current: current, decision: decision(current, target, reason, true)},
-             state}
+            {%{
+               target: target,
+               current: current,
+               decision: decision(current, target, reason, true),
+               trace: trace
+             }, state}
 
           {:skip, why} ->
             Logger.info("brick autoscale: skipping scale-down of class #{name} (reason=#{why})")
-            {%{target: current, current: current, decision: nil}, state}
+
+            # The span keeps the skip reason bounded: a directing-write error
+            # term stays in the log line above, not in an attribute.
+            skip_reason = if is_atom(why), do: why, else: :victim_direct_failed
+
+            {%{
+               target: current,
+               current: current,
+               decision: nil,
+               trace: Map.put(trace, :skip_reason, skip_reason)
+             }, state}
         end
 
       target < current ->
-        {%{target: current, current: current, decision: decision(current, target, reason, false)},
-         state}
+        {%{
+           target: current,
+           current: current,
+           decision: decision(current, target, reason, false),
+           trace: trace
+         }, state}
 
       true ->
-        {%{target: current, current: current, decision: nil}, state}
+        {%{target: current, current: current, decision: nil, trace: trace}, state}
     end
   end
 
@@ -665,7 +715,10 @@ defmodule Embervm.BrickController do
 
   defp decision(_current, _target, _reason, _acted?), do: nil
 
-  defp apply_plan(state, _name, :skip, _now), do: {nil, state}
+  # Returns `{acting, outcome, state}`: the replica count fleet-full accounting
+  # should use (nil when there is no trustworthy count) and what happened to the
+  # write (`:written`, `:write_failed`, or `:read_failed` when none was tried).
+  defp apply_plan(state, _name, %{skip: true}, _now), do: {nil, :read_failed, state}
 
   defp apply_plan(state, name, plan, now) do
     case scale(state, name, plan.target) do
@@ -676,14 +729,114 @@ defmodule Embervm.BrickController do
             d -> note_decision(state, name, d.current, d.target, d.reason, now, d.acted?)
           end
 
-        {plan.target, state}
+        {plan.target, :written, state}
 
       :error ->
         # Report the last trustworthy read for fleet-full accounting. Most
         # importantly, do not stamp a successful-action cooldown. Static mode
         # has no live read, so a failed write cannot update fleet-full state.
-        {plan.current, state}
+        {plan.current, :write_failed, state}
     end
+  end
+
+  # -- decision trace ----------------------------------------------------------
+
+  # One `embervm.brick.decision` span per class per tick, whether or not the
+  # tick changed anything. The replica-change log line above covers only the
+  # ticks that move a count; every "decided not to act" branch (at max,
+  # fleet-full wait, up cooldown, below-threshold pressure, a skipped
+  # scale-down, an unreadable /scale, a floor-overflow suppression) was
+  # otherwise silent, which hid a stuck class during the 2026-09-30 incident.
+  defp trace_decision(state, class, plan, outcome, written, flagged_after) do
+    name = class_name(class)
+    trace = Map.get(plan, :trace, %{})
+    was_flagged? = MapSet.member?(state.flagged, name)
+    flagged? = MapSet.member?(flagged_after, name)
+
+    attributes =
+      decision_attributes(%{
+        size_class: name,
+        mode: state.mode,
+        current: Map.get(plan, :current),
+        target: Map.get(trace, :target),
+        written: written,
+        min: Map.get(trace, :min, class_min(class)),
+        max: Map.get(trace, :max, operative_ceiling(state, class)),
+        # Mode :off never prunes the denial window, so a count there is not a
+        # window count and is left off the span.
+        denials_in_window:
+          if(state.mode == :off, do: nil, else: length(Map.get(state.denials, name, []))),
+        up_threshold: state.up_threshold,
+        reason: Map.get(trace, :reason),
+        skip_reason: Map.get(trace, :skip_reason),
+        outcome: outcome,
+        acted?: outcome == :written and match?(%{acted?: true}, Map.get(plan, :decision)),
+        fleet_full: flagged?,
+        fleet_full_transition:
+          cond do
+            flagged? and not was_flagged? -> :flagged
+            was_flagged? and not flagged? -> :cleared
+            true -> :none
+          end
+      })
+
+    Tracer.with_span "embervm.brick.decision", %{attributes: attributes} do
+      :ok
+    end
+  end
+
+  @doc """
+  The attribute map for one `embervm.brick.decision` span, built from a plain
+  decision summary (pure, so tests can assert it without an exporter). Keys
+  whose value is nil are dropped; atoms other than booleans become strings.
+  Every value is bounded: counts, a size-class label, and fixed reason atoms.
+
+    * `ember.size_class`, `ember.brick.mode`
+    * `ember.brick.current` (live /scale read; absent in mode :off or on a read
+      failure), `ember.brick.target` (the autoscale target, or the static target
+      in mode :off), `ember.brick.written` (the count actually written)
+    * `ember.brick.min`, `ember.brick.max`, `ember.brick.denials_in_window`,
+      `ember.brick.up_threshold`, `ember.brick.pressure`
+    * `ember.reason` (a `desired/2` reason, or `static`, `ceiling_moved`,
+      `read_failed`, `floor_overflow`), `ember.brick.skip_reason` (a skipped
+      drain-aware scale-down), `ember.brick.outcome` (`written`,
+      `write_failed`, `read_failed`, `suppressed`)
+    * `ember.brick.acted` (the autoscale decision changed replicas)
+    * `ember.brick.fleet_full`, `ember.brick.fleet_full_transition`
+      (`flagged`, `cleared`, `none`)
+  """
+  @spec decision_attributes(map()) :: %{String.t() => term()}
+  def decision_attributes(d) do
+    denials = Map.get(d, :denials_in_window)
+    threshold = Map.get(d, :up_threshold)
+
+    pressure =
+      if is_integer(denials) and is_integer(threshold), do: denials >= threshold, else: nil
+
+    %{
+      "ember.size_class" => Map.get(d, :size_class),
+      "ember.brick.mode" => Map.get(d, :mode),
+      "ember.brick.current" => Map.get(d, :current),
+      "ember.brick.target" => Map.get(d, :target),
+      "ember.brick.written" => Map.get(d, :written),
+      "ember.brick.min" => Map.get(d, :min),
+      "ember.brick.max" => Map.get(d, :max),
+      "ember.brick.denials_in_window" => denials,
+      "ember.brick.up_threshold" => threshold,
+      "ember.brick.pressure" => pressure,
+      "ember.reason" => Map.get(d, :reason),
+      "ember.brick.skip_reason" => Map.get(d, :skip_reason),
+      "ember.brick.outcome" => Map.get(d, :outcome),
+      "ember.brick.acted" => Map.get(d, :acted?, false),
+      "ember.brick.fleet_full" => Map.get(d, :fleet_full),
+      "ember.brick.fleet_full_transition" => Map.get(d, :fleet_full_transition)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new(fn
+      {key, value} when is_boolean(value) -> {key, value}
+      {key, value} when is_atom(value) -> {key, Atom.to_string(value)}
+      pair -> pair
+    end)
   end
 
   defp read_current(state, name) do
