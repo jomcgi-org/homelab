@@ -4877,6 +4877,9 @@ py_test(
 
 py_test(
     name = "swarm_factory_conductor_test",
+    # 839 tests take about 190s unloaded with no single slow case, so the
+    # default 300s wall trips on a loaded remote runner (#6481).
+    timeout = "long",
     srcs = ["factory/orchestration/factory_conductor_test.py"],
     imports = ["."],
     deps = [
