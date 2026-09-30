@@ -56,7 +56,11 @@ data:
           {{- if kindIs "string" . }}
           - endpoint: {{ . | quote }}
             method: GET
-          {{- else }}
+          # A structured target with enabled: false stays staged until the CA
+          # mount is on (see the httpcheck comment in values.yaml). hasKey is
+          # needed because sprig's default treats false as empty, so a plain
+          # default would render a staged target as enabled.
+          {{- else if or (not (hasKey . "enabled")) .enabled $.Values.httpcheck.caMount.enabled }}
           - endpoint: {{ .endpoint | quote }}
             method: {{ .method | default "GET" }}
             {{- with .tls }}

@@ -14,13 +14,22 @@ allowedServices:
   - monolith-public
 
 httpcheck:
-  # Staged off while the Argo CD serving chain, SAN, trusted CA, and collector
-  # network path are validated from the hub. This temporarily removes the hub
-  # Argo CD probe signal. Enable the receiver and CA mount only in a separately
+  # Live public probes plus one staged in-cluster target. The two string
+  # targets render into the http_check receiver and ship probe metrics to
+  # Honeycomb, the same public URLs the residual home overlay probes. The
+  # Argo CD structured target stays staged with enabled: false: the template
+  # skips it while httpcheck.caMount.enabled is false and renders it once the
+  # CA mount is on, so a ca_file target can never render without its CA volume
+  # mount (which would fail every probe and risks the collector failing to
+  # start, taking traces and metrics export with it). Set the target to
+  # enabled: true and the CA mount to enabled: true only in a separately
   # authorized rollout after argocd-server-ca contains the verified CA.
-  enabled: false
+  enabled: true
   targets:
+    - "https://jomcgi.dev/health"
+    - "https://jomcgi.dev/"
     - endpoint: "https://argocd-server.argocd.svc:443/healthz"
+      enabled: false
       method: GET
       tls:
         ca_file: /etc/otel/argocd-ca/ca.crt

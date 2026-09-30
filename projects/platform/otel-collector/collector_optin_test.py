@@ -388,7 +388,8 @@ def test_metrics_pipeline_uses_otlp_http_exporter_with_dataset_header():
 
 
 # ---------------------------------------------------------------------------
-# HTTP probe staging: legacy targets remain stable while hub HTTPS stays off.
+# HTTP probe staging: the hub runs the public probes while the Argo CD
+# in-cluster target stays staged behind the CA mount (#6507).
 # ---------------------------------------------------------------------------
 
 
@@ -418,12 +419,24 @@ def test_mixed_legacy_and_structured_targets_render_together():
     ]
 
 
-def test_gke_probe_is_staged_off_with_valid_remaining_pipelines():
+def test_gke_renders_public_probes_with_argocd_target_staged():
+    """The hub ships the public jomcgi.dev probes while the Argo CD target
+    stays staged: no ca_file may render without its CA mount."""
     docs = _render_overlay("values-gke")
     config = _collector_config(docs)
+    receiver = config["receivers"]["http_check"]
 
-    assert "http_check" not in config["receivers"]
-    assert config["service"]["pipelines"]["metrics"]["receivers"] == ["otlp"]
+    assert receiver["collection_interval"] == "60s"
+    assert receiver["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://jomcgi.dev/", "method": "GET"},
+    ]
+    for target in receiver["targets"]:
+        assert "tls" not in target
+    assert config["service"]["pipelines"]["metrics"]["receivers"] == [
+        "http_check",
+        "otlp",
+    ]
     _assert_pipelines_reference_defined_components(config)
 
     container = _deployment_container(docs)
@@ -432,21 +445,23 @@ def test_gke_probe_is_staged_off_with_valid_remaining_pipelines():
     assert "httpcheck-ca" not in {v["name"] for v in volumes}
 
 
-def test_gke_stages_https_target_with_verified_ca_and_60s_cadence():
-    docs = _render_overlay("values-gke", ["--set", "httpcheck.enabled=true"])
+def test_gke_enabling_ca_mount_renders_staged_argocd_target():
+    docs = _render_overlay("values-gke", ["--set", "httpcheck.caMount.enabled=true"])
     config = _collector_config(docs)
     receiver = config["receivers"]["http_check"]
 
     assert receiver["collection_interval"] == "60s"
     assert receiver["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {
             "endpoint": "https://argocd-server.argocd.svc:443/healthz",
             "method": "GET",
             "tls": {"ca_file": "/etc/otel/argocd-ca/ca.crt"},
-        }
+        },
     ]
-    assert "insecure" not in receiver["targets"][0]["tls"]
-    assert "insecure_skip_verify" not in receiver["targets"][0]["tls"]
+    assert "insecure" not in receiver["targets"][2]["tls"]
+    assert "insecure_skip_verify" not in receiver["targets"][2]["tls"]
     _assert_pipelines_reference_defined_components(config)
 
 
@@ -479,7 +494,15 @@ def test_gke_ca_mount_is_opt_in_read_only_and_key_scoped():
 
 
 def test_ca_mount_stays_absent_when_only_mount_flag_is_set():
-    docs = _render_overlay("values-gke", ["--set", "httpcheck.caMount.enabled=true"])
+    docs = _render_overlay(
+        "values-gke",
+        [
+            "--set",
+            "httpcheck.enabled=false",
+            "--set",
+            "httpcheck.caMount.enabled=true",
+        ],
+    )
     pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
 
     assert "httpcheck-ca" not in {
