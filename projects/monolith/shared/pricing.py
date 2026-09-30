@@ -22,14 +22,16 @@ class PricedUsage:
 
 
 _MODEL_ALIASES = {
-    # GPT-6 Luna, Sol and Astra and Claude Opus 5.5 have no genai-prices 0.1.6
-    # entry, so they settle through the fixed table. GPT-6 has no Terra.
+    # GPT-6 Luna, Sol and Astra and Claude Opus and Sonnet 5.5 have no
+    # genai-prices 0.1.6 entry, so they settle through the fixed table. GPT-6
+    # has no Terra. These targets match the guest's CLAUDE_MODELS pins
+    # (projects/embervm/runtimes/claude/shim.py).
     "luna": ("gpt-6-luna", "fixed"),
     "terra": ("gpt-5.6-terra", "openai"),
     "sol": ("gpt-6.1-sol", "fixed"),
     "astra": ("gpt-6-astra", "fixed"),
     "opus": ("claude-opus-5-5", "fixed"),
-    "sonnet": ("claude-sonnet-5", "anthropic"),
+    "sonnet": ("claude-sonnet-5-5", "fixed"),
     "fable": ("claude-fable-5-1", "anthropic"),
     "spark": ("muse-spark-1.3-contributor", "muse"),
     "pi-spark": ("muse-spark-1.3-contributor", "muse"),
@@ -70,6 +72,15 @@ FIXED_PRICES = {
         "cache_write_per_million": 5.00,
         "output_per_million": 20.00,
         "note": "Anthropic list price, 2026-09-22",
+    },
+    # genai-prices matches claude-sonnet-5-5 by prefix as claude-sonnet-5, so
+    # it needs its own row. Cache write at the standard 1.25x of input.
+    "claude-sonnet-5-5": {
+        "input_per_million": 2.00,
+        "cache_read_per_million": 0.20,
+        "cache_write_per_million": 2.50,
+        "output_per_million": 10.00,
+        "note": "Anthropic list price, 2026-09-30",
     },
     "gpt-6-astra": {
         "input_per_million": 10.00,

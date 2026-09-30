@@ -597,6 +597,63 @@ def test_a_muse_first_escalation_ladder_is_a_valid_policy(db, policy):
     assert stored["model_pools"]["implement"] == ["spark", "sol", "astra"]
 
 
+def test_role_effort_overrides_are_validated_and_stored(db, policy):
+    policy["role_effort"] = {"reviewer": "max", "implement": "medium"}
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    stored = controls.status()["policy"]
+    assert stored["role_effort"] == {"implement": "medium", "reviewer": "max"}
+
+
+@pytest.mark.parametrize(
+    "role_effort",
+    [
+        {"reviewer": "ultra"},
+        {"reviewer": ""},
+        {"nobody": "high"},
+        ["reviewer", "xhigh"],
+        {"planner": None},
+    ],
+)
+def test_invalid_role_effort_is_refused(policy, role_effort):
+    policy["role_effort"] = role_effort
+    with pytest.raises(ValueError, match="role_effort"):
+        controls.validate_policy(policy)
+
+
+def test_policy_without_role_effort_stays_unchanged(policy):
+    assert "role_effort" not in controls.validate_policy(policy)
+
+
+def test_sonnet_is_an_allowed_worker_and_implement_pool_member(policy):
+    policy.update(
+        allowed_models=["opus", "sol", "sonnet", "spark"],
+        worker_model="spark",
+        model_pools={
+            "worker": ["spark", "sonnet", "sol"],
+            "implement": ["spark", "sonnet", "sol"],
+        },
+    )
+    normalized = controls.validate_policy(policy)
+    assert normalized["model_pools"]["worker"] == ["spark", "sonnet", "sol"]
+
+
+@pytest.mark.parametrize("model", ["opus", "sonnet", "fable", "claude-opus-5-5"])
+def test_claude_planner_reserves_above_the_turn_budget_for_xhigh(model):
+    assert controls.turn_reservation_usd(model, "planner", 5.0) == 7.5
+    # Work turns keep the turn budget; effort there is high, not xhigh.
+    assert controls.turn_reservation_usd(model, "work", 5.0) == 5.0
+
+
+def test_non_claude_planner_reservations_are_unchanged():
+    assert controls.turn_reservation_usd("spark", "planner", 5.0) == 0.50
+    assert controls.turn_reservation_usd("sol", "planner", 5.0) == 5.0
+
+
+def test_opus_review_floor_is_raised_for_xhigh_review():
+    assert controls.review_reservation_usd("opus", 0, 2.0) == 10.0
+    assert controls.review_reservation_usd("sonnet", 0, 2.0) < 10.0
+
+
 def test_policy_without_model_pools_stays_unchanged(db, policy):
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert "model_pools" not in controls.status()["policy"]
@@ -871,7 +928,7 @@ def test_a_three_node_plan_sizes_its_own_task(policy):
     # spent. The planner node costs money but never a work turn.
     assert allowance["turns"] == 3 * 2 + 2
     assert allowance["review_rounds_reserved"] == 1
-    assert allowance["usd"] == 4 * 2.0 + policy["turn_budget_usd"] + 8.0
+    assert allowance["usd"] == 4 * 2.0 + policy["turn_budget_usd"] + 10.0
     assert allowance["graph_revision"] == 4 and allowance["derived"] is True
 
 

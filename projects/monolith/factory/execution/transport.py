@@ -403,6 +403,10 @@ class Turn(NamedTuple):
     diff: dict | None = None
     artifact: dict | None = None
     model: str | None = None
+    # What the guest says ran behind the model alias, and the effort it ran
+    # at. Only the Claude adapter reports them; both are None otherwise.
+    provider_model: str | None = None
+    effort: str | None = None
     # Set by the transport, never copied from guest JSON. The normal writer
     # revalidates the receipt and native body in its completion transaction.
     native_receipt: dict | None = None
@@ -444,7 +448,16 @@ def parse_native_turn(
         diff=_guest_diff(guest_data.get("diff"), guest_id),
         artifact=_guest_artifact(guest_data.get("artifact"), artifact_path, guest_id),
         model=guest_data.get("model"),
+        provider_model=_guest_text(guest_data.get("provider_model")),
+        effort=_guest_text(guest_data.get("effort")),
     )
+
+
+def _guest_text(value: object) -> str | None:
+    """A short guest-reported label, or None for anything else."""
+    if isinstance(value, str) and 0 < len(value) <= 128:
+        return value
+    return None
 
 
 # Receipt adoption can finish a logical turn while its original POST is still
@@ -1364,6 +1377,7 @@ class EmberVmShimTransport:
         progress_token: str | None = None,
         system_prompt: str | None = None,
         reasoning: bool = False,
+        effort: str | None = None,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
         turn_seq: int | None = None,
@@ -1407,6 +1421,7 @@ class EmberVmShimTransport:
                     progress_token=progress_token,
                     system_prompt=system_prompt,
                     reasoning=reasoning,
+                    effort=effort,
                     artifact_path=artifact_path,
                     agent_session_id=agent_session_id,
                     turn_seq=turn_seq,
@@ -1447,6 +1462,7 @@ class EmberVmShimTransport:
         progress_token: str | None = None,
         system_prompt: str | None = None,
         reasoning: bool = False,
+        effort: str | None = None,
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
         turn_seq: int | None = None,
@@ -1467,6 +1483,8 @@ class EmberVmShimTransport:
             system_prompt: The caller's system prompt, appended to the shim's
                 own sandbox prompt. Omitted from the payload if None.
             reasoning: Whether the guest should use high thinking for each invoke.
+            effort: The Claude CLI effort level for this session's turns, or
+                None for the guest's per-model default. Other adapters ignore it.
             artifact_path: Declared artifact file the guest should read from the
                 checkout after the turn and deliver beside the diff. None means
                 no declaration, which is every caller until the conductor lands
@@ -1550,6 +1568,8 @@ class EmberVmShimTransport:
                 payload["progress_token"] = progress_token
             if system_prompt is not None:
                 payload["system_prompt"] = system_prompt
+            if effort is not None:
+                payload["effort"] = effort
             if artifact_path is not None:
                 payload["artifact_path"] = artifact_path
             body = json.dumps(payload)

@@ -82,6 +82,53 @@ def test_opus_5_5_model_id_is_not_priced_as_opus_5():
     assert price_usage("claude-opus-5", usage).cost_usd == pytest.approx(5.0)
 
 
+@pytest.mark.parametrize("model", ["sonnet", "claude-sonnet-5-5"])
+def test_sonnet_5_5_settles_through_the_fixed_table(model):
+    priced = price_usage(
+        model,
+        {"input_tokens": 1_000, "cache_read_tokens": 9_000, "output_tokens": 100},
+    )
+
+    assert priced is not None
+    assert priced.model_ref == "claude-sonnet-5-5"
+    # 1,000 uncached input at $2, 9,000 cache reads at $0.20, 100 output at $10.
+    assert priced.cost_usd == pytest.approx(0.0048)
+
+
+def test_sonnet_5_5_prices_cache_writes_at_the_write_rate():
+    priced = price_usage(
+        "claude-sonnet-5-5",
+        {
+            "shape": "claude",
+            "input_tokens": 1_000,
+            "cache_write_tokens": 2_000,
+            "output_tokens": 0,
+        },
+    )
+
+    assert priced is not None
+    # 1,000 input at $2 and 2,000 cache writes at $2.50.
+    assert priced.cost_usd == pytest.approx(0.007)
+
+
+def test_sonnet_5_5_list_price_per_million():
+    usage_in = {"input_tokens": 1_000_000, "output_tokens": 0}
+    usage_out = {"input_tokens": 0, "output_tokens": 1_000_000}
+
+    assert price_usage("claude-sonnet-5-5", usage_in).cost_usd == pytest.approx(2.0)
+    assert price_usage("claude-sonnet-5-5", usage_out).cost_usd == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("model", ["fable", "claude-fable-5-1"])
+def test_fable_prices_as_the_pinned_fable_5_1(model):
+    priced = price_usage(model, {"input_tokens": 1_000_000, "output_tokens": 0})
+
+    assert priced is not None
+    # The guest pins fable to claude-fable-5-1, so the alias prices that model.
+    assert priced.model_ref == "claude-fable-5-1"
+    assert priced.cost_usd > 0
+
+
 @pytest.mark.parametrize("model", ["spark", "qwen", "pi-spark"])
 def test_muse_contributor_price(model):
     priced = price_usage(model, {"input_tokens": 1_000_000, "output_tokens": 1_000_000})

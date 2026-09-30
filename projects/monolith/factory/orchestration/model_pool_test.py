@@ -771,3 +771,44 @@ def test_judge_follows_a_configured_pool_with_quota_floors():
 def test_judge_falls_back_to_the_reviewer_pool_without_opus():
     no_opus = policy(allowed_models=["sol", "spark"], reviewer_model="sol")
     assert model_pool.pool_for("judge", no_opus) == ["sol"]
+
+
+@pytest.mark.parametrize(
+    ("node_key", "effort"),
+    [
+        # Planner and reviewer think hardest (#6461).
+        ("conductor_1", "xhigh"),
+        ("review_pr6506", "xhigh"),
+        ("review_2", "xhigh"),
+        # A funding judge is a conductor_ node, matched first.
+        ("conductor_funding_1", "high"),
+        ("implement_fix", "high"),
+        ("integrate_1", "high"),
+        ("correct_1", "high"),
+        ("investigate_logs", "medium"),
+        ("refine_1", "medium"),
+        # An unknown role falls back to high.
+        ("something_else", "high"),
+    ],
+)
+def test_effort_follows_the_node_role(node_key, effort):
+    assert model_pool.effort_for(node_key, policy()) == effort
+    assert model_pool.effort_for(node_key, None) == effort
+
+
+def test_policy_role_effort_overrides_one_role_only():
+    overridden = policy(role_effort={"reviewer": "max", "implement": "medium"})
+    assert model_pool.effort_for("review_1", overridden) == "max"
+    assert model_pool.effort_for("implement_fix", overridden) == "medium"
+    assert model_pool.effort_for("conductor_1", overridden) == "xhigh"
+
+
+def test_every_role_default_is_a_cli_effort_level():
+    from factory.execution import EFFORT_LEVELS
+
+    assert set(model_pool.ROLE_EFFORT.values()) <= set(EFFORT_LEVELS)
+    assert model_pool.DEFAULT_ROLE_EFFORT in EFFORT_LEVELS
+
+
+def test_sonnet_stays_below_the_judgment_floor():
+    assert "sonnet" not in model_pool.JUDGMENT_MODELS

@@ -5132,6 +5132,13 @@ bdd_test(
     srcs = ["factory/orchestration/factory_policy_no_astra_postgres_test.py"],
 )
 
+# Hand-registered real-PostgreSQL coverage for the staged Claude 5.5 policy
+# migration (#6461), which rewrites the TEXT policy through jsonb.
+bdd_test(
+    name = "swarm_factory_policy_claude_55_postgres_test",
+    srcs = ["factory/orchestration/factory_policy_claude_55_postgres_test.py"],
+)
+
 # Hand-registered real-PostgreSQL coverage for the no-new-notes pending
 # provenance write: the atom_raw_provenance_pending partial unique index
 # only exists in Postgres, so a SQLite test cannot prove the retry is

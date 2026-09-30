@@ -417,6 +417,7 @@ def _persist_session(
     system_prompt: str | None = None,
     prompt: str | None = None,
     reasoning: bool = False,
+    effort: str | None = None,
     workflow_id: str | None = None,
     triggered_by: str | None = None,
     node_key: str | None = None,
@@ -439,6 +440,8 @@ def _persist_session(
             discord_thread=discord_thread,
             system_prompt=system_prompt,
             reasoning=reasoning,
+            # Passed only when set, so a store double without it keeps working.
+            **({"effort": effort} if effort is not None else {}),
             workflow_id=workflow_id,
             triggered_by=triggered_by,
             node_key=node_key,
@@ -1036,6 +1039,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 deliver_kwargs["system_prompt"] = session_row.system_prompt
             if session_row.reasoning:
                 deliver_kwargs["reasoning"] = True
+            if getattr(session_row, "effort", None) is not None:
+                deliver_kwargs["effort"] = session_row.effort
             effective_model = normalize_model(row.model)
 
             async def shared_admission_check() -> None:

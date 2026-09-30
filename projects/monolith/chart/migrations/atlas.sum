@@ -1,4 +1,4 @@
-h1:De1XT5seVtWTWmHbZVhkNAEVJa7Feu/2pF75Et4qPnU=
+h1:DpI8/b/eShnXhFgy4yTK3Tp/3aS4N+OLZlhmBaEUdT0=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -240,3 +240,5 @@ h1:De1XT5seVtWTWmHbZVhkNAEVJa7Feu/2pF75Et4qPnU=
 20260926000000_personal_retrieval_audit.sql h1:2bVZSeJ1HMA/OmdnnXCU3uPf/Q6Rb6TO45QEG8nYs+0=
 20260928010000_agent_board.sql h1:ITo1Z6coRSExU3noBB+uq+USSrPbx2TOCNcOAwHyUoU=
 20260929120000_drop_repo_docs.sql h1:5n8Yt31EKkgwd1dLJAMUyBbOVHyI+O0DeB4IJb/2XOo=
+20260930060000_agent_session_effort.sql h1:n6c1YCUHFh1cpcXv9BTtn/Mh8UFwJz69IdsNDmofp2s=
+20260930060100_factory_policy_claude_55.sql h1:vwW9H8Fzx9hV8undf/PuI3474VQmqVoTn116yuq3Klk=

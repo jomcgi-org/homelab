@@ -37,6 +37,25 @@ def _usage_counts(usage_json: str | None) -> tuple[int | None, int | None]:
     return tool_calls, input_tokens
 
 
+def provider_evidence(usage_json: str | None) -> dict:
+    """The provider model and effort the guest reported for one turn.
+
+    store.py writes both beside the token counts. Absent or malformed values
+    are left out rather than raised, like _usage_counts.
+    """
+    try:
+        usage = json.loads(usage_json)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(usage, dict):
+        return {}
+    return {
+        key: usage[key]
+        for key in ("provider_model", "effort")
+        if isinstance(usage.get(key), str) and usage[key]
+    }
+
+
 async def merge_workflow_attributes(dbos, workflow_id: str, patch: dict) -> None:
     """Apply ``patch`` to a workflow's attributes WITHOUT discarding the rest.
 
