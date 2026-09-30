@@ -297,6 +297,58 @@ def test_tail_sampling_keeps_errors_and_pi_runtime_invokes(values_name):
     assert not _matches_policy(policies["keep-pi-runtime"], ordinary_trace)
 
 
+@pytest.mark.parametrize("values_name", ["values-prod", "values-gke"])
+def test_ember_signal_is_capped_and_factory_is_uncapped(values_name):
+    """ember.reason / ember.placement.outcome traces are kept, but INSIDE the
+    composite ceiling: expected denials scale with caller rate, so an uncapped
+    path would let a denial storm bill the month. Factory traces are paced by
+    the factory's own heartbeats and are an uncapped peer policy."""
+    config = _collector_config(_render_overlay(values_name))
+    policies = {p["name"]: p for p in config["processors"]["tail_sampling"]["policies"]}
+
+    # keep-errors must still exclude the expected class; this change must not
+    # widen the uncapped path.
+    exclude = policies["keep-errors"]["and"]["and_sub_policy"][1]
+    assert exclude["not"]["not_sub_policy"]["string_attribute"]["values"] == [
+        "expected"
+    ]
+
+    factory = policies["keep-factory"]
+    assert factory["type"] == "ottl_condition"
+    (condition,) = factory["ottl_condition"]["span"]
+    assert 'resource.attributes["service.name"] == "monolith-backend"' in condition
+    for prefix in ("swarm", "drain", "agent_sessions", "factory"):
+        assert prefix in condition
+
+    uncapped_signal = [
+        p
+        for name, p in policies.items()
+        if name != "capped" and "ember.reason" in str(p)
+    ]
+    assert not uncapped_signal, "ember.reason must not bypass the composite ceiling"
+
+    composite = policies["capped"]["composite"]
+    subs = {s["name"]: s for s in composite["composite_sub_policy"]}
+    (signal,) = subs["ember-signal"]["ottl_condition"]["span"]
+    assert signal == (
+        'attributes["ember.reason"] != nil or '
+        'attributes["ember.placement.outcome"] != nil'
+    )
+    # Errors first: composite priority is the sub-policy list order.
+    assert [s["name"] for s in composite["composite_sub_policy"]][:2] == [
+        "errors",
+        "ember-signal",
+    ]
+    # Every sub-policy has an explicit allocation (a missing one silently
+    # falls back to an equal share), each slice holds a whole trace (100
+    # spans), and the allocations do not exceed the ceiling.
+    alloc = {a["policy"]: a["percent"] for a in composite["rate_allocation"]}
+    assert set(alloc) == set(subs)
+    assert sum(alloc.values()) <= 100
+    total = composite["max_total_spans_per_second"]
+    assert all(total * pct / 100 >= 100 for pct in alloc.values())
+
+
 def test_allowlist_drops_services_not_named():
     """The conditions are OR-ed drop rules, so an unlisted service must be
     dropped by the same condition that keeps a listed one."""

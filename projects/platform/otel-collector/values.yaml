@@ -154,9 +154,16 @@ sampling:
   # Recheck against measured span-per-trace depth once real data lands. If
   # traces run deeper than 100 spans, raise this rather than rebalancing:
   # shrinking any slice to feed another just moves the silent drop.
-  maxTotalSpansPerSecond: 400
+  #
+  # 500, not 400: the ember-signal slice (below) was added by raising the
+  # ceiling, per the rule above, so errors keep 200 spans/sec and every other
+  # slice keeps 100. Sustained, 500 exhausts 20M events in about 11 hours
+  # instead of 14; a sustained ceiling hit is an incident either way.
+  maxTotalSpansPerSecond: 500
   # Budget split. Errors keep the largest slice, but every slice is sized to
-  # hold a whole trace, per the per-trace rule above.
+  # hold a whole trace, per the per-trace rule above. Measured 2026-09-30:
+  # embervm-control traces carrying ember.reason peak at 22 spans, well inside
+  # a 100 spans/sec slice.
   #
   # These do NOT have to sum to 100 and nothing validates them, so a sum over
   # 100 quietly raises the real ceiling above maxTotalSpansPerSecond. A
@@ -164,9 +171,46 @@ sampling:
   # rather than erroring or getting nothing, so keep the names in step with the
   # composite_sub_policy entries in the ConfigMap template.
   rateAllocation:
-    errorsPercent: 50
-    slowPercent: 25
-    baselinePercent: 25
+    errorsPercent: 40
+    emberSignalPercent: 20
+    slowPercent: 20
+    baselinePercent: 20
+  # Low-volume, high-signal EmberVM outcomes, kept whether or not the trace
+  # errored. A span carrying any of these attributes marks the whole trace.
+  #
+  # Why ember.failure.class=expected stays EXCLUDED from keep-errors while
+  # ember.reason is kept here: they sit on opposite sides of the ceiling.
+  # keep-errors is an UNCAPPED peer policy, so anything it matches bypasses
+  # maxTotalSpansPerSecond. Expected outcomes (429 backpressure, queue_full,
+  # client 4xx) are driven by caller request rate, so letting them through an
+  # uncapped path would let one misbehaving caller bill the whole month. This
+  # policy is instead a sub-policy of the capped composite: in steady state
+  # these traces are rare enough that every one is kept (a session-create
+  # denial or placement miss is exactly what a 2026-09-30-style incident needs,
+  # and at the 0.1% baseline it was effectively never kept), while during a
+  # denial storm the slice saturates and the ceiling holds.
+  #
+  # The attributes are matched by presence, not value, so a new reason in the
+  # Elixir taxonomy (session_telemetry.ex) is kept without a chart change.
+  emberSignalAttributes:
+    - ember.reason
+    - ember.placement.outcome
+  # Factory traces from monolith-backend, kept in full and UNCAPPED.
+  #
+  # There is no factory.task_id attribute and no span named factory*: the
+  # factory instruments under the "swarm" tracer (factory/orchestration/
+  # tracing.py) with swarm.* and drain.* span names, plus agent_sessions.deliver
+  # in factory/execution/transport.py. Matching on those names is what reaches
+  # them; the factory prefix is kept in case a span adopts it later.
+  #
+  # Uncapped is safe here, unlike ember signal, because factory volume is set
+  # by the factory's own clock rather than by callers: one drain cycle at a
+  # time, and claim_job/poll_turn heartbeats every 5 seconds (IDLE_POLL_SECONDS,
+  # POLL_INTERVAL_SECONDS), so roughly 20-40k spans/day. Recheck if the factory
+  # grows concurrent drain workers.
+  factory:
+    serviceName: monolith-backend
+    spanNamePattern: "^(swarm\\.|drain\\.|agent_sessions\\.|factory)"
 
 # Endpoints the http_check receiver probes. Empty by default. Targets may be
 # legacy URL strings or objects with endpoint, method, and tls settings.

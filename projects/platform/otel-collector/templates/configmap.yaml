@@ -140,6 +140,15 @@ data:
             string_attribute:
               key: ember.workload
               values: [pi-runtime]
+          # Uncapped like the two above. Factory volume is paced by the
+          # factory's own 5-second heartbeats, not by callers; see
+          # sampling.factory in values.yaml.
+          - name: keep-factory
+            type: ottl_condition
+            ottl_condition:
+              error_mode: ignore
+              span:
+                - 'resource.attributes["service.name"] == {{ .Values.sampling.factory.serviceName | quote }} and IsMatch(name, {{ .Values.sampling.factory.spanNamePattern | quote }})'
           # One composite policy, not three peer policies. tail_sampling ORs
           # its policies, so peers can only ever admit more traces. The
           # composite policy imposes the ceiling on ordinary traffic, while the
@@ -162,12 +171,20 @@ data:
             type: composite
             composite:
               max_total_spans_per_second: {{ .Values.sampling.maxTotalSpansPerSecond }}
-              policy_order: [errors, slow-traces, baseline]
+              policy_order: [errors, ember-signal, slow-traces, baseline]
               composite_sub_policy:
                 - name: errors
                   type: status_code
                   status_code:
                     status_codes: [ERROR]
+                # Capped on purpose, unlike keep-errors: expected denials scale
+                # with caller rate. See sampling.emberSignalAttributes.
+                - name: ember-signal
+                  type: ottl_condition
+                  ottl_condition:
+                    error_mode: ignore
+                    span:
+                      - '{{ range $i, $a := .Values.sampling.emberSignalAttributes }}{{ if $i }} or {{ end }}attributes[{{ $a | quote }}] != nil{{ end }}'
                 - name: slow-traces
                   type: latency
                   latency:
@@ -179,6 +196,8 @@ data:
               rate_allocation:
                 - policy: errors
                   percent: {{ .Values.sampling.rateAllocation.errorsPercent }}
+                - policy: ember-signal
+                  percent: {{ .Values.sampling.rateAllocation.emberSignalPercent }}
                 - policy: slow-traces
                   percent: {{ .Values.sampling.rateAllocation.slowPercent }}
                 - policy: baseline
