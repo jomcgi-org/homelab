@@ -41,12 +41,13 @@ go_test(
 # platforms skip this target while CI's Linux executor still runs it.
 go_test(
     name = "s6_tlc_test",
+    timeout = "moderate",
     srcs = ["s6_tlc_test.go"],
     data = [
         "//projects/embervm/specs:adoption_trace.tla",
-        "@tla2tools//file",
         "@temurin21_jre_linux_amd64//:bin/java",
         "@temurin21_jre_linux_amd64//:jre",
+        "@tla2tools//file",
     ],
     embed = [":conformance_lib"],
     env = {
@@ -58,7 +59,6 @@ go_test(
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
     ],
-    timeout = "moderate",
 )
 
 platform_transition_filegroup(
