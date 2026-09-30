@@ -165,8 +165,7 @@ def _codex_fresh(payload: dict) -> bool:
     from factory.orchestration import model_pool as pool
 
     return any(
-        view.get("observed") is True
-        and pool.grant_observation_state(view) == "fresh"
+        view.get("observed") is True and pool.grant_observation_state(view) == "fresh"
         for view in _codex_grant_views(payload)
     )
 
@@ -361,9 +360,7 @@ async def codex_tick() -> None:
         for _ in range(5):
             payload = await fetch_provider_quota(force=True)
             if _codex_fresh(payload):
-                await asyncio.to_thread(
-                    _codex_record, key, CODEX_OBSERVED_ACTION
-                )
+                await asyncio.to_thread(_codex_record, key, CODEX_OBSERVED_ACTION)
                 return
             await asyncio.sleep(1)
         await asyncio.to_thread(_codex_record, key, CODEX_NO_OBSERVATION_ACTION)
