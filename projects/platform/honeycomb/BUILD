@@ -17,10 +17,8 @@ py_library(
 # Dry run by default; pass --apply to write. Reads HONEYCOMB_CONFIG_KEY.
 py_venv_binary(
     name = "sync",
-    srcs = ["sync.py"],
     data = glob(["triggers/*.yaml"]),
     main = "sync.py",
-    deps = ["@pip//pyyaml"],
 )
 
 py_test(
