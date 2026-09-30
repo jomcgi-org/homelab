@@ -191,17 +191,38 @@ _CAPACITY_JITTER = 0.25
 _CREATE_RETRY_SECONDS = (2, 5, 10, 20, 30, 45, 60, 90, 90, 90)
 
 
-def _capacity_denial(exc: httpx.HTTPStatusError) -> bool:
-    """True when a 429 says the workload is at capacity, not merely busy."""
+def _capacity_denial_reason(exc: httpx.HTTPStatusError) -> str | None:
+    """The 429 capacity reason (one of _CAPACITY_DENIAL_REASONS), else None."""
     if exc.response.status_code != 429:
-        return False
+        return None
     try:
         body = exc.response.json()
     except Exception:
-        return False
+        return None
     if not isinstance(body, dict):
-        return False
-    return body.get("reason") in _CAPACITY_DENIAL_REASONS
+        return None
+    reason = body.get("reason")
+    return reason if reason in _CAPACITY_DENIAL_REASONS else None
+
+
+def _capacity_denial(exc: httpx.HTTPStatusError) -> bool:
+    """True when a 429 says the workload is at capacity, not merely busy."""
+    return _capacity_denial_reason(exc) is not None
+
+
+def _capacity_event(name: str, attributes: dict) -> None:
+    """Record one capacity-ladder step on the current span.
+
+    Like agent_sessions.brick_gone, the event lands on the caller's span
+    (agent_sessions.deliver for a delivery). The span also carries the
+    latest step as attributes, so a delivery that spent minutes waiting on
+    capacity is findable by attribute, not only by reading its events. The
+    reason is one of _CAPACITY_DENIAL_REASONS, so every value is bounded.
+    """
+    span = trace.get_current_span()
+    span.add_event(name, attributes)
+    span.set_attribute("agent_sessions.capacity.attempts", attributes["attempt"])
+    span.set_attribute("agent_sessions.capacity.reason", attributes["reason"])
 
 
 def _capacity_sleep_seconds(attempt: int) -> float:
@@ -938,7 +959,8 @@ class EmberVmShimTransport:
             # caller for 19 minutes over one.
             if not self.retry_create:
                 raise EmberVMTransportError(_status_error_detail(exc)) from exc
-            if _capacity_denial(exc):
+            capacity_reason = _capacity_denial_reason(exc)
+            if capacity_reason is not None:
                 if _attempt < len(_CAPACITY_BACKOFF_SECONDS):
                     delay = _capacity_sleep_seconds(_attempt)
                     logger.info(
@@ -948,8 +970,28 @@ class EmberVmShimTransport:
                         _attempt + 1,
                         len(_CAPACITY_BACKOFF_SECONDS),
                     )
+                    _capacity_event(
+                        "agent_sessions.capacity_wait",
+                        {
+                            "reason": capacity_reason,
+                            "attempt": _attempt + 1,
+                            "max_attempts": len(_CAPACITY_BACKOFF_SECONDS),
+                            "delay_seconds": round(delay, 1),
+                        },
+                    )
                     await asyncio.sleep(delay)
                     return await self.create_session(restore_from, model, _attempt + 1)
+                _capacity_event(
+                    "agent_sessions.capacity_exhausted",
+                    {
+                        "reason": capacity_reason,
+                        "attempt": _attempt + 1,
+                        "max_attempts": len(_CAPACITY_BACKOFF_SECONDS),
+                    },
+                )
+                trace.get_current_span().set_attribute(
+                    "agent_sessions.capacity.exhausted", True
+                )
             elif _attempt < len(_CREATE_RETRY_SECONDS) and _retryable_from_response(
                 exc
             ):

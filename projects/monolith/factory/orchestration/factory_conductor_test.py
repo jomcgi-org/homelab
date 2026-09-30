@@ -17130,6 +17130,154 @@ def test_operator_cessation_runs_with_the_flag_off_and_keeps_the_receipt(
     assert _uncertain_snapshot(s)["runs"][0]["status"] == "failed"
 
 
+def _cessation_spans(monkeypatch):
+    """Capture factory.cessation.advance spans without a global provider.
+
+    This module installs no TracerProvider, so the cessation module's tracer
+    is swapped for one wired to an in-memory exporter for the test only.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from factory.orchestration import factory_cessation
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(factory_cessation, "tracer", provider.get_tracer("test"))
+
+    def spans():
+        return [
+            dict(span.attributes)
+            for span in exporter.get_finished_spans()
+            if span.name == factory_cessation.SPAN
+        ]
+
+    return spans
+
+
+def test_cessation_span_records_a_run_skipped_with_the_flag_off(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, enabled=False, guest=s.precondition["session_id"])
+    spans = _cessation_spans(monkeypatch)
+    assert _cessation_tick(s) == 0
+    [span] = spans()
+    assert span["factory.cessation.outcome"] == "not_applicable"
+    assert span["factory.cessation.reason"] == "flag_disabled"
+    assert span["factory.cessation.enabled"] is False
+    assert span["factory.task_id"] == s.task["id"]
+    assert span["factory.node_key"] == s.run["node_key"]
+    assert span["factory.attempt"] == 1
+
+
+def test_cessation_span_records_the_deadline_grace_still_pending(
+    bound_zero_turn_factory, monkeypatch
+):
+    from datetime import timedelta
+
+    s = bound_zero_turn_factory
+    cessation = _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    s.cessation_task["deadline_at"] = (
+        s.now[0] - timedelta(seconds=cessation.GRACE_SECONDS - 60)
+    ).isoformat()
+    spans = _cessation_spans(monkeypatch)
+    assert _cessation_tick(s) == 0
+    [span] = spans()
+    assert span["factory.cessation.reason"] == "deadline_grace_pending"
+    assert span["factory.cessation.enabled"] is True
+    assert span["factory.cessation.deadline_due"] is False
+
+
+def test_cessation_span_records_a_live_workflow_as_not_applicable(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="PENDING")
+    )
+    spans = _cessation_spans(monkeypatch)
+    assert _cessation_tick(s) == 0
+    [span] = spans()
+    assert span["factory.workflow_status"] == "PENDING"
+    assert span["factory.cessation.trigger"] == "deadline"
+    assert span["factory.cessation.outcome"] == "not_applicable"
+    assert span["factory.cessation.reason"] == "workflow_not_terminal"
+
+
+def test_cessation_span_records_a_missing_session_id(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    cessation = _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    spans = _cessation_spans(monkeypatch)
+    from factory.orchestration import graph
+
+    [run] = [row for row in graph.node_runs(s.task["id"]) if row["attempt"] == 1]
+    pin = run["pin"]
+    assert cessation.advance(pin, None, {}, "SUCCESS") == "not_applicable"
+    [span] = spans()
+    assert span["factory.cessation.reason"] == "session_id_missing"
+    assert span["factory.workflow_status"] == "SUCCESS"
+
+
+def test_cessation_span_follows_waiting_then_settled(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    _cessation(s, monkeypatch, guest=s.precondition["session_id"])
+    spans = _cessation_spans(monkeypatch)
+    _cessation_tick(s)
+    [first] = spans()
+    assert first["factory.cessation.outcome"] == "waiting"
+    assert first["factory.cessation.shape"] == "bound"
+    assert first["factory.workflow_status"] == "SUCCESS"
+    assert "factory.cessation.reason" not in first
+    assert _cessation_sample_until_settled(s)
+    assert spans()[-1]["factory.cessation.outcome"] == "settled"
+    # The settled run is no longer uncertain, so later ticks consider nothing.
+    count = len(spans())
+    _cessation_tick(s, 600)
+    assert len(spans()) == count
+
+
+def test_cessation_span_records_an_operator_refusal_reason(
+    bound_zero_turn_factory, monkeypatch
+):
+    s = bound_zero_turn_factory
+    cessation = _cessation(
+        s, monkeypatch, enabled=False, guest=s.precondition["session_id"]
+    )
+    spans = _cessation_spans(monkeypatch)
+    stale = cessation.request_cessation(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "operator:joe",
+        expected_identity_sha256="0" * 64,
+        workflow_status="SUCCESS",
+    )
+    assert stale == {"ok": False, "state": "refused"}
+    [span] = spans()
+    assert span["factory.cessation.outcome"] == "refused"
+    assert span["factory.cessation.reason"] == "factory_attempt_changed"
+    assert span["factory.cessation.trigger"] == "operator"
+
+
+def test_cessation_reason_codes_stay_bounded():
+    from factory.orchestration import factory_cessation
+
+    assert factory_cessation._reason_code("factory_run_changed") == (
+        "factory_run_changed"
+    )
+    assert factory_cessation._reason_code("Invalid isoformat string: 'x'") == "other"
+
+
 def test_never_bound_attempt_settles_at_zero_on_the_lost_before_guest_proof(
     lost_before_guest_factory, monkeypatch
 ):
