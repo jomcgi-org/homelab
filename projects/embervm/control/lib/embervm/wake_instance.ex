@@ -436,8 +436,10 @@ defmodule Embervm.WakeInstance do
 
     case Scheduler.place_with_demand(req) do
       {:error, :no_bricks} ->
-        # The CP is blind, not out of room: NodeCapacity is fail-closed empty until
-        # a brick dials home, so this is the restart window. The brick list is
+        # No brick is registered: either the CP is blind (NodeCapacity is
+        # fail-closed empty until a brick dials home, the restart window) or the
+        # fleet was drained to zero. The scheduler already handed the miss to the
+        # BrickController, which tells those apart by live replica count. The brick list is
         # provably empty here (that is what :no_bricks means), so pass it rather
         # than re-reading the table, and log capacity_denial? false so the line
         # does not read as demand.

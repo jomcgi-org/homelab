@@ -133,8 +133,9 @@ defmodule Embervm.SchedulerTest do
   test "empty candidate universe is distinct from a capacity wall" do
     request = %Request{bricks: [], workload: "wl", need_mib: 512, base: :ready}
 
-    # BrickController.note_denial/2 casts to an optionally absent named process,
-    # so the returned distinction is the observable no-signal contract here.
+    # :no_bricks reports unconfirmed demand (BrickController.note_empty_demand/2,
+    # a cast to an optionally absent named process); the controller decides
+    # whether it is real. The returned distinction is the scheduler's contract.
     assert {:error, :no_bricks} = Scheduler.place_with_demand(request)
   end
 

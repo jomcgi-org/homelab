@@ -1858,9 +1858,11 @@ defmodule Embervm.SessionManager do
   end
 
   # All three scheduler misses stay `:no_capacity` on the wire: each is retryable
-  # and clients key on that reason. They have different owners, though. Only
-  # `:capacity` records autoscaler demand. `:base_missing` goes to the BaseBuilder,
-  # and `:no_bricks` means the CP has no capacity facts and records nothing. When
+  # and clients key on that reason. They have different owners, though.
+  # `:capacity` records autoscaler demand. `:base_missing` goes to the BaseBuilder.
+  # `:no_bricks` means the CP has no capacity facts; the scheduler reports it as
+  # unconfirmed demand, which the BrickController counts only when every class
+  # that fits the need is at zero replicas (a drained fleet, not a blind CP). When
   # all three flattened to one reason with nothing else recorded, a two-hour
   # no_capacity run in prod could not be attributed. It looked like a
   # BrickController that never scaled up, but no capacity demand ever reached it.

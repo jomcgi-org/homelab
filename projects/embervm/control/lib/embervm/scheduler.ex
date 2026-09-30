@@ -31,11 +31,23 @@ defmodule Embervm.Scheduler do
 
   @doc """
   Places a cold request and distinguishes capacity from a missing workload base.
-  A base-gated miss is retried without the base gate using the same request. An
-  An empty resolved universe means the control plane is blind and returns
-  `:no_bricks` without recording demand. An empty ungated result from a
-  non-empty universe records capacity demand; a non-empty ungated result tells
-  the base builder to provision on the brick that would have been selected.
+  A base-gated miss is retried without the base gate using the same request.
+
+  An empty resolved universe returns `:no_bricks`. From here the control plane
+  cannot tell whether it is blind (just booted, no brick has dialed home yet) or
+  the fleet is genuinely empty (every class was scaled to zero), so it reports
+  the miss as UNCONFIRMED demand through
+  `Embervm.BrickController.note_empty_demand/2`. The controller owns the
+  replica counts and only promotes the miss to a scale-up denial when every
+  class that could hold the need reads zero live replicas; while any such
+  brick exists or is starting, the miss is dropped, so a blind boot still
+  records no demand. Recording nothing at all here deadlocked a fleet drained
+  to zero (2026-09-30): nothing could ever scale it back up.
+
+  An empty ungated result from a non-empty universe records capacity demand; a
+  non-empty ungated result tells the base builder to provision on the brick that
+  would have been selected. `record_demand: false` suppresses both demand
+  signals.
   """
   @spec place_with_demand(Request.t()) ::
           {:ok, [map()]} | {:error, :no_bricks | :capacity | {:base_missing, term()}}
@@ -44,6 +56,10 @@ defmodule Embervm.Scheduler do
 
     case bricks do
       [] ->
+        if req.record_demand do
+          Embervm.BrickController.note_empty_demand(req.workload, req.need_mib || 0)
+        end
+
         {:error, :no_bricks}
 
       _ ->

@@ -45,6 +45,21 @@ defmodule Embervm.BrickController do
   (default 3) inside
   `up_window_ms` (default 60s) step the class +1, clamped to `max`.
 
+  Scale-from-zero signal: a placement that finds NO registered brick at all
+  (`Embervm.Scheduler.place_with_demand/1` returning `:no_bricks`) cannot tell
+  "the control plane is blind" (it just booted and no brick has dialed home yet)
+  from "the fleet is empty" (every class was idle-drained to zero). It reports
+  the miss through `note_empty_demand/2` as UNCONFIRMED demand, and this
+  controller, the one component that knows the replica counts, settles it on
+  the next tick: it reads the live `/scale` of every authorized class that could
+  hold the need, and only when ALL of them read zero is the miss promoted to an
+  ordinary denial (attributed exactly like `note_denial/2`, keeping its original
+  timestamp). Any nonzero or unreadable count means a fitting brick exists or is
+  starting and simply has not registered, which is blindness, not demand, so the
+  miss is dropped. That keeps the boot window from producing runaway scale-ups
+  while still letting a class drained to zero come back (2026-09-30, when every
+  class sat at zero and every claude-runtime create was refused as `no_bricks`).
+
   Scale-down signal: the class has at least one IDLE brick (a registered,
   non-draining instance with zero live VMs) continuously for `down_idle_ms`
   (default 15m) AND zero denials in the window AND no fleet-full episode inside
@@ -151,6 +166,7 @@ defmodule Embervm.BrickController do
   @default_down_idle_ms 900_000
   @default_down_cooldown_ms 600_000
   @default_ceiling_idle_ms 3_600_000
+  @max_empty_demand 64
 
   @typedoc """
   One size-class the controller reconciles: its label, static desired replica
@@ -255,6 +271,25 @@ defmodule Embervm.BrickController do
     GenServer.cast(server, {:denial, workload, need_mib})
   end
 
+  @doc """
+  Record a placement miss against an EMPTY brick universe (the scheduler's
+  `:no_bricks`) for a workload needing `need_mib` MiB. Unlike `note_denial/2`
+  this is unconfirmed: the next reconcile promotes it to a denial only if every
+  authorized class that fits the need has zero live replicas (the fleet was
+  scaled away), and drops it otherwise (the control plane is blind to bricks
+  that exist or are starting). Fire-and-forget like `note_denial/2`.
+  """
+  @spec note_empty_demand(String.t() | nil, non_neg_integer()) :: :ok
+  def note_empty_demand(workload, need_mib)
+      when (is_binary(workload) or is_nil(workload)) and is_integer(need_mib) do
+    note_empty_demand(__MODULE__, workload, need_mib)
+  end
+
+  @spec note_empty_demand(GenServer.server(), String.t() | nil, non_neg_integer()) :: :ok
+  def note_empty_demand(server, workload, need_mib) do
+    GenServer.cast(server, {:empty_demand, workload, need_mib})
+  end
+
   @impl true
   def init(opts) do
     state = %{
@@ -296,6 +331,9 @@ defmodule Embervm.BrickController do
       # Autoscale bookkeeping, all per class-name:
       # recent denial timestamps (pruned to up_window_ms each tick),
       denials: %{},
+      # Unconfirmed empty-universe misses (`note_empty_demand/2`), newest first,
+      # settled (promoted to denials or dropped) by the next reconcile.
+      empty_demand: [],
       # since when the class has continuously had >=1 idle brick,
       idle_since: %{},
       # last up/down decision stamps (hysteresis cooldowns),
@@ -331,7 +369,19 @@ defmodule Embervm.BrickController do
 
   @impl true
   def handle_cast({:denial, workload, need_mib}, state) do
-    case class_for_need(state.classes, need_mib, state.facts_fun.()) do
+    {:noreply, record_denial(state, workload, need_mib, state.clock.(), state.facts_fun.())}
+  end
+
+  def handle_cast({:empty_demand, workload, need_mib}, state) do
+    event = %{at: state.clock.(), workload: workload, need_mib: need_mib}
+    # Bounded: a create storm against an empty fleet cannot grow the buffer
+    # past what one tick could ever need to reach the up threshold.
+    pending = Enum.take([event | state.empty_demand], @max_empty_demand)
+    {:noreply, %{state | empty_demand: pending}}
+  end
+
+  defp record_denial(state, workload, need_mib, at, facts) do
+    case class_for_need(state.classes, need_mib, facts) do
       nil ->
         state =
           if ceiling_feature_enabled?(state.classes) do
@@ -352,19 +402,17 @@ defmodule Embervm.BrickController do
           :ok
         end
 
-        {:noreply, state}
+        state
 
       class ->
-        now = state.clock.()
-        denial = %{at: now, workload: workload, need_mib: need_mib}
-        state = refresh_capacity_condition(state, workload, class, now)
+        denial = %{at: at, workload: workload, need_mib: need_mib}
+        state = refresh_capacity_condition(state, workload, class, at)
 
-        {:noreply,
-         %{
-           state
-           | denials: Map.update(state.denials, class, [denial], &[denial | &1]),
-             ceiling_idle_since: Map.delete(state.ceiling_idle_since, class)
-         }}
+        %{
+          state
+          | denials: Map.update(state.denials, class, [denial], &[denial | &1]),
+            ceiling_idle_since: Map.delete(state.ceiling_idle_since, class)
+        }
     end
   end
 
@@ -450,8 +498,12 @@ defmodule Embervm.BrickController do
     state = check_capacity_drift(state, facts)
     state =
       if state.mode == :off,
-        do: state,
-        else: state |> prune_denials(now) |> track_idle(now, facts)
+        do: %{state | empty_demand: []},
+        else:
+          state
+          |> settle_empty_demand(facts, now)
+          |> prune_denials(now)
+          |> track_idle(now, facts)
 
     portfolio = Portfolio.floors(state.catalog_fun.(), state.classes)
     state = track_floor_overflow(state, portfolio)
@@ -1142,7 +1194,67 @@ defmodule Embervm.BrickController do
 
   # -- denial attribution ------------------------------------------------------
 
+  # Settle the unconfirmed empty-universe misses (see "Scale-from-zero signal"
+  # in the moduledoc). Each distinct need is checked against the LIVE /scale of
+  # every authorized class that could hold it, read at most once per class per
+  # tick and only on a tick that has pending misses. All-zero promotes the
+  # misses to denials with their original timestamps; anything else (a replica
+  # that has not registered yet, an unreadable count) drops them. A need no
+  # class fits skips the read: record_denial latches no_fitting_class for it
+  # whether or not the control plane can see bricks.
+  defp settle_empty_demand(%{empty_demand: []} = state, _facts, _now), do: state
+
+  defp settle_empty_demand(state, facts, now) do
+    horizon = now - state.up_window_ms
+    pending = state.empty_demand |> Enum.filter(&(&1.at > horizon)) |> Enum.reverse()
+    state = %{state | empty_demand: []}
+
+    {state, _live, dropped} =
+      Enum.reduce(pending, {state, %{}, %{}}, fn event, {st, live, dropped} ->
+        fitting = fitting_classes(st.classes, event.need_mib, facts)
+        {live, counts} = live_counts(st, fitting, live)
+
+        if Enum.all?(counts, &(&1 == {:ok, 0})) do
+          {record_denial(st, event.workload, event.need_mib, event.at, facts), live, dropped}
+        else
+          why = if Enum.member?(counts, :error), do: :scale_read_failed, else: :replicas_pending
+          {st, live, Map.update(dropped, why, 1, &(&1 + 1))}
+        end
+      end)
+
+    Enum.each(dropped, fn {why, count} ->
+      Logger.info(
+        "brick autoscale: ignoring #{count} empty-universe placement miss(es) (reason=#{why})"
+      )
+    end)
+
+    state
+  end
+
+  defp live_counts(state, names, live) do
+    Enum.reduce(names, {live, []}, fn name, {live, counts} ->
+      case Map.fetch(live, name) do
+        {:ok, count} ->
+          {live, [count | counts]}
+
+        :error ->
+          count = read_current(state, name)
+          {Map.put(live, name, count), [count | counts]}
+      end
+    end)
+  end
+
   defp class_for_need(classes, need_mib, facts) do
+    case fitting_classes(classes, need_mib, facts) do
+      [] -> nil
+      [smallest | _] -> smallest
+    end
+  end
+
+  # Every authorized class whose capacity holds `need_mib` plus its admission
+  # floor, smallest capacity first. Chart-declared usable_mib makes this work
+  # with zero live bricks.
+  defp fitting_classes(classes, need_mib, facts) do
     reported_floors =
       facts
       |> Enum.group_by(&Map.get(&1, :size_class, ""))
@@ -1172,10 +1284,8 @@ defmodule Embervm.BrickController do
     |> Enum.filter(fn {_name, capacity, floor} ->
       is_integer(capacity) and capacity >= need_mib + floor
     end)
-    |> case do
-      [] -> nil
-      fits -> fits |> Enum.min_by(fn {_name, capacity, _floor} -> capacity end) |> elem(0)
-    end
+    |> Enum.sort_by(fn {_name, capacity, _floor} -> capacity end)
+    |> Enum.map(&elem(&1, 0))
   end
 
   # Legacy compatibility path for ConfigMaps that predate chart-declared usable_mib.
