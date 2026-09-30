@@ -3145,6 +3145,12 @@ class CodexProcess:
         # bearing: it makes both plausible client join behaviors, trimming the
         # trailing slash and concatenating, or an RFC 3986 Url::join with a
         # relative segment, land on the same /codex/responses path.
+        #
+        # The CLI stays on rust-v0.146.0 (#6498). rust-v0.158.0 omitted
+        # Authorization on most chatgpt.com requests, and the egress swap only
+        # injects when the guest presents it (or the path is in
+        # injectAlwaysPaths), so every turn died with "claim injection failed;
+        # request denied". A re-land needs those paths opted in first.
         config = """model_provider = "ember-openai"
 enable_codex_api_key_env = false
 chatgpt_base_url = %s
