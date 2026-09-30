@@ -58,8 +58,9 @@ It needs Python 3 and PyYAML, nothing else. Tests:
 The first dry run should show one `NOOP` or `UPDATE` for the imported
 `jomcgi.dev /health composite unhealthy` trigger. Its `time_range` and
 `exceeded_limit` were not visible through the Honeycomb MCP and are taken
-from its description. Its probe is not running on the hub, so it currently
-sees no data (#6507). If the dry run shows drift on it, correct the spec file
+from its description. Its hub probe is re-enabled in the values-gke overlay
+(#6507) and reaches Honeycomb once ArgoCD syncs the change after merge; until
+then it still sees no data. If the dry run shows drift on it, correct the spec file
 to the live value before running `--apply`.
 
 ## Triggers
@@ -67,6 +68,7 @@ to the live value before running `--apply`.
 | File | Dataset | Enabled |
 | ---- | ------- | ------- |
 | `jomcgi-dev-health.yaml` | `metrics` | yes (imported from `aJgkA4vC2m8`) |
+| `jomcgi-dev-health-probe-absent.yaml` | `metrics` | yes (sync only after probe data lands, #6507) |
 | `embervm-session-create-denials.yaml` | `embervm-control` | yes |
 | `agent-turns-none-successful.yaml` | `monolith-backend` | yes |
 | `codex-quota-observation-stale.yaml` | `monolith-backend` | no, see below |

@@ -171,6 +171,12 @@ sampling:
 # Endpoints the http_check receiver probes. Empty by default. Targets may be
 # legacy URL strings or objects with endpoint, method, and tls settings.
 #
+# A structured target may carry enabled: false to stage it: the template
+# skips it while httpcheck.caMount.enabled is false and renders it once the
+# mount is on. That keeps a tls.ca_file target from ever rendering without
+# its CA volume mount, which would fail every probe for that target. String
+# targets always render.
+#
 # These probes are the only signal that leaves the cluster while
 # allowedServices is empty, and they are what replaces the SigNoz synthetic
 # monitors.

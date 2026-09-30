@@ -17,10 +17,13 @@ The collector exports the resulting metrics to Honeycomb. Its metrics pipeline
 accepts `http_check` only and does not accept OTLP metrics from services.
 
 Probe targets live under `httpcheck.targets` in
-`projects/platform/otel-collector/values-prod.yaml`. Add only public HTTPS URLs.
+`projects/platform/otel-collector/values-prod.yaml` and
+`projects/platform/otel-collector/values-gke.yaml`. Add only public HTTPS URLs.
 Revalidate any proposed in-cluster target against the destination's current
 reachability and access controls. The removed Cilium policies provide no ingress
-enforcement.
+enforcement. The GKE overlay additionally stages an ArgoCD in-cluster target
+with `enabled: false`; it renders only once `httpcheck.caMount.enabled` is true,
+so a `ca_file` target never renders without its CA mount (#6507).
 
 ## Collector metamonitoring
 
