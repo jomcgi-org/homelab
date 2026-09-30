@@ -25,7 +25,9 @@ Chart.yaml, which holds in the repo and in the runfiles tree alike.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import ssl
 import subprocess
 from pathlib import Path
 
@@ -58,7 +60,11 @@ def _render(extra: list[str] | None = None) -> list[dict]:
     return _render_overlay("values-prod", extra)
 
 
-def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[dict]:
+def _run_render(
+    values_names: list[str], extra: list[str] | None = None
+) -> subprocess.CompletedProcess:
+    """Run helm template without asserting success, so failure cases can
+    inspect the return code and stderr."""
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -66,13 +72,15 @@ def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[di
         str(_chart_dir()),
         "--namespace",
         RELEASE,
-        "--values",
-        str(_values("values")),
-        "--values",
-        str(_values(values_name)),
-        *(extra or []),
     ]
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    for name in values_names:
+        argv += ["--values", str(_values(name))]
+    argv += extra or []
+    return subprocess.run(argv, capture_output=True, text=True, timeout=120)
+
+
+def _render_overlay(values_name: str, extra: list[str] | None = None) -> list[dict]:
+    result = _run_render(["values", values_name], extra)
     assert result.returncode == 0, f"helm template failed:\n{result.stderr}"
     return [d for d in yaml.safe_load_all(result.stdout) if d]
 
@@ -98,19 +106,9 @@ def _matches_policy(policy: dict, spans: list[dict]) -> bool:
     raise AssertionError(f"unsupported policy type in focused test: {policy['type']}")
 
 
-def _render_default() -> list[dict]:
+def _render_default(extra: list[str] | None = None) -> list[dict]:
     """Render with values.yaml alone, no prod overlay."""
-    argv = [
-        os.environ.get("HELM_BIN", "helm"),
-        "template",
-        RELEASE,
-        str(_chart_dir()),
-        "--namespace",
-        RELEASE,
-        "--values",
-        str(_values("values")),
-    ]
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    result = _run_render(["values"], extra)
     assert result.returncode == 0, f"helm template failed:\n{result.stderr}"
     return [d for d in yaml.safe_load_all(result.stdout) if d]
 
@@ -388,9 +386,42 @@ def test_metrics_pipeline_uses_otlp_http_exporter_with_dataset_header():
 
 
 # ---------------------------------------------------------------------------
-# HTTP probe staging: the hub runs the public probes while the Argo CD
-# in-cluster target stays staged behind the CA mount (#6507).
+# Argo CD probe: the hub renders the live in-cluster target with the pinned
+# serving CA (#6542).
 # ---------------------------------------------------------------------------
+
+# Argo CD's self-generated serving leaf, copied from the issue. Public
+# material, not a secret. The render test below compares the ConfigMap data
+# against this and re-checks its fingerprint, so a transcription slip in
+# values-gke.yaml fails here rather than in the cluster.
+ARGOCD_CA_PEM = """-----BEGIN CERTIFICATE-----
+MIIDYzCCAkugAwIBAgIRAK7dcSkKawersVyXbig7+lowDQYJKoZIhvcNAQELBQAw
+EjEQMA4GA1UEChMHQXJnbyBDRDAeFw0yNjA4MzAwNDM3NTVaFw0yNzA4MzAwNDM3
+NTVaMBIxEDAOBgNVBAoTB0FyZ28gQ0QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAw
+ggEKAoIBAQDpBS8mOYTlyaSkL+5BX1UKfyf3cUpKfxCXMptFVwjGNY1cg73RNnYN
+dsPimFjZZNo/RB2AWtpDL4QUizNlRHPfQpoxPXb79rIobq9qTLDlBU9z3jlYWwuH
+1YD7exYEdXnJFEaeeYN/EErfWUUVrjcDGrYRb+GkAvddEc2k72m0kxYGr9b1d3LX
+oXVFWJUodqsTRJK9M8njWNnb8ei9ZanSNiQekhfrCPMzm9DeshIprNKSpzLBsABh
+UzQvjPURwbBIZ4g4GIPLuygVgdDMVIntlBLhz7BxdGth6MH+pL3OhuZi5XeTRK35
+s1qbqHx+G/hdWrEvjAo8bD9eMfhjXGDpAgMBAAGjgbMwgbAwDgYDVR0PAQH/BAQD
+AgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMBMAwGA1UdEwEB/wQCMAAwewYDVR0RBHQw
+coIJbG9jYWxob3N0gg1hcmdvY2Qtc2VydmVyghRhcmdvY2Qtc2VydmVyLmFyZ29j
+ZIIYYXJnb2NkLXNlcnZlci5hcmdvY2Quc3ZjgiZhcmdvY2Qtc2VydmVyLmFyZ29j
+ZC5zdmMuY2x1c3Rlci5sb2NhbDANBgkqhkiG9w0BAQsFAAOCAQEATCWKSqlU/xM1
+Lbt7iZzTZSrxWkbBGERWdZwrjI4bfSUsZ+ELRW1m1nKlircr542Rs38cdaKPHNZW
+B1+dMzq9RNcNjUyfT0cdVzLjoXOC0Og+urlVJdgUQNwtnOC5dCyPGJffw1ehgAYJ
+25PAeARNVBNVxsObMBVT0O5tZV45Q/C+hgba2rpnkF1GETDCxQPfDVOzfjV2uxbw
+eX7IjRgUZA3vej5DOgyN9q66j9r6HuTU7NLe11mE1skJvoumsMda7qgi6wj3v4II
+C/alD3OucIlYBtjJR5oAKNsCSsUWuV+pbUQZj+bFpQY/JFwY7uDKfMEqrCI39pjh
+nOMPtpq3vQ==
+-----END CERTIFICATE-----"""
+
+ARGOCD_CA_FINGERPRINT = (
+    "3C:D8:41:A6:CB:73:CC:60:39:20:20:07:43:4C:D8:A8:"
+    "2A:01:65:2A:1D:65:97:F6:B9:F4:6E:24:52:BD:ED:01"
+)
+
+ARGOCD_CA_MOUNT_PATH = "/etc/otel/argocd-ca/ca.crt"
 
 
 def test_prod_legacy_probe_targets_are_unchanged():
@@ -419,34 +450,10 @@ def test_mixed_legacy_and_structured_targets_render_together():
     ]
 
 
-def test_gke_renders_public_probes_with_argocd_target_staged():
-    """The hub ships the public jomcgi.dev probes while the Argo CD target
-    stays staged: no ca_file may render without its CA mount."""
+def test_gke_renders_live_argocd_target_with_pinned_ca():
+    """The hub ships the public jomcgi.dev probes plus the live Argo CD
+    target, verified against the pinned CA file."""
     docs = _render_overlay("values-gke")
-    config = _collector_config(docs)
-    receiver = config["receivers"]["http_check"]
-
-    assert receiver["collection_interval"] == "60s"
-    assert receiver["targets"] == [
-        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
-        {"endpoint": "https://jomcgi.dev/", "method": "GET"},
-    ]
-    for target in receiver["targets"]:
-        assert "tls" not in target
-    assert config["service"]["pipelines"]["metrics"]["receivers"] == [
-        "http_check",
-        "otlp",
-    ]
-    _assert_pipelines_reference_defined_components(config)
-
-    container = _deployment_container(docs)
-    assert "httpcheck-ca" not in {m["name"] for m in container["volumeMounts"]}
-    volumes = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]["volumes"]
-    assert "httpcheck-ca" not in {v["name"] for v in volumes}
-
-
-def test_gke_enabling_ca_mount_renders_staged_argocd_target():
-    docs = _render_overlay("values-gke", ["--set", "httpcheck.caMount.enabled=true"])
     config = _collector_config(docs)
     receiver = config["receivers"]["http_check"]
 
@@ -457,33 +464,47 @@ def test_gke_enabling_ca_mount_renders_staged_argocd_target():
         {
             "endpoint": "https://argocd-server.argocd.svc:443/healthz",
             "method": "GET",
-            "tls": {"ca_file": "/etc/otel/argocd-ca/ca.crt"},
+            "tls": {"ca_file": ARGOCD_CA_MOUNT_PATH},
         },
     ]
     assert "insecure" not in receiver["targets"][2]["tls"]
     assert "insecure_skip_verify" not in receiver["targets"][2]["tls"]
+    assert config["service"]["pipelines"]["metrics"]["receivers"] == [
+        "http_check",
+        "otlp",
+    ]
     _assert_pipelines_reference_defined_components(config)
 
 
-def test_gke_ca_mount_is_opt_in_read_only_and_key_scoped():
-    docs = _render_overlay(
-        "values-gke",
-        [
-            "--set",
-            "httpcheck.enabled=true",
-            "--set",
-            "httpcheck.caMount.enabled=true",
-        ],
+def test_gke_renders_argocd_ca_configmap_volume_and_mount():
+    """The pinned CA in values-gke.yaml reaches the collector unchanged: one
+    ConfigMap carrying the exact PEM, mounted read-only at the ca_file path."""
+    docs = _render_overlay("values-gke")
+    ca_maps = [
+        d
+        for d in docs
+        if d.get("kind") == "ConfigMap"
+        and d["metadata"]["name"] == "argocd-server-ca"
+    ]
+    assert len(ca_maps) == 1, "expected exactly one argocd-server-ca ConfigMap"
+    assert set(ca_maps[0]["data"]) == {"ca.crt"}
+    rendered_pem = ca_maps[0]["data"]["ca.crt"]
+    assert rendered_pem.rstrip("\n") == ARGOCD_CA_PEM.rstrip("\n")
+
+    fingerprint = ":".join(
+        f"{b:02X}"
+        for b in hashlib.sha256(ssl.PEM_cert_to_DER_cert(rendered_pem)).digest()
     )
-    deployment = _of_kind(docs, "Deployment")
-    pod_spec = deployment["spec"]["template"]["spec"]
+    assert fingerprint == ARGOCD_CA_FINGERPRINT
+
+    pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
     container = pod_spec["containers"][0]
     mount = next(m for m in container["volumeMounts"] if m["name"] == "httpcheck-ca")
     volume = next(v for v in pod_spec["volumes"] if v["name"] == "httpcheck-ca")
 
     assert mount == {
         "name": "httpcheck-ca",
-        "mountPath": "/etc/otel/argocd-ca/ca.crt",
+        "mountPath": ARGOCD_CA_MOUNT_PATH,
         "subPath": "ca.crt",
         "readOnly": True,
     }
@@ -493,9 +514,50 @@ def test_gke_ca_mount_is_opt_in_read_only_and_key_scoped():
     }
 
 
+def test_gke_empty_cacert_fails_render():
+    """An enabled mount with no pinned cert must fail loudly, so a ca_file
+    target can never ship without its CA."""
+    result = _run_render(
+        ["values", "values-gke"], ["--set", "httpcheck.caMount.caCert="]
+    )
+    assert result.returncode != 0
+    assert "httpcheck.caMount.caCert" in result.stderr
+
+
+def test_base_empty_cacert_fails_render_when_mount_enabled():
+    result = _run_render(
+        ["values"],
+        [
+            "--set",
+            "httpcheck.enabled=true",
+            "--set",
+            "httpcheck.caMount.enabled=true",
+        ],
+    )
+    assert result.returncode != 0
+    assert "httpcheck.caMount.caCert" in result.stderr
+
+
+def test_base_and_prod_renders_have_no_ca_configmap_or_mount():
+    """The default chart and the prod overlay stay off the CA mount: no
+    ConfigMap, no volume, no mount."""
+    for docs in (_render_default(), _render_overlay("values-prod")):
+        assert not [
+            d
+            for d in docs
+            if d.get("kind") == "ConfigMap"
+            and d["metadata"]["name"] == "argocd-server-ca"
+        ]
+        pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
+        assert "httpcheck-ca" not in {
+            m["name"] for m in pod_spec["containers"][0]["volumeMounts"]
+        }
+        assert "httpcheck-ca" not in {v["name"] for v in pod_spec["volumes"]}
+
+
 def test_ca_mount_stays_absent_when_only_mount_flag_is_set():
-    docs = _render_overlay(
-        "values-gke",
+    result = _run_render(
+        ["values", "values-gke"],
         [
             "--set",
             "httpcheck.enabled=false",
@@ -503,12 +565,36 @@ def test_ca_mount_stays_absent_when_only_mount_flag_is_set():
             "httpcheck.caMount.enabled=true",
         ],
     )
+    assert result.returncode == 0, f"helm template failed:\n{result.stderr}"
+    docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    assert not [
+        d
+        for d in docs
+        if d.get("kind") == "ConfigMap"
+        and d["metadata"]["name"] == "argocd-server-ca"
+    ]
     pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
 
     assert "httpcheck-ca" not in {
         m["name"] for m in pod_spec["containers"][0]["volumeMounts"]
     }
     assert "httpcheck-ca" not in {v["name"] for v in pod_spec["volumes"]}
+
+
+def test_httpcheck_ca_checksum_annotation_moves_with_the_mount():
+    """A subPath mount never receives ConfigMap updates, so the pod template
+    carries a checksum annotation that rolls the pod on cert rotation."""
+    gke_annotations = _of_kind(_render_overlay("values-gke"), "Deployment")["spec"][
+        "template"
+    ]["metadata"]["annotations"]
+    assert gke_annotations.get("checksum/httpcheck-ca"), (
+        "the gke render enables the CA mount and must carry the checksum"
+    )
+
+    base_annotations = _of_kind(_render_default(), "Deployment")["spec"][
+        "template"
+    ]["metadata"]["annotations"]
+    assert "checksum/httpcheck-ca" not in base_annotations
 
 
 # ---------------------------------------------------------------------------

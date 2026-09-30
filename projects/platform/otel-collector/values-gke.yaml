@@ -14,25 +14,51 @@ allowedServices:
   - monolith-public
 
 httpcheck:
-  # Live public probes plus one staged in-cluster target. The two string
+  # Live public probes plus the live in-cluster Argo CD target. The two string
   # targets render into the http_check receiver and ship probe metrics to
-  # Honeycomb, the same public URLs the residual home overlay probes. The
-  # Argo CD structured target stays staged with enabled: false: the template
-  # skips it while httpcheck.caMount.enabled is false and renders it once the
-  # CA mount is on, so a ca_file target can never render without its CA volume
-  # mount (which would fail every probe and risks the collector failing to
-  # start, taking traces and metrics export with it). Set the target to
-  # enabled: true and the CA mount to enabled: true only in a separately
-  # authorized rollout after argocd-server-ca contains the verified CA.
+  # Honeycomb. The Argo CD structured target probes
+  # https://argocd-server.argocd.svc:443/healthz with tls.ca_file pointing at
+  # the pinned CA below. The CA is Argo CD's self-generated serving leaf
+  # (O = Argo CD, self-signed, CA:FALSE), pinned per #6542. It expires
+  # 2027-08-30 and must be re-pinned from argocd-secret tls.crt before then.
+  # The mount and the argocd-server-ca ConfigMap must stay on while the target
+  # carries tls.ca_file: the template fails the render when caCert is empty,
+  # so a ca_file target can never ship without its CA (which would fail every
+  # probe and risks the collector failing to start, taking traces and metrics
+  # export with it).
   enabled: true
   targets:
     - "https://jomcgi.dev/health"
     - "https://jomcgi.dev/"
     - endpoint: "https://argocd-server.argocd.svc:443/healthz"
-      enabled: false
+      enabled: true
       method: GET
       tls:
         ca_file: /etc/otel/argocd-ca/ca.crt
+  caMount:
+    enabled: true
+    caCert: |
+      -----BEGIN CERTIFICATE-----
+      MIIDYzCCAkugAwIBAgIRAK7dcSkKawersVyXbig7+lowDQYJKoZIhvcNAQELBQAw
+      EjEQMA4GA1UEChMHQXJnbyBDRDAeFw0yNjA4MzAwNDM3NTVaFw0yNzA4MzAwNDM3
+      NTVaMBIxEDAOBgNVBAoTB0FyZ28gQ0QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAw
+      ggEKAoIBAQDpBS8mOYTlyaSkL+5BX1UKfyf3cUpKfxCXMptFVwjGNY1cg73RNnYN
+      dsPimFjZZNo/RB2AWtpDL4QUizNlRHPfQpoxPXb79rIobq9qTLDlBU9z3jlYWwuH
+      1YD7exYEdXnJFEaeeYN/EErfWUUVrjcDGrYRb+GkAvddEc2k72m0kxYGr9b1d3LX
+      oXVFWJUodqsTRJK9M8njWNnb8ei9ZanSNiQekhfrCPMzm9DeshIprNKSpzLBsABh
+      UzQvjPURwbBIZ4g4GIPLuygVgdDMVIntlBLhz7BxdGth6MH+pL3OhuZi5XeTRK35
+      s1qbqHx+G/hdWrEvjAo8bD9eMfhjXGDpAgMBAAGjgbMwgbAwDgYDVR0PAQH/BAQD
+      AgWgMBMGA1UdJQQMMAoGCCsGAQUFBwMBMAwGA1UdEwEB/wQCMAAwewYDVR0RBHQw
+      coIJbG9jYWxob3N0gg1hcmdvY2Qtc2VydmVyghRhcmdvY2Qtc2VydmVyLmFyZ29j
+      ZIIYYXJnb2NkLXNlcnZlci5hcmdvY2Quc3ZjgiZhcmdvY2Qtc2VydmVyLmFyZ29j
+      ZC5zdmMuY2x1c3Rlci5sb2NhbDANBgkqhkiG9w0BAQsFAAOCAQEATCWKSqlU/xM1
+      Lbt7iZzTZSrxWkbBGERWdZwrjI4bfSUsZ+ELRW1m1nKlircr542Rs38cdaKPHNZW
+      B1+dMzq9RNcNjUyfT0cdVzLjoXOC0Og+urlVJdgUQNwtnOC5dCyPGJffw1ehgAYJ
+      25PAeARNVBNVxsObMBVT0O5tZV45Q/C+hgba2rpnkF1GETDCxQPfDVOzfjV2uxbw
+      eX7IjRgUZA3vej5DOgyN9q66j9r6HuTU7NLe11mE1skJvoumsMda7qgi6wj3v4II
+      C/alD3OucIlYBtjJR5oAKNsCSsUWuV+pbUQZj+bFpQY/JFwY7uDKfMEqrCI39pjh
+      nOMPtpq3vQ==
+      -----END CERTIFICATE-----
 
 # OTLP over HTTP, not gRPC: the hub's otelcol gRPC dials to api.honeycomb.io
 # were canceled before completing while HTTPS from the same pod network
