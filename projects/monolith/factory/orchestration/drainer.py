@@ -179,14 +179,24 @@ def kg_provider_walled() -> tuple[bool, str]:
     """Whether fresh observations confirm room for a KG session."""
     try:
         from factory.orchestration.model_pool import (
+            availability,
             confirmed_availability,
             quota_summary,
         )
 
-        ok, reason = confirmed_availability(
-            DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE
-        )
-        return (not ok), reason
+        quota = quota_summary()
+        # Fresh evidence and the exhaustion veto run without a role, so the
+        # drainer floor never applies per grant or to the weekly window.
+        ok, confirmed_reason = confirmed_availability(DRAIN_MODEL, quota)
+        if not ok:
+            return True, confirmed_reason
+        # The floor is judged on the rolled-up headline of the least-used
+        # open grant, the same reading provider_walled uses, so KG yields
+        # only when every grant is below it.
+        ok, reason = availability(DRAIN_MODEL, quota, DRAINER_QUOTA_ROLE)
+        if not ok:
+            return True, reason
+        return False, confirmed_reason
     # nosemgrep: no-broad-except-swallow
     except Exception:  # unknown capacity must not admit KG work
         logger.debug("KG drain provider quota unreadable", exc_info=True)
