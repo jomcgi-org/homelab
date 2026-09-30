@@ -1,0 +1,45 @@
+# Disabled until pod-log shipping lands; column names unverified (see
+# egress-proxy-request-denied.yaml). The control plane logs one JSON object
+# per line (Embervm.LogFormatter) with "level" and an "mfa" field naming the
+# emitting module, which is what the calculated field matches.
+name: EmberVM BrickController or Scheduler error log
+dataset: k8s-logs
+description: >-
+  Any error-level log line from the EmberVM control plane's BrickController or
+  Scheduler modules. Those two own brick scaling and session placement: during
+  the 2026-09-30 00:47-02:46 UTC denial incident, placement failed for two
+  hours and the only trace-level signal was a denial count. The control-plane
+  logger writes one JSON object per line with "level":"error" and an mfa field
+  naming the module, so the query matches both. Fires on any matching line in
+  5 minutes. No baseline yet; error logs from these modules are expected to be
+  rare, which is the premise to confirm in the first week of shipped logs.
+enabled: false
+frequency: 300
+alert_type: on_change
+threshold:
+  op: ">"
+  value: 0
+recipients: [kjEJr2qxxxe]
+tags:
+  service: embervm
+  signal: logs
+query:
+  time_range: 300
+  calculated_fields:
+    - name: embervm_placement_module
+      expression: REG_MATCH($body, `Embervm\.(BrickController|Scheduler)\b`)
+  calculations:
+    - op: COUNT
+  filters:
+    - column: k8s.namespace.name
+      op: "="
+      value: embervm
+    - column: k8s.container.name
+      op: "="
+      value: control-plane
+    - column: body
+      op: contains
+      value: '"level":"error"'
+    - column: embervm_placement_module
+      op: "="
+      value: true

@@ -31,6 +31,7 @@ for the home cluster; the hub's root is `projects/gke-cluster/`, which lists the
 | ---------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `otel-collector`             | Deny-by-default trace collector and public URL probes exporting to Honeycomb.                            |
 | `opentelemetry-operator`     | OpenTelemetry auto-instrumentation operator; production language instrumentation is disabled.           |
+| `honeycomb`                  | Honeycomb alert triggers as code, and the sync that applies them.                                        |
 
 ## Storage
 
