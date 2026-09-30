@@ -116,7 +116,8 @@ export function initialTurnState() {
  */
 export function touchedEntry(n) {
   const entry = { id: n.id, title: n.title ?? "" };
-  if ("verification_state" in n) entry.verification_state = n.verification_state;
+  if ("verification_state" in n)
+    entry.verification_state = n.verification_state;
   if ("disputed" in n) entry.disputed = n.disputed;
   return entry;
 }
@@ -136,7 +137,10 @@ export function applyFrame(state, frame) {
       const id = frame.data?.id;
       if (id === undefined || id === null) return state;
       if (state.touched.some((n) => n.id === id)) return state;
-      return { ...state, touched: [...state.touched, touchedEntry(frame.data)] };
+      return {
+        ...state,
+        touched: [...state.touched, touchedEntry(frame.data)],
+      };
     }
     case "token":
       return {

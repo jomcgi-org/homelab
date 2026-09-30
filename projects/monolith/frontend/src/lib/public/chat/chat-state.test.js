@@ -66,12 +66,20 @@ describe("citationStateLabel", () => {
   });
 
   it("gives no label for legacy, null, missing or unknown states", () => {
-    expect(citationStateLabel({ id: 1, verification_state: "legacy" })).toBeNull();
+    expect(
+      citationStateLabel({ id: 1, verification_state: "legacy" }),
+    ).toBeNull();
     expect(citationStateLabel({ id: 1, verification_state: null })).toBeNull();
     expect(citationStateLabel({ id: 1, title: "old" })).toBeNull();
-    expect(citationStateLabel({ id: 1, verification_state: "weird" })).toBeNull();
     expect(
-      citationStateLabel({ id: 1, verification_state: "legacy", disputed: false }),
+      citationStateLabel({ id: 1, verification_state: "weird" }),
+    ).toBeNull();
+    expect(
+      citationStateLabel({
+        id: 1,
+        verification_state: "legacy",
+        disputed: false,
+      }),
     ).toBeNull();
     expect(citationStateLabel(null)).toBeNull();
     expect(citationStateLabel(undefined)).toBeNull();
