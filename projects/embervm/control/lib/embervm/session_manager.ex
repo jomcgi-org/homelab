@@ -6225,22 +6225,29 @@ defmodule Embervm.SessionManager do
   defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
-    # Dial the owning instance, not the bare node name (see archive_session_volume/2).
-    dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
-    result =
-      with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-        try do
-          state.delete_session_volume_fun.(channel, req)
-        rescue
-          error -> {:error, error}
-        catch
-          kind, reason -> {:error, {kind, reason}}
-        end
-      end
+    # Dial the owning instance, not the bare node name, and never dial on a
+    # miss (see archive_session_volume/2).
+    case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id) do
+      ^node_id ->
+        Logger.warning("embervm session volume delete skipped, no instance reports the lineage",
+          workload: workload, lineage_id: lineage_id, node_id: node_id)
 
-    case result do
-      {:ok, _} -> :ok
-      other -> Logger.warning("embervm session volume delete failed", workload: workload, lineage_id: lineage_id, node_id: node_id, dial_id: dial_id, reason: inspect(other))
+      dial_id ->
+        result =
+          with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+            try do
+              state.delete_session_volume_fun.(channel, req)
+            rescue
+              error -> {:error, error}
+            catch
+              kind, reason -> {:error, {kind, reason}}
+            end
+          end
+
+        case result do
+          {:ok, _} -> :ok
+          other -> Logger.warning("embervm session volume delete failed", workload: workload, lineage_id: lineage_id, node_id: node_id, dial_id: dial_id, reason: inspect(other))
+        end
     end
     :ok
   end
@@ -6255,38 +6262,48 @@ defmodule Embervm.SessionManager do
       # retire_session_volume/2 does: channel_fun only accepts instance dials,
       # so the bare volume_node_id failed :unknown_node on every drain and
       # parked workspaces never reached the store (#6499). The lookup fails
-      # open to the bare node_id when no instance reports the lineage; that
-      # dial still fails and the volume is kept, and dial_id == node_id in the
-      # warning below is how that miss reads in the logs.
-      dial_id = Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id)
+      # OPEN, returning the bare node_id when no instance reports the lineage
+      # (restore_then_prime/9 detects the same miss the same way). Dialing that
+      # would only fail :unknown_node, and another instance on the node cannot
+      # stand in because the lineage directory is per-instance on disk. So a
+      # miss keeps the volume without dialing and logs its own warning, which
+      # tells "no instance reports this lineage" apart from an RPC failure.
+      case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id) do
+        ^node_id ->
+          Logger.warning("embervm drain archive skipped, no instance reports the lineage; keeping volume",
+            workload: workload, lineage_id: lineage_id, node_id: node_id)
 
-      result =
-        with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
-          try do
-            state.archive_volume_fun.(channel, req)
-          rescue
-            error -> {:error, error}
-          catch
-            kind, reason -> {:error, {kind, reason}}
+          {:error, :no_owning_instance}
+
+        dial_id ->
+          result =
+            with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+              try do
+                state.archive_volume_fun.(channel, req)
+              rescue
+                error -> {:error, error}
+              catch
+                kind, reason -> {:error, {kind, reason}}
+              end
+            end
+
+          case result do
+            {:ok, %{skipped: true}} ->
+              Logger.warning("embervm drain archive skipped, lineage still attached",
+                workload: workload, lineage_id: lineage_id, node_id: node_id, dial_id: dial_id)
+              {:error, :archive_skipped}
+            {:ok, _} -> :ok
+            other ->
+              Logger.warning("embervm session workspace archive failed; keeping volume",
+                workload: workload,
+                lineage_id: lineage_id,
+                node_id: node_id,
+                dial_id: dial_id,
+                reason: inspect(other)
+              )
+
+              {:error, other}
           end
-        end
-
-      case result do
-        {:ok, %{skipped: true}} ->
-          Logger.warning("embervm drain archive skipped, lineage still attached",
-            workload: workload, lineage_id: lineage_id, node_id: node_id, dial_id: dial_id)
-          {:error, :archive_skipped}
-        {:ok, _} -> :ok
-        other ->
-          Logger.warning("embervm session workspace archive failed; keeping volume",
-            workload: workload,
-            lineage_id: lineage_id,
-            node_id: node_id,
-            dial_id: dial_id,
-            reason: inspect(other)
-          )
-
-          {:error, other}
       end
     else
       :ok
