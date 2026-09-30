@@ -914,3 +914,60 @@ class TestPublicFactsDaily:
         )
 
         assert second.status_code == 304
+
+
+# ---------------------------------------------------------------------------
+# search_public_chunks: orphan chunks fail closed (G3)
+# ---------------------------------------------------------------------------
+
+
+class TestSearchPublicChunksOrphans:
+    def test_orphan_chunk_is_not_returned(self):
+        # A chunk whose note left the public view must never ground a turn.
+        # The pgvector distance operator needs Postgres, so the session is
+        # stubbed: the statement is still built (asserting the join shape)
+        # and only execute/all is canned.
+        from types import SimpleNamespace
+
+        from knowledge import api as knowledge_api
+
+        captured: dict = {}
+        orphan = SimpleNamespace(
+            note_id="gone",
+            title="Gone",
+            chunk_text="stale text",
+            verification_state=None,
+            disputed=None,
+            distance=0.1,
+        )
+        kept = SimpleNamespace(
+            note_id="kept",
+            title="Kept",
+            chunk_text="fresh text",
+            verification_state="verified",
+            disputed=False,
+            distance=0.25,
+        )
+
+        class StubSession:
+            def execute(self, stmt):
+                captured["stmt"] = stmt
+
+                class Result:
+                    @staticmethod
+                    def all():
+                        return [orphan, kept]
+
+                return Result()
+
+        rows = knowledge_api.search_public_chunks(StubSession(), [0.1, 0.2], limit=6)
+
+        assert [row["note_id"] for row in rows] == ["kept"]
+        assert rows[0]["verification_state"] == "verified"
+        assert rows[0]["disputed"] is False
+        assert rows[0]["score"] == 0.75
+        # The chunk/note join is an inner join, never an outer one: orphans
+        # are dropped by the database, not defaulted to verified.
+        sql = str(captured["stmt"]).upper()
+        assert "LEFT OUTER JOIN" not in sql
+        assert "JOIN" in sql

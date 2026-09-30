@@ -34,7 +34,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from core.db import get_session
-from chat_public import inference, retrieval, sessions
+from chat_public import cache, inference, retrieval, sessions
 from chat_public import router as router_module
 from chat_public.db import get_chat_session
 from chat_public.retrieval import RetrievedNote
@@ -205,6 +205,119 @@ async def test_message_emits_node_touched_for_each_retrieved_note(
     joined = " ".join(m["content"] for m in captured[0])
     assert "<public_notes>" in joined
     assert "alpha grounding text" in joined and "beta grounding text" in joined
+
+
+# ---------------------------------------------------------------------------
+# 3b. node_touched frames carry the note's verification state and dispute flag
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_node_touched_frames_carry_verification_state(
+    client, session, monkeypatch
+):
+    retrieved = [
+        RetrievedNote(
+            "note-v",
+            "Verified Note",
+            "verified text",
+            0.9,
+            verification_state="verified",
+            disputed=False,
+        ),
+        RetrievedNote(
+            "note-u",
+            "Unverified Note",
+            "unverified text",
+            0.8,
+            verification_state="unverified",
+            disputed=False,
+        ),
+        RetrievedNote(
+            "note-d",
+            "Disputed Note",
+            "disputed text",
+            0.7,
+            verification_state="unverified",
+            disputed=True,
+        ),
+    ]
+    monkeypatch.setattr(inference, "stream_chat", _fake_stream())
+    monkeypatch.setattr(retrieval, "retrieve", _fake_retrieve(retrieved))
+    row = sessions.create_session(session)
+
+    resp = client.post(
+        "/internal/chat/message",
+        json={"session_id": row.id, "message": "tell me everything"},
+    )
+    assert resp.status_code == 200
+    frames = _parse_sse(resp.text)
+    touched = {
+        f["data"]["id"]: f["data"] for f in frames if f["type"] == "node_touched"
+    }
+    assert touched["note-v"]["verification_state"] == "verified"
+    assert touched["note-v"]["disputed"] is False
+    assert touched["note-u"]["verification_state"] == "unverified"
+    assert touched["note-u"]["disputed"] is False
+    assert touched["note-d"]["verification_state"] == "unverified"
+    assert touched["note-d"]["disputed"] is True
+
+
+@pytest.mark.asyncio
+async def test_replay_cached_reemits_stored_state(client, session):
+    # A cache entry stored with citation state replays it verbatim.
+    row = sessions.create_session(session)
+    cached = cache.CachedResponse(
+        text="Replayed reply.",
+        touched=[
+            {
+                "id": "note-v",
+                "title": "Verified Note",
+                "verification_state": "verified",
+                "disputed": False,
+            },
+            {
+                "id": "note-d",
+                "title": "Disputed Note",
+                "verification_state": "unverified",
+                "disputed": True,
+            },
+        ],
+    )
+    frames = [
+        frame
+        async for frame in router_module._replay_cached(
+            session, row, "tell me everything", cached
+        )
+    ]
+    parsed = _parse_sse("\n".join(frames))
+    touched = {
+        f["data"]["id"]: f["data"] for f in parsed if f["type"] == "node_touched"
+    }
+    assert touched["note-v"]["verification_state"] == "verified"
+    assert touched["note-v"]["disputed"] is False
+    assert touched["note-d"]["verification_state"] == "unverified"
+    assert touched["note-d"]["disputed"] is True
+
+
+@pytest.mark.asyncio
+async def test_replay_legacy_cached_touched_passes_through(client, session):
+    # Entries cached before the citation-state change hold only {id, title}:
+    # they replay unchanged (no invented state) and without error.
+    row = sessions.create_session(session)
+    cached = cache.CachedResponse(
+        text="Old reply.",
+        touched=[{"id": "note-a", "title": "Note A"}],
+    )
+    frames = [
+        frame
+        async for frame in router_module._replay_cached(
+            session, row, "tell me about alpha", cached
+        )
+    ]
+    parsed = _parse_sse("\n".join(frames))
+    touched = [f["data"] for f in parsed if f["type"] == "node_touched"]
+    assert touched == [{"id": "note-a", "title": "Note A"}]
 
 
 # ---------------------------------------------------------------------------

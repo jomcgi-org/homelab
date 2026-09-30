@@ -9,7 +9,9 @@
 // stays a thin shell around it.
 //
 // Wire format (one frame per blank-line-terminated block, single `data:` line):
-//   data: {"type":"node_touched","data":{"id":<id>,"title":<title>}}
+//   data: {"type":"node_touched","data":{"id":<id>,"title":<title>,"verification_state":<state>,"disputed":<bool>}}
+//     (verification_state/disputed are absent on entries stored before the
+//     citation-state change; readers must tolerate both shapes)
 //   data: {"type":"token","data":{"text":<delta>}}
 //   data: {"type":"done","data":{"turn_count":<n>,"total_tokens":<n>}}
 //   data: {"type":"busy","data":{"code":"busy","message":<text>}}

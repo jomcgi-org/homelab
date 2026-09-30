@@ -241,30 +241,25 @@ def search_public_chunks(
     Returns dicts with note identity, title, chunk text, verification state,
     dispute status, and ``score = 1 - cosine_distance`` (higher is closer).
     """
-    from sqlalchemy import func
     from sqlmodel import select
 
     from knowledge.public_models import PublicChunk, PublicNote
 
     distance = PublicChunk.embedding.cosine_distance(query_embedding)
-    # The repo-doc arm of the view was removed by #3905, so every remaining row
-    # joins to a real note. The outer join stays only as a guard against a
-    # chunk whose note row disappears mid-query; such an orphan defaults to
-    # verified and undisputed via the coalesce below.
-    verification_state = func.coalesce(PublicNote.verification_state, "verified").label(
-        "verification_state"
-    )
-    disputed = func.coalesce(PublicNote.disputed, False).label("disputed")
+    # Fail closed: an inner join drops chunks whose note just left the public
+    # view (unpublished, disputed, or otherwise removed), so a stale chunk
+    # never grounds a turn. Labelling such an orphan verified by default would
+    # keep serving a now-unpublished note's text.
     stmt = (
         select(
             PublicChunk.note_id,
             PublicChunk.title,
             PublicChunk.chunk_text,
-            verification_state,
-            disputed,
+            PublicNote.verification_state,
+            PublicNote.disputed,
             distance.label("distance"),
         )
-        .outerjoin(PublicNote, PublicNote.note_id == PublicChunk.note_id)
+        .join(PublicNote, PublicNote.note_id == PublicChunk.note_id)
         .order_by(distance.asc())
         .limit(max(1, limit) * _PUBLIC_CHUNK_OVERFETCH)
     )
@@ -276,6 +271,11 @@ def search_public_chunks(
     seen: set[str] = set()
     for row in rows:
         if row.note_id in seen:
+            continue
+        if row.verification_state is None:
+            # No public note row for this chunk (unreachable under the inner
+            # join, kept as a fail-closed guard): skip it rather than ground
+            # a turn on a note that left the public view.
             continue
         seen.add(row.note_id)
         out.append(

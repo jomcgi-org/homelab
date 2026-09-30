@@ -14,9 +14,12 @@ The cache is a simple key/value keyed by ``cache_key``, a hash of
   removed and lowercased, so trivial whitespace/case differences still hit.
 - ``prompt_version``: a stable hash of the active system prompt + model name, so
   a prompt edit or a model swap invalidates every entry.
-- ``notes_watermark``: ``max(indexed_at)`` over the public notes view, so any
-  change to the published notes invalidates the cache. The watermark query is
-  itself memoized for a short TTL so it does not run on every turn.
+- ``notes_watermark``: an md5 over the public notes view of each note's id,
+  verification state, dispute flag and ``indexed_at``, so any change to the
+  published notes invalidates the cache: a note entering or leaving the view,
+  a verification-state change, or a dispute flag flip all change the hash. The
+  watermark query is itself memoized for a short TTL so it does not run on
+  every turn.
 
 Reads + writes of the cache table use the ``public_writer`` chat engine (the
 ``get_chat_session`` dependency), which can DML the chat_public schema. The
@@ -60,8 +63,11 @@ WATERMARK_TTL_SECONDS = float(
 class CachedResponse:
     """A stored assistant turn: the full reply text plus the touched-note list.
 
-    ``touched`` mirrors the ``node_touched`` SSE payloads (``{"id", "title"}``) so
-    a cache hit can repaint the same grounded nodes before replaying the text.
+    ``touched`` mirrors the ``node_touched`` SSE payloads
+    (``{"id", "title", "verification_state", "disputed"}``) so a cache hit can
+    repaint the same grounded nodes before replaying the text. Rows written
+    before the citation-state change hold only ``{"id", "title"}`` and replay
+    through unchanged.
     """
 
     text: str
@@ -121,15 +127,26 @@ def _hash_key(
 
 
 def _query_watermark(read_db: Session) -> str:
-    """``max(indexed_at)`` over the public notes view, as a stable string key.
+    """Hash of the public notes view membership plus per-note review state.
+
+    A single schema-qualified raw SELECT over ``public_api.knowledge_notes``
+    hashing ``note_id``, ``verification_state``, ``disputed`` and
+    ``indexed_at`` (ordered by ``note_id``), so the watermark changes whenever
+    a note enters or leaves the view or any note's verification state or
+    dispute flag changes. An empty view yields the stable value ``'empty'``.
 
     Raises if the view is unreachable (e.g. SQLite test fixtures); callers treat
     any failure as "caching disabled for this turn".
     """
     row = read_db.execute(
-        text("SELECT max(indexed_at) FROM public_api.knowledge_notes")
+        text(
+            "SELECT coalesce(md5(string_agg(note_id || ':' || "
+            "coalesce(verification_state, '') || ':' || disputed::text || ':' || "
+            "coalesce(indexed_at::text, ''), ',' ORDER BY note_id)), 'empty') "
+            "FROM public_api.knowledge_notes"
+        )
     ).scalar()
-    return row.isoformat() if row is not None else "empty"
+    return row if row is not None else "empty"
 
 
 def current_watermark(read_db: Session) -> str | None:

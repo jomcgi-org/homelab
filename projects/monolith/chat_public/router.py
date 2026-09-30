@@ -359,7 +359,15 @@ async def _turn_stream(
         # result simply yields an ungrounded turn.
         retrieved = await retrieval.retrieve(read_db, message)
         for note in retrieved:
-            yield format_sse("node_touched", {"id": note.note_id, "title": note.title})
+            yield format_sse(
+                "node_touched",
+                {
+                    "id": note.note_id,
+                    "title": note.title,
+                    "verification_state": note.verification_state,
+                    "disputed": note.disputed,
+                },
+            )
 
         # Build the model context from the server-authoritative transcript BEFORE
         # appending the new message, compacting older turns into the rolling
@@ -408,7 +416,15 @@ async def _turn_stream(
             # Persist the turn's grounding so a shared snapshot can render the
             # same GROUNDED IN chips (same shape as the node_touched events and
             # the response cache's touched list).
-            touched=[{"id": n.note_id, "title": n.title} for n in retrieved],
+            touched=[
+                {
+                    "id": n.note_id,
+                    "title": n.title,
+                    "verification_state": n.verification_state,
+                    "disputed": n.disputed,
+                }
+                for n in retrieved
+            ],
         )
         sessions.record_turn(db, session, tokens=turn_tokens)
 
@@ -421,7 +437,15 @@ async def _turn_stream(
                 db,
                 cache_key,
                 reply,
-                [{"id": n.note_id, "title": n.title} for n in retrieved],
+                [
+                    {
+                        "id": n.note_id,
+                        "title": n.title,
+                        "verification_state": n.verification_state,
+                        "disputed": n.disputed,
+                    }
+                    for n in retrieved
+                ],
             )
 
         yield format_sse(
@@ -468,9 +492,16 @@ async def _replay_cached(
     """
     try:
         # Repaint the same grounded nodes the original answer touched, before the
-        # text, mirroring the generated-turn ordering.
+        # text, mirroring the generated-turn ordering. Entries stored before the
+        # citation-state change hold only {id, title}: pass those through
+        # unchanged (never invent a state for them).
         for note in cached.touched:
-            yield format_sse("node_touched", {"id": note["id"], "title": note["title"]})
+            payload = {"id": note["id"], "title": note["title"]}
+            if "verification_state" in note:
+                payload["verification_state"] = note["verification_state"]
+            if "disputed" in note:
+                payload["disputed"] = note["disputed"]
+            yield format_sse("node_touched", payload)
 
         sessions.append_message(
             db,
