@@ -266,6 +266,7 @@ filegroup(
         "//projects/platform/cert-manager:repo_docs",
         "//projects/platform/cilium:repo_docs",
         "//projects/platform/coredns:repo_docs",
+        "//projects/platform/honeycomb:repo_docs",
         "//projects/platform/kargo:repo_docs",
         "//projects/platform/kyverno:repo_docs",
         "//projects/platform/longhorn:repo_docs",

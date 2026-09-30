@@ -1,0 +1,30 @@
+# Disabled: drain.quota.codex.age_seconds is only written on drain.job spans,
+# 28 of them in the 7 days to 2026-09-30, all on 09-28 and 09-29. When the
+# drainer stops claiming jobs the column goes silent rather than growing, so
+# this cannot see the failure it is meant to catch. Enable once the drainer
+# writes the same attribute on every drain.cycle span (about every 16 minutes).
+name: Codex quota observation stale
+dataset: monolith-backend
+description: >-
+  drain.quota.codex.age_seconds is how old the drainer's last Codex quota
+  reading was when it made a scheduling decision. Fires when the MAX over the
+  last hour exceeds 3600 s, i.e. the drainer is deciding on a quota reading
+  more than an hour old. In the 7 days to 2026-09-30 the largest value seen was
+  138 s. Disabled until the attribute is emitted on every drain.cycle: today
+  it rides only on drain.job, so an idle or wedged drainer produces no data
+  and the trigger stays silent exactly when it matters.
+enabled: false
+frequency: 900
+alert_type: on_change
+threshold:
+  op: ">"
+  value: 3600
+recipients: [kjEJr2qxxxe]
+tags:
+  service: monolith
+  signal: quota
+query:
+  time_range: 3600
+  calculations:
+    - op: MAX
+      column: drain.quota.codex.age_seconds

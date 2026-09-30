@@ -1,7 +1,7 @@
 # Observability and Alerting
 
 The in-cluster alert templates, alert synchronizer, and notification channel have
-been removed. There is no in-cluster alerting pipeline today.
+been removed. Alerts are Honeycomb triggers (see Alerting below).
 
 ## Public probes
 
@@ -28,11 +28,13 @@ UptimeRobot checks `https://jomcgi.dev/health/otel-collector`. The route reaches
 the collector's `health_check` extension directly. It does not pass through the
 public frontend.
 
-## Alerting gap
+## Alerting
 
-This repo configures no in-cluster alert rules or notification channel for the
-probe metrics. It also configures no alert rules for Kubernetes health, ArgoCD
-state, EmberVM safety properties, or Hubble network-policy denials.
+Alerting is Honeycomb triggers, kept as code in
+[`projects/platform/honeycomb/`](../../projects/platform/honeycomb/README.md)
+and applied with its `sync.py`. Every trigger notifies the Discord webhook
+recipient. There are no in-cluster alert rules. Kubernetes health, ArgoCD
+state and Hubble network-policy denials have no trigger.
 
 The collector and probe configuration is documented in
 [`docs/observability.md`](../observability.md).
