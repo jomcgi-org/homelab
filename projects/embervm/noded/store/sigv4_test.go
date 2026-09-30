@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,5 +84,90 @@ func TestSignAuthenticatesIfMatch(t *testing.T) {
 	}
 	if got := req.Header.Get("Authorization"); !strings.Contains(got, "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date") {
 		t.Fatalf("Authorization does not sign If-Match: %q", got)
+	}
+}
+
+type createOnlyTransport func(*http.Request) (*http.Response, error)
+
+func (f createOnlyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestPutIfAbsentSignsBackendPrecondition(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		gcs      bool
+	}{
+		{name: "gcs", endpoint: "https://storage.googleapis.com", gcs: true},
+		{name: "gcs-port", endpoint: "https://storage.googleapis.com:443", gcs: true},
+		{name: "gcs-bucket", endpoint: "https://bucket.storage.googleapis.com", gcs: true},
+		{name: "s3", endpoint: "https://s3.example.test"},
+		{name: "not-gcs", endpoint: "https://notstorage.googleapis.com"},
+		{name: "not-gcs-suffix", endpoint: "https://storage.googleapis.com.example.test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stored string
+			fake := &fakeObjectStore{accessKeyID: "test-id", secretAccessKey: "test-secret"}
+			client := &http.Client{Transport: createOnlyTransport(func(req *http.Request) (*http.Response, error) {
+				if req.Method != http.MethodPut {
+					t.Fatalf("method = %q, want PUT", req.Method)
+				}
+				precondition := "if-none-match"
+				if tc.gcs {
+					precondition = "x-goog-if-generation-match"
+					if req.Header.Get(precondition) != "0" || req.Header.Get("If-None-Match") != "" {
+						t.Fatalf("GCS create-only headers = %v", req.Header)
+					}
+				} else if req.Header.Get(precondition) != "*" || req.Header.Get("x-goog-if-generation-match") != "" {
+					t.Fatalf("S3 create-only headers = %v", req.Header)
+				}
+				wantSigned := "SignedHeaders=content-type;host;"
+				if !tc.gcs {
+					wantSigned += precondition + ";"
+				}
+				wantSigned += "x-amz-content-sha256;x-amz-date"
+				if tc.gcs {
+					wantSigned += ";" + precondition
+				}
+				if !strings.Contains(req.Header.Get("Authorization"), wantSigned+",") {
+					t.Fatalf("precondition is not signed: %q", req.Header.Get("Authorization"))
+				}
+				// Simulate the Host value net/http sends and verify with the
+				// independent fake-store signer, not production helpers.
+				received := req.Clone(req.Context())
+				received.Host = req.URL.Host
+				if code := fake.verifySigV4(received); code != "" {
+					t.Fatalf("signature verification failed: %s", code)
+				}
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					return nil, err
+				}
+				status := http.StatusOK
+				// GCS ignores If-None-Match on PUT. Only its generation
+				// precondition can prevent the second writer overwriting.
+				conditional := req.Header.Get("x-goog-if-generation-match") == "0"
+				if !tc.gcs {
+					conditional = req.Header.Get("If-None-Match") == "*"
+				}
+				if conditional && stored != "" {
+					status = http.StatusPreconditionFailed
+				} else {
+					stored = string(body)
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})}
+			s := New(tc.endpoint, "embervm", false, WithCredentials(fake.accessKeyID, fake.secretAccessKey), WithHTTPClient(client))
+			if created, err := s.PutIfAbsent(context.Background(), "rootfs/marker", strings.NewReader("winner"), 6); err != nil || !created {
+				t.Fatalf("first create = %v, %v, want true, nil", created, err)
+			}
+			if created, err := s.PutIfAbsent(context.Background(), "rootfs/marker", strings.NewReader("loser"), 5); err != nil || created {
+				t.Fatalf("second create = %v, %v, want false, nil", created, err)
+			}
+			if stored != "winner" {
+				t.Fatalf("stored marker = %q, want winner", stored)
+			}
+		})
 	}
 }
