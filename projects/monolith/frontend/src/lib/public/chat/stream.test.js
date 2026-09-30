@@ -79,6 +79,37 @@ describe("applyFrame (turn-state reducer)", () => {
     ]);
   });
 
+  it("node_touched keeps the citation state fields when the frame has them", () => {
+    let s = initialTurnState();
+    s = applyFrame(s, {
+      type: "node_touched",
+      data: { id: 1, title: "A", verification_state: "verified", disputed: false },
+    });
+    s = applyFrame(s, {
+      type: "node_touched",
+      data: { id: 2, title: "B", verification_state: "unverified", disputed: true },
+    });
+    // A legacy entry and a pre-change entry stay plain: fields absent, not undefined.
+    s = applyFrame(s, {
+      type: "node_touched",
+      data: { id: 3, title: "C", verification_state: null, disputed: false },
+    });
+    s = applyFrame(s, { type: "node_touched", data: { id: 4, title: "D" } });
+    // Dedupe by id is unchanged even when the repeat carries different state.
+    s = applyFrame(s, {
+      type: "node_touched",
+      data: { id: 1, title: "A", verification_state: "unverified", disputed: true },
+    });
+    expect(s.touched).toEqual([
+      { id: 1, title: "A", verification_state: "verified", disputed: false },
+      { id: 2, title: "B", verification_state: "unverified", disputed: true },
+      { id: 3, title: "C", verification_state: null, disputed: false },
+      { id: 4, title: "D" },
+    ]);
+    expect("verification_state" in s.touched[3]).toBe(false);
+    expect("disputed" in s.touched[3]).toBe(false);
+  });
+
   it("node_touched arrives before tokens and survives the token stream", () => {
     let s = initialTurnState();
     s = applyFrame(s, { type: "node_touched", data: { id: 1, title: "A" } });

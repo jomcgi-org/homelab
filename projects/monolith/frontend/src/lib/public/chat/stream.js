@@ -94,7 +94,7 @@ export function createSseParser() {
  * error. `touched` is the ordered, deduped set of public notes the turn
  * grounded on (the overlay highlight set). `assistant` is the streamed reply.
  *
- * @returns {{ status: string, assistant: string, touched: {id: any, title: string}[], error: string, turnCount: number, totalTokens: number }}
+ * @returns {{ status: string, assistant: string, touched: {id: any, title: string, verification_state?: string | null, disputed?: boolean}[], error: string, turnCount: number, totalTokens: number }}
  */
 export function initialTurnState() {
   return {
@@ -105,6 +105,20 @@ export function initialTurnState() {
     turnCount: 0,
     totalTokens: 0,
   };
+}
+
+/**
+ * Normalise a touched entry (a node_touched frame payload or a stored turn's
+ * entry). The citation state fields ride along only when the source carries
+ * them: entries stored before the citation-state change have neither.
+ *
+ * @param {{ id: any, title?: string, verification_state?: string | null, disputed?: boolean }} n
+ */
+export function touchedEntry(n) {
+  const entry = { id: n.id, title: n.title ?? "" };
+  if ("verification_state" in n) entry.verification_state = n.verification_state;
+  if ("disputed" in n) entry.disputed = n.disputed;
+  return entry;
 }
 
 /**
@@ -122,10 +136,7 @@ export function applyFrame(state, frame) {
       const id = frame.data?.id;
       if (id === undefined || id === null) return state;
       if (state.touched.some((n) => n.id === id)) return state;
-      return {
-        ...state,
-        touched: [...state.touched, { id, title: frame.data?.title ?? "" }],
-      };
+      return { ...state, touched: [...state.touched, touchedEntry(frame.data)] };
     }
     case "token":
       return {
