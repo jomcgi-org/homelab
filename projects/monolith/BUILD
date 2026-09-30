@@ -5294,6 +5294,22 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_progress_watchdog_test",
+    srcs = ["factory/orchestration/factory_progress_watchdog_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_fence_test",
     srcs = ["factory/orchestration/factory_fence_test.py"],
     imports = ["."],

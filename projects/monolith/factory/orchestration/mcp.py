@@ -710,6 +710,13 @@ def _lifecycle_evidence(db, row, snapshot: dict) -> dict:
     }
 
 
+def _watchdog_detail(db, row, snapshot: dict) -> dict | None:
+    """The no-progress watchdog's standing and its last verdict."""
+    from factory.orchestration.factory_progress_watchdog import detail
+
+    return detail(db, getattr(row, "task_id", None), snapshot.get("policy"))
+
+
 def _detail_payload(
     receipt_id: int, node_offset: int, limit: int, history_limit: int = 10
 ) -> dict:
@@ -747,6 +754,7 @@ def _detail_payload(
             "queue": _queue_context(db, row),
             "work_item": work_item,
             "lifecycle": _lifecycle_evidence(db, row, snapshot),
+            "watchdog": _watchdog_detail(db, row, snapshot),
             "source_timestamps": {
                 "receipt_created_at": _iso(getattr(row, "created_at", None)),
                 "receipt_updated_at": _iso(getattr(row, "updated_at", None)),

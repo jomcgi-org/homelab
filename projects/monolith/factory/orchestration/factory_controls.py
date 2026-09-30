@@ -80,6 +80,7 @@ _POLICY_KEYS = {
     "intake",
     "problem_issues",
     "quota_guard",
+    "progress_watchdog",
     "auto_merge",
 }
 _OPTIONAL_POLICY_KEYS = {
@@ -95,6 +96,7 @@ _OPTIONAL_POLICY_KEYS = {
     "intake",
     "problem_issues",
     "quota_guard",
+    "progress_watchdog",
     "auto_merge",
 }
 
@@ -233,6 +235,13 @@ DEFAULT_QUOTA_GUARD = {
     # Quota about to be replaced is not quota worth preserving.
     "claude_7d_imminent_reset_minutes": 120,
 }
+# The no-progress watchdog (factory_progress_watchdog). A fixed dollar step
+# rather than a fraction of task_budget_usd: what a pointless loop costs does
+# not scale with the ceiling, and a funding grant raises that ceiling mid-task,
+# which would otherwise move the watchdog away exactly when spend is growing.
+# $20 is a fifth to two fifths of the usual $50-100 task budget, so a looping
+# task reaches a person well before the budget does.
+DEFAULT_PROGRESS_WATCHDOG = {"enabled": True, "threshold_usd": 20.0}
 # An observation older than this says nothing about now, and an unknown
 # reading never starts a fallback: downgrading every review because a broker
 # read failed would turn one outage into two.
@@ -682,6 +691,9 @@ def validate_policy(policy: dict) -> dict:
         policy.get("problem_issues", {})
     )
     result["quota_guard"] = _validate_quota_guard(policy.get("quota_guard", {}))
+    result["progress_watchdog"] = _validate_progress_watchdog(
+        policy.get("progress_watchdog", {})
+    )
     # Landing is the one factory step that writes to the repository rather
     # than reading it, so it is a flag of its own and defaults off. A policy
     # written before landing existed reads as false and lands nothing.
@@ -813,6 +825,27 @@ def _validate_quota_guard(value: object) -> dict:
     return result
 
 
+def _validate_progress_watchdog(value: object) -> dict:
+    """The no-progress watchdog block, every field defaulted."""
+    if not isinstance(value, dict) or not set(value) <= set(DEFAULT_PROGRESS_WATCHDOG):
+        raise ValueError("invalid progress_watchdog")
+    enabled = value.get("enabled", DEFAULT_PROGRESS_WATCHDOG["enabled"])
+    if type(enabled) is not bool:
+        raise ValueError("invalid progress_watchdog enabled")
+    threshold = _money(
+        value.get("threshold_usd", DEFAULT_PROGRESS_WATCHDOG["threshold_usd"]),
+        "progress_watchdog threshold_usd",
+    )
+    if threshold > 200:
+        raise ValueError("invalid progress_watchdog threshold_usd")
+    return {"enabled": enabled, "threshold_usd": threshold}
+
+
+def progress_watchdog_policy(policy: dict) -> dict:
+    """The watchdog block, defaulted, so a policy stored before it still watches."""
+    return _validate_progress_watchdog(policy.get("progress_watchdog") or {})
+
+
 def quota_guard_policy(policy: dict) -> dict:
     """The guard block, defaulted, so a policy stored before it still guards."""
     return _validate_quota_guard(policy.get("quota_guard") or {})
@@ -838,6 +871,7 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
     """
     comparable = dict(policy)
     comparable["problem_issues"] = problem_issues_policy(comparable)
+    comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
     return comparable
 
 
