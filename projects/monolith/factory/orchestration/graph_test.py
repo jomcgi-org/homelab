@@ -501,6 +501,156 @@ def test_discard_refuses_live_dependents(db):
     assert_recorded(db, result, "discard_node", "refused", "dependents", 2, 2)
 
 
+def _failed_node(task_id, node_key, expected_version, *, cost=0.4, **overrides):
+    """A node that ran once and failed, the shape a planner wants to replace."""
+    assert add_work(task_id, node_key, expected_version, **overrides).ok
+    admitted = admit_dispatch(task_id, node_key, dispatch_key=f"wf-{node_key}")
+    assert admitted.ok
+    assert record_outcome(task_id, node_key, 1, "failed", cost, None, "{}").ok
+
+
+def test_discard_retires_a_node_whose_attempts_all_failed_and_settled(db):
+    # Regression for #6460: a failed investigate/implement node that has run
+    # was refused armed forever, so the planner could not replace it and the
+    # repeated refusal escalated as a funding question.
+    task_id = make_task(db, budget=3.0)
+    _failed_node(task_id, "implement_fix", 0)
+    assert load_graph(task_id)[0]["armed_at"] is not None
+    history = node_runs(task_id)
+
+    retired = discard(task_id, "implement_fix", 1)
+    assert retired.ok and retired.version == 2
+    assert_recorded(db, retired, "discard_node", "applied", None, 1, 2)
+    assert load_graph(task_id) == []
+    assert [node["node_key"] for node in load_graph(task_id, 1)] == ["implement_fix"]
+    # Retiring keeps the run history, and its measured spend stays charged,
+    # while the unused ceiling of the retired node is released.
+    assert node_runs(task_id) == history
+    assert graph.budget_snapshot(task_id)["planned_cost_usd"] == pytest.approx(0.4)
+    assert (
+        add_work(task_id, "implement_fix_v2", 2, max_cost_usd=2.61).refusal_code
+        == "budget_exceeded"
+    )
+    assert add_work(task_id, "implement_fix_v2", 2, max_cost_usd=2.6).ok
+
+
+def test_retired_node_history_survives_reuse_of_its_key(db):
+    task_id = make_task(db)
+    _failed_node(task_id, "node", 0)
+    assert discard(task_id, "node", 1).ok
+    assert add_work(task_id, "node", 2, prompt="second incarnation").ok
+    [first] = load_graph(task_id, 1)
+    assert first["prompt"] == "do node" and first["discarded_in_version"] == 2
+    [second] = load_graph(task_id)
+    assert second["prompt"] == "second incarnation" and second["armed_at"] is None
+    # A reused key inherits the attempt the retired incarnation spent.
+    assert [run["attempt"] for run in node_runs(task_id, "node")] == [1]
+
+
+def test_plan_replaces_a_settled_failed_node_in_one_batch(db):
+    task_id = make_task(db)
+    _failed_node(task_id, "investigate_scope", 0)
+    result = apply_plan(
+        task_id,
+        [
+            {
+                "op": "discard_node",
+                "node_key": "investigate_scope",
+                "stated_reason": "failed; replaced by a narrower investigation",
+            },
+            plan_add("investigate_scope_v2"),
+        ],
+        expected_version=1,
+    )
+    assert result.ok and result.version == 3
+    assert [node["node_key"] for node in load_graph(task_id)] == [
+        "investigate_scope_v2"
+    ]
+
+
+@pytest.mark.parametrize("status", ["admitted", "dispatched", "uncertain"])
+def test_discard_still_refuses_armed_while_an_attempt_is_unsettled(db, status):
+    task_id = make_task(db)
+    assert add_work(task_id, "node", 0).ok
+    assert admit_dispatch(task_id, "node").ok
+    if status == "dispatched":
+        assert record_dispatch(task_id, "node", 1, 7, None).ok
+    if status == "uncertain":
+        assert record_outcome(task_id, "node", 1, "uncertain", None, None, "{}").ok
+    refused = discard(task_id, "node", 1)
+    assert not refused.ok and refused.refusal_code == "armed"
+    assert_recorded(db, refused, "discard_node", "refused", "armed", 1, 1)
+    # The refusal says what the planner can do instead of re-proposing it.
+    assert f"attempt 1 is {status}" in refused.detail
+    assert "new node_key" in refused.detail
+    assert [node["node_key"] for node in load_graph(task_id)] == ["node"]
+
+
+def test_discard_refuses_a_settled_node_whose_start_is_unresolved(db):
+    from factory.orchestration.factory_models import FactoryStart
+
+    task_id = make_task(db)
+    _failed_node(task_id, "node", 0)
+    with Session(db) as session:
+        session.add(
+            FactoryStart(
+                task_id=task_id,
+                start_key="wf-node",
+                actor="test",
+                model="worker-model",
+                max_cost_usd=1.0,
+                status="uncertain",
+            )
+        )
+        session.commit()
+    refused = discard(task_id, "node", 1)
+    assert not refused.ok and refused.refusal_code == "armed"
+    assert "unresolved start" in refused.detail
+
+    with Session(db) as session:
+        start = session.exec(select(FactoryStart)).one()
+        start.status = "failed"
+        session.add(start)
+        session.commit()
+    assert discard(task_id, "node", 1).ok
+
+
+def test_discard_refuses_a_succeeded_node_as_armed(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "node", 0).ok
+    assert admit_dispatch(task_id, "node").ok
+    assert record_outcome(task_id, "node", 1, "succeeded", 0.1, "head", "{}").ok
+    refused = discard(task_id, "node", 1)
+    assert not refused.ok and refused.refusal_code == "armed"
+    assert "succeeded" in refused.detail
+
+
+def test_retiring_a_settled_node_still_obeys_the_dependents_rule(db):
+    task_id = make_task(db)
+    _failed_node(task_id, "parent", 0)
+    assert add_work(task_id, "child", 1, deps=["parent"]).ok
+    refused = discard(task_id, "parent", 2)
+    assert not refused.ok and refused.refusal_code == "dependents"
+    assert discard(task_id, "child", 2).ok
+    assert discard(task_id, "parent", 3).ok
+
+
+def test_plan_refusal_on_an_unsettled_node_carries_the_repair_detail(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "implement_fix", 0).ok
+    assert admit_dispatch(task_id, "implement_fix").ok
+    assert record_outcome(task_id, "implement_fix", 1, "uncertain", None, None, "{}").ok
+    result = apply_plan(
+        task_id,
+        [{"op": "discard_node", "node_key": "implement_fix", "stated_reason": "x"}],
+        expected_version=1,
+    )
+    assert not result.ok and result.refusal_code == "armed"
+    assert result.detail.startswith("edit 0 (implement_fix): armed (")
+    assert "attempt 1 is uncertain" in result.detail
+    assert "new node_key" in result.detail
+
+
 def test_admit_attempt_numbering_bound_and_armed_stamp(db):
     task_id = make_task(db)
     assert add_work(task_id, "node", 0, max_cost_usd=10.0).ok

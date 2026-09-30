@@ -630,13 +630,29 @@ def _reject_plan_decision(
     _reject_decision(task["id"], cause, action, code, reason)
     if not _check_consecutive_refusals(task["id"], code):
         return
-    prefix = "envelope exceeded: "
-    deficit = reason.removeprefix(prefix) if reason.startswith(prefix) else reason
-    question = (
+    lead = (
         f"Planning was refused {CONSECUTIVE_REFUSAL_THRESHOLD} consecutive times "
-        f"with {code}. The unresolved deficit is {deficit}. Should the exact "
-        "deficit be funded and the task resumed, or should the task remain on hold?"
+        f"with {code}."
     )
+    if code == "envelope_exceeded":
+        prefix = "envelope exceeded: "
+        deficit = reason.removeprefix(prefix) if reason.startswith(prefix) else reason
+        question = (
+            f"{lead} The unresolved deficit is {deficit}. Should the exact "
+            "deficit be funded and the task resumed, or should the task remain "
+            "on hold?"
+        )
+        resume = {"key": "fund-and-resume", "label": "Fund deficit and resume"}
+    else:
+        # Only the envelope is a funding question (#6460). Every other code is
+        # a graph edit the planner could not make, and funding it re-admits a
+        # task that meets the same refusal.
+        question = (
+            f"{lead} The refused edit is {reason}. This is not a budget shortfall: the "
+            "planner could not find a legal repair. Should the task resume with "
+            "direction on how to rescope or repair the plan, or remain on hold?"
+        )
+        resume = {"key": "rescope-and-resume", "label": "Resume with direction"}
     _escalate_task(
         task,
         {
@@ -645,8 +661,7 @@ def _reject_plan_decision(
             "question": question,
             "options": [
                 {
-                    "key": "fund-and-resume",
-                    "label": "Fund deficit and resume",
+                    **resume,
                     "effect": CONTINUE_EFFECT,
                     "detail": {"scope": question[:2000]},
                 },

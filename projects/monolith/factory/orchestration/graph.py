@@ -31,7 +31,10 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.db import get_engine
-from factory.orchestration.factory_models import MAX_CAPACITY_DENIED_ATTEMPTS
+from factory.orchestration.factory_models import (
+    MAX_CAPACITY_DENIED_ATTEMPTS,
+    FactoryStart,
+)
 from factory.orchestration.models import (
     SwarmConductorCall,
     SwarmNodeRun,
@@ -596,7 +599,11 @@ def discard_node(
     activities_claim_write: bool = False,
     session: Session | None = None,
 ) -> GraphOp:
-    """Discard an unarmed live leaf while retaining its historical visibility."""
+    """Discard a live leaf while retaining its historical visibility.
+
+    A node that has run is retired this way once every attempt is terminal
+    and settled; see ``_unsettled_reason``. Its run history stays charged.
+    """
 
     args = {
         "node_key": node_key,
@@ -626,6 +633,77 @@ def discard_node(
         )
 
 
+_ARMED_REPAIR = (
+    "wait for it to settle, or add a replacement node under a new node_key "
+    "and leave this one in place; do not re-propose this discard"
+)
+
+
+def _unsettled_reason(db: Session, task_id: str, node: SwarmPlanNode) -> str | None:
+    """Why this node cannot be retired yet, or None when retiring it is safe.
+
+    A node that has run can still be retired once every attempt is terminal
+    and its start is resolved: nothing is executing or unreconciled, the run
+    history and its charged cost stay in the ledger, and retiring it only
+    stops it counting as live, pending plan work (#6460). Refusing that case
+    left a planner replacing a failed node with no legal edit, and its repeated
+    refusal escalated as a funding question.
+
+    An attempt that is admitted, dispatched or uncertain, a start the reconciler
+    has not resolved, or an armed node with no ledger row at all stays refused.
+    A succeeded node stays refused too: its result is delivered evidence and
+    it no longer counts as pending, so retiring it would only hide it.
+    """
+    runs = list(
+        db.exec(
+            select(SwarmNodeRun).where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node.node_key,
+            )
+        ).all()
+    )
+    if not runs:
+        if node.armed_at is None:
+            return None
+        return f"{node.node_key} is armed without a settled attempt; {_ARMED_REPAIR}"
+    active = [run for run in runs if run.status not in TERMINAL_RUN_STATUSES]
+    if active:
+        run = min(active, key=lambda item: item.attempt)
+        return f"{node.node_key} attempt {run.attempt} is {run.status}; {_ARMED_REPAIR}"
+    if any(run.status == "succeeded" for run in runs):
+        return (
+            f"{node.node_key} succeeded and its result stands; it is not pending "
+            "work, so add any follow-up under a new node_key instead"
+        )
+    keys = [run.dispatch_key for run in runs if run.dispatch_key]
+    if keys:
+        start = db.exec(
+            select(FactoryStart).where(
+                FactoryStart.task_id == task_id,
+                FactoryStart.start_key.in_(keys),
+                FactoryStart.status.in_(("reserved", "uncertain")),
+            )
+        ).first()
+        if start is not None:
+            return (
+                f"{node.node_key} has an unresolved start ({start.status}); "
+                f"{_ARMED_REPAIR}"
+            )
+    return None
+
+
+def _ledger_snapshot(item: dict) -> dict:
+    """A node snapshot the version ledger can store as JSON.
+
+    A retired node that has run carries its ``armed_at`` stamp, which the
+    ledger keeps as an ISO 8601 string.
+    """
+    armed_at = item.get("armed_at")
+    if isinstance(armed_at, datetime):
+        return {**item, "armed_at": armed_at.isoformat()}
+    return item
+
+
 def _discard_node_locked(
     db: Session,
     task: SwarmTask,
@@ -649,14 +727,9 @@ def _discard_node_locked(
     node = live.get(node_key)
     if node is None:
         return _refuse(db, task, "discard_node", args, version, "unknown_node")
-    has_run = db.exec(
-        select(SwarmNodeRun.id).where(
-            SwarmNodeRun.task_id == task_id,
-            SwarmNodeRun.node_key == node_key,
-        )
-    ).first()
-    if node.armed_at is not None or has_run is not None:
-        return _refuse(db, task, "discard_node", args, version, "armed")
+    unsettled = _unsettled_reason(db, task_id, node)
+    if unsettled is not None:
+        return _refuse(db, task, "discard_node", args, version, "armed", unsettled)
     if (
         node.base_artifact_sha is not None
         and observed_branch_head is not None
@@ -682,10 +755,12 @@ def _discard_node_locked(
             change_json=_json(
                 {
                     "node_key": node_key,
-                    "snapshot": next(
-                        item
-                        for item in load_graph(task_id, session=db)
-                        if item["node_key"] == node_key
+                    "snapshot": _ledger_snapshot(
+                        next(
+                            item
+                            for item in load_graph(task_id, session=db)
+                            if item["node_key"] == node_key
+                        )
                     ),
                 }
             ),

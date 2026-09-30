@@ -17326,3 +17326,47 @@ def test_never_bound_attempt_outside_the_exact_proof_keeps_its_ceiling(
     assert run["status"] == "failed" and run["cost_usd"] is None
     start = _uncertain_snapshot(s)["factory"]["starts"][0]
     assert start["status"] == "failed" and start["cost_usd"] is None
+
+
+def _repeated_plan_refusal(monkeypatch, code, reason):
+    """Drive the consecutive-refusal escalation and return what it asked."""
+    escalations = []
+    monkeypatch.setattr(conductor, "_reject_decision", lambda *_args: None)
+    monkeypatch.setattr(conductor, "_check_consecutive_refusals", lambda *_: True)
+    monkeypatch.setattr(
+        conductor, "_escalate_task", lambda *args: escalations.append(args)
+    )
+    conductor._reject_plan_decision(
+        {"id": "task-6460"}, "planner-cause", "plan", code, reason, []
+    )
+    assert len(escalations) == 1
+    return escalations[0][1]
+
+
+@pytest.mark.parametrize(
+    "code", ["armed", "dependents", "branch_moved", "write_claimed"]
+)
+def test_repeated_graph_refusal_escalates_a_repair_question_not_funding(
+    monkeypatch, code
+):
+    # Regression for #6460: a repeated armed refusal asked whether "the exact
+    # deficit" should be funded, though nothing was underfunded.
+    reason = f"edit 1 (implement_s6trace): {code}"
+    decision = _repeated_plan_refusal(monkeypatch, code, reason)
+    question = decision["question"]
+    assert "fund" not in question.lower() and "deficit" not in question.lower()
+    assert reason in question and "rescope or repair" in question
+    assert [option["key"] for option in decision["options"]] == [
+        "rescope-and-resume",
+        "hold",
+    ]
+    assert all("fund" not in option["label"].lower() for option in decision["options"])
+
+
+def test_repeated_envelope_refusal_still_asks_for_funding(monkeypatch):
+    decision = _repeated_plan_refusal(
+        monkeypatch, "envelope_exceeded", 'envelope exceeded: {"usd": 1.5}'
+    )
+    assert 'The unresolved deficit is {"usd": 1.5}' in decision["question"]
+    assert "Should the exact deficit be funded" in decision["question"]
+    assert decision["options"][0]["key"] == "fund-and-resume"
