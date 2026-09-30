@@ -13358,22 +13358,26 @@ def test_duplicate_continuation_tick_replays_grant_without_failing_task(
     )
 
 
-def funding_task(monkeypatch):
+def funding_task(monkeypatch, *, judge_pool=None):
     from factory.orchestration import factory_funding as funding
     from factory.orchestration import factory_controls as controls
 
     monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
     task, policy = reviewed_after_three_turns(4)
-    # The production policy includes Astra; preserve the fixture's other models.
-    from sqlmodel import Session
+    if judge_pool is not None:
+        # Allow and configure the judge pool; preserve the fixture's models.
+        from sqlmodel import Session
 
-    with Session(conductor.get_engine()) as db:
-        row = controls._receipt(db, task["id"])
-        original = json.loads(row.policy_json)
-        original["allowed_models"].append("astra")
-        row.policy_json = json.dumps(original)
-        db.add(row)
-        db.commit()
+        with Session(conductor.get_engine()) as db:
+            row = controls._receipt(db, task["id"])
+            original = json.loads(row.policy_json)
+            original["allowed_models"] += [
+                m for m in judge_pool if m not in original["allowed_models"]
+            ]
+            original.setdefault("model_pools", {})["judge"] = list(judge_pool)
+            row.policy_json = json.dumps(original)
+            db.add(row)
+            db.commit()
     monkeypatch.setattr(
         funding,
         "_issue",
@@ -13814,6 +13818,72 @@ def test_astra_decides_extensions_repeatedly_without_mutating_original_policy(
     assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 25
     with controls._read_session() as db:
         assert funding.amendment(db, task["id"])["next_plan"].startswith("Correct")
+
+
+@pytest.mark.parametrize(
+    "judge_pool, expected",
+    [(None, "opus"), (["astra"], "astra")],
+    ids=["no-astra-policy-runs-on-opus", "astra-configured-runs-on-astra"],
+)
+def test_funding_review_runs_on_the_policy_judge_and_applies(
+    feedback_db, monkeypatch, judge_pool, expected
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+    )
+
+    task, policy = funding_task(monkeypatch, judge_pool=judge_pool)
+    assert ("astra" in policy["allowed_models"]) == (judge_pool is not None)
+    assert funding.request(task, "Review plan exceeds allocation")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+    assert request["model"] == expected
+    node = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == request["node_key"]
+    )
+    assert node["model"] == expected
+    settle = settle_funding(task, funding_decision())
+    assert settle["audit_id"] == request["audit_id"]
+    with controls._read_session() as db:
+        settled = funding.latest(db, task["id"], "funding_review_settled")
+        assert settled["refusal"] is None
+        assert funding.amendment(db, task["id"]) is not None
+    assert controls.task_snapshot(task["id"])["policy"]["task_budget_usd"] == 20
+
+
+def test_funding_oversight_accepts_only_the_recorded_allowed_judge(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration import (
+        factory_controls as controls,
+        factory_funding as funding,
+        factory_funding_limits as limits,
+    )
+
+    task, _ = funding_task(monkeypatch)
+    assert funding.request(task, "Review plan exceeds allocation")
+    with controls._read_session() as db:
+        request = funding.pending(db, task["id"])
+        node_key, cost = request["node_key"], funding.REVIEW_COST_USD
+        assert limits.oversight_node(db, task["id"], node_key, "opus", cost)
+        # Astra is not allowed by this policy, and was not the recorded judge.
+        assert not limits.oversight_node(db, task["id"], node_key, "astra", cost)
+        assert not limits.judge_pin_ok(db, task["id"], request, "astra")
+        # A request recorded before the judge model was (legacy Astra) is
+        # refused once policy no longer allows Astra.
+        legacy = {k: v for k, v in request.items() if k != "model"}
+        assert limits.review_model(legacy) == "astra"
+        assert not limits.judge_pin_ok(db, task["id"], legacy, "astra")
+    refused = controls.authorize_start(
+        task["id"], request["start_key"], "test", model="astra", max_cost_usd=cost
+    )
+    assert refused == {"ok": False, "reason": "funding_review_pin_mismatch"}
+    assert controls.authorize_start(
+        task["id"], request["start_key"], "test", model="opus", max_cost_usd=cost
+    )["ok"]
 
 
 def test_funding_can_stop_without_human_escalation(feedback_db, monkeypatch):

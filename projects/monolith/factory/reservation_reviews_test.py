@@ -471,11 +471,62 @@ def test_malformed_model_response_never_approves(raw):
         reviews._decision(raw)
 
 
-def test_review_runner_uses_astra_and_reserved_capacity(db, monkeypatch):
+NO_ASTRA_POLICY = {
+    "allowed_models": ["opus", "sol", "spark"],
+    "conductor_model": "opus",
+    "worker_model": "spark",
+    "reviewer_model": "opus",
+}
+
+
+@pytest.mark.parametrize(
+    "policy, expected",
+    [
+        # No recorded factory policy (no control table here): explicit Opus.
+        (None, "opus"),
+        # The live policy no longer allows Astra: the judge runs on Opus.
+        (NO_ASTRA_POLICY, "opus"),
+        # Astra allowed and configured as the judge: it still runs on Astra.
+        (
+            {
+                **NO_ASTRA_POLICY,
+                "allowed_models": ["opus", "sol", "spark", "astra"],
+                "model_pools": {"judge": ["astra"]},
+            },
+            "astra",
+        ),
+        # Neither default judge is allowed: fall back to the reviewer pool.
+        (
+            {
+                "allowed_models": ["sol", "spark"],
+                "conductor_model": "sol",
+                "worker_model": "spark",
+                "reviewer_model": "sol",
+            },
+            "sol",
+        ),
+    ],
+)
+def test_review_runner_follows_policy_judge_and_reserved_capacity(
+    db, monkeypatch, policy, expected
+):
     import asyncio
     from types import SimpleNamespace
     from factory.execution import execution_api
+    from factory.orchestration.factory_models import FactoryControl
 
+    if policy is not None:
+        SQLModel.metadata.create_all(db, tables=[FactoryControl.__table__])
+        with Session(db) as session:
+            session.add(
+                FactoryControl(
+                    id="factory",
+                    state="enabled",
+                    policy_json=json.dumps(policy),
+                    actor="test",
+                )
+            )
+            session.commit()
     pid = seed(db, age=1801)
     calls = []
 
@@ -492,7 +543,7 @@ def test_review_runner_uses_astra_and_reserved_capacity(db, monkeypatch):
     monkeypatch.setattr(reviews, "observe_guest", observe)
     monkeypatch.setattr(execution_api, "run_synthetic_session", run)
     asyncio.run(reviews.review_once())
-    assert calls[0]["model"] == "astra"
+    assert calls[0]["model"] == expected
     assert calls[0]["admission_tier"] == "interactive"
     assert calls[0]["read_timeout"] == 240
     with Session(db) as session:

@@ -325,8 +325,9 @@ _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 # Muse first, because a brief is read by a person and never merged.
 # "reviewer" is the ordered fallback review runs down while the shared Claude
 # window is nearly spent; it is a class pool rather than a role pool because
-# its default need not start at the policy's own reviewer_model.
-_CLASS_POOL_ROLES = ("implement", "refine", "reviewer")
+# its default need not start at the policy's own reviewer_model. "judge" is
+# the funding and reservation-lease decision model, defaulting to Opus.
+_CLASS_POOL_ROLES = ("implement", "refine", "reviewer", "judge")
 
 # The escalation option vocabulary, shared by the two paths that raise one.
 # A refine verdict of needs-human and a delivery planner's pause both hand a
@@ -2590,7 +2591,10 @@ def authorize_start(
         from factory.orchestration import factory_funding_limits as factory_funding
 
         oversight = factory_funding.review_authority(db, task_id, start_key)
-        if oversight and (model != "astra" or cost != factory_funding.REVIEW_COST_USD):
+        if oversight and (
+            not factory_funding.judge_pin_ok(db, task_id, oversight, model)
+            or cost != factory_funding.REVIEW_COST_USD
+        ):
             return {"ok": False, "reason": "funding_review_pin_mismatch"}
         if (
             factory_funding.enabled()

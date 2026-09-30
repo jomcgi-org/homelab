@@ -1,4 +1,4 @@
-"""Astra reviews continued work; machine observation never renews its lease."""
+"""The judge reviews continued work; machine observation never renews its lease."""
 
 from __future__ import annotations
 
@@ -436,9 +436,33 @@ def _decision(raw):
     return value
 
 
+def review_model() -> str:
+    """The judge model the live factory policy selects for lease reviews.
+
+    Falls back to model_pool.DEFAULT_JUDGE_MODEL when no factory policy is
+    recorded or it cannot be read, so supervision never stalls on a missing
+    control row.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from factory.orchestration import model_pool
+    from factory.orchestration.factory_models import FactoryControl
+
+    try:
+        with Session(get_engine()) as db:
+            control = db.get(FactoryControl, "factory")
+            policy = json.loads(control.policy_json) if control else None
+    except (SQLAlchemyError, ValueError) as exc:
+        logger.warning("factory policy unreadable for lease review: %s", exc)
+        policy = None
+    if not policy:
+        return model_pool.DEFAULT_JUDGE_MODEL
+    return model_pool.select_model("judge", policy)["model"]
+
+
 def _review_prompt(candidate):
     return (
-        "You are Astra, supervising a factory execution lease. Decide whether this exact "
+        "You are the factory judge, supervising a factory execution lease. Decide whether this exact "
         "attempt should continue for another 30 minutes. Executor heartbeats are not useful "
         "progress. Assess the substantive progress and repeated errors below. Approve only "
         "when continuing is justified; steer or replan when the approach needs correction; "
@@ -729,7 +753,7 @@ async def review_once():
             await observe_guest(candidate)
             result = await run_synthetic_session(
                 _review_prompt(candidate),
-                model="astra",
+                model=await asyncio.to_thread(review_model),
                 session_key=candidate["key"],
                 read_timeout=leases.REVIEW_TIMEOUT_SECONDS,
                 admission_tier="interactive",

@@ -471,10 +471,11 @@ takes the first member whose provider still has quota.
 | `implement` | implement nodes, engine corrections, engine fan-in | the `worker` pool |
 | `refine` | the advisory briefing node | `["spark", "sol"]`, narrowed to allowed models |
 | `reviewer` | every review node, planner-added and engine-inserted | `["opus", "astra"]`, narrowed to allowed models, led by `reviewer_model` |
+| `judge` | funding decisions and reservation-lease reviews | `["opus"]` when allowed, else the `reviewer` pool |
 
 A role pool must start with that role's own configured model, so the policy's
 stated preference is what the pool is ranked from. A class pool, `implement`,
-`refine` and `reviewer`, names no policy field and so has no head to anchor to; its order
+`refine`, `reviewer` and `judge`, names no policy field and so has no head to anchor to; its order
 is the preference. Every member of every pool must appear in `allowed_models`.
 
 A GitOps policy change is a one-shot guarded migration that bumps `version`
@@ -2040,8 +2041,9 @@ no longer hides a conductor that has stopped making progress.
 With `FACTORY_RESERVATION_REVIEW_ENABLED`, every execution reservation starts
 with a 30-minute work-review lease. The existing executor heartbeat remains an
 ownership mechanism; it never renews the work-review lease. The factory begins
-an Astra review five minutes before expiry and bounds the review to four minutes.
-One durable review runs at a time, using reserved interactive headroom so a full
+a judge review five minutes before expiry and bounds the review to four minutes.
+The review runs on the policy's `judge` pool (see the pool table), or on Opus
+when no factory policy is recorded. One durable review runs at a time, using reserved interactive headroom so a full
 background pool cannot starve supervision.
 A failed reviewer may retain its historical guest binding after permit
 supervision proves that exact guest ceased. A matching settled cessation audit
@@ -2116,7 +2118,9 @@ Human escalation remains available for actual missing decisions or authority.
 ### Conductor funding decisions
 
 `FACTORY_CONDUCTOR_FUNDING_ENABLED` supersedes the fixed final correction pair.
-When a work allocation, review-round limit, or lease is exhausted, Astra judges
+When a work allocation, review-round limit, or lease is exhausted, the funding
+judge (the policy's `judge` pool, Opus by default; Astra only when policy allows
+it and names it in `model_pools.judge`) judges
 whether the objective is still useful, what progress has been made, and whether
 the likely remaining cost is reasonable. Its typed decision can continue,
 steer, or stop. There is no fixed extension count. Each approval records a
@@ -2134,9 +2138,11 @@ the truncated predecessor list used for display is not the accounting ledger.
 Reservations and unknown outcomes remain charged. Every new start rechecks the
 aggregate under the factory control lock. A new task cannot reset that budget.
 
-A funding review reserves one exact Astra dispatch with a $1 ceiling and a
+A funding review records the selected judge model and reserves one exact
+dispatch on it with a $1 ceiling and a
 five-minute deadline through the existing durable node executor. That dispatch
-can assess an exhausted task allocation; other work remains fenced until the
+can assess an exhausted task allocation, and start authorization and settlement
+accept only that recorded model while policy still allows it; other work remains fenced until the
 decision commits. Global stop, cancellation, unresolved execution, shared
 capacity, and the cumulative objective ceiling still apply. Failed or stale
 reviews wait five minutes before another bounded assessment. A stop decision

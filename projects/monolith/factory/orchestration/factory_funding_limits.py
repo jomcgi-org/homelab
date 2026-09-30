@@ -14,6 +14,8 @@ from factory.orchestration.factory_models import (
 
 OBJECTIVE_CEILING_USD = 200.0
 REVIEW_COST_USD = 1.0
+# Funding requests recorded before the judge model was recorded ran on Astra.
+LEGACY_REVIEW_MODEL = "astra"
 
 
 def enabled():
@@ -50,6 +52,19 @@ def review_authority(db, task_id, start_key):
     ):
         return request
     return None
+
+
+def review_model(request):
+    """The judge model a funding request recorded for its review dispatch."""
+    return request.get("model") or LEGACY_REVIEW_MODEL
+
+
+def judge_pin_ok(db, task_id, request, model):
+    """Accept only the request's recorded judge, while policy still allows it."""
+    if model != review_model(request):
+        return False
+    row = controls._receipt(db, task_id)
+    return row is not None and model in effective_policy(db, row)["allowed_models"]
 
 
 def amendment(db, task_id):
@@ -116,9 +131,9 @@ def graph_budget(db, task, *, node_key=None, model=None, cost=None):
     if (
         request
         and node_key == request["node_key"]
-        and model == "astra"
         and cost == REVIEW_COST_USD
         and controls._now() < datetime.fromisoformat(request["deadline_at"])
+        and judge_pin_ok(db, task.id, request, model)
     ):
         return OBJECTIVE_CEILING_USD
     return ceiling
@@ -129,9 +144,9 @@ def oversight_node(db, task_id, node_key, model, cost):
     return bool(
         request
         and request["node_key"] == node_key
-        and model == "astra"
         and cost == REVIEW_COST_USD
         and review_authority(db, task_id, request["start_key"])
+        and judge_pin_ok(db, task_id, request, model)
     )
 
 
@@ -140,7 +155,7 @@ def dispatch_prompt(db, task_id, node_key, prompt):
     if grant and not node_key.startswith("conductor_funding_"):
         return (
             prompt
-            + "\nAstra conductor direction for this allocation, within the original objective and review requirements:\n"
+            + "\nFunding judge direction for this allocation, within the original objective and review requirements:\n"
             + grant["next_plan"]
         )
     return prompt

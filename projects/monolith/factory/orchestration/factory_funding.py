@@ -1,4 +1,4 @@
-"""Astra allocates bounded work leases against one cumulative issue budget."""
+"""The funding judge allocates bounded work leases against one issue budget."""
 
 from datetime import datetime, timedelta
 import hashlib
@@ -9,7 +9,7 @@ import httpx
 
 from sqlmodel import select
 
-from factory.orchestration import factory_controls as controls, graph
+from factory.orchestration import factory_controls as controls, graph, model_pool
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
@@ -23,6 +23,7 @@ from factory.orchestration.factory_funding_limits import (
     objective,
     objective_for_receipt,
     pending,
+    review_model,
     OBJECTIVE_CEILING_USD,
     REVIEW_COST_USD,
 )
@@ -271,7 +272,7 @@ def inherit_dispatch_grant(db, row, task, carried, policy):
 
 
 def request(task, reason, *, recover=False):
-    """Reserve one exact Astra decision, even when task soft limits ran out."""
+    """Reserve one exact judge decision, even when task soft limits ran out."""
     from factory.orchestration import factory_conductor as c
 
     if not enabled():
@@ -312,7 +313,7 @@ def request(task, reason, *, recover=False):
                 ACTOR,
                 evidence={
                     "state": "objective_budget_ceiling",
-                    "reason": "Cumulative objective spending cannot fund another Astra decision within $200.",
+                    "reason": "Cumulative objective spending cannot fund another funding decision within $200.",
                 },
                 session=db,
             )
@@ -346,7 +347,8 @@ def request(task, reason, *, recover=False):
             ):
                 return False
         policy = effective_policy(db, row)
-        if "astra" not in policy["allowed_models"]:
+        judge = model_pool.select_model("judge", policy)["model"]
+        if judge not in policy["allowed_models"]:
             return False
         revision = graph.current_version(task["id"], session=db)
         previous_request = latest(db, task["id"], "funding_review_requested")
@@ -374,7 +376,7 @@ def request(task, reason, *, recover=False):
             ),
         }
         prompt = (
-            "You are the Astra factory conductor. Decide whether this objective is still worth pursuing. "
+            "You are the factory funding judge. Decide whether this objective is still worth pursuing. "
             "Judge progress, remaining scope, infrastructure failures, likely completion cost, and opportunity cost. "
             "Internal turn, dollar, review-round or time limits are reasons to reassess, never reasons to ask a human to restart a task. "
             "There is no fixed number of extensions. Approve a reasonable finite tranche, steer to a better plan, or stop if the objective is no longer worthwhile. "
@@ -396,6 +398,7 @@ def request(task, reason, *, recover=False):
             "runs_sha256": _runs_digest(runs),
             "issue_sha256": _digest(issue),
             "trigger": reason,
+            "model": judge,
         }
         if isinstance(deficit, dict):
             audit_detail["deficit"] = deficit
@@ -418,7 +421,7 @@ def request(task, reason, *, recover=False):
             node_key=node_key,
             kind="gate",
             prompt=c._boundary(task, review=True) + prompt,
-            model="astra",
+            model=judge,
             deps=[],
             max_cost_usd=REVIEW_COST_USD,
             side_effects=False,
@@ -465,10 +468,10 @@ def settle(task, run, request):
             jsonschema.validate(decision, SCHEMA)
             if (
                 run["status"] != "succeeded"
-                or run["pin"]["model"] != "astra"
+                or run["pin"]["model"] != review_model(request)
                 or run["dispatch_key"] != request["start_key"]
             ):
-                raise ValueError("Astra review did not complete")
+                raise ValueError("funding review did not complete")
             if (
                 graph.current_version(task["id"], session=db) != request["revision"]
                 or _runs_digest(
@@ -774,7 +777,7 @@ def reconcile(task, policy, runs, permission):
                 },
             )
             return True
-        return request(task, "Retry Astra decision after " + last["refusal"])
+        return request(task, "Retry funding decision after " + last["refusal"])
     snapshot = controls.task_snapshot(task["id"])
     nodes = graph.load_graph(task["id"])
     spent = snapshot["committed_cost_usd"]
