@@ -150,6 +150,12 @@ bricks:
   autoscale:
     ceilingBound: {}
     minReplicas:
+      # Two 8gi floors: claude-runtime (4096 MiB) fits only an 8gi brick, one
+      # per brick, and on 2026-09-30 denial-driven scale-up never added the
+      # second one (130+ no_capacity creates, no step up), so the factory
+      # conductor starved behind a single live session. Keep both until the
+      # scale-up path is fixed.
+      8gi: 2
       16gi: 0
     maxReplicas:
       4gi: 2
