@@ -216,6 +216,9 @@ def plan_promotion(
     return {
         "apiVersion": API_VERSION,
         "kind": "Promotion",
-        "metadata": {"generateName": f"{stage_name}.", "namespace": namespace},
+        # Kargo's webhook names the Promotion itself (stage.ulid.freight), but
+        # the API server validates generateName first, and a trailing "." is
+        # not a valid subdomain prefix. A trailing "-" is masked by that check.
+        "metadata": {"generateName": f"{stage_name}-", "namespace": namespace},
         "spec": spec,
     }
