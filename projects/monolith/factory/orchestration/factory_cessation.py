@@ -39,8 +39,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
+from opentelemetry import trace
 from sqlmodel import Session, select
 
 from factory.execution.api import (
@@ -54,6 +56,7 @@ from factory.orchestration import factory_supervision as supervisor
 from factory.orchestration import graph
 from factory.orchestration.factory_models import FactoryAudit, FactoryStart
 from factory.orchestration.models import SwarmNodeRun
+from factory.orchestration.tracing import set_attributes, tracer
 
 ACTOR = "factory:active-cessation"
 # Matches FACTORY_DEADLINE_BACKSTOP_GRACE_SECONDS and the reconciler pause TTL,
@@ -89,6 +92,41 @@ _GUEST_EVIDENCE_ACTIONS = (
     "bound_zero_turn_fence",
     "attempt_stop_requested",
 )
+
+
+# One span per stranded attempt considered, on every path: the conductor tick
+# (supervise_task) and the operator repair (request_cessation). Before it, an
+# attempt skipped because the flag was off, the deadline grace had not passed,
+# its workflow was still live or its session id was unresolved left no trace.
+SPAN = "factory.cessation.advance"
+# Refusal codes are fixed identifiers; anything else (a stray ValueError
+# message) collapses to one value so the attribute stays low-cardinality.
+_REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _reason_code(code: str) -> str:
+    return code if _REASON_CODE.match(code) else "other"
+
+
+def _span_attributes(span, pin, workflow_status, trigger):
+    set_attributes(
+        span,
+        {
+            "factory.task_id": pin.get("task_id"),
+            "factory.node_key": pin.get("node_key"),
+            "factory.attempt": pin.get("attempt"),
+            "factory.workflow_status": workflow_status,
+            "factory.cessation.trigger": trigger,
+        },
+    )
+
+
+def _span_outcome(span, outcome, reason=None):
+    set_attributes(
+        span,
+        {"factory.cessation.outcome": outcome, "factory.cessation.reason": reason},
+    )
+    return outcome
 
 
 def enabled() -> bool:
@@ -256,11 +294,15 @@ def _begin(pin, session_id, *, trigger, actor, expected_identity_sha256=None):
     """Return the committed intent, recording it first when allowed.
 
     ``trigger`` None means only an existing intent may be advanced. Returns
-    None when there is nothing to do.
+    None when there is nothing to do, and names why on the current span.
     """
     with controls._locked_session() as (db, control):
         records = _records(db, pin)
         if any(action == "stop_settled" for action, _ in records):
+            set_attributes(
+                trace.get_current_span(),
+                {"factory.cessation.reason": "already_settled"},
+            )
             return None
         identity, _run = _locked_stranded(db, control, pin, session_id)
         saved = _intent(records)
@@ -268,6 +310,9 @@ def _begin(pin, session_id, *, trigger, actor, expected_identity_sha256=None):
             _verify(saved, identity)
             return saved
         if trigger is None:
+            set_attributes(
+                trace.get_current_span(), {"factory.cessation.reason": "no_intent"}
+            )
             return None
         if (
             expected_identity_sha256 is not None
@@ -624,10 +669,43 @@ def advance(
     Returns "settled", "waiting", "refused" or "not_applicable". A live node
     workflow still owns its attempt, so nothing starts before DBOS reports it
     terminal. Without ``trigger`` only an already recorded intent advances.
+    Every call leaves one ``factory.cessation.advance`` span carrying the
+    outcome and, for not_applicable and refused, the reason.
     """
+    with tracer.start_as_current_span(SPAN) as span:
+        _span_attributes(span, pin, workflow_status, trigger)
+        outcome = _advance(
+            span,
+            pin,
+            session_id,
+            original_result,
+            workflow_status,
+            trigger=trigger,
+            actor=actor,
+            expected_identity_sha256=expected_identity_sha256,
+        )
+        return _span_outcome(span, outcome)
+
+
+def _advance(
+    span,
+    pin,
+    session_id,
+    original_result,
+    workflow_status,
+    *,
+    trigger,
+    actor,
+    expected_identity_sha256,
+):
     if workflow_status not in TERMINAL_WORKFLOW_STATUSES:
+        span.set_attribute("factory.cessation.reason", "workflow_not_terminal")
         return "not_applicable"
     if type(session_id) is not int:
+        span.set_attribute(
+            "factory.cessation.reason",
+            "session_id_missing" if session_id is None else "session_id_not_int",
+        )
         return "not_applicable"
     try:
         saved = _begin(
@@ -643,9 +721,12 @@ def advance(
         # path committed to has changed underneath it.
         if trigger is not None or str(exc).startswith("cessation_"):
             supervisor._note(pin, _refusal(exc), error=str(exc))
+        span.set_attribute("factory.cessation.reason", _reason_code(str(exc)))
         return "refused"
     if saved is None:
+        # _begin named the reason (already_settled or no_intent).
         return "not_applicable"
+    span.set_attribute("factory.cessation.shape", saved["shape"])
     try:
         if saved["shape"] == "never_bound":
             return _settle_if_proven(
@@ -663,6 +744,7 @@ def advance(
         return _advance_bound(pin, session_id, saved, original_result)
     except ValueError as exc:
         supervisor._note(pin, _refusal(exc), error=str(exc))
+        span.set_attribute("factory.cessation.reason", _reason_code(str(exc)))
         return "refused"
 
 
@@ -707,6 +789,23 @@ def supervise_task(task: dict, dbos) -> int:
             continue
         pin = run["pin"]
         if not automatic and not _has_intent(pin):
+            # The common silent case: the flag is off or the deadline grace
+            # has not passed, and no operator intent exists. Recorded so an
+            # attempt held uncertain for hours shows why nothing acted on it.
+            with tracer.start_as_current_span(SPAN) as span:
+                _span_attributes(span, pin, None, None)
+                set_attributes(
+                    span,
+                    {
+                        "factory.cessation.enabled": enabled(),
+                        "factory.cessation.deadline_due": _deadline_due(task),
+                    },
+                )
+                _span_outcome(
+                    span,
+                    "not_applicable",
+                    "flag_disabled" if not enabled() else "deadline_grace_pending",
+                )
             continue
         state = dbos.get_workflow_status(pin["workflow_id"])
         workflow_status = None if state is None else state.status

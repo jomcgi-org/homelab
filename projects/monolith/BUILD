@@ -4885,6 +4885,7 @@ py_test(
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlalchemy",

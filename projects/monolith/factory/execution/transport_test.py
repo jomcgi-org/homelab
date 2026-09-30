@@ -2785,6 +2785,112 @@ def test_create_session_capacity_denial_eventually_gives_up(monkeypatch):
     assert len(attempts) == len(transport._CAPACITY_BACKOFF_SECONDS) + 1
 
 
+def _capacity_parent_span(coro_fn):
+    """Run ``coro_fn`` under a parent span and return (result or exc, span)."""
+
+    async def run():
+        with _PROVIDER.get_tracer("test").start_as_current_span("parent"):
+            try:
+                return await coro_fn()
+            except Exception as exc:  # noqa: BLE001 - asserted by the caller
+                return exc
+
+    result = asyncio.run(run())
+    [parent] = [s for s in _EXPORTER.get_finished_spans() if s.name == "parent"]
+    return result, parent
+
+
+def test_capacity_waits_are_recorded_as_span_events(monkeypatch):
+    """Each capacity retry leaves its reason, attempt and delay on the span."""
+    attempts = []
+
+    async def handler(request):
+        attempts.append(request)
+        if len(attempts) < 3:
+            return _capacity_response(request, reason="session_cap")
+        return httpx.Response(
+            200,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    async def fake_sleep(_seconds):
+        return None
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(transport.random, "uniform", lambda _lo, _hi: 0.0)
+
+    result, parent = _capacity_parent_span(
+        transport.EmberVmShimTransport().create_session
+    )
+
+    assert result.session_id == "s1"
+    waits = [e for e in parent.events if e.name == "agent_sessions.capacity_wait"]
+    assert [dict(e.attributes) for e in waits] == [
+        {
+            "reason": "session_cap",
+            "attempt": 1,
+            "max_attempts": len(transport._CAPACITY_BACKOFF_SECONDS),
+            "delay_seconds": 5.0,
+        },
+        {
+            "reason": "session_cap",
+            "attempt": 2,
+            "max_attempts": len(transport._CAPACITY_BACKOFF_SECONDS),
+            "delay_seconds": 10.0,
+        },
+    ]
+    assert parent.attributes["agent_sessions.capacity.attempts"] == 2
+    assert parent.attributes["agent_sessions.capacity.reason"] == "session_cap"
+    assert "agent_sessions.capacity.exhausted" not in parent.attributes
+
+
+def test_an_exhausted_capacity_ladder_is_marked_on_the_span(monkeypatch):
+    async def handler(request):
+        return _capacity_response(request)
+
+    async def fake_sleep(_seconds):
+        return None
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
+
+    result, parent = _capacity_parent_span(
+        transport.EmberVmShimTransport().create_session
+    )
+
+    assert isinstance(result, transport.EmberVMTransportError)
+    ladder = len(transport._CAPACITY_BACKOFF_SECONDS)
+    waits = [e for e in parent.events if e.name == "agent_sessions.capacity_wait"]
+    assert len(waits) == ladder
+    [exhausted] = [
+        e for e in parent.events if e.name == "agent_sessions.capacity_exhausted"
+    ]
+    assert dict(exhausted.attributes) == {
+        "reason": "workload_cap",
+        "attempt": ladder + 1,
+        "max_attempts": ladder,
+    }
+    assert parent.attributes["agent_sessions.capacity.exhausted"] is True
+
+
+def test_a_non_capacity_429_records_no_capacity_events(monkeypatch):
+    async def handler(request):
+        return httpx.Response(
+            429, json={"error": "rate limit exceeded"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+
+    result, parent = _capacity_parent_span(
+        transport.EmberVmShimTransport().create_session
+    )
+
+    assert isinstance(result, transport.EmberVMTransportError)
+    assert not [e for e in parent.events if e.name.startswith("agent_sessions.cap")]
+
+
 def test_create_session_non_capacity_429_uses_the_generic_ladder(monkeypatch):
     """A retryable 429 that is not a cap denial takes the generic ladder.
 
