@@ -483,8 +483,7 @@ def test_gke_renders_argocd_ca_configmap_volume_and_mount():
     ca_maps = [
         d
         for d in docs
-        if d.get("kind") == "ConfigMap"
-        and d["metadata"]["name"] == "argocd-server-ca"
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "argocd-server-ca"
     ]
     assert len(ca_maps) == 1, "expected exactly one argocd-server-ca ConfigMap"
     assert set(ca_maps[0]["data"]) == {"ca.crt"}
@@ -570,8 +569,7 @@ def test_ca_mount_stays_absent_when_only_mount_flag_is_set():
     assert not [
         d
         for d in docs
-        if d.get("kind") == "ConfigMap"
-        and d["metadata"]["name"] == "argocd-server-ca"
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "argocd-server-ca"
     ]
     pod_spec = _of_kind(docs, "Deployment")["spec"]["template"]["spec"]
 
@@ -591,9 +589,9 @@ def test_httpcheck_ca_checksum_annotation_moves_with_the_mount():
         "the gke render enables the CA mount and must carry the checksum"
     )
 
-    base_annotations = _of_kind(_render_default(), "Deployment")["spec"][
-        "template"
-    ]["metadata"]["annotations"]
+    base_annotations = _of_kind(_render_default(), "Deployment")["spec"]["template"][
+        "metadata"
+    ]["annotations"]
     assert "checksum/httpcheck-ca" not in base_annotations
 
 
