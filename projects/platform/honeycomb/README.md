@@ -68,7 +68,7 @@ to the live value before running `--apply`.
 | File | Dataset | Enabled |
 | ---- | ------- | ------- |
 | `jomcgi-dev-health.yaml` | `metrics` | yes (imported from `aJgkA4vC2m8`) |
-| `jomcgi-dev-health-probe-absent.yaml` | `metrics` | yes (sync only after probe data lands, #6507) |
+| `jomcgi-dev-health-probe-absent.yaml` | `metrics` | no, staged until hub probe data and alert behavior are verified (#6507) |
 | `embervm-session-create-denials.yaml` | `embervm-control` | yes |
 | `agent-turns-none-successful.yaml` | `monolith-backend` | yes |
 | `codex-quota-observation-stale.yaml` | `monolith-backend` | no, see below |
