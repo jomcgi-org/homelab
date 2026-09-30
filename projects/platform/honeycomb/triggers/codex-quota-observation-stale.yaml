@@ -1,7 +1,7 @@
 # drain.quota.codex.age_seconds is written on every drain.cycle span (about
 # every 16 minutes), including disabled and empty cycles, as well as on
-# drain.job spans. When the drainer stops cycling the column goes silent
-# rather than growing, so this also catches a wedged drainer.
+# drain.job spans. A drainer that stops cycling entirely writes nothing, so
+# this does not catch that failure; it catches cycles with a stale reading.
 name: Codex quota observation stale
 dataset: monolith-backend
 description: >-
