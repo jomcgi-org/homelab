@@ -14,6 +14,9 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if and .Values.httpcheck.enabled .Values.httpcheck.caMount.enabled }}
+        checksum/httpcheck-ca: {{ include (print $.Template.BasePath "/httpcheck-ca-configmap.yaml") . | sha256sum }}
+        {{- end }}
       labels:
         {{- include "otel-collector.labels" . | nindent 8 }}
     spec:

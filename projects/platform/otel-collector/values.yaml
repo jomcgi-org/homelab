@@ -235,6 +235,8 @@ httpcheck:
     configMapName: argocd-server-ca
     key: ca.crt
     mountPath: /etc/otel/argocd-ca/ca.crt
+    # Public PEM, rendered into the ConfigMap, required when the mount is on.
+    caCert: ""
 
 resources:
   requests:

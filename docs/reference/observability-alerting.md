@@ -21,9 +21,9 @@ Probe targets live under `httpcheck.targets` in
 `projects/platform/otel-collector/values-gke.yaml`. Add only public HTTPS URLs.
 Revalidate any proposed in-cluster target against the destination's current
 reachability and access controls. The removed Cilium policies provide no ingress
-enforcement. The GKE overlay additionally stages an ArgoCD in-cluster target
-with `enabled: false`; it renders only once `httpcheck.caMount.enabled` is true,
-so a `ca_file` target never renders without its CA mount (#6507).
+enforcement. The GKE overlay additionally enables a live Argo CD in-cluster
+target with the pinned serving CA from #6542; the render fails when the pinned
+cert is empty, so the `ca_file` target always ships with its CA mount.
 
 ## Collector metamonitoring
 
