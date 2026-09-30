@@ -1034,9 +1034,7 @@ def _deliver_span():
     return spans[0]
 
 
-@pytest.mark.parametrize(
-    ("model", "family"), [("sol", "codex"), ("sonnet", "claude")]
-)
+@pytest.mark.parametrize(("model", "family"), [("sol", "codex"), ("sonnet", "claude")])
 def test_deliver_span_records_model_family_and_terminal_reason(
     monkeypatch, model, family
 ):
@@ -1057,9 +1055,7 @@ def test_deliver_span_records_model_family_and_terminal_reason(
 
 
 @pytest.mark.parametrize("model", ["bogus-model", None])
-def test_deliver_span_unknown_or_missing_model_does_not_raise(
-    monkeypatch, model
-):
+def test_deliver_span_unknown_or_missing_model_does_not_raise(monkeypatch, model):
     async def handler(request):
         return _turn_response(request)
 
