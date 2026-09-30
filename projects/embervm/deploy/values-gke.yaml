@@ -150,6 +150,14 @@ bricks:
   autoscale:
     ceilingBound: {}
     minReplicas:
+      # Never drain the last 8gi brick. claude-runtime (4096 MiB) fits only an
+      # 8gi brick, and a class at zero cannot come back: with no bricks
+      # registered, Scheduler.place_with_demand returns :no_bricks WITHOUT
+      # recording demand, so the BrickController never sees a denial to scale
+      # up on. On 2026-09-30 full-mode idle_drain took 8gi 1 -> 0 at 03:53 and
+      # every session create failed until a manual scale. Keep this floor until
+      # scale-from-zero records demand.
+      8gi: 1
       16gi: 0
     maxReplicas:
       4gi: 2
