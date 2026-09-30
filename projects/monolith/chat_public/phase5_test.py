@@ -487,6 +487,5 @@ def test_watermark_change_propagates_through_memo():
 def test_watermark_failure_disables_caching():
     # The view absent (or any DB error): fail closed to None, unchanged.
     assert (
-        cache.current_watermark(_StubReadDb(error=RuntimeError("no such view")))
-        is None
+        cache.current_watermark(_StubReadDb(error=RuntimeError("no such view"))) is None
     )
