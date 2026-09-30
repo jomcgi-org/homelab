@@ -1393,9 +1393,7 @@ class EmberVmShimTransport:
                     receipt_claim_owner=receipt_claim_owner,
                 )
                 if turn.terminal_reason is not None:
-                    span.set_attribute(
-                        "agent.terminal_reason", turn.terminal_reason
-                    )
+                    span.set_attribute("agent.terminal_reason", turn.terminal_reason)
                 return turn, used
         except Exception as exc:
             if not invocation.attempted:
