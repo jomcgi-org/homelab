@@ -68,7 +68,9 @@ to the live value before running `--apply`.
 | ---- | ------- | ------- |
 | `jomcgi-dev-health.yaml` | `metrics` | yes (imported from `aJgkA4vC2m8`) |
 | `embervm-session-create-denials.yaml` | `embervm-control` | yes |
-| `agent-turns-none-successful.yaml` | `monolith-backend` | yes |
+| `agent-turns-none-successful-codex.yaml` | `monolith-backend` | yes |
+| `agent-turns-none-successful-claude.yaml` | `monolith-backend` | yes |
+| `agent-turns-none-successful-muse.yaml` | `monolith-backend` | yes |
 | `codex-quota-observation-stale.yaml` | `monolith-backend` | no, see below |
 | `egress-proxy-request-denied.yaml` | `k8s-logs` | no, logs not shipped yet |
 | `embervm-control-plane-errors.yaml` | `k8s-logs` | no, logs not shipped yet |
@@ -93,12 +95,15 @@ These need instrumentation before they can alert.
   Set the same attribute on every `drain.cycle` span (about every 16 minutes)
   in `projects/monolith/factory/orchestration/drainer.py`, then enable
   `codex-quota-observation-stale.yaml` unchanged (#6508).
-- **Per-model-family turn success.** `agent_sessions.deliver`
-  (`projects/monolith/factory/execution/transport.py`) receives `model` but
-  records no attributes. Setting `agent.model` (and `agent.model_family`:
-  `codex` for sol/luna/terra/astra, `claude`, `spark`) plus the turn's
-  `terminal_reason` would let `agent-turns-none-successful.yaml` be split into
-  one trigger per family, which is what a Codex-only outage needs (#6509).
+- **Per-model-family turn success.** Now queryable: `agent_sessions.deliver`
+  records `agent.model`, `agent.model_family` (`codex`, `claude`, `muse` for
+  Spark, `pi` for pi-spark, `unknown` when unrecognized) and
+  `agent.terminal_reason` (#6509), and the three
+  `agent-turns-none-successful-{codex,claude,muse}.yaml` triggers filter on
+  it. Note `sync.py` never deletes: the old all-families live trigger became
+  `UNMANAGED` when its spec file was removed and had to be deleted in the
+  Honeycomb UI by hand. A per-family trigger only fires once the attribute is
+  live.
 - **Factory tasks stuck uncertain.** No span or column exposes factory task
   state (searched for factory, uncertain, receipt, permit). A periodic span
   from the factory reconciler carrying `factory.tasks.uncertain` and

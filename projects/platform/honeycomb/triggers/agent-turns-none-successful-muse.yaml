@@ -1,4 +1,4 @@
-name: Agent turns attempted but none delivered (60m)
+name: Agent turns attempted but none delivered (60m) [muse]
 dataset: monolith-backend
 description: >-
   agent_sessions.deliver wraps every agent turn the monolith sends to EmberVM
@@ -9,10 +9,9 @@ description: >-
   healthy stretch 2026-09-28 10:00 to 09-29 23:00 UTC the worst hour had 1
   unanswered failure, so this stays quiet; it fires on the 09-30 00:47
   denial incident and on the 09-23 to 09-28 outages (hourly 422s from the
-  guest, then prime_failed 500s). Covers all model families: the span does not
-  record which model ran, so a Codex-only or Claude-only outage is visible
-  here only once no turn of any family succeeds. Per-family alerting needs the
-  model on this span (see README).
+  guest, then prime_failed 500s). Covers the muse (Spark) family only
+  (agent.model_family set by agent_sessions.deliver, #6509); sister triggers
+  cover codex and claude.
 enabled: true
 frequency: 900
 alert_type: on_change
@@ -36,3 +35,6 @@ query:
     - column: name
       op: "="
       value: agent_sessions.deliver
+    - column: agent.model_family
+      op: "="
+      value: muse
