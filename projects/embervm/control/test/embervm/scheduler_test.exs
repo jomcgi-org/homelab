@@ -344,4 +344,98 @@ defmodule Embervm.SchedulerTest do
     assert Brick.wildcard?(brick(size_class: "", mem_budget_mib: 8_192))
     refute Brick.wildcard?(brick(size_class: "8gi", mem_budget_mib: 8_192))
   end
+
+  # Regression for the 2026-09-30 GKE no_capacity run, when the BrickController
+  # never scaled up. The prod 8gi brick ran in the physical admission model
+  # (admits_on_reservation: false), with a 7936 MiB budget and a 512 MiB reject
+  # floor. With one 4096 MiB claude-runtime VM live, it reported about 7600 MiB of
+  # physical headroom and 15 free slots, while the CP shadow ledger held 4096 MiB.
+  # The suspected cause was that the base-ready and base-none passes gate memory
+  # differently, so a real capacity wall was filed as base-missing. These tests
+  # pin that both passes share one slot and physical-memory gate, which
+  # the reservation ledger does not influence. They differ only in the base filter.
+  @need 4_096
+
+  defp prod_8gi(opts) do
+    brick(
+      instance_id: "gke-node/brick-8gi",
+      node_id: "gke-node",
+      configured_id: "gke-node",
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_reject_floor_mib: 512,
+      max_live_vms: 16,
+      live_vms: Keyword.get(opts, :live_vms, 1),
+      free_slots: nil,
+      mem_headroom_mib: Keyword.get(opts, :mem_headroom_mib, 7_600),
+      workloads: Keyword.get(opts, :workloads, %{})
+    )
+  end
+
+  defp place_session(bricks) do
+    Scheduler.place_with_demand(%Request{
+      bricks: bricks,
+      workload: "claude-runtime",
+      key: "claude-runtime",
+      need_mib: @need,
+      base: {:ready, :snapshot_ref},
+      # The routing contract is the return value. The branch that returns
+      # :capacity is also the one that calls BrickController.note_denial/2.
+      record_demand: false
+    })
+  end
+
+  defp with_full_shadow_reservation(fun) do
+    table = String.to_atom("scheduler_prod_shape_#{System.unique_integer([:positive])}")
+    {:ok, ledger} = Reservation.start_link(name: nil, table: table)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(ledger) end)
+    Reservation.claim(ledger, "gke-node/brick-8gi", "vm-live", workload: "claude-runtime", mem_mib: @need)
+    assert Reservation.reserved_mib("gke-node/brick-8gi", table) == @need
+    fun.()
+  end
+
+  describe "demand routing on the prod 8gi brick shape" do
+    test "control: a ready base on an occupied brick with physical room places" do
+      with_full_shadow_reservation(fn ->
+        ready_brick = prod_8gi(workloads: ready("claude-runtime", %{snapshot_ref: "claude-runtime__35c1016f7a69"}))
+        assert {:ok, [%{instance_id: "gke-node/brick-8gi"}]} = place_session([ready_brick])
+      end)
+    end
+
+    test "a missing base on a brick with physical room goes to the base builder, not the autoscaler" do
+      with_full_shadow_reservation(fn ->
+        building = prod_8gi(workloads: %{"claude-runtime" => %{base_state: :BASE_BUILD_STATE_BUILDING}})
+        assert {:error, {:base_missing, "gke-node"}} = place_session([building])
+      end)
+    end
+
+    test "a physically full brick is a capacity denial whether or not its base is ready" do
+      # 4_600 < need 4_096 + floor 512: the shared memory gate refuses both passes.
+      for workloads <- [%{}, ready("claude-runtime", %{snapshot_ref: "snap"})] do
+        full = prod_8gi(mem_headroom_mib: 4_600, workloads: workloads)
+        assert {:error, :capacity} = place_session([full])
+      end
+    end
+
+    test "a slot-exhausted brick is a capacity denial, never base missing" do
+      full = prod_8gi(live_vms: 16, workloads: %{})
+      assert {:error, :capacity} = place_session([full])
+    end
+
+    test "undersized sibling classes do not turn a full 8gi into base missing" do
+      # The 2gi and 4gi bricks are registered but cannot hold a 4096 MiB guest
+      # (their physical headroom is under need + floor). They must not be
+      # the base-none probe's pick.
+      small = [
+        brick(instance_id: "gke-node/brick-2gi", configured_id: "gke-node", size_class: "2gi",
+          mem_budget_mib: 1_792, mem_reject_floor_mib: 512, mem_headroom_mib: 2_030, workloads: %{}),
+        brick(instance_id: "gke-node/brick-4gi", configured_id: "gke-node", size_class: "4gi",
+          mem_budget_mib: 3_840, mem_reject_floor_mib: 512, mem_headroom_mib: 4_085, workloads: %{})
+      ]
+
+      full_8gi = prod_8gi(mem_headroom_mib: 4_000, workloads: ready("claude-runtime", %{snapshot_ref: "snap"}))
+      assert {:error, :capacity} = place_session([full_8gi | small])
+      assert {:error, :capacity} = place_session(small)
+    end
+  end
 end

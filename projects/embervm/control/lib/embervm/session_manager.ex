@@ -1851,15 +1851,39 @@ defmodule Embervm.SessionManager do
         workload_entry = Map.get(brick.workloads, workload, %{})
         {:ok, brick.configured_id, Brick.dial_id(brick), Map.get(workload_entry, :snapshot_ref)}
 
-      {:error, :capacity} ->
-        {:error, :no_capacity}
-
-      {:error, :no_bricks} ->
-        {:error, :no_capacity}
-
-      {:error, _reason} ->
+      {:error, reason} ->
+        note_placement_miss(workload, reason)
         {:error, :no_capacity}
     end
+  end
+
+  # All three scheduler misses stay `:no_capacity` on the wire: each is retryable
+  # and clients key on that reason. They have different owners, though. Only
+  # `:capacity` records autoscaler demand. `:base_missing` goes to the BaseBuilder,
+  # and `:no_bricks` means the CP has no capacity facts and records nothing. When
+  # all three flattened to one reason with nothing else recorded, a two-hour
+  # no_capacity run in prod could not be attributed. It looked like a
+  # BrickController that never scaled up, but no capacity demand ever reached it.
+  # The span attribute and log line keep the outcome, so a sustained run shows
+  # which of the three owners should have acted.
+  defp note_placement_miss(workload, reason) do
+    {outcome, node_id} =
+      case reason do
+        :capacity -> {"capacity", nil}
+        :no_bricks -> {"no_bricks", nil}
+        {:base_missing, id} -> {"base_missing", id}
+        other -> {inspect(other), nil}
+      end
+
+    attrs = %{"ember.placement.outcome" => outcome}
+    attrs = if is_binary(node_id), do: Map.put(attrs, "ember.placement.base_missing_node", node_id), else: attrs
+    Tracer.set_attributes(attrs)
+
+    Logger.info("embervm session placement miss",
+      workload: workload,
+      reason: outcome,
+      node_id: node_id
+    )
   end
 
   # Claim a primed VM from the dispatcher's inventory, or Prime one on a miss (the
