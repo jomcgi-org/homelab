@@ -83,11 +83,21 @@ describe("applyFrame (turn-state reducer)", () => {
     let s = initialTurnState();
     s = applyFrame(s, {
       type: "node_touched",
-      data: { id: 1, title: "A", verification_state: "verified", disputed: false },
+      data: {
+        id: 1,
+        title: "A",
+        verification_state: "verified",
+        disputed: false,
+      },
     });
     s = applyFrame(s, {
       type: "node_touched",
-      data: { id: 2, title: "B", verification_state: "unverified", disputed: true },
+      data: {
+        id: 2,
+        title: "B",
+        verification_state: "unverified",
+        disputed: true,
+      },
     });
     // A legacy entry and a pre-change entry stay plain: fields absent, not undefined.
     s = applyFrame(s, {
@@ -98,7 +108,12 @@ describe("applyFrame (turn-state reducer)", () => {
     // Dedupe by id is unchanged even when the repeat carries different state.
     s = applyFrame(s, {
       type: "node_touched",
-      data: { id: 1, title: "A", verification_state: "unverified", disputed: true },
+      data: {
+        id: 1,
+        title: "A",
+        verification_state: "unverified",
+        disputed: true,
+      },
     });
     expect(s.touched).toEqual([
       { id: 1, title: "A", verification_state: "verified", disputed: false },
