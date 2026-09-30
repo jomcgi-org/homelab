@@ -39,11 +39,17 @@ defmodule Embervm.SpecTrace.Checker do
   3. **AdoptIdempotent** — a vm_id never appears in two `adopt_inventory`
      records within one run.
 
-  4. **HealthMonotonic** — for a node, `age_to_down` is never observed without
-     a preceding `age_to_unknown` since the last `reconnect`.
+  4. **HealthMonotonic** — for a node instance, `age_to_down` is never observed
+     without a preceding `age_to_unknown`. A `reconnect` is a dial attempt and
+     does not reset the machine; a new incarnation is a new instance id.
 
   5. **PrimeBeforeCheckpoint** — every vm_id in a `checkpoint` inventory set
      has a preceding `prime` or `adopt_inventory` in the run.
+
+  "In the run" means the whole control-plane incarnation, not the queried
+  window: a lower-bounded window is checked against the run's earlier prime,
+  adopt and health records too (`run_prefix/4`), which only ever supply
+  context and are never themselves judged.
 
   6. **DestroyIntentPrecedesRecord**: every `confirm_destroy` for a live VM
      (`had_vm: true`) has a `begin_destroy` for the same session_id earlier in
@@ -79,7 +85,7 @@ defmodule Embervm.SpecTrace.Checker do
      can do (#4838).
 
   This list is the fourth copy of the invariant set (#4802): `invariants/0` is
-  the source, `check_invariant/2` dispatches on it, and the router reads it. The
+  the source, `check_invariant/3` dispatches on it, and the router reads it. The
   prose here drifted first, documenting 6 of 8 while numbering the last one 8,
   so `documents every invariant it evaluates` in the test suite now holds it to
   `invariants/0` rather than to review.
@@ -125,7 +131,14 @@ defmodule Embervm.SpecTrace.Checker do
 
         Enum.flat_map(run_ids, fn run_id ->
           run_records = records_by_run[run_id] |> Enum.sort_by(& &1["mono"])
-          Enum.map(invariants(), &check_invariant(&1, run_records))
+
+          case run_prefix(store_mod, store, opts, run_id) do
+            {:ok, prefix} ->
+              Enum.map(invariants(), &check_invariant(&1, run_records, prefix))
+
+            {:error, reason} ->
+              [error_verdict(:unknown, {:run_prefix, run_id, reason})]
+          end
         end)
 
       {:error, reason} ->
@@ -133,11 +146,68 @@ defmodule Embervm.SpecTrace.Checker do
     end
   end
 
+  # Actions whose history before the window decides whether a record INSIDE the
+  # window is lawful. A prime or adopt_inventory establishes a vm_id's
+  # provenance for as long as the run lives, and the health machine's state at
+  # the window's start is whatever the run's earlier transitions left it in.
+  @prefix_actions ["prime", "adopt_inventory", "age_to_unknown", "age_to_down", "reconnect"]
+
+  # The run's records from BEFORE a lower-bounded window.
+  #
+  # A window is a slice of a run, not a run. The conformance gate asks for
+  # `since_ts_ms=<suite start>` against a control plane that has been up for
+  # hours, so the window opens with a warm pool whose primes (or the boot
+  # adopt_inventory that re-established them) sit before the bound. Judging the
+  # slice as though it began at Init, with an empty inventory and every node
+  # "starting", evaluates a state adoption.tla never reaches from Init, and it
+  # false-failed prime_before_checkpoint on every suite that did not happen to
+  # start just before a control-plane boot.
+  #
+  # The prefix only ever SUPPLIES context: provenance facts and the health
+  # state at the window's start. No verdict judges a prefix record; each of
+  # them was judged by the window that contained it.
+  defp run_prefix(store_mod, store, opts, run_id) do
+    since_ts = Keyword.get(opts, :since_ts_ms)
+    since_seq = Keyword.get(opts, :since_seq)
+
+    if is_nil(since_ts) and is_nil(since_seq) do
+      {:ok, []}
+    else
+      base =
+        [run_id: run_id, spec: Keyword.get(opts, :spec, "adoption")] ++
+          if(is_integer(since_ts), do: [until_ts_ms: since_ts - 1], else: [])
+
+      Enum.reduce_while(@prefix_actions, {:ok, []}, fn action, {:ok, acc} ->
+        case store_mod.read_window(store, Keyword.put(base, :action, action)) do
+          {:ok, records} ->
+            records =
+              if is_integer(since_seq),
+                do: Enum.filter(records, &(&1["seq"] < since_seq)),
+                else: records
+
+            {:cont, {:ok, records ++ acc}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, records} -> {:ok, Enum.sort_by(records, & &1["mono"])}
+        error -> error
+      end
+    end
+  end
+
+  defp check_invariant(invariant, records, _prefix)
+       when invariant not in [:dispatch_provenance, :health_monotonic, :prime_before_checkpoint],
+       do: check_invariant(invariant, records)
+
+  defp check_invariant(:dispatch_provenance, records, prefix), do: check_dispatch_provenance(records, prefix)
+  defp check_invariant(:health_monotonic, records, prefix), do: check_health_monotonic(records, prefix)
+  defp check_invariant(:prime_before_checkpoint, records, prefix), do: check_prime_before_checkpoint(records, prefix)
+
   defp check_invariant(:no_double_assign, records), do: check_no_double_assign(records)
-  defp check_invariant(:dispatch_provenance, records), do: check_dispatch_provenance(records)
   defp check_invariant(:adopt_idempotent, records), do: check_adopt_idempotent(records)
-  defp check_invariant(:health_monotonic, records), do: check_health_monotonic(records)
-  defp check_invariant(:prime_before_checkpoint, records), do: check_prime_before_checkpoint(records)
   defp check_invariant(:eventually_dispatched, records), do: check_eventually_dispatched(records)
   defp check_invariant(:inventory_reconciled, records), do: check_inventory_reconciled(records)
 
@@ -301,19 +371,8 @@ defmodule Embervm.SpecTrace.Checker do
     end
   end
 
-  defp check_dispatch_provenance(records) do
-    primes = Enum.filter(records, &(&1["action"] == "prime"))
-    prime_vm_ids = Enum.map(primes, & &1["vars"]["vm_id"]) |> MapSet.new()
-
-    adopts = Enum.filter(records, &(&1["action"] == "adopt_inventory"))
-
-    adopted_vm_ids =
-      Enum.filter(adopts, fn record ->
-        vm_ids = record["vars"]["vm_ids"] || []
-        is_list(vm_ids) and length(vm_ids) > 0
-      end)
-      |> Enum.flat_map(& &1["vars"]["vm_ids"])
-      |> MapSet.new()
+  defp check_dispatch_provenance(records, prefix) do
+    {prime_vm_ids, adopted_vm_ids} = provenance_vm_ids(prefix ++ records)
 
     dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"]))
 
@@ -408,9 +467,10 @@ defmodule Embervm.SpecTrace.Checker do
     end
   end
 
-  defp check_health_monotonic(records) do
-    health_records =
-      Enum.filter(records, &(&1["action"] in ["age_to_unknown", "age_to_down", "reconnect"]))
+  @health_actions ["age_to_unknown", "age_to_down", "reconnect"]
+
+  defp check_health_monotonic(records, prefix) do
+    health_records = Enum.filter(records, &(&1["action"] in @health_actions))
 
     case health_records do
       [] ->
@@ -423,17 +483,27 @@ defmodule Embervm.SpecTrace.Checker do
         }
 
       _ ->
-        # Group by node_id and track state for each node
         # Group the HEALTH records, not every record in the run: grouping all of
         # them buckets dispatches and primes under their node_id too, so a node
         # with no health transitions at all would be examined for one.
         #
-        # (Enum.filter_map/3 was removed in Elixir 1.9; this runs 1.18.)
+        # The run's prefix seeds each node's state at the window's start, so a
+        # window that opens between a node's age_to_unknown and its age_to_down
+        # judges the down edge against the unknown edge that really preceded
+        # it. Only in-window age_to_down records are judged.
+        seeds =
+          prefix
+          |> Enum.filter(&(&1["action"] in @health_actions))
+          |> Enum.group_by(& &1["vars"]["node_id"])
+          |> Map.new(fn {node_id, node_records} -> {node_id, health_seen_unknown(node_records, false)} end)
+
         violations =
           health_records
           |> Enum.group_by(& &1["vars"]["node_id"])
-          |> Enum.filter(fn {_node_id, node_records} -> has_health_violation?(node_records) end)
-          |> Enum.map(fn {node_id, _records} -> node_id end)
+          |> Enum.flat_map(fn {node_id, node_records} ->
+            health_violations(node_records, Map.get(seeds, node_id, false))
+          end)
+          |> Enum.sort_by(& &1["mono"])
 
         if Enum.empty?(violations) do
           %{
@@ -444,25 +514,29 @@ defmodule Embervm.SpecTrace.Checker do
             detail: "all nodes maintain health monotonicity"
           }
         else
-          offending_node = List.first(violations)
-
           %{
             invariant: :health_monotonic,
             verdict: :fail,
             coverage: Enum.count(health_records),
             oracle: :trace_only,
-            detail: "node #{offending_node} has age_to_down without preceding age_to_unknown"
+            detail:
+              "age_to_down without a preceding age_to_unknown: " <>
+                Enum.map_join(Enum.take(violations, 10), ", ", fn record ->
+                  "node #{record["vars"]["node_id"]} at seq #{record["seq"]} (ts #{record["ts"]}, last_gen #{inspect(record["vars"]["last_gen"])})"
+                end) <>
+                if(length(violations) > 10, do: " (+#{length(violations) - 10} more)", else: "")
           }
         end
     end
   end
 
   # The health machine ages healthy -> unknown -> down, so an age_to_down with no
-  # age_to_unknown since the last reconnect is the violation.
+  # age_to_unknown before it is the violation.
   #
-  # Two bugs lived here and both made this report violations on LAWFUL traces,
-  # which is the worst failure mode for a gate: a checker that cries wolf gets
-  # overridden by reflex, and the override rate is ADR 034's kill-point metric.
+  # Three bugs lived here and all of them made this report violations on LAWFUL
+  # traces, which is the worst failure mode for a gate: a checker that cries
+  # wolf gets overridden by reflex, and the override rate is ADR 034's
+  # kill-point metric.
   #
   #   1. The accumulator was discarded (`fn record, _seen_unknown ->`), so the
   #      age_to_down branch could never consult it and EVERY age_to_down halted
@@ -470,39 +544,67 @@ defmodule Embervm.SpecTrace.Checker do
   #   2. When the reduce never halted it returned the accumulator itself, so a
   #      node that had merely gone unknown returned `true`, i.e. "violation",
   #      having done nothing wrong.
+  #   3. A `reconnect` reset the machine, on the belief that it "starts a fresh
+  #      incarnation". It does not. `reconnect` is emitted by start_streamer on
+  #      every backoff dial attempt, and a dial changes neither `health` nor the
+  #      silence baseline evaluate_node_age ages from (only an accepted status
+  #      does). A node whose daemon is being replaced goes unknown, retries its
+  #      dial at 1s/2s/4s, and ages down on schedule: unknown, reconnect,
+  #      reconnect, down. Resetting on the reconnect made that down edge look
+  #      unannounced, and it failed the 0.111.4 dev gate on exactly that
+  #      sequence during the noded rollout. A genuinely fresh incarnation is a
+  #      new instance id, which is a different node_id group here, and in
+  #      adoption.tla Reconnect only touches a node that is already down
+  #      (down -> starting), never an unknown one.
   #
-  # Halting with a distinct marker keeps "have I seen unknown" and "did I find a
-  # violation" from sharing one boolean, which is what allowed both.
-  defp has_health_violation?(node_records) do
+  # Carrying "have I seen unknown" and "which records violated" as separate
+  # halves of the accumulator keeps them from sharing one boolean, which is
+  # what allowed 1 and 2, and lets the verdict name every offending record.
+  defp health_violations(node_records, seen_unknown) do
     node_records
-    |> Enum.reduce_while(false, fn record, seen_unknown ->
+    |> Enum.reduce({seen_unknown, []}, fn record, {seen, violations} ->
       case record["action"] do
-        # A reconnect starts a fresh incarnation of the health machine.
-        "reconnect" -> {:cont, false}
-        "age_to_unknown" -> {:cont, true}
-        "age_to_down" -> if seen_unknown, do: {:cont, seen_unknown}, else: {:halt, :violation}
-        _ -> {:cont, seen_unknown}
+        "age_to_unknown" -> {true, violations}
+        "age_to_down" -> if seen, do: {seen, violations}, else: {seen, [record | violations]}
+        _ -> {seen, violations}
       end
     end)
-    |> case do
-      :violation -> true
-      _ -> false
-    end
+    |> elem(1)
+    |> Enum.reverse()
   end
 
-  defp check_prime_before_checkpoint(records) do
-    primes = Enum.filter(records, &(&1["action"] == "prime"))
-    prime_vm_ids = Enum.map(primes, & &1["vars"]["vm_id"]) |> MapSet.new()
+  defp health_seen_unknown(node_records, seen_unknown) do
+    Enum.reduce(node_records, seen_unknown, fn record, seen ->
+      if record["action"] == "age_to_unknown", do: true, else: seen
+    end)
+  end
 
-    adopts = Enum.filter(records, &(&1["action"] == "adopt_inventory"))
+  # Every vm_id the run primed or adopted, from the window AND the run's prefix
+  # before it. Set membership rather than ordering, as before: a prime's record
+  # and the checkpoint that first lists its vm_id can land in the same flush.
+  defp provenance_vm_ids(records) do
+    prime_vm_ids =
+      records
+      |> Enum.filter(&(&1["action"] == "prime"))
+      |> Enum.map(& &1["vars"]["vm_id"])
+      |> MapSet.new()
 
     adopted_vm_ids =
-      Enum.filter(adopts, fn record ->
-        vm_ids = record["vars"]["vm_ids"] || []
-        is_list(vm_ids) and length(vm_ids) > 0
+      records
+      |> Enum.filter(&(&1["action"] == "adopt_inventory"))
+      |> Enum.flat_map(fn record ->
+        case record["vars"]["vm_ids"] do
+          vm_ids when is_list(vm_ids) -> vm_ids
+          _ -> []
+        end
       end)
-      |> Enum.flat_map(& &1["vars"]["vm_ids"])
       |> MapSet.new()
+
+    {prime_vm_ids, adopted_vm_ids}
+  end
+
+  defp check_prime_before_checkpoint(records, prefix) do
+    {prime_vm_ids, adopted_vm_ids} = provenance_vm_ids(prefix ++ records)
 
     checkpoints = Enum.filter(records, &(&1["action"] == "checkpoint"))
 
@@ -548,11 +650,19 @@ defmodule Embervm.SpecTrace.Checker do
             }
 
           true ->
+            # {checkpoint, unproven vm_ids} for every checkpoint that lists a
+            # vm_id the run never primed or adopted. Kept per record so a
+            # failure names the checkpoint and the vm_ids, not just "some".
             issues =
-              Enum.filter(parsed, fn {_declared, vm_ids} ->
-                Enum.any?(vm_ids, fn vm_id ->
-                  not (MapSet.member?(prime_vm_ids, vm_id) or MapSet.member?(adopted_vm_ids, vm_id))
-                end)
+              checkpoints
+              |> Enum.zip(parsed)
+              |> Enum.flat_map(fn {checkpoint, {_declared, vm_ids}} ->
+                unproven =
+                  vm_ids
+                  |> Enum.reject(&(MapSet.member?(prime_vm_ids, &1) or MapSet.member?(adopted_vm_ids, &1)))
+                  |> Enum.uniq()
+
+                if unproven == [], do: [], else: [{checkpoint, unproven}]
               end)
 
             prime_before_checkpoint_verdict(issues, checkpoints)
@@ -1042,12 +1152,20 @@ defmodule Embervm.SpecTrace.Checker do
         }
 
       true ->
+        unproven = issues |> Enum.flat_map(&elem(&1, 1)) |> Enum.uniq()
+        {first, _} = hd(issues)
+        {last, _} = List.last(issues)
+
         %{
           invariant: :prime_before_checkpoint,
           verdict: :fail,
           coverage: length(checkpoints),
           oracle: :trace_only,
-          detail: "some checkpoint vm_ids lack preceding prime or adopt"
+          detail:
+            "#{length(issues)} of #{length(checkpoints)} checkpoints list vm_ids with no prime or adopt " <>
+              "in the run: #{Enum.map_join(Enum.take(unproven, 10), ", ", &inspect/1)}" <>
+              if(length(unproven) > 10, do: " (+#{length(unproven) - 10} more)", else: "") <>
+              "; first at seq #{first["seq"]} (ts #{first["ts"]}), last at seq #{last["seq"]} (ts #{last["ts"]})"
         }
     end
   end
