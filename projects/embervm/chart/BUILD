@@ -114,6 +114,8 @@ py_test(
         "//projects/embervm/dev/deploy:deploy_values",
         "//projects/embervm/dev/deploy:gke_values",
         "//projects/embervm/dev/deploy:recovery_values",
+        "//projects/embervm/dev/deploy:store_validation_values",
+        "//projects/gke-apps/embervm:application.yaml",
         "//projects/gke-apps/embervm-dev:application.yaml",
         "@multitool//tools/helm",
     ] + glob([
@@ -130,6 +132,8 @@ py_test(
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
         # The INACTIVE GKE recovery preset, rendered over chart defaults only.
         "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
+        "STORE_VALIDATION_VALUES": "$(rootpath //projects/embervm/dev/deploy:store_validation_values)",
+        "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         # The Applications, so releaseName is read from where it is DECLARED.
         "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
