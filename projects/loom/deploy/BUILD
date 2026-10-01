@@ -81,6 +81,7 @@ py_test(
         "//projects:gke-apps/kustomization.yaml",
         "//projects/gke-apps/context-forge-gateway:application.yaml",
         "//projects/gke-apps/loom:application.yaml",
+        "//projects/gke-apps/loom:argocd-repo-cred.yaml",
         "//projects/gke-apps/loom:kustomization.yaml",
     ],
     env = {
