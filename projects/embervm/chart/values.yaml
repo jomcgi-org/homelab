@@ -1316,6 +1316,19 @@ rootfsBuilder:
   # Conservative useful bound for the shared loop-file and scratch bottleneck.
   # The template and driver both reject values outside 1..16.
   maxConcurrency: 2
+  # Bake guest updates in place without rolling bricks. Disable to restore init
+  # baking (rollback rolls pods once). The long-running baker adds its requests
+  # to every pod's scheduled sum; init requests used max(init, container sum).
+  inPodBake:
+    enabled: false
+    pollSeconds: 30
+    pendingMaxAge: 1800s
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
 
 # Remote baked-rootfs retention uses the control plane's existing S3 client and
 # an hourly, fail-closed candidate sweep. Every sweep is dry-run while disabled:
