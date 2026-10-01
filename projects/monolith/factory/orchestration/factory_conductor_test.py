@@ -1706,7 +1706,9 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # operational flag on split children add about 300 characters: without
     # them the planner can only page a person when nothing is left to build
     # but live checks. The bound moved from 20,800 to 21,100.
-    assert len(prompt) < 21_100
+    # The exact gate-dependent closing contract adds about 200 characters to
+    # the planner's task section (#6641), while historical evidence stays bounded.
+    assert len(prompt) < 21_500
     assert (task, nodes, runs) == before
 
 
@@ -12368,8 +12370,8 @@ def test_a_named_gate_refusal_reaches_the_planner_by_its_own_name(monkeypatch):
     assert recorded == {"code": "pr_missing_close_keyword", "reason": "no closing line"}
 
 
-def test_the_delivery_boundary_closes_only_without_operational_acceptance():
-    """#6208 makes closure conditional on completing operational acceptance."""
+def test_the_delivery_boundary_leaves_closing_rules_to_dispatch():
+    """Stored boundaries cannot freeze the receipt's gate state."""
     task = {
         "id": "t-1",
         "repo": "owner/repo",
@@ -12377,12 +12379,9 @@ def test_the_delivery_boundary_closes_only_without_operational_acceptance():
         "issue_number": 77,
     }
     boundary = conductor._boundary(task)
-    assert "Closes #77" in boundary
-    assert "when nothing operational remains" in boundary
-    assert "later conductor rescope" in boundary
-    # A review node reads the same boundary, so the requirement it checks the
-    # body against is the one the implementer was given.
-    assert "Closes #77" in conductor._boundary(task, review=True)
+    assert "Closes #77" not in boundary
+    assert "Refs #77" not in boundary
+    assert "Closes #77" not in conductor._boundary(task, review=True)
     # A task with no receipt issue says nothing about closing keywords rather
     # than inventing a number.
     assert "Closes" not in conductor._boundary({**task, "issue_number": None})
@@ -16017,6 +16016,215 @@ def live_gate():
     }
 
 
+def record_closing_gate(task, monkeypatch):
+    """Record a real receipt decision while keeping GitHub effects hermetic."""
+    from factory.orchestration import factory_landing
+
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_args: None)
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: {"body": ""})
+    monkeypatch.setattr(factory_landing, "github_write", lambda *_args, **_kwargs: None)
+    assert conductor.factory_gates.resolve(
+        task, {"gate": live_gate()}, "test:closing-gate"
+    )
+    return conductor._task(task["id"])
+
+
+def dispatch_closing_prompt(task, node_key, monkeypatch):
+    """Use the real dispatch, reservation, pin validation and guest renderer."""
+    from factory.orchestration import node_workflows
+
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    selected = [
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == node_key
+    ]
+    assert conductor._dispatch_ready(
+        task,
+        selected,
+        conductor.graph.node_runs(task["id"]),
+        1,
+        fan_out=False,
+        parallel=1,
+    )
+    [run] = conductor.graph.node_runs(task["id"], node_key)
+    pinned = node_workflows._validate_pin(run["pin"])
+    prompt = node_workflows._node_prompt(
+        pinned["prompt"],
+        pinned["artifact_path"],
+        pinned["artifact_schema"],
+        pinned["retry_context"],
+        pinned["branch"],
+        pinned.get("closing_instruction", ""),
+    )
+    return prompt, run["pin"]
+
+
+def assert_closing_prompt(prompt, issue, gated, *, review=False):
+    """Independent exact-text expectations detect regressions in the renderer."""
+    if gated:
+        expected = (
+            f"The pull request body must contain the line Refs #{issue} and a "
+            "line starting Conductor rescope: that states the recorded rescope, "
+            "with the outstanding operational checklist. "
+            f"Do not use any closing keyword for issue #{issue}. "
+        )
+        assert f"Closes #{issue}" not in prompt
+    else:
+        expected = (
+            f"The pull request body must contain the line Closes #{issue}, "
+            "whatever the node believes about remaining live checks. Finish is "
+            "refused with pr_missing_close_keyword otherwise. If live acceptance "
+            "appears to remain, report it in the implementation artifact summary "
+            "so the planner can record a live_validation gate; the PR body must "
+            f"still contain Closes #{issue} until that gate is recorded. "
+        )
+        assert (
+            f"The pull request body must contain the line Refs #{issue}" not in prompt
+        )
+    assert expected in prompt
+    assert "when nothing operational remains" not in prompt
+    assert "later conductor rescope" not in prompt
+    reviewer_check = (
+        "At the exact pushed PR head, verify the PR body follows this task's "
+        "recorded gate state. Return changes_requested if it does not: "
+    )
+    assert (reviewer_check + expected in prompt) == review
+
+
+@pytest.mark.parametrize("gated", [False, True])
+@pytest.mark.parametrize(
+    "role", ["implement", "review", "correct", "re_review", "integrate"]
+)
+def test_closing_rule_rendered_for_planned_and_engine_nodes(
+    feedback_db, monkeypatch, gated, role
+):
+    if role == "integrate":
+        task, policy = parallel_plan()
+        if gated:
+            task = record_closing_gate(task, monkeypatch)
+        conductor.reconcile_task(task["id"], policy, object())
+        node_key = "integrate_1"
+        for member in ("implement_alpha", "implement_beta"):
+            run_feedback_node(task, member, {}, head=HEAD_ONE)
+    elif role in ("correct", "re_review"):
+        task, policy = reviewed_task()
+        if gated:
+            task = record_closing_gate(task, monkeypatch)
+        conductor.reconcile_task(task["id"], policy, object())
+        node_key = "correct_1" if role == "correct" else "review_1"
+        if role == "re_review":
+            run_feedback_node(task, "correct_1", {}, head=HEAD_ONE)
+    else:
+        task, policy = feedback_task()
+        if gated:
+            task = record_closing_gate(task, monkeypatch)
+        task, policy = planned_task((task, policy), [plan_edit("body", role)])
+        node_key = f"{role}_body"
+    prompt, _pin = dispatch_closing_prompt(task, node_key, monkeypatch)
+    assert_closing_prompt(prompt, task["issue_number"], gated, review="review" in role)
+    # A body following every role's rendered contract passes the keyword gate.
+    body = (
+        "Refs #7\n" + conductor.factory_gates.rescope_text(live_gate())
+        if gated
+        else "Closes #7"
+    )
+    delivery_task, runs = delivery(monkeypatch, body=body)
+    delivery_task["conductor_gates"] = task.get("conductor_gates", [])
+    assert (
+        conductor.verify_delivery(delivery_task, 3, runs, issue_number=7)["state"]
+        == "ready_for_review"
+    )
+
+
+@pytest.mark.parametrize("role", ["implement", "review", "planner"])
+@pytest.mark.parametrize("gate_before_dispatch", [False, True])
+def test_closing_rule_late_gate_reaches_already_inserted_nodes(
+    feedback_db, monkeypatch, role, gate_before_dispatch
+):
+    if role == "planner":
+        task, policy = feedback_task()
+        conductor.reconcile_task(task["id"], policy, object())
+        node_key = "conductor_1"
+    else:
+        task, _policy = planned_task(feedback_task(), [plan_edit("late", role)])
+        node_key = f"{role}_late"
+    [stored] = [
+        n for n in conductor.graph.load_graph(task["id"]) if n["node_key"] == node_key
+    ]
+    assert "Closes #7" not in stored["prompt"]
+    if gate_before_dispatch:
+        task = record_closing_gate(task, monkeypatch)
+    prompt, pin = dispatch_closing_prompt(task, node_key, monkeypatch)
+    assert_closing_prompt(prompt, 7, gate_before_dispatch, review=role == "review")
+    assert "Only the factory task" in prompt[: prompt.index(pin["closing_instruction"])]
+    if gate_before_dispatch:
+        assert live_gate()["scope"] in prompt
+        assert live_gate()["live_checks"][0] in prompt
+    else:
+        # A later gate cannot mutate the admitted attempt on re-attachment.
+        task = record_closing_gate(task, monkeypatch)
+        context = {
+            key: value
+            for key, value in pin.items()
+            if key in conductor.graph._CONTEXT_FIELDS
+        }
+        context["closing_instruction"] = conductor._closing_instruction(
+            task, review=role == "review"
+        )
+        assert conductor.reserve_node(task["id"], node_key, pin["workflow_id"], context)
+        [reattached] = conductor.graph.node_runs(task["id"], node_key)
+        assert reattached["pin"] == pin
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_closing_rule_rendered_body_agrees_with_delivery(
+    feedback_db, monkeypatch, gated
+):
+    task, _policy = planned_task(feedback_task(), [plan_edit("body", "implement")])
+    if gated:
+        task = record_closing_gate(task, monkeypatch)
+    prompt, _pin = dispatch_closing_prompt(task, "implement_body", monkeypatch)
+    assert_closing_prompt(prompt, 7, gated)
+    body = (
+        "Refs #7\n" + conductor.factory_gates.rescope_text(live_gate())
+        if gated
+        else "Closes #7"
+    )
+    delivery_task, runs = delivery(monkeypatch, body=body)
+    delivery_task["conductor_gates"] = task.get("conductor_gates", [])
+    assert (
+        conductor.verify_delivery(delivery_task, 3, runs, issue_number=7)["state"]
+        == "ready_for_review"
+    )
+
+
+@pytest.mark.parametrize("role", ["implement", "review"])
+@pytest.mark.parametrize("gated", [False, True])
+def test_closing_rule_no_issue_number_renders_no_rule(
+    feedback_db, monkeypatch, role, gated
+):
+    task, _policy = planned_task(feedback_task(), [plan_edit("body", role)])
+    if gated:
+        task = record_closing_gate(task, monkeypatch)
+    task["issue_number"] = None
+    prompt, pin = dispatch_closing_prompt(task, f"{role}_body", monkeypatch)
+    assert pin["closing_instruction"] == ""
+    assert "The pull request body must contain the line" not in prompt
+    assert "Closes #" not in prompt
+    assert "Refs #" not in prompt
+
+
+@pytest.mark.parametrize("gated", [False, True])
+def test_closing_rule_planner_uses_the_same_recorded_contract(
+    feedback_db, monkeypatch, gated
+):
+    task, _policy = feedback_task()
+    if gated:
+        task = record_closing_gate(task, monkeypatch)
+    assert_closing_prompt(conductor.planner_prompt(task, [], []), 7, gated)
+
+
 def test_stale_advisory_receipt_uses_delivery_path(feedback_db, monkeypatch):
     from sqlmodel import Session, select
 
@@ -16059,7 +16267,10 @@ def test_rescoped_delivery_keeps_operational_issue_open(monkeypatch):
         conductor.verify_delivery(task, 3, runs, issue_number=77)["state"]
         == "ready_for_review"
     )
-    assert "Do not use Closes #77" in conductor._boundary(task)
+    assert (
+        "The pull request body must contain the line Refs #77"
+        in conductor._closing_instruction(task)
+    )
 
 
 @pytest.mark.parametrize(
@@ -18264,7 +18475,12 @@ def test_policy_role_effort_overrides_the_pinned_effort(feedback_db, monkeypatch
     assert efforts == {"medium"}
 
 
-def test_a_pin_admitted_before_effort_reattaches_without_conflict(feedback_db):
+@pytest.mark.parametrize(
+    "new_field", [{"effort": "high"}, {"closing_instruction": "Refs #7"}]
+)
+def test_a_pin_admitted_before_effort_reattaches_without_conflict(
+    feedback_db, new_field
+):
     task, policy = feedback_task()
     assert conductor._add(
         task,
@@ -18287,14 +18503,15 @@ def test_a_pin_admitted_before_effort_reattaches_without_conflict(feedback_db):
         "hydration_branch": "main",
         "retry_context": "[]",
     }
-    # The legacy pin: admitted by a conductor that sent no effort.
+    # The legacy pin: admitted by a conductor that sent neither optional field.
     assert conductor.reserve_node(task["id"], "implement_fix", workflow, context)
     # The same dispatch key after this deploy carries one, and must re-attach.
     assert conductor.reserve_node(
-        task["id"], "implement_fix", workflow, {**context, "effort": "high"}
+        task["id"], "implement_fix", workflow, {**context, **new_field}
     )
     [run] = conductor.graph.node_runs(task["id"], "implement_fix")
     assert "effort" not in run["pin"]
+    assert "closing_instruction" not in run["pin"]
 
 
 def test_planner_caps_are_sized_for_a_1m_token_context():

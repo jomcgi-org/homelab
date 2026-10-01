@@ -1384,6 +1384,32 @@ def test_retry_context_admits_the_raised_cap(harness):
     assert len(admitted["retry_context"]) == 64_000
 
 
+@pytest.mark.parametrize("instruction", [None, 3, "x" * 2001])
+def test_closing_instruction_is_bounded_before_any_effect(harness, instruction):
+    with pytest.raises(ValueError, match="closing_instruction"):
+        nodes.execute_node.__wrapped__(pin(closing_instruction=instruction))
+    assert harness.starts == []
+    assert harness.clocks == []
+
+
+@pytest.mark.parametrize(
+    "instruction", ["", "The pull request body must contain the line Refs #11. "]
+)
+def test_closing_instruction_rides_pin_into_guest_prompt(harness, instruction):
+    nodes.execute_node.__wrapped__(pin(closing_instruction=instruction))
+    admitted, _key, prompt = harness.starts[0]
+    assert admitted["closing_instruction"] == instruction
+    expected = "Implement this task." + ("\n\n" + instruction if instruction else "")
+    assert expected in prompt
+
+
+def test_legacy_pin_stays_without_closing_instruction(harness):
+    nodes.execute_node.__wrapped__(pin())
+    admitted, _key, prompt = harness.starts[0]
+    assert "closing_instruction" not in admitted
+    assert "The pull request body must contain" not in prompt
+
+
 def test_the_conductor_slices_retry_context_to_the_pin_cap():
     from factory.orchestration import factory_conductor
 

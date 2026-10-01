@@ -1744,13 +1744,20 @@ implementation node, the latest independent review approving the current head
 on a model the reviewer pool allows, and passing repository PR status checks. GitHub is read again to verify
 the head and checks. Delivery evidence remains in the task audit.
 
-The pull request body must close the task's issue. Every delivery node's
-boundary states the required `Closes #<issue>` line and says to keep it on
-every update to the pull request, engine correction rounds included, and the
-completion gate reads the body back from GitHub and refuses a delivery that
-does not carry a closing keyword. The refusal is named
-`pr_missing_close_keyword`, so the planner reads what is wrong instead of a
-generic validation failure and can ask for the body to be fixed. The gate
+The pull request body follows the task's recorded gate state. With no recorded
+live checks, it must contain `Closes #<issue>` regardless of the node's own
+assessment of operational acceptance. A node that believes live acceptance
+remains reports it in its artifact summary for the planner to record a gate.
+With recorded live checks, the body must contain `Refs #<issue>`, a line starting
+`Conductor rescope:` stating the rescope, and the outstanding checklist, with
+no closing keyword for that issue. The conductor pins the current rule at
+dispatch for implement, correct and integrate nodes. Independent review nodes
+check the body at the exact head and return `changes_requested` on a mismatch.
+Stored node boundaries carry no closing rule; a gate recorded after insertion
+reaches the next dispatch, while an admitted attempt retains its immutable pin.
+The planner uses the same rule. The completion gate reads the body back from
+GitHub and refuses a delivery without a closing keyword as
+`pr_missing_close_keyword` when no live checks are recorded. The gate
 accepts every keyword GitHub acts on, `closes`, `fixes` and `resolves` in all
 their forms, because refusing a body that says `Fixes #123` would fail a
 delivery that does close its issue, and all three reference forms GitHub
