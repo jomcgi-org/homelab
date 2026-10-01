@@ -176,6 +176,7 @@ def _assert_enabled_route(
         for rule in rules
         for route_filter in rule.get("filters", [])
     )
+    route_labels = route["metadata"].get("labels", {})
     for obj in objects:
         if obj.get("kind") != "SecurityPolicy":
             continue
@@ -184,6 +185,18 @@ def _assert_enabled_route(
         if "targetRef" in spec:
             targets = [*targets, spec["targetRef"]]
         assert all(target.get("name") != route_name for target in targets)
+        for selector in spec.get("targetSelectors", []):
+            if selector.get("kind", "HTTPRoute") != "HTTPRoute":
+                continue
+            assert "matchExpressions" not in selector, (
+                obj["metadata"]["name"],
+                selector,
+            )
+            match_labels = selector.get("matchLabels", {})
+            assert not all(
+                route_labels.get(key) == value
+                for key, value in match_labels.items()
+            ), (obj["metadata"]["name"], selector)
 
 
 def test_enabled_route_uses_api_and_application_authentication() -> None:
@@ -193,6 +206,30 @@ def test_enabled_route_uses_api_and_application_authentication() -> None:
         "https://auth.jomcgi.dev/application/o/mcp-friends/",
         ["openid", "profile", "email"],
     )
+
+
+def test_production_chain_advertises_the_verifier_issuer() -> None:
+    chain = ("deploy/values.yaml", "deploy/values-gke.yaml")
+    issuer = None
+    authorization_server = None
+    for values_file in [CHART / "values.yaml", *(MONOLITH / o for o in chain)]:
+        values = yaml.safe_load(values_file.read_text())
+        issuer = values.get("auth", {}).get("authentik", {}).get(
+            "issuer", issuer
+        )
+        authorization_server = (
+            values.get("cfIngress", {}).get("mcp", {}).get(
+                "authorizationServer", authorization_server
+            )
+        )
+    assert authorization_server == issuer
+    objects = _render(chain, settings=("cfIngress.mcp.enabled=true",))
+    service_name = _object(objects, "Service", "monolith")["metadata"]["name"]
+    metadata = _object(
+        objects, "HTTPRouteFilter", f"{service_name}-mcp-resource-metadata"
+    )
+    advertised = json.loads(metadata["spec"]["directResponse"]["body"]["inline"])
+    assert advertised["authorization_servers"] == [issuer]
 
 
 def test_overrides_change_metadata_route_and_challenge() -> None:
