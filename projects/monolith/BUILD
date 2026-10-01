@@ -1544,6 +1544,7 @@ py_library(
         "factory/orchestration/api.py",
         "factory/orchestration/factory_controls.py",
         "factory/orchestration/factory_funding_limits.py",
+        "factory/orchestration/factory_landing.py",
         "factory/orchestration/factory_models.py",
         "factory/orchestration/models.py",
     ],
@@ -1552,6 +1553,7 @@ py_library(
     deps = [
         ":pkg_core",
         ":pkg_shared",
+        "@pip//httpx",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
@@ -1569,6 +1571,7 @@ py_library(
             "factory/orchestration/api.py",
             "factory/orchestration/factory_controls.py",
             "factory/orchestration/factory_funding_limits.py",
+            "factory/orchestration/factory_landing.py",
             "factory/orchestration/factory_models.py",
             "factory/orchestration/models.py",
             "factory/orchestration/rationale.py",
