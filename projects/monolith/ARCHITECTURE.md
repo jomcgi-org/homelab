@@ -812,7 +812,8 @@ observer and before destroying DBOS. Another replica adopts the committed
 receipt through the ordinary turn writer. Turns without an adoptable receipt
 get five seconds to finish. Early holds share a five-second lock budget, and
 cancellation gets five seconds, inside the chart's thirty-second termination
-grace. The flag defaults off and is enabled in the GKE overlay. The two-replica
+grace. The enabled uvicorn bootstrap bounds HTTP drain at five seconds before
+lifespan handoff. The flag defaults off and is enabled in the GKE overlay. The two-replica
 mid-invoke test covers handoff and successful node completion; control-plane
 restart (#6664) and cross-brick rejoin (#6663) remain separate.
 (see: /projects/monolith/factory/execution/mcp.py)

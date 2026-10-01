@@ -1643,11 +1643,12 @@ def test_private_entrypoint_installs_the_signal_server_only_when_enabled(
                 server.config.host,
                 server.config.port,
                 server.config.log_level,
+                server.config.timeout_graceful_shutdown,
             )
         )
 
     def legacy_server(app, *, host, port, log_level):
-        served.append(("legacy", app, host, port, log_level))
+        served.append(("legacy", app, host, port, log_level, None))
 
     monkeypatch.setattr(RolloutHandoffServer, "run", handoff_server)
     monkeypatch.setattr(uvicorn, "run", legacy_server)
@@ -1661,7 +1662,14 @@ def test_private_entrypoint_installs_the_signal_server_only_when_enabled(
         {"__name__": "__main__", "app": app},
     )
     assert served == [
-        ("handoff" if enabled else "legacy", app, "0.0.0.0", 8000, "warning")
+        (
+            "handoff" if enabled else "legacy",
+            app,
+            "0.0.0.0",
+            8000,
+            "warning",
+            5 if enabled else None,
+        )
     ]
 
 

@@ -1400,7 +1400,8 @@ and hands off the exact in-flight POST before receipt-observer cancellation
 cleanup or DBOS destruction. The existing cancellation hold remains the
 flag-off path. A turn without an adoptable receipt gets a five-second grace;
 hold writes and cancellation each have a five-second drain budget inside the
-chart's thirty-second termination grace. The flag defaults false and the GKE
+chart's thirty-second termination grace. The enabled backend bounds HTTP drain
+at five seconds before lifespan handoff. The flag defaults false and the GKE
 overlay enables it with a dated comment. The file-backed two-replica test rolls
 the observer mid-invoke, adopts its receipt through the ordinary writer, and
 checks the node workflow succeeds. It does not cover a control-plane restart
