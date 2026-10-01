@@ -10333,12 +10333,18 @@ def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
     manager = shim.ClaudeProcess(str(workspace), str(executable))
     monkeypatch.setattr(manager, "_configure_git", lambda: None)
 
-    assert shim._is_stale_background_turn_result(
-        {"type": "result", "result": "", "num_turns": 0, "usage": {}}
-    ) is True
-    assert shim._is_stale_background_turn_result(
-        {"type": "result", "result": "OK", "num_turns": 1, "usage": {}}
-    ) is False
+    assert (
+        shim._is_stale_background_turn_result(
+            {"type": "result", "result": "", "num_turns": 0, "usage": {}}
+        )
+        is True
+    )
+    assert (
+        shim._is_stale_background_turn_result(
+            {"type": "result", "result": "OK", "num_turns": 1, "usage": {}}
+        )
+        is False
+    )
 
     record = manager.turn("Reply with only the word OK")
     assert record["result"] == "OK"
