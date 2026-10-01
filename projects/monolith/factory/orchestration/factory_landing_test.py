@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -18,10 +18,10 @@ from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
+    FactoryStart,
     WorkItem,
     WorkItemEdge,
     WorkItemEvent,
-    FactoryStart,
 )
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
@@ -1378,15 +1378,15 @@ def test_merge_waits_for_rollout_and_retries_after_bounded_observation(
     )
     observations = []
 
-    def pending(repo, merge_sha):
-        observations.append((repo, merge_sha))
+    def pending(repo, merge_sha, pr_number):
+        observations.append((repo, merge_sha, pr_number))
         return {"verified": False, "reason": "published_chart_not_deployed"}
 
     monkeypatch.setattr(factory_rollout, "verify", pending)
     landing.landing_tick(POLICY)
     landing.landing_tick(POLICY)
     assert receipt_state(db, "t-wait") == state
-    assert observations == [("owner/repo", "b" * 40)]
+    assert observations == [("owner/repo", "b" * 40, 3)]
     assert len(audits(db, "rollout_observed")) == 1
     assert not audits(db, "issue_closed")
     assert not calls["write"]
@@ -1406,6 +1406,29 @@ def test_merge_waits_for_rollout_and_retries_after_bounded_observation(
             assert session.get(SwarmTask, "t-wait").settled_at is not None
     landing.landing_tick(POLICY)
     assert len(audits(db, "rollout_verified")) == 1
+
+
+def test_rollout_passes_pr_number_and_audits_blocker_identity(db, monkeypatch):
+    delivered(db, "t-scope", 11, 3)
+    landing._record("t-scope", "merged", pr_number=3, merge_commit_sha="b" * 40)
+    item = landing._deliveries(POLICY)[0]
+    calls = []
+
+    def verify(*args):
+        calls.append(args)
+        return {
+            "verified": False,
+            "reason": "application_not_healthy_and_synced",
+            "application": "embervm",
+            "resource": "Deployment/embervm/backend",
+        }
+
+    monkeypatch.setattr(factory_rollout, "verify", verify)
+    assert landing._verify_rollout("owner/repo", item) is False
+    assert calls == [("owner/repo", "b" * 40, 3)]
+    observed = audits(db, "rollout_observed", "t-scope")[0]
+    assert observed["application"] == "embervm"
+    assert observed["resource"] == "Deployment/embervm/backend"
 
 
 def test_unavailable_rollout_evidence_keeps_operational_acceptance_pending(

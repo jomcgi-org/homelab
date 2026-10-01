@@ -762,7 +762,7 @@ def _verify_rollout(repo: str, item: dict) -> bool:
         except (httpx.HTTPError, ValueError) as exc:
             _error(item["task_id"], "rollout_identity", exc)
             return False
-    result = factory_rollout.verify(repo, merge_sha)
+    result = factory_rollout.verify(repo, merge_sha, item["pr_number"])
     if result["verified"]:
         _record(
             item["task_id"],
