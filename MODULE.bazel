@@ -856,8 +856,8 @@ multiarch_http_file(
 # change those.
 multiarch_http_file(
     name = "codex_cli",
-    amd64_sha256 = "5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a",
-    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz",
+    amd64_sha256 = "b48ca1b2d6b1bf42b944e02c3d937c898e24651916684cdc35fdedf31b291bcb",
+    amd64_url = "https://github.com/openai/codex/releases/download/rust-v0.159.3/codex-x86_64-unknown-linux-musl.tar.gz",
     binary_name = "codex",
     extract_path = "codex-x86_64-unknown-linux-musl",
     package_dir = "/usr/local/bin",

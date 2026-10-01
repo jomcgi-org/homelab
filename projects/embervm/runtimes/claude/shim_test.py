@@ -329,7 +329,10 @@ config = open(config_path).read()
 assert 'model_provider = "ember-openai"' in config
 assert 'base_url = "http://chatgpt.com/backend-api/codex/"' in config
 assert 'chatgpt_base_url = "http://chatgpt.com/backend-api/"' in config
-assert "enable_codex_api_key_env = false" in config
+assert "enable_codex_api_key_env" not in config
+# Load bearing since openai/codex#39214 (issue #6471): without it a custom
+# provider sends turns with no Authorization and the egress swap denies them.
+assert "requires_openai_auth = true" in config
 assert 'wire_api = "responses"' in config
 assert sys.argv[1] == "app-server"
 
@@ -395,7 +398,7 @@ def response(request, result=None, error=None):
 initialize = json.loads(sys.stdin.readline())
 record(initialize)
 assert initialize["method"] == "initialize"
-response(initialize, {"cliVersion": "0.146.0"})
+response(initialize, {"cliVersion": "0.159.3"})
 initialized = json.loads(sys.stdin.readline())
 record(initialized)
 assert initialized["method"] == "initialized"

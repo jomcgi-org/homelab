@@ -3191,13 +3191,22 @@ class CodexProcess:
         # trailing slash and concatenating, or an RFC 3986 Url::join with a
         # relative segment, land on the same /codex/responses path.
         #
-        # The CLI stays on rust-v0.146.0 (#6498). rust-v0.158.0 omitted
-        # Authorization on most chatgpt.com requests, and the egress swap only
-        # injects when the guest presents it (or the path is in
-        # injectAlwaysPaths), so every turn died with "claim injection failed;
-        # request denied". A re-land needs those paths opted in first.
+        # requires_openai_auth = true is load bearing (issue #6471). Since
+        # openai/codex#39214 a custom model provider no longer inherits the
+        # ambient ChatGPT login unless it sets this flag, so without it the
+        # CLI sends /backend-api/codex/responses and /backend-api/codex/models
+        # with NO Authorization header. The egress swap keys on that header's
+        # presence, denies the request ("claim injection failed"), and the
+        # turn dies as "stream disconnected before completion". That is what
+        # rust-v0.158.0 did in prod (#6489, reverted in #6498). With the flag
+        # every chatgpt.com request carries the placeholder header again, and
+        # the sidecar swaps it for the broker's token as before. Older CLIs
+        # accept the flag and ignore it for request auth.
+        #
+        # No enable_codex_api_key_env line: newer CLIs report it as an
+        # unrecognized setting on every spawn. _child_env still scrubs
+        # OPENAI_API_KEY, so no protection is lost.
         config = """model_provider = "ember-openai"
-enable_codex_api_key_env = false
 chatgpt_base_url = %s
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
@@ -3205,8 +3214,9 @@ approval_policy = "never"
 [projects.%s]
 trust_level = "trusted"
 
-# Codex 0.146.0 binary inspection exposes [tools].web_search, while
-# web_search_request is deprecated because web search is enabled by default.
+# Codex 0.159.3 still accepts [tools].web_search (no unrecognized-setting
+# warning), while web_search_request is deprecated because web search is
+# enabled by default.
 [tools]
 web_search = true
 
@@ -3214,6 +3224,7 @@ web_search = true
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
+requires_openai_auth = true
 """ % (
             json.dumps(base_url),
             json.dumps(self.workspace),
