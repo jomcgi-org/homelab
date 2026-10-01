@@ -102,6 +102,30 @@ filegroup(
 # py_test is hand-registered: gazelle does not generate py_test rules, so they
 # must be declared explicitly in BUILD.
 py_test(
+    name = "chart_inpod_bake_test",
+    srcs = ["chart_inpod_bake_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "chart_env_identity_test",
     srcs = ["chart_env_identity_test.py"],
     data = [

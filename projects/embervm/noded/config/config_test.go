@@ -11,6 +11,28 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
+func TestLoadRootfsPendingMaxAge(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		want    time.Duration
+		invalid bool
+	}{
+		{"", 0, false}, {"1800s", 30 * time.Minute, false}, {"bad", 0, true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("EMBERVM_NODED_ROOTFS_PENDING_MAX_AGE", tc.value)
+			cfg, err := Load()
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), "EMBERVM_NODED_ROOTFS_PENDING_MAX_AGE") {
+					t.Fatalf("Load=%v", err)
+				}
+			} else if err != nil || cfg.RootfsPendingMaxAge != tc.want {
+				t.Fatalf("Load age=%v err=%v, want %v", cfg.RootfsPendingMaxAge, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestDetectCPUVendorFromFixture(t *testing.T) {
 	tests := []struct {
 		name     string
