@@ -1217,6 +1217,16 @@
   display: none;
 }
 
+/* A fact title or body can carry one long identifier; it breaks inside the
+   cell rather than pushing the page sideways on a phone. */
+.factory-page .doc details > summary > span,
+.factory-page .doc details .body,
+.factory-page .pair .side > span,
+.factory-page .results li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .factory-page .doc details > summary::before {
   padding-top: 0.25em;
   color: var(--ink-2);
