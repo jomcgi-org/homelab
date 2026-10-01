@@ -458,8 +458,15 @@ def get_public_search_index(
     session: Session = Depends(get_session),
 ):
     """Return a compact, cacheable title index for the public record."""
+    # Only the four columns the index carries: loading whole notes pulled
+    # every note body through the ORM to throw it away.
     rows = session.exec(
-        select(PublicNote)
+        select(
+            PublicNote.note_id,
+            PublicNote.title,
+            PublicNote.verification_state,
+            PublicNote.indexed_at,
+        )
         .where(PublicNote.verification_state.in_(_RECORD_STATES))
         .order_by(
             PublicNote.observed_at.desc().nulls_last(),

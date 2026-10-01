@@ -1,7 +1,7 @@
 import pytest
 from genai_prices import Usage, calc_price
 
-from shared.pricing import price_usage
+from shared.pricing import list_price_usd, price_usage, usage_has_tokens
 
 
 def test_luna_input_price():
@@ -430,3 +430,30 @@ def test_astra_and_gpt_6_astra_agree_on_the_same_usage():
     usage = {"input_tokens": 12_000, "output_tokens": 3_000}
 
     assert price_usage("astra", usage) == price_usage("gpt-6-astra", usage)
+
+
+def test_list_price_takes_claude_codes_reported_cost_as_list():
+    # Claude Code prices every call in the turn, subagents included, at list;
+    # the usage block covers only the main loop and would undercount.
+    usage = {"input_tokens": 10, "output_tokens": 100}
+    assert list_price_usd("opus", usage, 2.5) == pytest.approx(2.5)
+    assert list_price_usd("claude-sonnet-5-5", usage, 0.3) == pytest.approx(0.3)
+
+
+def test_list_price_reprices_usage_when_the_reported_cost_is_not_list():
+    usage = {"input_tokens": 1_000_000}
+    # Codex-family runtimes report no cost, and an early reported 0.0 is not a
+    # free turn: both price from usage.
+    assert list_price_usd("luna", usage, None) == pytest.approx(0.10)
+    assert list_price_usd("luna", usage, 0.0) == pytest.approx(0.10)
+    assert list_price_usd("luna", usage, 9.0) == pytest.approx(0.10)
+    # A Claude turn with no reported cost still prices from its usage.
+    assert list_price_usd("opus", usage, None) == pytest.approx(4.0)
+
+
+def test_list_price_leaves_tokenless_and_unknown_turns_unpriced():
+    assert list_price_usd("astra", {"activities": []}, None) is None
+    assert list_price_usd("gpt-unknown", {"input_tokens": 1_000}, None) is None
+    assert usage_has_tokens({"cached_input_tokens": 3})
+    assert not usage_has_tokens({"input_tokens": 0, "flag": True})
+    assert not usage_has_tokens(None)

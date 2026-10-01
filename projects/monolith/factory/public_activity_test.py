@@ -1,10 +1,14 @@
-"""Unit tests for the public agent activity response and cache contract."""
+"""Unit tests for the public agent activity response and cache contract.
+
+The route serves the one public_api.agent_activity_snapshot row as written;
+the aggregation and its windows are tested where they are built, in
+factory/publication_test.py.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import json
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,33 +18,23 @@ from core.db import get_session
 
 
 class _Result:
-    def __init__(self, *, one=None, rows=None):
-        self._one = one
-        self._rows = rows
+    def __init__(self, row):
+        self._row = row
 
-    def one(self):
-        return self._one
-
-    def all(self):
-        return self._rows
+    def first(self):
+        return self._row
 
 
 class _FakeSession:
-    def __init__(self, now_row, daily_rows, local_daily_rows=None):
-        self.now_row = now_row
-        self.daily_rows = daily_rows
-        self.local_daily_rows = local_daily_rows or []
+    def __init__(self, row):
+        self.row = row
         self.statements: list[str] = []
 
     def execute(self, statement):
         sql = str(statement)
         self.statements.append(sql)
-        if "public_api.agent_activity_now" in sql:
-            return _Result(one=self.now_row)
-        if "public_api.agent_activity_daily" in sql:
-            return _Result(rows=self.daily_rows)
-        if "public_api.local_session_activity_daily" in sql:
-            return _Result(rows=self.local_daily_rows)
+        if "public_api.agent_activity_snapshot" in sql:
+            return _Result(self.row)
         raise AssertionError(f"unexpected query: {sql}")
 
 
@@ -55,57 +49,26 @@ def _client(fake_session):
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _daily_row(
-    day_value, amount, *, cost=None, list_cost=None, cost_source=None, model="luna"
-):
-    return {
-        "day": day_value,
-        "model": model,
-        "sessions": amount,
-        "turns": amount * 2,
-        "input_tokens": amount * 3,
-        "output_tokens": amount * 4,
-        "cache_read_tokens": amount * 5,
-        "cost_usd": cost,
-        "list_cost_usd": list_cost,
-        "cost_source": cost_source,
-    }
+_PAYLOAD = {
+    "snapshotted_at": "2026-10-01T12:00:00+00:00",
+    "cost_basis": "list",
+    "now": {
+        "active_last_hour": 3,
+        "sessions_today": 5,
+        "running": 2,
+        "last_turn_at": None,
+    },
+    "daily": [],
+    "local_daily": [],
+    "spend_daily": [{"day": "2026-10-01", "spend_usd": 1.5}],
+    "totals_7d": {"combined": {"spend_usd": 1.5}},
+    "totals_30d": {"combined": {"spend_usd": 4.0}},
+}
 
 
-def _local_row(day_value, amount, *, list_cost=None, model="gpt-5.6-luna"):
-    return {
-        "day": day_value,
-        "model": model,
-        "source": "codex-session",
-        "sessions": amount,
-        "input_tokens": amount * 7,
-        "output_tokens": amount * 8,
-        "cache_read_tokens": amount * 9,
-        "list_cost_usd": list_cost,
-    }
-
-
-def test_activity_shape_windows_headers_and_stable_etag():
-    today = datetime.now(timezone.utc).date()
-    rows = [
-        _daily_row(today - timedelta(days=30), 16, model="terra"),
-        _daily_row(today - timedelta(days=7), 4, cost=4.0, model="sol"),
-        _daily_row(today - timedelta(days=6), 2, cost=1.25, model="terra"),
-        _daily_row(today, 1, cost=0.5, list_cost=0.75, model="luna"),
-        _daily_row(today - timedelta(days=29), 8, model="opus"),
-    ]
+def test_activity_serves_the_snapshot_row_with_cache_headers_and_stable_etag():
     fake_session = _FakeSession(
-        {
-            "active_last_hour": 3,
-            "sessions_today": 5,
-            "running": 2,
-            "last_turn_at": None,
-        },
-        rows,
-        [
-            _local_row(today, 3, list_cost=2.5),
-            _local_row(today - timedelta(days=7), 9, list_cost=99),
-        ],
+        {"payload": dict(_PAYLOAD), "snapshotted_at": "2026-10-01T12:00:00Z"}
     )
 
     with _client(fake_session) as client:
@@ -113,86 +76,8 @@ def test_activity_shape_windows_headers_and_stable_etag():
         second = client.get("/api/agents/public/activity")
 
         assert first.status_code == 200
-        payload = first.json()
-        assert payload["now"] == {
-            "active_last_hour": 3,
-            "sessions_today": 5,
-            "running": 2,
-            "last_turn_at": None,
-        }
-        assert list(payload) == [
-            "now",
-            "daily",
-            "local_daily",
-            "spend_daily",
-            "totals_7d",
-        ]
-        assert len(payload["daily"]) == 4
-        assert set(payload["daily"][0]) == {
-            "day",
-            "model",
-            "sessions",
-            "turns",
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
-            "cost_usd",
-            "list_cost_usd",
-            "cost_source",
-        }
-        assert [row["day"] for row in payload["daily"]] == [
-            today.isoformat(),
-            (today - timedelta(days=6)).isoformat(),
-            (today - timedelta(days=7)).isoformat(),
-            (today - timedelta(days=29)).isoformat(),
-        ]
-        assert payload["totals_7d"] == {
-            "ember": {
-                "sessions": 3,
-                "turns": 6,
-                "input_tokens": 9,
-                "output_tokens": 12,
-                "cache_read_tokens": 15,
-                "cost_usd": 1.75,
-                "list_cost_usd": 0.75,
-            },
-            "local": {
-                "sessions": 3,
-                "turns": 0,
-                "input_tokens": 21,
-                "output_tokens": 24,
-                "cache_read_tokens": 27,
-                "cost_usd": None,
-                "list_cost_usd": 2.5,
-            },
-            "combined": {
-                "sessions": 6,
-                "turns": 6,
-                "input_tokens": 30,
-                "output_tokens": 36,
-                "cache_read_tokens": 42,
-                "cost_usd": 1.75,
-                "list_cost_usd": 3.25,
-                "spend_usd": 1.75,
-            },
-        }
-        assert payload["spend_daily"] == [
-            {
-                "day": (today - timedelta(days=29)).isoformat(),
-                "spend_usd": None,
-            },
-            {
-                "day": (today - timedelta(days=7)).isoformat(),
-                "spend_usd": 4.0,
-            },
-            {
-                "day": (today - timedelta(days=6)).isoformat(),
-                "spend_usd": 1.25,
-            },
-            {"day": today.isoformat(), "spend_usd": 0.5},
-        ]
-        assert payload["local_daily"][0]["source"] == "codex-session"
-        assert first.headers["cache-control"] == ("public, max-age=300, s-maxage=300")
+        assert first.json() == _PAYLOAD
+        assert first.headers["cache-control"] == "public, max-age=300, s-maxage=300"
         assert first.headers["etag"] == second.headers["etag"]
 
         unchanged = client.get(
@@ -203,68 +88,44 @@ def test_activity_shape_windows_headers_and_stable_etag():
         assert unchanged.headers["etag"] == first.headers["etag"]
         assert unchanged.headers["cache-control"] == first.headers["cache-control"]
 
-    assert fake_session.statements
-    assert all("public_api." in sql for sql in fake_session.statements)
-    assert all("agent_sessions.agent_" not in sql for sql in fake_session.statements)
-
-
-@pytest.mark.parametrize("cost_source", [None, "reported", "list", "mixed"])
-def test_activity_exposes_aggregate_cost_source_and_etag_tracks_it(cost_source):
-    row = _daily_row(datetime.now(timezone.utc).date(), 1, cost_source=cost_source)
-    fake_session = _FakeSession(
-        {
-            "active_last_hour": 1,
-            "sessions_today": 1,
-            "running": 0,
-            "last_turn_at": None,
-        },
-        [row],
-    )
-    # Extra private fields must not leak even if supplied by a future view.
-    row.update(session_id=123, prompt="private", result_text="private", diff="private")
-    with _client(fake_session) as client:
-        first = client.get("/api/agents/public/activity")
-        assert first.status_code == 200
-        assert first.json()["daily"][0]["cost_source"] == cost_source
-        assert not {"session_id", "prompt", "result_text", "diff"} & set(
-            first.json()["daily"][0]
-        )
-        row["cost_source"] = "reported" if cost_source is None else None
+        fake_session.row["payload"]["totals_7d"] = {"combined": {"spend_usd": 2.0}}
         changed = client.get(
             "/api/agents/public/activity",
             headers={"If-None-Match": first.headers["etag"]},
         )
         assert changed.status_code == 200
         assert changed.headers["etag"] != first.headers["etag"]
-    assert "cost_source" in next(
-        sql
-        for sql in fake_session.statements
-        if "public_api.agent_activity_daily" in sql
+
+    # One single-row read of the public snapshot, never the private tables.
+    assert fake_session.statements
+    assert all(
+        "public_api.agent_activity_snapshot" in sql for sql in fake_session.statements
     )
+    assert all("agent_sessions." not in sql for sql in fake_session.statements)
 
 
-def test_activity_serializes_last_turn_at_as_utc():
+def test_activity_decodes_a_text_payload():
     fake_session = _FakeSession(
-        {
-            "active_last_hour": 0,
-            "sessions_today": 0,
-            "running": 0,
-            "last_turn_at": datetime(2026, 9, 7, 12, 30),
-        },
-        [],
+        {"payload": json.dumps(_PAYLOAD), "snapshotted_at": None}
     )
-
     with _client(fake_session) as client:
         response = client.get("/api/agents/public/activity")
-
     assert response.status_code == 200
-    assert response.json()["now"]["last_turn_at"] == "2026-09-07T12:30:00+00:00"
+    assert response.json()["cost_basis"] == "list"
 
 
-def test_activity_returns_500_when_views_are_unavailable():
+def test_activity_returns_503_before_the_first_snapshot():
+    with _client(_FakeSession(None)) as client:
+        response = client.get("/api/agents/public/activity")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "agent activity not snapshotted"}
+
+
+def test_activity_returns_500_when_the_snapshot_is_unavailable():
     class _BrokenSession:
         def execute(self, statement):
-            raise SQLAlchemyError("public activity view is unavailable")
+            raise SQLAlchemyError("public activity snapshot is unavailable")
 
     with _client(_BrokenSession()) as client:
         response = client.get("/api/agents/public/activity")

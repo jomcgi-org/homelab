@@ -218,7 +218,13 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     ("reported_cost", "model", "usage", "has_list_cost"),
     [
-        (0.0123, "luna", {"input_tokens": 1_000_000}, False),
+        # A reported cost no longer suppresses the list price: every turn is
+        # priced at list so the public pages compare models on one basis.
+        (0.0123, "luna", {"input_tokens": 1_000_000}, True),
+        # Claude Code's reported cost is already a list-price figure.
+        (0.0123, "opus", {"input_tokens": 0}, True),
+        # A turn that never reached a model stays unpriced.
+        (None, "astra", {"activities": []}, False),
         (None, "luna", {"input_tokens": 1_000_000}, True),
         (None, "gpt-unknown", {"input_tokens": 1_000}, False),
         (None, "astra", {"input_tokens": 1_000, "output_tokens": 200}, True),
@@ -248,7 +254,7 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
         ),
     ],
 )
-def test_create_turn_keeps_reported_and_list_costs_separate(
+def test_create_turn_records_reported_and_list_costs_side_by_side(
     monkeypatch,
     tmp_path,
     reported_cost,
@@ -1639,19 +1645,16 @@ def test_drain_continues_same_pending_attempt_and_reservation(
             assert (
                 store.get_turn(db, sid, seq).terminal_reason == "interrupted_for_drain"
             )
-        # A prefix whose provider cost was reported never carries a list price;
-        # only the unreported prefix is list-priced, so only that branch seeds it.
+        # Only the unreported branch seeds a prefix list price, so the reported
+        # branch also proves an unpriced prefix leaves the sum unknown.
         if not reported_costs:
             with Session(engine) as db:
                 prefix = store.get_turn(db, sid, seq)
                 prefix.list_cost_usd = 0.04
                 db.add(prefix)
                 db.commit()
-        from types import SimpleNamespace
 
-        monkeypatch.setattr(
-            store, "price_usage", lambda *_: SimpleNamespace(cost_usd=0.05)
-        )
+        monkeypatch.setattr(store, "list_price_usd", lambda *_: 0.05)
         assert store.claim_pending_message_for_session_sync(sid, "pod-b") == seq
         completed = _successful_uncertain_turn()._replace(
             total_cost_usd=0.01 if reported_costs else None
