@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import Event
@@ -91,12 +92,19 @@ def _seed(lane):
         )
 
 
+# Postgres renders schema-qualified table names (the SQLite harness strips
+# schemas), and "campaign" is a prefix of "campaign_member", so match the
+# FROM clause with a word boundary.
+_CAMPAIGN_FROM = re.compile(r"FROM\s+grimoire\.campaign(?!\w)")
+_MEMBER_FROM = re.compile(r"FROM\s+grimoire\.campaign_member(?!\w)")
+
+
 def _is_campaign_lock(sql: str) -> bool:
-    return "FROM campaign \n" in sql and "campaign.id =" in sql
+    return bool(_CAMPAIGN_FROM.search(sql))
 
 
 def _is_member_lock(sql: str) -> bool:
-    return "FROM campaign_member \n" in sql and "campaign_member.id =" in sql
+    return bool(_MEMBER_FROM.search(sql))
 
 
 def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
@@ -110,7 +118,13 @@ def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
 
             def paused_exec(statement, *args, **kwargs):
                 sql = str(statement.compile(dialect=postgresql.dialect()))
-                if _is_member_lock(sql) and not self_member_locked.is_set():
+                # Pause only after the locking read: the earlier membership
+                # lookup touches the same table without holding the row.
+                if (
+                    _is_member_lock(sql)
+                    and "FOR UPDATE" in sql
+                    and not self_member_locked.is_set()
+                ):
                     self_member_locked.set()
                     assert dm_campaign_locked.wait(WAIT_SECONDS), (
                         "DM assign never took the campaign lock"
