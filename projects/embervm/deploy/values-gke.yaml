@@ -286,3 +286,10 @@ statefulSweeper:
     # closed, so the stated reason to stay off is gone. Thresholds stay at the
     # chart defaults. Revert is this one line.
     enabled: true
+
+# Drain only the sessions on the draining brick instance. Every size class
+# shares the ember-bricks node, so a node-scoped drain made each autoscaler
+# idle drain of an EMPTY brick interrupt every live turn on the node's 8gi
+# brick (2026-10-01 00:44:42 and 02:04:42). A session with unknown placement
+# is still drained. Revert is this one line.
+drainInstanceScopedSessions: true
