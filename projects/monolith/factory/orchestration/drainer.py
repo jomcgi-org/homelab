@@ -216,7 +216,7 @@ def claim_drainer_job(
     from factory.execution.admission import (
         adopt_existing,
         lock_pool,
-        reserve_start,
+        reserve_start_verdict,
         reserved_routine_jobs,
     )
     from core.db import get_engine
@@ -236,6 +236,21 @@ def claim_drainer_job(
         tracer.start_as_current_span("drain.claim_job") as span,
         Session(engine) as session,
     ):
+        kg_enabled = KG_JOB_KIND in tuple(kinds)
+        # Every claim poll names why it did or did not claim. Without this a
+        # spent daily allowance, a full lane and an empty queue all read as
+        # the same silent idle loop (2026-10-01 03:43-07:00).
+        reasons: list[str] = []
+
+        def idle(outcome: str) -> None:
+            _report_claim_outcome(
+                span,
+                workflow_id,
+                claim_index,
+                outcome,
+                kg_due=_kg_due_count(session) if kg_enabled else None,
+            )
+
         walled, reason = provider_walled()
         if walled:
             set_attributes(span, {"drain.deferred": reason})
@@ -244,6 +259,7 @@ def claim_drainer_job(
                 DRAIN_MODEL,
                 reason,
             )
+            idle(f"provider_walled: {reason}")
             return None
         kg_walled, kg_reason = kg_provider_walled()
         remaining_kinds = tuple(kinds)
@@ -257,7 +273,9 @@ def claim_drainer_job(
                 DRAIN_MODEL,
                 kg_reason,
             )
+            reasons.append(f"kg_unconfirmed: {kg_reason}")
             if not remaining_kinds:
+                idle("; ".join(reasons))
                 return None
         lock_pool(session)
         adopt_existing(session)
@@ -276,6 +294,8 @@ def claim_drainer_job(
             )
             if job is None:
                 savepoint.rollback()
+                reasons.append("no_due_job")
+                idle("; ".join(reasons))
                 session.commit()
                 return None
             is_kg = job["routine_kind"] == KG_JOB_KIND
@@ -305,7 +325,7 @@ def claim_drainer_job(
                     "daily_limit": cap,
                     "daily_used": used,
                 }
-            admitted = reserve_start(
+            refusal = reserve_start_verdict(
                 session,
                 local_id,
                 tier="kg" if is_kg else "project",
@@ -313,7 +333,7 @@ def claim_drainer_job(
                 routine_job_name=job["name"],
                 **daily,
             )
-            if admitted:
+            if refusal is None:
                 savepoint.commit()
                 session.commit()
                 set_attributes(
@@ -325,17 +345,84 @@ def claim_drainer_job(
                         "drain.job_name": job["name"],
                     },
                 )
+                _report_claim_outcome(span, workflow_id, claim_index, "claimed")
                 return job
             savepoint.rollback()
+            if is_kg:
+                set_attributes(span, {"drain.kg_refusal": refusal})
+            reasons.append(f"{'kg' if is_kg else 'project'}_refused: {refusal}")
             if not is_kg:
+                idle("; ".join(reasons))
                 session.commit()
                 return None
             # A full KG lane or daily limit must not hide ordinary project work.
             remaining_kinds = tuple(
                 kind for kind in remaining_kinds if kind != KG_JOB_KIND
             )
+        idle("; ".join(reasons))
         session.commit()
         return None
+
+
+# Last claim outcome per drain workflow, for the cycle heartbeat and to log
+# only on change. Telemetry only: no control flow reads it, so a replay that
+# skips the claim step (and leaves this empty) changes nothing but a log line.
+_LAST_CLAIM_OUTCOME: dict[str, str] = {}
+_LAST_CLAIM_OUTCOME_LIMIT = 64
+
+
+def _kg_due_count(session) -> int | None:
+    """Claimable KG jobs right now, for the stall trigger. Never raises."""
+    from sqlalchemy import text
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION as unknown
+
+    try:  # nosemgrep: no-broad-except-swallow - optional telemetry only
+        sqlite = session.get_bind().dialect.name == "sqlite"
+        table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+        now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
+        return int(
+            session.execute(
+                text(
+                    f"SELECT count(*) FROM {table} WHERE routine_kind = :kind "
+                    f"AND next_run_at IS NOT NULL AND next_run_at <= {now_expr} "
+                    "AND locked_by IS NULL "
+                    "AND (last_status IS NULL OR last_status != :unknown)"
+                ),
+                {"kind": KG_JOB_KIND, "unknown": unknown},
+            ).scalar_one()
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("KG due-job count failed", exc_info=True)
+        return None
+
+
+def _report_claim_outcome(
+    span,
+    workflow_id: str,
+    claim_index: int,
+    outcome: str,
+    *,
+    kg_due: int | None = None,
+) -> None:
+    """Stamp every claim poll with its outcome and log when it changes."""
+    attributes = {"drain.claim_outcome": outcome[:SPAN_SUMMARY_MAX_CHARS]}
+    if kg_due is not None:
+        attributes["drain.kg_queue_due"] = kg_due
+    set_attributes(span, attributes)
+    previous = _LAST_CLAIM_OUTCOME.get(workflow_id)
+    if len(_LAST_CLAIM_OUTCOME) >= _LAST_CLAIM_OUTCOME_LIMIT:
+        _LAST_CLAIM_OUTCOME.clear()
+    _LAST_CLAIM_OUTCOME[workflow_id] = outcome
+    if outcome == previous or outcome == "claimed":
+        return
+    blocked = "refused" in outcome or "walled" in outcome or "unconfirmed" in outcome
+    (logger.warning if blocked and kg_due else logger.info)(
+        "Luna drainer %s claim %s did not claim: %s (kg due=%s)",
+        workflow_id,
+        claim_index,
+        outcome,
+        kg_due,
+    )
 
 
 @DBOS.step()
@@ -907,6 +994,183 @@ def retry_stranded_drainer_cleanups(*, list_fn=None, destroy_fn=None) -> dict:
     return {"stranded": len(stranded), "retired": retired}
 
 
+LOST_BEFORE_SESSION_GRACE_SECONDS = 600
+LOST_BEFORE_SESSION_LIMIT = 8
+_TERMINAL_WORKFLOW_STATUSES = frozenset(
+    {"SUCCESS", "ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"}
+)
+
+
+def lost_before_session_sweep_enabled() -> bool:
+    import os
+
+    return (
+        os.environ.get("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _drainer_workflow_state(session, workflow_id: str) -> tuple[str, int] | None:
+    """(status, updated_at epoch ms) of a drain workflow, or None if unknown."""
+    from sqlalchemy import text
+
+    if session.get_bind().dialect.name != "postgresql":
+        return None
+    row = session.execute(
+        text(
+            "SELECT status, updated_at FROM dbos.workflow_status "
+            "WHERE workflow_uuid = :workflow_id"
+        ),
+        {"workflow_id": workflow_id},
+    ).first()
+    if row is None or row.updated_at is None:
+        return None
+    return str(row.status), int(row.updated_at)
+
+
+def _lost_owner_workflow(permit) -> str | None:
+    """The drain workflow that reserved this permit, from its deterministic key."""
+    if not permit.routine_job_name or permit.tier not in {"kg", "project"}:
+        return None
+    node_key = KG_NODE_KEY if permit.tier == "kg" else DRAINER_NODE_KEY
+    suffix = f":{node_key}:{permit.routine_job_name}"
+    local = permit.local_session_id or ""
+    if not local.endswith(suffix):
+        return None
+    workflow_id = local[: -len(suffix)]
+    if not workflow_id.startswith("_drainer-worker:"):
+        return None
+    return workflow_id
+
+
+# Deliberately not a DBOS step: adding a step to drain_cycle shifts the
+# function ids a PENDING cycle replays against after a rollout, and that
+# mismatch (DBOSUnexpectedStepError) is what orphaned permit 10732. The sweep
+# is idempotent and re-proves everything under the pool lock, so re-running
+# it on replay is safe.
+def settle_lost_drainer_reservations(
+    current_workflow_id: str, limit: int = LOST_BEFORE_SESSION_LIMIT
+) -> list[int]:
+    """Settle drainer permits whose workflow ended before creating the session.
+
+    A rollout can end a drain workflow between reserve_start and
+    start_agent_session: the permit stays ``reserved`` with no session, holds
+    a KG (or project) slot and a unit of the rolling daily allowance, and its
+    routine lease stays on the dead holder, which no claimer may take over.
+    Permit supervision only sees permits with a session, and the factory
+    lost-before-session sweep only sees factory tasks, so nothing settled
+    these (permit 10732, 2026-10-01 01:59).
+
+    The proof, all re-read under the pool lock: the permit is still reserved
+    and unbound, no session row carries its key, its owning workflow is
+    terminal in DBOS (it can never run start_agent_session again) and has
+    been for the grace period, which also covers a step still finishing
+    after a cancel. The lease is released only from that exact dead holder
+    and never from a row parked on an unknown outcome.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from core.db import get_engine
+    from factory.execution.admission import cancel_unbound, lock_pool
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION as unknown
+    from sqlalchemy import text
+    from sqlmodel import Session, select
+
+    if not lost_before_session_sweep_enabled():
+        return []
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=LOST_BEFORE_SESSION_GRACE_SECONDS)
+    cutoff_ms = int(cutoff.timestamp() * 1000)
+    settled: list[int] = []
+    with (
+        tracer.start_as_current_span("drain.lost_before_session_sweep") as span,
+        Session(get_engine()) as session,
+    ):
+        lock_pool(session)
+        permits = session.exec(
+            select(AgentCapacityReservation)
+            .where(
+                AgentCapacityReservation.state == "reserved",
+                AgentCapacityReservation.session_id.is_(None),
+                AgentCapacityReservation.tier.in_(("kg", "project")),
+                AgentCapacityReservation.routine_job_name.isnot(None),
+                AgentCapacityReservation.local_session_id.startswith(
+                    "_drainer-worker:"
+                ),
+            )
+            .order_by(AgentCapacityReservation.id)
+            .limit(limit)
+        ).all()
+        sqlite = session.get_bind().dialect.name == "sqlite"
+        table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+        for permit in permits:
+            workflow_id = _lost_owner_workflow(permit)
+            created_at = permit.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if (
+                workflow_id is None
+                or workflow_id == current_workflow_id
+                or created_at > cutoff
+            ):
+                continue
+            state = _drainer_workflow_state(session, workflow_id)
+            if (
+                state is None
+                or state[0] not in _TERMINAL_WORKFLOW_STATUSES
+                or state[1] > cutoff_ms
+            ):
+                continue
+            if session.exec(
+                select(AgentSession.id).where(
+                    AgentSession.local_session_id == permit.local_session_id
+                )
+            ).first():
+                continue
+            if not cancel_unbound(
+                session,
+                permit.local_session_id,
+                permit.pending_seq,
+                outcome="lost_before_session",
+            ):
+                continue
+            holder = f"{CLAIM_HOLDER}:{workflow_id}:"
+            released = session.execute(
+                text(
+                    f"UPDATE {table} SET locked_by = NULL, locked_at = NULL "
+                    "WHERE name = :name AND locked_by IS NOT NULL "
+                    "AND substr(locked_by, 1, :holder_len) = :holder "
+                    "AND (last_status IS NULL OR last_status != :unknown)"
+                ),
+                {
+                    "name": permit.routine_job_name,
+                    "holder": holder,
+                    "holder_len": len(holder),
+                    "unknown": unknown,
+                },
+            ).rowcount
+            settled.append(permit.id)
+            logger.warning(
+                "Luna drainer settled permit %s lost before session: workflow %s "
+                "is %s, job %s lease released=%s",
+                permit.id,
+                workflow_id,
+                state[0],
+                permit.routine_job_name,
+                bool(released),
+            )
+        session.commit()
+        set_attributes(
+            span,
+            {
+                "drain.lost_before_session.candidates": len(permits),
+                "drain.lost_before_session.settled": len(settled),
+            },
+        )
+    return settled
+
+
 def _session_key(
     workflow_id: str, job_name: str, node_key: str = DRAINER_NODE_KEY
 ) -> str:
@@ -1123,9 +1387,17 @@ def drain_cycle() -> dict:
         except Exception:  # noqa: BLE001 - cleanup retry must not stop the cycle
             logger.warning("Luna drainer stranded cleanup retry failed", exc_info=True)
             stranded = {"stranded": -1, "retired": 0}
+        try:
+            lost = settle_lost_drainer_reservations(workflow_id)
+        except Exception:  # noqa: BLE001 - the sweep must not stop the cycle
+            logger.warning(
+                "Luna drainer lost-before-session sweep failed", exc_info=True
+            )
+            lost = []
         set_attributes(
             span,
             {
+                "drain.lost_before_session_settled": len(lost),
                 "drain.stranded_cleanups": stranded["stranded"],
                 "drain.stranded_cleanups_retired": stranded["retired"],
                 "drain.workflow_id": workflow_id,
@@ -1409,6 +1681,19 @@ def drain_cycle() -> dict:
         # unvalidated int(env), so setting it to 0 as a way to pause the lane
         # would otherwise satisfy 0 >= 0 and chain an endless one-per-second
         # no-op, writing unbounded workflow_status rows.
+        # The cycle heartbeat: why the last poll did not claim, even when the
+        # cycle claimed nothing at all.
+        idle_reason = _LAST_CLAIM_OUTCOME.pop(workflow_id, None)
+        if idle_reason is not None and idle_reason != "claimed":
+            set_attributes(
+                span, {"drain.idle_reason": idle_reason[:SPAN_SUMMARY_MAX_CHARS]}
+            )
+            logger.info(
+                "Luna drainer cycle %s ended after %s job(s); last claim: %s",
+                workflow_id,
+                processed,
+                idle_reason,
+            )
         chained = False
         if idle_rotation or (
             processed and succeeded and processed >= settings["max_jobs_per_cycle"]
@@ -1425,7 +1710,11 @@ def drain_cycle() -> dict:
                 "drain.outcome": (
                     "bound_reached"
                     if processed >= settings["max_jobs_per_cycle"] and processed > 0
-                    else "queue_empty"
+                    else (
+                        "queue_empty"
+                        if idle_reason in (None, "claimed", "no_due_job")
+                        else "blocked"
+                    )
                 ),
             },
         )

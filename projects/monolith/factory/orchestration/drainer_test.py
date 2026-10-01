@@ -3374,3 +3374,219 @@ def test_recall_cache_maintenance_retains_live_receipts_and_bounds_deletion(
             recall_cache.cache_key("Receipt 1\n\nReceipt body"),
             recall_cache.cache_key("Receipt 2\n\nReceipt body"),
         }
+
+
+def test_kg_daily_allowance_refusal_is_named_on_every_poll(admission_database, caplog):
+    """A spent KG allowance must not read as an empty queue (2026-10-01)."""
+    import logging
+
+    _queued_job(admission_database, "kg:due")
+    drainer._LAST_CLAIM_OUTCOME.clear()
+    with caplog.at_level(logging.INFO, logger=drainer.logger.name):
+        assert _admitted_claim("wf-spent", cap=0) is None
+        assert _admitted_claim("wf-spent", cap=0) is None
+
+    outcome = drainer._LAST_CLAIM_OUTCOME["wf-spent"]
+    assert "kg_refused: daily_allowance_exhausted" in outcome
+    assert outcome.endswith("no_due_job")
+    spans = _spans_named("drain.claim_job")
+    assert len(spans) == 2
+    for span in spans:
+        assert span.attributes["drain.claim_outcome"] == outcome
+        assert span.attributes["drain.kg_queue_due"] == 1
+        assert span.attributes["drain.kg_refusal"] == (
+            "daily_allowance_exhausted (kg-rolling-24h: used=0 unbound=0 limit=0)"
+        )
+    # Logged once on change, at warning because due KG work is blocked.
+    logged = [r for r in caplog.records if "did not claim" in r.getMessage()]
+    assert len(logged) == 1 and logged[0].levelno == logging.WARNING
+
+
+def test_claim_outcome_names_empty_queue_and_claim(admission_database):
+    drainer._LAST_CLAIM_OUTCOME.clear()
+    assert _admitted_claim("wf-empty") is None
+    assert drainer._LAST_CLAIM_OUTCOME["wf-empty"] == "no_due_job"
+    _queued_job(admission_database, "kg:one")
+    assert _admitted_claim("wf-empty", index=1)["name"] == "kg:one"
+    assert drainer._LAST_CLAIM_OUTCOME["wf-empty"] == "claimed"
+    first, second = _spans_named("drain.claim_job")
+    assert first.attributes["drain.claim_outcome"] == "no_due_job"
+    assert first.attributes["drain.kg_queue_due"] == 0
+    assert second.attributes["drain.claim_outcome"] == "claimed"
+
+
+def test_cycle_heartbeat_reports_blocked_idle_reason(monkeypatch):
+    # _run's claim returns None at once; this is what the real claim step
+    # leaves behind for the cycle when the KG allowance is spent.
+    monkeypatch.setattr(
+        drainer,
+        "_LAST_CLAIM_OUTCOME",
+        {FakeDBOS.workflow_id: "kg_refused: daily_allowance_exhausted; no_due_job"},
+    )
+    monkeypatch.setattr(
+        drainer,
+        "retry_stranded_drainer_cleanups",
+        lambda: {
+            "stranded": 0,
+            "retired": 0,
+        },
+    )
+    result, *_ = _run(monkeypatch, [])
+    assert result["processed"] == 0
+    (cycle,) = _spans_named("drain.cycle")
+    assert cycle.attributes["drain.outcome"] == "blocked"
+    assert cycle.attributes["drain.idle_reason"].startswith("kg_refused")
+    assert cycle.attributes["drain.lost_before_session_settled"] == 0
+
+
+def _lost_permit(engine, *, workflow_id, job, age_seconds=3600):
+    from datetime import datetime, timedelta, timezone
+    from factory.execution.models import AgentCapacityReservation
+
+    local = f"{workflow_id}:kg-drain:{job}"
+    with Session(engine) as db:
+        db.execute(
+            text("""INSERT INTO routine_jobs
+            (name,routine_kind,next_run_at,payload,locked_by,locked_at,ttl_secs)
+            VALUES (:name,'kg-drain','2026-01-01','{}',:holder,'2026-01-01',44100)"""),
+            {"name": job, "holder": f"luna-drainer:{workflow_id}:14"},
+        )
+        row = AgentCapacityReservation(
+            local_session_id=local,
+            pending_seq=1,
+            tier="kg",
+            model="luna",
+            state="reserved",
+            daily_key="kg-rolling-24h",
+            routine_job_name=job,
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+        )
+        db.add(row)
+        db.commit()
+        return row.id, local
+
+
+def _workflow_states(monkeypatch, states):
+    import time
+
+    old_ms = int((time.time() - 3600) * 1000)
+
+    def lookup(_session, workflow_id):
+        status = states.get(workflow_id)
+        if status is None or isinstance(status, tuple):
+            return status
+        return status, old_ms
+
+    monkeypatch.setattr(drainer, "_drainer_workflow_state", lookup)
+
+
+def _permit_state(engine, permit_id):
+    from factory.execution.models import AgentCapacityReservation
+
+    with Session(engine) as db:
+        row = db.get(AgentCapacityReservation, permit_id)
+        return row.state, row.outcome
+
+
+def _lock_holder(engine, job):
+    with Session(engine) as db:
+        return db.execute(
+            text("SELECT locked_by FROM routine_jobs WHERE name = :n"), {"n": job}
+        ).scalar_one()
+
+
+def test_lost_before_session_sweep_settles_dead_workflow_permit(
+    admission_database, monkeypatch
+):
+    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
+    permit_id, _ = _lost_permit(
+        admission_database, workflow_id="_drainer-worker:0:1573", job="kg:orphan"
+    )
+    _workflow_states(monkeypatch, {"_drainer-worker:0:1573": "ERROR"})
+
+    assert drainer.settle_lost_drainer_reservations("_drainer-worker:0:1584") == [
+        permit_id
+    ]
+    assert _permit_state(admission_database, permit_id) == (
+        "settled",
+        "lost_before_session",
+    )
+    assert _lock_holder(admission_database, "kg:orphan") is None
+    # The released job is claimable again, and its allowance unit is back.
+    drainer._LAST_CLAIM_OUTCOME.clear()
+    assert _admitted_claim("_drainer-worker:0:1584", cap=1)["name"] == "kg:orphan"
+    (span,) = _spans_named("drain.lost_before_session_sweep")
+    assert span.attributes["drain.lost_before_session.settled"] == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["flag_off", "pending", "recent_workflow", "young_permit", "session", "unknown"],
+)
+def test_lost_before_session_sweep_refuses_without_proof(
+    admission_database, monkeypatch, case
+):
+    import time
+    from factory.execution import store
+
+    if case != "flag_off":
+        monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
+    workflow_id = "_drainer-worker:1:1522"
+    permit_id, local = _lost_permit(
+        admission_database,
+        workflow_id=workflow_id,
+        job="kg:held",
+        age_seconds=60 if case == "young_permit" else 3600,
+    )
+    states = {
+        "pending": {workflow_id: "PENDING"},
+        "recent_workflow": {workflow_id: ("CANCELLED", int(time.time() * 1000))},
+        "unknown": {},
+    }.get(case, {workflow_id: "ERROR"})
+    _workflow_states(monkeypatch, states)
+    if case == "session":
+        with Session(admission_database) as db:
+            store.create_session(
+                db, local, "<guest>", "main", "luna", admission_tier="kg"
+            )
+            db.commit()
+
+    assert drainer.settle_lost_drainer_reservations("_drainer-worker:1:1523") == []
+    assert _permit_state(admission_database, permit_id) == ("reserved", None)
+    assert _lock_holder(admission_database, "kg:held") == (
+        f"luna-drainer:{workflow_id}:14"
+    )
+
+
+def test_lost_before_session_sweep_never_touches_its_own_workflow(
+    admission_database, monkeypatch
+):
+    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
+    permit_id, _ = _lost_permit(
+        admission_database, workflow_id="_drainer-worker:0:9", job="kg:mine"
+    )
+    _workflow_states(monkeypatch, {"_drainer-worker:0:9": "SUCCESS"})
+    assert drainer.settle_lost_drainer_reservations("_drainer-worker:0:9") == []
+    assert _permit_state(admission_database, permit_id) == ("reserved", None)
+
+
+def test_lost_before_session_sweep_keeps_unknown_outcome_lease(
+    admission_database, monkeypatch
+):
+    monkeypatch.setenv("DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED", "true")
+    permit_id, _ = _lost_permit(
+        admission_database, workflow_id="_drainer-worker:0:7", job="kg:parked"
+    )
+    with Session(admission_database) as db:
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET last_status = 'invocation_outcome_unknown' "
+                "WHERE name = 'kg:parked'"
+            )
+        )
+        db.commit()
+    _workflow_states(monkeypatch, {"_drainer-worker:0:7": "ERROR"})
+    assert drainer.settle_lost_drainer_reservations("other") == [permit_id]
+    assert _lock_holder(admission_database, "kg:parked") == (
+        "luna-drainer:_drainer-worker:0:7:14"
+    )

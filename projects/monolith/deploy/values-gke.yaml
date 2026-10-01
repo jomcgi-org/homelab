@@ -180,6 +180,11 @@ agents:
     # guests answered 503/422 (workspace volume not mounted, CLI exit). Inert
     # until the control plane sends x-ember-invoke-outcome.
     guestAnswerSettlementEnabled: true
+  drainer:
+    # Settle drainer permits lost between reserve_start and session creation
+    # once their DBOS workflow is terminal (permit 10732 held a KG slot and a
+    # daily-allowance unit from 01:59 to 07:00 on 2026-10-01).
+    lostBeforeSessionSweepEnabled: true
 
 postgres:
   storage:

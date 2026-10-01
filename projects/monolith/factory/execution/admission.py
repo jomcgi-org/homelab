@@ -302,6 +302,40 @@ def reserve_start(
     daily_used counts all bound sessions in the caller's rolling window. Only
     unbound reservations are added, so binding does not double-charge allowance.
     """
+    return (
+        reserve_start_verdict(
+            db,
+            local_session_id,
+            tier=tier,
+            model=model,
+            pending_seq=pending_seq,
+            daily_key=daily_key,
+            daily_limit=daily_limit,
+            daily_used=daily_used,
+            routine_job_name=routine_job_name,
+        )
+        is None
+    )
+
+
+def reserve_start_verdict(
+    db: Session,
+    local_session_id: str,
+    *,
+    tier: str,
+    model: str | None,
+    pending_seq: int = 1,
+    daily_key: str | None = None,
+    daily_limit: int | None = None,
+    daily_used: int = 0,
+    routine_job_name: str | None = None,
+) -> str | None:
+    """``reserve_start`` that names its refusal: None admits, a reason refuses.
+
+    The reason is for telemetry only. A caller that drops a whole kind on a
+    refusal (the drainer does, for KG) must be able to say why, or a spent
+    daily allowance and a full lane look identical to an empty queue.
+    """
     if tier not in TIERS or pending_seq < 1:
         raise ValueError("Invalid server admission identity")
     lock_pool(db)
@@ -309,16 +343,18 @@ def reserve_start(
         select(AgentSession).where(AgentSession.local_session_id == local_session_id)
     ).first()
     if agent is not None and cleanup_pending(db, agent):
-        return False
+        return "cleanup_pending"
     adopt_existing(db)
     existing = reservation(db, local_session_id, pending_seq)
     if existing is not None:
-        return (
+        if (
             existing.tier == tier
             and existing.model == model
             and existing.routine_job_name == routine_job_name
             and existing.state in {"reserved", "running"}
-        )
+        ):
+            return None
+        return f"existing_reservation_{existing.state}"
     active = db.exec(
         select(AgentCapacityReservation).where(
             AgentCapacityReservation.state != "settled"
@@ -327,7 +363,7 @@ def reserve_start(
     if routine_job_name is not None and any(
         row.routine_job_name == routine_job_name for row in active
     ):
-        return False
+        return "routine_job_already_reserved"
     background_full = (
         tier != "interactive"
         and sum(r.tier != "interactive" for r in active) >= background_limit()
@@ -335,16 +371,16 @@ def reserve_start(
     kg_full = tier == "kg" and sum(r.tier == "kg" for r in active) >= kg_limit()
     if len(active) >= total_limit():
         _warn_stale_uncertain(active)
-        return False
+        return f"total_full ({len(active)}/{total_limit()})"
     if tier != "interactive":
         if background_full:
             _warn_stale_uncertain(active)
-            return False
+            return f"background_full (limit {background_limit()})"
         if _higher_priority_waiting(db, tier):
-            return False
+            return "higher_priority_waiting"
     if kg_full:
         _warn_stale_uncertain(active)
-        return False
+        return f"kg_full (limit {kg_limit()})"
     if daily_key is not None:
         if daily_limit is None or daily_limit < 0 or daily_used < 0:
             raise ValueError(
@@ -360,7 +396,10 @@ def reserve_start(
             )
         ).all()
         if daily_used + len(unbound) >= daily_limit:
-            return False
+            return (
+                f"daily_allowance_exhausted ({daily_key}: used={daily_used} "
+                f"unbound={len(unbound)} limit={daily_limit})"
+            )
     db.add(
         AgentCapacityReservation(
             local_session_id=local_session_id,
@@ -372,7 +411,7 @@ def reserve_start(
         )
     )
     db.flush()
-    return True
+    return None
 
 
 def free_background_slots(db: Session) -> int:
@@ -513,7 +552,13 @@ def settle(
     db.add(row)
 
 
-def cancel_unbound(db: Session, local_session_id: str, pending_seq: int = 1) -> bool:
+def cancel_unbound(
+    db: Session,
+    local_session_id: str,
+    pending_seq: int = 1,
+    *,
+    outcome: str = "cancelled_before_session",
+) -> bool:
     """Cancel only a reservation whose session has provably never been created."""
     lock_pool(db)
     row = reservation(db, local_session_id, pending_seq)
@@ -528,7 +573,7 @@ def cancel_unbound(db: Session, local_session_id: str, pending_seq: int = 1) -> 
     ):
         return False
     row.state = "settled"
-    row.outcome = "cancelled_before_session"
+    row.outcome = outcome
     row.settled_at = datetime.now(timezone.utc)
     db.add(row)
     return True

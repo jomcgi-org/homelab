@@ -312,6 +312,56 @@ def test_atomic_daily_allowance_reserves_unbound_then_counts_bound_once(database
     assert not reserve(database, "next", "kg", **{**args, "daily_used": 400})
 
 
+def test_reserve_start_verdict_names_each_refusal(database):
+    """The drainer reports these, so a spent allowance is not a silent idle."""
+    with Session(database) as db:
+        assert (
+            admission.reserve_start_verdict(
+                db, "kg-a", tier="kg", model="luna", routine_job_name="job"
+            )
+            is None
+        )
+        assert (
+            admission.reserve_start_verdict(
+                db, "kg-b", tier="kg", model="luna", routine_job_name="job"
+            )
+            == "routine_job_already_reserved"
+        )
+        assert admission.reserve_start_verdict(
+            db,
+            "kg-c",
+            tier="kg",
+            model="luna",
+            daily_key="kg-rolling-24h",
+            daily_limit=400,
+            daily_used=400,
+        ) == (
+            "daily_allowance_exhausted (kg-rolling-24h: used=400 unbound=0 limit=400)"
+        )
+        assert (
+            admission.reserve_start_verdict(db, "kg-d", tier="kg", model="luna") is None
+        )
+        assert admission.reserve_start_verdict(
+            db, "kg-e", tier="kg", model="luna"
+        ).startswith("kg_full")
+        assert (
+            admission.reserve_start_verdict(db, "kg-a", tier="kg", model="sol")
+            == "existing_reservation_reserved"
+        )
+        db.rollback()
+
+
+def test_cancel_unbound_records_the_callers_outcome(database):
+    from factory.execution.models import AgentCapacityReservation
+
+    assert reserve(database, "lost", "kg")
+    with Session(database) as db:
+        assert admission.cancel_unbound(db, "lost", outcome="lost_before_session")
+        db.commit()
+        (row,) = db.exec(select(AgentCapacityReservation)).all()
+        assert (row.state, row.outcome) == ("settled", "lost_before_session")
+
+
 def test_only_uncreated_reserved_session_can_cancel(database):
     assert reserve(database, "uncreated", "kg")
     with Session(database) as db:
