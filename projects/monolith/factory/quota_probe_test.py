@@ -291,6 +291,34 @@ def test_codex_probe_skips_fresh_grant(db, luna_model):
     assert probe.codex_claim(codex_payload(grants)) is None
 
 
+@pytest.mark.parametrize("refreshed_grant", ["codex-b", "codex-cluster"])
+def test_codex_probe_stops_after_either_broker_grant_refresh(
+    db, monkeypatch, luna_model, refreshed_grant
+):
+    from factory.execution import provider_quota
+
+    raw = {
+        "providers": {},
+        "grants_complete": True,
+        "grants": {
+            "codex-cluster": codex_grant(3062.0),
+            "codex-b": codex_grant(172800.0),
+        },
+    }
+    assert probe.codex_claim(provider_quota._available_result(raw)) is not None
+    # Let the 900-second cadence expire so it cannot mask a missing fresh guard.
+    monkeypatch.setattr(probe.controls, "_now", lambda: NOW + timedelta(seconds=901))
+    raw["grants"][refreshed_grant]["age_seconds"] = 12.0
+    assert probe.codex_claim(provider_quota._available_result(raw)) is None
+    with Session(db) as session:
+        starts = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "codex_quota_probe_started"
+            )
+        ).all()
+        assert len(starts) == 1
+
+
 def test_codex_probe_skips_all_exhausted_pool(db, luna_model):
     future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
     flagged = {

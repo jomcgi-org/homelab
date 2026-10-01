@@ -3067,6 +3067,86 @@ def test_kg_provider_defers_when_every_grant_is_stale(monkeypatch):
     assert "stale_observation" in reason
 
 
+@pytest.mark.parametrize("refreshed_grant", ["codex-b", "codex-cluster"])
+def test_broker_refresh_reopens_all_stale_kg_gate(
+    admission_database, monkeypatch, caplog, refreshed_grant
+):
+    import httpx
+    from sqlmodel import select
+
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+    from factory.orchestration import model_pool
+
+    def grant(age):
+        return {
+            "provider": "codex",
+            "observed": True,
+            "status": "allowed",
+            "exhausted": False,
+            "age_seconds": age,
+            "windows": [{"name": "primary", "used_percent": 10.0, "expired": False}],
+        }
+
+    # The provider headline can be fresh while both individual grants are stale.
+    raw = {
+        "providers": {"codex": grant(10.0)},
+        "grants_complete": True,
+        "grants": {"codex-cluster": grant(3062.0), "codex-b": grant(172800.0)},
+    }
+    requests = []
+
+    def request(method, url, *, timeout):
+        assert (method, url, timeout) == ("GET", "http://broker/quota", 5)
+        requests.append(url)
+        return httpx.Response(200, json=raw, request=httpx.Request(method, url))
+
+    monkeypatch.setenv("EMBER_TOKENBROKER_URL", "http://broker")
+    monkeypatch.setenv("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", "900")
+    monkeypatch.setattr(provider_quota.broker_client, "request_sync", request)
+    monkeypatch.setattr(drainer, "kg_provider_walled", _KG_PROVIDER_WALLED)
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    _queued_job(admission_database, "kg-refresh")
+    provider_quota.reset_cache()
+    try:
+        quota = model_pool.quota_summary()
+        views = {view["grant"]: view for view in quota["codex"]["grant_views"]}
+        assert model_pool.grant_observation_state(views["codex-cluster"]) == "stale"
+        assert model_pool.grant_observation_state(views["codex-b"]) == "stale"
+        assert model_pool.kg_quota_max_age_seconds() == 900
+        assert _KG_PROVIDER_WALLED() == (
+            True,
+            "grant codex-cluster stale_observation age 3062; "
+            "grant codex-b stale_observation age 172800",
+        )
+        with caplog.at_level("INFO", logger=drainer.__name__):
+            assert _admitted_claim("wf-stale") is None
+        assert "KG drain claim deferred: luna capacity is unconfirmed" in caplog.text
+        with Session(admission_database) as db:
+            assert db.exec(select(AgentCapacityReservation)).all() == []
+            assert db.exec(select(AgentSession)).all() == []
+            assert (
+                db.execute(
+                    text("SELECT locked_by FROM routine_jobs WHERE name='kg-refresh'")
+                ).scalar()
+                is None
+            )
+
+        raw["grants"][refreshed_grant]["age_seconds"] = 12.0
+        provider_quota.reset_cache()
+        assert _KG_PROVIDER_WALLED() == (False, "confirmed_available")
+        quota = model_pool.quota_summary()
+        views = {view["grant"]: view for view in quota["codex"]["grant_views"]}
+        other = "codex-cluster" if refreshed_grant == "codex-b" else "codex-b"
+        assert views[refreshed_grant]["age_seconds"] == 12.0
+        assert model_pool.grant_observation_state(views[refreshed_grant]) == "fresh"
+        assert model_pool.grant_observation_state(views[other]) == "stale"
+        claimed = _admitted_claim("wf-refreshed")
+        assert claimed is not None and claimed["name"] == "kg-refresh"
+        assert requests == ["http://broker/quota", "http://broker/quota"]
+    finally:
+        provider_quota.reset_cache()
+
+
 def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
     import factory.orchestration.model_pool as model_pool
 
