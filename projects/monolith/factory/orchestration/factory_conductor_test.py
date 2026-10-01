@@ -918,6 +918,21 @@ def feedback_audits(engine, task_id):
         ]
 
 
+def clamp_audits(engine, task_id):
+    from factory.orchestration.factory_models import FactoryAudit
+
+    with Session(engine) as db:
+        return [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "conductor_bound_clamped",
+                )
+            ).all()
+        ]
+
+
 def test_discard_before_task_branch_exists_records_absent_head_and_advances(
     feedback_db, monkeypatch
 ):
@@ -9049,6 +9064,21 @@ def test_plan_action_is_a_valid_decision_and_bounds_its_edits():
         },
         conductor.DECISION_SCHEMA,
     )
+    # Artifact validation must admit excess bounds for policy handling, not
+    # turn them into invalid artifacts and spend another planner turn.
+    edit = plan_edit(
+        "fix",
+        "implement",
+        max_cost_usd=99.0,
+        max_attempts=99,
+        turn_timeout_seconds=10**9,
+    )
+    assert not schema_errors(edit, conductor.EDIT_SCHEMA)
+    assert not schema_errors(edit, conductor.DECISION_SCHEMA)
+    assert not schema_errors(
+        {"action": "plan", "reason": "Deliver the fix", "edits": [edit]},
+        conductor.DECISION_SCHEMA,
+    )
     assert schema_errors(
         {"action": "plan", "reason": "no edits", "edits": []},
         conductor.DECISION_SCHEMA,
@@ -9121,11 +9151,193 @@ def test_plan_applies_a_whole_dag_under_one_expected_version(feedback_db):
     assert feedback_audits(feedback_db, task["id"]) == []
 
 
+def test_plan_clamps_cost_and_audits_the_applied_node(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", ["scope"], max_cost_usd=99.0),
+            plan_edit("check", "review", ["fix"]),
+        ],
+    )
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert set(nodes) == {
+        "conductor_1",
+        "investigate_scope",
+        "implement_fix",
+        "review_check",
+    }
+    assert nodes["implement_fix"]["max_cost_usd"] == 2.0
+    assert nodes["implement_fix"]["deps"] == ["investigate_scope"]
+    assert nodes["review_check"]["deps"] == ["implement_fix"]
+    assert feedback_audits(feedback_db, task["id"]) == []
+    audits = clamp_audits(feedback_db, task["id"])
+    assert len(audits) == 1
+    assert audits[0] == {
+        "workflow_id": "factory-decision:conductor_1:1:implement_fix",
+        "cause": "factory-decision:conductor_1:1",
+        "node_key": "implement_fix",
+        "field": "max_cost_usd",
+        "requested": 99.0,
+        "applied": 2.0,
+    }
+
+
+def test_single_add_node_clamps_cost_and_audits_once(feedback_db):
+    task, policy = feedback_task()
+    decision = plan_edit("fix", "implement", max_cost_usd=99.0)
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    runs = conductor.graph.node_runs(task["id"])
+    conductor.apply_decision(task, policy, run, runs)
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert nodes["implement_fix"]["max_cost_usd"] == 2.0
+    assert feedback_audits(feedback_db, task["id"]) == []
+    audits = clamp_audits(feedback_db, task["id"])
+    assert len(audits) == 1
+    assert audits[0]["node_key"] == "implement_fix"
+    assert audits[0]["cause"] == "factory-decision:conductor_1:1"
+    assert audits[0]["field"] == "max_cost_usd"
+    assert audits[0]["requested"] == 99.0
+    assert audits[0]["applied"] == 2.0
+    conductor.apply_decision(task, policy, run, runs)
+    # Exercise the audit fence itself, not only the processed-decision fence.
+    conductor._audit_clamped_bounds(
+        task["id"],
+        "factory-decision:conductor_1:1",
+        [conductor._prepare_add(task, policy, decision)],
+    )
+    assert clamp_audits(feedback_db, task["id"]) == audits
+
+
+@pytest.mark.parametrize("model, applied", [("opus", 10.0), ("luna", 0.04)])
+def test_plan_clamps_review_cost_to_model_reservation(feedback_db, model, applied):
+    task, policy = planned_task(
+        feedback_task(model_pools={"reviewer": ["opus", "luna"]}),
+        [plan_edit("check", "review", model=model, max_cost_usd=99.0)],
+    )
+    node = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == "review_check"
+    )
+    assert node["max_cost_usd"] == conductor._review_reservation_usd(
+        task, policy, model
+    )
+    assert node["max_cost_usd"] == applied
+    assert feedback_audits(feedback_db, task["id"]) == []
+    audits = clamp_audits(feedback_db, task["id"])
+    assert len(audits) == 1
+    assert audits[0]["node_key"] == "review_check"
+    assert audits[0]["field"] == "max_cost_usd"
+    assert audits[0]["requested"] == 99.0
+    assert audits[0]["applied"] == applied
+
+
+@pytest.mark.parametrize("cost", [1.25, 2.0])
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+def test_cost_at_or_below_policy_is_unchanged_and_not_audited(
+    feedback_db, cost, action
+):
+    task, policy = feedback_task()
+    edit = plan_edit("fix", "implement", max_cost_usd=cost)
+    assert "cost_clamped" not in conductor._prepare_add(task, policy, edit)
+    decision = (
+        {"action": "plan", "reason": "Deliver the fix", "edits": [edit]}
+        if action == "plan"
+        else edit
+    )
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    node = next(
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == "implement_fix"
+    )
+    assert node["max_cost_usd"] == cost
+    assert feedback_audits(feedback_db, task["id"]) == []
+    assert clamp_audits(feedback_db, task["id"]) == []
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize(
+    "refusal",
+    ["unknown_dep", "stale_version", "envelope_exceeded", "bound_exceeds_policy"],
+)
+def test_refused_decision_never_audits_a_proposed_cost_clamp(
+    feedback_db, action, refusal
+):
+    task, policy = feedback_task(max_turns=1 if refusal == "envelope_exceeded" else 18)
+    edit = plan_edit("fix", "implement", max_cost_usd=99.0)
+    if action == "plan":
+        later = plan_edit(
+            "check", "investigate", ["never_added"] if refusal == "unknown_dep" else []
+        )
+        if refusal == "bound_exceeds_policy":
+            later["max_attempts"] = 99
+        decision = {
+            "action": "plan",
+            "reason": "Deliver the fix",
+            "edits": [edit, later],
+        }
+    else:
+        if refusal == "unknown_dep":
+            edit["deps"] = ["never_added"]
+        if refusal == "bound_exceeds_policy":
+            edit["turn_timeout_seconds"] = 10**9
+        decision = edit
+    if refusal == "stale_version":
+        decision["expected_version"] = 0
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    audits = feedback_audits(feedback_db, task["id"])
+    assert len(audits) == 1 and audits[0]["refusal_code"] == refusal
+    assert clamp_audits(feedback_db, task["id"]) == []
+
+
+def test_plan_audits_each_clamped_node_once(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(),
+        [
+            plan_edit("scope", "investigate", max_cost_usd=8.0),
+            plan_edit("fix", "implement", ["scope"], max_cost_usd=99.0),
+        ],
+    )
+    audits = clamp_audits(feedback_db, task["id"])
+    assert len(audits) == 2
+    assert {a["node_key"]: (a["requested"], a["applied"]) for a in audits} == {
+        "investigate_scope": (8.0, 2.0),
+        "implement_fix": (99.0, 2.0),
+    }
+    assert feedback_audits(feedback_db, task["id"]) == []
+
+
+def test_planner_prompt_explains_cost_clamping_and_other_bound_refusals():
+    assert (
+        "max_cost_usd above new_node_max_cost_usd (or the review "
+        "reservation for review nodes) is lowered to that ceiling and audited"
+        in conductor._PLANNER_CHARTER
+    )
+    assert (
+        "max_attempts and turn_timeout_seconds above policy are still refused "
+        "with bound_exceeds_policy" in conductor._PLANNER_CHARTER
+    )
+
+
 @pytest.mark.parametrize(
     "bad, code",
     [
         ({"model": "fable"}, "model_not_allowed"),
-        ({"max_cost_usd": 99.0}, "bound_exceeds_policy"),
+        ({"max_attempts": 99}, "bound_exceeds_policy"),
+        ({"turn_timeout_seconds": 10**9}, "bound_exceeds_policy"),
+        ({"max_cost_usd": 0}, "bound_invalid"),
+        ({"max_cost_usd": -1}, "bound_invalid"),
+        ({"max_cost_usd": True}, "bound_invalid"),
+        ({"max_cost_usd": float("nan")}, "bound_invalid"),
+        ({"max_cost_usd": float("inf")}, "bound_invalid"),
+        ({"max_cost_usd": "99"}, "bound_invalid"),
         ({"max_attempts": 0}, "bound_invalid"),
         ({"deps": ["never_added"]}, "unknown_dep"),
     ],
@@ -9147,6 +9359,7 @@ def test_one_bad_edit_rejects_the_whole_plan(feedback_db, bad, code):
     assert len(audits) == 1 and audits[0]["refusal_code"] == code
     assert audits[0]["decision_action"] == "plan"
     assert "edit 1" in audits[0]["reason"] and "fix" in audits[0]["reason"]
+    assert clamp_audits(feedback_db, task["id"]) == []
 
 
 def test_plan_preserves_the_reserved_conductor_and_engine_round_prefixes(feedback_db):
