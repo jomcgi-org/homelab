@@ -654,9 +654,9 @@ time uses `executor_monotonic` around the single transport delivery await.
 Runtime duration is `guest_reported`, accepted only as an integer from zero
 to less than seven days. The block records these clock labels explicitly.
 
-Null means unavailable. Receipt adoption has no executor measurement; error,
-unknown-invocation and pre-dispatch cancellation rows have no runtime or
-executor measurement. Provider retries remain null because current adapter
+Null means unavailable. Receipt adoption has no executor measurement;
+executor-failure error rows, unknown-invocation and pre-dispatch cancellation
+rows have no runtime or executor measurement. Provider retries remain null because current adapter
 results do not report them. Dispatch count tracks executor dispatches of the
 pending sequence; the factory node attempt and CLI loop count remain separate.
 Drain continuations retain each prior observation under `drain_continuations`
