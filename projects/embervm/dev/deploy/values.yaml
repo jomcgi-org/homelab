@@ -444,3 +444,10 @@ bazelQuery:
 shotter:
   guestImage:
     repository: ""
+
+# #5772 staged activation, dev first: one bounded-concurrency bake driver with
+# the per-identity sibling lock and class-ceiling skip, instead of one
+# sequential init container per workload. maxConcurrency stays at the chart
+# default and remote retention stays off. Set back to false to roll back.
+rootfsBuilder:
+  parallelEnabled: true
