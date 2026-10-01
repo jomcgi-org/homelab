@@ -6,14 +6,19 @@
  *
  * Every rule follows the tier's drawing conventions: 1px ink for a panel
  * outline, --stroke for internal partitions, --line for row separators. No
- * radii, no shadows, no gradients, no fills except the accent markers and the
- * --band strips. */
+ * radii, no shadows, no gradients, no fills except the accent markers, the
+ * --band strips and the two diff tints. */
 
 .factory-page.activity-page {
   /* One accent token beyond the shared set: a running node's box needs a fill
      faint enough to stay behind its label, and --band is the neutral strip, not
      an accent one. --hatch is already defined on .factory-page. */
   --accent-band: color-mix(in srgb, var(--accent) 10%, var(--sheet));
+  /* Diff tints: the add and delete rows carry a wash of their colour so a
+     hunk reads as a shape before the glyphs are parsed. Both mixes are faint
+     enough to keep --ink above 7:1 on them in either scheme. */
+  --add-band: color-mix(in srgb, var(--ok) 13%, var(--sheet));
+  --del-band: color-mix(in srgb, var(--tone-disk) 11%, var(--sheet));
   /* The overview and the context view are fitted to one screen: their lists
      paginate rather than grow. These three are records, read top to bottom and
      as long as their content, so they scroll as ordinary documents. */
@@ -29,12 +34,13 @@
   min-height: 0;
 }
 
-.factory-page.activity-page .code {
+.factory-page.activity-page .code,
+.factory-page.activity-page code {
   font-family: var(--font-code);
 }
 
 /* Section labels here carry a right-aligned note: the snapshot time, the window,
-   or the instruction for the panel below. */
+   or a count for the panel below. */
 .factory-page.activity-page .sec-label {
   display: flex;
   gap: 0.8em;
@@ -65,7 +71,7 @@
 }
 
 /* Marks: one square, one meaning, shared by the ledger rows, the node strips,
-   the plan figure and the key. factory.css defines the square; these are this
+   the plan strip and the key. factory.css defines the square; these are this
    view's vocabulary for what fills it. */
 .factory-page.activity-page .mark.done,
 .factory-page.activity-page .mark.landed {
@@ -287,23 +293,16 @@
   background: var(--hatch);
 }
 
-.factory-page.activity-page .foot {
-  max-width: 70ch;
-  margin: 1.6rem 0 0;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.7rem;
-  line-height: 1.5;
-}
-
-.factory-page.activity-page .empty {
+.factory-page.activity-page .empty,
+.factory-page.activity-page .none {
   margin: 0;
   color: var(--ink-2);
-  font-size: 0.88rem;
+  font-family: var(--font-code);
+  font-size: 0.72rem;
 }
 
-/* Task page: the title block and the boxed spec sit side by side, the way a
-   drawing carries its part list beside the part. */
+/* Task and session heads: the title block and the boxed spec sit side by
+   side, the way a drawing carries its part list beside the part. */
 .factory-page.activity-page .task-head,
 .factory-page.activity-page .sess-head {
   display: grid;
@@ -313,6 +312,10 @@
   margin-bottom: 2rem;
 }
 
+.factory-page.activity-page .title-block {
+  min-width: 0;
+}
+
 .factory-page.activity-page .task-head h2 {
   margin: 0.1em 0 0.3em;
   font-size: 1.55rem;
@@ -320,6 +323,7 @@
   letter-spacing: -0.02em;
   line-height: 1.15;
   text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .factory-page.activity-page .sess-head h2 {
@@ -328,6 +332,7 @@
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .factory-page.activity-page .sess-head h2 .who {
@@ -347,20 +352,49 @@
   letter-spacing: 0.02em;
 }
 
+.factory-page.activity-page .id a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.factory-page.activity-page .id a:hover {
+  color: var(--accent-ink);
+}
+
 .factory-page.activity-page .task-head .links {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4em 1.2em;
+  margin-bottom: 1rem;
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.72rem;
 }
 
 .factory-page.activity-page .task-head .links a {
+  display: inline-flex;
+  gap: 0.45em;
+  align-items: center;
   color: var(--ink-2);
+  text-decoration: none;
 }
 
 .factory-page.activity-page .task-head .links a:hover {
+  color: var(--accent-ink);
+}
+
+.factory-page.activity-page .sess-head .lede {
+  margin: 0.4em 0 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
+.factory-page.activity-page .sess-head .lede a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.factory-page.activity-page .sess-head .lede a:hover {
   color: var(--accent-ink);
 }
 
@@ -377,6 +411,7 @@
 
 .factory-page.activity-page .spec {
   min-width: 17em;
+  max-width: 100%;
   border: 1px solid var(--ink);
   font-family: var(--font-code);
   font-size: 0.72rem;
@@ -384,10 +419,14 @@
 
 .factory-page.activity-page .spec div {
   display: grid;
-  grid-template-columns: 7em 1fr;
+  grid-template-columns: 7em minmax(0, 1fr);
   gap: 0.6em;
   padding: 0.35em 0.7em;
   border-top: 1px solid var(--line);
+}
+
+.factory-page.activity-page .spec div > span:last-child {
+  overflow-wrap: anywhere;
 }
 
 .factory-page.activity-page .spec div:first-child {
@@ -406,58 +445,15 @@
   color: var(--ink-3);
 }
 
-.factory-page.activity-page .brief {
-  max-width: 64ch;
-  margin: 0.9em 0 0;
-  font-size: 0.95rem;
-}
-
-.factory-page.activity-page .brief p {
-  margin: 0 0 0.7em;
-}
-
-.factory-page.activity-page .brief p:last-child {
-  margin: 0;
-}
-
-/* A brief paragraph that is only a markdown heading reads as a label, not as a
-   level in the page outline, so it takes the section label's type and stays a
-   paragraph. */
-.factory-page.activity-page .brief p.h {
-  margin: 1.2em 0 0.5em;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.factory-page.activity-page .brief p.h:first-child {
-  margin-top: 0;
-}
-
-.factory-page.activity-page .brief b {
-  font-weight: 600;
-}
-
-.factory-page.activity-page .brief.lede {
-  margin-top: 0.4em;
-  color: var(--ink-2);
-  font-size: 0.9rem;
-}
-
-.factory-page.activity-page .outcome-panel {
-  margin-top: 1.4rem;
-}
-
-/* Outcome: the verdict word in the left column, the sentence beside it, and
-   any stop event ruled off underneath. */
+/* Verdict: the word in the left column, the record's own clause beside it. */
 .factory-page.activity-page .verdict {
   display: grid;
   grid-template-columns: 7em minmax(0, 1fr);
   gap: 1em;
   align-items: baseline;
+  padding: 0.7em 0.8em;
+  border: 1px solid var(--stroke);
+  background: var(--band);
 }
 
 .factory-page.activity-page .verdict .big {
@@ -477,179 +473,310 @@
 }
 
 .factory-page.activity-page .verdict p {
-  max-width: 60ch;
   margin: 0;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .factory-page.activity-page .verdict p a {
   color: var(--accent-ink);
 }
 
-.factory-page.activity-page .notice {
-  display: grid;
-  grid-template-columns: 7em minmax(0, 1fr);
-  gap: 1em;
-  align-items: baseline;
-  margin: 0.9em 0 0;
-  padding: 0.6em 0 0;
-  border-top: 1px solid var(--line);
-  font-size: 0.88rem;
+/* Stop events: one line each, newest first, the ones that needed a person
+   marked in the disk tone. */
+.factory-page.activity-page .stops {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-code);
+  font-size: 0.7rem;
 }
 
-.factory-page.activity-page .notice b {
+.factory-page.activity-page .stops li {
+  display: grid;
+  grid-template-columns: 11em 11em minmax(0, 1fr) 4em;
+  gap: 0.8em;
+  padding: 0.3em 0.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.factory-page.activity-page .stops li:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.factory-page.activity-page .stops .why {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.factory-page.activity-page .stops .who {
+  text-align: right;
+}
+
+.factory-page.activity-page .stops li.warn .who {
+  color: var(--tone-disk);
+}
+
+/* Prose written by an agent or an issue author, rendered from markdown.js.
+   Headings read as labels, not as levels in the page outline. */
+.factory-page.activity-page .md {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.factory-page.activity-page .md > :first-child,
+.factory-page.activity-page .reply > :first-child {
+  margin-top: 0;
+}
+
+.factory-page.activity-page .md p,
+.factory-page.activity-page .reply p {
+  margin: 0.55em 0;
+}
+
+.factory-page.activity-page .md .md-h,
+.factory-page.activity-page .reply .md-h {
+  margin: 1.1em 0 0.35em;
   color: var(--ink-2);
   font-family: var(--font-code);
-  font-size: 0.64rem;
+  font-size: 0.66rem;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.factory-page.activity-page .notice.warn b {
-  color: var(--tone-disk);
+.factory-page.activity-page .md .md-h.deep,
+.factory-page.activity-page .reply .md-h.deep {
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
-.factory-page.activity-page .notice .when {
-  display: block;
-  margin-top: 0.15em;
-  color: var(--ink-3);
+.factory-page.activity-page .md ul,
+.factory-page.activity-page .md ol,
+.factory-page.activity-page .reply ul,
+.factory-page.activity-page .reply ol {
+  margin: 0.35em 0;
+  padding-left: 1.4em;
+}
+
+/* The site resets list markers; a reply's lists get them back, the marker in
+   the secondary ink so the text stays the darker thing. */
+.factory-page.activity-page .md ul,
+.factory-page.activity-page .reply ul {
+  list-style: square;
+}
+
+.factory-page.activity-page .md ol,
+.factory-page.activity-page .reply ol {
+  list-style: decimal;
+}
+
+.factory-page.activity-page .md li::marker,
+.factory-page.activity-page .reply li::marker {
+  color: var(--ink-2);
   font-family: var(--font-code);
-  font-size: 0.68rem;
+  font-size: 0.85em;
 }
 
-/* The plan figure. Click a node to open its step; hovering either one points at
-   the other. It scrolls sideways rather than shrinking below legibility. */
-.factory-page.activity-page .fig {
+.factory-page.activity-page .md li,
+.factory-page.activity-page .reply li {
+  margin: 0.2em 0;
+}
+
+/* A task item carries its own box, so the marker would be a second one. */
+.factory-page.activity-page .md li.task,
+.factory-page.activity-page .reply li.task {
+  list-style: none;
+  margin-left: -1.2em;
+}
+
+.factory-page.activity-page .md .box,
+.factory-page.activity-page .reply .box {
+  margin-right: 0.45em;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+}
+
+.factory-page.activity-page .md code,
+.factory-page.activity-page .reply code {
+  font-size: 0.92em;
+}
+
+.factory-page.activity-page .md .md-code,
+.factory-page.activity-page .reply .md-code {
+  margin: 0.6em 0;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.factory-page.activity-page .md blockquote,
+.factory-page.activity-page .reply blockquote {
+  margin: 0.6em 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 2px solid var(--stroke);
+  color: var(--ink-2);
+}
+
+.factory-page.activity-page .md hr,
+.factory-page.activity-page .reply hr {
+  height: 0;
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--stroke);
+}
+
+.factory-page.activity-page .md-table {
+  margin: 0.6em 0;
   overflow-x: auto;
 }
 
-/* The figure carries its own width and height in pixels, so it renders at the
-   size it was laid out at rather than stretching to the column. Nothing scales
-   it in either direction: .fig scrolls sideways when a plan is wider. */
-.factory-page.activity-page .fig svg {
-  display: block;
-  /* No max-width: a long chain (nine nodes on a real task laid out at ~2600px)
-     must scroll inside .fig at 1:1, not shrink to a third and lose its labels. */
-  height: auto;
-  color: var(--ink);
+.factory-page.activity-page .md-table table {
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.factory-page.activity-page .md-table th,
+.factory-page.activity-page .md-table td {
+  padding: 0.3em 0.9em 0.3em 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.factory-page.activity-page .md-table th {
+  border-bottom-color: var(--stroke);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.64rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.factory-page.activity-page .brief {
+  max-width: 68ch;
+}
+
+/* The plan as a strip: nodes in run order, wrapping, each a button that opens
+   its step. A chevron between entries carries the order. */
+.factory-page.activity-page .plan-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.factory-page.activity-page .pnode {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.factory-page.activity-page .pnode + .pnode::before {
+  padding: 0 0.45em;
+  color: var(--ink-3);
+  content: "›";
   font-family: var(--font-code);
 }
 
-.factory-page.activity-page .fig .node {
+.factory-page.activity-page .pnode button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0 0.5em;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 18em;
+  padding: 0.4em 0.65em 0.45em;
+  border: 1px solid var(--ink);
+  background: var(--sheet);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  text-align: left;
   cursor: pointer;
 }
 
-.factory-page.activity-page .fig .node rect.box {
-  fill: var(--sheet);
-  stroke: var(--ink);
-  stroke-width: 1;
+.factory-page.activity-page .pnode button:disabled {
+  cursor: default;
 }
 
-.factory-page.activity-page .fig .node.done rect.box {
-  fill: var(--ink);
+.factory-page.activity-page .pnode button:hover:not(:disabled),
+.factory-page.activity-page .pnode.hot button,
+.factory-page.activity-page .pnode button:focus-visible {
+  border-color: var(--accent-ink);
+  outline: 0;
+  box-shadow: inset 0 0 0 1px var(--accent-ink);
 }
 
-.factory-page.activity-page .fig .node.done text.l {
-  fill: var(--sheet);
-}
-
-.factory-page.activity-page .fig .node.running rect.box {
-  fill: var(--accent-band);
-  stroke: var(--accent-ink);
-}
-
-.factory-page.activity-page .fig .node.pending rect.box {
-  stroke: var(--ink-2);
-  stroke-dasharray: 3 3;
-}
-
-.factory-page.activity-page .fig .node.failed rect.box {
-  stroke: var(--tone-disk);
-}
-
-.factory-page.activity-page .fig .node.failed text.l {
-  fill: var(--tone-disk);
-}
-
-.factory-page.activity-page .fig .node.retired rect.box,
-.factory-page.activity-page .fig .node.cancelled rect.box {
-  fill: url("#plan-hatch");
-  stroke: var(--ink-3);
-}
-
-.factory-page.activity-page .fig .node.retired text,
-.factory-page.activity-page .fig .node.cancelled text {
-  fill: var(--ink-2);
-}
-
-.factory-page.activity-page .fig .node text {
-  fill: var(--ink);
-  font-size: 11px;
-}
-
-.factory-page.activity-page .fig .node text.s {
-  fill: var(--ink-2);
-  font-size: 10px;
-}
-
-.factory-page.activity-page .fig .node.done text.s {
-  fill: var(--sheet);
-  opacity: 0.8;
-}
-
-.factory-page.activity-page .fig .node .n circle {
-  fill: var(--sheet);
-  stroke: var(--ink);
-  stroke-width: 1;
-}
-
-.factory-page.activity-page .fig .node .n text {
-  fill: var(--ink);
-  font-size: 10px;
+.factory-page.activity-page .pnode .n {
+  color: var(--ink-2);
   font-weight: 700;
 }
 
-.factory-page.activity-page .fig .node:hover rect.box,
-.factory-page.activity-page .fig .node.hot rect.box,
-.factory-page.activity-page .fig .node:focus-visible rect.box {
-  stroke: var(--accent-ink);
-  stroke-width: 2;
-}
-
-.factory-page.activity-page .fig .node:hover .n circle,
-.factory-page.activity-page .fig .node.hot .n circle {
-  stroke: var(--accent-ink);
-  stroke-width: 2;
-}
-
-.factory-page.activity-page .fig .edge {
-  fill: none;
-  stroke: var(--ink-2);
-  stroke-width: 1;
-}
-
-.factory-page.activity-page .fig .edge.dead {
-  stroke-dasharray: 2 3;
-}
-
-.factory-page.activity-page .fig .arrow {
-  fill: var(--ink-2);
-}
-
-.factory-page.activity-page .cap {
-  display: flex;
-  justify-content: space-between;
-  gap: 1em;
-  margin: 0.6em 0 0;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.68rem;
-}
-
-.factory-page.activity-page .cap b {
-  color: var(--ink);
+.factory-page.activity-page .pnode .k {
+  overflow: hidden;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .pnode .s,
+.factory-page.activity-page .pnode .d {
+  display: inline-flex;
+  grid-column: 2;
+  gap: 0.4em;
+  align-items: center;
+  color: var(--ink-2);
+  font-size: 0.64rem;
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .pnode .d {
+  color: var(--ink-3);
+}
+
+.factory-page.activity-page .pnode.done button {
+  background: var(--band);
+}
+
+.factory-page.activity-page .pnode.running button {
+  border-color: var(--accent-ink);
+  background: var(--accent-band);
+}
+
+.factory-page.activity-page .pnode.pending button {
+  border-color: var(--ink-2);
+  border-style: dashed;
+}
+
+.factory-page.activity-page .pnode.failed button {
+  border-color: var(--tone-disk);
+}
+
+.factory-page.activity-page .pnode.failed .k {
+  color: var(--tone-disk);
+}
+
+.factory-page.activity-page .pnode.retired button,
+.factory-page.activity-page .pnode.cancelled button {
+  border-color: var(--ink-3);
+  color: var(--ink-2);
 }
 
 /* Steps: one disclosure row per attempt, in the ledger's rhythm. Open one and
@@ -704,9 +831,14 @@
   font-weight: 700;
 }
 
+.factory-page.activity-page .step-btn .main {
+  min-width: 0;
+}
+
 .factory-page.activity-page .step-btn .what {
   display: block;
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .factory-page.activity-page .step-btn .what .who {
@@ -765,114 +897,434 @@
   display: none;
 }
 
+.factory-page.activity-page .transcript > .more {
+  margin: 0 0 0.6em;
+}
+
+/* A turn: its number in the gutter, then the instruction, what ran, the
+   reply, the numbers, and on the record the patch. */
 .factory-page.activity-page .turn {
   display: grid;
   grid-template-columns: 1rem minmax(0, 1fr);
-  gap: 0.35em 0.6rem;
+  gap: 0 0.6rem;
   padding: 0.55em 0 0.7em;
   border-top: 1px solid var(--line);
 }
 
-.factory-page.activity-page .turn:first-child {
+.factory-page.activity-page .transcript .turn:first-of-type {
   padding-top: 0.1em;
   border-top: 0;
 }
 
 .factory-page.activity-page .turn .tn {
-  grid-row: 1 / span 4;
   padding-top: 0.3em;
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.7rem;
 }
 
-.factory-page.activity-page .turn p {
-  max-width: 72ch;
-  margin: 0;
-  font-size: 0.88rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.factory-page.activity-page .turn .ask,
-.factory-page.activity-page .rec p.ask {
-  color: var(--ink-2);
-}
-
-/* Flex, not inline text: a flex container drops the whitespace between the
-   spans outright, so the separator below is the only thing between two
-   activities however the template happens to be wrapped. */
-.factory-page.activity-page .turn .did {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.1em 0.5em;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.72rem;
-  white-space: normal;
-}
-
-.factory-page.activity-page .turn .did span + span::before {
-  content: "· ";
-  color: var(--ink-3);
-}
-
-/* The turn digest on the task page is a summary, not the list. A Codex-runtime
-   turn records over a hundred commands, and every one of them inline made the
-   dotted line a wall: the counts read first, then the first few rows, then the
-   way to the rest. */
-.factory-page.activity-page .turn .digest {
+.factory-page.activity-page .turn .body {
   display: grid;
-  gap: 0.25em;
+  gap: 0.7em;
   min-width: 0;
 }
 
-.factory-page.activity-page .turn .did-rows {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.72rem;
-}
-
-/* The same two columns as the session record's rows, so a reader who opens the
-   full session finds the label where they left it. */
-.factory-page.activity-page .turn .did-rows li {
-  display: grid;
-  grid-template-columns: 3.2em minmax(0, 1fr);
-  gap: 0.6rem;
-  align-items: baseline;
-  padding: 0.08em 0;
-}
-
-.factory-page.activity-page .turn .did-rows .ty {
+/* The type label every row kind shares: BASH, EDIT, PROMPT, RATIONALE. */
+.factory-page.activity-page .ty {
   color: var(--ink-3);
+  font-family: var(--font-code);
   font-size: 0.62rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.factory-page.activity-page .turn .did-rows .what {
+/* The instruction, folded to its first line. A conductor brief runs to
+   thousands of characters and would otherwise bury the reply under it. */
+.factory-page.activity-page .ask {
+  border: 1px solid var(--stroke);
+}
+
+.factory-page.activity-page .ask summary {
+  display: grid;
+  grid-template-columns: 3.2em minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.35em 0.6em;
   color: var(--ink-2);
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  list-style: none;
+}
+
+.factory-page.activity-page .ask summary::-webkit-details-marker {
+  display: none;
+}
+
+.factory-page.activity-page .ask summary:hover {
+  color: var(--accent-ink);
+}
+
+.factory-page.activity-page .ask .preview {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.factory-page.activity-page .ask[open] .preview {
+  visibility: hidden;
+}
+
+.factory-page.activity-page .ask .len {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .ask-text {
+  max-width: 100%;
+  margin: 0;
+  padding: 0.6em 0.8em 0.8em;
+  border-top: 1px solid var(--stroke);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.factory-page.activity-page .turn .digest .more {
-  margin: 0.1em 0 0;
+/* Activities: what the turn actually ran. The counts read first, then one
+   row per call. A long command opens in place; an edit opens its file. */
+.factory-page.activity-page .acts {
+  display: grid;
+  gap: 0.2em;
+  min-width: 0;
 }
 
+.factory-page.activity-page .did {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1em 0.5em;
+  margin: 0;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+}
+
+.factory-page.activity-page .did span + span::before {
+  content: "· ";
+  color: var(--ink-3);
+}
+
+.factory-page.activity-page .act-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+}
+
+.factory-page.activity-page .act-rows > li {
+  border-top: 1px solid var(--line);
+}
+
+.factory-page.activity-page .act-rows > li:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.factory-page.activity-page .act-rows .a {
+  display: grid;
+  grid-template-columns: 3.2em minmax(0, 1fr) 1rem;
+  gap: 0.6rem;
+  align-items: baseline;
+  width: 100%;
+  padding: 0.28em 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.factory-page.activity-page .act-rows .a.x {
+  cursor: pointer;
+}
+
+.factory-page.activity-page .act-rows .a.x:hover,
+.factory-page.activity-page .act-rows .a.x:focus-visible {
+  color: var(--accent-ink);
+  outline: 0;
+}
+
+.factory-page.activity-page .act-rows .what {
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.factory-page.activity-page .act-rows .what .dir {
+  color: var(--ink-2);
+}
+
+.factory-page.activity-page .act-rows .what .name {
+  font-weight: 600;
+}
+
+.factory-page.activity-page .act-rows .a.x:hover .what,
+.factory-page.activity-page .act-rows .a.x:hover .what .dir {
+  color: var(--accent-ink);
+}
+
+.factory-page.activity-page .act-rows .tog {
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.factory-page.activity-page .act-rows .a.x:hover .tog,
+.factory-page.activity-page .act-rows li.open .tog {
+  color: var(--accent-ink);
+}
+
+.factory-page.activity-page .act-rows .opened {
+  margin: 0.1em 0 0.5em calc(3.2em + 0.6rem);
+}
+
+.factory-page.activity-page .act-rows .cmd {
+  margin: 0;
+  padding: 0.5em 0.7em;
+  border-left: 2px solid var(--accent-ink);
+  background: var(--band);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The reply, as the agent wrote it. */
+.factory-page.activity-page .reply {
+  max-width: 76ch;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.factory-page.activity-page .reply > .more-tog {
+  margin: 0.3em 0 0;
+}
+
+.factory-page.activity-page .why {
+  display: grid;
+  gap: 0.2em;
+}
+
+.factory-page.activity-page .why pre {
+  margin: 0;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The numbers under a turn: cost, tokens, commit, the diff stat, how it ended. */
 .factory-page.activity-page .turn .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3em 1.2em;
+  align-items: baseline;
   color: var(--ink-3);
   font-family: var(--font-code);
   font-size: 0.66rem;
-  white-space: normal;
+}
+
+.factory-page.activity-page .turn .meta b {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.factory-page.activity-page .turn .meta .bad {
+  color: var(--tone-disk);
+}
+
+.factory-page.activity-page .turn .meta .stat b,
+.factory-page.activity-page .diff .stat b {
+  color: var(--ok);
+  font-weight: 500;
+}
+
+.factory-page.activity-page .turn .meta .stat s,
+.factory-page.activity-page .diff .stat s {
+  color: var(--tone-disk);
+  text-decoration: none;
+}
+
+.factory-page.activity-page .turn .meta a.sha {
+  border-bottom: 1px solid var(--stroke);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.factory-page.activity-page .turn .meta a.sha:hover {
+  border-bottom-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+/* Diffs: one disclosure per file. The summary is the file header; the body
+   is a three-column grid of old number, new number and text, each line tinted
+   by what it did. Rows, never markup: diff.js hands over parsed lines. */
+.factory-page.activity-page .diff {
+  display: grid;
+  gap: 0.4em;
+  min-width: 0;
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+}
+
+.factory-page.activity-page .dfile {
+  min-width: 0;
+  border: 1px solid var(--stroke);
+}
+
+.factory-page.activity-page .dfile summary {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) auto auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.35em 0.6em;
+  background: var(--band);
+  cursor: pointer;
+  list-style: none;
+}
+
+.factory-page.activity-page .dfile summary::-webkit-details-marker {
+  display: none;
+}
+
+.factory-page.activity-page .dfile summary:hover .name {
+  color: var(--accent-ink);
+}
+
+.factory-page.activity-page .dfile summary .tog::before {
+  color: var(--ink-3);
+  content: "+";
+}
+
+.factory-page.activity-page .dfile[open] summary .tog::before {
+  content: "−";
+}
+
+/* A path wraps after a slash (the markup puts a break opportunity there)
+   and never inside a file name unless the name alone is wider than the box. */
+.factory-page.activity-page .dfile .path {
+  overflow-wrap: normal;
+}
+
+.factory-page.activity-page .dfile .name,
+.factory-page.activity-page .act-rows .what .name {
+  overflow-wrap: anywhere;
+}
+
+.factory-page.activity-page .dfile .dir {
+  color: var(--ink-2);
+}
+
+.factory-page.activity-page .dfile .name {
+  font-weight: 600;
+}
+
+.factory-page.activity-page .dfile .from {
+  margin-left: 0.6em;
+  color: var(--ink-3);
+}
+
+.factory-page.activity-page .dfile .kind {
+  color: var(--ink-2);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.factory-page.activity-page .dfile .stat {
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .hunks {
+  border-top: 1px solid var(--stroke);
+  line-height: 1.45;
+  overflow-x: auto;
+}
+
+.factory-page.activity-page .ln {
+  display: grid;
+  grid-template-columns: 3.4em 3.4em minmax(0, 1fr);
+  min-width: max-content;
+  min-height: 1.45em;
+}
+
+.factory-page.activity-page .ln .no {
+  padding: 0 0.5em 0 0;
+  color: var(--ink-3);
+  text-align: right;
+  user-select: none;
+}
+
+.factory-page.activity-page .ln .tx {
+  padding: 0 0.7em 0 0.5em;
+  white-space: pre;
+}
+
+.factory-page.activity-page .ln .tx::before {
+  display: inline-block;
+  width: 1em;
+  color: var(--ink-3);
+  content: " ";
+}
+
+.factory-page.activity-page .ln.add {
+  background: var(--add-band);
+}
+
+.factory-page.activity-page .ln.add .tx::before {
+  color: var(--ok);
+  content: "+";
+}
+
+.factory-page.activity-page .ln.del {
+  background: var(--del-band);
+}
+
+.factory-page.activity-page .ln.del .tx::before {
+  color: var(--tone-disk);
+  content: "−";
+}
+
+.factory-page.activity-page .ln.hd,
+.factory-page.activity-page .ln.note {
+  color: var(--ink-3);
+}
+
+.factory-page.activity-page .ln.hd > span:last-child,
+.factory-page.activity-page .ln.note > span:last-child {
+  padding: 0.1em 0.7em 0.1em 0.5em;
+  white-space: pre;
+}
+
+.factory-page.activity-page .ln.hd {
+  background: var(--band);
+}
+
+.factory-page.activity-page .diff .cut {
+  margin: 0;
+  color: var(--tone-disk);
 }
 
 .factory-page.activity-page .more {
   display: block;
-  margin: 0.6em 0 0;
+  margin: 0.3em 0 0;
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.7rem;
@@ -891,10 +1343,7 @@
 }
 
 .factory-page.activity-page .rec > li {
-  display: grid;
-  grid-template-columns: 1.5rem minmax(0, 1fr);
-  gap: 0.5em 0.6rem;
-  padding: 0.9em 0 1.1em;
+  padding: 0.5em 0;
   border-top: 1px solid var(--line);
 }
 
@@ -902,238 +1351,22 @@
   border-bottom: 1px solid var(--line);
 }
 
-.factory-page.activity-page .rec .body {
-  display: grid;
-  gap: 0.55em;
-  min-width: 0;
-}
-
-.factory-page.activity-page .rec .tn {
-  padding-top: 0.3em;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.7rem;
-}
-
-.factory-page.activity-page .rec p {
-  max-width: 72ch;
-  margin: 0;
-  font-size: 0.88rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.factory-page.activity-page .rec p.why {
-  color: var(--ink-2);
-  font-size: 0.84rem;
-}
-
-.factory-page.activity-page .rec p.why::before {
-  content: "rationale";
-  margin-right: 0.7em;
-  color: var(--ink-3);
-  font-family: var(--font-code);
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-/* Activities: what the turn actually ran. An edit or a write opens the hunk it
-   produced; a command has nothing to open and stays a plain row. */
-.factory-page.activity-page .acts {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.72rem;
-}
-
-.factory-page.activity-page .acts > li {
-  border-top: 1px solid var(--line);
-}
-
-.factory-page.activity-page .acts > li:first-child {
+.factory-page.activity-page .rec .turn {
+  padding-top: 0.4em;
   border-top: 0;
 }
 
-.factory-page.activity-page .acts .a {
-  display: grid;
-  grid-template-columns: 3.2em minmax(0, 1fr) 1rem;
-  gap: 0.6rem;
-  align-items: baseline;
-  width: 100%;
-  padding: 0.25em 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: default;
-}
-
-.factory-page.activity-page .acts .a.x {
-  cursor: pointer;
-}
-
-.factory-page.activity-page .acts .a.x:hover,
-.factory-page.activity-page .acts .a.x:focus-visible {
-  color: var(--accent-ink);
-  outline: 0;
-}
-
-.factory-page.activity-page .acts .ty {
-  color: var(--ink-3);
-  font-size: 0.62rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.factory-page.activity-page .acts .what {
-  color: var(--ink);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.factory-page.activity-page .acts .a.x .what {
-  color: var(--ink-2);
-}
-
-.factory-page.activity-page .acts .a.x:hover .what {
-  color: var(--accent-ink);
-}
-
-.factory-page.activity-page .acts .a .tog {
-  color: var(--ink-3);
-  text-align: right;
-}
-
-.factory-page.activity-page .acts .a.x:hover .tog,
-.factory-page.activity-page .acts li.open .tog {
-  color: var(--accent-ink);
-}
-
-/* The toggle that opens the tail of a long activity list. It lines up with the
-   value column, the way an opened hunk does, rather than with the type label. */
-.factory-page.activity-page .acts-tog {
-  justify-self: start;
-  margin: 0 0 0 calc(3.2em + 0.6rem);
-}
-
-/* Diffs render as one row per line rather than one pre block: the classifier
-   returns rows, so the markup never has to be assembled from worker output. */
-.factory-page.activity-page .hunk {
-  margin: 0.2em 0 0.5em calc(3.2em + 0.6rem);
-  padding: 0.5em 0.7em;
-  border-left: 2px solid var(--accent-ink);
-  background: var(--band);
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.7rem;
-  line-height: 1.45;
-  overflow-x: auto;
-}
-
-.factory-page.activity-page .hunk[hidden] {
-  display: none;
-}
-
-.factory-page.activity-page .hunk .ln {
-  display: block;
-  /* An empty context line still occupies its row; a zero-height block would
-     silently close the gap the diff actually has. */
-  min-height: 1.45em;
-  white-space: pre;
-}
-
-.factory-page.activity-page .hunk .add {
-  color: var(--ok);
-}
-
-.factory-page.activity-page .hunk .del {
-  color: var(--tone-disk);
-}
-
-.factory-page.activity-page .hunk .hd {
-  color: var(--ink-3);
-}
-
-.factory-page.activity-page .hunk .fn {
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.factory-page.activity-page .hunk.patch {
-  margin: 0.2em 0 0;
-}
-
-.factory-page.activity-page .rec .meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3em 1.2em;
-  align-items: baseline;
-  color: var(--ink-3);
-  font-family: var(--font-code);
-  font-size: 0.66rem;
-}
-
-.factory-page.activity-page .rec .meta b {
-  color: var(--ink-2);
-  font-weight: 400;
-}
-
-.factory-page.activity-page .rec .meta .bad,
-.factory-page.activity-page .turn .meta .bad {
-  color: var(--tone-disk);
-}
-
-.factory-page.activity-page .rec .meta .stat b {
-  color: var(--ok);
-}
-
-.factory-page.activity-page .rec .meta .stat s {
-  color: var(--tone-disk);
-  text-decoration: none;
-}
-
-.factory-page.activity-page .rec .meta button {
-  border: 0;
-  border-bottom: 1px solid var(--stroke);
-  background: none;
-  color: var(--ink-2);
-  font: inherit;
-  cursor: pointer;
-}
-
-.factory-page.activity-page .rec .meta button:hover {
-  border-bottom-color: var(--accent-ink);
-  color: var(--accent-ink);
-}
-
-.factory-page.activity-page .rec .meta a.sha,
-.factory-page.activity-page .turn .meta a.sha {
-  border-bottom: 1px solid var(--stroke);
-  color: var(--ink-2);
-  text-decoration: none;
-}
-
-.factory-page.activity-page .rec .meta a.sha:hover,
-.factory-page.activity-page .turn .meta a.sha:hover {
-  border-bottom-color: var(--accent-ink);
-  color: var(--accent-ink);
-}
-
-/* The toggle on a clipped prompt or reply: the same mono mark the step and
-   activity toggles use, inline at the end of the text it opens. */
+/* The toggle that opens the rest of something clipped: the same mono mark the
+   step and activity toggles use. */
 .factory-page.activity-page .more-tog {
-  margin-left: 0.5em;
+  justify-self: start;
+  margin: 0;
   border: 0;
   padding: 0;
   background: none;
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-family: var(--font-code);
-  font-size: 0.72em;
+  font-size: 0.7rem;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1176,12 +1409,23 @@
   .factory-page.activity-page .task-head,
   .factory-page.activity-page .sess-head {
     grid-template-columns: 1fr;
+    gap: 1.2rem;
   }
 }
 
 @media (max-width: 760px) {
   .factory-page.activity-page {
     padding: 1rem 1em 4em;
+  }
+
+  /* The trail wraps rather than pushing the page wide: a session crumb
+     carries a node key and an attempt number. */
+  .factory-page.activity-page .masthead > .trail {
+    max-width: 100%;
+  }
+
+  .factory-page.activity-page .masthead .trail-row {
+    flex-wrap: wrap;
   }
 
   .factory-page.activity-page .sec-label {
@@ -1193,9 +1437,46 @@
     text-align: left;
   }
 
-  .factory-page.activity-page .verdict,
-  .factory-page.activity-page .notice {
+  .factory-page.activity-page .verdict {
     grid-template-columns: 1fr;
     gap: 0.4em;
+  }
+
+  .factory-page.activity-page .stops li {
+    grid-template-columns: 4em minmax(0, 1fr) 4em;
+  }
+
+  .factory-page.activity-page .stops .when {
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .factory-page.activity-page .stops .act {
+    display: none;
+  }
+
+  .factory-page.activity-page .step-btn {
+    grid-template-columns: 1.2rem 1rem minmax(0, 1fr) 1rem;
+  }
+
+  .factory-page.activity-page .step-btn .cost {
+    grid-column: 3;
+    text-align: left;
+  }
+
+  .factory-page.activity-page .transcript {
+    padding-left: 0.5rem;
+  }
+
+  .factory-page.activity-page .act-rows .opened {
+    margin-left: 0;
+  }
+
+  .factory-page.activity-page .ask summary {
+    grid-template-columns: 3.2em minmax(0, 1fr);
+  }
+
+  .factory-page.activity-page .ask .len {
+    grid-column: 2;
   }
 }
