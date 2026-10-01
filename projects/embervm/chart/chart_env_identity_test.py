@@ -1621,7 +1621,8 @@ def test_dev_rootfs_paths_are_under_dev_scratch(renders):
         for container in pod_spec.get("initContainers", []):
             if container["name"] == "build-all-rootfs":
                 rootfs_paths |= {
-                    path for _workload, _image, path, _memory in _driver_tuples(container)
+                    path
+                    for _workload, _image, path, _memory in _driver_tuples(container)
                 }
     assert rootfs_paths, (
         "no BASE_ROOTFS_PATH values in the dev render. Either the brick renders no "
