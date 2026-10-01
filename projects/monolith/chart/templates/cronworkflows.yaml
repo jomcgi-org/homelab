@@ -64,6 +64,15 @@ spec:
   failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 5 }}
   workflowSpec:
     entrypoint: run
+    {{- with .parameters }}
+    # Optional Argo parameters (an entry's `parameters` list of name/value). They
+    # let `argo submit -p name=value` feed a manual-only job. Args reference them
+    # with Argo's workflow.parameters syntax; args go through toYaml, not tpl, so
+    # that text passes through to Argo literally.
+    arguments:
+      parameters:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
     # Stamp the JOB PODS, not just the CronWorkflow object. The labels above land
     # on the CR and do not propagate, so without this the pods carry no chart
     # labels at all and the only way to select them is by namespace.

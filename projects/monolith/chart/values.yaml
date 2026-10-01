@@ -284,6 +284,49 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # Public chat retention (ADR security/005): deletes sessions idle past 30 days
+    # (kept while they have a shared snapshot) and snapshots older than 365 days,
+    # then writes one chat_public.purge_audit row. Windows are overridable via
+    # CHAT_PUBLIC_SESSION_RETENTION_DAYS / CHAT_PUBLIC_SNAPSHOT_RETENTION_DAYS.
+    - name: chat-public-retention
+      args: ["chat-public-retention"]
+      schedule: "15 4 * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
+    # Public chat takedown, manual-only: removes a session (or every session of one
+    # stored ip_hash) with its transcript and shared snapshots. Pass the STORED
+    # ip_hash, never a raw IP. Submit with exactly one selector:
+    #   argo submit --from cronworkflow/chat-public-takedown -n monolith-workflows -p session-id=<id>
+    #   argo submit --from cronworkflow/chat-public-takedown -n monolith-workflows -p ip-hash=<stored hash>
+    - name: chat-public-takedown
+      args:
+        - chat-public-takedown
+        - --session-id
+        - "{{workflow.parameters.session-id}}"
+        - --ip-hash
+        - "{{workflow.parameters.ip-hash}}"
+      parameters:
+        - name: session-id
+          value: ""
+        - name: ip-hash
+          value: ""
+      schedule: "15 4 * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # This job only asks the leader API pod to start a drain cycle, then exits.
     # It stays active while the drainer is disabled because the endpoint no-ops.
     - name: agent-drain
