@@ -13,7 +13,9 @@
 # lib/jexec, exactly the 0755 entries in the upstream tarball) get 0755,
 # everything else 0644, directories 0755. The upstream tarball's symlinks all
 # live under legal/ and are dereferenced here (Bazel stages them as files), so
-# the layer carries no links.
+# the layer carries no symlinks. bsdtar may still record inputs that share
+# an inode at build time (remote execution stages identical files as one CAS
+# blob) as hardlinks to an earlier entry; s6_tlc_image_test resolves those.
 #
 # Args:
 #   $1   the JRE's bin/java (its dir's parent is the JRE root)
