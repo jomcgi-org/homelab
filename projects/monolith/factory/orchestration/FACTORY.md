@@ -1419,6 +1419,18 @@ the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
 
+The 2026-10-01 evidence in #6670 identified eleven cessations during monolith
+promotions. `agents.sessions.rolloutHandoffEnabled` now fences claims at SIGTERM
+and hands off the exact in-flight POST before receipt-observer cancellation
+cleanup or DBOS destruction. The existing cancellation hold remains the
+flag-off path. A turn without an adoptable receipt gets a five-second grace;
+hold writes and cancellation each have a five-second drain budget inside the
+chart's thirty-second termination grace. The flag defaults false and the GKE
+overlay enables it with a dated comment. The file-backed two-replica test rolls
+the observer mid-invoke, adopts its receipt through the ordinary writer, and
+checks the node workflow succeeds. It does not cover a control-plane restart
+(#6664) or cross-brick rejoin (#6663).
+
 A queued executor that receives a result but fails to persist it also writes
 this bounded hold before releasing its claim. Receipt adoption can retry the
 database write without a second model invocation or a live-guest probe. The

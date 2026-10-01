@@ -9,6 +9,7 @@ import platform
 import re
 import secrets
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -555,6 +556,8 @@ def _claim_pending_message_sync(
     ordering hold across replicas, so nothing outside this call may choose
     which message runs next.
     """
+    if rollout_shutdown_in_progress():
+        return None
     return store.claim_pending_message_for_session_sync(
         session_id, claim_owner or _REPLICA_ID
     )
@@ -732,6 +735,20 @@ def _refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool
 
 
 _inflight_tasks: set[asyncio.Task] = set()
+_rollout_handoffs: dict[asyncio.Task, Callable[[float], bool]] = {}
+_rollout_shutdown_started = False
+_rollout_drain_started = False
+
+
+def begin_rollout_shutdown() -> None:
+    """Fence admission at SIGTERM, before HTTP and leader teardown wait."""
+    global _rollout_shutdown_started
+    if store.rollout_handoff_enabled():
+        _rollout_shutdown_started = True
+
+
+def rollout_shutdown_in_progress() -> bool:
+    return store.rollout_handoff_enabled() and _rollout_shutdown_started
 
 
 def _schedule_next_message(session_id: int) -> None:
@@ -743,6 +760,8 @@ def _schedule_next_message(session_id: int) -> None:
     escaping the executor is discarded silently. This is the same invariant
     app/main_summary_test.py asserts for the leader-elected singletons.
     """
+    if rollout_shutdown_in_progress():
+        return
     task = asyncio.create_task(_execute_pending_message(session_id))
     _inflight_tasks.add(task)
     task.add_done_callback(_inflight_tasks.discard)
@@ -770,6 +789,8 @@ async def _execute_pending_message(session_id: int) -> None:
     one retry of the exact interrupted attempt.
     """
 
+    if rollout_shutdown_in_progress():
+        return
     # Factory controls also fence the shared pending-message sweep. Checking
     # only while creating a session leaves a queued turn free to create a VM
     # after an operator stop. Paused turns retain their unclaimed receipt.
@@ -978,6 +999,8 @@ async def _execute_pending_message(session_id: int) -> None:
         if not row:
             return
         claimed_dispatch_count = row.dispatch_count
+        if rollout_shutdown_in_progress():
+            raise asyncio.CancelledError
         # Load session to get workspace and stored session_id for resumption
         session_row, _ = await asyncio.to_thread(_load_session, session_id)
         if not session_row:
@@ -1065,6 +1088,8 @@ async def _execute_pending_message(session_id: int) -> None:
             effective_model = normalize_model(row.model)
 
             async def shared_admission_check() -> None:
+                if rollout_shutdown_in_progress():
+                    raise asyncio.CancelledError
                 if not await asyncio.to_thread(
                     factory_session_allowed, session_row.local_session_id
                 ):
@@ -1287,6 +1312,21 @@ async def _execute_pending_message(session_id: int) -> None:
         # remains the backstop.
         _schedule_next_message(session_id)
 
+    def handoff(lock_timeout_seconds: float) -> bool:
+        # The live transport record names the last attempted physical POST.
+        # Write before cancelling delivery: its receipt-observer cleanup can
+        # outlive the drain, even though the guest keeps working (#6670).
+        if (
+            not rollout_shutdown_in_progress()
+            or claim_stolen
+            or claim_released
+            or not _response_lost_eligible()
+        ):
+            return False
+        return _record_response_lost("replica_shutdown", {}, lock_timeout_seconds)
+
+    if store.rollout_handoff_enabled():
+        _rollout_handoffs[executor_task] = handoff
     try:
         # Start the heartbeat refresh task
         refresh_task = asyncio.create_task(_refresh_heartbeat())
@@ -1296,6 +1336,7 @@ async def _execute_pending_message(session_id: int) -> None:
         executor_cancelled = True
         raise
     finally:
+        _rollout_handoffs.pop(executor_task, None)
         # Cancel the refresh task
         if refresh_task:
             refresh_task.cancel()
@@ -1588,21 +1629,57 @@ def _adopt_response_lost_results() -> list[int]:
 
 
 async def drain_inflight_executors() -> int:
-    """Cancel in-flight turn executors so each records its hold before teardown.
+    """Hand off receipt-backed turns before cancelling their response observers.
 
-    uvicorn tears the event loop down on SIGTERM without cancelling these tasks
-    first, and DBOS.destroy() waits zero seconds for workflow completion, so
-    without this an executor's own cancellation handler often never runs and
-    the attempt reaches the new replica as a stale claim rather than a hold.
-    The wait is bounded well inside the pod's thirty-second termination grace;
-    an executor that does not finish in time falls back to the lease path
-    exactly as it did before.
+    With rollout handoff disabled, keep the existing cancellation-first drain.
+    Enabled shutdown fences admission, writes holds before observer cleanup,
+    and lets non-adoptable turns finish during a bounded grace. Any failed hold
+    or unfinished cancellation remains covered by the existing claim lease.
     """
-    tasks = [task for task in _inflight_tasks if not task.done()]
+    global _rollout_drain_started
+    begin_rollout_shutdown()
+    if rollout_shutdown_in_progress():
+        # Both leader_stop and per-replica shutdown call this hook. A second
+        # cancellation would interrupt the cleanup the first drain bounded.
+        if _rollout_drain_started:
+            return 0
+        _rollout_drain_started = True
+    tasks = [
+        task for task in _inflight_tasks | _rollout_handoffs.keys() if not task.done()
+    ]
     if not tasks:
         return 0
-    for task in tasks:
-        task.cancel()
+    if rollout_shutdown_in_progress():
+        # The chart grants 30 seconds. Spend at most 5 on early holds (each
+        # lock wait is capped at 2), 5 on non-adoptable turns, and 5 awaiting
+        # cancellation. The remaining 15 belong to HTTP and leader teardown.
+        hold_deadline = time.monotonic() + INFLIGHT_DRAIN_SECONDS
+        grace = []
+        for task in tasks:
+            remaining = hold_deadline - time.monotonic()
+            handoff = _rollout_handoffs.get(task)
+            held = False
+            if handoff is not None and remaining > 0:
+                try:
+                    held = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            handoff, min(SHUTDOWN_HOLD_LOCK_SECONDS, remaining)
+                        ),
+                        timeout=remaining,
+                    )
+                except Exception:  # noqa: BLE001 - retain the bounded grace.
+                    logger.exception("Could not hand off an executor during rollout")
+            if held:
+                task.cancel()
+            else:
+                grace.append(task)
+        if grace:
+            _, pending = await asyncio.wait(grace, timeout=INFLIGHT_DRAIN_SECONDS)
+            for task in pending:
+                task.cancel()
+    else:
+        for task in tasks:
+            task.cancel()
     done, pending = await asyncio.wait(tasks, timeout=INFLIGHT_DRAIN_SECONDS)
     if pending:
         logger.warning(
@@ -1622,10 +1699,14 @@ async def _sweep_orphaned_pending_messages() -> None:
     3. Execute untouched pending messages and permitted preemption retries.
     """
     while True:
+        if rollout_shutdown_in_progress():
+            return
         recovered = await _reconcile_zombie_sessions()
         if recovered > 0:
             logger.warning("Recovered %d zombie agent sessions", recovered)
         await asyncio.sleep(5)
+        if rollout_shutdown_in_progress():
+            return
         # Reclaim stale claims from crashed replicas
         reclaimed = await asyncio.to_thread(_reclaim_stale_claims_sync)
         if reclaimed > 0:

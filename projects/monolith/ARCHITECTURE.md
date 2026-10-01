@@ -862,6 +862,23 @@ complete.
 (see: /projects/monolith/factory/execution/reconciliation.py)
 (see: /projects/monolith/factory/orchestration/factory_supervision.py)
 
+**Why.** Eleven factory cessations coincided with monolith promotions on
+2026-10-01 (#6670). The existing cancellation handler recorded a response-loss
+hold only after delivery and its receipt observer unwound; observer cleanup
+could outlive the five-second drain, and leader teardown destroyed DBOS first.
+`agents.sessions.rolloutHandoffEnabled` fences admission at SIGTERM and publishes
+the exact attempted POST identity while delivery is still waiting. Shutdown
+writes the receipt, guest, claim owner and dispatch hold before cancelling the
+observer and before destroying DBOS. Another replica adopts the committed
+receipt through the ordinary turn writer. Turns without an adoptable receipt
+get five seconds to finish. Early holds share a five-second lock budget, and
+cancellation gets five seconds, inside the chart's thirty-second termination
+grace. The flag defaults off and is enabled in the GKE overlay. The two-replica
+mid-invoke test covers handoff and successful node completion; control-plane
+restart (#6664) and cross-brick rejoin (#6663) remain separate.
+(see: /projects/monolith/factory/execution/mcp.py)
+(see: /projects/monolith/factory/execution/response_lost_test.py)
+
 **Why.** A lost invoke response is not a lost invocation. Every monolith
 rollout cancelled the executor watching an in-flight turn, and the guest went
 on working while the executor recorded `invocation_outcome_unknown`, failed the

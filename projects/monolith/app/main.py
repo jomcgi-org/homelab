@@ -57,5 +57,12 @@ async def _stop_singletons(app: FastAPI) -> None:
 
 if __name__ == "__main__":
     import uvicorn
+    from factory.module import RolloutHandoffServer
+    from factory.execution.store import rollout_handoff_enabled
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    if rollout_handoff_enabled():
+        RolloutHandoffServer(
+            uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+        ).run()
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")

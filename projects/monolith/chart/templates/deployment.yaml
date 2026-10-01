@@ -42,6 +42,7 @@ spec:
         app.kubernetes.io/component: app
       annotations: {}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.backend.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "monolith.fullname" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -221,6 +222,8 @@ spec:
               value: {{ .Values.agents.sessions.resultReceiptAdoptionEnabled | quote }}
             - name: AGENT_RESPONSE_LOST_RECOVERY_ENABLED
               value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
+            - name: AGENT_ROLLOUT_HANDOFF_ENABLED
+              value: {{ .Values.agents.sessions.rolloutHandoffEnabled | default false | quote }}
             - name: AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED
               value: {{ .Values.agents.sessions.responseLostDrainRelayEnabled | default false | quote }}
             - name: AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED

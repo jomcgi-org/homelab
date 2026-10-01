@@ -413,3 +413,47 @@ def test_backend_exposes_chart_version_for_kargo_gate(chart_context):
         rf'- name: MONOLITH_CHART_VERSION\n\s+value: "{re.escape(chart_version)}"',
         rendered,
     ), "backend container is missing MONOLITH_CHART_VERSION from .Chart.Version"
+
+
+@pytest.mark.parametrize(
+    ("overlays", "expected"),
+    [
+        ((), "false"),
+        (("values.yaml",), "false"),
+        (("values.yaml", "values-gke.yaml"), "true"),
+    ],
+)
+def test_rollout_handoff_flag_and_grace_render_in_hub_order(overlays, expected):
+    chart = find_chart_dir()
+    command = [os.environ.get("HELM_BIN", "helm"), "template", "monolith", str(chart)]
+    for overlay in overlays:
+        command.extend(["--values", str(chart.parent / "deploy" / overlay)])
+    rendered = subprocess.run(
+        command, capture_output=True, text=True, check=True
+    ).stdout
+    backend = next(
+        doc
+        for doc in rendered.split("\n---")
+        if "kind: Deployment" in doc and "- name: backend" in doc
+    )
+    assert re.search(
+        rf'- name: AGENT_ROLLOUT_HANDOFF_ENABLED\n\s+value: "{expected}"', backend
+    )
+    assert re.search(r"terminationGracePeriodSeconds: 30\b", backend)
+
+
+def test_rollout_termination_grace_is_a_chart_value():
+    rendered = subprocess.run(
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "monolith",
+            str(find_chart_dir()),
+            "--set",
+            "backend.terminationGracePeriodSeconds=42",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "terminationGracePeriodSeconds: 42" in rendered

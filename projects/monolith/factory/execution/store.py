@@ -519,6 +519,11 @@ def response_lost_recovery_enabled() -> bool:
     return os.getenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false").lower() == "true"
 
 
+def rollout_handoff_enabled() -> bool:
+    """Keep rollout admission and early receipt handoff behind one control."""
+    return os.getenv("AGENT_ROLLOUT_HANDOFF_ENABLED", "false").lower() == "true"
+
+
 RESPONSE_LOST_MESSAGE = (
     "The synchronous response to this turn was lost while the guest was still "
     "working. The turn is held until its committed result is recovered, or "

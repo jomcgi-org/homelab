@@ -12,6 +12,17 @@ from knowledge.api import kg_health
 from factory.reservation_reviews import reservation_health
 from factory.orchestration.health import drainer_health
 from factory import ops_health
+from uvicorn import Server
+
+
+class RolloutHandoffServer(Server):
+    """Fence factory admission when uvicorn receives a termination signal."""
+
+    def handle_exit(self, sig, frame) -> None:
+        from factory.execution.mcp import begin_rollout_shutdown
+
+        begin_rollout_shutdown()
+        super().handle_exit(sig, frame)
 
 
 def register(app) -> None:
@@ -59,9 +70,15 @@ async def _leader_start(app):
 async def _leader_stop(app):
     from factory.orchestration import runtime
     from factory.orchestration.factory_conductor import disarm_watchdog
+    from factory.execution.mcp import (
+        drain_inflight_executors,
+        rollout_shutdown_in_progress,
+    )
 
     disarm_watchdog()
     try:
+        if rollout_shutdown_in_progress():
+            await drain_inflight_executors()
         runtime.shutdown()
     finally:
         app.state.leader_singletons_dbos_launched = False
