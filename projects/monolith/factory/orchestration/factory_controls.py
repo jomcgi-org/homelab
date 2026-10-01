@@ -2412,6 +2412,8 @@ def review_routing_view(policy: dict, *, session: Session | None = None) -> dict
 
 
 def status(*, session: Session | None = None) -> dict:
+    from factory.orchestration.factory_landing import rollout_waits
+
     with _read_session(session) as db:
         control = db.exec(
             select(FactoryControl)
@@ -2424,6 +2426,7 @@ def status(*, session: Session | None = None) -> dict:
                 "reason": "not_initialized",
                 "state": "disabled",
                 "receipts": [],
+                "rollout_waits": [],
             }
         rows = db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
         receipts = [_snapshot(db, r) for r in rows]
@@ -2443,6 +2446,7 @@ def status(*, session: Session | None = None) -> dict:
             "receipts": receipts,
             "active_tasks": [r for r in receipts if r["state"] in _ACTIVE],
             "landing_tasks": [r for r in receipts if r["state"] == "landing"],
+            "rollout_waits": rollout_waits(policy, session=db),
         }
 
 

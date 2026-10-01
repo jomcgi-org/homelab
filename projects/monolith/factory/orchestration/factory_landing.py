@@ -52,6 +52,8 @@ REVIEW_PUBLISH_BATCH = 5
 # its age.
 LANDING_WINDOW_HOURS = 168
 LANDING_ERROR_SECONDS = 3600
+ROLLOUT_WAIT_REPORT_MINUTES = 30
+ROLLOUT_ESCALATE_MINUTES = 60
 # Ejections the lane will absorb before it hands the pull request to a human.
 # A queue analysis failure is usually transient and worth one re-arm; an
 # invalid merge commit needs a rebase no node here can do, and re-arming into
@@ -274,6 +276,7 @@ LANDING_ACTIONS = (
     "merged",
     "rollout_verified",
     "rollout_observed",
+    "rollout_escalated",
     "issue_closed",
     "repository_delivery_complete",
 )
@@ -335,7 +338,9 @@ def _delivery_prs(db, task_ids: list[str]) -> dict[str, tuple[int, str | None]]:
     return result
 
 
-def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
+def _deliveries(
+    policy: dict, *, include_refused: bool = False, session=None
+) -> list[dict]:
     """Every delivery whose landing is unfinished, oldest first.
 
     Selected on landing state, never on recency. Selecting the newest receipts
@@ -350,7 +355,7 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
     """
     repo = policy["repo"]
     cutoff = _now() - timedelta(hours=LANDING_WINDOW_HOURS)
-    with _read_session() as db:
+    with _read_session(session) as db:
         terminal = select(FactoryAudit.task_id).where(
             FactoryAudit.action.in_(("issue_closed", "repository_delivery_complete")),
             FactoryAudit.task_id.is_not(None),
@@ -374,6 +379,17 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
         task_ids = [row.task_id for row in rows]
         prs = _delivery_prs(db, task_ids)
         state = _landing_state(db, task_ids)
+        merged_at = {}
+        if task_ids:
+            merges = db.exec(
+                select(FactoryAudit)
+                .where(
+                    FactoryAudit.task_id.in_(task_ids),
+                    FactoryAudit.action == "merged",
+                )
+                .order_by(FactoryAudit.id)
+            ).all()
+            merged_at = {row.task_id: _aware(row.created_at) for row in merges}
     result = []
     for row in rows:
         delivery = prs.get(row.task_id)
@@ -412,10 +428,12 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
+                "merged_at": merged_at.get(row.task_id),
                 "merge_commit_sha": audits["merged"][-1].get("merge_commit_sha")
                 if audits["merged"]
                 else None,
                 "rollout_verified": bool(audits["rollout_verified"]),
+                "rollout_escalated": bool(audits["rollout_escalated"]),
                 "rollout_observation": audits["rollout_observed"][-1]
                 if audits["rollout_observed"]
                 else None,
@@ -425,6 +443,36 @@ def _deliveries(policy: dict, *, include_refused: bool = False) -> list[dict]:
             }
         )
     return result
+
+
+def _rollout_wait(item: dict, now: datetime) -> dict | None:
+    merged_at = item.get("merged_at")
+    if not item.get("merged") or item.get("rollout_verified") or item.get("closed"):
+        return None
+    if merged_at is None:
+        return None
+    waited = int((now - _aware(merged_at)).total_seconds() // 60)
+    if waited < ROLLOUT_WAIT_REPORT_MINUTES:
+        return None
+    observation = item.get("rollout_observation") or {}
+    return {
+        "task_id": item["task_id"],
+        "issue_number": item["issue_number"],
+        "pr_number": item["pr_number"],
+        "merged_at": _aware(merged_at).isoformat(),
+        "waited_minutes": waited,
+        **{key: observation.get(key) for key in ("reason", "application", "resource")},
+    }
+
+
+def rollout_waits(policy: dict, *, session=None) -> list[dict]:
+    """Bounded durable landing evidence only, safe for status readers."""
+    now = _now()
+    return [
+        wait
+        for item in _deliveries(policy, include_refused=True, session=session)
+        if (wait := _rollout_wait(item, now)) is not None
+    ]
 
 
 def holding(item: dict) -> bool:
@@ -780,6 +828,31 @@ def _verify_rollout(repo: str, item: dict) -> bool:
     }
     _append(item["task_id"], "rollout_observed", **detail)
     item["rollout_observation"] = detail
+    wait = _rollout_wait(item, _now())
+    if wait is not None:
+        task_id = wait["task_id"]
+        _record(
+            task_id,
+            "rollout_wait_reported",
+            **{key: value for key, value in wait.items() if key != "task_id"},
+        )
+        if wait["waited_minutes"] >= ROLLOUT_ESCALATE_MINUTES and not item.get(
+            "rollout_escalated"
+        ):
+            from factory.orchestration.factory_conductor import _notify_person_once
+
+            application = wait["application"] or "unknown"
+            resource = wait["resource"] or "unknown"
+            reason = wait["reason"] or "unknown"
+            if _notify_person_once(
+                task_id,
+                f"Factory PR #{wait['pr_number']} (issue #{wait['issue_number']}) "
+                f"has waited {wait['waited_minutes']} minutes on rollout: "
+                f"{application} {resource} ({reason}). Landing keeps polling.",
+                kind="rollout",
+            ):
+                _record(task_id, "rollout_escalated", pr_number=item["pr_number"])
+                item["rollout_escalated"] = True
     return False
 
 

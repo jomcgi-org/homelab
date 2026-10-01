@@ -1,6 +1,7 @@
 """File-backed control, reservation and stop-ordering regressions."""
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import json
 from threading import Event
 
@@ -104,6 +105,108 @@ def grant(task_id, key="one", **kwargs):
         model=kwargs.get("model", "luna"),
         max_cost_usd=kwargs.get("cost", 2.0),
     )
+
+
+def test_status_rollout_waits_are_durable_and_exclude_finished(db, policy, monkeypatch):
+    from factory.orchestration import factory_landing as landing
+
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(landing, "_now", lambda: now)
+    monkeypatch.setattr(
+        landing, "github_get", lambda *_: pytest.fail("status must not read GitHub")
+    )
+    with Session(db) as session:
+        rows = []
+        session.add_all(
+            [
+                SwarmTask(
+                    id=task_id,
+                    task_text="issue",
+                    repo="owner/repo",
+                    base_branch="main",
+                    conductor_model="opus",
+                    budget_usd=5,
+                    workflow_id=f"factory:{task_id}",
+                    start_state="factory",
+                    start_triggered_by="test",
+                )
+                for task_id in ("wait", "recent", "verified", "closed")
+            ]
+        )
+        session.flush()
+        for task_id, issue, number, minutes, terminal in (
+            ("wait", 11, 3, 45, None),
+            ("recent", 12, 4, 10, None),
+            ("verified", 13, 5, 90, "rollout_verified"),
+            ("closed", 14, 6, 90, "issue_closed"),
+        ):
+            rows.extend(
+                [
+                    FactoryReceipt(
+                        repo="owner/repo",
+                        issue_number=issue,
+                        title="issue",
+                        body="",
+                        url="https://github.com/owner/repo/issues/11",
+                        actor="test",
+                        task_id=task_id,
+                        state="landing",
+                    ),
+                    FactoryAudit(
+                        actor="test",
+                        task_id=task_id,
+                        action="delivery_ready",
+                        detail_json=json.dumps(
+                            {
+                                "evidence": {
+                                    "pr_url": f"https://github.com/owner/repo/pull/{number}"
+                                }
+                            }
+                        ),
+                    ),
+                    FactoryAudit(
+                        actor="test",
+                        task_id=task_id,
+                        action="merged",
+                        created_at=now - timedelta(minutes=minutes),
+                        detail_json="{}",
+                    ),
+                    FactoryAudit(
+                        actor="test",
+                        task_id=task_id,
+                        action="rollout_observed",
+                        detail_json=json.dumps(
+                            {
+                                "reason": "application_not_healthy_and_synced",
+                                "application": "embervm",
+                                "resource": "Deployment/embervm/backend",
+                            }
+                        ),
+                    ),
+                ]
+            )
+            if terminal:
+                rows.append(
+                    FactoryAudit(
+                        actor="test", task_id=task_id, action=terminal, detail_json="{}"
+                    )
+                )
+        session.add_all(rows)
+        session.commit()
+        result = controls.status(session=session)
+    assert result["rollout_waits"] == [
+        {
+            "task_id": "wait",
+            "issue_number": 11,
+            "pr_number": 3,
+            "merged_at": "2026-10-01T11:15:00+00:00",
+            "waited_minutes": 45,
+            "reason": "application_not_healthy_and_synced",
+            "application": "embervm",
+            "resource": "Deployment/embervm/backend",
+        }
+    ]
 
 
 def test_escalation_view_carries_work_item_id_from_receipt_snapshot(db):

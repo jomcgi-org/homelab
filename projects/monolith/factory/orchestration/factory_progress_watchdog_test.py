@@ -811,6 +811,9 @@ def test_only_authority_kinds_page_once_the_digest_is_on(monkeypatch):
     assert not policy.pages("intervention") and not policy.pages("deadline")
     assert policy.pages("escalation") and policy.pages("landing")
     assert policy.pages("watchdog:2")
+    assert policy.pages("rollout")
+    assert "rollout" not in policy.DIGEST_KINDS
+    assert "rollout" not in policy.SELF_RELEASING_KINDS
     # With nothing to release a stranded slot, an intervention is a person's.
     monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "false")
     assert policy.pages("intervention") and policy.pages("deadline")
@@ -904,3 +907,52 @@ def test_the_digest_is_off_by_default(db, notices, monkeypatch):
 
     monkeypatch.delenv("FACTORY_NOTIFY_DIGEST_ENABLED", raising=False)
     assert policy.digest_tick() == "disabled"
+
+
+def test_rollout_wait_digest_selects_and_renders_once(db, notices, monkeypatch):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
+    task_id, _policy = admitted()
+    _audit(
+        task_id,
+        "rollout_wait_reported",
+        pr_number=3,
+        issue_number=11,
+        waited_minutes=30,
+        application="embervm",
+        resource="Deployment/embervm/backend",
+        reason="application_not_healthy_and_synced",
+    )
+    with controls._read_session() as session:
+        rows = policy._items(session, 0)
+        assert [row.action for row in rows] == ["rollout_wait_reported"]
+        groups = policy.sections(rows)
+        assert groups["rollout_waits"] == [
+            f"#3 (issue #11, {task_id}): 30m on embervm Deployment/embervm/backend (application_not_healthy_and_synced)"
+        ]
+        assert policy._items(session, rows[-1].id) == []
+    assert "Landings waiting on rollout (1)" in policy.compose(groups)
+    assert policy.digest_tick() == "sent"
+    assert policy.digest_tick() == "not_due"
+    assert len(notices) == 1
+    assert "Landings waiting on rollout (1)" in notices[0][0]
+
+
+def test_rollout_wait_digest_unknown_parts_and_message_bounds():
+    from types import SimpleNamespace
+    from factory.orchestration import factory_notify_policy as policy
+
+    row = SimpleNamespace(
+        task_id=None, action="rollout_wait_reported", detail_json="{}"
+    )
+    groups = policy.sections([row])
+    assert groups["rollout_waits"] == [
+        "#unknown (issue #unknown, ?): unknownm on unknown unknown (unknown)"
+    ]
+    groups["rollout_waits"] = ["wait " + str(i) for i in range(11)]
+    message = policy.compose(groups)
+    assert "- and 3 more" in message
+    assert "- wait 7" in message and "- wait 8" not in message
+    groups["rollout_waits"] = ["x" * 3000] * 11
+    assert len(policy.compose(groups)) <= 1900

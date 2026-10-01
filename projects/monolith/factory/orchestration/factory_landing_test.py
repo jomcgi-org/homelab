@@ -1431,6 +1431,155 @@ def test_rollout_passes_pr_number_and_audits_blocker_identity(db, monkeypatch):
     assert observed["resource"] == "Deployment/embervm/backend"
 
 
+def test_rollout_wait_bounds_are_pinned():
+    assert landing.ROLLOUT_WAIT_REPORT_MINUTES == 30
+    assert landing.ROLLOUT_ESCALATE_MINUTES == 60
+
+
+def merged_delivery(db, task_id="t-wait", *, merged_at=NOW):
+    delivered(db, task_id, 11, 3)
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="merged",
+                task_id=task_id,
+                created_at=merged_at,
+                detail_json=json.dumps({"pr_number": 3, "merge_commit_sha": "b" * 40}),
+            )
+        )
+        session.commit()
+    return landing._deliveries(POLICY)[0]
+
+
+def pending_rollout(monkeypatch):
+    monkeypatch.setattr(
+        factory_rollout,
+        "verify",
+        lambda *_: {
+            "verified": False,
+            "reason": "application_not_healthy_and_synced",
+            "application": "embervm",
+            "resource": "Deployment/embervm/backend",
+        },
+    )
+
+
+def test_deliveries_use_latest_merge_audit_timestamp_without_changing_detail(db):
+    merged_delivery(db, merged_at=NOW - timedelta(minutes=10))
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="test",
+                action="merged",
+                task_id="t-wait",
+                created_at=NOW,
+                detail_json=json.dumps({"pr_number": 3, "merge_commit_sha": "c" * 40}),
+            )
+        )
+        session.commit()
+    item = landing._deliveries(POLICY)[0]
+    assert item["merged_at"] == NOW
+    assert item["merge_commit_sha"] == "c" * 40
+    assert audits(db, "merged")[-1] == {"pr_number": 3, "merge_commit_sha": "c" * 40}
+
+
+def test_rollout_wait_reports_once_and_notifies_once_across_ticks(db, monkeypatch):
+    from factory.orchestration import factory_conductor as conductor
+
+    merged_delivery(db)
+    pending_rollout(monkeypatch)
+    calls = []
+
+    def notify(task_id, message, *, kind):
+        calls.append((task_id, message, kind))
+        return True
+
+    monkeypatch.setattr(conductor, "_notify_person_once", notify)
+    for minute in (29, 30, 59, 60, 61, 62, 63):
+        monkeypatch.setattr(
+            landing, "_now", lambda minute=minute: NOW + timedelta(minutes=minute)
+        )
+        assert not landing._verify_rollout("owner/repo", landing._deliveries(POLICY)[0])
+        assert len(audits(db, "rollout_wait_reported")) == (0 if minute == 29 else 1)
+        assert len(calls) == (0 if minute < 60 else 1)
+    assert audits(db, "rollout_wait_reported") == [
+        {
+            "pr_number": 3,
+            "issue_number": 11,
+            "merged_at": NOW.isoformat(),
+            "waited_minutes": 30,
+            "reason": "application_not_healthy_and_synced",
+            "application": "embervm",
+            "resource": "Deployment/embervm/backend",
+        }
+    ]
+    task_id, message, kind = calls[0]
+    assert task_id == "t-wait" and kind == "rollout"
+    for literal in (
+        "PR #3",
+        "issue #11",
+        "60 minutes",
+        "embervm",
+        "Deployment/embervm/backend",
+        "application_not_healthy_and_synced",
+        "Landing keeps polling",
+    ):
+        assert literal in message
+    assert len(audits(db, "rollout_observed")) == 7
+    monkeypatch.setattr(landing, "_now", lambda: NOW + timedelta(minutes=90))
+    monkeypatch.setattr(factory_rollout, "verify", lambda *_: {"verified": True})
+    assert landing._verify_rollout("owner/repo", landing._deliveries(POLICY)[0])
+    assert len(audits(db, "rollout_verified")) == 1
+    assert len(audits(db, "rollout_wait_reported")) == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("verified,unknown", [(True, False), (False, True)])
+def test_verified_or_unknown_merge_time_never_reports_or_pages(
+    db, monkeypatch, verified, unknown
+):
+    from factory.orchestration import factory_conductor as conductor
+
+    item = merged_delivery(db)
+    if unknown:
+        item["merged_at"] = None
+    monkeypatch.setattr(landing, "_now", lambda: NOW + timedelta(minutes=90))
+    monkeypatch.setattr(factory_rollout, "verify", lambda *_: {"verified": verified})
+    monkeypatch.setattr(
+        conductor, "_notify_person_once", lambda *_a, **_k: pytest.fail("must not page")
+    )
+    assert landing._verify_rollout("owner/repo", item) == verified
+    assert not audits(db, "rollout_wait_reported")
+
+
+def test_rollout_page_real_notification_dedupe_and_failed_send_retry(db, monkeypatch):
+    import agent.api
+    from factory.orchestration import factory_conductor as conductor
+
+    merged_delivery(db)
+    pending_rollout(monkeypatch)
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
+    sent = []
+
+    async def notify(message, *, level):
+        sent.append((message, level))
+        if len(sent) == 1:
+            raise RuntimeError("retry this send")
+
+    monkeypatch.setattr(agent.api, "notify", notify)
+    for minute in (60, 61, 62, 63):
+        monkeypatch.setattr(
+            landing, "_now", lambda minute=minute: NOW + timedelta(minutes=minute)
+        )
+        assert not landing._verify_rollout("owner/repo", landing._deliveries(POLICY)[0])
+    assert len(sent) == 2 and sent[-1][1] == "warn"
+    assert len(audits(db, "task_needs_person_notified")) == 1
+    assert conductor._notify_person_once("t-wait", "duplicate", kind="rollout")
+    assert len(sent) == 2
+    assert len(audits(db, "rollout_wait_reported")) == 1
+
+
 def test_unavailable_rollout_evidence_keeps_operational_acceptance_pending(
     db, monkeypatch
 ):
