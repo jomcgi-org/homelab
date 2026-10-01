@@ -289,8 +289,9 @@ def test_knowledge_recall_enabled_in_deploy_with_five_notes(chart_context):
         r'- name: KNOWLEDGE_RECALL_LIMIT\n\s+value: "5"',
         rendered,
     )
+    # #6561: production enables Conductor continuity; the chart default stays off.
     assert re.search(
-        r'- name: CONDUCTOR_CONTINUITY_ENABLED\n\s+value: "false"',
+        r'- name: CONDUCTOR_CONTINUITY_ENABLED\n\s+value: "true"',
         rendered,
     )
 
