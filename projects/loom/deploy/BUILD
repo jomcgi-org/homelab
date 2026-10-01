@@ -19,7 +19,11 @@ py_test(
     data = MANIFESTS + [
         "README.md",
         "kustomization.yaml",
+        "//bazel/images:generate-home-cluster",
     ],
+    env = {
+        "HOME_CLUSTER_GENERATOR_BIN": "$(rootpath //bazel/images:generate-home-cluster)",
+    },
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

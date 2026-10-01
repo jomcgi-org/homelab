@@ -14,6 +14,9 @@ EXCLUDED_ROOTS=(
 	"projects/gke-cluster"
 	"projects/platform-gke"
 	"projects/gke-apps"
+	# Loom's Postgres wiring is default-off and reserved for the GKE hub.
+	# #6603 adds its Application; #6605 enables it.
+	"projects/loom"
 	# Decommissioned at home after the 2026-08-31 GKE cutover (the deploy dirs
 	# stay: the hub's $values refs consume them). Inference stays enrolled until
 	# the node-4 host-process move.
