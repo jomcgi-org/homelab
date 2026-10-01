@@ -822,7 +822,7 @@ def test_reconcile_limit_is_honoured(session, monkeypatch, source, bodies):
     _insert_raw(
         session,
         bodies,
-        PLACEHOLDER_BODY,
+        PLACEHOLDER_BODY.replace("145 files", "146 files"),
         _placeholder_extra(SECOND_BASE, SECOND_HEAD),
         f"repo-diff:{SECOND_BASE}..{SECOND_HEAD}",
     )
