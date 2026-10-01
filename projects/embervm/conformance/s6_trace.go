@@ -29,9 +29,11 @@ import (
 //     -> incomplete, never pass.
 //
 // The TLC leg runs only where the toolchain is configured (S6_TLC_JAVA,
-// S6_TLC_JAR, S6_TLC_SPEC_DIR all set): the dev scheduled-job context. The
-// shipped runner image carries no JVM, so in-cluster S6 withholds the verdict
-// as incomplete rather than claiming anything about the window.
+// S6_TLC_JAR, S6_TLC_SPEC_DIR all set). The dev-only runner image carries the
+// pinned JRE, tla2tools.jar and adoption_trace.tla under /opt/tla (BUILD
+// :tla_tar_amd64), inert until conformance.s6.enabled renders that env; any
+// run without it withholds the verdict as incomplete rather than claiming
+// anything about the window.
 
 const (
 	s6ScenarioID      = "S6"
@@ -179,7 +181,8 @@ func writeS6TraceModule(records []traceRecord, minEvents int, module, cfg *strin
 
 // s6TLCConfigured reports whether the TLC leg can run here. The toolchain
 // (Temurin java, tla2tools jar, a directory carrying adoption_trace.tla)
-// exists only in the dev scheduled-job context, never in the runner image.
+// ships in the runner image under /opt/tla, but only the chart's S6_TLC_*
+// env (conformance.s6.enabled) points the runner at it.
 func s6TLCConfigured(cfg config) bool {
 	return cfg.tlcJava != "" && cfg.tlcJar != "" && cfg.tlcSpecDir != ""
 }
@@ -225,8 +228,12 @@ func runS6TLCWithOutput(ctx context.Context, cfg config, records []traceRecord) 
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, s6TLCTimeoutSeconds*time.Second)
 	defer cancel()
+	// -XX:-UsePerfData: the JVM otherwise maps an hsperfdata file under
+	// /tmp, which the runner's read-only root filesystem may not offer; TLC
+	// needs no jstat counters.
 	cmd := exec.CommandContext(timeoutCtx, cfg.tlcJava,
 		"-XX:+UseParallelGC",
+		"-XX:-UsePerfData",
 		"-Dtlc2.TLC.stopAfter="+strconv.Itoa(s6TLCTimeoutSeconds),
 		"-cp", cfg.tlcJar, "tlc2.TLC", "-workers", "auto",
 		"-config", "window.cfg", "window")

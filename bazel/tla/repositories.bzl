@@ -1,11 +1,16 @@
 """Prebuilt TLC model checker for the EmberVM TLA+ pilot (ADR embervm/006).
 
 TLC (the TLA+ model checker, shipped as tla2tools.jar) checks the adoption
-protocol spec in `projects/embervm/specs/` during CI. It is a build-time-only
-correctness checker: nothing deployed uses Java, and the checker's outputs
+protocol spec in `projects/embervm/specs/` during CI. The checker's outputs
 (counterexample traces, "no error" verdicts) are architecture-independent, so a
 single linux-amd64 toolchain is by design, the same posture as the prebuilt
 `@protoc_linux_x86_64` codegen tool in bazel/erlang.
+
+One deployed consumer: the dev-only EmberVM conformance runner image layers
+this JRE, the jar and adoption_trace.tla under /opt/tla for its S6 trace check
+(issue #6415, `//projects/embervm/conformance:tla_tar_amd64`). It stays inert
+unless the chart's conformance.s6.enabled renders the S6_TLC_* env, so bumping
+either artifact here also changes that image.
 
 Both artifacts are fetched at repo-fetch time (the host has network; the RBE
 executor is network-less) and run natively on the Ubuntu 22.04 x86_64 executor:
@@ -68,5 +73,5 @@ def _tla_impl(_ctx):
 
 tla = module_extension(
     implementation = _tla_impl,
-    doc = "Prebuilt TLC model checker (@tla2tools) and the Temurin 21 JRE (@temurin21_jre_linux_amd64) that runs it on the linux-amd64 RBE executor. Build-time only; nothing deployed uses Java.",
+    doc = "Prebuilt TLC model checker (@tla2tools) and the Temurin 21 JRE (@temurin21_jre_linux_amd64) that runs it on the linux-amd64 RBE executor, also layered into the dev-only EmberVM conformance runner image for S6 (inert unless conformance.s6.enabled).",
 )
