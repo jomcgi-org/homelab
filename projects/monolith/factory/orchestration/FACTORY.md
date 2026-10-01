@@ -2390,3 +2390,31 @@ Later observations remain in the audit
 instead of sending another message. Automatic stall recovery is audit-only.
 A failed notification attempt is audited without consuming the fence, so it
 can be retried, and does not block task settlement.
+
+#### Paging and the daily digest
+
+`FACTORY_NOTIFY_DIGEST_ENABLED` (`swarm.factoryNotifyDigestEnabled`, default
+false) decides per notification kind whether the operator is paged
+(`factory_notify_policy.pages`). Pages: `escalation` (a decision card: a
+planner pause, which the charter reserves for human authority; a funding
+question the merit judge escalated or a hard cap blocked; a branch another
+owner holds), `watchdog:*` (a looping verdict or two unreadable answers), and
+`landing` (a pull request left to merge). `intervention` and `deadline` page
+only while nothing will release the slot on its own; with active cessation or
+the deadline backstop on they digest. `refine` needs-human briefs digest.
+
+A digested notice is audited as `task_needs_person_digested` under the same
+per-task, per-kind fence and sends nothing. Once a day the reconciler sends
+one `info` message (`factory_digest_sent`, with its audit watermark) listing,
+since the last digest: the merit judge's funding grants with requested and
+granted figures, watchdog assessments that let a task continue, issues whose
+live checks were handed off, and the digested notices, with the escalations
+link. A failed send is retried an hour later. The first digest after enabling
+covers the previous day rather than all history. Decision cards are not
+changed: every card stays on `/factory/escalations` whether it paged or not.
+
+**Why.** Joe was paged for notices the factory then handled. Every one of the
+24 intervention pages in the week to 2026-10-01 was settled automatically by
+active cessation, stop supervision or a drain relay, and refine briefs ask a
+minute's scoping question on advisory work. Authority decisions still page;
+the rest, and what the factory approved on its own, arrive once a day.

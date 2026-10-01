@@ -274,6 +274,8 @@ spec:
               value: {{ .Values.swarm.factoryAgentBoardPollEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_POINTER_ENABLED
               value: {{ .Values.swarm.factoryWorkItemPointerEnabled | default false | quote }}
+            - name: FACTORY_NOTIFY_DIGEST_ENABLED
+              value: {{ .Values.swarm.factoryNotifyDigestEnabled | default false | quote }}
             - name: FACTORY_WORK_ITEM_BASE_URL
               value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED

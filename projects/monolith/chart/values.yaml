@@ -1585,6 +1585,11 @@ swarm:
   # complete.
   factoryAgentBoardPollEnabled: false
   factoryWorkItemPointerEnabled: false
+  # Page Discord only for notices that need a person's authority (decision
+  # cards, watchdog loops, PRs left to merge, stranded slots nothing will
+  # release) and send the rest, plus the factory's own auto-approvals, as one
+  # daily digest (factory_notify_policy). Cards stay on the escalations page.
+  factoryNotifyDigestEnabled: false
   factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false
   # Merit judging (factory_judge). The funding judge and the no-progress
