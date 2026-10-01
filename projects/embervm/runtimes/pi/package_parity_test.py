@@ -19,10 +19,24 @@ from pathlib import Path
 
 import yaml
 
-# Package -> why it is in one image and not the other. Empty today: the sets are
-# identical on purpose (see apko.yaml). A future entry reads like
+# Package -> why it is in one image and not the other. A future entry reads like
 #   "gh": "pi's 4-tool loop never opens a PR, and gh is ~20 MB",
-EXPECTED_DIVERGENCE: dict[str, str] = {}
+#
+# The factory toolchains (#6642) are claude-only on purpose. Factory sessions run
+# repo tests and chart renders; the pi image is the lean pi-spark rollback harness
+# and does not need them, and its lock is not re-resolved by that change.
+_TOOLCHAIN_REASON = (
+    "factory toolchain for sessions that run repo tests and renders (#6642); "
+    "the pi-spark rollback harness stays lean and its lock is not re-resolved"
+)
+EXPECTED_DIVERGENCE: dict[str, str] = {
+    "helm-3": _TOOLCHAIN_REASON,
+    "go-1.26": _TOOLCHAIN_REASON,
+    "nodejs-20": _TOOLCHAIN_REASON,
+    "pnpm~10": _TOOLCHAIN_REASON,
+    "py3.12-pytest": _TOOLCHAIN_REASON,
+    "py3.12-pyyaml": _TOOLCHAIN_REASON,
+}
 
 
 def _packages(path: Path) -> set[str]:

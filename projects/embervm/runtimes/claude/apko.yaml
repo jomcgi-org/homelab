@@ -62,9 +62,12 @@ contents:
     # node matches the Bazel node toolchain (node.toolchain 20.19.0 in
     # MODULE.bazel) that the repo's JS builds and tests run under. The monolith
     # frontend image runs nodejs-22, but nothing in a session builds that image.
-    # pnpm is the repo's JS package manager.
+    # pnpm is the repo's JS package manager, held to the 10 stream to match
+    # pnpm_version 10.34.5 in MODULE.bazel (the lockfile is pnpm 10 format). A
+    # bare `pnpm` resolves to the pnpm-11.8 provider, which wants Node >= 22.13
+    # and only warns on the node 20 shipped here.
     - nodejs-20
-    - pnpm
+    - pnpm~10
     # Repo tests are pytest and import yaml almost everywhere. These are the
     # python-3.12 system packages, importable by the shim's interpreter. A full
     # bazel/requirements/all.txt venv is deliberately NOT shipped (see README).
