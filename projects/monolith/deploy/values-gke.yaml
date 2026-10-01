@@ -37,6 +37,12 @@ swarm:
   # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
   # checks must pass before this hub behavior is enabled.
   factoryTransientStopRetryEnabled: false
+  # Finished repository work with only live checks left hands those checks to
+  # a needs-human issue instead of paging, and intake stops re-admitting it.
+  # On 2026-09-30 #6288, #5803, #5787, #5758, #5757, #5699 and #4321 were
+  # re-admitted after the 13 -> 14 bump and each paged; split children for
+  # live checks (#6559) were briefed by intake within seconds.
+  factoryOperationalHandoffEnabled: true
   # Accept EmberVM's failed/failed record for the exact guest whose invoke
   # failed inside this dispatch as cessation evidence. On 2026-09-30 noded
   # restarts at 21:22 and 23:27 left six attempts holding six of ten delivery
