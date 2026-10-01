@@ -1,6 +1,7 @@
 import hashlib
 import json
 import struct
+import zlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -61,15 +62,27 @@ def artifact(planned, data, kind, viewport=None):
     )
 
 
+def _png(viewport):
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    width, height = viewport
+    return (
+        PNG_SIGNATURE
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress((b"\x00" + b"\x00" * width * 3) * height))
+        + chunk(b"IEND", b"")
+    )
+
+
 def record(planned):
     # Synthetic byte fixtures test the contract without a browser or provider.
-    images = [
-        PNG_SIGNATURE
-        + b"\x00\x00\x00\x0dIHDR"
-        + struct.pack(">II", *viewport)
-        + bytes(9)
-        for viewport in DEFAULT_VIEWPORTS
-    ]
+    images = [_png(viewport) for viewport in DEFAULT_VIEWPORTS]
     outcome = json.dumps(
         {
             "navigation": "passed",

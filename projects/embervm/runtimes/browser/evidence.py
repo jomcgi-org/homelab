@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import struct
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Iterable
@@ -154,6 +155,59 @@ def viewport_key(viewport) -> str:
     return f"{viewport[0]}x{viewport[1]}"
 
 
+def _png_dimensions(data):
+    """Return (valid, (width, height) or None) after walking every chunk.
+
+    Each chunk length and CRC32 is verified. IHDR must be first with a
+    13-byte payload, at least one IDAT must appear, and a zero-length IEND
+    must be last with no trailing bytes.
+    """
+    if len(data) < 8 or data[:8] != PNG_SIGNATURE:
+        return False, None
+    offset = 8
+    total = len(data)
+    first = True
+    seen_idat = False
+    dimensions = None
+    while True:
+        if offset + 8 > total:
+            return False, None
+        (length,) = struct.unpack(">I", data[offset : offset + 4])
+        chunk_type = data[offset + 4 : offset + 8]
+        if offset + 12 + length > total:
+            return False, None
+        chunk_data = data[offset + 8 : offset + 8 + length]
+        (stored_crc,) = struct.unpack(
+            ">I", data[offset + 8 + length : offset + 12 + length]
+        )
+        if zlib.crc32(data[offset + 4 : offset + 8 + length]) & 0xFFFFFFFF != stored_crc:
+            return False, None
+        if first:
+            if chunk_type != b"IHDR" or length != 13:
+                return False, None
+            dimensions = struct.unpack(">II", chunk_data[:8])
+            first = False
+        else:
+            if chunk_type == b"IHDR":
+                return False, None
+            if chunk_type == b"IDAT":
+                seen_idat = True
+            if chunk_type == b"IEND":
+                if length != 0:
+                    return False, None
+                if offset + 12 + length != total:
+                    return False, None
+                if not seen_idat:
+                    return False, None
+                return True, dimensions
+        if chunk_type != b"IEND":
+            offset += 12 + length
+            if offset >= total:
+                return False, None
+            continue
+        return False, None
+
+
 def _artifact_bytes(record, now, fetch_bytes):
     """Return verified bytes or stable reason codes, never a retrieval URL."""
     reasons = []
@@ -176,15 +230,14 @@ def _artifact_bytes(record, now, fetch_bytes):
     if hashlib.sha256(data).hexdigest() != record.sha256:
         reasons.append("hash_mismatch")
     if record.kind == "screenshot":
-        if (
-            record.media_type != "image/png"
-            or len(data) < 33
-            or data[:8] != PNG_SIGNATURE
-            or data[8:16] != b"\x00\x00\x00\x0dIHDR"
-        ):
+        if record.media_type != "image/png":
             reasons.append("invalid_png")
-        elif struct.unpack(">II", data[16:24]) != tuple(record.viewport):
-            reasons.append("png_dimensions_mismatch")
+        else:
+            valid, dimensions = _png_dimensions(data)
+            if not valid:
+                reasons.append("invalid_png")
+            elif dimensions != tuple(record.viewport):
+                reasons.append("png_dimensions_mismatch")
     return (None if reasons else data), reasons
 
 

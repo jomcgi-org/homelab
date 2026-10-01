@@ -247,3 +247,98 @@ def test_clock_reversal_refused_and_shutdown_still_cleans(tmp_path):
     assert report.processes[0].reaped
     now[0] = 2
     assert worker.shutdown()[0].status == "ceased"
+
+
+def test_setsid_descendant_reaped_when_ceased(tmp_path):
+    script = (
+        "import pathlib,subprocess,sys,time; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "start_new_session=True); "
+        "pathlib.Path('child.pid').write_text(str(p.pid)); "
+        "pathlib.Path('ready').touch(); time.sleep(60)"
+    )
+    worker = Supervisor(
+        {arm: ((sys.executable, "-c", script),) for arm in COMMANDS},
+        kill_grace_s=0.2,
+        parent_dir=tmp_path,
+    )
+    try:
+        session = worker.create(OWNER, "mcp")
+        deadline = time.monotonic() + 5
+        while not (session.root / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (session.root / "ready").exists()
+        child = int((session.root / "child.pid").read_text())
+        os.kill(child, 0)
+        report = worker.terminate(session.session_id, OWNER, "cancel")
+        assert report.status == "ceased"
+        assert report.dirs_gone and not report.errors
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        worker.shutdown()
+
+
+def test_group_survivor_is_unconfirmed_then_ceased(tmp_path):
+    child_argv = (
+        "import pathlib,signal,time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "pathlib.Path('child_ready').touch()\ntime.sleep(60)"
+    )
+    script = "\n".join(
+        [
+            "import pathlib,subprocess,sys,time",
+            f"p=subprocess.Popen([{sys.executable!r},'-c',{child_argv!r}])",
+            "pathlib.Path('child.pid').write_text(str(p.pid))",
+            "deadline=time.monotonic()+5",
+            "while not pathlib.Path('child_ready').exists() "
+            "and time.monotonic()<deadline:",
+            "    time.sleep(0.01)",
+            "pathlib.Path('ready').touch()",
+            "time.sleep(60)",
+        ]
+    )
+    worker = Supervisor(
+        {arm: ((sys.executable, "-c", script),) for arm in COMMANDS},
+        kill_grace_s=0.1,
+        parent_dir=tmp_path,
+    )
+    try:
+        session = worker.create(OWNER, "cli")
+        deadline = time.monotonic() + 5
+        while not (session.root / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (session.root / "ready").exists()
+        first = worker.terminate(session.session_id, OWNER, "cancel")
+        assert first.status == "unconfirmed"
+        assert any("still present" in error for error in first.errors)
+        second = worker.terminate(session.session_id, OWNER, "cancel")
+        assert second.status == "ceased"
+        assert second.dirs_gone and not second.errors
+    finally:
+        worker.shutdown()
+
+
+def test_non_isolated_launcher_refused_and_reaped(tmp_path):
+    launched = []
+
+    def bad_launcher(command, **kwargs):
+        kwargs["start_new_session"] = False
+        process = launch(command, **kwargs)
+        launched.append(process)
+        return process
+
+    worker = Supervisor(COMMANDS, launcher=bad_launcher, parent_dir=tmp_path)
+    try:
+        with pytest.raises(LaunchFailed) as failure:
+            worker.create(OWNER, "mcp")
+        assert failure.value.report.reason == "launch_failure"
+        assert launched and launched[0].poll() is not None
+    finally:
+        worker.shutdown()

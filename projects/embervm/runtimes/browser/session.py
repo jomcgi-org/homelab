@@ -117,6 +117,72 @@ def launch(command, **kwargs):
     )
 
 
+def _proc_stat(pid):
+    """Return (ppid, pgrp, starttime) from /proc/<pid>/stat."""
+    with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as handle:
+        content = handle.read()
+    rparen = content.rfind(")")
+    if rparen < 0:
+        raise OSError("unparseable stat for pid " + str(pid))
+    fields = content[rparen + 2 :].split()
+    if len(fields) < 20:
+        raise OSError("truncated stat for pid " + str(pid))
+    return int(fields[1]), int(fields[2]), fields[19]
+
+
+def _process_table():
+    """Map every live pid to (ppid, pgrp, starttime) via /proc."""
+    table = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError as error:
+        raise OSError("cannot list /proc: " + str(error)) from None
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            table[pid] = _proc_stat(pid)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except (OSError, ValueError) as error:
+            raise OSError("cannot read /proc: " + str(error)) from None
+    return table
+
+
+def _descendant_snapshot(roots, table):
+    """Return {pid: (pgrp, starttime)} for roots and their transitive children."""
+    children = {}
+    for pid, (ppid, _, _) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    seen, queue, snapshot = set(), list(roots), {}
+    for pid in roots:
+        if pid in table:
+            _, pgrp, starttime = table[pid]
+            snapshot[pid] = (pgrp, starttime)
+    while queue:
+        current = queue.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for child in children.get(current, ()):
+            if child in snapshot:
+                continue
+            _, pgrp, starttime = table[child]
+            snapshot[child] = (pgrp, starttime)
+            queue.append(child)
+    return snapshot
+
+
+def _pid_alive_with_starttime(pid, starttime):
+    """Check whether pid is still the snapshotted process instance."""
+    try:
+        _, _, current = _proc_stat(pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return current == starttime
+
+
 class Supervisor:
     def __init__(
         self,
@@ -290,13 +356,28 @@ class Supervisor:
                 return self._last_clock
 
         started = cessation_time()
-        # Signal all groups before waiting on any one process.
+        roots = [process.pid for process in session.processes]
+        try:
+            snapshot = _descendant_snapshot(roots, _process_table())
+        except OSError as error:
+            snapshot = {}
+            errors.append("descendants: " + str(error))
+        owned_groups = {pgrp for pgrp in (pgrp for pgrp, _ in snapshot.values()) if pgrp in snapshot}
+        # Signal all groups before waiting on any one process, including
+        # detached descendants that left the launched process group.
         for process in session.processes:
             try:
                 if os.getpgid(process.pid) == process.pid:
                     os.killpg(process.pid, signal.SIGTERM)
                 else:
                     process.terminate()
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                errors.append("SIGTERM: " + str(error))
+        for pgrp in sorted(owned_groups):
+            try:
+                os.killpg(pgrp, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             except OSError as error:
@@ -335,6 +416,36 @@ class Supervisor:
                     group_gone,
                 )
             )
+        for pgrp in sorted(owned_groups):
+            try:
+                os.killpg(pgrp, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as error:
+                errors.append("SIGKILL: " + str(error))
+        if snapshot:
+            deadline = time.monotonic() + max(self.kill_grace_s, 0.1)
+            remaining = dict(snapshot)
+            while remaining:
+                still = {}
+                for pid, (_, starttime) in remaining.items():
+                    try:
+                        alive = _pid_alive_with_starttime(pid, starttime)
+                    except OSError as error:
+                        errors.append("descendants: " + str(error))
+                        continue
+                    if alive:
+                        still[pid] = (_, starttime)
+                remaining = still
+                if not remaining:
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+            for pid in sorted(remaining):
+                errors.append(
+                    "descendant still present after SIGKILL: pid " + str(pid)
+                )
         try:
             shutil.rmtree(session.root)
         except FileNotFoundError:

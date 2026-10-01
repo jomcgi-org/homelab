@@ -155,6 +155,27 @@ def test_png_failures(evidence, data, expected):
     assert expected in codes(verdict(records, blobs))
 
 
+def test_truncated_or_corrupt_png_is_invalid(evidence):
+    records, blobs, _ = evidence
+    viewport = DEFAULT_VIEWPORTS[0]
+    full = png(viewport)
+    header_only = (
+        PNG_SIGNATURE
+        + b"\x00\x00\x00\x0dIHDR"
+        + struct.pack(">II", *viewport)
+        + bytes(9)
+    )
+    assert len(header_only) == 33
+    corrupt = bytearray(full)
+    corrupt[-1] ^= 1
+    for bad in (full[:-12], header_only, bytes(corrupt)):
+        bad_record = record(bad, viewport=viewport)
+        case_records = [bad_record] + records[1:]
+        case_blobs = dict(blobs)
+        case_blobs[bad_record.sha256] = bad
+        assert "invalid_png" in codes(verdict(case_records, case_blobs))
+
+
 @pytest.mark.parametrize("category", ["functional", "accessibility"])
 @pytest.mark.parametrize(
     "status, expected",
