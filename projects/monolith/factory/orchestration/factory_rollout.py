@@ -456,8 +456,7 @@ def application_in_scope(repo, app, files, catalog, surface) -> bool:
                         for dep_dir in dep_dirs:
                             dep_prefix = "" if dep_dir == "." else dep_dir + "/"
                             if any(
-                                f == dep_dir or f.startswith(dep_prefix)
-                                for f in files
+                                f == dep_dir or f.startswith(dep_prefix) for f in files
                             ):
                                 return True
                     else:
