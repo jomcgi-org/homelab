@@ -450,9 +450,7 @@ def chat_public_takedown(
     from chat_public.retention import takedown
 
     def purge(session):
-        return takedown(
-            session, session_id=session_id or None, ip_hash=ip_hash or None
-        )
+        return takedown(session, session_id=session_id or None, ip_hash=ip_hash or None)
 
     _run_chat_public_purge("chat-public-takedown", purge, dry_run)
 
