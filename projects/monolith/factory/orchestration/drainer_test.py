@@ -2826,13 +2826,45 @@ def test_kg_provider_walled_defers_when_every_grant_is_below_the_floor(monkeypat
     assert _KG_PROVIDER_WALLED() == (True, "below_floor 25 remaining 20")
 
 
-def test_kg_provider_walled_still_vetoes_an_exhausted_grant(monkeypatch):
+def test_kg_provider_walled_uses_one_quota_snapshot(monkeypatch):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    snapshots = [
+        _kg_rolled((80.0, 30.0), (30.0, 30.0)),
+        _kg_rolled((80.0, 30.0), (85.0, 30.0)),
+    ]
+    # A second read would wall the floor check despite the confirmed snapshot.
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: snapshots.pop(0))
+    assert _KG_PROVIDER_WALLED() == (False, "all_grants_confirmed_available")
+    assert len(snapshots) == 1
+
+
+@pytest.mark.parametrize(
+    ("used", "expected"),
+    [
+        (75.0, (False, "all_grants_confirmed_available")),
+        (75.1, (True, "below_floor 25 remaining 24.9")),
+    ],
+)
+def test_kg_provider_walled_at_the_pooled_floor_boundary(monkeypatch, used, expected):
+    from factory.orchestration import model_pool
+
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: _kg_rolled((80.0, 30.0), (used, 80.0))
+    )
+    assert _KG_PROVIDER_WALLED() == expected
+
+
+@pytest.mark.parametrize("first", [(100.0, 30.0), (10.0, 100.0)])
+def test_kg_provider_walled_still_vetoes_an_exhausted_grant(monkeypatch, first):
     from factory.orchestration import model_pool
 
     monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
     # No floor applies to the veto: a fully used grant blocks KG on its own.
     monkeypatch.setattr(
-        model_pool, "quota_summary", lambda: _kg_rolled((100.0, 30.0), (30.0, 30.0))
+        model_pool, "quota_summary", lambda: _kg_rolled(first, (30.0, 30.0))
     )
     walled, reason = _KG_PROVIDER_WALLED()
     assert walled is True and "codex-cluster" in reason

@@ -176,7 +176,7 @@ def provider_walled() -> tuple[bool, str]:
 
 
 def kg_provider_walled() -> tuple[bool, str]:
-    """Whether fresh observations confirm room for a KG session."""
+    """Whether fresh evidence and the pooled drainer floor permit KG work."""
     try:
         from factory.orchestration.model_pool import (
             availability,
