@@ -21,7 +21,12 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine
 
 from factory.execution import store
-from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+from factory.execution.models import (
+    AgentCapacityReservation,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
 from factory.execution.transport import Turn
 
 WAIT_SECONDS = 5
@@ -88,6 +93,13 @@ def lane(pg, monkeypatch):
             )
             connection.execute(
                 delete(AgentTurn).where(AgentTurn.session_id == session_id)
+            )
+            # A lane left claimed (a heartbeat test) still holds a running
+            # admission slot; release it so later lanes can be admitted.
+            connection.execute(
+                delete(AgentCapacityReservation).where(
+                    AgentCapacityReservation.session_id == session_id
+                )
             )
             connection.execute(
                 delete(AgentSession).where(AgentSession.id == session_id)
