@@ -9,6 +9,7 @@ the identity noded's own allowlist (PR #6378) derives for the control plane.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,33 @@ def _config_map(documents: list[dict[str, Any]], name: str) -> dict[str, Any] | 
     return matches[0] if matches else None
 
 
+def _file_mode(config: str, name: str) -> int:
+    matches = re.findall(
+        rf"^[ \t]*{name}[ \t]*=[ \t]*(.*?)[ \t]*$", config, re.MULTILINE
+    )
+    assert len(matches) == 1, f"expected exactly one {name}: {matches}"
+    assert re.fullmatch(r"0[0-7]{3}", matches[0]), f"invalid {name}: {matches[0]}"
+    return int(matches[0], 8)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "",
+        "key_file_mode = ",
+        "key_file_mode = 0648",
+        "key_file_mode = 644",
+        'key_file_mode = "0640"',
+        "key_file_mode = 0640\nkey_file_mode = 0640",
+    ],
+)
+def test_file_mode_parser_rejects_missing_malformed_and_duplicate_modes(
+    config: str,
+) -> None:
+    with pytest.raises(AssertionError):
+        _file_mode(config, "key_file_mode")
+
+
 @pytest.mark.parametrize("values", [[], [_GKE_VALUES], [_HOME_VALUES]])
 def test_default_and_checked_in_overlays_leave_the_dial_fully_off(
     values: list[Path],
@@ -152,6 +180,14 @@ def test_sidecar_alone_delivers_files_but_keeps_the_plaintext_dial() -> None:
     assert _named(helper["ports"])["spiffe-health"]["containerPort"] == 8091
     assert helper["securityContext"]["readOnlyRootFilesystem"] is True
     assert helper["securityContext"]["allowPrivilegeEscalation"] is False
+    assert helper["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    helper_uid = helper["securityContext"].get(
+        "runAsUser", pod["securityContext"]["runAsUser"]
+    )
+    consumer_uid = control_plane["securityContext"].get(
+        "runAsUser", pod["securityContext"]["runAsUser"]
+    )
+    assert helper_uid == consumer_uid == 65532
     assert pod["securityContext"]["fsGroup"] == 65532
 
     helper_mounts = _named(helper["volumeMounts"])
@@ -190,8 +226,13 @@ def test_sidecar_alone_delivers_files_but_keeps_the_plaintext_dial() -> None:
     assert 'svid_file_name = "svid.pem"' in config
     assert 'svid_key_file_name = "svid_key.pem"' in config
     assert 'svid_bundle_file_name = "svid_bundle.pem"' in config
-    assert "cert_file_mode = 0444" in config
-    assert "key_file_mode = 0440" in config
+    cert_mode = _file_mode(config, "cert_file_mode")
+    key_mode = _file_mode(config, "key_file_mode")
+    assert cert_mode & 0o200, "certificate must remain owner-writable for rotation"
+    assert key_mode & 0o200, "key must remain owner-writable for rotation"
+    assert cert_mode & 0o400, "same-UID control plane must be able to read certificate"
+    assert key_mode & 0o400, "same-UID control plane must be able to read key"
+    assert key_mode & 0o007 == 0, "key must grant no permissions to other users"
     assert "bind_port = 8091" in config
 
 
