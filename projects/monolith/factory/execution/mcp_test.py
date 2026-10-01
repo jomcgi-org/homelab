@@ -22,6 +22,7 @@ from factory.execution.transport import (
     Turn,
 )
 from faas.embervm_client import EmberVMTransportError
+from factory.orchestration.models import SwarmNodeRun
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +130,50 @@ def test_execute_pending_message_forwards_reasoning_when_enabled(monkeypatch, se
     asyncio.run(mcp._execute_pending_message(row.id))
 
     assert delivered[0]["reasoning"] is True
+
+
+def test_factory_executor_declares_exact_pin_before_session_binding(monkeypatch, session):
+    from core import db as core_db
+
+    monkeypatch.setattr(core_db, "get_engine", lambda: session.bind)
+    monkeypatch.setattr(
+        "factory.orchestration.api.factory_session_allowed", lambda _key: True
+    )
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+    delivered = []
+
+    async def deliver(*args, **kwargs):
+        delivered.append(kwargs)
+        return _completed_delivery(args[2])
+
+    async def notify(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    row = store.create_session(session, "factory:t-path:implement:2", "/workspace", "main")
+    row.workflow_id = "dispatch-2"
+    row.node_key = "implement"
+    row.node_attempt = 2
+    session.add_all(
+        [
+            row,
+            SwarmNodeRun(
+                task_id="t-path", node_key="implement", attempt=1,
+                dispatch_key="dispatch-1", status="running",
+                pin_json=json.dumps({"artifact_path": ".factory/first.json"}),
+            ),
+            SwarmNodeRun(
+                task_id="t-path", node_key="implement", attempt=2,
+                dispatch_key="dispatch-2", session_id=None, status="running",
+                pin_json=json.dumps({"artifact_path": ".factory/second.json"}),
+            ),
+        ]
+    )
+    session.commit()
+    store.create_pending_message(session, row.id, "work")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    assert delivered[0]["artifact_path"] == ".factory/second.json"
 
 
 def test_execute_pending_message_forwards_session_effort(monkeypatch, session):

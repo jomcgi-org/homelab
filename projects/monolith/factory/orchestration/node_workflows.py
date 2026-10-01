@@ -381,9 +381,11 @@ def _evaluate_stored_artifact(
 ) -> dict:
     """Validate exact stored whole-file evidence or a complete added-file diff.
 
-    The current executor does not request the whole-file channel. Its reduced
-    diff deliberately preserves complete small added files when the full work
-    diff exceeds the cap, so diff_truncated alone does not invalidate an artifact.
+    Factory dispatch declares the admitted pin's path, so stored whole-file
+    evidence is primary. The added-file diff is a fallback only when the guest
+    returned no artifact record. Its reduced diff preserves small added files
+    when the full work diff exceeds the cap, so diff_truncated alone does not
+    invalidate an artifact.
     Hunk lengths are checked before the shared evaluator extracts its content.
     An explicit whole-file failure never falls back to the diff.
     """

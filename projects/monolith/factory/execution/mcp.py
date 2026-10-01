@@ -1076,6 +1076,18 @@ async def _execute_pending_message(session_id: int) -> None:
                     raise EmberVMTransportError("Shared execution admission is fenced")
 
             deliver_kwargs["admission_check"] = shared_admission_check
+            from factory.orchestration.api import declared_artifact_path
+
+            artifact_path = await asyncio.to_thread(
+                declared_artifact_path,
+                session_id,
+                session_row.local_session_id,
+                session_row.workflow_id,
+                session_row.node_key,
+                session_row.node_attempt,
+            )
+            if artifact_path is not None:
+                deliver_kwargs["artifact_path"] = artifact_path
             if not await asyncio.to_thread(
                 factory_session_allowed, getattr(session_row, "local_session_id", None)
             ):
