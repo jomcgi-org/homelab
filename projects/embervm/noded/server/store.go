@@ -777,6 +777,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		}
 		localRootfsID, rootfsErr := ext4UUID(img.RootfsPath)
 		if rootfsErr != nil {
+			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
+				return nil, pendingErr
+			}
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: read local rootfs UUID: %v", prefix, rootfsErr)
 		}
 		storedRootfsID = strings.TrimSpace(storedRootfsID)

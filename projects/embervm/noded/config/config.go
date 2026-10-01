@@ -214,6 +214,9 @@ type Config struct {
 
 	// BootReadyTimeout bounds the readiness poll after a COLD boot (BuildBase).
 	BootReadyTimeout time.Duration
+	// RootfsPendingMaxAge enables retryable in-pod bake admission when positive.
+	// Unset EMBERVM_NODED_ROOTFS_PENDING_MAX_AGE preserves legacy failures.
+	RootfsPendingMaxAge time.Duration
 	// RestoreReadyTimeout bounds the readiness poll after a WARM restore (Prime).
 	// A restored guest is already warm; this short budget only covers WaitReady
 	// retrying past the Firecracker post-restore vsock RX-queue race. Default 2s.
@@ -655,6 +658,9 @@ func Load() (Config, error) {
 	}
 
 	if err := parseDuration("EMBERVM_NODED_BOOT_READY_TIMEOUT", &c.BootReadyTimeout); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_ROOTFS_PENDING_MAX_AGE", &c.RootfsPendingMaxAge); err != nil {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_RESTORE_READY_TIMEOUT", &c.RestoreReadyTimeout); err != nil {

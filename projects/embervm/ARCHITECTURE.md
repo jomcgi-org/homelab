@@ -1244,6 +1244,38 @@ reserve and rejection floor. Oversized images are logged and skipped. A missing
 or malformed declaration is logged and baked fail-closed. The wildcard legacy
 DaemonSet also bakes every image.
 
+With `rootfsBuilder.inPodBake.enabled`, a long-running `rootfs-baker` replaces
+both init-bake forms. Guest digests and digest-bearing paths live in the
+directory-mounted rootfs-builder ConfigMap's tab-separated desired set, not in
+brick pod templates. The baker polls every 30 seconds and sends missing roots
+through the same bounded driver, class ceiling, content-addressed cache and
+lock. ConfigMap updates are projected by kubelet without restarting the pod.
+The chart defaults off; values-gke enables it. The first flip rolls bricks once;
+removing the enabled line restores init baking and rolls once again. The baker
+adds 100m CPU and 128Mi memory requests per pod (512Mi memory limit) to the
+scheduled container sum, unlike the old init request's max-with-sum accounting.
+
+**Why.** Digest-only publishes rolled every brick and drained live sessions.
+The ReplicaSet history on 2026-10-01 in #6662 identifies guest digest changes
+as the only pod-template change in several rolls. Moving desired roots out of
+the template lets existing sessions continue while new images bake in place.
+
+Noded starts before first-boot bakes finish. Before submitting each eligible
+missing root, the baker writes `<rootfsPath>.pending` and refreshes its mtime
+each poll while outstanding. Skipped workloads get no marker. Publication or
+failure removes it, and failed bakes retry on a later poll. With the flag-only
+`EMBERVM_NODED_ROOTFS_PENDING_MAX_AGE=1800s`, BuildBase returns ABORTED for a
+missing root with a fresh marker, without recording a failed base or changing
+its backoff. Missing or stale markers, unset env, and other filesystem errors
+retain existing behavior. Fresh serving, stateful and group boots and base
+restore admission use the same guard. GC and ENOSPC reclaim semantics are
+unchanged: `.pending` ends in neither `.ext4` nor a reclaimable `.tmp.` name,
+and the baker never deletes a published rootfs.
+
+Repository delivery is staged under #6662. Operational acceptance still needs
+a later digest-only publish to prove no brick ReplicaSet changes, new sessions
+use the baked base, and existing sessions survive without `node_gone`.
+
 Remote baked-rootfs retention is staged separately under
 `rootfsRemoteRetention`. The repository defaults are `enabled: false` and
 `ageDays: 30`. The control plane uses its existing S3 client to produce an
