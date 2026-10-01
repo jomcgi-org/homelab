@@ -1870,6 +1870,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
 | EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | guide merged (PR #6070); clean-host KVM validation outstanding |
 | OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
