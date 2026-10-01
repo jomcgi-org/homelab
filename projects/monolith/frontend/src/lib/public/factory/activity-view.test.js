@@ -832,7 +832,7 @@ describe("ledger filters", () => {
       phase: "done",
       admitted_at: "2026-09-10T10:00:00Z",
       finished_at: "2026-09-10T12:00:00Z",
-      committed_cost_usd: 3,
+      cost_usd: 3,
     },
     {
       issue_number: 2,
@@ -842,7 +842,7 @@ describe("ledger filters", () => {
       phase: "refine_1",
       admitted_at: "2026-09-11T10:00:00Z",
       finished_at: "2026-09-11T10:30:00Z",
-      committed_cost_usd: 9,
+      cost_usd: 9,
     },
     {
       issue_number: 3,
@@ -852,7 +852,7 @@ describe("ledger filters", () => {
       phase: "review_1",
       admitted_at: "2026-09-11T11:00:00Z",
       finished_at: null,
-      committed_cost_usd: 1,
+      cost_usd: 1,
     },
   ];
 
