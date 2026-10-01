@@ -948,6 +948,10 @@ def test_brick_gone_releases_claim_and_records_interrupted_turn(monkeypatch, ses
     retry = store.get_pending_message(session, row.id, pending.seq)
     assert interrupted.terminal_reason == "interrupted"
     assert interrupted.stop_reason == "brick_preempted"
+    observation = json.loads(interrupted.usage_json)["observation"]
+    assert observation["schema"] == "turn-observation/1"
+    assert observation["dispatch_count"] == 1
+    assert observation["dispatched_at"] is not None
     assert store.get_session(session, row.id).status == "recovering"
     assert retry.claimed_by_replica is None
     assert retry.dispatch_count == 1

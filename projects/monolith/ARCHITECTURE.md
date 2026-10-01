@@ -648,8 +648,13 @@ factory strip above the knowledge extraction queue strip.
 
 `AgentTurn.usage_json["observation"]` stores `turn-observation/1`: the requested
 model, queue and dispatch timestamps, dispatch count, and timing for one
-physical dispatch. Queue, dispatch and recording timestamps are UTC server
-wall time (`monolith_wall`); queue wait uses the same clock. Executor elapsed
+physical dispatch. Queue and recording timestamps are monolith pod wall time
+(`monolith_wall`); the dispatch timestamp is the database server's
+transaction-start time (`database_transaction_start`), so queue wait mixes
+both clocks (`monolith_wall+database_transaction_start`) and reads null when
+clock skew inverts the order. After a drain or brick retry, queue wait spans
+enqueue to the latest dispatch, so it includes the earlier dispatch's
+runtime. Executor elapsed
 time uses `executor_monotonic` around the single transport delivery await.
 Runtime duration is `guest_reported`, accepted only as an integer from zero
 to less than seven days. The block records these clock labels explicitly.

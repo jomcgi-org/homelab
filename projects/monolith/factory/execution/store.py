@@ -423,6 +423,11 @@ def turn_observation(
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
+    # queued_at is stamped by a Python default_factory on the monolith pod, while
+    # dispatched_at (last_dispatch_at) is set with func.now(), which on
+    # Postgres is the database server's transaction-start time. Queue wait
+    # therefore subtracts two hosts' clocks; when skew inverts the order the
+    # difference is reported as null rather than a negative wait.
     queued = utc(pending.created_at) if pending is not None else None
     dispatched = utc(pending.last_dispatch_at) if pending is not None else None
     queue_wait_ms = None
@@ -451,9 +456,9 @@ def turn_observation(
         "provider_retries": None,
         "clocks": {
             "queued_at": "monolith_wall",
-            "dispatched_at": "monolith_wall",
+            "dispatched_at": "database_transaction_start",
             "recorded_at": "monolith_wall",
-            "queue_wait_ms": "monolith_wall",
+            "queue_wait_ms": "monolith_wall+database_transaction_start",
             "executor_elapsed_ms": "executor_monotonic",
             "runtime_duration_ms": "guest_reported",
         },

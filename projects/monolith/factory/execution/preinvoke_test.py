@@ -374,7 +374,7 @@ def test_synthetic_failed_result_persistence_does_not_destroy_guest(
         assert request.method != "DELETE"
         return _probe_response(request)
 
-    def failed_database_write(*_args):
+    def failed_database_write(*_args, **_kwargs):
         raise error_type("result storage unavailable")
 
     _http(monkeypatch, handler)
