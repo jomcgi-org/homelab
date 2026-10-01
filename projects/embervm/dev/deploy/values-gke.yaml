@@ -165,3 +165,7 @@ baseRetention:
   remoteSweepEnabled: ""
 warmthS3Gc:
   enabled: ""
+
+# Instance-scoped session drain, armed ahead of production so the conformance
+# gate runs it first (see deploy/values-gke.yaml).
+drainInstanceScopedSessions: true
