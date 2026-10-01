@@ -2158,7 +2158,7 @@ def test_sweep_ignores_a_disabled_repo_without_reading_it(db, monkeypatch):
         ] == [("owner/repo", 1)]
 
 
-def _rescoped_history(db, number=11, task_id="t-rescoped", pr=6401):
+def _rescoped_history(db, number=11, task_id="t-rescoped", pr=6401, repo="owner/repo"):
     """An earlier task that rescoped to live validation and drafted a PR.
 
     The 2026-09-30 shape (#4321 and six others): the receipt failed on an old
@@ -2170,6 +2170,8 @@ def _rescoped_history(db, number=11, task_id="t-rescoped", pr=6401):
         intake_receipt(
             session,
             number,
+            repo=repo,
+            url=f"https://github.com/{repo}/issues/{number}",
             state="failed",
             generation=1,
             task_id=task_id,
@@ -2299,4 +2301,73 @@ def test_a_capped_loom_never_starves_homelab_delivery_intake(db, monkeypatch):
     assert detail["reason"] == "daily_cap"
     assert detail["repos"] == {
         "weave-hand/loom": {"admitted_today": 2, "max_per_day": 2}
+    }
+
+
+def test_the_delivered_scope_check_reads_each_candidates_own_repo(db, monkeypatch):
+    # Under the per-repo loop the hand-off check runs against the candidate's
+    # repo, out of one read budget shared by the whole sweep. A merged loom PR
+    # proves loom's issue delivered; homelab's candidate is still admitted.
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    _rescoped_history(db, repo="weave-hand/loom")
+    from factory.orchestration import factory_conductor
+
+    reads = []
+
+    def github_get(repo, suffix):
+        reads.append((repo, suffix))
+        return {
+            "merged": True,
+            "merged_at": "2026-09-27T00:00:00Z",
+            "base": {"repo": {"full_name": repo}},
+            "title": "feat: loom",
+            "body": "Refs #11",
+        }
+
+    monkeypatch.setattr(factory_conductor, "github_get", github_get)
+    fake_repo_pages(
+        monkeypatch,
+        {
+            "owner/repo": [issue(5, ["agent-ready"])],
+            "weave-hand/loom": [loom_issue(11, ["agent-ready"])],
+        },
+    )
+    admitted = intake_loop.intake_tick(multi_repo_policy(), generation=2)
+    assert [
+        (row["receipt"]["repo"], row["receipt"]["issue_number"]) for row in admitted
+    ] == [("owner/repo", 5)]
+    assert reads == [("weave-hand/loom", "pulls/6401")]
+    (recorded,) = audits(db, "repository_scope_delivered")
+    assert json.loads(recorded.detail_json)["delivered_prs"] == [6401]
+
+
+def test_one_delivery_check_budget_covers_every_repo_in_a_sweep(db, monkeypatch):
+    # The checks spend the shared GitHub budget, so a second repo does not
+    # get a fresh allowance: once it is spent, the next candidate defers.
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    monkeypatch.setattr(intake_loop.handoff, "INTAKE_READS_PER_SWEEP", 1)
+    _rescoped_history(db, number=3, task_id="t-home", pr=6401)
+    _rescoped_history(db, number=11, task_id="t-loom", pr=6402, repo="weave-hand/loom")
+    reads = _pulls(
+        monkeypatch,
+        {
+            "pulls/6401": {"merged": False, "body": "Refs #3"},
+            "pulls/6402": {"merged": False, "body": "Refs #11"},
+        },
+    )
+    fake_repo_pages(
+        monkeypatch,
+        {
+            "owner/repo": [issue(3, ["agent-ready"])],
+            "weave-hand/loom": [loom_issue(11, ["agent-ready"])],
+        },
+    )
+    admitted = intake_loop.intake_tick(multi_repo_policy(), generation=2)
+    assert [
+        (row["receipt"]["repo"], row["receipt"]["issue_number"]) for row in admitted
+    ] == [("owner/repo", 3)]
+    assert reads == ["pulls/6401"]
+    (recorded,) = audits(db, "intake_admitted")
+    assert json.loads(recorded.detail_json)["excluded"] == {
+        "delivery_check_deferred": 1
     }
