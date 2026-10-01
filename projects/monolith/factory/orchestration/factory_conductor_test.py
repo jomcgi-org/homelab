@@ -1687,7 +1687,11 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # without being told the action, its evidence, and its provenance. That
     # rule is roughly 350 characters on a preamble main had already grown to
     # within 200 of the bound, so the bound moved from 20,400 to 20,800.
-    assert len(prompt) < 20_800
+    # The repository_delivered gate (operational hand-off, #6288) and the
+    # operational flag on split children add about 300 characters: without
+    # them the planner can only page a person when nothing is left to build
+    # but live checks. The bound moved from 20,800 to 21,100.
+    assert len(prompt) < 21_100
     assert (task, nodes, runs) == before
 
 

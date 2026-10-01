@@ -25,7 +25,14 @@ GATE_SCHEMA = {
     "additionalProperties": False,
     "required": ["kind", "classification", "reason"],
     "properties": {
-        "kind": {"enum": ["parameter", "live_validation", "delivery_target"]},
+        "kind": {
+            "enum": [
+                "parameter",
+                "live_validation",
+                "delivery_target",
+                "repository_delivered",
+            ]
+        },
         "classification": {
             "enum": ["reversible", "spending", "prod_deletion", "external_account"]
         },
@@ -38,8 +45,20 @@ GATE_SCHEMA = {
             "maxItems": 10,
             "items": {"type": "string", "minLength": 1, "maxLength": 1000},
         },
+        "delivered_prs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "uniqueItems": True,
+            "items": {"type": "integer", "minimum": 1},
+        },
+        "tracked_in": {"type": "integer", "minimum": 1},
     },
     "allOf": [
+        {
+            "if": {"properties": {"kind": {"const": "repository_delivered"}}},
+            "then": {"required": ["live_checks", "delivered_prs"]},
+        },
         {
             "if": {"properties": {"kind": {"const": "parameter"}}},
             "then": {"required": ["value"]},
@@ -70,6 +89,10 @@ GATE_PROMPT = (
     "conductor adopts its branch, rebases onto main, repairs and re-reviews the "
     "same PR. A head outside `factory/` or a branch owned by another running "
     "task needs a person. "
+    "If the repository scope is already merged and only live checks remain, "
+    "use kind `repository_delivered` (`reversible`) with `delivered_prs`, "
+    "`live_checks`, and `tracked_in` only if the rescope names an open issue "
+    "owning those checks; the server hands them to a person. "
     "Return the gate with the would-be needs-human/escalate/pause artifact, "
     "including the proposed default or scope, so the server can continue it. "
 )
@@ -136,6 +159,14 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
     gate = validate_gate(raw)
     if gate["classification"] != "reversible":
         return False
+    if gate["kind"] == "repository_delivered":
+        # Delivery tasks only. A refine that resolves a gate goes on to apply
+        # agent-ready, which is the opposite of handing the checks off.
+        if cause.startswith("refine-gate:"):
+            return False
+        from factory.orchestration import factory_operational_handoff
+
+        return factory_operational_handoff.handoff(task, gate, cause)
     if gate["kind"] == "delivery_target":
         # This operation chooses only a server-discovered delivery branch.
         # Free-text proposals cannot authorize spending or external operations;

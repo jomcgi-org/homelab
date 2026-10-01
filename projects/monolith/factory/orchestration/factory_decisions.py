@@ -516,17 +516,20 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
                     )
             continue
         body = str(child.get("body") or "")
-        created = github_write(
-            repo,
-            "issues",
-            {
-                "title": str(child.get("title"))[:256],
-                "body": (
-                    f"{body}\n\nSplit out of #{number} by an operator decision "
-                    f"on the factory escalation."
-                ).strip(),
-            },
-        )
+        payload = {
+            "title": str(child.get("title"))[:256],
+            "body": (
+                f"{body}\n\nSplit out of #{number} by an operator decision "
+                f"on the factory escalation."
+            ).strip(),
+        }
+        from factory.orchestration import factory_operational_handoff as handoff
+
+        if handoff.enabled() and handoff.operational_child(child):
+            # Live checks are a person's to run. Without an exclusion label
+            # intake admitted #6559 as a refine task within seconds.
+            payload["labels"] = [HUMAN_LABEL]
+        created = github_write(repo, "issues", payload)
         child_number = created.get("number") if isinstance(created, dict) else None
         if not isinstance(child_number, int):
             raise DecisionError(502, "GitHub did not return a child issue number")

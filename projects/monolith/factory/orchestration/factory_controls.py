@@ -452,6 +452,10 @@ OPTION_SCHEMA = {
                                 "maxLength": 256,
                             },
                             "body": {"type": "string", "maxLength": 8000},
+                            # A child that carries live or operational checks
+                            # opens with needs-human, so intake leaves it to a
+                            # person (factory_operational_handoff).
+                            "operational": {"type": "boolean"},
                         },
                     },
                 },
