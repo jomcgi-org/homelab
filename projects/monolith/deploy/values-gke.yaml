@@ -36,6 +36,13 @@ swarm:
   # lanes on exactly this view until a manual cessation. The state is absorbing
   # and written before the 502 is sent, and the proof only observes.
   factoryInvokeFailureCessationEnabled: true
+  # Settle an attempt whose exact guest EmberVM reports never invoked
+  # (turn_seq 0, no invoke stamp) and for which no result receipt was ever
+  # minted. On 2026-10-01 the 01:37 rollout cancelled the executor for permit
+  # 10690 between guest create and invoke POST; the parked guest had no stop
+  # precondition and held a delivery lane. Both facts are durable and the
+  # proof only observes.
+  factoryNeverInvokedGuestSettlementEnabled: true
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true
