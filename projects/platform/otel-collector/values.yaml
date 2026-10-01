@@ -14,8 +14,7 @@ loom:
   cnpgCluster: loom-pg
   backupCheck:
     schedule: "*/30 * * * *"
-    # cgr.dev/chainguard/python:latest, linux/amd64 resolved 2026-10-01.
-    # Registry config confirms Python entrypoint and default uid 65532.
+    # Third-party Python image pinned by digest.
     image: cgr.dev/chainguard/python@sha256:125969103add9ace8bdbad31acbb07d2e5740e065312688534f0c666a181b987
     resources:
       requests:
