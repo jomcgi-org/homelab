@@ -2803,12 +2803,16 @@ class ClaudeProcess:
         """Start a resumed session's baseline from its transcript's saved total.
 
         Run before the CLI starts so a cost-state the live process writes
-        cannot be mistaken for the earlier total. An in-memory baseline always
-        wins: it also covers spend after the transcript's last cost-state.
+        cannot be mistaken for the earlier total. The CLI writes cost-state
+        only on a graceful exit, so after a kill or crash the transcript total
+        T lags the in-memory baseline B, and the resumed CLI restarts its
+        running total from T. The baseline is therefore min(B, T): B still
+        wins where T >= B (spend reported after the transcript's last
+        cost-state), but never above what the resumed CLI will report. A
+        transcript with no readable cost-state counts as zero, so the error is
+        over-billing, never under-billing.
         """
         baselines = self.__dict__.setdefault("_cost_baselines", {})
-        if session_id in baselines:
-            return
         seed = _transcript_cost_state(workspace, session_id)
         if seed is None:
             sys.stderr.write(
@@ -2816,6 +2820,11 @@ class ClaudeProcess:
                 "billing its first result from a zero baseline\n" % session_id
             )
             sys.stderr.flush()
+            if session_id in baselines:
+                baselines[session_id] = {"total": 0, "models": {}}
+            return
+        held = baselines.get(session_id)
+        if held is not None and held["total"] <= seed["total"]:
             return
         baselines[session_id] = seed
 

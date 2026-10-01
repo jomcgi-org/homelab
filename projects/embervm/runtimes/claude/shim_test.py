@@ -10304,18 +10304,45 @@ if '--version' in sys.argv:
     sys.exit(0)
 scenario = json.load(open(%(scenario)r))
 log = %(log)r
+transcript = %(transcript)r
 with open(log, 'a') as stream:
     stream.write(json.dumps(sys.argv[1:]) + '\\n')
 with open(log) as stream:
     spawn = len(stream.readlines()) - 1
+# Like the real CLI: a resume restores the running total from the transcript's
+# last cost-state, and cost-state is written only on a graceful exit (stdin
+# EOF), never when the process is killed.
+running = 0
+if '--resume' in sys.argv and os.path.isfile(transcript):
+    for raw in open(transcript):
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        if line.get('type') == 'cost-state' and line.get('sessionId') == 's':
+            running = line['totalCostUSD']
 print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',
                   'apiKeySource': 'none', 'mcp_servers': []}), flush=True)
 for batch in scenario[spawn]:
-    sys.stdin.readline()
+    if not sys.stdin.readline():
+        break
     if batch is None:
         sys.exit(1)
     for event in batch:
+        call_cost = event.pop('_call_cost', None)
+        if call_cost is not None:
+            running += call_cost
+            event['total_cost_usd'] = running
+            event['modelUsage']['model']['costUSD'] = running
+        else:
+            running = event.get('total_cost_usd', running)
         print(json.dumps(event), flush=True)
+else:
+    while sys.stdin.readline():
+        pass
+with open(transcript, 'a') as stream:
+    stream.write(json.dumps({'type': 'cost-state', 'sessionId': 's',
+                             'totalCostUSD': running}) + '\\n')
 """
 
 
@@ -10342,6 +10369,13 @@ def _cost_result(cumulative, result, usage, input_tokens, origin=None):
     return event
 
 
+def _cost_call(delta, result="ok"):
+    """A result for a call the CLI itself adds delta to its running total for."""
+    event = _cost_result(0, result, _OK_USAGE, 5)
+    event["_call_cost"] = delta
+    return event
+
+
 def _cost_manager(tmp_path, monkeypatch, scenario, transcript=None):
     """A ClaudeProcess over a fake CLI that plays one scenario entry per spawn.
 
@@ -10357,9 +10391,9 @@ def _cost_manager(tmp_path, monkeypatch, scenario, transcript=None):
     monkeypatch.setenv("HOME", str(home))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    directory = home / ".claude" / "projects" / str(workspace).replace("/", "-")
+    directory.mkdir(parents=True)
     if transcript is not None:
-        directory = home / ".claude" / "projects" / str(workspace).replace("/", "-")
-        directory.mkdir(parents=True)
         (directory / "s.jsonl").write_text(
             "".join(
                 line if isinstance(line, str) else json.dumps(line) + "\n"
@@ -10370,7 +10404,14 @@ def _cost_manager(tmp_path, monkeypatch, scenario, transcript=None):
     scenario_path.write_text(json.dumps(scenario))
     log = tmp_path / "argv.log"
     executable = tmp_path / "cost-cli"
-    executable.write_text(_COST_CLI % {"scenario": str(scenario_path), "log": str(log)})
+    executable.write_text(
+        _COST_CLI
+        % {
+            "scenario": str(scenario_path),
+            "log": str(log),
+            "transcript": str(directory / "s.jsonl"),
+        }
+    )
     os.chmod(executable, 0o755)
     manager = shim.ClaudeProcess(str(workspace), str(executable))
     monkeypatch.setattr(manager, "_configure_git", lambda: None)
@@ -10430,8 +10471,9 @@ def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
 
     first = manager.turn("Run a background shell task")
     assert first["total_cost_usd"] == pytest.approx(0.0277152)
-    # interrupt() closes the CLI after SIGINT, so the next turn resumes it.
-    manager._close_process(kill=True)
+    # interrupt() closes the CLI after SIGINT, so the next turn resumes it. A
+    # SIGINT exit is graceful: the CLI saves cost-state (stdin EOF in the fake).
+    manager._close_process(kill=False)
     second = manager.turn("Reply with only the word OK")
     assert second["result"] == "OK"
     assert second["num_turns"] == 1
@@ -10554,21 +10596,85 @@ def test_claude_turn_without_a_transcript_bills_the_raw_cumulative_cost(
     manager._close_process(kill=True)
 
 
-def test_claude_turn_in_memory_baseline_wins_over_the_transcript(tmp_path, monkeypatch):
+def test_claude_turn_resumes_from_a_graceful_exit_total_without_rebilling(
+    tmp_path, monkeypatch
+):
+    """A graceful exit saves cost-state, the resumed CLI continues from it."""
     manager, _ = _cost_manager(
         tmp_path,
         monkeypatch,
         [
-            [[_cost_result(0.01, "one", _OK_USAGE, 5)]],
-            [[_cost_result(0.025, "two", _OK_USAGE, 12)]],
+            [[_cost_call(0.003)]],
+            [[_cost_call(0.003)]],
         ],
-        transcript=[{"type": "cost-state", "sessionId": "s", "totalCostUSD": 0.002}],
     )
     first = manager.turn("one")
-    manager._close_process(kill=True)
+    manager._close_process(kill=False)
     second = manager.turn("two")
-    assert first["total_cost_usd"] == pytest.approx(0.01)
-    assert second["total_cost_usd"] == pytest.approx(0.015)
+    assert second["cumulative_total_cost_usd"] == pytest.approx(0.006)
+    billed = [first["total_cost_usd"], second["total_cost_usd"]]
+    assert billed == pytest.approx([0.003, 0.003])
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_bills_every_call_after_a_kill_with_no_saved_cost_state(
+    tmp_path, monkeypatch
+):
+    """SIGKILL writes no cost-state, so the resumed CLI restarts from zero (#6600).
+
+    The in-memory baseline (0.006) must not clamp the resumed CLI's reports
+    (0.003, 0.006) to nothing: four 0.003 calls bill 0.012.
+    """
+    manager, _ = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [[_cost_call(0.003)], [_cost_call(0.003)]],
+            [[_cost_call(0.003)], [_cost_call(0.003)]],
+        ],
+    )
+    reported = []
+    billed = []
+    for name in ("one", "two"):
+        record = manager.turn(name)
+        reported.append(record["cumulative_total_cost_usd"])
+        billed.append(record["total_cost_usd"])
+    manager._close_process(kill=True)
+    for name in ("three", "four"):
+        record = manager.turn(name)
+        reported.append(record["cumulative_total_cost_usd"])
+        billed.append(record["total_cost_usd"])
+    assert reported == pytest.approx([0.003, 0.006, 0.003, 0.006])
+    assert billed == pytest.approx([0.003, 0.003, 0.003, 0.003])
+    assert sum(billed) == pytest.approx(0.012)
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_stale_transcript_total_caps_the_in_memory_baseline(
+    tmp_path, monkeypatch
+):
+    """Transcript total 0.006 lags the reported 0.009 after a kill (#6600).
+
+    The resumed CLI restores 0.006 and reports 0.009 again, which is 0.003 of
+    new spend, not zero.
+    """
+    manager, _ = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [[_cost_call(0.003)]],
+            [[_cost_call(0.003)]],
+        ],
+        transcript=[{"type": "cost-state", "sessionId": "s", "totalCostUSD": 0.006}],
+    )
+    first = manager.turn("one", session_id="s")
+    assert first["cumulative_total_cost_usd"] == pytest.approx(0.009)
+    assert first["total_cost_usd"] == pytest.approx(0.003)
+    manager._close_process(kill=True)
+    # The kill left the transcript at 0.006 while 0.009 was reported.
+    second = manager.turn("two")
+    assert second["cumulative_total_cost_usd"] == pytest.approx(0.009)
+    assert second["total_cost_usd"] == pytest.approx(0.003)
     manager._close_process(kill=True)
 
 
