@@ -20,7 +20,10 @@ py_test(
         "README.md",
         "kustomization.yaml",
     ],
-    deps = ["@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446).
