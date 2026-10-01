@@ -1000,31 +1000,31 @@ jobs:
         # with a 4Gi ceiling.
         limits:
           memory: 4Gi
-    # One-time list-price backfill for agent turns. DATABASE_URL is injected
-    # from jobs.dbSecretName by the shared CronWorkflow template. Ships
-    # SUSPENDED and is submitted manually with:
-    #   argo submit --from cronworkflow/price-turns-backfill -n monolith-workflows
+    # List-price backfill for agent turns. DATABASE_URL is injected from
+    # jobs.dbSecretName by the shared CronWorkflow template. It touches only
+    # turns with no list price, so it is idempotent and cheap once caught up;
+    # running it hourly prices anything create_turn could not (a model alias
+    # added to shared/pricing.py after its turns ran) without a manual submit.
     - name: price-turns-backfill
       args: ["price-turns-backfill"]
-      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      schedule: "17 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 1800
-      suspend: true
+      suspend: false
       resources:
         requests:
           cpu: 250m
           memory: 512Mi
         limits:
           memory: 512Mi
-    # One-time list-price backfill for collector raws. Ships suspended and is
-    # submitted manually with:
-    #   argo submit --from cronworkflow/price-raws-backfill -n monolith-workflows
+    # List-price backfill for collector raws: idempotent like the turn
+    # backfill above, and hourly for the same reason.
     - name: price-raws-backfill
       args: ["price-raws-backfill"]
-      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      schedule: "47 * * * *"
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 1800
-      suspend: true
+      suspend: false
       resources:
         requests:
           cpu: 250m
