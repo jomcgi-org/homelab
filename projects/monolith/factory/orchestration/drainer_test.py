@@ -1327,10 +1327,7 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
     from knowledge.repo_diff_source import RepoDiffEvidence
 
     def collect(base_sha, head_sha):
-        patch = (
-            "diff --git a/file.py b/file.py\n"
-            "--- a/file.py\n+++ b/file.py\n+x = 1\n"
-        )
+        patch = "diff --git a/file.py b/file.py\n--- a/file.py\n+++ b/file.py\n+x = 1\n"
         return RepoDiffEvidence(
             base_sha=base_sha.lower(),
             head_sha=head_sha.lower(),

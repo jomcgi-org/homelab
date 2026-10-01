@@ -64,7 +64,9 @@ def _timeout(value: float) -> float:
     return min(value, 15.0)
 
 
-def _compare(client: httpx.Client, repo: str, base: str, head: str, timeout: float) -> dict:
+def _compare(
+    client: httpx.Client, repo: str, base: str, head: str, timeout: float
+) -> dict:
     try:
         response = client.get(
             f"{GITHUB_API}/repos/{repo}/compare/{base}...{head}",
@@ -73,7 +75,9 @@ def _compare(client: httpx.Client, repo: str, base: str, head: str, timeout: flo
             timeout=timeout,
         )
         if response.status_code in (404, 422):
-            raise RepoDiffRangeInvalid(f"GitHub rejected comparison ({response.status_code})")
+            raise RepoDiffRangeInvalid(
+                f"GitHub rejected comparison ({response.status_code})"
+            )
         if response.status_code != 200:
             raise RepoDiffSourceUnavailable(
                 f"GitHub comparison unavailable ({response.status_code})"
@@ -96,7 +100,9 @@ def _commit_sha(value: object) -> str:
     try:
         return _sha(value.get("sha"))
     except RepoDiffRangeInvalid as exc:
-        raise RepoDiffSourceUnavailable("GitHub comparison is missing a full commit SHA") from exc
+        raise RepoDiffSourceUnavailable(
+            "GitHub comparison is missing a full commit SHA"
+        ) from exc
 
 
 def _verify_base(body: dict, base: str) -> None:
@@ -104,9 +110,16 @@ def _verify_base(body: dict, base: str) -> None:
     if base_commit is None:
         base_commit = body.get("merge_base_commit")
     if _commit_sha(base_commit) != base:
-        raise RepoDiffRangeInvalid("GitHub comparison base does not match the requested SHA")
-    if body.get("status") == "ahead" and _commit_sha(body.get("merge_base_commit")) != base:
-        raise RepoDiffRangeInvalid("GitHub comparison does not descend from the requested base")
+        raise RepoDiffRangeInvalid(
+            "GitHub comparison base does not match the requested SHA"
+        )
+    if (
+        body.get("status") == "ahead"
+        and _commit_sha(body.get("merge_base_commit")) != base
+    ):
+        raise RepoDiffRangeInvalid(
+            "GitHub comparison does not descend from the requested base"
+        )
 
 
 def verify_on_main(
@@ -136,9 +149,9 @@ def _count(value: object) -> int:
 
 def _excluded(filename: str) -> bool:
     path = PurePosixPath(filename)
-    return (
-        len(path.parts) > 1 and fnmatchcase(path.parts[0], "bazel-*")
-    ) or any(fnmatchcase(path.name, pattern) for pattern in REPO_DIFF_EXCLUSIONS[:-1])
+    return (len(path.parts) > 1 and fnmatchcase(path.parts[0], "bazel-*")) or any(
+        fnmatchcase(path.name, pattern) for pattern in REPO_DIFF_EXCLUSIONS[:-1]
+    )
 
 
 def _git_path(prefix: str, filename: str) -> str:
@@ -174,18 +187,26 @@ def collect_repo_diff(
     total_commits = _count(body.get("total_commits"))
     if status == "identical":
         if base_sha != head_sha or total_commits != 0:
-            raise RepoDiffRangeInvalid("Identical comparison does not match the requested head")
+            raise RepoDiffRangeInvalid(
+                "Identical comparison does not match the requested head"
+            )
     else:
         commits = body.get("commits")
         if not isinstance(commits, list) or not commits:
-            raise RepoDiffSourceUnavailable("GitHub comparison is missing its final commit")
+            raise RepoDiffSourceUnavailable(
+                "GitHub comparison is missing its final commit"
+            )
         if _commit_sha(commits[-1]) != head_sha or total_commits == 0:
-            raise RepoDiffRangeInvalid("GitHub comparison head does not match the requested SHA")
+            raise RepoDiffRangeInvalid(
+                "GitHub comparison head does not match the requested SHA"
+            )
     files = body.get("files", [] if status == "identical" else None)
     if not isinstance(files, list):
         raise RepoDiffSourceUnavailable("GitHub comparison is missing its file list")
     if status == "identical" and files:
-        raise RepoDiffSourceUnavailable("Identical comparison unexpectedly includes files")
+        raise RepoDiffSourceUnavailable(
+            "Identical comparison unexpectedly includes files"
+        )
     verify_on_main(head_sha, repo=repo, client=client, timeout=timeout)
 
     stats: list[str] = []
@@ -221,10 +242,7 @@ def collect_repo_diff(
         before = "/dev/null" if item.get("status") == "added" else old_path
         after = "/dev/null" if item.get("status") == "removed" else new_path
         hunk = hunk.rstrip("\n")
-        patch = (
-            f"diff --git {old_path} {new_path}\n"
-            f"--- {before}\n+++ {after}\n{hunk}\n"
-        )
+        patch = f"diff --git {old_path} {new_path}\n--- {before}\n+++ {after}\n{hunk}\n"
         if truncated or patch_chars + len(patch) > REPO_DIFF_PATCH_CAP:
             truncated = True
             continue
