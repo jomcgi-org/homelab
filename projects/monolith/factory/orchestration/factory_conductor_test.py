@@ -6593,6 +6593,180 @@ def test_ambiguous_brick_restart_evidence_does_not_permit_retry(
     ]
 
 
+def _invoke_failed_view(s):
+    """The view EmberVM serves after Session.fail_and_stop (2026-09-30).
+
+    The session is failed before the 502 is sent, so its terminal update
+    precedes the monolith's own failure stamp, and the invoke that failed
+    never completed.
+    """
+    from datetime import timedelta
+
+    s.cp.update(
+        state="failed",
+        terminal_reason="failed",
+        last_invoke_at=None,
+        interrupted_turn=None,
+        updated_at=int(
+            (s.failed_turn_at - timedelta(milliseconds=1)).timestamp() * 1000
+        ),
+        node={"node_id": "node-1", "health": "healthy", "draining": False},
+        stop_precondition=None,
+    )
+
+
+@pytest.mark.parametrize("cost_usd", [None, 0.25])
+def test_invoke_failure_settles_exact_attempt_and_honors_retry_budget(
+    uncertain_factory, monkeypatch, cost_usd
+):
+    """A noded restart under an in-flight turn releases only that attempt."""
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    s.result["cost_usd"] = cost_usd
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
+    _invoke_failed_view(s)
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    # Observation only: a failed guest is never sent a stop or a destroy.
+    assert [precondition for _guest, precondition in s.calls] == [None]
+    settled = _uncertain_snapshot(s)
+    assert settled["permits"][0]["state"] == "settled"
+    assert settled["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert settled["runs"][0]["status"] == "failed"
+    assert settled["runs"][0]["accounted_cost_usd"] == (
+        s.run["pin"]["max_cost_usd"] if cost_usd is None else cost_usd
+    )
+    assert settled["factory"]["starts"][0]["status"] == "failed"
+    with Session(s.engine) as db:
+        event = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "stop_settled",
+            )
+        ).one()
+        proof = json.loads(event.detail_json)["completion"]
+    assert proof["cessation_evidence"] == "invoke_failure"
+    assert proof["session_id"] == "s-exact-factory"
+    assert proof["invoke_started_at"] == s.invoke_started_at
+
+    # Settled once; the ordinary retry budget then decides what runs next.
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    expected_runs = [(1, "failed")]
+    if cost_usd is not None:
+        expected_runs.append((2, "admitted"))
+    assert [
+        (run["attempt"], run["status"])
+        for run in conductor.graph.node_runs(s.task["id"])
+    ] == expected_runs
+    with Session(s.engine) as db:
+        starts = controls.task_snapshot(s.task["id"], session=db)["starts"]
+        assert [start["status"] for start in starts] == (
+            ["failed"] if cost_usd is None else ["failed", "reserved"]
+        )
+    before = _uncertain_snapshot(s)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s) == before
+
+
+def test_invoke_failure_evidence_is_staged_off_by_default(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.delenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", raising=False)
+    _invoke_failed_view(s)
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    snapshot = _uncertain_snapshot(s)
+    assert snapshot["permits"][0]["state"] == "uncertain"
+    assert snapshot["runs"][0]["status"] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "still_running",
+        "other_terminal_reason",
+        "foreign_guest",
+        "stale_invoke",
+        "invoke_after_failure",
+        "completed_invoke",
+        "drain_interrupted",
+        "malformed_update",
+        "saved_stop_mismatch",
+    ],
+)
+def test_ambiguous_invoke_failure_evidence_does_not_permit_retry(
+    uncertain_factory, monkeypatch, change
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "true")
+    _invoke_failed_view(s)
+    if change == "still_running":
+        s.cp.update(state="running", terminal_reason=None)
+    elif change == "other_terminal_reason":
+        # Only fail_and_stop's own reason is covered here; brick_gone has its
+        # own proof and anything else is not this shape.
+        s.cp["terminal_reason"] = "restore_failed"
+    elif change == "foreign_guest":
+        s.cp["session_id"] = "s-foreign"
+    elif change == "stale_invoke":
+        s.cp["invoke_started_at"] = int(
+            (s.dispatched_at - timedelta(seconds=1)).timestamp() * 1000
+        )
+    elif change == "invoke_after_failure":
+        started = int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000)
+        s.cp.update(invoke_started_at=started, updated_at=started + 1)
+    elif change == "completed_invoke":
+        s.cp["last_invoke_at"] = s.cp["invoke_started_at"]
+    elif change == "drain_interrupted":
+        s.cp["interrupted_turn"] = {"dispatch_id": "d-1", "turn_seq": 1}
+    elif change == "malformed_update":
+        s.cp["updated_at"] = "unknown"
+    else:
+        with controls._locked_session() as (db, control):
+            identity, _run = supervisor._locked_attempt(
+                db, control, s.run["pin"], s.sid, require_stop_due=False
+            )
+            supervisor._audit(
+                db,
+                s.run["pin"],
+                "stop_intent",
+                identity=identity,
+                precondition={**s.precondition, "generation": 1},
+            )
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    snapshot = _uncertain_snapshot(s)
+    assert snapshot["permits"][0]["state"] == "uncertain"
+    assert [(run["attempt"], run["status"]) for run in snapshot["runs"]] == [
+        (1, "uncertain")
+    ]
+
+
 def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     uncertain_factory, monkeypatch
 ):

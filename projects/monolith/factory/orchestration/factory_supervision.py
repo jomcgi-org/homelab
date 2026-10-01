@@ -610,6 +610,86 @@ def _brick_restart_cessation(view, identity, saved=None):
     }
 
 
+def _invoke_failure_enabled():
+    return (
+        os.environ.get("FACTORY_INVOKE_FAILURE_CESSATION_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _invoke_failure_cessation(view, identity, saved=None):
+    """Prove this attempt's guest was failed by the invoke that failed it.
+
+    A 502 "session invoke failed" is the at-most-once answer: the guest may
+    have run. But the control plane only sends it after Session.fail_and_stop
+    has durably moved the session to ``failed`` with terminal reason
+    ``failed``, and only then replies and tears the VM down. ``failed`` has no
+    outgoing edge in SessionState, so this exact guest can never take another
+    invoke. On 2026-09-30 a noded container restart closed the node channel
+    under six in-flight turns ("the connection is closed"); every guest read
+    back exactly this shape within a millisecond of the failure, and no proof
+    here accepted it, so each attempt held a delivery lane for hours until an
+    operator ran supervised cessation by hand.
+
+    The control plane does not order the failure against the monolith's own
+    error stamp (it fails the session before replying), so, as for a brick
+    restart, the terminal update need not follow ``failed_turn_at``. The invoke
+    must still have started inside this dispatch and never completed, no drain
+    may have recorded an interruption (that is the drain relay's continuation
+    to settle), and a saved stop identity must match. Anything missing,
+    malformed or foreign proves nothing.
+    """
+    if (
+        not isinstance(view, dict)
+        or view.get("state") != "failed"
+        or view.get("terminal_reason") != "failed"
+        or view.get("session_id") != identity["guest_id"]
+        or view.get("interrupted_turn") is not None
+    ):
+        return None
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    last_invoke = view.get("last_invoke_at")
+    updated_at = view.get("updated_at")
+    if (
+        type(generation) is not int
+        or generation < 0
+        or type(started) is not int
+        or started < 1
+        or type(updated_at) is not int
+        or updated_at < started
+        or (
+            last_invoke is not None
+            and (type(last_invoke) is not int or not 0 < last_invoke < started)
+        )
+    ):
+        return None
+    dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
+    failed_turn_at = int(_timestamp(identity["failed_turn_at"]).timestamp() * 1000)
+    if started <= dispatched_at or started > failed_turn_at:
+        return None
+    if saved is not None:
+        try:
+            expected = _precondition(saved.get("precondition"), identity["guest_id"])
+        except ValueError:
+            return None
+        if (
+            generation != expected["generation"]
+            or started != expected["invoke_started_at"]
+        ):
+            return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": "failed",
+        "terminal_reason": "failed",
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": last_invoke,
+        "updated_at": updated_at,
+        "cessation_evidence": "invoke_failure",
+    }
+
+
 def _drained_loss_cessation(view, identity):
     """Prove the exact drained dispatch has no valid restoration path.
 
@@ -2111,6 +2191,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             cessation = _control_plane_cessation(view, identity, saved)
             if cessation is None:
                 cessation = _brick_restart_cessation(view, identity, saved)
+            if cessation is None and _invoke_failure_enabled():
+                cessation = _invoke_failure_cessation(view, identity, saved)
             if cessation is None:
                 cessation = _replacement_invocation_cessation(view, identity, saved)
         if cessation is not None:
