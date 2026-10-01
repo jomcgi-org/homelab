@@ -893,6 +893,43 @@ def test_workload_and_pod_blockers_name_workload():
     assert result["resource"] == "Deployment/monolith/backend"
 
 
+def test_later_publication_does_not_pull_an_unrelated_chart_into_scope():
+    later = fleet_commit()
+    later["sha"] = "e" * 40
+    later["commit"]["message"] = (
+        later["commit"]["message"]
+        .replace(SOURCE, "f" * 40)
+        .replace("projects/embervm/chart 1.2.3", "projects/embervm/chart 1.2.4")
+    )
+    state = fleet()
+    state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"],
+        state,
+        get=fleet_github(moved=("monolith",)),
+        commits=[later, fleet_commit()],
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    assert result["publication_commit_sha"] == "c" * 40
+
+
+def test_unknown_kustomize_dependency_key_cannot_exclude_affected_application():
+    state = fleet()
+    app = hub("projects/config")
+    app["status"]["health"]["status"] = "Progressing"
+    state["applications"].append(app)
+    get = fleet_github(
+        documents={
+            "projects/config/kustomization.yaml": "resources: []\ncomponents: [../shared]\n",
+        }
+    )
+    result = scoped_verify(["projects/shared/manifest.yaml"], state, get=get)
+    assert result["verified"] is False
+    assert result["application"] == "hub"
+    assert result["reason"] == "application_not_healthy_and_synced"
+
+
 def snapshot_client(monkeypatch, *, failure=None, incomplete_apps=False):
     from kubernetes_asyncio import client, config
 
@@ -922,6 +959,8 @@ def snapshot_client(monkeypatch, *, failure=None, incomplete_apps=False):
             reads.append((name, namespace))
             if failure == "workload" and namespace == "embervm":
                 raise client.ApiException(status=404, reason="sensitive response")
+            if failure == "stall" and namespace == "embervm":
+                await asyncio.Event().wait()
             return state["workloads"][("Deployment", namespace, name)]
 
         read_namespaced_stateful_set = read_namespaced_deployment
@@ -947,6 +986,31 @@ def snapshot_client(monkeypatch, *, failure=None, incomplete_apps=False):
     monkeypatch.setattr(client, "AppsV1Api", lambda _api: Apps())
     monkeypatch.setattr(client, "CoreV1Api", lambda _api: Core())
     return state, reads
+
+
+def test_out_of_scope_stalled_workload_is_never_read(monkeypatch):
+    _, reads = snapshot_client(monkeypatch, failure="stall")
+    monkeypatch.setattr(rollout, "_recent", {})
+    original_wait = asyncio.wait_for
+    deadlines = []
+
+    async def bounded(coro, *, timeout):
+        deadlines.append(timeout)
+        return await original_wait(coro, timeout=0.1)
+
+    def listing(_repo, path):
+        if path.startswith("commits?"):
+            return [fleet_commit()]
+        return [{"filename": "projects/monolith/deploy/values.yaml"}]
+
+    monkeypatch.setattr(rollout.asyncio, "wait_for", bounded)
+    result = rollout.verify(
+        "owner/repo", MERGE, 6660, get=fleet_github(), listing=listing
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    assert reads == [("backend", "monolith")]
+    assert deadlines and all(timeout == 30 for timeout in deadlines)
 
 
 @pytest.mark.parametrize(
@@ -1069,12 +1133,18 @@ def test_immutable_mapper_reads_use_merge_ref(monkeypatch):
     assert all(path.endswith("?ref=" + "a" * 40) for path in calls)
 
 
-def test_deliveries_share_snapshot_but_not_application_scope(monkeypatch):
+def test_deliveries_share_inventory_and_only_same_scope_snapshots(monkeypatch):
     monkeypatch.setattr(rollout, "_recent", {})
     reads = []
+    inventories = []
 
-    async def observe(repo):
-        reads.append(repo)
+    async def inventory(repo):
+        inventories.append(repo)
+        return fleet()["applications"]
+
+    async def observe(repo, applications, scoped):
+        reads.append((repo, sorted(scoped)))
+        assert len(applications) == 2
         return fleet()
 
     def listing(_repo, path):
@@ -1084,9 +1154,27 @@ def test_deliveries_share_snapshot_but_not_application_scope(monkeypatch):
         return [{"filename": f"projects/{name}/deploy/values.yaml"}]
 
     monkeypatch.setattr(rollout, "cluster_snapshot", observe)
-    for number, name in ((1, "monolith"), (2, "embervm")):
+    monkeypatch.setattr(rollout, "application_inventory", inventory)
+    for number, name in ((1, "monolith"), (2, "embervm"), (1, "monolith")):
         result = rollout.verify(
             "owner/repo", MERGE, number, get=fleet_github(), listing=listing
         )
         assert result["scoped_applications"] == [name]
-    assert reads == ["owner/repo"]
+    assert inventories == ["owner/repo"]
+    assert reads == [("owner/repo", ["monolith"]), ("owner/repo", ["embervm"])]
+
+
+def test_first_covering_publication_must_be_provable_within_two_pages():
+    calls = []
+
+    def listing(_repo, path):
+        calls.append(path)
+        return [fleet_commit()] * 100
+
+    result = scoped_verify(["projects/monolith/deploy/values.yaml"], listing=listing)
+    assert result["verified"] is False
+    assert result["reason"] == "publication_scope_incomplete"
+    assert calls == [
+        "commits?sha=main&per_page=100&page=1",
+        "commits?sha=main&per_page=100&page=2",
+    ]

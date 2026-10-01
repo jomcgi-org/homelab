@@ -460,8 +460,11 @@ the issue (#6002).
 
 **Why.** Rollout verification gates only on the Applications the merged PR's
 files deploy through: registry chart versions moved since the merge, git paths
-and their kustomize surface, and `$values` files (#6660). Anything unreadable
-fails closed. A PR reaching no live Application verifies against its publication
+and their kustomize surface, and `$values` files (#6660). Chart scope uses the
+first provable publication covering the merge; later unrelated chart bumps do
+not widen it. Unknown kustomize keys include the Application conservatively, and
+workload reads begin after scope selection. Anything unreadable fails closed.
+A PR reaching no live Application verifies against its publication
 receipt's successful `pr-checks` render check. A wait reaches status and the daily
 digest at 30 minutes and pages once at 60 minutes. Landing keeps polling each
 minute and closes the issue only after verification.

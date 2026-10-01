@@ -120,6 +120,8 @@ def ancestor(repo: str, older: str, newer: str, get) -> bool:
 def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
     # A bounded search may defer, but may never turn an absent receipt into a
     # no-op publication. Lists come from main, not a PR or merge-queue ref.
+    candidate = None
+    complete = False
     for page in (1, 2):
         commits = listing(repo, f"commits?sha=main&per_page=100&page={page}")
         for commit in commits:
@@ -127,19 +129,29 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
             if receipt is None:
                 continue
             if not ancestor(repo, merge_sha, receipt["source_sha"], get):
+                if candidate is not None:
+                    complete = True
+                    break
                 continue
             if not ancestor(repo, receipt["source_sha"], receipt["commit_sha"], get):
                 raise Pending("publication_source_not_on_main")
-            ci = get(repo, f"commits/{receipt['source_sha']}/status")
-            required = [
-                s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"
-            ]
-            if len(required) != 1 or required[0].get("state") != "success":
-                raise Pending("publication_ci_not_successful")
-            return receipt
-        if len(commits) < 100:
+            # Main's commit list is newest first. Scope belongs to the first
+            # publication covering this merge, before unrelated later bumps.
+            candidate = receipt
+        if complete:
             break
-    raise Pending("publication_receipt_missing")
+        if len(commits) < 100:
+            complete = True
+            break
+    if candidate is None:
+        raise Pending("publication_receipt_missing")
+    if not complete:
+        raise Pending("publication_scope_incomplete")
+    ci = get(repo, f"commits/{candidate['source_sha']}/status")
+    required = [s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"]
+    if len(required) != 1 or required[0].get("state") != "success":
+        raise Pending("publication_ci_not_successful")
+    return candidate
 
 
 def sources(app: dict) -> list[dict]:
@@ -288,7 +300,9 @@ class DeploySurface:
                 "nameSuffix",
             }
             if config.keys() - known:
-                prefixes.add(prefix)
+                # Unknown keys may reference dependencies outside this directory.
+                # Include the Application conservatively via the caller's fence.
+                raise Pending("deploy_surface_unreadable")
             resources = config.get("resources", [])
             if not isinstance(resources, list):
                 raise Pending("deploy_surface_unreadable")
@@ -580,30 +594,43 @@ def application_evidence(repo, receipt, snapshot, versions, get, app):
     }
 
 
-async def cluster_snapshot(repo: str) -> dict:
+async def application_inventory(repo: str) -> list[dict]:
     from kubernetes_asyncio import client, config
 
     config.load_incluster_config()
     async with client.ApiClient() as api:
-        custom, apps, core = (
-            client.CustomObjectsApi(api),
-            client.AppsV1Api(api),
-            client.CoreV1Api(api),
-        )
-        found = await custom.list_namespaced_custom_object(
+        found = await client.CustomObjectsApi(api).list_namespaced_custom_object(
             "argoproj.io", "v1alpha1", "argocd", "applications", limit=200
         )
         if found.get("metadata", {}).get("continue"):
             raise Pending("application_inventory_incomplete")
+        return found["items"]
+
+
+async def cluster_snapshot(
+    repo: str, applications=None, scoped_applications=None
+) -> dict:
+    from kubernetes_asyncio import client, config
+
+    if applications is None:
+        applications = await application_inventory(repo)
+    config.load_incluster_config()
+    async with client.ApiClient() as api:
+        apps, core = client.AppsV1Api(api), client.CoreV1Api(api)
         result = {
-            "applications": found["items"],
+            "applications": applications,
             "workloads": {},
             "pods": {},
             "unreadable": {},
         }
         pod_failures = {}
-        for app in found["items"]:
+        for app in applications:
             if not managed(repo, app):
+                continue
+            if (
+                scoped_applications is not None
+                and app["metadata"]["name"] not in scoped_applications
+            ):
                 continue
             for resource in app.get("status", {}).get("resources", []):
                 kind = resource.get("kind")
@@ -655,19 +682,34 @@ def verify(
         catalog = chart_catalog(repo, receipt, get)
         versions = {name: version for name, (_, version) in catalog.items()}
         files = changed_files(repo, pr_number, listing)
+        surface = DeploySurface(repo, merge_sha, get)
         if snapshot is None:
 
-            async def observe():
-                return await asyncio.wait_for(cluster_snapshot(repo), timeout=30)
+            async def inventory():
+                return await asyncio.wait_for(application_inventory(repo), timeout=30)
 
-            snapshot = _cached(("snapshot", repo), lambda: asyncio.run(observe()))
-        surface = DeploySurface(repo, merge_sha, get)
+            applications = _cached(
+                ("applications", repo), lambda: asyncio.run(inventory())
+            )
+        else:
+            applications = snapshot["applications"]
         scoped = {
             app["metadata"]["name"]
-            for app in snapshot["applications"]
+            for app in applications
             if managed(repo, app)
             and application_in_scope(repo, app, files, catalog, surface)
         }
+        if snapshot is None:
+
+            async def observe():
+                return await asyncio.wait_for(
+                    cluster_snapshot(repo, applications, scoped), timeout=30
+                )
+
+            snapshot = _cached(
+                ("snapshot", repo, tuple(sorted(scoped))),
+                lambda: asyncio.run(observe()),
+            )
         apps = evaluate(repo, receipt, snapshot, versions, get, scoped)
         result = {
             "verified": True,
