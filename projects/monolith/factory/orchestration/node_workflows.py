@@ -956,9 +956,7 @@ def _recover_response_lost(
         # A drain that interrupted exactly this dispatch left a resumable turn,
         # not a lost result: relay it to the same guest (#6256) instead of
         # settling. Read the receipt once more first, as settlement does.
-        drained = (
-            response_lost_drain_evidence(hold, view) if relay_drained else None
-        )
+        drained = response_lost_drain_evidence(hold, view) if relay_drained else None
         if drained is not None:
             retried = adopt_response_lost_result(session_id, pin["artifact_path"])
             if retried is None or retried["status"] != "waiting":
