@@ -25,7 +25,12 @@ from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput, SCOPE_PATTERN
 from knowledge.recall import _get_repo_scope, render_related_notes
-from knowledge.repo_diff_source import REPO_DIFF_PATCH_CAP
+from knowledge.repo_diff_source import (
+    REPO_DIFF_PATCH_CAP,
+    RepoDiffEvidence,
+    collect_repo_diff,
+    verify_on_main,
+)
 from shared.embedding import EmbeddingClient
 
 KG_JOB_KIND = "kg-drain"
@@ -685,52 +690,6 @@ def _update_job_payload_in_session(session: Session, name: str, payload: dict) -
     return result.rowcount > 0
 
 
-_REPO_DIFF_PLACEHOLDER_MARKER = "[... elided ...]"
-_REPO_DIFF_HEADER = "diff --git "
-_REPO_DIFF_HEADER_RE = re.compile(r"^diff --git a/", re.MULTILINE)
-# Consecutive evidence rejections from one cursor before the scout skips the
-# range. Aligned with the drainer's retry budget so the skip lands before the
-# job would otherwise finish as an error on every run.
-REPO_DIFF_MAX_REJECTIONS = MAX_GARDENER_RETRIES
-# Skipped ranges kept in the job payload as an audit trail for reconciliation.
-REPO_DIFF_SKIPPED_HISTORY = 10
-
-
-def _validate_repo_diff_evidence(parsed: _RepoDiffResult) -> None:
-    """Reject placeholder or mismatched scout evidence before any cursor write.
-
-    The scout prompt caps large patches by embedding the exact marker inside
-    real diff content, so a diff that is only the marker (or that carries no
-    git diff headers) is model-invented evidence, not source data. Raising
-    here leaves the job payload untouched because apply_repo_diff has not
-    written yet and rolls back on error.
-    """
-    diff_empty = not parsed.diff.strip()
-    stat_empty = not parsed.diff_stat.strip()
-    if parsed.base_sha is None:
-        if diff_empty and stat_empty:
-            return
-        raise ExtractionOutputInvalid(
-            "first-run scout result must carry empty diff and diff_stat"
-        )
-    if parsed.base_sha == parsed.head_sha:
-        if diff_empty and stat_empty:
-            return
-        raise ExtractionOutputInvalid("scout range is empty but carries diff evidence")
-    if diff_empty and stat_empty:
-        return
-    if diff_empty != stat_empty:
-        raise ExtractionOutputInvalid(
-            "scout diff and diff_stat must both be empty or both be set"
-        )
-    if parsed.diff.strip() == _REPO_DIFF_PLACEHOLDER_MARKER:
-        raise ExtractionOutputInvalid(
-            "scout diff is a placeholder, not source evidence"
-        )
-    if not _REPO_DIFF_HEADER_RE.search(parsed.diff):
-        raise ExtractionOutputInvalid("scout diff carries no git diff headers")
-
-
 def _stored_scout_payload(session: Session, job_name: str) -> dict:
     table, _ = _routine_jobs_table(session)
     row = session.execute(
@@ -760,8 +719,8 @@ def _validate_repo_diff_range(parsed: _RepoDiffResult, stored_sha: str | None) -
     the job holds, so neither its evidence nor its head can move the cursor.
     Without this check a stale result persists an overlapping raw every run
     while the cursor stays frozen, and a stale empty result rewinds a newer
-    cursor through the no-changes path. Range mismatches are not counted
-    toward the bounded skip because the result's coordinates are untrusted.
+    cursor through the no-changes path. Range mismatches write nothing and
+    are rejected before contacting the authoritative comparison source.
     """
     if stored_sha is None:
         return
@@ -776,121 +735,106 @@ def _validate_repo_diff_range(parsed: _RepoDiffResult, stored_sha: str | None) -
         )
 
 
-def _scout_cursor_payload(
-    stored: dict, head_sha: str, *, skipped: dict | None = None
-) -> dict:
-    """Build the next cursor payload, keeping the skipped-range audit trail.
+def _scout_cursor_payload(stored: dict, head_sha: str) -> dict:
+    """Keep historical skips unchanged for the reconciliation owner.
 
-    Retry bookkeeping (``attempts`` from the drainer, ``rejections`` from the
-    evidence gate) is dropped on purpose: both count consecutive failures from
-    one cursor and a cursor move ends that streak.
+    An authoritative advance ends retry bookkeeping. No new skips are added.
     """
     payload = {"mode": "repo-diff", "last_sha": head_sha}
-    history = stored.get("skipped")
-    history = list(history) if isinstance(history, list) else []
-    if skipped is not None:
-        history.append(skipped)
-    if history:
-        payload["skipped"] = history[-REPO_DIFF_SKIPPED_HISTORY:]
+    if "skipped" in stored:
+        payload["skipped"] = stored["skipped"]
     return payload
 
 
-def _reject_repo_diff_evidence(
-    session: Session,
-    job_name: str,
-    stored: dict,
-    parsed: _RepoDiffResult,
-    error: ExtractionOutputInvalid,
-) -> dict:
-    """Count one evidence rejection, skipping the range once the bound is hit.
-
-    Each rejection re-runs the scout from the same cursor, so an unbounded
-    gate would leave the job failing every run once the drainer's retry budget
-    is spent. After REPO_DIFF_MAX_REJECTIONS consecutive rejections the range
-    is recorded under ``skipped`` in the job payload and the cursor advances
-    to the reported head without writing a raw. Nothing invented enters the
-    graph: the skipped range is an explicit gap for reconciliation from
-    authoritative source data, not a stat-only raw the extractor would have
-    to trust.
-    """
-    previous = stored.get("rejections", 0)
-    if not isinstance(previous, int) or isinstance(previous, bool) or previous < 0:
-        previous = 0
-    rejections = previous + 1
-    if rejections < REPO_DIFF_MAX_REJECTIONS:
-        counted = dict(stored)
-        counted["rejections"] = rejections
-        _update_job_payload_in_session(session, job_name, counted)
-        session.commit()
-        raise error
-    skipped = {
-        "base_sha": _stored_scout_sha(stored),
-        "head_sha": parsed.head_sha,
-        "rejections": rejections,
-        "reason": str(error)[:200],
-    }
-    _update_job_payload_in_session(
-        session,
-        job_name,
-        _scout_cursor_payload(stored, parsed.head_sha, skipped=skipped),
+def _repo_diff_cursor_update_sql(session: Session) -> str:
+    """Render a NULL-safe cursor compare-and-set for the session's dialect."""
+    table, payload_expr = _routine_jobs_table(session)
+    cursor_expr = (
+        "json_extract(payload, '$.last_sha')"
+        if session.get_bind().dialect.name == "sqlite"
+        else "payload->>'last_sha'"
     )
-    session.commit()
-    base = skipped["base_sha"] or "null"
-    return {
-        "raw_id": None,
-        "changed_files": 0,
-        "skipped": skipped,
-        "summary": (
-            f"skipped {base[:7]}..{parsed.head_sha[:7]} after {rejections} "
-            f"rejected scout results: {error}"
-        ),
+    return (
+        f"UPDATE {table} SET payload = {payload_expr} WHERE name = :name AND "
+        f"({cursor_expr} = :last_sha OR "
+        f"({cursor_expr} IS NULL AND :last_sha IS NULL))"
+    )
+
+
+def _advance_repo_diff_cursor(
+    session: Session, job_name: str, stored: dict, head_sha: str
+) -> None:
+    result = session.execute(
+        text(_repo_diff_cursor_update_sql(session)),
+        {
+            "name": job_name,
+            "payload": json.dumps(_scout_cursor_payload(stored, head_sha)),
+            "last_sha": _stored_scout_sha(stored),
+        },
+    )
+    if result.rowcount != 1:
+        raise ExtractionOutputInvalid("repo-diff cursor changed during comparison")
+
+
+def repo_diff_raw_content(evidence: RepoDiffEvidence) -> tuple[str, dict]:
+    """Build canonical raw Markdown and metadata for ingestion or reconciliation.
+
+    All evidence fields come from the verified GitHub comparison. Both owners
+    share this content for deduplication.
+    """
+    extra = {
+        "base_sha": evidence.base_sha,
+        "head_sha": evidence.head_sha,
+        "repo": GITHUB_REPO,
+        "changed_files": evidence.changed_files,
+        "additions": evidence.additions,
+        "deletions": evidence.deletions,
+        "total_commits": evidence.total_commits,
+        "evidence_source": evidence.evidence_source,
+        "coverage": evidence.coverage,
     }
-
-
-def _changed_files(diff_stat: str, diff: str) -> int:
-    stat_count = sum(1 for line in diff_stat.splitlines() if " | " in line)
-    if stat_count:
-        return stat_count
-    return len({line for line in diff.splitlines() if line.startswith("diff --git ")})
-
-
-def _repo_diff_markdown(parsed: _RepoDiffResult, changed_files: int) -> str:
-    assert parsed.base_sha is not None
-    scope = _get_repo_scope()
     frontmatter = yaml.safe_dump(
         {
-            "title": f"main diff {parsed.base_sha[:7]}..{parsed.head_sha[:7]}",
+            "title": f"main diff {evidence.base_sha[:7]}..{evidence.head_sha[:7]}",
             "provider": "repo-diff",
-            "repo": GITHUB_REPO,
-            "base_sha": parsed.base_sha,
-            "head_sha": parsed.head_sha,
-            "scope": scope,
-            "changed_files": changed_files,
+            **extra,
+            "scope": _get_repo_scope(),
+            "compare_status": evidence.compare_status,
         },
         sort_keys=False,
     )
-    return (
+    markdown = (
         f"---\n{frontmatter}---\n\n"
-        f"## Diff stat\n\n```text\n{parsed.diff_stat.rstrip()}\n```\n\n"
-        f"## Diff\n\n```diff\n{parsed.diff.rstrip()}\n```\n"
+        f"## Diff stat\n\n```text\n{evidence.diff_stat.rstrip()}\n```\n\n"
+        f"## Diff\n\n```diff\n{evidence.patch.rstrip()}\n```\n"
     )
+    return markdown, extra
 
 
 def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
-    """Apply one scout result and advance its cursor in the same transaction."""
-    parsed = _parse_repo_diff_result(result_text)
-    stored = _stored_scout_payload(session, job_name)
-    _validate_repo_diff_range(parsed, _stored_scout_sha(stored))
+    """Atomically apply authoritative evidence for the scout's coordinates.
+
+    Source errors leave the payload unchanged for the next recurring run. The
+    compare-and-set fences concurrent cursor moves; insertion errors roll back
+    the advance too. Historical skipped ranges remain available to reconcile.
+    """
     try:
-        _validate_repo_diff_evidence(parsed)
-    except ExtractionOutputInvalid as exc:
-        return _reject_repo_diff_evidence(session, job_name, stored, parsed, exc)
-    cursor_payload = _scout_cursor_payload(stored, parsed.head_sha)
-    try:
-        if parsed.base_sha is None or not parsed.diff.strip():
-            # The range check above proved base_sha is the stored cursor (or
-            # there is none), so head_sha cannot rewind a newer cursor here.
-            _update_job_payload_in_session(session, job_name, cursor_payload)
+        parsed = _parse_repo_diff_result(result_text)
+        stored = _stored_scout_payload(session, job_name)
+        stored_sha = _stored_scout_sha(stored)
+        _validate_repo_diff_range(parsed, stored_sha)
+        if parsed.base_sha is None:
+            verify_on_main(parsed.head_sha)
+            head_sha = parsed.head_sha.lower()
+            evidence = None
+        else:
+            evidence = collect_repo_diff(stored_sha or parsed.base_sha, parsed.head_sha)
+            head_sha = evidence.head_sha
+
+        # Fence the cursor before inserting or uploading a raw. The update and
+        # raw commit together, so insertion failure cannot lose a range.
+        _advance_repo_diff_cursor(session, job_name, stored, head_sha)
+        if evidence is None or evidence.changed_files == 0:
             session.commit()
             return {
                 "raw_id": None,
@@ -898,24 +842,17 @@ def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
                 "summary": "no changes",
             }
 
-        changed_files = _changed_files(parsed.diff_stat, parsed.diff)
-        markdown = _repo_diff_markdown(parsed, changed_files)
+        markdown, extra = repo_diff_raw_content(evidence)
         from knowledge.raw_write import persist_raw_with_status
 
         raw, created = persist_raw_with_status(
             session,
             content=markdown,
             source="repo-diff",
-            original_url=f"repo-diff:{parsed.base_sha}..{parsed.head_sha}",
-            extra={
-                "base_sha": parsed.base_sha,
-                "head_sha": parsed.head_sha,
-                "changed_files": changed_files,
-                "repo": GITHUB_REPO,
-            },
+            original_url=f"repo-diff:{evidence.base_sha}..{evidence.head_sha}",
+            extra=extra,
             commit=False,
         )
-        _update_job_payload_in_session(session, job_name, cursor_payload)
         session.commit()
     except Exception:
         session.rollback()
@@ -923,8 +860,8 @@ def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
     return {
         "raw_id": raw.raw_id,
         "created": created,
-        "changed_files": changed_files,
-        "summary": f"raw={raw.raw_id} changed_files={changed_files}",
+        "changed_files": evidence.changed_files,
+        "summary": f"raw={raw.raw_id} changed_files={evidence.changed_files}",
     }
 
 

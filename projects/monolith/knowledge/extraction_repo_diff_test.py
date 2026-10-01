@@ -1,22 +1,37 @@
-"""Tests for the repository diff scout stage."""
+"""Network-free tests for applying authoritative repository comparisons."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
+from types import SimpleNamespace
 
+import httpx
 import pytest
 from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 from sqlmodel import Session, SQLModel, create_engine, select
+import yaml
 
 from knowledge.extraction import (
-    REPO_DIFF_MAX_REJECTIONS,
-    REPO_DIFF_SKIPPED_HISTORY,
+    REPO_DIFF_PATCH_CAP,
     ExtractionOutputInvalid,
+    _repo_diff_cursor_update_sql,
     apply_repo_diff,
     build_repo_diff_prompt,
     ensure_repo_diff_job,
+    repo_diff_raw_content,
 )
 from knowledge.models import RawInput
+from knowledge.repo_diff_source import (
+    RepoDiffEvidence,
+    RepoDiffRangeInvalid,
+    RepoDiffSourceUnavailable,
+    collect_repo_diff,
+)
+
+BASE = "a" * 40
+HEAD = "b" * 40
 
 
 @pytest.fixture(name="session")
@@ -54,38 +69,102 @@ def session_fixture(tmp_path):
                 table.schema = original_schemas[table.name]
 
 
-def _scout_job(session: Session, name: str = "kg-repo-diff") -> None:
+def _evidence(base_sha=BASE, head_sha=HEAD):
+    patch = "diff --git a/example.py b/example.py\n@@ -1 +1 @@\n-old\n+verified\n"
+    return RepoDiffEvidence(
+        base_sha=base_sha.lower(),
+        head_sha=head_sha.lower(),
+        compare_status="ahead",
+        total_commits=2,
+        diff_stat="example.py | 2 +1 -1",
+        patch=patch,
+        changed_files=1,
+        additions=1,
+        deletions=1,
+        coverage={
+            "files_listed": 1,
+            "files_excluded": 0,
+            "files_included": 1,
+            "files_patch_included": 1,
+            "files_patch_omitted_by_github": 0,
+            "files_patch_cut_by_cap": 0,
+            "patch_chars": len(patch),
+            "patch_truncated": False,
+            "file_list_complete": True,
+            "total_commits": 2,
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+def source(monkeypatch):
+    """No applier test may accidentally contact GitHub or content storage."""
+    calls = SimpleNamespace(compare=[], verify=[], uploads={})
+
+    def collect(base_sha, head_sha):
+        calls.compare.append((base_sha, head_sha))
+        return _evidence(base_sha, head_sha)
+
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", collect)
+    monkeypatch.setattr("knowledge.extraction.verify_on_main", calls.verify.append)
+    monkeypatch.setattr(
+        "knowledge.raw_write.upload_raw",
+        lambda raw_id, content: calls.uploads.update({raw_id: content}),
+    )
+    return calls
+
+
+def _scout_job(session: Session, last_sha=BASE) -> None:
     session.execute(
         text(
             """
             INSERT INTO routine_jobs
                 (name, routine_kind, interval_secs, next_run_at, payload, created_by)
-            VALUES (:name, 'kg-drain', 3600, CURRENT_TIMESTAMP, :payload, 'test')
+            VALUES ('kg-repo-diff', 'kg-drain', 3600, CURRENT_TIMESTAMP, :payload, 'test')
             """
         ),
-        {"name": name, "payload": json.dumps({"mode": "repo-diff", "last_sha": None})},
+        {"payload": json.dumps({"mode": "repo-diff", "last_sha": last_sha})},
     )
     session.commit()
 
 
-def _output(*, base_sha: str | None, diff_stat: str = "", diff: str = "") -> str:
+def _output(*, base_sha=BASE, head_sha=HEAD, diff_stat="", diff=""):
     return (
         "```json\n"
         + json.dumps(
-            {
-                "head_sha": "b" * 40,
-                "base_sha": base_sha,
-                "diff_stat": diff_stat,
-                "diff": diff,
-            }
+            {"head_sha": head_sha, "base_sha": base_sha, "diff_stat": diff_stat, "diff": diff}
         )
         + "\n```"
     )
 
 
+def _payload_bytes(session):
+    return session.execute(
+        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+    ).scalar_one()
+
+
+def _stored_payload(session):
+    return json.loads(_payload_bytes(session))
+
+
+def _set_payload(session, payload):
+    session.execute(
+        text("UPDATE routine_jobs SET payload = :payload WHERE name = 'kg-repo-diff'"),
+        {"payload": json.dumps(payload)},
+    )
+    session.commit()
+
+
+def _assert_unchanged(session, before):
+    assert _payload_bytes(session) == before
+    assert session.exec(select(RawInput)).all() == []
+    assert "rejections" not in _stored_payload(session)
+    assert session.execute(text("SELECT count(*) FROM routine_jobs")).scalar_one() == 1
+
+
 def test_scout_prompt_renders_null_cursor_branch():
     prompt = build_repo_diff_prompt(None)
-
     assert "prior cursor is null" in prompt
     assert "This first run only establishes" in prompt
     assert '"base_sha": "full SHA or null"' in prompt
@@ -93,10 +172,8 @@ def test_scout_prompt_renders_null_cursor_branch():
 
 
 def test_scout_prompt_renders_set_cursor_branch():
-    sha = "a" * 40
-    prompt = build_repo_diff_prompt(sha)
-
-    assert sha in prompt
+    prompt = build_repo_diff_prompt(BASE)
+    assert BASE in prompt
     assert "git diff --stat <last_sha>..HEAD" in prompt
     assert "pnpm-lock.yaml" in prompt
     assert "requirements*.txt" in prompt
@@ -105,84 +182,304 @@ def test_scout_prompt_renders_set_cursor_branch():
     assert "[... elided ...]" in prompt
 
 
-def test_apply_no_change_advances_cursor_without_raw(session):
+@pytest.mark.parametrize(
+    ("diff", "stat"),
+    [
+        ("[... elided ...]", "145 files changed, 13202 insertions"),
+        ("  \n[... elided ...]\n ", "invented stat"),
+        ("headerless model summary", "invented stat"),
+        ("diff --git a/invented.py b/invented.py\n+model", "invented stat"),
+        ("model patch without statistics", ""),
+        ("", "model statistics without patch"),
+        ("", ""),
+    ],
+)
+def test_apply_uses_only_authoritative_content(session, source, diff, stat):
     _scout_job(session)
-
-    applied = apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None))
-
-    assert applied["summary"] == "no changes"
-    assert session.exec(select(RawInput)).all() == []
-    payload = session.execute(
-        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
-    ).scalar_one()
-    assert json.loads(payload) == {"mode": "repo-diff", "last_sha": "b" * 40}
-
-
-def test_apply_change_writes_raw_queues_extraction_and_advances_cursor(
-    session, monkeypatch
-):
-    _scout_job(session)
-    uploaded = {}
-    monkeypatch.setattr(
-        "knowledge.raw_write.upload_raw",
-        lambda raw_id, content: uploaded.update(raw_id=raw_id, content=content),
-    )
-
-    applied = apply_repo_diff(
-        session,
-        "kg-repo-diff",
-        _output(
-            base_sha="a" * 40,
-            diff_stat=" projects/monolith/example.py | 2 ++\n 1 file changed",
-            diff="diff --git a/example.py b/example.py\n+setting = true",
-        ),
-    )
-
+    applied = apply_repo_diff(session, "kg-repo-diff", _output(diff=diff, diff_stat=stat))
     raw = session.exec(select(RawInput)).one()
-    assert applied["raw_id"] == raw.raw_id
+    content = source.uploads[raw.raw_id]
+    evidence = _evidence()
+    expected_content, extra = repo_diff_raw_content(evidence)
+    assert content == expected_content
+    assert evidence.diff_stat in content
+    assert evidence.patch.rstrip() in content
+    if diff.strip():
+        assert diff.strip() not in content
+    if stat:
+        assert stat not in content
     assert applied["created"] is True
+    assert applied["raw_id"] == raw.raw_id
+    assert applied["changed_files"] == 1
     assert raw.source == "repo-diff"
-    assert raw.original_path == f"repo-diff:{'a' * 40}..{'b' * 40}"
-    assert raw.extra["changed_files"] == 1
-    assert "title: main diff aaaaaaa..bbbbbbb" in uploaded["content"]
-    jobs = session.execute(
-        text("SELECT name, payload FROM routine_jobs ORDER BY name")
-    ).all()
-    assert [row.name for row in jobs] == ["kg-repo-diff", f"kg:{raw.raw_id}"]
-    scout_payload = json.loads(jobs[0].payload)
-    assert scout_payload["last_sha"] == "b" * 40
+    assert raw.original_path == f"repo-diff:{BASE}..{HEAD}"
+    for key, value in extra.items():
+        assert raw.extra[key] == value
+    assert raw.extra["evidence_source"] == "github-compare"
+    frontmatter = yaml.safe_load(content.split("---\n", 2)[1])
+    for key, value in extra.items():
+        assert frontmatter[key] == value
+    assert frontmatter["compare_status"] == "ahead"
+    assert frontmatter["title"] == "main diff aaaaaaa..bbbbbbb"
+    jobs = (
+        session.execute(text("SELECT name FROM routine_jobs ORDER BY name"))
+        .scalars()
+        .all()
+    )
+    assert jobs == ["kg-repo-diff", f"kg:{raw.raw_id}"]
+    assert _stored_payload(session) == {"mode": "repo-diff", "last_sha": HEAD}
+    assert source.compare == [(BASE, HEAD)]
+    assert source.verify == []
 
 
-def test_duplicate_content_still_advances_cursor(session, monkeypatch):
+@pytest.mark.parametrize("diff", ["[... elided ...]", "model patch", ""])
+@pytest.mark.parametrize(
+    "error",
+    [
+        RepoDiffSourceUnavailable("GitHub unavailable"),
+        RepoDiffRangeInvalid("diverged"),
+        RepoDiffRangeInvalid("behind"),
+        RepoDiffRangeInvalid("GitHub rejected comparison (404)"),
+        RepoDiffRangeInvalid("Requested head is not reachable from main"),
+    ],
+)
+def test_source_failures_never_write_or_skip(session, monkeypatch, source, diff, error):
     _scout_job(session)
-    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
-    result = _output(
-        base_sha="a" * 40,
-        diff_stat=" file.py | 1 +",
-        diff="diff --git a/file.py b/file.py\n+x = 1",
-    )
-    assert apply_repo_diff(session, "kg-repo-diff", result)["created"] is True
-    session.execute(
-        text("UPDATE routine_jobs SET payload = :payload WHERE name = 'kg-repo-diff'"),
-        {"payload": json.dumps({"mode": "repo-diff", "last_sha": "a" * 40})},
-    )
-    session.commit()
+    before = _payload_bytes(session)
 
-    replay = apply_repo_diff(session, "kg-repo-diff", result)
+    def fail(*_args):
+        raise error
 
-    assert replay["created"] is False
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", fail)
+    # Repeated errors must never recover by acknowledging an unverified head.
+    for _ in range(4):
+        with pytest.raises(type(error)) as caught:
+            apply_repo_diff(session, "kg-repo-diff", _output(diff=diff))
+        assert caught.value is error
+        _assert_unchanged(session, before)
+    assert source.uploads == {}
+
+
+@pytest.mark.parametrize("base_sha", [None, "c" * 40])
+@pytest.mark.parametrize("diff", ["", "[... elided ...]"])
+def test_mismatched_base_rejected_before_source(session, source, base_sha, diff):
+    _scout_job(session)
+    before = _payload_bytes(session)
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(session, "kg-repo-diff", _output(base_sha=base_sha, diff=diff))
+    _assert_unchanged(session, before)
+    assert source.compare == source.verify == []
+
+
+@pytest.mark.parametrize("kind", ["identical", "excluded-only"])
+def test_valid_empty_comparison_advances_without_raw(session, monkeypatch, source, kind):
+    head = BASE if kind == "identical" else HEAD
+    _scout_job(session)
+    evidence = replace(
+        _evidence(head_sha=head),
+        compare_status="identical" if kind == "identical" else "ahead",
+        total_commits=0 if kind == "identical" else 2,
+        changed_files=0,
+        additions=0,
+        deletions=0,
+        diff_stat="",
+        patch="",
+        coverage={"files_excluded": 0 if kind == "identical" else 1},
+    )
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", lambda *_args: evidence)
+    applied = apply_repo_diff(
+        session, "kg-repo-diff", _output(head_sha=head, diff="invented model patch")
+    )
+    assert applied == {"raw_id": None, "changed_files": 0, "summary": "no changes"}
+    assert _stored_payload(session)["last_sha"] == head
+    assert session.exec(select(RawInput)).all() == []
+    assert source.uploads == {}
+
+
+@pytest.mark.parametrize("stored", [{"last_sha": None}, {}, {"last_sha": None, "skipped": []}])
+def test_first_run_verifies_head_and_initializes_null_safe_cursor(session, source, stored):
+    _scout_job(session, None)
+    _set_payload(session, {"mode": "repo-diff", **stored})
+    applied = apply_repo_diff(
+        session, "kg-repo-diff", _output(base_sha=None, head_sha=HEAD.upper(), diff="model")
+    )
+    assert source.verify == [HEAD.upper()]
+    assert source.compare == []
+    assert applied["summary"] == "no changes"
+    assert _stored_payload(session)["last_sha"] == HEAD
+    if "skipped" in stored:
+        assert _stored_payload(session)["skipped"] == []
+    assert session.exec(select(RawInput)).all() == []
+
+
+@pytest.mark.parametrize("error", [RepoDiffSourceUnavailable("offline"), RepoDiffRangeInvalid("off main")])
+def test_unverified_first_run_keeps_null_cursor(session, monkeypatch, error):
+    _scout_job(session, None)
+    before = _payload_bytes(session)
+
+    def fail(_sha):
+        raise error
+
+    monkeypatch.setattr("knowledge.extraction.verify_on_main", fail)
+    with pytest.raises(type(error)):
+        apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None))
+    _assert_unchanged(session, before)
+
+
+def test_large_comparison_persists_bounded_patch_and_coverage(session, monkeypatch, source):
+    _scout_job(session)
+    body = {
+        "status": "ahead",
+        "base_commit": {"sha": BASE},
+        "merge_base_commit": {"sha": BASE},
+        "commits": [{"sha": HEAD}],
+        "total_commits": 2,
+        "files": [
+            {"filename": "small.py", "additions": 1, "patch": "@@ -0,0 +1 @@\n+verified"},
+            {"filename": "large.py", "additions": 1, "patch": "+" + "x" * REPO_DIFF_PATCH_CAP},
+        ],
+    }
+
+    def response(request):
+        if request.url.path.endswith("...main"):
+            return httpx.Response(200, json={
+                "status": "identical", "base_commit": {"sha": HEAD}, "total_commits": 0
+            })
+        return httpx.Response(200, json=body)
+
+    with httpx.Client(transport=httpx.MockTransport(response)) as client:
+        evidence = collect_repo_diff(BASE, HEAD, client=client)
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", lambda *_args: evidence)
+    apply_repo_diff(session, "kg-repo-diff", _output(diff="model"))
+    raw = session.exec(select(RawInput)).one()
+    content = source.uploads[raw.raw_id]
+    persisted_patch = content.split("```diff\n", 1)[1].rsplit("\n```", 1)[0]
+    assert len(persisted_patch) <= REPO_DIFF_PATCH_CAP
+    assert "[... elided ...]" in persisted_patch
+    assert "diff --git a/small.py b/small.py" in persisted_patch
+    assert "diff --git a/large.py" not in persisted_patch
+    assert raw.extra["coverage"] == evidence.coverage
+    assert raw.extra["coverage"]["patch_truncated"] is True
+    assert raw.extra["coverage"]["files_patch_cut_by_cap"] == 1
+    assert yaml.safe_load(content.split("---\n", 2)[1])["coverage"] == evidence.coverage
+
+
+def test_duplicate_result_rejected_with_exactly_one_raw(session, source):
+    _scout_job(session)
+    result = _output(diff="[... elided ...]")
+    apply_repo_diff(session, "kg-repo-diff", result)
+    before = _payload_bytes(session)
+    with pytest.raises(ExtractionOutputInvalid, match="does not match the stored"):
+        apply_repo_diff(session, "kg-repo-diff", result)
     assert len(session.exec(select(RawInput)).all()) == 1
-    payload = session.execute(
-        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
-    ).scalar_one()
-    assert json.loads(payload)["last_sha"] == "b" * 40
+    assert _payload_bytes(session) == before
+    assert source.compare == [(BASE, HEAD)]
+
+
+def test_duplicate_authoritative_content_deduplicates(session):
+    _scout_job(session)
+    assert apply_repo_diff(session, "kg-repo-diff", _output())["created"] is True
+    _set_payload(session, {"mode": "repo-diff", "last_sha": BASE})
+    assert apply_repo_diff(session, "kg-repo-diff", _output())["created"] is False
+    assert len(session.exec(select(RawInput)).all()) == 1
+    assert _stored_payload(session)["last_sha"] == HEAD
+
+
+@pytest.mark.parametrize("initial", [False, True])
+def test_concurrent_cursor_move_preserved_without_raw(session, monkeypatch, source, initial):
+    _scout_job(session, None if initial else BASE)
+    newer = {"mode": "repo-diff", "last_sha": "c" * 40, "skipped": [{"reason": "retain"}]}
+
+    def advance(*_args):
+        # A committed intervening writer is visible to the CAS, not rolled back
+        # with this application. This seam models the read/write race directly.
+        _set_payload(session, newer)
+        return _evidence()
+
+    monkeypatch.setattr(
+        "knowledge.extraction.verify_on_main" if initial else "knowledge.extraction.collect_repo_diff",
+        advance,
+    )
+    with pytest.raises(ExtractionOutputInvalid, match="cursor changed"):
+        apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None if initial else BASE))
+    assert _stored_payload(session) == newer
+    assert session.exec(select(RawInput)).all() == []
+    assert source.uploads == {}
+
+
+def test_persistence_error_rolls_back_cursor_and_raw(session, monkeypatch):
+    _scout_job(session)
+    before = _payload_bytes(session)
+
+    def fail(*_args):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr("knowledge.raw_write.upload_raw", fail)
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        apply_repo_diff(session, "kg-repo-diff", _output())
+    _assert_unchanged(session, before)
+
+
+@pytest.mark.parametrize("mode", ["first-run", "changes", "empty"])
+@pytest.mark.parametrize(
+    "history", [[], [{"reason": "retain"}], [{"index": i} for i in range(15)], None]
+)
+def test_existing_skip_history_survives_unchanged(session, monkeypatch, mode, history):
+    first_run = mode == "first-run"
+    _scout_job(session, None if first_run else BASE)
+    if mode == "empty":
+        evidence = replace(_evidence(), changed_files=0, diff_stat="", patch="")
+        monkeypatch.setattr("knowledge.extraction.collect_repo_diff", lambda *_args: evidence)
+    _set_payload(session, {
+        "mode": "repo-diff", "last_sha": None if first_run else BASE,
+        "skipped": history, "rejections": 2, "attempts": 2,
+    })
+    apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None if first_run else BASE))
+    assert _stored_payload(session) == {"mode": "repo-diff", "last_sha": HEAD, "skipped": history}
+
+
+def test_case_insensitive_range_keeps_exact_stored_sha_for_cas(session, source):
+    _scout_job(session, BASE.upper())
+    apply_repo_diff(session, "kg-repo-diff", _output())
+    assert source.compare == [(BASE.upper(), HEAD)]
+    assert _stored_payload(session)["last_sha"] == HEAD
+
+
+def test_missing_job_cannot_create_orphan_raw(session, source):
+    with pytest.raises(ExtractionOutputInvalid, match="cursor changed"):
+        apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None))
+    assert session.exec(select(RawInput)).all() == []
+    assert source.uploads == {}
+
+
+@pytest.mark.parametrize("field", ["head_sha", "base_sha", "diff", "diff_stat"])
+@pytest.mark.parametrize("value", [None, 42, True, [], {}])
+def test_malformed_scout_fields_fail_before_source(session, source, field, value):
+    _scout_job(session)
+    before = _payload_bytes(session)
+    payload = {"head_sha": HEAD, "base_sha": BASE, "diff": "", "diff_stat": ""}
+    payload[field] = value
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_repo_diff(session, "kg-repo-diff", "```json\n" + json.dumps(payload) + "\n```")
+    _assert_unchanged(session, before)
+    assert source.compare == source.verify == []
 
 
 def test_malformed_scout_json_raises(session):
     _scout_job(session)
-
     with pytest.raises(ExtractionOutputInvalid):
         apply_repo_diff(session, "kg-repo-diff", "```json\n{bad}\n```")
+
+
+def test_postgres_cursor_sql_qualifies_schema_and_casts_jsonb():
+    session = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=postgresql.dialect()))
+    sql = _repo_diff_cursor_update_sql(session)
+    assert sql.startswith("UPDATE claude_agent.routine_jobs SET payload = CAST(:payload AS JSONB)")
+    assert "WHERE name = :name AND" in sql
+    assert "payload->>'last_sha' = :last_sha" in sql
+    assert "payload->>'last_sha' IS NULL AND :last_sha IS NULL" in sql
+    assert "json_extract" not in sql
+    assert set(text(sql).compile(dialect=postgresql.dialect()).params) == {"payload", "name", "last_sha"}
 
 
 def test_repo_diff_job_registration_follows_flag(session, monkeypatch):
@@ -192,7 +489,6 @@ def test_repo_diff_job_registration_follows_flag(session, monkeypatch):
     job = session.execute(text("SELECT interval_secs, payload FROM routine_jobs")).one()
     assert job.interval_secs == 3600
     assert json.loads(job.payload) == {"mode": "repo-diff", "last_sha": None}
-
     monkeypatch.setenv("KG_REPO_DIFF_ENABLED", "false")
     assert ensure_repo_diff_job(session) is True
     session.commit()
@@ -202,13 +498,11 @@ def test_repo_diff_job_registration_follows_flag(session, monkeypatch):
 def test_unknown_scout_hold_survives_feature_flag_toggle(session, monkeypatch):
     monkeypatch.setenv("KG_REPO_DIFF_ENABLED", "true")
     assert ensure_repo_diff_job(session) is True
-    session.execute(
-        text("""
+    session.execute(text("""
         UPDATE routine_jobs SET next_run_at = NULL,
             last_status = 'invocation_outcome_unknown',
             payload = '{"mode": "repo-diff", "last_sha": "retain"}'
-    """)
-    )
+    """))
     session.commit()
     for enabled in ("false", "true"):
         monkeypatch.setenv("KG_REPO_DIFF_ENABLED", enabled)
@@ -218,293 +512,3 @@ def test_unknown_scout_hold_survives_feature_flag_toggle(session, monkeypatch):
     assert row.next_run_at is None
     assert row.last_status == "invocation_outcome_unknown"
     assert json.loads(row.payload)["last_sha"] == "retain"
-
-
-def _stored_last_sha(session):
-    payload = session.execute(
-        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
-    ).scalar_one()
-    return json.loads(payload)["last_sha"]
-
-
-def _valid_diff(*, base_sha="a" * 40, diff_stat=None, diff=None):
-    return _output(
-        base_sha=base_sha,
-        diff_stat=(
-            " file.py | 1 +\n 1 file changed" if diff_stat is None else diff_stat
-        ),
-        diff=("diff --git a/file.py b/file.py\n+x = 1" if diff is None else diff),
-    )
-
-
-def test_placeholder_only_diff_rejected_without_cursor_advance(session):
-    _scout_job(session)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(
-            session,
-            "kg-repo-diff",
-            _output(
-                base_sha="a" * 40,
-                diff_stat=" file.py | 1 +\n 1 file changed",
-                diff="[... elided ...]",
-            ),
-        )
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) is None
-
-
-def test_placeholder_with_surrounding_whitespace_rejected(session):
-    _scout_job(session)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(
-            session,
-            "kg-repo-diff",
-            _output(
-                base_sha="a" * 40,
-                diff_stat=" file.py | 1 +",
-                diff="  \n[... elided ...]\n ",
-            ),
-        )
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) is None
-
-
-def test_headerless_invented_diff_rejected(session):
-    _scout_job(session)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(
-            session,
-            "kg-repo-diff",
-            _output(
-                base_sha="a" * 40,
-                diff_stat=" 145 files changed, 13202 insertions(+)",
-                diff="summary of 145 files, 13202 insertions and 245 deletions",
-            ),
-        )
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) is None
-
-
-def test_first_run_with_evidence_rejected(session):
-    _scout_job(session)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(session, "kg-repo-diff", _valid_diff(base_sha=None))
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) is None
-
-
-def test_same_sha_with_evidence_rejected(session):
-    _scout_job(session)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(session, "kg-repo-diff", _valid_diff(base_sha="b" * 40))
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) is None
-
-
-def test_mismatched_diff_and_stat_rejected(session):
-    _scout_job(session)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(
-            session,
-            "kg-repo-diff",
-            _output(
-                base_sha="a" * 40,
-                diff_stat="",
-                diff="diff --git a/file.py b/file.py\n+x = 1",
-            ),
-        )
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(
-            session,
-            "kg-repo-diff",
-            _output(
-                base_sha="a" * 40,
-                diff_stat=" file.py | 1 +",
-                diff="",
-            ),
-        )
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) is None
-
-
-def test_valid_empty_comparison_advances_cursor_without_raw(session):
-    _scout_job(session)
-
-    applied = apply_repo_diff(session, "kg-repo-diff", _output(base_sha="a" * 40))
-
-    assert applied["summary"] == "no changes"
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) == "b" * 40
-
-
-def test_truncated_large_diff_with_headers_accepted(session, monkeypatch):
-    _scout_job(session)
-    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
-    diff = "diff --git a/big.py b/big.py\n+line\n[... elided ...]\n+tail\n"
-
-    applied = apply_repo_diff(
-        session,
-        "kg-repo-diff",
-        _output(
-            base_sha="a" * 40,
-            diff_stat=" big.py | 200 ++++",
-            diff=diff,
-        ),
-    )
-
-    assert applied["created"] is True
-    assert len(session.exec(select(RawInput)).all()) == 1
-    assert _stored_last_sha(session) == "b" * 40
-
-
-def _set_cursor(session, last_sha, **extra):
-    session.execute(
-        text("UPDATE routine_jobs SET payload = :payload WHERE name = 'kg-repo-diff'"),
-        {"payload": json.dumps({"mode": "repo-diff", "last_sha": last_sha, **extra})},
-    )
-    session.commit()
-
-
-def _stored_payload(session):
-    payload = session.execute(
-        text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
-    ).scalar_one()
-    return json.loads(payload)
-
-
-def test_stale_base_rejected_without_raw_or_cursor_change(session, monkeypatch):
-    _scout_job(session)
-    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
-    _set_cursor(session, "c" * 40)
-
-    with pytest.raises(ExtractionOutputInvalid, match="does not match the stored"):
-        apply_repo_diff(session, "kg-repo-diff", _valid_diff(base_sha="a" * 40))
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_payload(session) == {"mode": "repo-diff", "last_sha": "c" * 40}
-
-
-def test_base_sha_matches_stored_cursor_case_insensitively(session, monkeypatch):
-    _scout_job(session)
-    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
-    _set_cursor(session, "ABCDEF" * 6 + "ABCD")
-
-    applied = apply_repo_diff(
-        session, "kg-repo-diff", _valid_diff(base_sha="abcdef" * 6 + "abcd")
-    )
-
-    assert applied["created"] is True
-    assert len(session.exec(select(RawInput)).all()) == 1
-    assert _stored_last_sha(session) == "b" * 40
-
-
-def test_first_run_result_rejected_once_cursor_is_set(session):
-    _scout_job(session)
-    _set_cursor(session, "c" * 40)
-
-    with pytest.raises(ExtractionOutputInvalid, match="first-run"):
-        apply_repo_diff(session, "kg-repo-diff", _output(base_sha=None))
-
-    assert _stored_last_sha(session) == "c" * 40
-
-
-def test_stale_empty_comparison_does_not_rewind_newer_cursor(session):
-    _scout_job(session)
-    _set_cursor(session, "c" * 40)
-
-    with pytest.raises(ExtractionOutputInvalid):
-        apply_repo_diff(session, "kg-repo-diff", _output(base_sha="a" * 40))
-
-    assert session.exec(select(RawInput)).all() == []
-    assert _stored_last_sha(session) == "c" * 40
-
-
-def test_repeated_placeholder_rejections_skip_range_after_bound(session):
-    _scout_job(session)
-    _set_cursor(session, "a" * 40, attempts=2)
-    placeholder = _valid_diff(diff="[... elided ...]")
-
-    for expected in range(1, REPO_DIFF_MAX_REJECTIONS):
-        with pytest.raises(ExtractionOutputInvalid, match="placeholder"):
-            apply_repo_diff(session, "kg-repo-diff", placeholder)
-        payload = _stored_payload(session)
-        assert payload["last_sha"] == "a" * 40
-        assert payload["rejections"] == expected
-        assert payload["attempts"] == 2
-
-    applied = apply_repo_diff(session, "kg-repo-diff", placeholder)
-
-    assert applied["raw_id"] is None
-    assert applied["skipped"]["base_sha"] == "a" * 40
-    assert applied["skipped"]["head_sha"] == "b" * 40
-    assert applied["skipped"]["rejections"] == REPO_DIFF_MAX_REJECTIONS
-    assert "placeholder" in applied["skipped"]["reason"]
-    assert applied["summary"].startswith("skipped aaaaaaa..bbbbbbb after 3")
-    assert session.exec(select(RawInput)).all() == []
-    payload = _stored_payload(session)
-    assert payload["last_sha"] == "b" * 40
-    assert "rejections" not in payload
-    assert "attempts" not in payload
-    assert payload["skipped"] == [applied["skipped"]]
-
-
-def test_accepted_result_clears_rejection_count_and_keeps_skip_history(
-    session, monkeypatch
-):
-    _scout_job(session)
-    monkeypatch.setattr("knowledge.raw_write.upload_raw", lambda *_args: None)
-    history = [{"base_sha": "0" * 40, "head_sha": "a" * 40, "rejections": 3}]
-    _set_cursor(session, "a" * 40, rejections=1, skipped=history)
-
-    applied = apply_repo_diff(session, "kg-repo-diff", _valid_diff())
-
-    assert applied["created"] is True
-    assert _stored_payload(session) == {
-        "mode": "repo-diff",
-        "last_sha": "b" * 40,
-        "skipped": history,
-    }
-
-
-def test_range_mismatch_does_not_count_toward_skip(session):
-    _scout_job(session)
-    _set_cursor(session, "c" * 40, rejections=2)
-
-    with pytest.raises(ExtractionOutputInvalid, match="does not match"):
-        apply_repo_diff(session, "kg-repo-diff", _valid_diff(diff="[... elided ...]"))
-
-    payload = _stored_payload(session)
-    assert payload["last_sha"] == "c" * 40
-    assert payload["rejections"] == 2
-
-
-def test_skipped_history_is_bounded(session):
-    _scout_job(session)
-    history = [
-        {"base_sha": str(index) * 40, "head_sha": "a" * 40, "rejections": 3}
-        for index in range(REPO_DIFF_SKIPPED_HISTORY)
-    ]
-    _set_cursor(
-        session, "a" * 40, rejections=REPO_DIFF_MAX_REJECTIONS - 1, skipped=history
-    )
-
-    applied = apply_repo_diff(
-        session, "kg-repo-diff", _valid_diff(diff="[... elided ...]")
-    )
-
-    stored = _stored_payload(session)["skipped"]
-    assert len(stored) == REPO_DIFF_SKIPPED_HISTORY
-    assert stored[-1] == applied["skipped"]
-    assert stored[0] == history[1]
