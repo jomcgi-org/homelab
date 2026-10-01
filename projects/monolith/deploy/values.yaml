@@ -313,10 +313,6 @@ agents:
     # the routine lane. docFixAutoMerge stays at the chart default (false)
     # until a few docfix-review verdicts have been read.
     docFixEnabled: true
-  sessions:
-    # Exact-turn Stop on /private/factory/execution (#4321, #6401). Enabled
-    # for the live checks on #6564; set back to false to roll back.
-    stopControlEnabled: true
 
 # Grimoire D&D ingest pipeline (private tier only; spec
 # the grimoire pg-first design). Enabled here so the two
