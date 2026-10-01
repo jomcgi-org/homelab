@@ -21,7 +21,6 @@ filegroup(
 exports_files(
     [
         "gke-apps/kustomization.yaml",
-        "gke-apps/context-forge-gateway/application.yaml",
     ],
     visibility = ["//projects/loom/deploy:__pkg__"],
 )
