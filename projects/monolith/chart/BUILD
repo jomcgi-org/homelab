@@ -93,7 +93,10 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
     },
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(
