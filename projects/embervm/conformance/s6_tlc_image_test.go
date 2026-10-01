@@ -91,8 +91,23 @@ func extractS6TLCLayer(t *testing.T, layer, root string) map[string]*tar.Header 
 			if err := out.Close(); err != nil {
 				t.Fatal(err)
 			}
+		case tar.TypeLink:
+			// bsdtar records files that share an inode at build time as
+			// hardlinks (remote execution stages identical inputs, such as the
+			// JRE's limited/ and unlimited/ default_US_export.policy, as one
+			// CAS file). The target must be a regular file earlier in the layer.
+			target := strings.TrimPrefix(path.Clean(hdr.Linkname), "./")
+			if th, ok := headers[target]; !ok || th.Typeflag != tar.TypeReg {
+				t.Fatalf("layer hardlink %q points at %q, which is not an earlier regular file", name, hdr.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(filepath.Join(root, filepath.FromSlash(target)), dest); err != nil {
+				t.Fatal(err)
+			}
 		default:
-			t.Fatalf("layer entry %q has type %q; the layer ships only dirs and regular files", name, hdr.Typeflag)
+			t.Fatalf("layer entry %q has type %q; the layer ships only dirs, regular files and hardlinks", name, hdr.Typeflag)
 		}
 	}
 	return headers
