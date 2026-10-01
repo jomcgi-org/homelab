@@ -1508,16 +1508,104 @@ def _transcript_slug(cwd):
     return cwd.replace("/", "-")
 
 
-def _transcript_exists(cwd, session_id):
+def _transcript_path(cwd, session_id):
     home = os.environ.get("HOME", os.path.expanduser("~"))
-    path = os.path.join(
+    return os.path.join(
         home,
         ".claude",
         "projects",
         _transcript_slug(cwd),
         "%s.jsonl" % session_id,
     )
-    return os.path.isfile(path)
+
+
+def _transcript_exists(cwd, session_id):
+    return os.path.isfile(_transcript_path(cwd, session_id))
+
+
+# Per-model fields of the CLI's modelUsage that accumulate with the session.
+# contextWindow and maxOutputTokens describe the model and are left alone.
+_MODEL_USAGE_CUMULATIVE_KEYS = (
+    "inputTokens",
+    "outputTokens",
+    "thinkingTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+    "webSearchRequests",
+    "costUSD",
+)
+
+
+def _is_cost_number(value):
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def _model_usage_snapshot(model_usage):
+    """Keep only the cumulative per-model fields, the next result's baseline."""
+    return {
+        model: {
+            key: entry[key]
+            for key in _MODEL_USAGE_CUMULATIVE_KEYS
+            if _is_cost_number(entry.get(key))
+        }
+        for model, entry in model_usage.items()
+        if isinstance(entry, dict)
+    }
+
+
+def _model_usage_delta(model_usage, baseline):
+    """Rewrite cumulative per-model fields as what this result adds."""
+    delta = {}
+    for model, entry in model_usage.items():
+        if not isinstance(entry, dict):
+            delta[model] = entry
+            continue
+        prior = baseline.get(model, {})
+        delta[model] = {
+            key: max(0, value - prior.get(key, 0))
+            if key in _MODEL_USAGE_CUMULATIVE_KEYS and _is_cost_number(value)
+            else value
+            for key, value in entry.items()
+        }
+    return delta
+
+
+def _transcript_cost_state(cwd, session_id):
+    """Return the last cost-state line a session transcript saved, or None.
+
+    The CLI appends {"type": "cost-state", "sessionId", "totalCostUSD",
+    "modelUsage", ...} to the transcript and a resume restores the last one as
+    its running total, so a resumed session's first result is cumulative from
+    it. Unreadable, missing or malformed state is None.
+    """
+    state = None
+    try:
+        with open(_transcript_path(cwd, session_id), "rb") as stream:
+            for raw in stream:
+                if b'"cost-state"' not in raw:
+                    continue
+                try:
+                    line = json.loads(raw)
+                except ValueError:
+                    continue
+                if (
+                    isinstance(line, dict)
+                    and line.get("type") == "cost-state"
+                    and line.get("sessionId") == session_id
+                    and _is_cost_number(line.get("totalCostUSD"))
+                ):
+                    state = line
+    except OSError:
+        return None
+    if state is None:
+        return None
+    model_usage = state.get("modelUsage")
+    return {
+        "total": state["totalCostUSD"],
+        "models": _model_usage_snapshot(model_usage)
+        if isinstance(model_usage, dict)
+        else {},
+    }
 
 
 def _workspace_is_tmpfs():
@@ -2468,6 +2556,9 @@ class ClaudeProcess:
         self.unparseable_lines = collections.deque(maxlen=5)
         self.stderr_lines = collections.deque(maxlen=5)
         self.parsed_events = collections.deque(maxlen=5)
+        # Cumulative cost ledger reported so far, by CLI session id. See
+        # _bill_from_baseline.
+        self._cost_baselines = {}
 
     def ready(self):
         with self.process_lock:
@@ -2543,6 +2634,7 @@ class ClaudeProcess:
             command.extend(["--effort", effort])
         if session_id:
             command.extend(["--resume", session_id])
+            self._seed_cost_baseline(spawn_workspace, session_id)
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         agent_mcp_configured = False
         if agent_mcp_url and _agent_mcp_endpoint_alive(agent_mcp_url):
@@ -2672,6 +2764,14 @@ class ClaudeProcess:
                     self.session_id = actual_session_id
                 elif session_id:
                     self.session_id = session_id
+                if not session_id and self.session_id:
+                    # A new session's ledger starts at zero. Record that now:
+                    # an interrupt before its first result is returned must
+                    # not let the respawn seed from a transcript total that
+                    # already holds the unreported spend.
+                    self.__dict__.setdefault("_cost_baselines", {}).setdefault(
+                        self.session_id, {"total": 0, "models": {}}
+                    )
                 self.model = model
                 self.effort = effort
                 self.system_prompt = system_prompt
@@ -2698,6 +2798,58 @@ class ClaudeProcess:
         self._close_process(kill=False)
         error_msg = "claude exited before init, exit code %s" % code
         raise RuntimeError(self._assemble_error_with_rings(error_msg))
+
+    def _seed_cost_baseline(self, workspace, session_id):
+        """Start a resumed session's baseline from its transcript's saved total.
+
+        Run before the CLI starts so a cost-state the live process writes
+        cannot be mistaken for the earlier total. An in-memory baseline always
+        wins: it also covers spend after the transcript's last cost-state.
+        """
+        baselines = self.__dict__.setdefault("_cost_baselines", {})
+        if session_id in baselines:
+            return
+        seed = _transcript_cost_state(workspace, session_id)
+        if seed is None:
+            sys.stderr.write(
+                "ember-claude-shim: no saved cost state for session %s, "
+                "billing its first result from a zero baseline\n" % session_id
+            )
+            sys.stderr.flush()
+            return
+        baselines[session_id] = seed
+
+    def _bill_from_baseline(self, record):
+        """Turn the CLI's cumulative cost into what this record adds (#6600).
+
+        total_cost_usd and modelUsage are running totals for the CLI session,
+        and a resume continues from the transcript's total, so the monolith
+        (which bills each record's cost as that turn's own) would otherwise
+        bill earlier spend again, as when a resumed CLI repeats an interrupted
+        turn's cost. The baseline is the total through the last result
+        returned from turn(). A result turn() skips and a result it never
+        read (an interrupt that leaves only _partial_turn) leave it alone, so
+        that spend lands in the next returned record exactly once. A total
+        below the baseline (a zeroed crash result) bills nothing and does not
+        lower the baseline.
+        """
+        cumulative = record.get("total_cost_usd")
+        if not _is_cost_number(cumulative):
+            return
+        baselines = self.__dict__.setdefault("_cost_baselines", {})
+        session_id = record.get("session_id") or self.session_id
+        baseline = baselines.get(session_id, {"total": 0, "models": {}})
+        record["cumulative_total_cost_usd"] = cumulative
+        record["total_cost_usd"] = max(0, cumulative - baseline["total"])
+        models = baseline["models"]
+        model_usage = record.get("modelUsage")
+        if isinstance(model_usage, dict):
+            record["modelUsage"] = _model_usage_delta(model_usage, models)
+            models = _model_usage_snapshot(model_usage)
+        baselines[session_id] = {
+            "total": max(cumulative, baseline["total"]),
+            "models": models,
+        }
 
     @staticmethod
     def _pump_stdout(process, output_queue):
@@ -3040,6 +3192,7 @@ class ClaudeProcess:
                         record["effort"] = getattr(self, "effort", None)
                         record["voice"] = voice_summary(event.get("result", ""))
                         record["activities"] = activity_from_events(events)
+                        self._bill_from_baseline(record)
                         _emit_elapsed(
                             "model", getattr(self, "_turn_timing_model_start", None)
                         )
