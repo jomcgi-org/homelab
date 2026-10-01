@@ -1,0 +1,41 @@
+# Disabled: drain.kg_queue_due starts flowing only after the drainer change
+# that stamps every drain.claim_job poll with drain.claim_outcome and
+# drain.kg_queue_due ships. Enable (set enabled: true) once the attribute is
+# confirmed present on drain.claim_job spans in the monolith-backend dataset.
+name: KG drain completed nothing in 60m with a due queue
+dataset: monolith-backend
+description: >-
+  Every idle drain.claim_job poll (about every 5-10 s per drain worker) carries
+  drain.kg_queue_due, the number of claimable kg-drain routine jobs, and
+  drain.claim_outcome, why it did not claim. Every finished job writes one
+  drain.finish_job span. kg_stall_score is -100000 per successful KG
+  completion (drain.job_name kg:* or kg-repo-diff, drain.status ok) and +1 per
+  poll that saw due KG work, so SUM > 60 over 60 minutes means the drainer kept
+  polling with KG jobs due and completed none. On 2026-10-01 03:43-07:00 the
+  rolling KG daily allowance was spent and every poll was refused silently
+  while about 1,000 jobs sat due; this fires on that shape. Check
+  drain.claim_outcome on the same spans for the reason. A drainer that stops
+  polling entirely writes nothing, and this trigger does not catch that.
+enabled: false
+frequency: 900
+alert_type: on_change
+threshold:
+  op: ">"
+  value: 60
+recipients: [kjEJr2qxxxe]
+tags:
+  service: monolith
+  signal: drain
+query:
+  time_range: 3600
+  calculated_fields:
+    - name: kg_stall_score
+      expression: >-
+        IF(AND(EQUALS($name, "drain.finish_job"), STARTS_WITH($drain.job_name, "kg"), EQUALS($drain.status, "ok")), -100000, IF(GT($drain.kg_queue_due, 0), 1, 0))
+  calculations:
+    - op: SUM
+      column: kg_stall_score
+  filters:
+    - column: name
+      op: in
+      value: [drain.claim_job, drain.finish_job]

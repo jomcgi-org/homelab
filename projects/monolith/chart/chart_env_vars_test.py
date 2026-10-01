@@ -273,6 +273,16 @@ def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
     )
 
 
+def test_drainer_lost_before_session_sweep_ships_staged_off(chart_context):
+    """The chart wires the drainer sweep gate without enabling it."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r'- name: DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED\n\s+value: "false"',
+        rendered,
+    )
+
+
 def test_repo_diff_reconcile_ships_default_off(chart_context):
     """The chart wires the reconcile gate without enabling the backfill."""
     rendered = chart_context["rendered"]

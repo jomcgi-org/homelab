@@ -188,6 +188,13 @@ agents:
     # Health advisories and logs are the default failure surface. Enable only
     # when each failed job should also ask for attention in Discord.
     notifyFailures: false
+    # Settle a drainer permit whose workflow ended (e.g. killed by a rollout)
+    # after reserve_start but before its session was created, and release
+    # that job's lease from the dead holder. Proof: permit reserved with no
+    # session row, owning DBOS workflow terminal for 10 minutes. Without it
+    # such a permit holds a KG slot and a daily-allowance unit forever
+    # (permit 10732, 2026-10-01).
+    lostBeforeSessionSweepEnabled: false
     # Jobs are deliberately serial so background work does not consume the
     # whole Luna lane. This only bounds how much backlog one tick may consume;
     # 15 makes a deep queue drain continuously (one cycle keeps claiming until

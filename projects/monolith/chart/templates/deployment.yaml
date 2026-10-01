@@ -239,6 +239,8 @@ spec:
               value: {{ .enabled | quote }}
             - name: DRAINER_NOTIFY_FAILURES
               value: {{ .notifyFailures | quote }}
+            - name: DRAINER_LOST_BEFORE_SESSION_SWEEP_ENABLED
+              value: {{ .lostBeforeSessionSweepEnabled | default false | quote }}
             - name: DRAINER_MAX_JOBS_PER_CYCLE
               value: {{ .maxJobsPerCycle | quote }}
             - name: DRAINER_TURN_TIMEOUT_SECONDS
