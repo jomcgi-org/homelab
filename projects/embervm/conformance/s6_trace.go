@@ -31,9 +31,10 @@ import (
 // The TLC leg runs only where the toolchain is configured (S6_TLC_JAVA,
 // S6_TLC_JAR, S6_TLC_SPEC_DIR all set). The dev-only runner image carries the
 // pinned JRE, tla2tools.jar and adoption_trace.tla under /opt/tla (BUILD
-// :tla_tar_amd64), inert until conformance.s6.enabled renders that env; any
-// run without it withholds the verdict as incomplete rather than claiming
-// anything about the window.
+// :tla_tar_amd64). conformance.s6.enabled renders that env together with a
+// /tmp emptyDir for the work dir and JVM-sized memory (chart values
+// conformance.s6); any run without the env withholds the verdict as
+// incomplete rather than claiming anything about the window.
 
 const (
 	s6ScenarioID      = "S6"
@@ -229,8 +230,7 @@ func runS6TLCWithOutput(ctx context.Context, cfg config, records []traceRecord) 
 	timeoutCtx, cancel := context.WithTimeout(ctx, s6TLCTimeoutSeconds*time.Second)
 	defer cancel()
 	// -XX:-UsePerfData: the JVM otherwise maps an hsperfdata file under
-	// /tmp, which the runner's read-only root filesystem may not offer; TLC
-	// needs no jstat counters.
+	// /tmp, the chart's size-limited emptyDir; TLC needs no jstat counters.
 	cmd := exec.CommandContext(timeoutCtx, cfg.tlcJava,
 		"-XX:+UseParallelGC",
 		"-XX:-UsePerfData",

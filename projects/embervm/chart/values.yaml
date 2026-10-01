@@ -509,13 +509,39 @@ conformance:
     s6: 60s
   # S6 TLC trace validation (#6415), staged default-off. Narrower than and
   # independent of conformance.enabled: the runner only appends the S6 scenario
-  # when this is true, and the S6 scenario itself withholds pass/incomplete
-  # unless TLC is wired (S6_TLC_* env, dev job context only). An operator flips
-  # this after the embervm-dev lane is confirmed stable; until then every
-  # environment, dev included, carries false.
+  # when this is true. Turning it on also renders the S6_TLC_* env pointing at
+  # the toolchain the image ships under /opt/tla, a /tmp emptyDir (the root
+  # filesystem stays read-only) and s6.resources in place of resources below.
+  # An operator flips this after the embervm-dev lane is confirmed stable;
+  # until then every environment, dev included, carries false.
   s6:
     enabled: false
     minTraceEvents: 4
+    # Must match tla_layer_mtree.sh and s6_tlc_image_test.go's constants.
+    tlc:
+      java: /opt/tla/jre/bin/java
+      jar: /opt/tla/tla2tools.jar
+      specDir: /opt/tla/specs
+      # `-workers auto` and the JVM's GC threads follow the node's CPU count,
+      # and the default heap is 25% of the memory limit. Pin both so the
+      # footprint does not scale with the node: 2 workers, heap capped at half
+      # the limit (384Mi of 768Mi), leaving the rest for the JVM's off-heap
+      # (TLC reserves 64MB for fingerprints) and the Go runner (~8MB).
+      javaToolOptions: "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=50"
+    # Holds one TLC work dir at a time; a run leaves a few KB.
+    tmpSizeLimit: 64Mi
+    # Measured with the pinned JRE and jar, runS6TLCWithOutput's flags and the
+    # javaToolOptions above: peak RSS 76MB on the 10-record pass window, 194MB
+    # at 250 records, 212MB at 500. A suite's live window is a few hundred
+    # records (recv_status every 2s per node, a checkpoint per 5s sweep). The
+    # pass window costs 1.1 CPU-seconds and 500 records 5.0, which a 50m share
+    # cannot finish inside budgets.s6 under contention; 250m can (20s).
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        memory: 768Mi
   resources:
     requests:
       cpu: 50m

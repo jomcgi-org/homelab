@@ -453,3 +453,40 @@ py_test(
     },
     deps = ["@pip//pyyaml"],
 )
+
+# S6's TLC wiring (#6415): renders the conformance runner with
+# conformance.s6.enabled off (unchanged from S1..S5) and on (S6_TLC_* env,
+# /tmp emptyDir, JVM-sized resources), and reads the in-image /opt/tla paths
+# from the layer's mtree script and image test so the two cannot drift.
+py_test(
+    name = "chart_conformance_s6_test",
+    srcs = ["chart_conformance_s6_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/conformance:s6_tlc_image_test.go",
+        "//projects/embervm/conformance:tla_layer_mtree.sh",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:deploy_values",
+        "//projects/embervm/dev/deploy:gke_values",
+        "//projects/embervm/dev/deploy:recovery_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "files/**/*",
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
+        "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
+        "S6_IMAGE_TEST": "$(rootpath //projects/embervm/conformance:s6_tlc_image_test.go)",
+        "S6_LAYER_MTREE": "$(rootpath //projects/embervm/conformance:tla_layer_mtree.sh)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

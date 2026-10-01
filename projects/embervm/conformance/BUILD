@@ -4,6 +4,16 @@ load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
+# The two files that define the /opt/tla layout, read by the chart's S6 test so
+# the chart's S6_TLC_* defaults cannot drift from the shipped layer.
+exports_files(
+    [
+        "s6_tlc_image_test.go",
+        "tla_layer_mtree.sh",
+    ],
+    visibility = ["//projects/embervm/chart:__pkg__"],
+)
+
 go_library(
     name = "conformance_lib",
     srcs = [
@@ -81,7 +91,8 @@ tar(
 # at /opt/tla/tla2tools.jar and the spec at /opt/tla/specs/adoption_trace.tla.
 # Inert unless the chart renders S6_TLC_JAVA, S6_TLC_JAR and S6_TLC_SPEC_DIR
 # (conformance.s6.enabled, false in every environment). Moving any path means
-# updating the chart's S6_TLC_* env in the same change. Every DT_NEEDED of the
+# updating conformance.s6.tlc in the chart's values.yaml and its template
+# defaults in the same change; chart_conformance_s6_test fails otherwise. Every DT_NEEDED of the
 # JRE's bin/java and the libraries TLC loads resolves from glibc and ld-linux
 # already in apko.lock.json; only the GUI and sound libraries (libawt_xawt,
 # libsplashscreen, libjsound) need X11 or ALSA, and headless TLC never loads

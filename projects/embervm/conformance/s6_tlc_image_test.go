@@ -25,7 +25,8 @@ import (
 )
 
 // The in-image layout the chart's S6_TLC_* env points at. Changing one means
-// changing tla_layer_mtree.sh and the chart in the same change.
+// changing tla_layer_mtree.sh and the chart in the same change; the chart's
+// chart_conformance_s6_test reads these constants to hold it to that.
 const (
 	s6TLCImageJava    = "opt/tla/jre/bin/java"
 	s6TLCImageJar     = "opt/tla/tla2tools.jar"
