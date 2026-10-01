@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from cluster import cd_health as mod
+from cluster import cd_leader
 
 
 def _iso(dt: datetime) -> str:
@@ -353,45 +356,153 @@ async def test_result_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_deployment_observations_are_default_off(monkeypatch):
+async def _run_cycle(monkeypatch, *, enabled, writer, timeout="0.05"):
+    """One cd_leader cycle with a healthy lag check; returns (events, probes)."""
+    mod._cache = None
     monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
-    monkeypatch.delenv("DEPLOYMENT_OBSERVATIONS_ENABLED", raising=False)
-    calls = []
+    if enabled:
+        monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_ENABLED", "true")
+    else:
+        monkeypatch.delenv("DEPLOYMENT_OBSERVATIONS_ENABLED", raising=False)
+    monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_TIMEOUT_S", timeout)
+    events: list = []
 
     async def _healthy(lag_s):
-        return True, []
+        return True, ["monolith: prod on 0.301.1, up to date"]
+
+    async def _probe(name, ok, detail):
+        events.append(("probe", name, ok, detail))
 
     async def _record(poll_time):
-        calls.append(poll_time)
+        await writer(events, poll_time)
 
     monkeypatch.setattr(mod, "_chart_lag_fault", _healthy)
     monkeypatch.setattr(mod, "_record_deployment_observations", _record)
+    monkeypatch.setattr(cd_leader, "write_probe", _probe)
+    await asyncio.wait_for(cd_leader._cycle(), 2.0)
+    return events
 
-    await mod.cd_health()
+
+def _probes(events):
+    return [e for e in events if e[0] == "probe"]
+
+
+@pytest.mark.asyncio
+async def test_hanging_writer_cannot_delay_or_change_the_probe(monkeypatch):
+    state = {"entered": False, "cancelled": False}
+
+    async def _hang(events, poll_time):
+        events.append(("observe",))
+        state["entered"] = True
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    events = await _run_cycle(monkeypatch, enabled=True, writer=_hang)
+    baseline = await _run_cycle(monkeypatch, enabled=False, writer=_hang)
+
+    assert [e[0] for e in events] == ["probe", "observe"]
+    assert state == {"entered": True, "cancelled": True}
+    assert _probes(events) == _probes(baseline)
+    assert _probes(events) == [
+        (
+            "probe",
+            "cd",
+            True,
+            "monolith: prod on 0.301.1, up to date"
+            "; ci check disabled: no GITHUB_API_TOKEN",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_raising_writer_leaves_probe_unchanged_and_warns(monkeypatch, caplog):
+    async def _boom(events, poll_time):
+        raise RuntimeError("embed exploded")
+
+    with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+        events = await _run_cycle(monkeypatch, enabled=True, writer=_boom)
+    baseline = await _run_cycle(monkeypatch, enabled=False, writer=_boom)
+
+    assert _probes(events) == _probes(baseline)
+    assert len(_probes(events)) == 1
+    assert "deployment observation cycle failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_timed_out_writer_logs_a_warning(monkeypatch, caplog):
+    async def _hang(events, poll_time):
+        await asyncio.Event().wait()
+
+    with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+        await _run_cycle(monkeypatch, enabled=True, writer=_hang)
+
+    assert "deployment observation cycle timed out after 0.05s" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_deployment_observations_are_default_off(monkeypatch):
+    calls = []
+
+    async def _record(events, poll_time):
+        calls.append(poll_time)
+
+    events = await _run_cycle(monkeypatch, enabled=False, writer=_record)
 
     assert calls == []
+    assert len(_probes(events)) == 1
 
 
 @pytest.mark.asyncio
 async def test_only_cache_misses_record_deployment_observations(monkeypatch):
+    calls = []
+
+    async def _record(events, poll_time):
+        calls.append(poll_time)
+
+    await _run_cycle(monkeypatch, enabled=True, writer=_record)
+    # Second cycle inside the 60 s TTL: _run_cycle resets the cache, so drive
+    # the leader cycle directly against the still-warm cache instead.
+    await asyncio.wait_for(cd_leader._cycle(), 2.0)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_returns_no_poll_time(monkeypatch):
     monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
-    monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_ENABLED", "true")
-    polls = []
 
     async def _healthy(lag_s):
         return True, []
 
-    async def _record(poll_time):
-        polls.append(poll_time)
-
     monkeypatch.setattr(mod, "_chart_lag_fault", _healthy)
-    monkeypatch.setattr(mod, "_record_deployment_observations", _record)
+    first, first_poll = await mod.cd_health_cycle()
+    second, second_poll = await mod.cd_health_cycle()
 
-    await mod.cd_health()
-    await mod.cd_health()
+    assert isinstance(first_poll, datetime)
+    assert second_poll is None
+    assert second == first
 
-    assert len(polls) == 1
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 120.0),
+        ("abc", 120.0),
+        ("0", 120.0),
+        ("-5", 120.0),
+        ("7.5", 7.5),
+    ],
+)
+def test_observation_timeout_s(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("DEPLOYMENT_OBSERVATIONS_TIMEOUT_S", raising=False)
+    else:
+        monkeypatch.setenv("DEPLOYMENT_OBSERVATIONS_TIMEOUT_S", raw)
+
+    assert mod._observation_timeout_s() == expected
 
 
 class _ObservationKubernetes:

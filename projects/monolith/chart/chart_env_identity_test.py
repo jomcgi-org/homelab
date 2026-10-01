@@ -1630,6 +1630,7 @@ def _startup_control_env(rendered):
     for name in (
         "CD_PROBE_ENABLED",
         "DEPLOYMENT_OBSERVATIONS_ENABLED",
+        "DEPLOYMENT_OBSERVATIONS_TIMEOUT_S",
         "HOME_OBSERVABILITY_PRIME_ENABLED",
         "MONOLITH_LEADER_SINGLETONS",
         "POD_RESTART_WATCH_ENABLED",
@@ -1668,6 +1669,7 @@ def test_default_startup_controls_remain_enabled():
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
     assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == "false"
+    assert env["DEPLOYMENT_OBSERVATIONS_TIMEOUT_S"]["value"] == "120"
     assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "true"
     assert env["POD_RESTART_WATCH_INTERVAL_S"]["value"] == "300"
     assert env["POD_RESTART_WATCH_NAMESPACES"]["value"] == "monolith-public"
@@ -1702,12 +1704,13 @@ def test_deployment_observation_gate_renders_independently(tmp_path, enabled):
     override = _write_values(
         tmp_path,
         "deployment-observations.yaml",
-        {"deploymentObservations": {"enabled": enabled}},
+        {"deploymentObservations": {"enabled": enabled, "timeoutSeconds": 45}},
     )
 
     env = _startup_control_env(_render("deployment-observations", [override]))
 
     assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == str(enabled).lower()
+    assert env["DEPLOYMENT_OBSERVATIONS_TIMEOUT_S"]["value"] == "45"
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
     assert env["POD_RESTART_WATCH_ENABLED"]["value"] == "true"
 
@@ -1725,6 +1728,23 @@ def test_deployed_startup_controls_remain_enabled(renders, tier):
 def recovery_gke_render():
     # Do not inherit production's restored DB or historical dev's leader mute.
     return _render("monolith-dev", [Path(os.environ["RECOVERY_GKE_VALUES"])])
+
+
+@pytest.mark.parametrize("tier", ["prod", "gke", "dev", "recovery-gke"])
+def test_deployment_observations_stay_off_with_a_bounded_cycle_everywhere(
+    renders, recovery_gke_render, tier
+):
+    rendered = recovery_gke_render if tier == "recovery-gke" else renders[tier]
+    env = _startup_control_env(rendered)
+
+    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == "false"
+    assert env["DEPLOYMENT_OBSERVATIONS_TIMEOUT_S"]["value"] == "120"
+    # The observation cycle runs after the latch write; its timeout plus the
+    # probe interval must stay under the public reader's staleness bound,
+    # home/module.py _CD_STALENESS_S (750.0).
+    timeout = int(env["DEPLOYMENT_OBSERVATIONS_TIMEOUT_S"]["value"])
+    interval = int(env["CD_PROBE_INTERVAL_S"]["value"])
+    assert timeout + interval < 750
 
 
 def test_recovery_gke_has_no_shared_control_or_external_owners(recovery_gke_render):

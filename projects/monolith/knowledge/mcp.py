@@ -201,6 +201,7 @@ async def search_knowledge(
     limit: int = 20,
     type: str | None = None,
     include_personal: bool = False,
+    include_deployment_observations: bool = False,
 ) -> dict:
     """Semantic search over the knowledge graph.
 
@@ -215,6 +216,9 @@ async def search_knowledge(
         include_personal: Explicitly include the caller's personal and legacy
             NULL-scoped notes. The verified principal must carry its exact
             ``personal:<subject>`` grant, and the attempt is durably audited.
+        include_deployment_observations: Include server-projected deployment
+            observation facts (one per app per cd poll). Hidden by default so
+            they cannot crowd ordinary knowledge out of the top results.
     """
     principal = current_principal()
     try:
@@ -255,6 +259,7 @@ async def search_knowledge(
             type_filter=type,
             scope_filters=authorization.scopes,
             include_unscoped=authorization.include_unscoped,
+            include_deployment_observations=include_deployment_observations,
         )
     return {"results": results}
 

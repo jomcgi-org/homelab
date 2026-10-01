@@ -5,6 +5,12 @@ in this app. The loop computes CD health with the checks in cd_health.py (which
 need ArgoCD reads and a GitHub token, both private-tier only) and writes the
 result to the platform_probe latch. The public tier reads that latch, because
 it is the tier UptimeRobot can reach and the tier that must not hold privilege.
+
+The default-off deployment observation writer runs in the same cycle but only
+AFTER the latch is written, and only on a fresh poll (a cache hit records
+nothing), bounded by DEPLOYMENT_OBSERVATIONS_TIMEOUT_S. The latch must never
+wait on it: its probe interval plus that timeout stays under the reader's
+staleness bound (home/module.py ``_CD_STALENESS_S``).
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ import asyncio
 import logging
 import os
 
-from cluster.cd_health import cd_health
+from cluster.cd_health import cd_health_cycle, run_deployment_observation_cycle
 from core.platform_probe import write_probe
 from framework import log_task_exception, register_leader_tasks
 
@@ -31,12 +37,19 @@ def _interval_s() -> float:
         return 300.0
 
 
+async def _cycle() -> None:
+    """One iteration: the latch first, then the bounded observation lane."""
+    result, poll_time = await cd_health_cycle()
+    await write_probe(PROBE_NAME, bool(result["ok"]), str(result["detail"]))
+    if poll_time is not None:
+        await run_deployment_observation_cycle(poll_time)
+
+
 async def _loop() -> None:
     interval = _interval_s()
     while True:
         try:  # nosemgrep: no-broad-except-swallow - a dead loop is worse, logged here
-            result = await cd_health()
-            await write_probe(PROBE_NAME, bool(result["ok"]), str(result["detail"]))
+            await _cycle()
         except asyncio.CancelledError:
             raise
         except Exception:

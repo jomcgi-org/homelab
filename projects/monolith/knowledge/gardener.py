@@ -36,7 +36,7 @@ def merge_clones(
 
     from knowledge.clones import clone_clusters
     from knowledge.models import AtomRawProvenance, Chunk, Note, NoteLink
-    from knowledge.store import open_dispute_note_ids
+    from knowledge.store import DEPLOYMENT_OBSERVATION_SOURCE, open_dispute_note_ids
 
     statement = (
         select(Note)
@@ -47,6 +47,13 @@ def merge_clones(
             or_(
                 Note.valid_until.is_(None),
                 Note.valid_until > datetime.now(timezone.utc),
+            ),
+            # Observations are identical by construction (same app, versions)
+            # and each is an immutable point-in-time record: merging clones
+            # would invalidate history. NULL-safe, a plain != drops NULL source.
+            or_(
+                Note.source.is_(None),
+                Note.source != DEPLOYMENT_OBSERVATION_SOURCE,
             ),
         )
         .order_by(Note.id)

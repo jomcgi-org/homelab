@@ -248,6 +248,7 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
         include_unscoped=False,
         exclude_invalidated=False,
         include_legacy=False,
+        include_deployment_observations=False,
     )
     detail = KnowledgeStore(session).get_note_by_id("scoped")
     assert detail is not None
@@ -433,3 +434,45 @@ def test_personal_audit_migration_enforces_retention_and_least_privilege():
     assert ") ON TABLE knowledge.personal_retrieval_audit" in migration
     assert "GRANT SELECT" not in migration
     assert "GRANT DELETE" not in migration
+
+
+_OBSERVATION_PREDICATE = (
+    "knowledge.notes.source IS NULL OR knowledge.notes.source != %(source_1)s"
+)
+
+
+def _compiled_rank_sql(**kwargs):
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []
+    _rank_search_chunks(session, [0.0] * 1024, 2, None, **kwargs)
+    return session.execute.call_args.args[0].compile(dialect=postgresql.dialect())
+
+
+def _compiled_search_notes_sql(**kwargs):
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []
+    KnowledgeStore(session).search_notes([0.0] * 1024, limit=2, **kwargs)
+    return session.execute.call_args.args[0].compile(dialect=postgresql.dialect())
+
+
+@pytest.mark.parametrize(
+    "compile_sql", [_compiled_rank_sql, _compiled_search_notes_sql]
+)
+def test_default_search_hides_deployment_observations_before_the_limit(compile_sql):
+    compiled = compile_sql()
+    sql = str(compiled)
+
+    assert _OBSERVATION_PREDICATE in sql
+    # NULL-source notes must survive: a bare != would drop them in SQL.
+    assert sql.index("WHERE") < sql.index(_OBSERVATION_PREDICATE) < sql.index("LIMIT")
+    assert "deployment-observation" in compiled.params.values()
+
+
+@pytest.mark.parametrize(
+    "compile_sql", [_compiled_rank_sql, _compiled_search_notes_sql]
+)
+def test_deployment_observation_opt_in_omits_the_source_predicate(compile_sql):
+    compiled = compile_sql(include_deployment_observations=True)
+
+    assert "knowledge.notes.source" not in str(compiled)
+    assert "deployment-observation" not in compiled.params.values()

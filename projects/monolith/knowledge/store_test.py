@@ -391,6 +391,7 @@ class TestSearchNotes:
 @pytest.mark.parametrize("scope_filter", [None, "repo:jomcgi-org/homelab"])
 @pytest.mark.parametrize("exclude_invalidated", [False, True])
 @pytest.mark.parametrize("include_legacy", [False, True])
+@pytest.mark.parametrize("include_deployment_observations", [False, True])
 def test_context_search_forwards_all_ranking_filters(
     store,
     session,
@@ -398,6 +399,7 @@ def test_context_search_forwards_all_ranking_filters(
     scope_filter,
     exclude_invalidated,
     include_legacy,
+    include_deployment_observations,
 ):
     calls = []
 
@@ -413,6 +415,7 @@ def test_context_search_forwards_all_ranking_filters(
             scope_filter=scope_filter,
             exclude_invalidated=exclude_invalidated,
             include_legacy=include_legacy,
+            include_deployment_observations=include_deployment_observations,
         )
         == []
     )
@@ -426,6 +429,7 @@ def test_context_search_forwards_all_ranking_filters(
                 "include_unscoped": False,
                 "exclude_invalidated": exclude_invalidated,
                 "include_legacy": include_legacy,
+                "include_deployment_observations": include_deployment_observations,
             },
         )
     ]

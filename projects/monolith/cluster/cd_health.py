@@ -50,6 +50,7 @@ which is when it starts to matter.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -529,11 +530,63 @@ def _evaluate_ci(
     )
 
 
+_OBSERVATION_TIMEOUT_DEFAULT_S = 120.0
+
+
+def _observation_timeout_s() -> float:
+    """Bound on one observation cycle, from DEPLOYMENT_OBSERVATIONS_TIMEOUT_S."""
+    timeout_s = _env_seconds(
+        "DEPLOYMENT_OBSERVATIONS_TIMEOUT_S", _OBSERVATION_TIMEOUT_DEFAULT_S
+    )
+    if timeout_s <= 0:
+        logger.warning(
+            "deployment observation: non-positive "
+            "DEPLOYMENT_OBSERVATIONS_TIMEOUT_S=%s, using %s",
+            timeout_s,
+            _OBSERVATION_TIMEOUT_DEFAULT_S,
+        )
+        return _OBSERVATION_TIMEOUT_DEFAULT_S
+    return timeout_s
+
+
+async def run_deployment_observation_cycle(poll_time: datetime) -> None:
+    """Write this poll's deployment observations, bounded and fully isolated.
+
+    Default off (DEPLOYMENT_OBSERVATIONS_ENABLED). Runs AFTER the cd probe
+    latch is written, under a timeout, so a slow GitHub lookup or an embedding
+    retry can never delay the latch past the public reader's staleness bound.
+    Failures and timeouts are logged and never touch the cd result.
+    """
+    if not _env_enabled("DEPLOYMENT_OBSERVATIONS_ENABLED"):
+        return
+    timeout_s = _observation_timeout_s()
+    try:  # nosemgrep: no-broad-except-swallow - isolated observation lane
+        await asyncio.wait_for(
+            _record_deployment_observations(poll_time), timeout=timeout_s
+        )
+    except asyncio.CancelledError:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning("deployment observation cycle timed out after %ss", timeout_s)
+    except Exception:  # noqa: BLE001
+        logger.warning("deployment observation cycle failed", exc_info=True)
+
+
 async def cd_health() -> dict:
     """The advisory ``cd`` health component, plus the existing CI signal."""
+    result, _poll_time = await cd_health_cycle()
+    return result
+
+
+async def cd_health_cycle() -> tuple[dict, datetime | None]:
+    """The cd result plus the poll time, or ``None`` on a cache hit.
+
+    The poll time is the caller's cue to run the observation lane: only a
+    cache miss is a fresh poll, so a cache hit must not record anything.
+    """
     global _cache
     if _cache is not None and (time.monotonic() - _cache[0]) < _CACHE_TTL_S:
-        return _cache[1]
+        return _cache[1], None
 
     poll_time = datetime.now(timezone.utc)
     lag_s = _env_seconds("CD_HEALTH_CHART_LAG_S", 7200.0)
@@ -554,15 +607,6 @@ async def cd_health() -> dict:
             ok = False
         details.extend(lag_details)
 
-    # This writer is a separate, default-off lane. Its failures never change
-    # the advisory health result, and the cache guard above ensures cache hits
-    # cannot create observations.
-    if _env_enabled("DEPLOYMENT_OBSERVATIONS_ENABLED"):
-        try:  # nosemgrep: no-broad-except-swallow - isolated observation lane
-            await _record_deployment_observations(poll_time)
-        except Exception:  # noqa: BLE001
-            logger.warning("deployment observation cycle failed", exc_info=True)
-
     if not os.environ.get("GITHUB_API_TOKEN", ""):
         details.append("ci check disabled: no GITHUB_API_TOKEN")
     else:
@@ -578,4 +622,4 @@ async def cd_health() -> dict:
 
     result = {"ok": ok, "detail": "; ".join(details) if details else "cd ok"}
     _cache = (time.monotonic(), result)
-    return result
+    return result, poll_time

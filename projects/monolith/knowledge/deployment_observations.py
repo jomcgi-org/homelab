@@ -24,11 +24,14 @@ import yaml
 from knowledge.indexing import chunk_texts_for_raw, index_note_from_raw_sync
 from knowledge.models import AtomRawProvenance, Note, RawInput
 from knowledge.raw_write import persist_raw_with_status
-from knowledge.store import KnowledgeStore, provenance_for_notes
+from knowledge.store import (
+    DEPLOYMENT_OBSERVATION_SOURCE,
+    KnowledgeStore,
+    provenance_for_notes,
+)
 from shared.embedding import EmbeddingClient
 
 DEPLOYMENT_OBSERVATION_SCOPE = "environment:homelab"
-DEPLOYMENT_OBSERVATION_SOURCE = "deployment-observation"
 DEPLOYMENT_OBSERVATION_VERSION = "deployment-observation/v1"
 VALIDITY_MULTIPLIER = 2.5
 

@@ -176,6 +176,30 @@ class TestSearchKnowledge:
             type_filter=None,
             scope_filters=DEFAULT_SCOPES,
             include_unscoped=False,
+            include_deployment_observations=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deployment_observations_opt_in_is_forwarded(self):
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+
+        with (
+            patch("knowledge.mcp.Session", return_value=MagicMock()),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            await search_knowledge("attention", include_deployment_observations=True)
+
+        MockStore.return_value.search_notes_with_context.assert_called_once_with(
+            query_embedding=FAKE_EMBEDDING,
+            limit=20,
+            type_filter=None,
+            scope_filters=DEFAULT_SCOPES,
+            include_unscoped=False,
+            include_deployment_observations=True,
         )
 
     @pytest.mark.asyncio
@@ -209,6 +233,7 @@ class TestSearchKnowledge:
                 type_filter="paper",
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
+                include_deployment_observations=False,
             )
 
     @pytest.mark.asyncio
@@ -298,6 +323,7 @@ class TestSearchKnowledge:
             type_filter=None,
             scope_filters=DEFAULT_SCOPES,
             include_unscoped=False,
+            include_deployment_observations=False,
         )
 
     @pytest.mark.asyncio
@@ -327,6 +353,7 @@ class TestSearchKnowledge:
             type_filter=None,
             scope_filters=(*DEFAULT_SCOPES, "personal:agent@example.com"),
             include_unscoped=True,
+            include_deployment_observations=False,
         )
 
     @pytest.mark.asyncio

@@ -152,6 +152,30 @@ async def test_active_as_of_excludes_expiry_but_history_keeps_overlaps(session):
     )
 
 
+@pytest.mark.asyncio
+async def test_expired_observation_is_history_but_not_active(session):
+    """Hiding observations from search must not hide them from this reader."""
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    await _persist(session, _observation(poll_time))
+    expiry = poll_time + timedelta(seconds=750)
+
+    history = list_deployment_observations(session)
+    before_expiry = list_deployment_observations(
+        session, active_as_of=expiry - timedelta(seconds=1)
+    )
+    after_expiry = list_deployment_observations(
+        session, active_as_of=expiry + timedelta(seconds=1)
+    )
+
+    assert len(history) == 1
+    assert history[0]["valid_until"].replace(tzinfo=timezone.utc) == expiry
+    assert history[0]["valid_until"].replace(tzinfo=timezone.utc) < datetime.now(
+        timezone.utc
+    )
+    assert len(before_expiry) == 1
+    assert after_expiry == []
+
+
 def test_payload_allowlist_rejects_telemetry_fields():
     poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
     observation = _observation(poll_time)
@@ -211,6 +235,63 @@ async def test_async_wrapper_writes_off_loop_and_embeds_only_new_facts(session):
     assert write_threads and loop_thread not in write_threads
     session.expire_all()
     assert len(session.exec(select(Note)).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_event_loop_never_holds_or_uses_a_session(session):
+    """Every Session open, commit and upload runs off the loop, none spans embed."""
+    import threading
+
+    engine = session.get_bind()
+    poll_time = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    loop_thread = threading.get_ident()
+    state = {"open": 0}
+    session_threads = []
+    upload_threads = []
+    embed = []
+
+    class _RecordingSession(Session):
+        def __enter__(self):
+            state["open"] += 1
+            session_threads.append(("enter", threading.get_ident()))
+            return super().__enter__()
+
+        def commit(self):
+            session_threads.append(("commit", threading.get_ident()))
+            return super().commit()
+
+        def __exit__(self, *exc):
+            state["open"] -= 1
+            return super().__exit__(*exc)
+
+    def _upload(*_args, **_kwargs):
+        upload_threads.append(threading.get_ident())
+
+    class _SpyEmbedder:
+        async def embed_batch(self, texts):
+            embed.append((state["open"], threading.get_ident()))
+            return [[0.0] * 1024 for _ in texts]
+
+    with (
+        patch("knowledge.deployment_observations.Session", _RecordingSession),
+        patch("knowledge.raw_write.upload_raw", _upload),
+        patch("knowledge.deployment_observations.EmbeddingClient", _SpyEmbedder),
+    ):
+        result = await persist_deployment_observation(
+            _observation(poll_time), engine=engine
+        )
+
+    assert result.fact_created
+    # No Session may be open while the embedding call awaits on the loop.
+    assert len(embed) == 1
+    assert embed[0][0] == 0
+    assert state["open"] == 0
+    enters = [t for kind, t in session_threads if kind == "enter"]
+    commits = [t for kind, t in session_threads if kind == "commit"]
+    assert len(enters) >= 2
+    assert commits
+    assert loop_thread not in enters + commits
+    assert upload_threads and loop_thread not in upload_threads
 
 
 @pytest.mark.asyncio

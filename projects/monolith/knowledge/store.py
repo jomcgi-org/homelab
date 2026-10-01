@@ -185,6 +185,20 @@ def _entities_for_note_ids(
     return grouped
 
 
+# Source stamped on server-projected deployment observations. Defined here, not
+# imported from knowledge.deployment_observations, which imports this module
+# (and drags embedding and raw-write deps into every store importer).
+DEPLOYMENT_OBSERVATION_SOURCE = "deployment-observation"
+
+
+def _not_deployment_observation():
+    """NULL-safe: a plain ``source !=`` would drop every NULL-source note."""
+    return or_(
+        Note.source.is_(None),
+        Note.source != DEPLOYMENT_OBSERVATION_SOURCE,
+    )
+
+
 def _rank_search_chunks(
     session: Session,
     query_embedding: list[float],
@@ -194,6 +208,7 @@ def _rank_search_chunks(
     include_unscoped: bool = False,
     exclude_invalidated: bool = False,
     include_legacy: bool = False,
+    include_deployment_observations: bool = False,
 ) -> list[tuple[int, int, float]]:
     """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
     distance = Chunk.embedding.cosine_distance(query_embedding)
@@ -224,6 +239,8 @@ def _rank_search_chunks(
                 Note.verification_state != "legacy",
             )
         )
+    if not include_deployment_observations:
+        notes_stmt = notes_stmt.where(_not_deployment_observation())
     if exclude_invalidated:
         notes_stmt = notes_stmt.where(
             Note.valid_until.is_(None),
@@ -503,6 +520,7 @@ class KnowledgeStore:
         query_embedding: list[float],
         limit: int = 5,
         exclude_ids: list[str] | None = None,
+        include_deployment_observations: bool = False,
     ) -> list[dict]:
         """Semantic search over notes using cosine similarity.
 
@@ -512,7 +530,9 @@ class KnowledgeStore:
         penalised by chunk length to downrank ultra-short stubs.
 
         Soft-deleted notes (``deleted_at IS NOT NULL``) are excluded —
-        their content should not surface in search after a delete.
+        their content should not surface in search after a delete. Deployment
+        observations are hidden unless ``include_deployment_observations``;
+        the filter is in the SQL, before the limit.
         """
         distance = Chunk.embedding.cosine_distance(query_embedding)
         len_penalty = func.least(
@@ -539,6 +559,8 @@ class KnowledgeStore:
 
         if exclude_ids:
             stmt = stmt.where(Note.note_id.notin_(exclude_ids))
+        if not include_deployment_observations:
+            stmt = stmt.where(_not_deployment_observation())
 
         rows = self.session.execute(stmt).all()
         return [
@@ -562,6 +584,7 @@ class KnowledgeStore:
         exclude_invalidated: bool = False,
         include_embeddings: bool = False,
         include_legacy: bool = False,
+        include_deployment_observations: bool = False,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -571,7 +594,8 @@ class KnowledgeStore:
         1. Top-N notes ranked by ``best_score = 1 - min(cosine_distance)``
            across their chunks, with optional note filters applied before the
            ranking limit. Legacy notes are excluded unless ``include_legacy``
-           is explicitly enabled.
+           is explicitly enabled, and deployment observations unless
+           ``include_deployment_observations`` is.
         2. A single batched ``SELECT DISTINCT ON (note_fk)`` to pick the
            best-matching chunk per top-N note, with no N+1.
 
@@ -592,6 +616,7 @@ class KnowledgeStore:
             include_unscoped=include_unscoped,
             exclude_invalidated=exclude_invalidated,
             include_legacy=include_legacy,
+            include_deployment_observations=include_deployment_observations,
         )
         if not ranked:
             return []
