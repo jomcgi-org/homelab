@@ -1823,9 +1823,9 @@ bricks:
     # is the bootstrap ceiling; sustained workload-attributed denials may raise
     # it one step at a time only up to ceilingBound. Missing or zero means the
     # feature is disabled for that class and preserves the fixed maxReplicas
-    # behavior. This repository ships every class disabled. A later canary is a
-    # reviewed values-only change for one explicitly selected non-production
-    # class.
+    # behavior. Chart defaults and production keep every class disabled. The
+    # hub dev overlay stages only 4gi with bound 1 in full mode; operational
+    # acceptance remains on #5505.
     ceilingBound: {}
     # Once replica-level drain has safely brought a dynamically raised class to
     # zero live replicas, keep its raised ceiling for one quiet hour before
