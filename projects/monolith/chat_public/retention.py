@@ -125,7 +125,8 @@ def purge_expired(session: Session, now: datetime | None = None) -> PurgeReport:
                 "SELECT s.id FROM chat_public.sessions s "
                 "WHERE s.last_seen_at < :cutoff "
                 "AND NOT EXISTS (SELECT 1 FROM chat_public.shared_snapshots n "
-                "WHERE n.source_session_id = s.id)"
+                "WHERE n.source_session_id = s.id) "
+                "FOR UPDATE OF s"
             ),
             {"cutoff": session_cutoff},
         ).scalars()

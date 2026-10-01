@@ -194,9 +194,11 @@ def test_takedown_matching_nothing_still_writes_zero_audit_row(db):
 def test_retention_deletes_idle_keeps_recent_and_shared(db):
     idle = _uid("idle31")
     recent = _uid("idle29")
+    edge = _uid("idle30")
     shared = _uid("shared")
     _session(db, idle, idle_days=31, messages=2)
     _session(db, recent, idle_days=29, messages=1)
+    _session(db, edge, idle_days=30, messages=1)
     _session(db, shared, idle_days=31, messages=1)
     snap = _uid("snap")
     _snapshot(db, snap, shared, age_days=100)
@@ -208,6 +210,8 @@ def test_retention_deletes_idle_keeps_recent_and_shared(db):
     assert _count(db, "messages", "session_id", idle) == 0
     assert _count(db, "sessions", "id", recent) == 1
     assert _count(db, "messages", "session_id", recent) == 1
+    assert _count(db, "sessions", "id", edge) == 1
+    assert _count(db, "messages", "session_id", edge) == 1
     assert _count(db, "sessions", "id", shared) == 1
     assert _count(db, "shared_snapshots", "id", snap) == 1
     assert report.action == "retention"
@@ -238,11 +242,11 @@ def test_retention_deletes_expired_snapshot_and_its_idle_session_together(db):
     assert report.snapshots_deleted >= 1
 
 
-def test_snapshot_just_inside_window_is_kept(db):
+def test_snapshot_exactly_at_window_is_kept(db):
     sid = _uid("edge")
     snap = _uid("snap-edge")
     _session(db, sid, idle_days=400)
-    _snapshot(db, snap, sid, age_days=364)
+    _snapshot(db, snap, sid, age_days=365)
 
     retention.purge_expired(db, now=NOW)
 
