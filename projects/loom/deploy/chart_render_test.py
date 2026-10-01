@@ -3,6 +3,7 @@
 import os
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -39,6 +40,31 @@ def render(values_path):
 @pytest.fixture(scope="module")
 def rendered():
     return render(DEPLOY / "values.yaml")
+
+
+def test_default_probe_matches_the_query_api_service(rendered):
+    values_path = Path(
+        os.environ.get(
+            "LOOM_MONITORING_VALUES",
+            str(DEPLOY.parents[2] / "projects/platform/otel-collector/values.yaml"),
+        )
+    )
+    monitoring = yaml.safe_load(values_path.read_text())["loom"]
+    assert monitoring["enabled"] is False
+    endpoint = urlsplit(monitoring["probeEndpoint"])
+    assert endpoint.scheme == "http"
+    assert endpoint.path == "/docs"
+    assert endpoint.hostname == f"loom-query-api.{monitoring['namespace']}.svc"
+    service = next(
+        d
+        for d in rendered
+        if d["kind"] == "Service" and d["metadata"]["name"] == "loom-query-api"
+    )
+    # Helm assigns --namespace loom to resources without an explicit namespace.
+    assert service["metadata"].get("namespace", "loom") == monitoring["namespace"]
+    assert endpoint.port == 8080
+    assert any(p["port"] == endpoint.port for p in service["spec"]["ports"])
+    assert not any(d["kind"] == "NetworkPolicy" for d in rendered)
 
 
 def containers(documents):
