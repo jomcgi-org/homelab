@@ -712,8 +712,7 @@ export function filterTasks(tasks, filters) {
   const by = {
     newest: (a, b) => stamp(b).localeCompare(stamp(a)),
     oldest: (a, b) => stamp(a).localeCompare(stamp(b)),
-    spend: (a, b) =>
-      (Number(b.committed_cost_usd) || 0) - (Number(a.committed_cost_usd) || 0),
+    spend: (a, b) => (Number(b.cost_usd) || 0) - (Number(a.cost_usd) || 0),
     time: (a, b) => elapsedOf(b) - elapsedOf(a),
   }[filters.sort ?? "newest"];
   return kept.sort(by);
