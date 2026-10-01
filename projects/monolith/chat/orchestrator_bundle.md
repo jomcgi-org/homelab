@@ -114,6 +114,7 @@ Top-level projects/ directories:
 - gke-cluster
 - home-cluster
 - inference
+- loom
 - mcp
 - model-bench
 - monolith
