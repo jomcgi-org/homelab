@@ -1420,14 +1420,18 @@ allowance, and changes to either value must keep the pair consistent.
 (see: /projects/monolith/factory/orchestration/health.py)
 (see: /projects/monolith/chart/values.yaml)
 
-Each Bazel, pages or Postgres probe run has an independent `ember.probe.<demo>`
-root span with final `ember.probe.demo`, `ember.probe.ok`, `ember.probe.retries`
-and bounded `ember.probe.detail` attributes. Each attempt is a current child
-span with separate `ember.probe.attempt.*` attributes; retry delays sit outside
-those children. The Honeycomb `ember-demo-probe-failed.yaml` trigger counts
-failed root outcomes in `monolith-backend`, grouped by demo and trace ID, over
-an hour every 15 minutes. A recovered retry cannot match its final-failure
-filter. Probe outcomes use spans; no OTLP probe metric is emitted.
+Each Bazel, pages, Postgres, Codex or Spark probe run has an independent
+`ember.probe.<demo>` root span with final `ember.probe.demo`, `ember.probe.ok`
+and bounded `ember.probe.detail` attributes (ERROR status on failure), set by
+one helper shared by the retrying and session probes. Retrying probes also set
+`ember.probe.retries` and give each attempt a current child span with separate
+`ember.probe.attempt.*` attributes; retry delays sit outside those children.
+The Honeycomb `ember-demo-probe-failed.yaml` trigger counts failed root outcomes
+in `monolith-backend`, grouped by demo and trace ID, over an hour every 15
+minutes. A recovered retry cannot match its final-failure
+filter. The trigger uses `on_change`, so it notifies once while open and a
+second component failing in the same window sends no new notification. Probe
+outcomes use spans; no OTLP probe metric is emitted.
 (see: /projects/monolith/ember_public/synthetic_probe.py)
 (see: /projects/platform/honeycomb/triggers/ember-demo-probe-failed.yaml)
 
