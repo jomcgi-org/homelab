@@ -198,9 +198,10 @@ Trace admission is deny-by-default by construction. With an empty `allowedServic
 
 The metrics pipeline accepts the `http_check` receiver only: both overlays probe
 `https://jomcgi.dev/health` and `https://jomcgi.dev/`. The hub's Argo CD in-cluster
-target is live with its self-signed serving leaf pinned per #6542. The
-certificate expires 2027-08-30 and must be re-pinned from `argocd-secret`
-`tls.crt` before then. Arbitrary OTLP metrics are never accepted.
+target is live with Argo CD's self-signed serving leaf pinned in
+`values-gke.yaml` per #6542. The certificate expires 2027-08-30 and must be
+re-pinned from the `argocd` namespace's `argocd-secret` key `tls.crt` before
+then. Arbitrary OTLP metrics are never accepted.
 
 UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator is installed at home only and renders no `Instrumentation` resources. There is no in-repository trace query surface; the retired private waterfall is not being restored.
 
@@ -240,7 +241,8 @@ self-signed serving leaf preserves TLS verification without
 `insecure_skip_verify` and leaves `server.insecure` false. With both
 `httpcheck.enabled` and `httpcheck.caMount.enabled` on, rendering fails if
 `httpcheck.caMount.caCert` is empty, null or whitespace-only. Turning the CA
-mount off is not guarded: the enabled target still renders with `tls.ca_file`,
+mount off is not guarded: `httpcheck.caMount.enabled: false` still renders the
+enabled target with `tls.ca_file: /etc/otel/argocd-ca/ca.crt`,
 and the missing file fails probes and risks the collector failing to start,
 stopping traces and metrics export. The absence trigger exists because a
 disabled or dead probe makes the composite trigger silent by design (it
