@@ -2735,7 +2735,10 @@ def mark_turn_error_sync(
 
 def executor_not_invoked_record_enabled() -> bool:
     """Staged control: a cancelled executor that never POSTed records not_invoked."""
-    return os.getenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "false").lower() == "true"
+    return (
+        os.getenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "false").lower()
+        == "true"
+    )
 
 
 def mark_turn_interrupted_sync(

@@ -1696,9 +1696,7 @@ def test_never_invoked_settlement_refuses_a_session_with_a_receipt(never_invoked
         {"session_id": "another-guest"},
     ],
 )
-def test_never_invoked_settlement_requires_the_exact_idle_guest(
-    never_invoked, change
-):
+def test_never_invoked_settlement_requires_the_exact_idle_guest(never_invoked, change):
     pid = seed(never_invoked, "never-exact", tier="kg")
     original = before(never_invoked, pid)
     sweep(_never_invoked_view("guest-never-exact", **change))
