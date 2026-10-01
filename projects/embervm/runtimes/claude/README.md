@@ -207,6 +207,52 @@ can run. Same reasoning as the control-plane image. To add arm64 later, set
 CLI hard-requires the loader and a changed transitive edge would break the guest
 silently.
 
+## Factory toolchains (#6642)
+
+The factory retro found ~26% of sessions bootstrapping a toolchain (`pip install
+pytest`, downloading helm or Go) before doing any work, so the tools the repo's
+own validation needs ship in the base. A fresh factory session should use them
+instead of installing its own.
+
+| Tool | apko package | Why this stream |
+|------|--------------|-----------------|
+| helm | `helm-3` | The repo pins helm 3.16.4 (`bazel/tools/tools.lock.json`); Wolfi's plain `helm` is 4.x. Wolfi only carries 3.19.x, so this is the nearest 3 release, not an exact match. |
+| go | `go-1.26` | `go.mod` says `go 1.26.0` with no toolchain line, so the packaged 1.26.x needs no toolchain download. |
+| node | `nodejs-20` | Matches the Bazel node toolchain (`node.toolchain` 20.19.0 in `MODULE.bazel`). The monolith frontend image runs `nodejs-22`; nothing in a session builds it. |
+| pnpm | `pnpm~10` | Matches `pnpm_version` 10.34.5 in `MODULE.bazel`. A bare `pnpm` resolves to the pnpm 11 provider, which wants Node >= 22.13. |
+| pytest, yaml | `py3.12-pytest`, `py3.12-pyyaml` | Repo tests are pytest and import `yaml` almost everywhere. System packages for the image's `python-3.12`. |
+
+`toolchain_guard_test.py` pins the package names, the lock resolution (helm 3.x,
+go 1.26.x, node 20.x, pnpm 10.x for x86_64), the lock checksum against
+`apko.yaml`, and the PATH dependency below.
+
+**PATH dependency.** guest-init forces `PATH=/usr/bin:/bin:/usr/local/bin`
+(`setDefaultEnv`), and each package installs its executable under `/usr/bin`
+(`helm`, `go`, `node`, `pnpm`). The guard test asserts `/usr/bin` stays in that
+literal; a PATH without it leaves every tool above installed but unreachable.
+
+**Known limitations.**
+
+- A full `bazel/requirements/all.txt` venv is out of scope: it is 274 pins
+  including opencv, onnxruntime and rasterio, and targets Python 3.13 while the
+  guest ships 3.12. Only pytest and pyyaml are shipped, as system packages.
+- No C toolchain is shipped, so cgo packages need `CGO_ENABLED=0` or a bootstrap.
+- Versions are whatever Wolfi resolved at relock time (see `apko.lock.json`), not
+  the exact Bazel-pinned versions.
+
+**Measured, not guarded** (from the Wolfi APKINDEX `I:` field at relock time):
+the resolved package set grew from about 152 MB to about 532 MB installed, a
+delta of about 380 MB. `go-1.26` is 186 MB, `helm-3` 60 MB, `nodejs-20` 58 MB (plus
+`icu78-data-full` 33 MB), `pnpm` 9 MB, pytest and its dependencies about 15 MB.
+The glibc bump from 2.43 to 2.44 is included in that delta. Against the ~1.1 GB the
+guest root used before, that is about 1.5 GB, well under `rootfsBuilder.rootfsSize`
+of 4G. This is a package-size estimate, not a measurement of a built rootfs.
+
+The pi runtime deliberately diverges: it is the lean pi-spark rollback harness,
+does not need these, and its lock is not re-resolved by this change. The
+divergence is recorded in `EXPECTED_DIVERGENCE` in
+`../pi/package_parity_test.py`.
+
 ## Guest configuration that is easy to miss
 
 - **Workspace trust** is pre-seeded at `/home/runtime/.claude.json` keyed by the
