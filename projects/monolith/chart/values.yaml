@@ -1868,6 +1868,9 @@ swarm:
 grimoire:
   authentikBaseUrl: "http://authentik-server.authentik:80"
   enabled: false
+  play:
+    # Play routes stay off until the complete play surface is ready (#6612).
+    enabled: false
   s3Bucket: "grimoire"
   # Default extraction model (spec #5): DeepSeek V4 Flash via OpenRouter, with
   # reasoning disabled per call in code. deploy/values.yaml can repoint this at

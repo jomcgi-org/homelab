@@ -661,6 +661,8 @@ spec:
               value: {{ .Values.artifact.publicBase | quote }}
             {{- end }}
             {{- end }}
+            - name: GRIMOIRE_PLAY_ENABLED
+              value: {{ .Values.grimoire.play.enabled | quote }}
             {{- if .Values.grimoire.enabled }}
             # Grimoire D&D ingest pipeline (private tier only; spec
             # the grimoire pg-first design, section 4.3). The S3

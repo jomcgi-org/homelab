@@ -6367,6 +6367,32 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_session_events_test",
+    srcs = ["grimoire/session_events_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_library(
+    name = "grimoire_session_events_test_data",
+    data = ["grimoire/wipe/truncate_derived_tables.sql"],
+)
+
+bdd_test(
+    name = "grimoire_session_events_postgres_test",
+    srcs = ["grimoire/session_events_postgres_test.py"],
+    deps = [":grimoire_session_events_test_data"],
+)
+
+py_test(
     name = "grimoire_models_test",
     srcs = ["grimoire/models_test.py"],
     imports = ["."],

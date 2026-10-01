@@ -1,0 +1,264 @@
+"""Real migrations, row-lock concurrency, rollback, and private-child lifecycle."""
+
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import delete, event, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.pool import NullPool
+from sqlmodel import Session, create_engine, select
+
+from grimoire.audience import Audience
+from grimoire.models import (
+    AppUser,
+    Campaign,
+    CampaignMember,
+    GameSession,
+    PlayerCharacter,
+    SessionEvent,
+)
+from grimoire.session_events import append_event
+
+
+@pytest.fixture
+def lane(pg):
+    engine = create_engine(pg.url, poolclass=NullPool)
+    with Session(engine) as session:
+        campaign = Campaign(name=f"events-{uuid4()}")
+        user = AppUser(
+            email=f"events-{uuid4()}@example.test", display_name="Event author"
+        )
+        session.add_all([campaign, user])
+        session.flush()
+        member = CampaignMember(campaign_id=campaign.id, app_user_id=user.id, role="dm")
+        game_session = GameSession(campaign_id=campaign.id)
+        pc = PlayerCharacter(campaign_id=campaign.id, character_name="Audience PC")
+        session.add_all([member, game_session, pc])
+        session.commit()
+        info = SimpleNamespace(
+            engine=engine,
+            campaign_id=campaign.id,
+            session_id=game_session.id,
+            member_id=member.id,
+            pc_id=pc.id,
+            user_id=user.id,
+        )
+    try:
+        yield info
+    finally:
+        with engine.begin() as connection:
+            connection.execute(delete(Campaign).where(Campaign.id == info.campaign_id))
+            connection.execute(delete(AppUser).where(AppUser.id == info.user_id))
+        engine.dispose()
+
+
+def _append(session, game_session, lane, *, audience=None, body=None):
+    return append_event(
+        session,
+        game_session=game_session,
+        kind="action",
+        audience=audience or Audience("table"),
+        author_member_id=lane.member_id,
+        body=body or {},
+    )
+
+
+def test_concurrent_append_gap_free_and_per_session(pg, lane):
+    workers = 8
+    events_per_worker = 5
+    barrier = Barrier(workers)
+
+    def writer(worker):
+        # Each thread owns a separate connection and transaction.
+        engine = create_engine(pg.url, poolclass=NullPool)
+        lock_queries = []
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def assert_lock(
+            connection, cursor, statement, parameters, context, executemany
+        ):
+            if (
+                statement.startswith("SELECT")
+                and "FROM grimoire.game_session" in statement
+            ):
+                # This also makes lock removal fail deterministically, even on a
+                # lucky scheduler that happens to serialize unlocked writers.
+                assert "FOR UPDATE" in statement
+                lock_queries.append(statement)
+
+        try:
+            with Session(engine) as session, session.begin():
+                # No pre-lock read: all writers start with the same known ID.
+                game_session = GameSession(
+                    id=lane.session_id, campaign_id=lane.campaign_id
+                )
+                barrier.wait(timeout=10)
+                seqs = [
+                    _append(
+                        session,
+                        game_session,
+                        lane,
+                        body={"worker": worker, "event": index},
+                    ).seq
+                    for index in range(events_per_worker)
+                ]
+                assert len(lock_queries) == 5
+                return seqs
+        finally:
+            engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(writer, range(workers)))
+    assert sorted(seq for result in results for seq in result) == list(range(1, 41))
+    with Session(lane.engine) as session:
+        events = session.exec(
+            select(SessionEvent)
+            .where(SessionEvent.session_id == lane.session_id)
+            .order_by(SessionEvent.seq)
+        ).all()
+        assert [row.seq for row in events] == list(range(1, 41))
+        assert len({row.id for row in events}) == 40
+        assert all(row.campaign_id == lane.campaign_id for row in events)
+        first = session.get(GameSession, lane.session_id)
+        first.status = "ended"
+        session.flush()
+        second = GameSession(campaign_id=lane.campaign_id)
+        session.add(second)
+        session.flush()
+        assert _append(session, second, lane).seq == 1
+        assert _append(session, second, lane).seq == 2
+        session.commit()
+
+
+def test_postgres_rollback_does_not_consume_seq(lane):
+    with Session(lane.engine) as session:
+        game_session = session.get(GameSession, lane.session_id)
+        assert _append(session, game_session, lane).seq == 1
+        session.commit()
+        assert _append(session, game_session, lane).seq == 2
+        session.rollback()
+        assert _append(session, game_session, lane).seq == 2
+        assert _append(session, game_session, lane).seq == 3
+        session.commit()
+        assert [
+            row.seq
+            for row in session.exec(
+                select(SessionEvent)
+                .where(SessionEvent.session_id == lane.session_id)
+                .order_by(SessionEvent.seq)
+            )
+        ] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        "kind = 'invalid'",
+        "audience = 'invalid'",
+        "seq = 0",
+        "seq = -1",
+        "audience = 'pcs', audience_pc_ids = '[]'",
+        "audience = 'table', audience_pc_ids = '[\"pc\"]'",
+        "audience = 'dm', audience_pc_ids = '[\"pc\"]'",
+        "audience_pc_ids = '{}'",
+        "audience_pc_ids = 'null'",
+        "audience_pc_ids = NULL",
+        "body = NULL",
+        "created_at = NULL",
+        "kind = NULL",
+        "audience = NULL",
+        "campaign_id = NULL",
+        "session_id = NULL",
+        "seq = NULL",
+    ],
+)
+def test_migration_constraints_reject_invalid_rows(lane, changes):
+    with Session(lane.engine) as session:
+        row = _append(session, session.get(GameSession, lane.session_id), lane)
+        session.commit()
+        row_id = row.id
+    with pytest.raises(IntegrityError), lane.engine.begin() as connection:
+        connection.execute(
+            text(f"UPDATE grimoire.session_event SET {changes} WHERE id = :id"),
+            {"id": row_id},
+        )
+
+
+def test_migration_defaults_uniqueness_and_private_grants(lane):
+    with lane.engine.begin() as connection:
+        values = connection.execute(
+            text("""
+            INSERT INTO grimoire.session_event (campaign_id, session_id, seq, kind, audience)
+            VALUES (:campaign, :session, 1, 'system', 'dm')
+            RETURNING id, audience_pc_ids, body, created_at, author_member_id, retracted_at
+        """),
+            {"campaign": lane.campaign_id, "session": lane.session_id},
+        ).one()
+        assert values.id is not None
+        assert values.audience_pc_ids == []
+        assert values.body == {}
+        assert values.created_at is not None
+        assert values.author_member_id is None
+        assert values.retracted_at is None
+        assert (
+            connection.execute(
+                text(
+                    "SELECT has_table_privilege('public_reader', 'grimoire.session_event', 'SELECT')"
+                )
+            ).scalar_one()
+            is False
+        )
+    with pytest.raises(IntegrityError), lane.engine.begin() as connection:
+        connection.execute(
+            text("""
+            INSERT INTO grimoire.session_event (campaign_id, session_id, seq, kind, audience)
+            VALUES (:campaign, :session, 1, 'system', 'dm')
+        """),
+            {"campaign": lane.campaign_id, "session": lane.session_id},
+        )
+
+
+def test_author_delete_nulls_provenance_and_wipe_preserves_events(lane):
+    with Session(lane.engine) as session:
+        row = _append(
+            session,
+            session.get(GameSession, lane.session_id),
+            lane,
+            audience=Audience("pcs", frozenset([lane.pc_id]), lane.member_id),
+        )
+        row_id = row.id
+        session.commit()
+    with lane.engine.begin() as connection:
+        connection.execute(
+            delete(CampaignMember).where(CampaignMember.id == lane.member_id)
+        )
+        connection.execute(
+            text(
+                (
+                    Path(__file__).parent / "wipe" / "truncate_derived_tables.sql"
+                ).read_text()
+            )
+        )
+    with Session(lane.engine) as session:
+        row = session.get(SessionEvent, row_id)
+        assert row is not None
+        assert row.author_member_id is None
+        assert row.audience == "pcs"
+        assert row.audience_pc_ids == [lane.pc_id]
+
+
+@pytest.mark.parametrize("parent", [Campaign, GameSession])
+def test_parent_delete_cascades_events(lane, parent):
+    with Session(lane.engine) as session:
+        row = _append(session, session.get(GameSession, lane.session_id), lane)
+        row_id = row.id
+        session.commit()
+    with lane.engine.begin() as connection:
+        parent_id = lane.campaign_id if parent is Campaign else lane.session_id
+        connection.execute(delete(parent).where(parent.id == parent_id))
+    with Session(lane.engine) as session:
+        assert session.get(SessionEvent, row_id) is None
