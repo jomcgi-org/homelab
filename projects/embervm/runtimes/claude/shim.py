@@ -631,41 +631,23 @@ def _is_leaked_tool_call(text):
 
 
 def _is_stale_background_turn_result(event):
-    """Return whether a Claude result event is a stale background notification.
+    """Return whether a Claude result event is a background task notification.
 
     After a Stop interrupts a turn that backgrounded its shell command, the
     resumed CLI replays that background task completion as a result event
-    before answering the next prompt (session 13949 on #6600: result "",
-    num_turns 0, zero usage, prior turn cost repeated). It must never become
-    the next dispatch result, so the turn loop skips it and keeps waiting
-    for the result carrying the current prompt answer and its own usage.
+    before answering the next prompt (session 13949 on #6600: subtype
+    "success", result "", num_turns 0, zero-filled usage, prior turn cost
+    repeated). The CLI marks these with origin {"kind": "task-notification"},
+    the queued message's origin. They must never become the next dispatch
+    result, so the turn loop skips them and keeps waiting for the result
+    carrying the current prompt answer and its own usage.
     """
     if not isinstance(event, dict):
         return False
     if event.get("type") != "result":
         return False
-    subtype = event.get("subtype")
-    if isinstance(subtype, str) and subtype.strip().lower() in (
-        "background",
-        "background_task",
-        "task_notification",
-        "task-notification",
-        "notification",
-    ):
-        return True
-    try:
-        num_turns = event.get("num_turns")
-    except Exception:
-        return False
-    if num_turns != 0:
-        return False
-    result = event.get("result")
-    if result not in ("", None):
-        return False
-    usage = event.get("usage", {})
-    if isinstance(usage, dict) and len(usage) != 0:
-        return False
-    return True
+    origin = event.get("origin")
+    return isinstance(origin, dict) and origin.get("kind") == "task-notification"
 
 
 # Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
