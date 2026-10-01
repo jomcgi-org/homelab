@@ -392,7 +392,12 @@ func TestCodexUsageAccountClaim(t *testing.T) {
 		name, token string
 		valid       bool
 	}{
-		{"valid", usageTestToken(usageClaims), true}, {"no-jwt", "plain", false}, {"bad-base64", "h.%%.s", false}, {"bad-json", usageTestToken("{"), false}, {"no-claim", usageTestToken(`{}`), false}, {"empty-claim", usageTestToken(`{"https://api.openai.com/auth":{"chatgpt_account_id":""}}`), false},
+		{"valid", usageTestToken(usageClaims), true},
+		{"no-jwt", "plain", false},
+		{"bad-base64", "h.%%.s", false},
+		{"bad-json", usageTestToken("{"), false},
+		{"no-claim", usageTestToken(`{}`), false},
+		{"empty-claim", usageTestToken(`{"https://api.openai.com/auth":{"chatgpt_account_id":""}}`), false},
 		{"partial-base64", "h." + base64.RawURLEncoding.EncodeToString([]byte(usageClaims)) + "!.s", false},
 		{"partial-json", usageTestToken(usageClaims + "junk"), false},
 		{"partial-type-error", usageTestToken(`{"https://api.openai.com/auth":{"chatgpt_account_id":"test-account"},"https://api.openai.com/auth":{"chatgpt_account_id":123}}`), false},
