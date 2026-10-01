@@ -644,6 +644,28 @@ factory strip above the knowledge extraction queue strip.
 (see: /projects/monolith/factory/execution/voice.py)
 (see: /projects/monolith/chart/values.yaml)
 
+### Turn observations survive queue deletion
+
+`AgentTurn.usage_json["observation"]` stores `turn-observation/1`: the requested
+model, queue and dispatch timestamps, dispatch count, and timing for one
+physical dispatch. Queue, dispatch and recording timestamps are UTC server
+wall time (`monolith_wall`); queue wait uses the same clock. Executor elapsed
+time uses `executor_monotonic` around the single transport delivery await.
+Runtime duration is `guest_reported`, accepted only as an integer from zero
+to less than seven days. The block records these clock labels explicitly.
+
+Null means unavailable. Receipt adoption has no executor measurement; error,
+unknown-invocation and pre-dispatch cancellation rows have no runtime or
+executor measurement. Provider retries remain null because current adapter
+results do not report them. Dispatch count tracks executor dispatches of the
+pending sequence; the factory node attempt and CLI loop count remain separate.
+Drain continuations retain each prior observation under `drain_continuations`
+and write a fresh observation without adding elapsed times. Guest usage cannot
+override the server-owned block.
+(see: /projects/monolith/factory/execution/store.py)
+(see: /projects/monolith/factory/execution/mcp.py)
+(see: /projects/monolith/factory/execution/reconciliation.py)
+
 A factory start reserves a ceiling and settles at the cost its node result
 reports. Codex-backed models report no provider cost, so a result falls back to
 the list price the turn store computed from token usage, and every result

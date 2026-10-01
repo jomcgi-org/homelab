@@ -408,12 +408,65 @@ def _attempted(pending: PendingMessage) -> bool:
     )
 
 
+def turn_observation(
+    pending: PendingMessage | None,
+    *,
+    executor_elapsed_ms: int | None = None,
+    runtime_duration_ms: object = None,
+) -> dict:
+    """Snapshot server queue identity and the clocks of one physical dispatch."""
+
+    def utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    queued = utc(pending.created_at) if pending is not None else None
+    dispatched = utc(pending.last_dispatch_at) if pending is not None else None
+    queue_wait_ms = None
+    if queued is not None and dispatched is not None and dispatched >= queued:
+        queue_wait_ms = (dispatched - queued) // timedelta(milliseconds=1)
+    # Adapter duration is untrusted JSON. A bool is an int subclass; reject it
+    # along with negative, fractional and implausibly long guest measurements.
+    runtime = (
+        runtime_duration_ms
+        if type(runtime_duration_ms) is int
+        and 0 <= runtime_duration_ms < 7 * 24 * 60 * 60 * 1000
+        else None
+    )
+    return {
+        "schema": "turn-observation/1",
+        "requested_model": pending.model if pending is not None else None,
+        "queued_at": queued.isoformat() if queued is not None else None,
+        "dispatched_at": dispatched.isoformat() if dispatched is not None else None,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "queue_wait_ms": queue_wait_ms,
+        "dispatch_count": pending.dispatch_count if pending is not None else None,
+        "executor_elapsed_ms": executor_elapsed_ms,
+        "runtime_duration_ms": runtime,
+        # No current adapter result reports provider retries. CLI num_turns and
+        # executor dispatch_count measure different events.
+        "provider_retries": None,
+        "clocks": {
+            "queued_at": "monolith_wall",
+            "dispatched_at": "monolith_wall",
+            "recorded_at": "monolith_wall",
+            "queue_wait_ms": "monolith_wall",
+            "executor_elapsed_ms": "executor_monotonic",
+            "runtime_duration_ms": "guest_reported",
+        },
+    }
+
+
 def _progress_usage(pending: PendingMessage, cause: str) -> dict:
     try:
         activities = json.loads(pending.partial_activities or "[]")
     except (TypeError, ValueError):
         activities = []
     return {
+        "observation": turn_observation(pending),
         "activities": activities,
         "recovery": {
             "cause": cause,
@@ -2436,6 +2489,8 @@ def persist_turn_from_pending_sync(
     model: str | None = None,
     claim_owner: str | None = None,
     dispatch_count: int | None = None,
+    *,
+    executor_elapsed_ms: int | None = None,
 ) -> AgentTurn:
     """Persist the result of a queued message using a fresh database session."""
     with Session(get_engine()) as session:
@@ -2491,6 +2546,12 @@ def persist_turn_from_pending_sync(
                 )
             receipt_provenance = captured["provenance"]
         usage = {**turn.usage, "activities": turn.activities}
+        usage.pop("observation", None)
+        usage["observation"] = turn_observation(
+            pending,
+            executor_elapsed_ms=executor_elapsed_ms,
+            runtime_duration_ms=turn.duration_ms,
+        )
         # Guest usage is data, never authority to assert receipt adoption.
         usage.pop("native_result_receipt", None)
         if receipt_provenance is not None:

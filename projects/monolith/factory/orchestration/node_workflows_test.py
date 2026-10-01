@@ -1713,8 +1713,9 @@ def queued_attempt(reconciliation_db):
     return state
 
 
+@pytest.mark.parametrize("reserved", [False, True])
 def test_queued_cancellation_is_atomic_explicit_and_idempotent(
-    queued_attempt, monkeypatch
+    queued_attempt, monkeypatch, reserved
 ):
     from factory.execution.api import cancel_queued_factory_attempt
     from factory.execution import reconciliation
@@ -1731,6 +1732,21 @@ def test_queued_cancellation_is_atomic_explicit_and_idempotent(
     )
     state = queued_attempt
     with Session(state.engine) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        queued_at = pending.created_at.replace(tzinfo=timezone.utc).isoformat()
+        if reserved:
+            owner = db.get(AgentSession, 7)
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=owner.local_session_id,
+                    session_id=7,
+                    pending_seq=1,
+                    tier="project",
+                    model="luna",
+                )
+            )
+            db.commit()
+    with Session(state.engine) as db:
         assert cancel_queued_factory_attempt(db, state.pin, 7) == 7
         db.rollback()
     with Session(state.engine) as db:
@@ -1745,10 +1761,28 @@ def test_queued_cancellation_is_atomic_explicit_and_idempotent(
         assert turn.model is None and turn.cost_usd is None
         assert turn.stop_reason == "cancelled_before_dispatch"
         assert "\x00" not in turn.usage_json
-        assert json.loads(turn.usage_json) == {
+        usage = json.loads(turn.usage_json)
+        observation = usage.pop("observation")
+        assert usage == {
             "source": "factory_reconciliation",
             "reason": "cancelled_before_dispatch",
         }
+        assert turn.terminal_reason == "error"
+        assert observation["schema"] == "turn-observation/1"
+        assert observation["requested_model"] == "luna"
+        assert observation["queued_at"] == queued_at
+        assert observation["dispatched_at"] is None
+        assert observation["queue_wait_ms"] is None
+        assert observation["dispatch_count"] == 0
+        assert observation["executor_elapsed_ms"] is None
+        assert observation["runtime_duration_ms"] is None
+        assert observation["provider_retries"] is None
+        permit = db.exec(select(AgentCapacityReservation)).first()
+        if reserved:
+            assert permit.state == "settled"
+            assert permit.outcome == "cancelled_before_dispatch"
+        else:
+            assert permit is None
         assert cancel_queued_factory_attempt(db, state.pin, 7) is None
 
 

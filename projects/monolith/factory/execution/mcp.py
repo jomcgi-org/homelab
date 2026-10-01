@@ -588,6 +588,8 @@ def _persist_turn_from_pending_sync(
     model: str | None = None,
     claim_owner: str | None = None,
     dispatch_count: int | None = None,
+    *,
+    executor_elapsed_ms: int | None = None,
 ) -> AgentTurn:
     return store.persist_turn_from_pending_sync(
         session_id,
@@ -600,6 +602,7 @@ def _persist_turn_from_pending_sync(
         model,
         claim_owner,
         dispatch_count,
+        executor_elapsed_ms=executor_elapsed_ms,
     )
 
 
@@ -1087,6 +1090,7 @@ async def _execute_pending_message(session_id: int) -> None:
                     claim_owner,
                 )
                 return
+            deliver_started = time.monotonic()
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,
@@ -1094,6 +1098,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 effective_model,
                 **deliver_kwargs,
             )
+            executor_elapsed_ms = int((time.monotonic() - deliver_started) * 1000)
             # Check if claim was stolen while deliver was running
             if _abort_stolen_executor("deliver"):
                 return
@@ -1222,6 +1227,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 turn.model or effective_model,
                 claim_owner,
                 row.dispatch_count,
+                executor_elapsed_ms=executor_elapsed_ms,
             )
         except (store.PendingClaimLost, store.SessionOutcomeUnknown):
             return

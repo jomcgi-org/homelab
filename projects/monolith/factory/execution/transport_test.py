@@ -39,6 +39,43 @@ def _brick_events():
     ]
 
 
+def test_missing_native_duration_remains_unavailable_through_persistence(
+    monkeypatch, tmp_path
+):
+    from sqlmodel import Session, SQLModel, create_engine
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'missing_duration.db'}")
+    schemas = {table.name: table.schema for table in SQLModel.metadata.tables.values()}
+    for table in SQLModel.metadata.tables.values():
+        table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        monkeypatch.setattr(store, "get_engine", lambda: engine)
+        with Session(engine) as db:
+            agent = store.create_session(db, "missing-duration", "guest", "main")
+            pending = store.create_pending_message(db, agent.id, "hello", "luna")
+            sid, seq = agent.id, pending.seq
+        native = {"result": "done", "terminal_reason": "end_turn", "num_turns": 99}
+        turn = transport.parse_native_turn(native, "guest")
+        assert turn.duration_ms is None
+        store.persist_turn_from_pending_sync(
+            sid, seq, "hello", turn, "done", "completed"
+        )
+        with Session(engine) as db:
+            observation = json.loads(store.get_turn(db, sid, seq).usage_json)[
+                "observation"
+            ]
+            assert observation["runtime_duration_ms"] is None
+            assert observation["executor_elapsed_ms"] is None
+            assert observation["provider_retries"] is None
+            assert observation["dispatched_at"] is None
+            assert observation["queue_wait_ms"] is None
+    finally:
+        engine.dispose()
+        for table in SQLModel.metadata.tables.values():
+            table.schema = schemas[table.name]
+
+
 class FakeAsyncClient:
     handler = None
 

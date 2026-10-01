@@ -1333,6 +1333,245 @@ def _successful_uncertain_turn():
     )
 
 
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        (True, None),
+        (False, None),
+        (-1, None),
+        (1.5, None),
+        ("100", None),
+        (float("nan"), None),
+        (float("inf"), None),
+        (10**100, None),
+        (7 * 24 * 60 * 60 * 1000, None),
+        (None, None),
+        (100, 100),
+        (0, 0),
+        (7 * 24 * 60 * 60 * 1000 - 1, 7 * 24 * 60 * 60 * 1000 - 1),
+    ],
+)
+def test_turn_observation_survives_pending_deletion(uncertain_lane, duration, expected):
+    engine, sid = uncertain_lane
+    queued = datetime(2026, 9, 1, 10, 0, 0, 123000, tzinfo=timezone.utc)
+    dispatched = queued + timedelta(milliseconds=2345)
+    with Session(engine) as db:
+        pending = store.get_pending_message(db, sid, 1)
+        pending.created_at = queued
+        pending.last_dispatch_at = dispatched
+        db.add(pending)
+        db.commit()
+    before = datetime.now(timezone.utc)
+    turn = _successful_uncertain_turn()._replace(
+        duration_ms=duration,
+        usage={"observation": {"schema": "guest-spoof", "executor_elapsed_ms": 999}},
+    )
+    store.persist_turn_from_pending_sync(
+        sid,
+        1,
+        "original prompt",
+        turn,
+        "done",
+        "completed",
+        "cli-done",
+        "sol",
+        "owner-1",
+        1,
+        executor_elapsed_ms=3456,
+    )
+    after = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        assert store.get_pending_message(db, sid, 1) is None
+        observation = json.loads(store.get_turn(db, sid, 1).usage_json)["observation"]
+        recorded = datetime.fromisoformat(observation["recorded_at"])
+        assert before <= recorded <= after
+        assert observation == {
+            "schema": "turn-observation/1",
+            "requested_model": "terra",
+            "queued_at": queued.isoformat(),
+            "dispatched_at": dispatched.isoformat(),
+            "recorded_at": recorded.isoformat(),
+            "queue_wait_ms": 2345,
+            "dispatch_count": 1,
+            "executor_elapsed_ms": 3456,
+            "runtime_duration_ms": expected,
+            "provider_retries": None,
+            "clocks": {
+                "queued_at": "monolith_wall",
+                "dispatched_at": "monolith_wall",
+                "recorded_at": "monolith_wall",
+                "queue_wait_ms": "monolith_wall",
+                "executor_elapsed_ms": "executor_monotonic",
+                "runtime_duration_ms": "guest_reported",
+            },
+        }
+    assert turn.usage["observation"]["schema"] == "guest-spoof"
+
+
+def test_turn_observations_are_isolated_in_one_session(uncertain_lane):
+    engine, sid = uncertain_lane
+    with Session(engine) as db:
+        pending = store.get_pending_message(db, sid, 1)
+        pending.last_dispatch_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        db.add(pending)
+        db.commit()
+    store.persist_turn_from_pending_sync(
+        sid,
+        1,
+        "first",
+        _successful_uncertain_turn(),
+        "done",
+        "completed",
+        "cli-done",
+        "terra",
+        "owner-1",
+        1,
+        executor_elapsed_ms=111,
+    )
+    assert store.claim_pending_message_for_session_sync(sid, "owner-2") == 2
+    with Session(engine) as db:
+        pending = store.get_pending_message(db, sid, 2)
+        pending.model = None
+        pending.last_dispatch_at = datetime(2026, 9, 2, tzinfo=timezone.utc)
+        db.add(pending)
+        db.commit()
+    store.persist_turn_from_pending_sync(
+        sid,
+        2,
+        "second",
+        _successful_uncertain_turn()._replace(duration_ms=0),
+        "done",
+        "completed",
+        "cli-done",
+        "terra",
+        "owner-2",
+        1,
+        executor_elapsed_ms=0,
+    )
+    with Session(engine) as db:
+        first = json.loads(store.get_turn(db, sid, 1).usage_json)["observation"]
+        second = json.loads(store.get_turn(db, sid, 2).usage_json)["observation"]
+        assert first["executor_elapsed_ms"] == 111
+        assert first["runtime_duration_ms"] == 1
+        assert first["requested_model"] == "terra"
+        assert second["executor_elapsed_ms"] == 0
+        assert second["runtime_duration_ms"] == 0
+        assert second["requested_model"] is None
+        assert first["dispatched_at"] == "2026-09-01T00:00:00+00:00"
+        assert second["dispatched_at"] == "2026-09-02T00:00:00+00:00"
+        assert store.get_pending_message(db, sid, 2) is None
+
+
+@pytest.mark.parametrize(
+    ("queued", "dispatched", "expected_queued", "expected_dispatched", "wait"),
+    [
+        (None, None, None, None, None),
+        (datetime(2026, 9, 1), None, "2026-09-01T00:00:00+00:00", None, None),
+        (None, datetime(2026, 9, 1), None, "2026-09-01T00:00:00+00:00", None),
+        (
+            datetime(2026, 9, 2),
+            datetime(2026, 9, 1),
+            "2026-09-02T00:00:00+00:00",
+            "2026-09-01T00:00:00+00:00",
+            None,
+        ),
+        (
+            datetime(2026, 9, 1),
+            datetime(2026, 9, 1),
+            "2026-09-01T00:00:00+00:00",
+            "2026-09-01T00:00:00+00:00",
+            0,
+        ),
+        (
+            datetime(2026, 9, 1, 2, tzinfo=timezone(timedelta(hours=2))),
+            datetime(2026, 9, 1, 0, 0, 1, 999, tzinfo=timezone.utc),
+            "2026-09-01T00:00:00+00:00",
+            "2026-09-01T00:00:01.000999+00:00",
+            1000,
+        ),
+    ],
+)
+def test_observation_queue_clocks(
+    queued, dispatched, expected_queued, expected_dispatched, wait
+):
+    from types import SimpleNamespace
+
+    observation = store.turn_observation(
+        SimpleNamespace(
+            created_at=queued,
+            last_dispatch_at=dispatched,
+            model=None,
+            dispatch_count=0,
+        )
+    )
+    assert observation["queued_at"] == expected_queued
+    assert observation["dispatched_at"] == expected_dispatched
+    assert observation["queue_wait_ms"] == wait
+    assert observation["executor_elapsed_ms"] is None
+    assert observation["runtime_duration_ms"] is None
+    assert observation["requested_model"] is None
+    assert observation["dispatch_count"] == 0
+
+
+def test_observation_without_pending_identity_is_unavailable():
+    observation = store.turn_observation(None)
+    assert observation["queued_at"] is None
+    assert observation["dispatched_at"] is None
+    assert observation["queue_wait_ms"] is None
+    assert observation["dispatch_count"] is None
+    assert observation["requested_model"] is None
+
+
+@pytest.mark.parametrize("finish", ["error", "not_invoked", "unknown"])
+def test_terminal_progress_rows_keep_observations_and_settlement(
+    uncertain_lane, finish
+):
+    from factory.execution.models import AgentCapacityReservation
+
+    engine, sid = uncertain_lane
+    with Session(engine) as db:
+        pending = store.get_pending_message(db, sid, 1)
+        queued = pending.created_at.replace(tzinfo=timezone.utc).isoformat()
+        dispatched = pending.last_dispatch_at.replace(tzinfo=timezone.utc).isoformat()
+    if finish == "unknown":
+        store.release_pending_message_claim_sync(sid, 1, "owner-1")
+    else:
+        store.mark_turn_error_sync(
+            sid,
+            1,
+            "failed",
+            "owner-1",
+            dispatch_count=1,
+            invocation_not_attempted=finish == "not_invoked",
+        )
+    with Session(engine) as db:
+        turn = store.get_turn(db, sid, 1)
+        observation = json.loads(turn.usage_json)["observation"]
+        assert observation["schema"] == "turn-observation/1"
+        assert observation["requested_model"] == "terra"
+        assert observation["queued_at"] == queued
+        assert observation["dispatched_at"] == dispatched
+        assert observation["dispatch_count"] == 1
+        assert observation["executor_elapsed_ms"] is None
+        assert observation["runtime_duration_ms"] is None
+        assert observation["provider_retries"] is None
+        assert turn.terminal_reason == "error"
+        assert turn.stop_reason == (
+            store.UNKNOWN_INVOCATION if finish == "unknown" else None
+        )
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == ("uncertain" if finish == "unknown" else "settled")
+        assert (
+            permit.outcome
+            == {
+                "unknown": "observer_released",
+                "error": "delivery_error",
+                "not_invoked": "not_invoked",
+            }[finish]
+        )
+        assert store.get_pending_message(db, sid, 1) is None
+
+
 def test_confirmed_user_interrupt_settles_actual_usage_once_and_allows_followup(
     monkeypatch, tmp_path
 ):
@@ -1682,6 +1921,7 @@ def test_drain_continues_same_pending_attempt_and_reservation(
             "luna",
             "pod-a",
             1,
+            executor_elapsed_ms=101,
         )
         with Session(engine) as db:
             permit = db.exec(select(AgentCapacityReservation)).one()
@@ -1719,6 +1959,7 @@ def test_drain_continues_same_pending_attempt_and_reservation(
             "luna",
             "pod-b",
             2,
+            executor_elapsed_ms=202,
         )
         with Session(engine) as db:
             permit = db.exec(select(AgentCapacityReservation)).one()
@@ -1736,6 +1977,14 @@ def test_drain_continues_same_pending_attempt_and_reservation(
                 json.loads(turn.usage_json)["drain_continuations"][0]["result"]
                 == "partial work saved"
             )
+            usage = json.loads(turn.usage_json)
+            prior = usage["drain_continuations"][0]["usage"]["observation"]
+            assert prior["executor_elapsed_ms"] == 101
+            assert prior["runtime_duration_ms"] == 1
+            assert prior["dispatch_count"] == 1
+            assert usage["observation"]["executor_elapsed_ms"] == 202
+            assert usage["observation"]["runtime_duration_ms"] == 1
+            assert usage["observation"]["dispatch_count"] == 2
     finally:
         _restore_schemas(schemas)
 

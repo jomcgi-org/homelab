@@ -375,6 +375,34 @@ def test_queued_qwen_message_is_delivered_as_spark(monkeypatch, session):
     assert delivered_models == ["spark"]
 
 
+def test_executor_measures_only_the_deliver_await(monkeypatch, session):
+    from types import SimpleNamespace
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(mcp, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+
+    async def deliver(*args, **kwargs):
+        clock["now"] += 2.5
+        turn, ember = _completed_delivery(args[2])
+        return turn._replace(duration_ms=900), ember
+
+    async def notify(*args, **kwargs):
+        clock["now"] += 10
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    agent = store.create_session(
+        session, "timed-await", "/workspace", "main", model="luna"
+    )
+    store.create_pending_message(session, agent.id, "hello", model="luna")
+    asyncio.run(mcp._execute_pending_message(agent.id))
+    session.expire_all()
+    usage = json.loads(store.get_turn(session, agent.id, 1).usage_json)
+    assert usage["observation"]["executor_elapsed_ms"] == 2500
+    assert usage["observation"]["runtime_duration_ms"] == 900
+    assert usage["observation"]["provider_retries"] is None
+
+
 def test_cross_family_send_is_rejected_without_pending_row(session):
     row = store.create_session(session, "sid-123", "/workspace", "main", model="luna")
     result = asyncio.run(mcp.monolith_agent_session_send(row.id, "hello", model="qwen"))

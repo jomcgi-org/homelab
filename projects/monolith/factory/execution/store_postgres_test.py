@@ -7,6 +7,7 @@ database and independent committed connections, never its SAVEPOINT fixture.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 import json
 from queue import Queue
 from threading import Event, local
@@ -316,6 +317,19 @@ def test_completion_and_reconciliation_commit_exactly_one_outcome(
         )
         if held:
             assert json.loads(turns[0].usage_json)["recovery"]["dispatch_count"] == 1
+        observation = json.loads(turns[0].usage_json)["observation"]
+        assert observation["schema"] == "turn-observation/1"
+        assert observation["requested_model"] == "terra"
+        assert observation["dispatch_count"] == 1
+        assert datetime.fromisoformat(
+            observation["queued_at"]
+        ).utcoffset() == timedelta(0)
+        assert datetime.fromisoformat(
+            observation["dispatched_at"]
+        ).utcoffset() == timedelta(0)
+        assert observation["executor_elapsed_ms"] is None
+        assert observation["runtime_duration_ms"] == (None if held else 1)
+        assert observation["provider_retries"] is None
 
 
 def test_pending_delete_failure_rolls_back_unknown_record_and_session_hold(lane):
