@@ -18,6 +18,7 @@ import os
 from sqlmodel import select
 
 from factory.execution.api import (
+    factory_attempt_never_posted,
     fence_bound_zero_turn_factory_attempt,
     read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt,
@@ -687,6 +688,83 @@ def _invoke_failure_cessation(view, identity, saved=None):
         "last_invoke_at": last_invoke,
         "updated_at": updated_at,
         "cessation_evidence": "invoke_failure",
+    }
+
+
+def _never_invoked_enabled():
+    return (
+        os.environ.get(
+            "FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "false"
+        ).lower()
+        == "true"
+    )
+
+
+def _never_invoked_guest_cessation(view, identity, saved=None):
+    """Prove the control plane never started any invoke on this exact guest.
+
+    EmberVM stamps ``invoke_started_at`` and increments ``turn_seq`` in the
+    same durable write when an invoke starts, before the invoke worker runs
+    (SessionStore.do_record_invoke_started),
+    and neither is ever cleared, so a view with ``turn_seq`` 0 and no invoke
+    stamp names a guest that has never run a model turn, in any generation.
+    That guest has no stop precondition to offer (SessionStopProof.identity
+    needs an invoke), so the conditional stop path refused it as
+    ``missing_stop_precondition`` and the attempt held its lane until
+    supervised cessation two hours past the task deadline. On 2026-10-01 a
+    monolith rollout cancelled the executor for permit 10690 eleven seconds
+    after its claim, after the guest was bound and before any invoke.
+
+    This is the remote half only. The caller must also hold the local proof
+    (``factory_attempt_never_posted``) that no executor sent a POST before the
+    settlement fence and none can after it; without both, nothing settles.
+    Anything missing, malformed, foreign, stopped or drained proves nothing.
+    """
+    required = {
+        "session_id",
+        "generation",
+        "turn_seq",
+        "created_at",
+        "invoke_started_at",
+        "last_invoke_at",
+        "interrupted_turn",
+        "stop_intent",
+        "stop_completion",
+    }
+    if (
+        not isinstance(view, dict)
+        or not required.issubset(view)
+        or view["session_id"] != identity["guest_id"]
+        or type(view["turn_seq"]) is not int
+        or view["turn_seq"] != 0
+        or type(view["generation"]) is not int
+        or view["generation"] < 0
+        or type(view["created_at"]) is not int
+        or view["created_at"] < 1
+        or any(
+            view[key] is not None
+            for key in (
+                "invoke_started_at",
+                "last_invoke_at",
+                "interrupted_turn",
+                "stop_intent",
+                "stop_completion",
+            )
+        )
+        or view.get("stop_precondition") is not None
+        or saved is not None
+    ):
+        return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": view.get("state"),
+        "terminal_reason": view.get("terminal_reason"),
+        "generation": view["generation"],
+        "turn_seq": 0,
+        "created_at": view["created_at"],
+        "invoke_started_at": None,
+        "last_invoke_at": None,
+        "cessation_evidence": "never_invoked_guest",
     }
 
 
@@ -2193,6 +2271,8 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 cessation = _brick_restart_cessation(view, identity, saved)
             if cessation is None and _invoke_failure_enabled():
                 cessation = _invoke_failure_cessation(view, identity, saved)
+            if cessation is None and _never_invoked_enabled():
+                cessation = _never_invoked_guest_cessation(view, identity, saved)
             if cessation is None:
                 cessation = _replacement_invocation_cessation(view, identity, saved)
         if cessation is not None:
@@ -2238,6 +2318,17 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                     raise ValueError("stop_intent_changed")
                 if not existing:
                     raise ValueError("missing_committed_stop_intent")
+            if (
+                cessation is not None
+                and cessation.get("cessation_evidence") == "never_invoked_guest"
+            ):
+                # The remote view says no invoke ever started; the local
+                # receipt ledger, read under the settlement locks, says none
+                # was sent and none can be. Both or nothing.
+                never_posted = factory_attempt_never_posted(db, identity)
+                if never_posted is None:
+                    raise ValueError("never_invoked_local_proof_missing")
+                proof = {**cessation, "never_posted": never_posted}
             if proof is not None:
                 _settle_failed_attempt(
                     db,

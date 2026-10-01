@@ -1592,6 +1592,13 @@ swarm:
   # settles failed at unknown cost and normal retry runs, instead of holding
   # its lane until supervised cessation two hours past the task deadline.
   factoryInvokeFailureCessationEnabled: false
+  # Settle an uncertain attempt whose exact guest the control plane reports
+  # never invoked (turn_seq 0, no invoke stamp) when no result receipt was
+  # ever minted for it, so no executor reached a POST before the settlement
+  # fence (factory_supervision._never_invoked_guest_cessation). A monolith
+  # rollout that cancels the executor between claim and POST otherwise holds
+  # the lane on missing_stop_precondition until supervised cessation.
+  factoryNeverInvokedGuestSettlementEnabled: false
   # Settle only a drained factory continuation whose exact dispatch is proven
   # permanently lost by the control plane. Staged off until the live checks in
   # FACTORY.md have exercised the proof and refusal paths.

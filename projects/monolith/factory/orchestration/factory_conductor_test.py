@@ -6767,6 +6767,205 @@ def test_ambiguous_invoke_failure_evidence_does_not_permit_retry(
     ]
 
 
+def _never_invoked_view(s):
+    """The guest permit 10690 left behind (2026-10-01, monolith rollout).
+
+    The executor bound a freshly created guest and was cancelled before its
+    invoke POST, so the control plane has never stamped an invoke and offers
+    no stop precondition.
+    """
+    from datetime import timedelta
+
+    created = int((s.dispatched_at + timedelta(seconds=3)).timestamp() * 1000)
+    s.cp.update(
+        state="running",
+        terminal_reason=None,
+        generation=0,
+        turn_seq=0,
+        created_at=created,
+        updated_at=created,
+        invoke_started_at=None,
+        last_invoke_at=None,
+        interrupted_turn=None,
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+        node={"node_id": "node-1", "health": "healthy", "draining": False},
+    )
+
+
+def _add_receipt(s, *, captured=False):
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session
+    from factory.execution.models import AgentResultReceipt, AgentSession
+
+    now = datetime.now(timezone.utc)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        db.add(
+            AgentResultReceipt(
+                id="e" * 32,
+                token_sha256="b" * 64,
+                session_id=s.sid,
+                local_session_id=agent.local_session_id,
+                seq=1,
+                dispatch_count=1,
+                claim_owner="original-factory-executor",
+                guest_id=agent.ember_session_id,
+                request_sha256="c" * 64,
+                created_at=now,
+                accept_until=now + timedelta(hours=13),
+                retain_until=now + timedelta(days=7),
+                received_at=now if captured else None,
+                result_sha256="d" * 64 if captured else None,
+                result_body=b"{}" if captured else None,
+            )
+        )
+        db.commit()
+
+
+def test_never_invoked_guest_settles_exact_attempt_without_a_stop(
+    uncertain_factory, monkeypatch
+):
+    """A rollout that cancels the executor before its POST releases the lane."""
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
+    _never_invoked_view(s)
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    # Observation only: no conditional stop and no destroy.
+    assert [precondition for _guest, precondition in s.calls] == [None]
+    settled = _uncertain_snapshot(s)
+    assert settled["permits"][0]["state"] == "settled"
+    assert settled["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert settled["runs"][0]["status"] == "failed"
+    # Unknown cost: the reservation stays charged, as for every bound guest.
+    assert settled["runs"][0]["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    assert settled["factory"]["starts"][0]["status"] == "failed"
+    with Session(s.engine) as db:
+        event = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "stop_settled",
+            )
+        ).one()
+        proof = json.loads(event.detail_json)["completion"]
+    assert proof["cessation_evidence"] == "never_invoked_guest"
+    assert proof["turn_seq"] == 0
+    assert proof["never_posted"]["result_receipts"] == 0
+
+    before = _uncertain_snapshot(s)
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s) == before
+
+
+def test_never_invoked_guest_evidence_is_staged_off_by_default(
+    uncertain_factory, monkeypatch
+):
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    monkeypatch.delenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", raising=False)
+    _never_invoked_view(s)
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    snapshot = _uncertain_snapshot(s)
+    assert snapshot["permits"][0]["state"] == "uncertain"
+    assert snapshot["runs"][0]["status"] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "invoked",
+        "invoke_stamp",
+        "completed_stamp",
+        "foreign_guest",
+        "drain_marker",
+        "stop_intent",
+        "stop_precondition",
+        "missing_turn_seq",
+        "malformed_created_at",
+        "prepared_receipt",
+        "captured_receipt",
+        "receipts_disabled",
+        "saved_stop_intent",
+    ],
+)
+def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
+    uncertain_factory, monkeypatch, change
+):
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
+    _never_invoked_view(s)
+    if change == "invoked":
+        s.cp["turn_seq"] = 1
+    elif change == "invoke_stamp":
+        s.cp["invoke_started_at"] = s.invoke_started_at
+    elif change == "completed_stamp":
+        s.cp["last_invoke_at"] = s.last_invoke_at
+    elif change == "foreign_guest":
+        s.cp["session_id"] = "s-foreign"
+    elif change == "drain_marker":
+        s.cp["interrupted_turn"] = {"dispatch_id": "d-1", "seq": 1}
+    elif change == "stop_intent":
+        s.cp["stop_intent"] = {"operation_id": "stop-1"}
+    elif change == "stop_precondition":
+        s.cp["stop_precondition"] = {**s.precondition, "invoke_started_at": None}
+    elif change == "missing_turn_seq":
+        del s.cp["turn_seq"]
+    elif change == "malformed_created_at":
+        s.cp["created_at"] = "yesterday"
+    elif change == "prepared_receipt":
+        # A minted receipt means an executor reached its POST.
+        _add_receipt(s)
+    elif change == "captured_receipt":
+        _add_receipt(s, captured=True)
+    elif change == "receipts_disabled":
+        # Without receipts the local ledger cannot prove the POST never left.
+        monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
+    else:
+        with controls._locked_session() as (db, control):
+            identity, _run = supervisor._locked_attempt(
+                db, control, s.run["pin"], s.sid, require_stop_due=False
+            )
+            supervisor._audit(
+                db,
+                s.run["pin"],
+                "stop_intent",
+                identity=identity,
+                precondition=s.precondition,
+            )
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    snapshot = _uncertain_snapshot(s)
+    assert snapshot["permits"][0]["state"] == "uncertain"
+    assert [(run["attempt"], run["status"]) for run in snapshot["runs"]] == [
+        (1, "uncertain")
+    ]
+
+
 def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     uncertain_factory, monkeypatch
 ):

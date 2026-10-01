@@ -875,6 +875,77 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
     }
 
 
+def factory_attempt_never_posted(db: Session, identity: dict) -> dict | None:
+    """Prove the exact uncertain attempt never sent, and can never send, a POST.
+
+    With result receipts enabled the transport mints a receipt, in its own
+    committed transaction, immediately before every physical invoke POST
+    (``transport._deliver``), and nothing else sends an invoke for a pending
+    turn. ``prepare_receipt`` refuses to mint one once the turn is settled:
+    it requires the live claim on the pending row and a running permit, and
+    ``read_uncertain_factory_attempt`` has already proved the row is gone and
+    the permit uncertain. So no receipt row for this session means that no
+    executor reached a POST before the fence, and none can after it. A monolith
+    rollout that cancels the executor between claim and POST (2026-10-01,
+    permit 10690) leaves exactly this shape behind an idle guest.
+
+    The caller holds the factory control and session locks through
+    settlement. Receipts are pruned after their retention window, so an
+    attempt older than that proves nothing. This is local evidence only; the
+    supervisor pairs it with the control plane's own never-invoked view.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import or_
+
+    from factory.execution import result_receipts
+    from factory.execution.models import AgentResultReceipt, PendingMessage
+
+    if not result_receipts.enabled():
+        return None
+    agent = db.get(AgentSession, identity["session_id"], populate_existing=True)
+    if (
+        agent is None
+        or agent.ember_session_id != identity["guest_id"]
+        or agent.result_receipt_fence_id is not None
+    ):
+        return None
+    failed_turn_at = datetime.fromisoformat(identity["failed_turn_at"])
+    if failed_turn_at.tzinfo is None:
+        failed_turn_at = failed_turn_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - failed_turn_at >= timedelta(
+        days=result_receipts.RETAIN_DAYS
+    ):
+        return None
+    if (
+        db.exec(
+            select(PendingMessage.id).where(PendingMessage.session_id == agent.id)
+        ).first()
+        is not None
+    ):
+        return None
+    receipt = db.exec(
+        select(AgentResultReceipt.id)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .limit(1)
+    ).first()
+    if receipt is not None:
+        return None
+    return {
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "guest_id": agent.ember_session_id,
+        "dispatch_count": identity["dispatch_count"],
+        "result_receipts": 0,
+    }
+
+
 def adopt_completed_factory_receipt(db: Session, pin: dict, identity: dict) -> dict:
     """Recover a completed native response after its pending claim was lost.
 
