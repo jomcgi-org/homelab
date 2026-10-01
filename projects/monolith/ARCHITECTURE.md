@@ -461,9 +461,10 @@ the issue (#6002).
 **Why.** Rollout verification gates only on the Applications the merged PR's
 files deploy through: registry chart versions moved since the merge, git paths
 and their kustomize surface, and `$values` files (#6660). Chart scope uses the
-first provable publication covering the merge; later unrelated chart bumps do
-not widen it. Deployment proof can use a newer successful publication containing
-the merge. The receipt commit bounds the history search even when an older-source
+publication with the earliest proven source containing the merge; later unrelated
+chart bumps do not widen it. Chart deployment proof uses the newest proven source,
+while git revisions need only contain the delivery's source. Source ancestry
+orders receipts, and the receipt commit bounds the history search even when a
 publisher finishes late. Unknown kustomize keys include the Application conservatively, and
 workload reads begin after scope selection. Anything unreadable fails closed.
 A PR reaching no live Application verifies against its publication

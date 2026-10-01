@@ -141,11 +141,22 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
                 continue
             if not ancestor(repo, receipt["source_sha"], receipt["commit_sha"], get):
                 raise Pending("publication_source_not_on_main")
-            # Main's commit list is newest first. Scope belongs to the first
-            # publication covering this merge, before unrelated later bumps.
+            # Publishers may finish out of source order. Source ancestry pins
+            # the first covering scope and the newest proven deployment.
             if latest is None:
                 latest = receipt
-            candidate = receipt
+                candidate = receipt
+            elif receipt["source_sha"] != latest["source_sha"]:
+                if ancestor(repo, latest["source_sha"], receipt["source_sha"], get):
+                    latest = receipt
+                elif not ancestor(
+                    repo, receipt["source_sha"], latest["source_sha"], get
+                ):
+                    raise Pending("publication_source_not_ordered")
+            if receipt["source_sha"] != candidate["source_sha"] and ancestor(
+                repo, receipt["source_sha"], candidate["source_sha"], get
+            ):
+                candidate = receipt
         if complete:
             break
         if len(commits) < 100:
@@ -578,7 +589,10 @@ def application_evidence(repo, receipt, snapshot, versions, get, app):
             ):
                 raise Pending("published_chart_not_deployed")
         elif owned_git(repo, source):
-            if not ancestor(repo, receipt["source_sha"], revision, get):
+            # Unchanged git values need only contain this delivery's source,
+            # even if a newer publication proves the current chart version.
+            floor = receipt.get("scope_receipt", receipt)["source_sha"]
+            if not ancestor(repo, floor, revision, get):
                 raise Pending("git_revision_not_deployed")
     if "resources" not in status:
         raise Pending("application_resources_missing")
