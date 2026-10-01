@@ -53,6 +53,7 @@ from grimoire.models import (
     KnowledgeGrant,
     PlayerCharacter,
     Relationship,
+    SessionEvent,
 )
 
 ROLES = ("dm", "player_a", "player_b", "no_character", "outsider", "other_campaign")
@@ -132,6 +133,8 @@ class LeakHarness:
             self.rows["sheet"].decided_by_email = self.emails["dm"]
         elif state == "submit":
             self.rows["sheet"].sheet = dict(SHEET_BODY)
+        elif state == "play":
+            self.rows["campaign_session"].status = "active"
         self.session.commit()
 
     def app(self) -> FastAPI:
@@ -318,6 +321,32 @@ def build_fixture(session: Session) -> LeakHarness:
                 player_character_id=rows[character_key].id if character_key else None,
             ),
         )
+
+    for audience, pc_key, allowed in (
+        ("dm", None, ("dm",)),
+        ("pcs", "character_a", ("dm", "player_a")),
+        ("pcs", "character", ("dm", "player_b")),
+        ("table", None, MEMBERS),
+    ):
+        for retracted in (False, True):
+            key = f"event_{pc_key or audience}{'_retracted' if retracted else ''}"
+            keep(
+                key,
+                SessionEvent(
+                    id=mark(f"{key}.id", allowed, True),
+                    campaign_id=rows["campaign"].id,
+                    session_id=rows["campaign_session"].id,
+                    seq=1 + sum(isinstance(obj, SessionEvent) for obj in objects),
+                    kind="narration",
+                    author_member_id=rows["member_dm"].id,
+                    audience=audience,
+                    audience_pc_ids=[rows[pc_key].id] if pc_key else [],
+                    body={
+                        "secret": mark(f"{key}.body", ("dm",) if retracted else allowed)
+                    },
+                    retracted_at=datetime.now(timezone.utc) if retracted else None,
+                ),
+            )
 
     keep(
         "invitation",

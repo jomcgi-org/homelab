@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
+from uuid import UUID
 
 from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
@@ -29,6 +30,7 @@ from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
 from grimoire import aliases, library
+from grimoire.audience import Audience, AudienceKind, audience_predicate
 from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
@@ -44,6 +46,7 @@ from grimoire.models import (
     CharacterSheetVersion,
     Entity,
     EntityType,
+    EventKind,
     GameSession,
     GrantScope,
     KnowledgeChunk,
@@ -51,7 +54,14 @@ from grimoire.models import (
     MemberRole,
     PlayerCharacter,
     Relationship,
+    SessionEvent,
     SessionStatus,
+)
+from grimoire.session_events import (
+    InvalidEventAudienceError,
+    SessionEndedError,
+    append_event,
+    require_play_enabled,
 )
 from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
 from grimoire.search import search_campaign
@@ -1490,6 +1500,46 @@ class GameSessionView(BaseModel):
     ended_at: datetime | None
 
 
+@router.get(
+    "/campaigns/{campaign_id}/sessions",
+    response_model=list[GameSessionView],
+    dependencies=[Depends(require_play_enabled)],
+)
+def list_game_sessions(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[GameSession]:
+    _get_member_or_404(session, campaign_id, email)
+    return session.exec(
+        select(GameSession)
+        .where(GameSession.campaign_id == campaign_id)
+        .order_by(GameSession.started_at.desc(), GameSession.id.desc())
+    ).all()
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/current",
+    response_model=GameSessionView,
+    dependencies=[Depends(require_play_enabled)],
+)
+def current_game_session(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> GameSession:
+    _get_member_or_404(session, campaign_id, email)
+    row = session.exec(
+        select(GameSession).where(
+            GameSession.campaign_id == campaign_id,
+            GameSession.status.in_(("active", "paused")),
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="game session not found")
+    return row
+
+
 @router.post(
     "/campaigns/{campaign_id}/sessions",
     response_model=GameSessionView,
@@ -1544,6 +1594,190 @@ def update_game_session(
     session.commit()
     session.refresh(game_session)
     return game_session
+
+
+# --- Audience-scoped session event log --------------------------------
+
+
+class SessionEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: EventKind
+    audience: AudienceKind
+    audience_pc_ids: list[str] = Field(default_factory=list)
+    body: dict[str, Any]
+
+    @field_validator("audience_pc_ids")
+    @classmethod
+    def valid_pc_uuids(cls, values: list[str]) -> list[str]:
+        for value in values:
+            UUID(value)
+        return values
+
+
+class SessionEventView(BaseModel):
+    id: str
+    campaign_id: str
+    session_id: str
+    seq: int
+    kind: EventKind
+    audience: AudienceKind
+    audience_pc_ids: list[str]
+    author_member_id: str | None
+    body: dict[str, Any] | None
+    created_at: datetime
+    retracted_at: datetime | None
+
+    @field_validator("created_at", "retracted_at")
+    @classmethod
+    def timestamps_as_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _session_in_campaign(
+    session: Session, campaign_id: str, session_id: str
+) -> GameSession:
+    row = session.get(GameSession, session_id)
+    if row is None or row.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="game session not found")
+    return row
+
+
+def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
+    """Project retractions and avoid exposing other members' administrative ids."""
+    dm = member.role == "dm"
+    return SessionEventView(
+        id=row.id,
+        campaign_id=row.campaign_id,
+        session_id=row.session_id,
+        seq=row.seq,
+        kind=row.kind,
+        audience=row.audience,
+        audience_pc_ids=(
+            row.audience_pc_ids
+            if dm
+            else [pc for pc in row.audience_pc_ids if pc == member.player_character_id]
+        ),
+        author_member_id=(
+            row.author_member_id if dm or row.author_member_id == member.id else None
+        ),
+        body=row.body if dm or row.retracted_at is None else None,
+        created_at=row.created_at,
+        retracted_at=row.retracted_at,
+    )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/sessions/{session_id}/events",
+    response_model=SessionEventView,
+    dependencies=[Depends(require_play_enabled)],
+)
+def create_session_event(
+    campaign_id: str,
+    session_id: str,
+    body: SessionEventRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> SessionEventView:
+    member = _get_member_or_404(session, campaign_id, email)
+    game_session = _session_in_campaign(session, campaign_id, session_id)
+    if body.kind == "utterance":
+        raise HTTPException(status_code=403, detail="utterances require ingest")
+    if member.role != "dm" and (
+        body.kind != "action" or body.audience not in ("dm", "table")
+    ):
+        raise HTTPException(status_code=403, detail="player action required")
+    try:
+        audience = Audience(
+            body.audience,
+            frozenset(body.audience_pc_ids),
+            author_member_id=member.id,
+        )
+        row = append_event(
+            session,
+            game_session=game_session,
+            kind=body.kind,
+            audience=audience,
+            author_member_id=member.id,
+            body=body.body,
+        )
+    except SessionEndedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (InvalidEventAudienceError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(row)
+    return _event_view(row, member)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/{session_id}/events",
+    response_model=list[SessionEventView],
+    dependencies=[Depends(require_play_enabled)],
+)
+def list_session_events(
+    campaign_id: str,
+    session_id: str,
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[SessionEventView]:
+    member = _get_member_or_404(session, campaign_id, email)
+    _session_in_campaign(session, campaign_id, session_id)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    rows = session.exec(
+        select(SessionEvent)
+        .where(
+            SessionEvent.campaign_id == campaign_id,
+            SessionEvent.session_id == session_id,
+            SessionEvent.seq > after,
+            audience_predicate(SessionEvent, viewer, member),
+        )
+        .order_by(SessionEvent.seq)
+        .limit(limit)
+    ).all()
+    return [_event_view(row, member) for row in rows]
+
+
+@router.post(
+    "/campaigns/{campaign_id}/sessions/{session_id}/events/{event_id}/retract",
+    response_model=SessionEventView,
+    dependencies=[Depends(require_play_enabled)],
+)
+def retract_session_event(
+    campaign_id: str,
+    session_id: str,
+    event_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> SessionEventView:
+    member = _get_member_or_404(session, campaign_id, email)
+    _session_in_campaign(session, campaign_id, session_id)
+    row = session.exec(
+        select(SessionEvent)
+        .where(
+            SessionEvent.id == event_id,
+            SessionEvent.session_id == session_id,
+            SessionEvent.campaign_id == campaign_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="session event not found")
+    if member.role != "dm" and (
+        row.kind != "action" or row.author_member_id != member.id
+    ):
+        raise HTTPException(status_code=403, detail="own player action required")
+    # Retraction is idempotent and permitted after a session ends.
+    if row.retracted_at is None:
+        row.retracted_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(row)
+    return _event_view(row, member)
 
 
 # --- Registered-user lobby and accepted invitations --------------------

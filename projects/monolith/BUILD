@@ -6372,6 +6372,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pgvector",
