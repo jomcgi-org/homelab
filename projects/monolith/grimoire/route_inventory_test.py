@@ -26,6 +26,7 @@ class Case:
     caller: str = "dm"
     success: int = 200
     state: str | None = None
+    denials: dict[str, int] = field(default_factory=dict)
 
 
 # $row.column values resolve against real persisted fixture rows. Bodies are
@@ -36,6 +37,11 @@ CASES = {
         body={"character_name": "New PC", "sheet": {}}
     ),
     ("GET", PREFIX + "/characters"): Case(),
+    ("POST", PREFIX + "/characters/self"): Case(
+        body={"name": "New PC"},
+        caller="no_character",
+        denials={"player_a": 409, "player_b": 409, "dm": 403},
+    ),
     ("GET", PREFIX + CHARACTER): Case(params={"player_character_id": "$character.id"}),
     ("POST", PREFIX + CHARACTER + "/drafts"): Case(
         params={"player_character_id": "$character.id"},
@@ -84,6 +90,10 @@ CASES = {
         body={"email": "$email.outsider"}, caller="operator"
     ),
     ("GET", PREFIX + "/members"): Case(),
+    ("PUT", PREFIX + "/members/{member_id}/character"): Case(
+        params={"member_id": "$member_no_character.id"},
+        body={"new": {"name": "New PC"}},
+    ),
     ("DELETE", PREFIX + "/members/{member_id}"): Case(
         params={"member_id": "$member.id"}, success=204
     ),
@@ -172,7 +182,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 32
+    assert len(enumerated) == 35
 
 
 def test_route_inventory(harness):
@@ -243,11 +253,15 @@ def test_campaign_route_matrix(harness, method, path):
             assert h.snapshot() == before, f"cross-campaign mutation: {method} {path}"
 
         if method != "GET":
-            for viewer in ("player_a", "player_b", "no_character"):
+            denied_viewers = {"player_a", "player_b", "no_character", *case.denials}
+            for viewer in sorted(denied_viewers):
                 if viewer == case.caller:
                     continue
                 response = call(client, h, method, path, case, viewer)
-                assert response.status_code in (403, 404), response.text
+                expected = (
+                    (case.denials[viewer],) if viewer in case.denials else (403, 404)
+                )
+                assert response.status_code in expected, response.text
                 assert h.snapshot() == before, f"{viewer} mutated {method} {path}"
 
         if method == "GET":

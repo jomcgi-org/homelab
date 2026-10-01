@@ -24,9 +24,10 @@ from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from shared.embedding import EmbeddingClient
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, or_, select
 
 from grimoire import aliases, library
@@ -359,6 +360,12 @@ class CharacterView(BaseModel):
     sheet: dict
 
 
+class CharacterNameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+
+
 @router.post(
     "/campaigns/{campaign_id}/characters",
     response_model=CharacterView,
@@ -379,6 +386,38 @@ def create_character(
         sheet=body.sheet,
     )
     session.add(character)
+    session.commit()
+    session.refresh(character)
+    return character
+
+
+@router.post(
+    "/campaigns/{campaign_id}/characters/self",
+    response_model=CharacterView,
+)
+def create_own_character(
+    campaign_id: str,
+    body: CharacterNameRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> PlayerCharacter:
+    member = _get_member_or_404(session, campaign_id, email)
+    if member.role != "player":
+        raise HTTPException(status_code=403, detail="campaign player role required")
+    # Refresh after the lock: another request may have assigned this member.
+    member = session.exec(
+        select(CampaignMember)
+        .where(CampaignMember.id == member.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if member.player_character_id is not None:
+        raise HTTPException(status_code=409, detail="player already has a character")
+    character = PlayerCharacter(campaign_id=campaign_id, character_name=body.name)
+    session.add(character)
+    session.flush()
+    member.player_character_id = character.id
+    session.add(member)
     session.commit()
     session.refresh(character)
     return character
@@ -735,11 +774,27 @@ class BootstrapDmRequest(BaseModel):
     email: str
 
 
+class MemberCharacterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    player_character_id: str | None = None
+    new: CharacterNameRequest | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_character(self) -> MemberCharacterRequest:
+        has_id = "player_character_id" in self.model_fields_set
+        has_new = "new" in self.model_fields_set
+        if has_id == has_new or (has_new and self.new is None):
+            raise ValueError("provide exactly one of player_character_id or new")
+        return self
+
+
 class MemberView(BaseModel):
     id: str
     email: str
     role: MemberRole
     player_character_id: str | None
+    character_name: str | None
     created_at: datetime
 
 
@@ -752,8 +807,80 @@ def _member_view(session: Session, member: CampaignMember) -> MemberView:
         email=user.email,
         role=member.role,
         player_character_id=member.player_character_id,
+        character_name=_member_character_name(session, member),
         created_at=member.created_at,
     )
+
+
+def _member_character_name(session: Session, member: CampaignMember) -> str | None:
+    if member.player_character_id is None:
+        return None
+    return _get_character_in_campaign_or_404(
+        session, member.campaign_id, member.player_character_id
+    ).character_name
+
+
+@router.put(
+    "/campaigns/{campaign_id}/members/{member_id}/character",
+    response_model=MemberView,
+)
+def assign_member_character(
+    campaign_id: str,
+    member_id: str,
+    body: MemberCharacterRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> MemberView:
+    _require_dm(session, campaign_id, email)
+    session.exec(
+        select(Campaign).where(Campaign.id == campaign_id).with_for_update()
+    ).one()
+    # Self creation locks this row too; serialize against it before reading the link.
+    member = session.exec(
+        select(CampaignMember)
+        .where(
+            CampaignMember.id == member_id,
+            CampaignMember.campaign_id == campaign_id,
+            CampaignMember.role == "player",
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if member is None:
+        raise HTTPException(status_code=404, detail="player membership not found")
+    try:
+        if body.new is not None:
+            character = PlayerCharacter(
+                campaign_id=campaign_id, character_name=body.new.name
+            )
+            session.add(character)
+            session.flush()
+            character_id = character.id
+        else:
+            character_id = body.player_character_id
+            if character_id is not None:
+                _get_character_in_campaign_or_404(session, campaign_id, character_id)
+                assigned = session.exec(
+                    select(CampaignMember).where(
+                        CampaignMember.campaign_id == campaign_id,
+                        CampaignMember.player_character_id == character_id,
+                        CampaignMember.id != member.id,
+                    )
+                ).first()
+                if assigned is not None:
+                    raise HTTPException(
+                        status_code=409, detail="character already assigned"
+                    )
+        member.player_character_id = character_id
+        session.add(member)
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail="character already assigned"
+        ) from exc
+    session.refresh(member)
+    return _member_view(session, member)
 
 
 @router.post(
@@ -1792,6 +1919,8 @@ class LobbyUserView(BaseModel):
 class LobbyCampaignView(CampaignView):
     role: MemberRole
     is_owner: bool
+    player_character_id: str | None
+    character_name: str | None
 
 
 class InvitationView(BaseModel):
@@ -1852,6 +1981,8 @@ def get_lobby(
                 created_at=campaign.created_at,
                 role=member.role,
                 is_owner=campaign.owner_app_user_id == user.id,
+                player_character_id=member.player_character_id,
+                character_name=_member_character_name(session, member),
             )
         )
     invitations = session.exec(
