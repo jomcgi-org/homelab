@@ -36,6 +36,7 @@ from factory.execution.models import (
     PendingMessage,
 )
 from core import db as core_db
+from factory.orchestration.models import SwarmNodeRun
 
 ARTIFACT_PATH = ".factory/result.json"
 
@@ -45,7 +46,9 @@ def database(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'response-lost.db'}",
         connect_args={"check_same_thread": False, "timeout": 3},
-        execution_options={"schema_translate_map": {"agent_sessions": None}},
+        execution_options={
+            "schema_translate_map": {"agent_sessions": None, "swarm": None}
+        },
     )
     SQLModel.metadata.create_all(
         engine,
@@ -58,6 +61,7 @@ def database(tmp_path, monkeypatch):
                 AgentSession,
                 AgentTurn,
                 PendingMessage,
+                SwarmNodeRun,
             )
         ],
     )
@@ -329,6 +333,64 @@ def test_lost_response_recovers_the_exact_result_without_re_executing(
     assert after["session"]["cli_session_id"] == "native-cli"
     # No observer is left to clear a fence, so adoption must not set one.
     assert after["session"]["result_receipt_fence_id"] is None
+
+
+@pytest.mark.parametrize("lose_response", [False, True])
+def test_factory_pin_reaches_real_invoke_and_response_loss_hold(
+    database, monkeypatch, lose_response
+):
+    monkeypatch.setattr(
+        "factory.orchestration.api.factory_session_allowed", lambda _key: True
+    )
+    sid = queue(database, "factory:t-artifact:implement:2")
+    with Session(database) as db:
+        agent = db.get(AgentSession, sid)
+        agent.workflow_id = "artifact-dispatch-2"
+        agent.node_key = "implement"
+        agent.node_attempt = 2
+        db.add_all(
+            [
+                agent,
+                SwarmNodeRun(
+                    task_id="t-artifact",
+                    node_key="implement",
+                    attempt=2,
+                    dispatch_key="artifact-dispatch-2",
+                    session_id=None,
+                    status="running",
+                    pin_json=json.dumps({"artifact_path": ARTIFACT_PATH}),
+                ),
+            ]
+        )
+        db.commit()
+
+    async def handler(request):
+        if lose_response:
+            raise httpx.ReadError("original response lost", request=request)
+        return httpx.Response(200, json=native_record(), request=request)
+
+    requests = fake_http(monkeypatch, handler, working_guest(sid))
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    assert len(requests) == 1
+    assert requests[0].url.path == f"/v1/sessions/guest-{sid}/invoke"
+    assert json.loads(requests[0].content)["artifact_path"] == ARTIFACT_PATH
+    if lose_response:
+        assert_held(database, sid, "invoke_response_lost")
+        assert hold_of(sid)["artifact_path"] == ARTIFACT_PATH
+        held = snapshot(database, sid)
+        publish(native_record(), requests[0])
+        assert store.adopt_response_lost_result(sid, ".factory/other.json") == {
+            "status": "refused",
+            "reason": "declared artifact path changed",
+        }
+        assert snapshot(database, sid) == held
+        assert (
+            store.adopt_response_lost_result(sid, ARTIFACT_PATH)["status"] == "adopted"
+        )
+    turn = snapshot(database, sid)["turns"][0]
+    assert turn["artifact_path"] == ARTIFACT_PATH
+    assert turn["artifact_outcome"] == "ok"
+    assert bytes(turn["artifact_blob"]) == b'{"status": "ok"}'
 
 
 @pytest.mark.parametrize("recovery_enabled", [True, False])
