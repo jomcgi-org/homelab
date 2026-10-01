@@ -210,6 +210,29 @@ def test_heartbeat_commits_before_waiting_reclaim_rechecks_staleness(lane, monke
         assert store.get_session(session, lane.session_id).status == "running"
 
 
+def test_session_lock_heartbeat_does_not_queue_on_pool_holder(lane, monkeypatch):
+    """A long capacity_pool holder no longer delays a heartbeat past its lease."""
+    from factory.execution import admission
+
+    monkeypatch.setenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "true")
+    holder = lane.engine.connect()
+    transaction = holder.begin()
+    try:
+        with Session(bind=holder) as db:
+            admission.lock_pool(db)
+            db.flush()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                heartbeat = pool.submit(
+                    lane.run,
+                    "heartbeat",
+                    lambda: store.refresh_claim_sync(lane.session_id, 1, OWNER),
+                )
+                assert heartbeat.result(timeout=WAIT_SECONDS) is True
+    finally:
+        transaction.rollback()
+        holder.close()
+
+
 def test_activation_waits_for_unknown_commit_and_keeps_session_held(lane, monkeypatch):
     locked, proceed = _pause_after_session_lock(lane, monkeypatch, "hold")
 

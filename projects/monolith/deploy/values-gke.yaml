@@ -173,6 +173,10 @@ agents:
     # at once, and supervision settles a non-factory permit whose guest never
     # ran an invoke and has no receipt (permit 10690's shape, 2026-10-01).
     executorNotInvokedRecordEnabled: true
+    # Heartbeats skip the global pool lock. On 2026-10-01, 15 factory runs
+    # (lease_expired or zombie_observer_lost) lost a healthy invoke because
+    # a heartbeat queued behind capacity_pool past the 30 second lease.
+    claimHeartbeatSessionLockEnabled: true
     neverInvokedGuestSettlementEnabled: true
     resultReceiptAdoptionEnabled: true
     # Settle a non-factory permit on the guest's own error answer. At

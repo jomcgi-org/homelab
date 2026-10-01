@@ -73,12 +73,37 @@ def _lock_session(session: Session, session_id: int) -> AgentSession | None:
     database write lock without changing user-visible timestamps.
     """
     admission.lock_pool(session)
+    return _lock_session_row(session, session_id)
+
+
+def _lock_session_row(session: Session, session_id: int) -> AgentSession | None:
+    """Lock one session row without first taking the global capacity pool.
+
+    Only for a writer that takes no lock after the session except that
+    session's own pending row, which already follows the session in lock
+    order. Such a writer can wait behind a pool holder's session lock but can
+    never hold something a pool holder waits for while it waits for the pool.
+    """
     session.execute(
         update(AgentSession)
         .where(AgentSession.id == session_id)
         .values(last_turn_at=AgentSession.last_turn_at)
     )
     return session.get(AgentSession, session_id, populate_existing=True)
+
+
+def claim_heartbeat_session_lock_enabled() -> bool:
+    """Whether claim heartbeats skip the global capacity-pool lock.
+
+    Off, every heartbeat queues on the single capacity_pool row behind every
+    admission, settlement and receipt transaction in the fleet. Under factory
+    load that queue delays a heartbeat past the 30 second lease, and the stale
+    sweep then settles a healthy invoke as lease_expired (2026-10-01).
+    """
+    return (
+        os.getenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "false").lower()
+        == "true"
+    )
 
 
 def _assert_sendable(session: Session, session_id: int) -> None:
@@ -2855,7 +2880,14 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
     Returns True if claim is still held, False if claim was stolen.
     """
     with Session(get_engine()) as session:
-        row = _lock_session(session, session_id)
+        # The heartbeat writes only this session's pending row after the
+        # session lock, so it may skip the pool lock (see the flag's docstring).
+        lock = (
+            _lock_session_row
+            if claim_heartbeat_session_lock_enabled()
+            else _lock_session
+        )
+        row = lock(session, session_id)
         if row is None or _bound_zero_turn_cleanup_pending(row):
             return False
         # Match the owner in the UPDATE itself. A recovery transaction that
