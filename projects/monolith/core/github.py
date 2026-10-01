@@ -109,8 +109,13 @@ def fetch_issue_states(
     """Fetch linked issue state, omitting unresolved aliases, not real failures."""
     if not numbers:
         return []
-    if any(type(number) is not int or number <= 0 for number in numbers):
-        raise ValueError("GitHub issue numbers must be positive integers")
+    if any(type(number) is not int for number in numbers):
+        raise ValueError("GitHub issue numbers must be integers")
+    # Older declarations accepted nonpositive numbers. Treat them as unknown
+    # without letting one invalid link poison every active goal's refresh.
+    numbers = [number for number in numbers if number > 0]
+    if not numbers:
+        return []
     owner, name = (repo or GITHUB_REPO).split("/", 1)
     aliases = {f"issue_{number}": number for number in sorted(set(numbers))}
     fields = "\n".join(
@@ -118,6 +123,7 @@ def fetch_issue_states(
           number state closedAt
           closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {{
             nodes {{ number merged mergedAt }}
+            pageInfo {{ hasNextPage }}
           }}
         }}"""
         for alias, number in aliases.items()
@@ -153,11 +159,13 @@ def fetch_issue_states(
             issue = repository[alias]
             if issue is None:
                 continue
-            closing = [
-                pr
-                for pr in issue["closedByPullRequestsReferences"]["nodes"]
-                if pr["merged"] is True
-            ]
+            connection = issue["closedByPullRequestsReferences"]
+            # Keep the scoped first:20 query, but never publish partial counts.
+            if connection["pageInfo"]["hasNextPage"]:
+                raise RuntimeError(
+                    f"GitHub closing refs truncated for issue #{issue['number']}"
+                )
+            closing = [pr for pr in connection["nodes"] if pr["merged"] is True]
             merge_times = [
                 stamp
                 for pr in closing

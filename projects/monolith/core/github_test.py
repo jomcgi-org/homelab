@@ -38,6 +38,8 @@ def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch
         assert body["variables"] == {"owner": "example", "name": "repo"}
         assert "issue_5927: issue(number: 5927)" in body["query"]
         assert "includeClosedPrs: true" in body["query"]
+        assert "issue_0" not in body["query"]
+        assert "issue_-1" not in body["query"]
         assert request.headers["Authorization"] == "Bearer test-token"
         return httpx.Response(
             200,
@@ -49,6 +51,7 @@ def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch
                             "state": "CLOSED",
                             "closedAt": "2026-09-28T12:00:00Z",
                             "closedByPullRequestsReferences": {
+                                "pageInfo": {"hasNextPage": False},
                                 "nodes": [
                                     {
                                         "number": 6412,
@@ -61,14 +64,17 @@ def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch
                                         "mergedAt": "2026-09-28T12:00:00Z",
                                     },
                                     {"number": 9998, "merged": False, "mergedAt": None},
-                                ]
+                                ],
                             },
                         },
                         "issue_5784": {
                             "number": 5784,
                             "state": "OPEN",
                             "closedAt": None,
-                            "closedByPullRequestsReferences": {"nodes": []},
+                            "closedByPullRequestsReferences": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": False},
+                            },
                         },
                         "issue_9999": None,
                     }
@@ -85,7 +91,7 @@ def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         rows = fetch_issue_states(
-            [5927, 5784, 9999], repo="example/repo", client=client
+            [5927, 5784, 9999, 0, -1], repo="example/repo", client=client
         )
     assert [row["number"] for row in rows] == [5784, 5927]
     assert rows[0]["state"] == "OPEN"
@@ -130,8 +136,44 @@ def test_fetch_issue_states_reuses_retry_policy(monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         assert fetch_issue_states([5927], repo="example/repo", client=client) == []
         assert fetch_issue_states([], client=client) == []
+        assert fetch_issue_states([0, -1], client=client) == []
     assert len(calls) == 2
     assert delays == [2]
+
+
+def test_fetch_issue_states_rejects_truncated_closing_refs():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "repository": {
+                        "issue_5927": {
+                            "number": 5927,
+                            "state": "CLOSED",
+                            "closedAt": None,
+                            "closedByPullRequestsReferences": {
+                                "nodes": [
+                                    {
+                                        "number": n,
+                                        "merged": True,
+                                        "mergedAt": "2026-09-28T12:00:00Z",
+                                    }
+                                    for n in range(1, 21)
+                                ],
+                                "pageInfo": {"hasNextPage": True},
+                            },
+                        },
+                    }
+                }
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(
+            RuntimeError, match="closing refs truncated for issue #5927"
+        ):
+            fetch_issue_states([5927], repo="example/repo", client=client)
 
 
 def test_fetch_merged_pull_requests_pages_and_filters_old_merges():
