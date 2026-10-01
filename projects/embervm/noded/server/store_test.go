@@ -3366,6 +3366,56 @@ func TestDrainWaitsForBankedSessionExport(t *testing.T) {
 	}
 }
 
+// TestDrainExportsSurviveShutdownSignal reproduces the production wiring: the
+// export workers start under the daemon's signal context, SIGTERM cancels it,
+// and only then does the drain enqueue its exports. With the export context
+// detached from the signal the banked session still reaches the store.
+func TestDrainExportsSurviveShutdownSignal(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	signalCtx, sigterm := context.WithCancel(context.Background())
+	exportCtx, cancelExports := DrainExportContext(signalCtx, true)
+	defer cancelExports()
+	s.startExportQueue(exportCtx)
+	sigterm()
+
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "sessions", "drain-after-signal"), map[string]string{
+		"memfile": "flushed-memory", "snapfile": "snapshot", "imageref": "base",
+	})
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "drain-after-signal", sessionID: "s-signal", workload: "sandbox"})
+	deadline := time.Now().Add(10 * time.Second)
+	s.SetDraining(deadline)
+	if remaining := s.WaitForManagedDrain(context.Background(), deadline); remaining != 0 {
+		t.Fatalf("remaining = %d", remaining)
+	}
+	if !time.Now().Before(deadline) {
+		t.Fatal("drain ran to its deadline instead of finishing the export")
+	}
+	if !fs.has("session/amd/sandbox/drain-after-signal") {
+		t.Fatal("banked session missing from store after a signal-time drain")
+	}
+}
+
+// TestDrainExportContextDisabledFollowsSignal pins the flag-off behaviour: the
+// export context is the signal context itself, so it is cancelled with it.
+func TestDrainExportContextDisabledFollowsSignal(t *testing.T) {
+	signalCtx, sigterm := context.WithCancel(context.Background())
+	exportCtx, cancel := DrainExportContext(signalCtx, false)
+	defer cancel()
+	sigterm()
+	if exportCtx.Err() == nil {
+		t.Fatal("flag off: export context must be cancelled by the signal")
+	}
+	detached, cancelDetached := DrainExportContext(signalCtx, true)
+	if detached.Err() != nil {
+		t.Fatal("flag on: export context must outlive the signal")
+	}
+	cancelDetached()
+	if detached.Err() == nil {
+		t.Fatal("flag on: the returned cancel must stop the export context")
+	}
+}
+
 func TestDrainSkipsUnexportableArtifacts(t *testing.T) {
 	s := newStoreTestServer(t, newFakeStore())
 	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "rejected", sessionID: "s-rejected", workload: "sandbox"})

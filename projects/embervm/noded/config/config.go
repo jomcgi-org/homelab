@@ -233,6 +233,11 @@ type Config struct {
 	// mechanism can be verified live before a deployment values flip. Env
 	// EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED.
 	PreemptionNoticeEnabled bool
+	// DrainExportsOutliveSignal keeps the artifact export and restore workers
+	// running after SIGTERM, until the daemon exits, so the drain's workspace and
+	// session exports can finish. Default false (workers stop with the signal,
+	// which cancels every drain export). Env EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL.
+	DrainExportsOutliveSignal bool
 	// PreemptionDrainTimeout is the deadline published after the GCE preemption
 	// notice. Default 20s: GCE Spot provides an approximately 30s best-effort
 	// shutdown period, less notice-observation latency and the daemon's own final
@@ -535,6 +540,7 @@ func Load() (Config, error) {
 		SizeClass:                   os.Getenv("EMBERVM_NODED_SIZE_CLASS"),
 		WarmRestoreWithVolume:       boolDefault("EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME", false),
 		DiffBanking:                 boolDefault("EMBERVM_NODED_DIFF_BANKING", false),
+		DrainExportsOutliveSignal:   boolDefault("EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL", false),
 		DiffBankingWorkloads:        csvDefault("EMBERVM_NODED_DIFF_BANKING_WORKLOADS"),
 		EnforceBundleRootfsIdentity: boolDefault("EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY", false),
 		ControlPlaneURL:             os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),

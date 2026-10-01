@@ -290,7 +290,12 @@ func run(logger *slog.Logger) error {
 	// no-op when the store is disabled. They run for the daemon's lifetime; ctx
 	// cancels them on shutdown, and the export queue is fire-and-forget so it never
 	// holds the drain deadline.
-	srv.StartStoreLoops(ctx)
+	// With DrainExportsOutliveSignal the export and restore workers keep running
+	// after SIGTERM so WaitForManagedDrain can actually move parked workspaces and
+	// banked sessions off node; they stop when run returns.
+	exportCtx, cancelExports := server.DrainExportContext(ctx, cfg.DrainExportsOutliveSignal)
+	defer cancelExports()
+	srv.StartStoreLoopsWithExportContext(ctx, exportCtx)
 	// Sample the cgroup CPU usage rate on the liveness cadence so
 	// NodeStatus.cpu_headroom_millicores always has a live two-sample delta
 	// rather than a stale or empty one (ADR embervm/005 item 4: the daemon

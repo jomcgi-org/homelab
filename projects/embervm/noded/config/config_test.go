@@ -333,6 +333,7 @@ func TestLoadDefaults(t *testing.T) {
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
 		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED",
+		"EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL",
 		"EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
 		"EMBERVM_NODED_ENFORCE_BUNDLE_ROOTFS_IDENTITY",
 		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
@@ -410,6 +411,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.PreemptionNoticeEnabled {
 		t.Error("PreemptionNoticeEnabled should default false")
+	}
+	if c.DrainExportsOutliveSignal {
+		t.Error("DrainExportsOutliveSignal should default false")
 	}
 	if c.PreemptionDrainTimeout != 20*time.Second {
 		t.Errorf("PreemptionDrainTimeout = %v, want 20s", c.PreemptionDrainTimeout)
@@ -556,6 +560,17 @@ func TestLoadBundleRootfsIdentityEnforcementOverride(t *testing.T) {
 	}
 	if !c.EnforceBundleRootfsIdentity {
 		t.Error("EnforceBundleRootfsIdentity should follow the environment gate")
+	}
+}
+
+func TestLoadDrainExportsOutliveSignalOverride(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL", "true")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.DrainExportsOutliveSignal {
+		t.Error("DrainExportsOutliveSignal = false, want true")
 	}
 }
 
