@@ -1,0 +1,32 @@
+name: Ember demo probe failed (by component)
+dataset: monolith-backend
+description: >-
+  Counts final failed Ember demo probe roots for bazel, pages and postgres.
+  The demo and trace.trace_id breakdowns name the failing component and run.
+  Attempts use separate outcome attributes, so recovered retries do not alert.
+  The probes run hourly; a 60-minute window checked every 15 minutes catches
+  one post-retry failure with COUNT > 0 on one evaluation.
+  Open the failing run in Honeycomb by replacing <trace_id> in
+  https://ui.honeycomb.io/jomcgi-75/environments/homelab/datasets/monolith-backend/trace?trace_id=<trace_id>.
+  The link searches the last two hours; for older alerts add trace_start_ts and
+  trace_end_ts as UTC epoch seconds around the run.
+enabled: true
+frequency: 900
+alert_type: on_change
+threshold:
+  op: '>'
+  value: 0
+  exceeded_limit: 1
+recipients: [kjEJr2qxxxe]
+tags:
+  service: monolith
+  signal: ember-probe
+query:
+  time_range: 3600
+  calculations:
+    - op: COUNT
+  filters:
+    - column: ember.probe.ok
+      op: '='
+      value: false
+  breakdowns: [ember.probe.demo, trace.trace_id]
