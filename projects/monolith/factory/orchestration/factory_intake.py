@@ -604,10 +604,14 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     blocked_by=[blocker.id for blocker in blockers] or None,
                 )
         # Each repo admits under its own lane caps, so a full repo never
-        # holds the lane for a later receipt on a repo with room.
+        # holds the lane for a later receipt on a repo with room. The
+        # global ceiling and its contended split stay owned by open_lanes:
+        # only a tier with room in `available` admits anything.
         row = None
         for candidate in candidates:
             tier = routes[receipt_task_class(candidate)]["tier"]
+            if tier not in available:
+                continue
             repo_limits = repo_lane_limits(policy, candidate.repo)
             held = sum(
                 1
@@ -686,9 +690,13 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             }
         # The pinned policy carries the repo's own envelope: lane caps,
         # budget and landing switch come from the entry, so every
-        # downstream check answers to the repo's numbers.
+        # downstream check answers to the repo's numbers. The dispatch
+        # grant overlay prices only this task; it is never pinned, and
+        # for a single-entry primary policy the pinned value is the
+        # global policy unchanged.
+        pinned_policy = repo_effective_policy(policy, row.repo)
         effective_policy = {
-            **repo_effective_policy(policy, row.repo),
+            **pinned_policy,
             **(dispatch_grant["policy_overlay"] if dispatch_grant else {}),
         }
         task_id = mint_task_id()
@@ -708,7 +716,11 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         from knowledge.api import prepare_recall
 
         prepare_recall(db, task.task_text)
-        row.task_id, row.state, row.policy_json = task_id, "admitted", _json(policy)
+        row.task_id, row.state, row.policy_json = (
+            task_id,
+            "admitted",
+            _json(pinned_policy),
+        )
         row.routing_tier = route["tier"]
         store_class_route(receipt_task_class(row), route, session=db)
         row.updated_at = _now()

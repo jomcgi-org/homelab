@@ -2596,6 +2596,45 @@ def test_legacy_policy_normalizes_to_single_primary_repo_entry(db, policy):
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
 
 
+def test_repos_map_tolerates_a_stored_policy_without_defaulted_blocks(policy):
+    # A stored pre-repos policy (and any raw json.loads of the control row)
+    # carries an intake block validate_policy has not defaulted yet. The
+    # intake sweep and the webhook read the map off that raw shape, so the
+    # map must default through the same accessors instead of KeyError.
+    policy["intake"] = {"enabled": True}
+    entries = controls.repos_map(dict(policy))
+    assert set(entries) == {"owner/repo"}
+    assert entries["owner/repo"]["labels"] == controls.intake_policy(policy)["labels"]
+    assert (
+        entries["owner/repo"]["exclude_labels"]
+        == controls.intake_policy(policy)["exclude_labels"]
+    )
+    assert entries["owner/repo"]["max_per_day"] == controls.intake_policy(policy)[
+        "max_per_day"
+    ]
+    assert entries["owner/repo"]["max_tasks"] == controls.lane_max_tasks(policy)
+    assert controls.enabled_repos(dict(policy)) == ["owner/repo"]
+    # A policy stored before auto_merge existed carries no key at all, and
+    # validate_policy still accepts it, so the map must read it too.
+    policy.pop("auto_merge", None)
+    assert controls.validate_policy(dict(policy))["auto_merge"] is False
+    assert controls.repos_map(dict(policy))["owner/repo"]["auto_merge"] is False
+    assert controls.enabled_repos(dict(policy)) == ["owner/repo"]
+
+
+def test_single_repo_admission_pins_the_global_policy_json(db, policy, monkeypatch):
+    # Main pinned the validated global policy to the receipt. With one repo
+    # the repo-effective envelope inherits every value unchanged, so the
+    # pinned JSON must equal what main pinned, built main's way.
+    enable(policy, monkeypatch)
+    expected = controls._json(controls.validate_policy(controls.status()["policy"]))
+    receive("owner/repo", 1)
+    admission = admit_next("scheduler")
+    assert admission["ok"]
+    assert admission["receipt"]["policy"] == json.loads(expected)
+    assert admission["policy"] == admission["receipt"]["policy"]
+
+
 def test_two_repos_admit_independently_under_own_caps(db, policy, monkeypatch):
     enable(two_repo_policy(policy), monkeypatch)
     receive("owner/repo", 1)

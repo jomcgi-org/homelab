@@ -1054,6 +1054,10 @@ def wide_policy(**intake):
             "max_per_day": 50,
             **intake,
         },
+        # The sweep resolves per-repo caps and budgets through the repos
+        # map, so the fixture carries the envelope a validated policy has.
+        "task_budget_usd": 10.0,
+        "turn_budget_usd": 1.0,
     }
 
 

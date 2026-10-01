@@ -936,9 +936,14 @@ def _validate_repo_entry(
         if type(setting) is not bool:
             raise ValueError(f"invalid repos {key} for {slug}")
         entry[key] = setting
-    intake = policy["intake"]
+    # Inherited defaults come through the defaulting accessors, and only when
+    # the entry lacks the key. repos_map runs on stored and freshly parsed
+    # policies whose intake block is not defaulted yet (or whose auto_merge
+    # predates the flag), so reading policy["intake"] or policy["auto_merge"]
+    # directly raises KeyError on a policy validate_policy accepts.
+    intake = intake_policy(policy)
     for key in ("labels", "exclude_labels"):
-        labels = value.get(key, intake[key])
+        labels = value[key] if key in value else intake[key]
         if not isinstance(labels, list) or len(labels) > 32:
             raise ValueError(f"invalid repos {key} for {slug}")
         entry[key] = sorted({_text(label, "label", 128) for label in labels})
@@ -947,19 +952,26 @@ def _validate_repo_entry(
     }:
         raise ValueError(f"repos labels overlap exclude_labels for {slug}")
     entry["max_per_day"] = _integer(
-        value.get("max_per_day", intake["max_per_day"]),
+        value["max_per_day"] if "max_per_day" in value else intake["max_per_day"],
         "max_per_day",
         1,
         10000,
     )
-    entry["max_tasks"] = _validate_max_tasks(value.get("max_tasks", policy["max_tasks"]))
+    entry["max_tasks"] = (
+        _validate_max_tasks(value["max_tasks"])
+        if "max_tasks" in value
+        else lane_max_tasks(policy)
+    )
     for key in ("task_budget_usd", "turn_budget_usd"):
-        entry[key] = _money(value.get(key, policy[key]), key)
+        entry[key] = _money(value[key] if key in value else policy[key], key)
     if entry["turn_budget_usd"] > entry["task_budget_usd"]:
         raise ValueError(f"turn budget exceeds task budget for {slug}")
-    auto_merge = value.get(
-        "auto_merge", policy["auto_merge"] if is_primary else DEFAULT_AUTO_MERGE
-    )
+    if "auto_merge" in value:
+        auto_merge = value["auto_merge"]
+    elif is_primary:
+        auto_merge = policy.get("auto_merge", DEFAULT_AUTO_MERGE)
+    else:
+        auto_merge = DEFAULT_AUTO_MERGE
     if type(auto_merge) is not bool:
         raise ValueError(f"invalid repos auto_merge for {slug}")
     entry["auto_merge"] = auto_merge
@@ -1037,15 +1049,19 @@ def repo_lane_max_tasks(policy: dict, repo: str) -> dict:
 def repo_lane_limits(policy: dict, repo: str) -> dict:
     """Per-repo lane concurrency with the chart ceiling applied per lane.
 
-    The ceiling is chart configuration sized for the whole factory; each
-    repo entry is capped by it the same way the global lanes are. The
-    global admission gate still bounds total work in flight.
+    The ceiling is chart configuration sized for the whole factory; a repo
+    entry admits at most the smaller of its own lane ask and the ceiling,
+    each lane independently. One lane's share is never subtracted from the
+    other: the global ceiling and its contended split stay owned by
+    open_lanes and the available lanes at the admission gate, so this check
+    is a no-op beyond that gate for a single-entry primary policy.
     """
     ceiling = factory_max_concurrent_tasks()
     wanted = repo_lane_max_tasks(policy, repo)
-    delivery = max(1, min(wanted["delivery"], ceiling))
-    advisory = max(0, min(wanted["advisory"], ceiling - delivery))
-    return {"delivery": delivery, "advisory": advisory}
+    return {
+        "delivery": max(1, min(wanted["delivery"], ceiling)),
+        "advisory": max(0, min(wanted["advisory"], ceiling)),
+    }
 
 
 def repo_effective_policy(policy: dict, repo: str) -> dict:
