@@ -1,6 +1,8 @@
 """Guard the default-off loom Postgres manifest set without cluster access."""
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -155,3 +157,31 @@ def test_default_off_has_no_application(documents):
     for parsed in documents.values():
         for document in parsed:
             assert document["kind"] != "Application"
+
+
+def test_default_off_home_generator_never_enrolls_loom(tmp_path):
+    generator = Path(
+        os.environ.get(
+            "HOME_CLUSTER_GENERATOR_BIN",
+            str(DEPLOY.parents[2] / "bazel/images/generate-home-cluster.sh"),
+        )
+    ).resolve()
+    for project in ("loom", "inference"):
+        deploy = tmp_path / "projects" / project / "deploy"
+        deploy.mkdir(parents=True)
+        (deploy / "kustomization.yaml").write_text(
+            "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources: []\n"
+        )
+    subprocess.run(
+        ["bash", str(generator)],
+        cwd=tmp_path,
+        env={**os.environ, "BUILD_WORKSPACE_DIRECTORY": str(tmp_path)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    generated = yaml.safe_load(
+        (tmp_path / "projects/home-cluster/kustomization.yaml").read_text()
+    )
+    assert generated["resources"] == ["../../projects/inference/deploy"]
