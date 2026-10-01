@@ -4852,6 +4852,22 @@ py_test(
 )
 
 py_test(
+    name = "swarm_workflow_replay_test",
+    srcs = ["factory/orchestration/workflow_replay_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_cyclegroup",
+        ":pkg_factory",
+        ":pkg_knowledge",
+        ":pkg_swarm",
+        "@pip//dbos",
+        "@pip//opentelemetry_sdk",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_runtime_test",
     srcs = ["factory/orchestration/runtime_test.py"],
     imports = ["."],

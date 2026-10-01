@@ -1258,14 +1258,39 @@ The DBOS application version is pinned to the node workflow's own source:
 call. DBOS otherwise derives it from every registered workflow in the process
 and neither recovers nor dequeues anything an older version started, so any
 unrelated workflow edit stranded in-flight nodes. Pinned, a deploy that leaves
-those functions alone recovers its in-flight nodes natively. The cost is that
-another workflow changed in a deploy now keeps its version and is recovered
-against its recorded steps, which DBOS refuses loudly with
-`DBOSUnexpectedStepError`, and a loud refusal beats the silent PENDING strand
-this replaces.
+those functions alone recovers its in-flight nodes natively. Other workflows
+keep the same version when edited and replay against their recorded steps.
+DBOS patching is enabled alongside the explicit node version; it does not
+replace that version.
+
+`drain_cycle`, `implement_then_review` and `start_session_workflow` must preserve
+their checkpoint sequence across deploys. The current sequence is the baseline,
+with no patch markers. Do not wrap an existing unchanged call in a patch.
+Gate every future addition, removal, reorder or rename of an operation that
+consumes a workflow function id. In DBOS 2.29.0 this includes `@DBOS.step` calls,
+including calls from helpers such as `_claim_with_idle_wait`, `_await_turn` and
+`chain_next_cycle`; durable operations such as `DBOS.sleep`, send/recv and
+set_event/get_event; child workflow calls, starts and enqueues; and patch markers
+themselves. The rule also applies to other checkpointing DBOS APIs and their
+async variants.
+
+To add a step, use `if DBOS.patch("<unique-name>"): new_step()`. To remove one,
+use `if not DBOS.patch("<unique-name>"): old_step()`. Reorder or rename with a
+removal and an addition, each with its own unique patch name. Preserve the old
+branch for pre-patch history. Put behaviour that needs no checkpoint of its own
+inside an existing step or in non-step code. Retire a patch with
+`DBOS.deprecate_patch` only once no workflow started before the patch can still
+be PENDING; drop it in a later deploy after histories containing that marker
+can no longer replay.
+
+**Why.** #6659 added `_quota_span_attributes` ahead of recorded drainer steps.
+Replay raised `DBOSUnexpectedStepError` after reservation and before session
+creation, orphaning permit 10732. A patch returns false on pre-patch history
+without consuming a function id, and records a marker for new executions.
 
 Editing the node workflow or one of its steps is therefore the one deploy that
-strands in-flight nodes, and nothing can recover them. The reconciler cancels
+strands in-flight nodes: DBOS does not recover the older version, so patching
+does not help there. The reconciler cancels
 such a workflow, audits `workflow_stranded` with both versions, and settles the
 attempt as uncertain, after which the node's real session outcome is reconciled
 and the node retries within `max_attempts`.

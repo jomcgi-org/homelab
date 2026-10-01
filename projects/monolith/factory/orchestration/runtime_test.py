@@ -144,7 +144,16 @@ def test_init_dbos_pins_the_application_version_to_the_node_workflow(monkeypatch
     monkeypatch.setattr(runtime, "node_workflow_version", lambda: "pinned-version")
 
     assert runtime.init_dbos() is not None
-    assert configs[0]["application_version"] == "pinned-version"
+    assert configs == [
+        {
+            "name": "monolith",
+            "system_database_url": "postgresql://dbos.example/monolith",
+            "dbos_system_schema": "dbos",
+            "application_version": "pinned-version",
+            "enable_patching": True,
+        }
+    ]
+    assert configs[0]["enable_patching"] is True
 
 
 @pytest.fixture

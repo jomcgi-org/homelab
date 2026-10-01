@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from factory.orchestration import config
 from factory.durable_identity import durable_source
+
+if TYPE_CHECKING:
+    from dbos import DBOSConfig
 
 _dbos = None
 _launched = False
@@ -71,11 +75,9 @@ def node_workflow_version() -> str:
     with the DBOS package version mixed in last so a library upgrade still
     changes the version.
 
-    The trade is deliberate. Every other workflow in the process now keeps its
-    version across a deploy that changed it, so a changed body can be recovered
-    against recorded steps. DBOS detects that as a step mismatch and raises
-    DBOSUnexpectedStepError rather than replaying silently, so the failure is
-    loud.
+    Every other workflow keeps its version across deploys. Changes to their
+    checkpoint sequence must use DBOS.patch, as described in FACTORY.md, to
+    replay against recorded steps without DBOSUnexpectedStepError.
 
     An unreadable source raises rather than falling back. Falling back is not
     neutral: DBOS would then compute its own version, that version differs from
@@ -109,6 +111,19 @@ def node_workflow_version() -> str:
     return hasher.hexdigest()
 
 
+def build_dbos_config(system_database_url: str) -> DBOSConfig:
+    """The production config, also used by SQLite workflow replay tests."""
+    from dbos import DBOSConfig
+
+    return DBOSConfig(
+        name="monolith",
+        system_database_url=system_database_url,
+        dbos_system_schema="dbos",
+        application_version=node_workflow_version(),
+        enable_patching=True,
+    )
+
+
 def init_dbos():
     global _dbos
     if _dbos is not None or not _enabled():
@@ -116,16 +131,9 @@ def init_dbos():
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         return None
-    from dbos import DBOS, DBOSConfig
+    from dbos import DBOS
 
-    _dbos = DBOS(
-        config=DBOSConfig(
-            name="monolith",
-            system_database_url=database_url,
-            dbos_system_schema="dbos",
-            application_version=node_workflow_version(),
-        )
-    )
+    _dbos = DBOS(config=build_dbos_config(database_url))
     return _dbos
 
 
