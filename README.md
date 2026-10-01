@@ -59,6 +59,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
 ├── mcp/              #   Context Forge gateway + MCP servers
 ├── inference/        #   Inference configuration and llama.cpp embeddings
+├── loom/             #   Default-off Postgres control-plane wiring for weave-hand/loom
 ├── operators/        #   Custom Kubernetes operators
 ├── sextant/          #   State-machine code generator for operators
 ├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
