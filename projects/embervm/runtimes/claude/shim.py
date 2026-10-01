@@ -630,6 +630,44 @@ def _is_leaked_tool_call(text):
     return stripped.startswith("<tool_call>")
 
 
+def _is_stale_background_turn_result(event):
+    """Return whether a Claude result event is a stale background notification.
+
+    After a Stop interrupts a turn that backgrounded its shell command, the
+    resumed CLI replays that background task completion as a result event
+    before answering the next prompt (session 13949 on #6600: result "",
+    num_turns 0, zero usage, prior turn cost repeated). It must never become
+    the next dispatch result, so the turn loop skips it and keeps waiting
+    for the result carrying the current prompt answer and its own usage.
+    """
+    if not isinstance(event, dict):
+        return False
+    if event.get("type") != "result":
+        return False
+    subtype = event.get("subtype")
+    if isinstance(subtype, str) and subtype.strip().lower() in (
+        "background",
+        "background_task",
+        "task_notification",
+        "task-notification",
+        "notification",
+    ):
+        return True
+    try:
+        num_turns = event.get("num_turns")
+    except Exception:
+        return False
+    if num_turns != 0:
+        return False
+    result = event.get("result")
+    if result not in ("", None):
+        return False
+    usage = event.get("usage", {})
+    if isinstance(usage, dict) and len(usage) != 0:
+        return False
+    return True
+
+
 # Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
 # PI_CONTEXT_SAFETY_TOKENS so pi starts compacting while there is still room for
 # a full response at turn boundaries. pi checks compaction at agent_end and
@@ -2984,6 +3022,16 @@ class ClaudeProcess:
                             cached_activities,
                         )
                     if event.get("type") == "result":
+                        if _is_stale_background_turn_result(event):
+                            try:
+                                sys.stderr.write(
+                                    "ember-claude-shim: skipping stale "
+                                    "background-task result\n"
+                                )
+                                sys.stderr.flush()
+                            except Exception:
+                                pass
+                            continue
                         if pusher:
                             pusher.push(
                                 accumulated_text + current_message_buffer,

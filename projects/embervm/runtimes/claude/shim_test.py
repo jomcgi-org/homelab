@@ -10296,3 +10296,53 @@ def test_interrupt_honors_window_and_resignals_only_once(
         == outcome
     )
     assert len(signals) == 2
+
+
+def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
+    """Interrupted background completion must not become the next result (#6600).
+
+    Shape from session 13949: the resumed CLI replays the interrupted turn's
+    background-task completion (result "", num_turns 0, zero usage, prior
+    cost) before the follow-up answer. The turn must skip it and return the
+    follow-up's own answer and usage.
+    """
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
+    monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "stale-background-cli"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "if '--version' in sys.argv:\n"
+        "    sys.exit(0)\n"
+        "line = sys.stdin.readline()\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
+        "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
+        "print(json.dumps({'type': 'result', 'result': '', 'subtype': 'background',\n"
+        "                  'is_error': False, 'num_turns': 0, 'session_id': 's',\n"
+        "                  'usage': {}, 'total_cost_usd': 0.0277152,\n"
+        "                  'modelUsage': {'input': 1}}), flush=True)\n"
+        "print(json.dumps({'type': 'result', 'result': 'OK',\n"
+        "                  'is_error': False, 'num_turns': 1, 'session_id': 's',\n"
+        "                  'usage': {'input_tokens': 5}, 'total_cost_usd': 0.001,\n"
+        "                  'modelUsage': {'input': 5}}), flush=True)\n"
+    )
+    os.chmod(executable, 0o755)
+    manager = shim.ClaudeProcess(str(workspace), str(executable))
+    monkeypatch.setattr(manager, "_configure_git", lambda: None)
+
+    assert shim._is_stale_background_turn_result(
+        {"type": "result", "result": "", "num_turns": 0, "usage": {}}
+    ) is True
+    assert shim._is_stale_background_turn_result(
+        {"type": "result", "result": "OK", "num_turns": 1, "usage": {}}
+    ) is False
+
+    record = manager.turn("Reply with only the word OK")
+    assert record["result"] == "OK"
+    assert record["num_turns"] == 1
+    assert record["usage"] == {"input_tokens": 5}
+    assert record["total_cost_usd"] == 0.001
+    manager._close_process(kill=True)
