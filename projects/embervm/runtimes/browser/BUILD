@@ -10,3 +10,24 @@ py_test(
     imports = ["."],
     deps = ["@pip//pytest"],
 )
+
+py_test(
+    name = "session_test",
+    srcs = [
+        "session.py",
+        "session_test.py",
+    ],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "grants_test",
+    srcs = [
+        "grants.py",
+        "grants_test.py",
+        "session.py",
+    ],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
