@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.execution import store
 from factory.execution.constants import (
+    BOUND_ZERO_TURN_CLEANUP_PREFIX,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
 )
@@ -1198,6 +1199,54 @@ def test_stale_reclaim_rechecks_heartbeat_after_candidate_read(
             store.get_pending_message(session, session_id, 1).claimed_by_replica
             == "owner-1"
         )
+
+
+def test_session_lock_heartbeat_skips_pool_lock_and_keeps_fences(
+    uncertain_lane, monkeypatch
+):
+    engine, session_id = uncertain_lane
+    monkeypatch.setenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", "true")
+
+    def no_pool(_db):
+        raise AssertionError("heartbeat took the capacity pool lock")
+
+    monkeypatch.setattr(store.admission, "lock_pool", no_pool)
+    with Session(engine) as session:
+        pending = store.get_pending_message(session, session_id, 1)
+        pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=25)
+        session.add(pending)
+        session.commit()
+
+    assert store.refresh_claim_sync(session_id, 1, "owner-1") is True
+    with Session(engine) as session:
+        refreshed = store.get_pending_message(session, session_id, 1).claimed_at
+        refreshed = (
+            refreshed if refreshed.tzinfo else refreshed.replace(tzinfo=timezone.utc)
+        )
+        assert datetime.now(timezone.utc) - refreshed < timedelta(seconds=10)
+    # Another owner still cannot revive the lease without the pool lock.
+    assert store.refresh_claim_sync(session_id, 1, "owner-2") is False
+    # The bound-zero-turn settlement fence still stops the heartbeat.
+    with Session(engine) as session:
+        row = store.get_session(session, session_id)
+        row.guest_cleanup_id = f"{BOUND_ZERO_TURN_CLEANUP_PREFIX}fence"
+        session.add(row)
+        session.commit()
+    assert store.refresh_claim_sync(session_id, 1, "owner-1") is False
+
+
+def test_heartbeat_takes_pool_lock_when_flag_off(uncertain_lane, monkeypatch):
+    _, session_id = uncertain_lane
+    monkeypatch.delenv("AGENT_CLAIM_HEARTBEAT_SESSION_LOCK_ENABLED", raising=False)
+    calls = []
+    original = store.admission.lock_pool
+    monkeypatch.setattr(
+        store.admission,
+        "lock_pool",
+        lambda db: calls.append(True) or original(db),
+    )
+    assert store.refresh_claim_sync(session_id, 1, "owner-1") is True
+    assert calls
 
 
 def test_expired_attempt_is_recorded_once(uncertain_lane):

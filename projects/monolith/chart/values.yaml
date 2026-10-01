@@ -165,6 +165,12 @@ agents:
     # sent), record the turn not_invoked at once, under a bounded lock wait,
     # so the permit settles at zero cost instead of as an unknown outcome.
     executorNotInvokedRecordEnabled: false
+    # Refresh a running turn's claim under its own session row lock only,
+    # instead of queueing on the global capacity_pool row first. Off, a
+    # heartbeat can wait behind fleet admission and settlement transactions
+    # past the 30 second lease, and the stale sweep settles the healthy
+    # invoke as lease_expired, destroying its guest.
+    claimHeartbeatSessionLockEnabled: false
     # Supervision backstop for kg, project and interactive permits: settle an
     # uncertain permit whose bound guest the control plane shows never ran an
     # invoke (turn_seq 0, no invoke stamp or stop record) and for which no
