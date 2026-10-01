@@ -296,6 +296,8 @@ spec:
               value: {{ .Values.swarm.factoryLostBeforeGuestSettlementEnabled | default false | quote }}
             - name: FACTORY_ESCALATION_REVALIDATION_ENABLED
               value: {{ .Values.swarm.factoryEscalationRevalidationEnabled | default false | quote }}
+            - name: FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED
+              value: {{ .Values.swarm.factoryActiveReceiptDecisionsEnabled | default false | quote }}
             - name: FACTORY_DEADLINE_BACKSTOP_ENABLED
               value: {{ .Values.swarm.factoryDeadlineBackstopEnabled | default false | quote }}
             - name: FACTORY_ACTIVE_CESSATION_ENABLED
