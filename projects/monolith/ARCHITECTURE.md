@@ -599,22 +599,23 @@ needs at least one fresh permitting grant observation, and a stale grant is
 unselectable rather than unconfirmed because the egress ranker tries fresh
 usable grants before stale ones. That alone still wedges an all-stale pool,
 since the deferral stops the very traffic that would refresh an observation.
-The Codex freshness probe closes the loop with one minimal unpinned Luna
-request when no observed grant is fresh and at least one is not exhausted.
-It is unpinned because no per-request grant selector exists in the token
-broker or the egress proxy, and adding guest-to-sidecar plumbing for one
-would be new security-sensitive surface for a reversible default. It is sound
-because the ranker never prefers a stale grant while a fresh usable one
-exists, so the probe lands on the best usable grant and refreshes it either
-way, while unknown, unobserved, and exhausted capacity still defer without
-spending a request. Exhaustion counts only while it can still be true (an
-active window at the exhausted percent, or a rejection whose reset is still in
-the future), matching the ranker, so an all-stale pool of spent grants whose
-resets have passed is probed rather than wedged. The gate and probe cap their
-freshness bound at the sidecar's 15 minutes, so every grant the gate calls
-fresh is also fresh to the ranker.
+The tokenbroker's inference-free usage refresher is the primary source of
+Codex grant freshness, including parked grants. The Codex probe is the
+backstop: one unpinned Luna request when every observed grant is stale and
+at least one is no longer exhausted. The ranker selects its grant, so a probe
+cannot target a parked account. The gate and probe retain the sidecar's
+15-minute freshness ceiling.
+
+**Why.** Probe cleanup advances past held rows in session-ID order before
+limiting the result to five unheld guests. Bound or running Codex probes always
+fence another probe, with a log naming the blocking reason. Only orphaned
+pending turns and unknown outcomes older than 3,600 seconds stop fencing.
+That gives recovery four times the 900-second freshness ceiling and thirty
+120-second turn timeouts, without expiring a live guest's fence or clearing
+its evidence.
 (see: /projects/monolith/factory/quota_probe.py)
 (see: /projects/monolith/factory/orchestration/model_pool.py)
+(see: /projects/embervm/tokenbroker/cmd/tokenbroker/codex_usage.go)
 
 The agent console is served at `/agents` on the private hostname as an
 inbox-first surface: rows state the ask, a run view draws the plan, decision
