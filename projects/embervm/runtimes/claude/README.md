@@ -224,7 +224,9 @@ instead of installing its own.
 
 `toolchain_guard_test.py` pins the package names, the lock resolution (helm 3.x,
 go 1.26.x, node 20.x, pnpm 10.x for x86_64), the lock checksum against
-`apko.yaml`, and the PATH dependency below.
+`apko.yaml`, the repo streams those packages match (`go.mod` go directive 1.26.x
+with no newer `toolchain` line, `MODULE.bazel` node 20.x and pnpm 10.x), and the
+PATH dependency below.
 
 **PATH dependency.** guest-init forces `PATH=/usr/bin:/bin:/usr/local/bin`
 (`setDefaultEnv`), and each package installs its executable under `/usr/bin`

@@ -85,9 +85,19 @@ sh_test(
 
 # The EmberVM chart test that couples hypervisorEpoch to the vendored
 # Firecracker version (#4409) reads the kata_firecracker_archive pin from here.
+# The claude guest toolchain guard (#6642) reads go.mod and MODULE.bazel to pin
+# the go, node and pnpm streams the guest ships.
 exports_files(
     ["MODULE.bazel"],
-    visibility = ["//projects/embervm/chart:__pkg__"],
+    visibility = [
+        "//projects/embervm/chart:__pkg__",
+        "//projects/embervm/runtimes/claude:__pkg__",
+    ],
+)
+
+exports_files(
+    ["go.mod"],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
 # Produce aspect_rules_py targets rather than rules_python

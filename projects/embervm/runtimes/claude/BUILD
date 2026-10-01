@@ -248,6 +248,8 @@ py_test(
     data = [
         "apko.lock.json",
         "apko.yaml",
+        "//:MODULE.bazel",
+        "//:go.mod",
         "//projects/embervm/runtimes/claude/guest-init/cmd:guest_init_source",
     ],
     imports = ["."],
