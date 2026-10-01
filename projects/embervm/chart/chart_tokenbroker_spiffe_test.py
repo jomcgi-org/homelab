@@ -119,7 +119,9 @@ def test_plaintext_retirement_is_explicit_and_requires_mtls() -> None:
         raise AssertionError("accepted plaintext retirement without mTLS")
 
 
-def test_production_overlay_enables_stage_one_but_keeps_plaintext_retirement_off() -> None:
+def test_production_overlay_enables_stage_one_but_keeps_plaintext_retirement_off() -> (
+    None
+):
     """#5791 stage 1: listener and egress client on together, port 8080 still served."""
     defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
     gke = yaml.safe_load((_chart_dir().parent / "deploy/values-gke.yaml").read_text())
