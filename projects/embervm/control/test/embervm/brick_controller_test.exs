@@ -542,6 +542,127 @@ defmodule Embervm.BrickControllerTest do
            ]
   end
 
+  # A safe victim exists (uid-b: idle, warmth fully exported), so in the tests
+  # below the only thing that can stop the shrink is the injected failure.
+  defp safe_victim_facts do
+    [
+      %{size_class: "2gi", pod_uid: "uid-a", live_vms: 1, draining: false},
+      %{
+        size_class: "2gi",
+        pod_uid: "uid-b",
+        live_vms: 0,
+        draining: false,
+        stateful_bundles: [%{exported: true}]
+      }
+    ]
+  end
+
+  # Start the idle dwell on one tick, pass it, and capture the acting tick's log.
+  defp idle_drain_tick(opts) do
+    {clock, advance} = new_clock()
+    pid = start(Keyword.merge(opts, clock: clock))
+
+    BrickController.reconcile_now(pid)
+    advance.(200)
+    ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+  end
+
+  @no_shrink [
+    {"embervm", "embervm-embervm-noded-brick-2gi", 2},
+    {"embervm", "embervm-embervm-noded-brick-2gi", 2}
+  ]
+
+  test "full mode skips the shrink when the brick pods cannot be listed" do
+    {record, calls} = new_recorder()
+    {annotate, annotated} = new_annotator()
+
+    log =
+      safe_victim_facts()
+      |> full_mode_opts(record, annotate)
+      |> Keyword.merge(pods_fun: fn _ns, _selector -> {:error, :timeout} end)
+      |> idle_drain_tick()
+
+    assert log =~ "brick autoscale: skipping scale-down of class 2gi (reason=:timeout)"
+    assert annotated.() == []
+    assert calls.() == @no_shrink
+  end
+
+  test "full mode skips the shrink when the victim's pod is not in the list" do
+    {record, calls} = new_recorder()
+    {annotate, annotated} = new_annotator()
+
+    # The victim fact names uid-b, but no listed pod carries that uid (the pod
+    # is already gone): annotating any listed pod would direct the wrong kill.
+    log =
+      safe_victim_facts()
+      |> full_mode_opts(record, annotate)
+      |> Keyword.merge(
+        pods_fun: fn _ns, _selector ->
+          {:ok, [%{name: "brick-a", uid: "uid-a"}, %{name: "brick-c", uid: "uid-c"}]}
+        end
+      )
+      |> idle_drain_tick()
+
+    assert log =~
+             "brick autoscale: skipping scale-down of class 2gi (reason=victim_pod_not_found)"
+
+    assert annotated.() == []
+    assert calls.() == @no_shrink
+  end
+
+  test "full mode skips the shrink when the deletion-cost annotation fails" do
+    {record, calls} = new_recorder()
+    {:ok, attempts} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(attempts) end)
+
+    annotate = fn ns, pod, annotations ->
+      Agent.update(attempts, &[{ns, pod, annotations} | &1])
+      {:error, :forbidden}
+    end
+
+    log =
+      safe_victim_facts()
+      |> full_mode_opts(record, annotate)
+      |> idle_drain_tick()
+
+    assert log =~ "brick autoscale: skipping scale-down of class 2gi (reason=:forbidden)"
+    # The right victim was found and targeted; the refused write caused the skip.
+    assert Agent.get(attempts, & &1) == [
+             {"embervm", "brick-b", %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"}}
+           ]
+
+    assert calls.() == @no_shrink
+  end
+
+  test "full mode writes the victim's deletion cost before the /scale shrink" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(events) end)
+
+    scale = fn _ns, name, replicas ->
+      Agent.update(events, &[{:scale, name, replicas} | &1])
+      :ok
+    end
+
+    annotate = fn _ns, pod, annotations ->
+      Agent.update(events, &[{:annotate, pod, annotations} | &1])
+      :ok
+    end
+
+    log =
+      safe_victim_facts()
+      |> full_mode_opts(scale, annotate)
+      |> idle_drain_tick()
+
+    assert log =~ "brick autoscale: scaling class 2gi from 2 to 1 (reason=idle_drain)"
+    # One shared log: the ReplicaSet must already see the victim's cost when the
+    # shrink lands, or it picks its own (possibly warm or busy) pod to kill.
+    assert events |> Agent.get(& &1) |> Enum.reverse() == [
+             {:scale, "embervm-embervm-noded-brick-2gi", 2},
+             {:annotate, "brick-b", %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"}},
+             {:scale, "embervm-embervm-noded-brick-2gi", 1}
+           ]
+  end
+
   test "a denial is attributed to the smallest class that fits the need" do
     {clock, advance} = new_clock()
 
