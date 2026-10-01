@@ -23,6 +23,12 @@ exports_files([
 ])
 
 MANIFEST_SETS = [
+    # Raw kustomize manifests, not a Helm render.
+    "//projects/loom/deploy:cnpg-cluster.yaml",
+    "//projects/loom/deploy:cnpg-metrics-service.yaml",
+    "//projects/loom/deploy:cnpg-scheduledbackup.yaml",
+    "//projects/loom/deploy:namespace.yaml",
+    "//projects/loom/deploy:onepassworditem-cnpg-backup-gcs.yaml",
     # First-party applications rendered with their deploy values.
     "//projects/embervm/deploy:manifests/all.yaml",
     "//projects/embervm/deploy:manifests_gke/all.yaml",

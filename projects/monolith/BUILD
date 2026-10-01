@@ -255,6 +255,7 @@ filegroup(
         "//projects/firecracker/sandbox/ocaml:repo_docs",
         "//projects/firecracker/sandbox/python:repo_docs",
         "//projects/firecracker/sandbox/rust:repo_docs",
+        "//projects/loom/deploy:repo_docs",
         "//projects/mcp/context-forge-gateway/deploy:repo_docs",
         "//projects/model-bench:repo_docs",
         "//projects/model-bench/probe:repo_docs",

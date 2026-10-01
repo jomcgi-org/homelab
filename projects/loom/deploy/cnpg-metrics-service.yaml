@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: loom-pg-metrics
+  namespace: loom
+  labels:
+    app.kubernetes.io/component: database-metrics
+spec:
+  selector:
+    cnpg.io/cluster: loom-pg
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: 9187
+      protocol: TCP

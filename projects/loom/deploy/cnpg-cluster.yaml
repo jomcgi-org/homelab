@@ -1,0 +1,41 @@
+# Loom owns its migrations and LISTEN/NOTIFY queue. A dedicated cluster keeps
+# its blast radius off monolith-pg (Joe confirmed on 2026-10-01).
+# CNPG mints loom-pg-app with the application credentials; no password is committed.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: loom-pg
+  namespace: loom
+spec:
+  instances: 1
+  # Other clusters omit imageName and use the operator's PG 18 default.
+  # Loom requires PG 17; the system variant includes barman-cloud for backups.
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.11-system-trixie
+  storage:
+    size: 10Gi
+    storageClass: standard-rwo
+  bootstrap:
+    initdb:
+      database: loom
+      owner: loom
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  monitoring:
+    enablePodMonitor: true
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: "gs://h0melab-cnpg-backups/loom-pg/"
+      serverName: loom-pg
+      googleCredentials:
+        applicationCredentials:
+          name: loom-pg-backup-gcs
+          key: service-account-key.json
+      wal:
+        compression: gzip
+      data:
+        compression: gzip

@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Deliberately unreferenced by projects/gke-apps and every Application.
+# #6603 adds the Application; #6605 enables it.
+resources:
+  - namespace.yaml
+  - cnpg-cluster.yaml
+  - cnpg-scheduledbackup.yaml
+  - onepassworditem-cnpg-backup-gcs.yaml
+  - cnpg-metrics-service.yaml
