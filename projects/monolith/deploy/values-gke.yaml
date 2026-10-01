@@ -25,6 +25,13 @@ swarm:
   # bounds. Capacity is released only after durable guest cessation proof.
   factoryReservationReviewEnabled: true
   factoryConductorFundingEnabled: true
+  # The funding judge and the watchdog decide on progress, proximity to
+  # landing and value, and a repeated envelope deficit goes to the judge,
+  # capped at the pinned budget plus min(1x, $50). On 2026-10-01 #6541 paged
+  # for $1.20 over $50 (#6508: $1.94, #5938: $0.89). Priority issues are the
+  # Phase 1 factory roadmap and the KG drain blockers.
+  factoryMeritJudgeEnabled: true
+  factoryMeritJudgePriorityIssues: "6460,6461,6462,6463,6481,6482"
   factoryAutonomousContinuationEnabled: true
   factoryStopSupervisionEnabled: true
   # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
