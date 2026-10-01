@@ -123,9 +123,11 @@ class ChatSnapshot(
     token (same posture as a session id) so the share url is unguessable. Once
     created a snapshot is immutable: there is no application UPDATE path.
 
-    ``source_session_id`` is forensics-only and is NOT a cascading FK: a snapshot
-    must outlive its session, so purging a session sets it NULL rather than
-    deleting the share (ON DELETE SET NULL in the migration). Mirrors
+    ``source_session_id`` is NOT a cascading FK (ON DELETE SET NULL in the
+    migration), so deleting a session would orphan its snapshots. Retention
+    therefore keeps a shared session until its snapshot expires, and takedown
+    deletes the snapshot (resolved through ``source_session_id``) before the
+    session. See chat_public/retention.py. Mirrors
     chart/migrations/20260620000000_chat_public_shared_snapshots.sql.
     """
 

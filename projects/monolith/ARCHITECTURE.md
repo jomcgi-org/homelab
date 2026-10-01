@@ -1006,6 +1006,30 @@ but its chat input is text rather than a multimodal message payload.
 (see: /projects/monolith-public/deploy/values-gke.yaml)
 (see: /projects/monolith/grimoire_chat/router.py)
 
+Public chat purges run only from the jobs image. A daily `chat-public-retention`
+CronWorkflow (04:15 UTC) deletes sessions idle past 30 days and snapshots older
+than 365 days. A manual-only `chat-public-takedown` CronWorkflow, submitted with
+`argo submit --from cronworkflow/chat-public-takedown -n monolith-workflows -p
+session-id=<id>` (or `-p ip-hash=<stored hash>`), removes one session or every
+session sharing a stored `ip_hash`, with its transcript, session details and
+shared snapshots. Every run writes one `chat_public.purge_audit` row.
+(see: /projects/monolith/chat_public/retention.py)
+(see: /projects/monolith/chart/migrations/20261001150000_chat_public_purge_audit.sql)
+
+**Why.** `shared_snapshots.source_session_id` is `ON DELETE SET NULL`, so
+deleting a session first would orphan its snapshots and no later takedown could
+find them. Every purge therefore resolves snapshots through
+`source_session_id` and deletes them before the session rows, in one
+transaction, and retention keeps a shared session until its snapshot expires so
+a takedown can always resolve it. The audit holds counts and a sha256 digest of
+the takedown selector only, never a raw id or hash, and `public_writer` cannot
+read or rewrite it. Takedown takes the stored `ip_hash` because the hashing salt
+lives only in monolith-public. The 30 and 365 day windows are reversible
+defaults (env overrides read at call time), not policy commitments. Out of
+scope: `response_cache` is keyed by message rather than session, Grimoire chat
+has its own schema, and a forked session copies a transcript with no lineage,
+so takedown does not follow forks.
+
 The WhatsApp gateway is a transport-only Go service in its own single-replica
 Deployment with a household agent path behind it. It holds an external session
 singleton, so it is parked during the cutover window and comes back on the hub
@@ -1564,7 +1588,7 @@ this table when the work ships or the issue closes without it.
 | A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and a new ASR-capacity decision; #5461 closed as not planned |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
-| Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
+| Public chat retention and takedown purge tooling ships | section 5 (security/005) | #3899 | implemented in repository; the first scheduled run and a live takedown are not yet observed |
 | A role-separated GitHub App review gate lets swarm merge autonomously | Decision history (agents/027) | #3835 | not started |
 | The repo-docs and public docs manifests are genrule outputs read by the images and the vite build, never committed | section 10 | #6446 | implemented in repository; the first main build publishing images and a public frontend from the generated manifests is not yet observed |
 
@@ -1709,7 +1733,7 @@ mismatch without silently rewriting the decision record.
 | ADR | Title | Status | Disposition |
 | --- | --- | --- | --- |
 | `security/004` | Public Read-Only Service Isolation | Accepted, shipped: separate pruned binary, `public_reader` on the CNPG standby, ingress and egress policy where the CRDs exist (see: /projects/monolith-public/chart/values.yaml). Private-tier default-deny egress still open (#5143) | deleted |
-| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/chat_public/limits.py). Retention and takedown still open (#3899) | deleted |
+| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/chat_public/limits.py). Retention and takedown purge jobs implemented (see: /projects/monolith/chat_public/retention.py); live rollout not yet observed (#3899) | deleted |
 | 006 | Crossing (`moving`) on `friends.jomcgi.dev` as a second authentik lane | Accepted, shipped (see: /projects/monolith/chart/templates/httproute-friends.yaml) | deleted |
 
 ### Platform

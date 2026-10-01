@@ -239,6 +239,127 @@ def test_publish_facts_command():
     log.assert_called_once_with("Publish facts: %s", report)
 
 
+def _purge_session_mock():
+    session = mock.MagicMock()
+    return session, session.__enter__.return_value
+
+
+def test_chat_public_retention_commits_and_echoes_counts():
+    from chat_public.retention import PurgeReport
+
+    report = PurgeReport("retention", 2, 5, 1)
+    session, active = _purge_session_mock()
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch("chat_public.retention.purge_expired", return_value=report) as core,
+        mock.patch.object(jobs_main, "configure_logging"),
+    ):
+        result = runner.invoke(jobs_main.app, ["chat-public-retention"])
+
+    assert result.exit_code == 0, result.output
+    core.assert_called_once_with(active)
+    active.commit.assert_called_once_with()
+    active.rollback.assert_not_called()
+    assert json.loads(result.stdout) == {
+        "action": "retention",
+        "dry_run": False,
+        "messages_deleted": 5,
+        "sessions_deleted": 2,
+        "snapshots_deleted": 1,
+    }
+
+
+def test_chat_public_retention_dry_run_rolls_back():
+    from chat_public.retention import PurgeReport
+
+    session, active = _purge_session_mock()
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch(
+            "chat_public.retention.purge_expired",
+            return_value=PurgeReport("retention", 1, 1, 1),
+        ),
+        mock.patch.object(jobs_main, "configure_logging"),
+    ):
+        result = runner.invoke(jobs_main.app, ["chat-public-retention", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    active.rollback.assert_called_once_with()
+    active.commit.assert_not_called()
+    assert json.loads(result.stdout)["dry_run"] is True
+
+
+def test_chat_public_takedown_by_session_id_never_echoes_selector():
+    from chat_public.retention import PurgeReport
+
+    report = PurgeReport("takedown_session", 1, 3, 2)
+    session, active = _purge_session_mock()
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch("chat_public.retention.takedown", return_value=report) as core,
+        mock.patch.object(jobs_main, "configure_logging"),
+        mock.patch.object(jobs_main.logger, "info") as log,
+    ):
+        result = runner.invoke(
+            jobs_main.app, ["chat-public-takedown", "--session-id", "secret-sid"]
+        )
+
+    assert result.exit_code == 0, result.output
+    core.assert_called_once_with(active, session_id="secret-sid", ip_hash=None)
+    active.commit.assert_called_once_with()
+    assert "secret-sid" not in result.stdout
+    assert "secret-sid" not in str(log.call_args_list)
+    assert json.loads(result.stdout)["snapshots_deleted"] == 2
+
+
+def test_chat_public_takedown_by_ip_hash_dry_run():
+    from chat_public.retention import PurgeReport
+
+    session, active = _purge_session_mock()
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch(
+            "chat_public.retention.takedown",
+            return_value=PurgeReport("takedown_ip_hash", 2, 4, 1),
+        ) as core,
+        mock.patch.object(jobs_main, "configure_logging"),
+    ):
+        result = runner.invoke(
+            jobs_main.app,
+            ["chat-public-takedown", "--ip-hash", "abc123", "--dry-run"],
+        )
+
+    assert result.exit_code == 0, result.output
+    core.assert_called_once_with(active, session_id=None, ip_hash="abc123")
+    active.rollback.assert_called_once_with()
+    active.commit.assert_not_called()
+    assert "abc123" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["--session-id", "", "--ip-hash", ""],
+        ["--session-id", "s", "--ip-hash", "h"],
+    ],
+)
+def test_chat_public_takedown_requires_exactly_one_selector(args):
+    with (
+        mock.patch("chat_public.retention.takedown") as core,
+        mock.patch("core.db.get_engine") as engine,
+    ):
+        result = runner.invoke(jobs_main.app, ["chat-public-takedown", *args])
+
+    assert result.exit_code != 0
+    core.assert_not_called()
+    engine.assert_not_called()
+
+
 def test_seed_entities_command():
     from knowledge.entities import SeedReport
 
