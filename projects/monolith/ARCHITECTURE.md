@@ -412,7 +412,9 @@ switch, intake labels, lane caps, daily cap, budget envelope, landing mode
 and charter fragment, while pause, stop and generation stay global so one
 operator act still halts everything. A policy with only the legacy `repo`
 field normalizes to a one-entry map that behaves exactly as today, so the
-live policy needs no re-post. Admission, the intake sweep and the webhook
+live policy needs no re-post. Entries store only what an operator set and
+read everything else from the global blocks when used, so a later global
+raise still reaches homelab instead of a frozen copy. Admission, the intake sweep and the webhook
 all serve the enabled entries under their own numbers, and each prompt
 carries its repo's charter: homelab receipts read the existing charter
 unchanged, loom receipts read loom's own CI, landing and review rules.

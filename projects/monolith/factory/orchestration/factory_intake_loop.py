@@ -891,16 +891,32 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         # One per lane, in lane-blind rank order, so the delivery lane keeps
         # its precedence over refine while an open advisory lane is not left
         # idle behind a delivery candidate it has nothing to do with.
+        # The daily cap is per repo and checked here, while choosing: a
+        # capped repo's delivery candidate falls through to the next one in
+        # that lane, so a capped repo never takes the slot another repo with
+        # room would have used. The advisory lane has nothing to do with what
+        # the cap bounds, so it is never consulted for one.
         chosen: list[dict] = []
         taken: set[str] = set()
+        capped: dict[str, dict] = {}
         for candidate in candidates:
             if candidate["lane"] in taken:
+                continue
+            repo = candidate["repo"]
+            repo_max_per_day = entries[repo]["max_per_day"]
+            if (
+                candidate["lane"] == "delivery"
+                and admitted_today[repo] >= repo_max_per_day
+            ):
+                capped[repo] = {
+                    "admitted_today": admitted_today[repo],
+                    "max_per_day": repo_max_per_day,
+                }
                 continue
             taken.add(candidate["lane"])
             chosen.append(candidate)
 
         received_all = []
-        capped: dict[str, dict] = {}
         for candidate in chosen:
             # Re-read the lane under the lock. The room that picked this
             # candidate was measured before a GitHub sweep that takes seconds,
@@ -940,17 +956,6 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 continue
             delivery = candidate["lane"] == "delivery"
             repo = candidate["repo"]
-            repo_max_per_day = entries[repo]["max_per_day"]
-            # Refuse this candidate rather than the rest of the tick. The
-            # lanes are independent, and the advisory lane behind a capped
-            # delivery candidate has nothing to do with what the cap bounds.
-            # The cap is per repo, so a capped repo never throttles another.
-            if delivery and admitted_today[repo] >= repo_max_per_day:
-                capped[repo] = {
-                    "admitted_today": admitted_today[repo],
-                    "max_per_day": repo_max_per_day,
-                }
-                continue
             issue = candidate["issue"]
             received = receive_issue(
                 repo,

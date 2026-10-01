@@ -707,18 +707,12 @@ def validate_policy(policy: dict) -> dict:
     if type(auto_merge) is not bool:
         raise ValueError("invalid auto_merge")
     result["auto_merge"] = auto_merge
-    # A policy written before the repos map reads as one entry for the legacy
-    # repo, derived from the global blocks above, so the live policy needs no
-    # re-post and homelab behaves exactly as today.
-    repos = policy.get("repos")
-    if repos is None:
-        result["repos"] = {
-            result["repo"]: _validate_repo_entry(
-                result["repo"], {}, is_primary=True, policy=result
-            )
-        }
-    else:
-        result["repos"] = _validate_repos(repos, result)
+    # The repos map is stored sparse and never derived here: a policy
+    # without it reads as one primary entry equal to the global blocks
+    # (repos_map), so the live policy needs no re-post and homelab follows
+    # every later change to those blocks exactly as today.
+    if "repos" in policy:
+        result["repos"] = _validate_repos(policy["repos"], result)
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
@@ -918,78 +912,98 @@ ADMISSION_CANDIDATE_SCAN_LIMIT = 100
 REPO_ACTIONS = ("pause_repo", "resume_repo", "enable_repo", "disable_repo")
 
 
-def _validate_repo_entry(
-    slug: str, value: object, *, is_primary: bool, policy: dict
-) -> dict:
-    """One repos entry, defaulted from the global blocks it refines.
+def _validate_repo_entry(slug: str, value: object) -> dict:
+    """One stored repos entry, kept sparse: only the keys the operator set.
 
-    The legacy primary entry defaults to enabled so a policy with only the
-    legacy `repo` field normalizes to today's behaviour. Any other entry
-    defaults to disabled, so adding a repo never starts work in it.
+    A key the entry leaves out is inherited from the global block at read
+    time (repo_entry), never copied in here, so raising a global budget, lane
+    cap or daily cap reaches every repo that did not override it, whether the
+    raise came through configure or a direct JSON merge.
     """
     if not isinstance(value, dict) or not set(value) <= REPO_ENTRY_KEYS:
         raise ValueError(f"invalid repos entry for {slug}")
     entry: dict = {}
-    for key in ("enabled", "paused"):
-        default = True if key == "enabled" and is_primary else False
-        setting = value.get(key, default)
-        if type(setting) is not bool:
-            raise ValueError(f"invalid repos {key} for {slug}")
-        entry[key] = setting
-    # Inherited defaults come through the defaulting accessors, and only when
-    # the entry lacks the key. repos_map runs on stored and freshly parsed
-    # policies whose intake block is not defaulted yet (or whose auto_merge
-    # predates the flag), so reading policy["intake"] or policy["auto_merge"]
-    # directly raises KeyError on a policy validate_policy accepts.
-    intake = intake_policy(policy)
+    for key in ("enabled", "paused", "auto_merge"):
+        if key in value:
+            if type(value[key]) is not bool:
+                raise ValueError(f"invalid repos {key} for {slug}")
+            entry[key] = value[key]
     for key in ("labels", "exclude_labels"):
-        labels = value[key] if key in value else intake[key]
-        if not isinstance(labels, list) or len(labels) > 32:
-            raise ValueError(f"invalid repos {key} for {slug}")
-        entry[key] = sorted({_text(label, "label", 128) for label in labels})
+        if key in value:
+            labels = value[key]
+            if not isinstance(labels, list) or len(labels) > 32:
+                raise ValueError(f"invalid repos {key} for {slug}")
+            entry[key] = sorted({_text(label, "label", 128) for label in labels})
+    if "max_per_day" in value:
+        entry["max_per_day"] = _integer(value["max_per_day"], "max_per_day", 1, 10000)
+    if "max_tasks" in value:
+        entry["max_tasks"] = _validate_max_tasks(value["max_tasks"])
+    for key in ("task_budget_usd", "turn_budget_usd"):
+        if key in value:
+            entry[key] = _money(value[key], key)
+    if "landing" in value:
+        if value["landing"] not in LANDING_MODES:
+            raise ValueError(f"invalid repos landing for {slug}")
+        entry["landing"] = value["landing"]
+    if "charter" in value:
+        charter = value["charter"]
+        if not isinstance(charter, str) or len(charter) > 2000:
+            raise ValueError(f"invalid repos charter for {slug}")
+        entry["charter"] = charter
+    return entry
+
+
+def _resolve_repo_entry(
+    slug: str, stored: dict, *, is_primary: bool, policy: dict
+) -> dict:
+    """One effective repos entry: the stored keys over the global blocks.
+
+    The legacy primary entry defaults to enabled so a policy with only the
+    legacy `repo` field reads as today's behaviour. Any other entry defaults
+    to disabled, so adding a repo never starts work in it, and to auto_merge
+    off, so the global switch never arms a merge in another repository.
+    Inherited values come through the defaulting accessors because this runs
+    on stored policies whose intake block is not defaulted yet (or whose
+    auto_merge predates the flag).
+    """
+    intake = intake_policy(policy)
+    entry = {
+        "enabled": stored.get("enabled", is_primary),
+        "paused": stored.get("paused", False),
+        "labels": stored.get("labels", intake["labels"]),
+        "exclude_labels": stored.get("exclude_labels", intake["exclude_labels"]),
+        "max_per_day": stored.get("max_per_day", intake["max_per_day"]),
+        "max_tasks": stored.get("max_tasks", lane_max_tasks(policy)),
+        "task_budget_usd": stored.get("task_budget_usd", policy["task_budget_usd"]),
+        "turn_budget_usd": stored.get("turn_budget_usd", policy["turn_budget_usd"]),
+        "charter": stored.get("charter", ""),
+    }
     if {label.lower() for label in entry["labels"]} & {
         label.lower() for label in entry["exclude_labels"]
     }:
         raise ValueError(f"repos labels overlap exclude_labels for {slug}")
-    entry["max_per_day"] = _integer(
-        value["max_per_day"] if "max_per_day" in value else intake["max_per_day"],
-        "max_per_day",
-        1,
-        10000,
-    )
-    entry["max_tasks"] = (
-        _validate_max_tasks(value["max_tasks"])
-        if "max_tasks" in value
-        else lane_max_tasks(policy)
-    )
-    for key in ("task_budget_usd", "turn_budget_usd"):
-        entry[key] = _money(value[key] if key in value else policy[key], key)
     if entry["turn_budget_usd"] > entry["task_budget_usd"]:
         raise ValueError(f"turn budget exceeds task budget for {slug}")
-    if "auto_merge" in value:
-        auto_merge = value["auto_merge"]
+    if "auto_merge" in stored:
+        auto_merge = stored["auto_merge"]
     elif is_primary:
         auto_merge = policy.get("auto_merge", DEFAULT_AUTO_MERGE)
     else:
         auto_merge = DEFAULT_AUTO_MERGE
-    if type(auto_merge) is not bool:
-        raise ValueError(f"invalid repos auto_merge for {slug}")
-    entry["auto_merge"] = auto_merge
-    landing = value.get("landing", "merge_queue" if auto_merge else "none")
-    if landing not in LANDING_MODES:
-        raise ValueError(f"invalid repos landing for {slug}")
-    if auto_merge and landing != "merge_queue":
+    entry["auto_merge"] = auto_merge is True
+    landing = stored.get("landing", "merge_queue" if entry["auto_merge"] else "none")
+    if entry["auto_merge"] and landing != "merge_queue":
         raise ValueError(f"repos auto_merge needs merge_queue landing for {slug}")
     entry["landing"] = landing
-    charter = value.get("charter", "")
-    if not isinstance(charter, str) or len(charter) > 2000:
-        raise ValueError(f"invalid repos charter for {slug}")
-    entry["charter"] = charter
     return entry
 
 
 def _validate_repos(value: object, policy: dict) -> dict:
-    """The repos map, with the legacy primary entry synthesized when absent."""
+    """The stored repos map, sparse, each entry checked against the globals.
+
+    Only entries the operator wrote are stored; the legacy primary is never
+    materialized here; repos_map supplies it at read time.
+    """
     if not isinstance(value, dict) or not 1 <= len(value) <= MAX_REPOS:
         raise ValueError("invalid repos")
     primary = policy["repo"]
@@ -998,26 +1012,39 @@ def _validate_repos(value: object, policy: dict) -> dict:
         slug = normalize_repo(raw_slug)
         if slug in result:
             raise ValueError("duplicate repos entry")
-        result[slug] = _validate_repo_entry(
-            slug, raw_entry, is_primary=(slug == primary), policy=policy
+        result[slug] = _validate_repo_entry(slug, raw_entry)
+        _resolve_repo_entry(
+            slug, result[slug], is_primary=(slug == primary), policy=policy
         )
-    if primary not in result:
-        result = {
-            primary: _validate_repo_entry(primary, {}, is_primary=True, policy=policy),
-            **result,
-        }
     return result
 
 
-def repos_map(policy: dict) -> dict:
-    """The repos map, synthesized for a policy stored before it existed."""
+def _stored_repos(policy: dict) -> dict:
+    """The sparse stored map with the legacy primary present, as {} if absent."""
     repos = policy.get("repos")
-    if isinstance(repos, dict) and repos:
-        return repos
+    stored = dict(repos) if isinstance(repos, dict) else {}
     primary = policy.get("repo")
     if not primary:
-        return {}
-    return {primary: _validate_repo_entry(primary, {}, is_primary=True, policy=policy)}
+        return stored
+    primary = normalize_repo(primary)
+    return {primary: stored.pop(primary, {}), **stored}
+
+
+def repos_map(policy: dict) -> dict:
+    """Every effective repos entry, resolved against the global blocks now.
+
+    A policy stored before the map existed reads as one enabled primary
+    entry equal to the global blocks. An entry inherits each key it does not
+    set from the current global value, so it never freezes a copy.
+    """
+    primary = policy.get("repo")
+    primary = normalize_repo(primary) if primary else None
+    return {
+        slug: _resolve_repo_entry(
+            slug, stored, is_primary=(slug == primary), policy=policy
+        )
+        for slug, stored in _stored_repos(policy).items()
+    }
 
 
 def enabled_repos(policy: dict) -> list[str]:
@@ -1030,7 +1057,7 @@ def enabled_repos(policy: dict) -> list[str]:
 
 
 def repo_entry(policy: dict, repo: str) -> dict:
-    """One validated repos entry, or a refusal for an unconfigured repo."""
+    """One effective repos entry, or a refusal for an unconfigured repo."""
     entry = repos_map(policy).get(normalize_repo(repo))
     if entry is None:
         raise ValueError("unknown repo")
@@ -1123,13 +1150,13 @@ def migration_policy_with_loom(policy: dict) -> dict:
     that carries it can only be a shape the lane already accepts.
     """
     validated = validate_policy(dict(policy))
-    if LOOM_REPO_SLUG in validated["repos"]:
+    stored = dict(validated.get("repos") or {})
+    if LOOM_REPO_SLUG in stored:
         raise ValueError("loom entry already present")
-    merged = {
-        **validated,
-        "repos": {**validated["repos"], LOOM_REPO_SLUG: staged_loom_repo_entry()},
-    }
-    return validate_policy(merged)
+    # Only the loom entry is added. The primary is not copied in, so homelab
+    # keeps reading the global blocks after this payload is posted.
+    stored[LOOM_REPO_SLUG] = staged_loom_repo_entry()
+    return validate_policy({**validated, "repos": stored})
 
 
 def quota_guard_policy(policy: dict) -> dict:
@@ -1158,10 +1185,10 @@ def _policy_for_generation_comparison(policy: dict) -> dict:
     comparable = dict(policy)
     comparable["problem_issues"] = problem_issues_policy(comparable)
     comparable["progress_watchdog"] = progress_watchdog_policy(comparable)
-    # A stored policy from before the repos map normalizes to the same
-    # single primary entry a fresh post does, so re-posting unchanged
-    # operator fields never demands a new generation.
-    comparable["repos"] = repos_map(comparable)
+    # The stored map compares sparse with the primary present, so a policy
+    # from before the map, one naming the primary as {} and a fresh post
+    # without the map all compare equal and never demand a new generation.
+    comparable["repos"] = _stored_repos(comparable)
     return comparable
 
 
@@ -1173,6 +1200,30 @@ def auto_merge_enabled(policy: dict) -> bool:
     off, because the failure that matters here writes to the repository.
     """
     return policy.get("auto_merge", DEFAULT_AUTO_MERGE) is True
+
+
+def repo_auto_merge_enabled(policy: dict, repo: object) -> bool:
+    """Whether a delivery on ``repo`` may enter landing under this policy.
+
+    Landing serves only the policy's primary repo (factory_landing reads
+    ``policy["repo"]``), so a delivery on any other repo would sit in
+    landing with nothing to settle it. It also needs the global switch and
+    the repo entry's own auto_merge: a loom receipt never lands just because
+    homelab does.
+    """
+    if not auto_merge_enabled(policy):
+        return False
+    try:
+        slug = normalize_repo(repo)
+        if slug != normalize_repo(policy.get("repo")):
+            return False
+        # The primary inherits the global switch unless its sparse entry
+        # turns it off. Only that key is read, so a minimal stored policy
+        # lands exactly as it did before the map existed.
+        stored = _stored_repos(policy).get(slug)
+        return isinstance(stored, dict) and stored.get("auto_merge", True) is True
+    except (TypeError, ValueError):
+        return False
 
 
 def validate_task_class(value: object) -> str:
@@ -2591,7 +2642,8 @@ def set_control(
             # generation while work is running, keeping the old queue inert.
             if (
                 active
-                and configured != _policy_for_generation_comparison(previous)
+                and _policy_for_generation_comparison(configured)
+                != _policy_for_generation_comparison(previous)
                 and configured["generation"] <= previous.get("generation", -1)
             ):
                 reason = "generation_not_advanced"
@@ -2646,10 +2698,13 @@ def set_control(
                 reason = "not_configured"
             else:
                 validated = validate_policy(stored)
-                if slug not in validated["repos"]:
+                repos = _stored_repos(validated)
+                if slug not in repos:
                     reason = "unknown_repo"
                 else:
-                    entry = dict(validated["repos"][slug])
+                    # Only the switch is written into the sparse entry; every
+                    # inherited key keeps following the global blocks.
+                    entry = dict(repos[slug])
                     if action == "pause_repo":
                         entry["paused"] = True
                     elif action == "resume_repo":
@@ -2658,8 +2713,10 @@ def set_control(
                         entry["enabled"] = True
                     else:
                         entry["enabled"] = False
-                    validated["repos"][slug] = entry
-                    control.policy_json = _json(validate_policy(validated))
+                    repos[slug] = entry
+                    control.policy_json = _json(
+                        validate_policy({**validated, "repos": repos})
+                    )
                     configure_detail["repo"] = slug
         elif action in ("pause_task", "resume_task"):
             row = _receipt(db, task_id)
@@ -3392,7 +3449,9 @@ def finish_task(
             and row.state != "landing"
             and (evidence or {}).get("state") == "ready_for_review"
             and (evidence or {}).get("pr_url")
-            and auto_merge_enabled(json.loads(_control.policy_json or "{}"))
+            and repo_auto_merge_enabled(
+                json.loads(_control.policy_json or "{}"), row.repo
+            )
         ):
             # Delivery approval ends guest execution, not the deployment task.
             outcome = "landing"
@@ -3495,7 +3554,9 @@ def request_landing_recovery(
             return {"ok": False, "reason": "unresolved_execution"}
         if row.state in ("succeeded", "landing"):
             live_policy = json.loads(_control.policy_json or "{}")
-            if _control.state != "enabled" or not auto_merge_enabled(live_policy):
+            if _control.state != "enabled" or not repo_auto_merge_enabled(
+                live_policy, row.repo
+            ):
                 return {"ok": False, "reason": "factory_disabled"}
             active = db.exec(
                 select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
