@@ -3459,6 +3459,7 @@ func TestSessionWorkspaceExportRaceDoesNotAcknowledge(t *testing.T) {
 func TestSessionWorkspaceExportFencedBeforeAttach(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
+	s.cfg.BootReadyTimeout = 5 * time.Second
 	const workload, lineage = "sbx", "lineage-boot"
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
 	key := artifactPrefix(ref, s.cfg.CpuVendor)
@@ -3479,6 +3480,8 @@ func TestSessionWorkspaceExportFencedBeforeAttach(t *testing.T) {
 	}()
 	select {
 	case <-ready:
+	case err := <-done:
+		t.Fatalf("Prime finished before readiness: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("Prime did not reach the pre-attach readiness window")
 	}
@@ -3519,6 +3522,11 @@ func TestSessionWorkspaceRestoreInvalidatesAcknowledgement(t *testing.T) {
 	fs.seedArtifact(key, map[string]string{"workspace.img": "restored bytes"}, 0, "", "")
 	if s.alreadyDurable(context.Background(), ref, key) {
 		t.Fatal("store presence cannot acknowledge a mutable workspace")
+	}
+	// Force a real download while retaining the old in-memory acknowledgement.
+	// A present-local restore is an existing no-op path, not a disk write.
+	if err := os.Remove(s.volumes.SessionVolumePath(ref.Workload, ref.Ref)); err != nil {
+		t.Fatal(err)
 	}
 	resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{Artifact: ref})
 	if err != nil || resp.GetSkipped() {
