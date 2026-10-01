@@ -82,6 +82,18 @@ def _append(session, game_session, lane, *, audience=None, body=None):
     )
 
 
+def test_uuid_audience_uses_persisted_canonical_ids(lane):
+    with Session(lane.engine) as session:
+        row = _append(
+            session,
+            session.get(GameSession, lane.session_id),
+            lane,
+            audience=Audience("pcs", frozenset([lane.pc_id.upper()])),
+        )
+        assert row.audience_pc_ids == [lane.pc_id]
+        session.commit()
+
+
 def test_concurrent_append_gap_free_and_per_session(pg, lane):
     workers = 8
     events_per_worker = 5

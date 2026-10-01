@@ -35,7 +35,13 @@ from grimoire.testing.leak_harness import ROLES, sqlite_harness
 def engine(tmp_path):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'events.db'}",
-        execution_options={"schema_translate_map": {"grimoire": None}},
+        execution_options={
+            "schema_translate_map": {
+                table.schema: None
+                for table in SQLModel.metadata.tables.values()
+                if table.schema
+            }
+        },
     )
 
     @event.listens_for(engine, "connect")
@@ -374,6 +380,72 @@ def test_dm_narration_for_pc_a_only_canary(http_harness):
             assert (token in response.text) == (viewer in ("dm", "player_a"))
 
 
+def test_event_projection_keeps_other_member_and_pc_ids_private(http_harness):
+    h, client = http_harness
+    response = _post(
+        h,
+        client,
+        kind="narration",
+        audience="pcs",
+        audience_pc_ids=[h.rows["character_a"].id, h.rows["character"].id],
+    )
+    assert response.status_code == 200
+    event_id = response.json()["id"]
+    for viewer, pc_key in (
+        ("dm", None),
+        ("player_a", "character_a"),
+        ("player_b", "character"),
+    ):
+        response = client.get(_url(h, "/events"), headers=h.headers(viewer))
+        h.assert_no_leak(response, viewer)
+        row = next(row for row in response.json() if row["id"] == event_id)
+        assert row["audience_pc_ids"] == (
+            sorted([h.rows["character_a"].id, h.rows["character"].id])
+            if viewer == "dm"
+            else [h.rows[pc_key].id]
+        )
+        assert row["author_member_id"] == (
+            h.rows["member_dm"].id if viewer == "dm" else None
+        )
+
+
+def test_poll_scopes_campaign_and_session(http_harness):
+    h, client = http_harness
+    second = GameSession(campaign_id=h.rows["campaign"].id, status="ended")
+    h.session.add(second)
+    h.session.flush()
+    other_event = SessionEvent(
+        campaign_id=h.rows["campaign"].id,
+        session_id=second.id,
+        seq=1,
+        kind="system",
+        audience="table",
+        body={"foreign": "session"},
+    )
+    # The query also fails closed if an out-of-band writer mismatches campaign.
+    mismatched = SessionEvent(
+        campaign_id=h.rows["other"].id,
+        session_id=h.rows["campaign_session"].id,
+        seq=9,
+        kind="system",
+        audience="table",
+        body={"foreign": "campaign"},
+    )
+    h.session.add_all([other_event, mismatched])
+    h.session.commit()
+    response = client.get(_url(h, "/events"), headers=h.headers("dm"))
+    assert response.status_code == 200
+    assert [row["seq"] for row in response.json()] == list(range(1, 9))
+    response = client.get(
+        _url(h, "/events", game_session=second.id), headers=h.headers("dm")
+    )
+    assert [row["id"] for row in response.json()] == [other_event.id]
+    response = client.post(
+        _url(h, f"/events/{mismatched.id}/retract"), headers=h.headers("dm")
+    )
+    assert response.status_code == 404
+
+
 def test_poll_filters_in_one_sql_query_before_limit(http_harness):
     h, client = http_harness
     statements = []
@@ -480,6 +552,54 @@ def test_retraction_allowed_after_session_ends(http_harness, viewer):
     )
     assert response.status_code == 200
     assert response.json()["retracted_at"] is not None
+
+
+def test_player_cannot_retract_own_server_side_roll(http_harness):
+    h, client = http_harness
+    row = append_event(
+        h.session,
+        game_session=h.rows["campaign_session"],
+        kind="roll",
+        audience=Audience("table"),
+        author_member_id=h.rows["member_player_a"].id,
+        body={"dice": "d20"},
+    )
+    h.session.commit()
+    before = h.snapshot()
+    response = client.post(
+        _url(h, f"/events/{row.id}/retract"), headers=h.headers("player_a")
+    )
+    assert response.status_code == 403
+    assert h.snapshot() == before
+    response = client.post(
+        _url(h, f"/events/{row.id}/retract"), headers=h.headers("dm")
+    )
+    assert response.status_code == 200
+
+
+def test_retraction_locks_and_refreshes_event(http_harness, monkeypatch):
+    h, client = http_harness
+    original_exec = h.session.exec
+    statements = []
+
+    def capture(statement, *args, **kwargs):
+        if any(
+            description.get("entity") is SessionEvent
+            for description in statement.column_descriptions
+        ):
+            statements.append(statement)
+        return original_exec(statement, *args, **kwargs)
+
+    monkeypatch.setattr(h.session, "exec", capture)
+    response = client.post(
+        _url(h, f"/events/{h.rows['event_table'].id}/retract"), headers=h.headers("dm")
+    )
+    assert response.status_code == 200
+    assert len(statements) == 1
+    assert str(statements[0].compile(dialect=postgresql.dialect())).endswith(
+        "FOR UPDATE"
+    )
+    assert statements[0].get_execution_options()["populate_existing"] is True
 
 
 @pytest.mark.parametrize(
