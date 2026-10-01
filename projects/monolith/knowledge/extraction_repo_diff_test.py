@@ -769,16 +769,10 @@ def test_reconcile_skipped_range_once(session, monkeypatch, source, bodies):
     assert source.compare == [(SECOND_BASE, SECOND_HEAD)]
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        RepoDiffSourceUnavailable("GitHub unavailable"),
-        RepoDiffRangeInvalid("diverged"),
-    ],
-)
 def test_reconcile_source_failure_writes_nothing_and_retries(
-    session, monkeypatch, source, bodies, error
+    session, monkeypatch, source, bodies
 ):
+    error = RepoDiffSourceUnavailable("GitHub unavailable")
     _enable_reconcile(monkeypatch)
     _scout_job(session)
     raw_id = _insert_raw(
@@ -1003,6 +997,86 @@ def test_reconcile_empty_comparison_writes_nothing(
     assert reconcile_repo_diff_gaps(session) == 0
     assert reconcile_repo_diff_gaps(session) == 0
     assert len(_repo_diff_raws(session)) == 1
+
+
+def test_reconcile_permanent_outcomes_do_not_use_the_budget(
+    session, monkeypatch, source, bodies
+):
+    """Empty and invalid ranges ahead of valid targets must not stall the pass."""
+    _enable_reconcile(monkeypatch)
+    _scout_job(session)
+    fourth_base, fourth_head = "8" * 40, "9" * 40
+    for index, (base_sha, head_sha) in enumerate(
+        [
+            (BASE, HEAD),
+            (SECOND_BASE, SECOND_HEAD),
+            (THIRD_BASE, THIRD_HEAD),
+        ]
+    ):
+        _insert_raw(
+            session,
+            bodies,
+            PLACEHOLDER_BODY.replace("145 files", f"{index} files"),
+            _placeholder_extra(base_sha, head_sha),
+            f"repo-diff:{base_sha}..{head_sha}",
+        )
+    _set_payload(
+        session,
+        {
+            "mode": "repo-diff",
+            "last_sha": fourth_head,
+            "skipped": [{"base_sha": fourth_base, "head_sha": fourth_head}],
+        },
+    )
+    requested = []
+
+    def collect(base_sha, head_sha):
+        requested.append((base_sha, head_sha))
+        if (base_sha, head_sha) == (BASE, HEAD):
+            return replace(_evidence(base_sha, head_sha), changed_files=0)
+        if (base_sha, head_sha) == (SECOND_BASE, SECOND_HEAD):
+            raise RepoDiffRangeInvalid("diverged")
+        return _evidence(base_sha, head_sha)
+
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", collect)
+    assert reconcile_repo_diff_gaps(session, limit=2) == 2
+    assert requested == [
+        (BASE, HEAD),
+        (SECOND_BASE, SECOND_HEAD),
+        (THIRD_BASE, THIRD_HEAD),
+        (fourth_base, fourth_head),
+    ]
+    reconciled = {
+        row.original_path
+        for row in session.exec(select(RawInput)).all()
+        if row.original_path.endswith("#github-compare")
+    }
+    assert reconciled == {
+        f"repo-diff:{THIRD_BASE}..{THIRD_HEAD}#github-compare",
+        f"repo-diff:{fourth_base}..{fourth_head}#github-compare",
+    }
+
+
+def test_reconcile_source_outage_stops_the_pass(session, monkeypatch, source, bodies):
+    _enable_reconcile(monkeypatch)
+    _scout_job(session)
+    for base_sha, head_sha in [(BASE, HEAD), (SECOND_BASE, SECOND_HEAD)]:
+        _insert_raw(
+            session,
+            bodies,
+            PLACEHOLDER_BODY.replace("145 files", f"{base_sha[0]} files"),
+            _placeholder_extra(base_sha, head_sha),
+            f"repo-diff:{base_sha}..{head_sha}",
+        )
+    requested = []
+
+    def collect(base_sha, head_sha):
+        requested.append((base_sha, head_sha))
+        raise RepoDiffSourceUnavailable("GitHub unavailable")
+
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", collect)
+    assert reconcile_repo_diff_gaps(session) == 0
+    assert requested == [(BASE, HEAD)]
 
 
 def test_reconcile_dedupes_raw_and_skipped_overlap(

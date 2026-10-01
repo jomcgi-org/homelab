@@ -1037,26 +1037,43 @@ def reconcile_repo_diff_gaps(session: Session, *, limit: int = 2) -> int:
     the deterministic original_url `repo-diff:<base>..<head>#github-compare`
     and extra `reconciles` naming the original raw_id or "skipped". The
     original raw, its notes and provenance rows, the scout cursor, and the
-    skipped list are never modified. Source failures defer the target to a
-    later pass. Returns the number of new raws persisted.
+    skipped list are never modified. Only persisted raws count against
+    `limit`: permanent outcomes (invalid or empty ranges) are logged and
+    passed over, while a source outage stops the pass so a later one retries.
+    Returns the number of new raws persisted.
     """
     if not _reconcile_enabled():
         return 0
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
         return 0
     reconciled = 0
-    for base_sha, head_sha, reconciles in _reconcile_targets(session)[:limit]:
+    for base_sha, head_sha, reconciles in _reconcile_targets(session):
+        if reconciled >= limit:
+            break
         try:
             evidence = collect_repo_diff(base_sha, head_sha)
-        except (RepoDiffSourceUnavailable, RepoDiffRangeInvalid) as exc:
+        except RepoDiffSourceUnavailable as exc:
             logger.warning(
-                "repo-diff reconcile deferred for %.7s..%.7s: %s",
+                "repo-diff reconcile stopped for %.7s..%.7s: %s",
+                base_sha,
+                head_sha,
+                exc,
+            )
+            break
+        except RepoDiffRangeInvalid as exc:
+            logger.warning(
+                "repo-diff reconcile skipped invalid range %.7s..%.7s: %s",
                 base_sha,
                 head_sha,
                 exc,
             )
             continue
         if evidence.changed_files == 0:
+            logger.info(
+                "repo-diff reconcile skipped empty range %.7s..%.7s",
+                base_sha,
+                head_sha,
+            )
             continue
         markdown, extra = repo_diff_raw_content(evidence)
         extra["reconciles"] = reconciles
