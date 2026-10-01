@@ -646,6 +646,11 @@ defmodule Embervm.SessionManager do
       # runs, and destroyed is recorded ONLY when the node confirms teardown; an
       # unconfirmed teardown leaves the session in destroying for the reconcile loop.
       node_confirmed_destroy: Keyword.get(opts, :node_confirmed_destroy, false),
+      # EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. Off (default): a drain edge
+      # interrupts and banks every running session on the NODE. On: only sessions
+      # placed on the draining INSTANCE (node + pod_uid) are drained; a session on a
+      # co-located sibling brick keeps running. See drain_instance/4.
+      drain_instance_scoped: Keyword.get(opts, :drain_instance_scoped, false),
       # Alarm threshold (ms) for a session stuck in destroying, and the grace window
       # (ms) before fail-closed orphan reconciliation acts (ADR embervm/014). Both
       # only bite under the node_confirmed_destroy gate.
@@ -1081,6 +1086,11 @@ defmodule Embervm.SessionManager do
 
   def handle_call({:drain_node, node_id, deadline}, _from, state) do
     {count, state} = drain_bank_node(state, node_id, deadline)
+    {:reply, count, state}
+  end
+
+  def handle_call({:drain_instance, node_id, pod_uid, deadline}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id, deadline, pod_uid)
     {:reply, count, state}
   end
 
@@ -2390,10 +2400,33 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:drain_node, node_id, deadline}, :infinity)
   end
 
-  defp drain_bank_node(state, node_id, deadline) do
+  @doc """
+  Drain the running sessions on one draining brick INSTANCE (node + pod_uid).
+
+  The drain edge is instance-scoped (NodeRegistry sends `{node, pod_uid}`), but
+  several bricks of different size classes share a node. Draining by node alone
+  interrupted live turns on sibling bricks whenever the autoscaler idle-drained
+  an EMPTY brick (2026-10-01 00:44:42 and 02:04:42: a 2gi and a 4gi brick with
+  zero live VMs were scaled down, and every claude-runtime turn on the node's
+  8gi brick was interrupted for drain).
+
+  With the `drain_instance_scoped` gate on and a non-empty pod_uid, a session is
+  drained only when it is on that instance, using the same placement evidence as
+  the node-down sweep (`session_on_downed_instance?/4`): the remembered dial, or,
+  when the dial was lost, whether a surviving co-located instance reports the
+  session. A session whose placement cannot be shown to be elsewhere is still
+  drained, so an uncertain placement never escapes a real pod shutdown. With the
+  gate off, or without a pod_uid, this is `drain_node/3`.
+  """
+  def drain_instance(server, node_id, pod_uid, deadline) do
+    GenServer.call(server, {:drain_instance, node_id, pod_uid, deadline}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id, deadline, pod_uid \\ nil) do
     node_sessions =
       SessionStore.all(state.session_store)
       |> Enum.filter(&(&1.state in [:running, :banking] and &1.node_id == node_id))
+      |> Enum.filter(&drain_targets_session?(state, &1, node_id, pod_uid))
 
     state =
       Enum.reduce(node_sessions, state, fn session, acc ->
@@ -2432,6 +2465,13 @@ defmodule Embervm.SessionManager do
 
     {count, state}
   end
+
+  defp drain_targets_session?(%{drain_instance_scoped: true} = state, session, node_id, pod_uid)
+       when is_binary(pod_uid) and pod_uid != "" do
+    session_on_downed_instance?(state, session, node_id, %{pod_uid: pod_uid})
+  end
+
+  defp drain_targets_session?(_state, _session, _node_id, _pod_uid), do: true
 
   defp sweep_brick_gone_node(state, node_id, supplied_metadata) do
     metadata =

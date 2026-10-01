@@ -17,7 +17,11 @@ from pathlib import Path
 import pytest
 
 _ENV = re.compile(r'^\s*- name: (\S+)\n\s+value: "?([^"\n]+)"?', re.MULTILINE)
-_GATES = ("EMBERVM_PLACEMENT_RETRY", "EMBERVM_ASYNC_LIFECYCLE_WRITES")
+_GATES = (
+    "EMBERVM_PLACEMENT_RETRY",
+    "EMBERVM_ASYNC_LIFECYCLE_WRITES",
+    "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS",
+)
 
 
 def _chart_dir() -> Path:
@@ -55,6 +59,7 @@ def test_gates_default_off() -> None:
     assert _render_gate_values([]) == {
         "EMBERVM_PLACEMENT_RETRY": "false",
         "EMBERVM_ASYNC_LIFECYCLE_WRITES": "false",
+        "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS": "false",
     }
 
 
@@ -63,10 +68,11 @@ def test_gates_default_off() -> None:
     [
         ("dispatcher.placementRetry", "EMBERVM_PLACEMENT_RETRY"),
         ("asyncLifecycleWrites", "EMBERVM_ASYNC_LIFECYCLE_WRITES"),
+        ("drainInstanceScopedSessions", "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS"),
     ],
 )
 def test_gate_flips_via_its_chart_key(key: str, env_name: str) -> None:
     rendered = _render_gate_values([f"{key}=true"])
     assert rendered[env_name] == "true"
-    other = next(name for name in _GATES if name != env_name)
-    assert rendered[other] == "false", f"{key} must not move {other}"
+    for other in (name for name in _GATES if name != env_name):
+        assert rendered[other] == "false", f"{key} must not move {other}"
