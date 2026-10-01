@@ -161,7 +161,7 @@ class LeakHarness:
 
 class FakeEmbedClient:
     async def embed(self, text: str) -> list[float]:
-        return [0.0] * 4
+        return [0.0] * 1024
 
 
 @contextmanager
@@ -412,8 +412,8 @@ def build_fixture(session: Session) -> LeakHarness:
                 embeddable_kind="entity",
                 embeddable_id=entity.id,
                 model="test",
-                dim=4,
-                vector=[0.0] * 4,
+                dim=1024,
+                vector=[0.0] * 1024,
             ),
         )
     for key, allowed in (
