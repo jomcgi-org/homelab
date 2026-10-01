@@ -81,6 +81,10 @@ swarm:
   # starts and their capacity permits and escalates the task, never
   # interrupting a start that is still reserved.
   factoryDeadlineBackstopEnabled: true
+  # Page only for authority decisions; digest the rest daily. All 24
+  # intervention pages in the week to 2026-10-01 were settled automatically
+  # (active cessation is on), and cards stay on the escalations page.
+  factoryNotifyDigestEnabled: true
   # Produce the cessation proof the backstop waits for (#6495). The backstop
   # is still staged off in code because elapsed time is not cessation
   # evidence, so uncertain attempts past their deadline held their permits
