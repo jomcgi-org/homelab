@@ -625,6 +625,70 @@ def test_plain_resume_task_also_rearms_and_answers_the_card(
     assert document["resolved"]["option_key"] == "resume"
 
 
+def _bump_generation():
+    # Configure accepts a new generation while work runs; the active task
+    # keeps its pinned generation-0 policy.
+    assert controls.set_control(
+        "configure", "operator", policy=policy_for(generation=1)
+    )["ok"]
+    assert controls.status()["policy"]["generation"] == 1
+
+
+def test_a_card_on_an_active_old_generation_task_is_decidable(
+    db, github, notices, model, spans, monkeypatch
+):
+    # 2026-10-01: receipts 700 and 703 were still admitted on generation 13
+    # when the policy moved to 14, and factory_decide refused their watchdog
+    # cards as stale, so the only way out was resume_task by hand.
+    monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
+    task_id, policy = looped(db, github, notices, spans)
+    _bump_generation()
+    row = receipt(db, task_id)
+    assert row.generation == 0 and row.state == "admitted"
+
+    result = decisions.request_decision(
+        row.id,
+        decisions._fields(row)["decision_id"],
+        "resume",
+        "operator",
+        request_key="active-old-generation",
+    )
+    assert result["ok"], result
+    assert watchdog.check(task_id, policy) == "cleared"
+    assert not receipt(db, task_id).task_paused
+
+
+def test_without_the_flag_an_active_old_generation_card_is_refused(
+    db, github, notices, model, spans, monkeypatch
+):
+    monkeypatch.delenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", raising=False)
+    task_id, _policy = looped(db, github, notices, spans)
+    _bump_generation()
+    row = receipt(db, task_id)
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(row.id, "resume", "operator")
+    assert "receipt generation 0" in raised.value.reason
+
+
+def test_a_settled_old_generation_card_is_still_refused_with_the_flag(
+    db, github, notices, model, spans, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "true")
+    task_id, _policy = looped(db, github, notices, spans)
+    with Session(db) as session:
+        stored = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+        ).one()
+        stored.state = "escalated"
+        session.add(stored)
+        session.commit()
+    _bump_generation()
+    row = receipt(db, task_id)
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(row.id, "resume", "operator")
+    assert "receipt generation 0" in raised.value.reason
+
+
 def test_stop_from_the_card_cancels_the_task(db, github, notices, model, spans):
     task_id, policy = looped(db, github, notices, spans)
     row = receipt(db, task_id)

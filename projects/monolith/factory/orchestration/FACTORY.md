@@ -315,6 +315,20 @@ issue mutation. Conversely, a decision request whose receipt no longer matches
 the policy generation is refused before labels, comments, child issues, or
 issue state can change.
 
+That refusal is for retired cards. With `FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED`
+(`swarm.factoryActiveReceiptDecisionsEnabled`), a card whose receipt is still
+`admitted`, `uncertain` or `landing` is decidable whatever the current
+generation, because a generation advance never retires active work: the task
+keeps running under its pinned policy, and its card (a no-progress watchdog
+pause, most often) is a live question about that task. The existing rule that
+a running receipt accepts only a watchdog decision still applies. A settled
+or queued receipt on an old generation is refused exactly as before.
+
+**Why.** On 2026-10-01 receipts 700 and 703 were still `admitted` on
+generation 13 when the policy moved to 14, and `factory_decide` refused their
+watchdog cards as belonging to an old generation. The only way out was
+`resume_task` by hand.
+
 Configuration preserves control state: enabled work continues, paused
 admissions stay paused, and initial configuration still needs `enable`.
 `stop` remains irreversible. The configure audit records

@@ -1645,6 +1645,10 @@ swarm:
   # Re-read open escalation cards from GitHub in bounded batches. Off until
   # the reconciliation path is reviewed and deliberately enabled.
   factoryEscalationRevalidationEnabled: false
+  # Decide a card on a receipt that is still admitted, uncertain or landing
+  # whatever the current policy generation: active work keeps its pinned
+  # policy, so its card (a watchdog pause, most often) is not stale.
+  factoryActiveReceiptDecisionsEnabled: false
   # Release a lane slot held past the task deadline by a start no cessation
   # proof can settle (#6025). Stop supervision is fail-closed by design, so an
   # attempt whose evidence never arrives keeps its slot forever; past the

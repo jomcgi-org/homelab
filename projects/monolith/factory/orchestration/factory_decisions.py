@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import nullcontext
 from datetime import datetime, timezone
 
@@ -133,6 +134,23 @@ def _receipt(db, receipt_id: int) -> FactoryReceipt:
     return row
 
 
+def _active_receipt_decisions_enabled() -> bool:
+    return os.getenv("FACTORY_ACTIVE_RECEIPT_DECISIONS_ENABLED", "false").lower() == (
+        "true"
+    )
+
+
+def _pinned_and_active(row: FactoryReceipt) -> bool:
+    """Whether this receipt still runs under the policy it pinned.
+
+    A generation advance retires queued and escalated receipts, never active
+    ones: admitted, uncertain and landing work keeps its pinned policy until
+    it settles. A card on such a receipt (the no-progress watchdog's, most
+    often) is not stale, so its generation is no reason to refuse it.
+    """
+    return _active_receipt_decisions_enabled() and row.state in _RUNNING_STATES
+
+
 def _require_current_generation(
     db, row: FactoryReceipt, control: FactoryControl | None = None
 ) -> None:
@@ -185,7 +203,8 @@ def _claim(
     context = _locked_session() if session is None else nullcontext((session, None))
     with context as (db, control):
         row = _receipt(db, receipt_id)
-        _require_current_generation(db, row, control)
+        if not _pinned_and_active(row):
+            _require_current_generation(db, row, control)
         if _pending_request(db, receipt_id):
             raise DecisionError(
                 409, "a durable decision request has an unresolved outcome"
