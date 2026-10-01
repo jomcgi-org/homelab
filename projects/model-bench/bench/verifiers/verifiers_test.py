@@ -65,3 +65,12 @@ def test_pytest_verifier_reports_setup_error_when_venv_missing(tmp_path, monkeyp
     v = get_verifier("pytest")
     r = v(tmp_path, {"tests": {"t_test.py": "def test_x():\n    assert True\n"}})
     assert not r.passed and "venv python not found" in r.feedback
+
+
+def test_sandbox_timeout_with_stderr_output_returns_text(tmp_path):
+    from bench.verifiers.sandbox import run_sandboxed
+
+    res = run_sandboxed(["sh", "-c", "echo out; echo err >&2; sleep 5"], cwd=tmp_path, timeout_s=1)
+    assert res.timed_out and res.rc == 124
+    assert isinstance(res.stdout, str) and isinstance(res.stderr, str)
+    assert res.stderr.endswith("[sandbox] timed out")

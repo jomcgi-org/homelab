@@ -75,10 +75,11 @@ def run_sandboxed(
         )
         return SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)
     except subprocess.TimeoutExpired as e:
+        # TimeoutExpired carries bytes even under text=True, so decode before appending.
         out = e.stdout or ""
-        err = (e.stderr or "") + "\n[sandbox] timed out"
+        err = e.stderr or ""
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
-        return SandboxResult(124, out, err, True)
+        return SandboxResult(124, out, err + "\n[sandbox] timed out", True)
