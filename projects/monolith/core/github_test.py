@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from core import github
-from core.github import fetch_merged_pull_requests
+from core.github import fetch_issue_states, fetch_merged_pull_requests
 
 
 def _read_github_repo() -> str:
@@ -28,6 +28,110 @@ def test_github_repo_environment_override(monkeypatch):
     monkeypatch.setenv("GITHUB_REPO", "example/alternate-repo")
 
     assert _read_github_repo() == "example/alternate-repo"
+
+
+def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["variables"] == {"owner": "example", "name": "repo"}
+        assert "issue_5927: issue(number: 5927)" in body["query"]
+        assert "includeClosedPrs: true" in body["query"]
+        assert request.headers["Authorization"] == "Bearer test-token"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "repository": {
+                        "issue_5927": {
+                            "number": 5927,
+                            "state": "CLOSED",
+                            "closedAt": "2026-09-28T12:00:00Z",
+                            "closedByPullRequestsReferences": {
+                                "nodes": [
+                                    {
+                                        "number": 6412,
+                                        "merged": True,
+                                        "mergedAt": "2026-09-28T11:00:00Z",
+                                    },
+                                    {
+                                        "number": 6543,
+                                        "merged": True,
+                                        "mergedAt": "2026-09-28T12:00:00Z",
+                                    },
+                                    {"number": 9998, "merged": False, "mergedAt": None},
+                                ]
+                            },
+                        },
+                        "issue_5784": {
+                            "number": 5784,
+                            "state": "OPEN",
+                            "closedAt": None,
+                            "closedByPullRequestsReferences": {"nodes": []},
+                        },
+                        "issue_9999": None,
+                    }
+                },
+                "errors": [
+                    {
+                        "type": "NOT_FOUND",
+                        "path": ["repository", "issue_9999"],
+                        "message": "Could not resolve to an Issue",
+                    }
+                ],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        rows = fetch_issue_states(
+            [5927, 5784, 9999], repo="example/repo", client=client
+        )
+    assert [row["number"] for row in rows] == [5784, 5927]
+    assert rows[0]["state"] == "OPEN"
+    assert rows[0]["closed_at"] is None
+    assert rows[0]["closing_prs"] == []
+    assert rows[1]["closing_prs"] == [6412, 6543]
+    assert rows[1]["last_closing_merge_at"] == datetime(
+        2026, 9, 28, 12, tzinfo=timezone.utc
+    )
+    assert rows[1]["closed_at"] == datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"type": "FORBIDDEN", "path": ["repository", "issue_5927"]},
+        {"type": "NOT_FOUND", "path": ["repository"]},
+    ],
+)
+def test_fetch_issue_states_does_not_hide_genuine_graphql_failures(error):
+    def handler(request):
+        return httpx.Response(
+            200, json={"data": {"repository": {"issue_5927": None}}, "errors": [error]}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError, match="GitHub GraphQL error"):
+            fetch_issue_states([5927], repo="example/repo", client=client)
+
+
+def test_fetch_issue_states_reuses_retry_policy(monkeypatch):
+    delays = []
+    monkeypatch.setattr(github.time, "sleep", delays.append)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"data": {"repository": {"issue_5927": None}}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert fetch_issue_states([5927], repo="example/repo", client=client) == []
+        assert fetch_issue_states([], client=client) == []
+    assert len(calls) == 2
+    assert delays == [2]
 
 
 def test_fetch_merged_pull_requests_pages_and_filters_old_merges():

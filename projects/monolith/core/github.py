@@ -71,6 +71,113 @@ def _parse_github_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _post_graphql(client: httpx.Client, query: str, variables: dict, operation: str):
+    """Share the snapshot clients' HTTP retry policy and authorization headers."""
+    for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
+        try:
+            response = client.post(
+                f"{GITHUB_API}/graphql",
+                headers=_github_headers(),
+                json={"query": query, "variables": variables},
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            status: int | str = exc.response.status_code
+            if status not in _RETRY_STATUS_CODES or attempt == _MAX_REQUEST_ATTEMPTS:
+                raise
+        except httpx.TransportError as exc:
+            status = type(exc).__name__
+            if attempt == _MAX_REQUEST_ATTEMPTS:
+                raise
+        logger.warning(
+            "%s: retrying on %s after attempt %d/%d",
+            operation,
+            status,
+            attempt,
+            _MAX_REQUEST_ATTEMPTS,
+        )
+        time.sleep(_RETRY_BACKOFF_SECONDS[attempt - 1])
+
+
+def fetch_issue_states(
+    numbers: list[int],
+    *,
+    repo: str | None = None,
+    client: httpx.Client | None = None,
+) -> list[dict]:
+    """Fetch linked issue state, omitting unresolved aliases, not real failures."""
+    if not numbers:
+        return []
+    if any(type(number) is not int or number <= 0 for number in numbers):
+        raise ValueError("GitHub issue numbers must be positive integers")
+    owner, name = (repo or GITHUB_REPO).split("/", 1)
+    aliases = {f"issue_{number}": number for number in sorted(set(numbers))}
+    fields = "\n".join(
+        f"""{alias}: issue(number: {number}) {{
+          number state closedAt
+          closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {{
+            nodes {{ number merged mergedAt }}
+          }}
+        }}"""
+        for alias, number in aliases.items()
+    )
+    query = (
+        "query GoalIssueStates($owner: String!, $name: String!) {"
+        "repository(owner: $owner, name: $name) {" + fields + "}}"
+    )
+    owned_client = client is None
+    if client is None:
+        client = httpx.Client(timeout=20.0, follow_redirects=True)
+    try:
+        payload = _post_graphql(
+            client, query, {"owner": owner, "name": name}, "fetch_issue_states"
+        )
+        repository = (payload.get("data") or {}).get("repository")
+        for error in payload.get("errors") or []:
+            path = error.get("path") or []
+            if (
+                error.get("type") == "NOT_FOUND"
+                and len(path) == 2
+                and path[0] == "repository"
+                and path[1] in aliases
+                and isinstance(repository, dict)
+                and repository.get(path[1]) is None
+            ):
+                continue
+            raise RuntimeError(f"GitHub GraphQL error: {error}")
+        if not isinstance(repository, dict):
+            raise ValueError("GitHub issue response had an unexpected shape")
+        issues = []
+        for alias in aliases:
+            issue = repository[alias]
+            if issue is None:
+                continue
+            closing = [
+                pr
+                for pr in issue["closedByPullRequestsReferences"]["nodes"]
+                if pr["merged"] is True
+            ]
+            merge_times = [
+                stamp
+                for pr in closing
+                if (stamp := _parse_github_datetime(pr["mergedAt"])) is not None
+            ]
+            issues.append(
+                {
+                    "number": issue["number"],
+                    "state": issue["state"],
+                    "closed_at": _parse_github_datetime(issue["closedAt"]),
+                    "closing_prs": sorted({pr["number"] for pr in closing}),
+                    "last_closing_merge_at": max(merge_times, default=None),
+                }
+            )
+        return issues
+    finally:
+        if owned_client:
+            client.close()
+
+
 def fetch_merged_pull_requests(
     cutoff: datetime,
     *,
@@ -109,41 +216,12 @@ def fetch_merged_pull_requests(
     try:
         cursor = None
         for page in range(1, _MAX_PULL_PAGES + 1):
-            for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
-                try:
-                    response = client.post(
-                        f"{GITHUB_API}/graphql",
-                        headers=_github_headers(),
-                        json={
-                            "query": _MERGED_PULL_QUERY,
-                            "variables": {
-                                "owner": owner,
-                                "name": name,
-                                "cursor": cursor,
-                            },
-                        },
-                    )
-                    response.raise_for_status()
-                    break
-                except httpx.HTTPStatusError as exc:
-                    status: int | str = exc.response.status_code
-                    if (
-                        status not in _RETRY_STATUS_CODES
-                        or attempt == _MAX_REQUEST_ATTEMPTS
-                    ):
-                        raise
-                except httpx.TransportError as exc:
-                    status = type(exc).__name__
-                    if attempt == _MAX_REQUEST_ATTEMPTS:
-                        raise
-                logger.warning(
-                    "fetch_merged_pull_requests: retrying on %s after attempt %d/%d",
-                    status,
-                    attempt,
-                    _MAX_REQUEST_ATTEMPTS,
-                )
-                time.sleep(_RETRY_BACKOFF_SECONDS[attempt - 1])
-            payload = response.json()
+            payload = _post_graphql(
+                client,
+                _MERGED_PULL_QUERY,
+                {"owner": owner, "name": name, "cursor": cursor},
+                "fetch_merged_pull_requests",
+            )
             if payload.get("errors"):
                 raise RuntimeError(f"GitHub GraphQL error: {payload['errors']}")
             try:
