@@ -309,10 +309,15 @@ swarm:
 agents:
   drainer:
     enabled: true
-    # Operator-set rolling 24-hour limit (2026-09-07): keep extraction moving
-    # so agent context stays current. Temporary catch-up grants remain bounded
-    # separately; the extraction quality gates and serial worker limit apply.
-    kgMaxJobsPerDay: 400
+    # Operator-set rolling 24-hour limit. 400 (2026-09-07) became the binding
+    # limit once the drain ran at three Luna sessions: about 80 jobs an hour
+    # exhausted it in five hours on 2026-10-01 with ~950 KG jobs still due, and
+    # every later claim was refused silently until a burst grant. Raised to
+    # 2000 (Joe, 2026-10-01) so KG admission concurrency (agentSessions
+    # admission kg) and the Codex quota floor (quotaFloors drainer: 25) are the
+    # real limits; Codex sat near 8% of its weekly window. Temporary catch-up
+    # grants remain bounded separately; the extraction quality gates apply.
+    kgMaxJobsPerDay: 2000
     # Doc drift found by the repo-diff feed opens human-reviewed docs PRs on
     # the routine lane. docFixAutoMerge stays at the chart default (false)
     # until a few docfix-review verdicts have been read.
