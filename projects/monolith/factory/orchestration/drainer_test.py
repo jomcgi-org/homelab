@@ -1324,6 +1324,38 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
     from agent import routine_jobs
     from knowledge.extraction import ExtractionOutputInvalid, enqueue_extraction
     from knowledge.models import AtomRawProvenance, RawInput
+    from knowledge.repo_diff_source import RepoDiffEvidence
+
+    def collect(base_sha, head_sha):
+        patch = (
+            "diff --git a/file.py b/file.py\n"
+            "--- a/file.py\n+++ b/file.py\n+x = 1\n"
+        )
+        return RepoDiffEvidence(
+            base_sha=base_sha.lower(),
+            head_sha=head_sha.lower(),
+            compare_status="ahead",
+            total_commits=1,
+            diff_stat=" file.py | 1 +",
+            patch=patch,
+            changed_files=1,
+            additions=1,
+            deletions=0,
+            coverage={
+                "files_listed": 1,
+                "files_excluded": 0,
+                "files_included": 1,
+                "files_patch_included": 1,
+                "files_patch_omitted_by_github": 0,
+                "files_patch_cut_by_cap": 0,
+                "patch_chars": len(patch),
+                "patch_truncated": False,
+                "file_list_complete": True,
+                "total_commits": 1,
+            },
+        )
+
+    monkeypatch.setattr("knowledge.extraction.collect_repo_diff", collect)
 
     engine = create_engine(f"sqlite:///{tmp_path / 'freshness-roundtrip.db'}")
     schemas = {table.name: table.schema for table in SQLModel.metadata.tables.values()}
@@ -2377,11 +2409,16 @@ def test_pause_between_successful_jobs_stops_before_second_claim(monkeypatch, pa
 
 def test_settled_turn_does_not_release_expired_job_lease_before_finalization(
     admission_database,
+    monkeypatch,
 ):
     from agent import routine_jobs
     from factory.execution import admission, store
     from factory.execution.models import AgentTurn
 
+    verified = []
+    monkeypatch.setattr(
+        "knowledge.extraction.verify_on_main", lambda sha: verified.append(sha)
+    )
     _queued_job(admission_database, "postprocessing")
     assert routine_jobs.update_job_payload("postprocessing", {"mode": "repo-diff"})
     claim = _admitted_claim("owner")
@@ -2428,6 +2465,7 @@ def test_settled_turn_does_not_release_expired_job_lease_before_finalization(
         expected_holder=claim["locked_by"],
     )
     assert applied["summary"] == "no changes"
+    assert verified == ["b" * 40]
     assert drainer.finish_drainer_job.__wrapped__(
         "postprocessing", "ok", "applied", expected_holder=claim["locked_by"]
     )
