@@ -25,6 +25,7 @@ from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput, SCOPE_PATTERN
 from knowledge.recall import _get_repo_scope, render_related_notes
+from knowledge.repo_diff_source import REPO_DIFF_PATCH_CAP
 from shared.embedding import EmbeddingClient
 
 KG_JOB_KIND = "kg-drain"
@@ -51,7 +52,6 @@ RELATED_NOTES = 8
 DEDUPE_NOTES = 3
 REPO_DIFF_JOB_NAME = "kg-repo-diff"
 REPO_DIFF_INTERVAL_SECS = 3600
-REPO_DIFF_PATCH_CAP = 60_000
 DOC_DRIFT_CAP = 10
 
 _SESSION_BEHAVIOUR_RULES = (
