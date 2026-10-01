@@ -1572,6 +1572,13 @@ swarm:
   # Sample transient stop refusals for a fixed bounded window before notifying.
   # Keep staged off until the brick-roll and restart live checks pass (#6266).
   factoryTransientStopRetryEnabled: false
+  # Accept the control plane's own "failed"/"failed" record for the exact
+  # guest whose invoke failed inside this dispatch as cessation evidence
+  # (factory_supervision._invoke_failure_cessation). EmberVM writes that
+  # absorbing state before it answers the at-most-once 502, so the attempt
+  # settles failed at unknown cost and normal retry runs, instead of holding
+  # its lane until supervised cessation two hours past the task deadline.
+  factoryInvokeFailureCessationEnabled: false
   # Settle only a drained factory continuation whose exact dispatch is proven
   # permanently lost by the control plane. Staged off until the live checks in
   # FACTORY.md have exercised the proof and refusal paths.

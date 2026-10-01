@@ -1974,6 +1974,23 @@ that its owned guest ceased. A parked guest on a departed node is first asked to
 destroy, then settled only after the later `destroyed` view. Issue #6091 tracks
 the control-plane root cause that can otherwise leave this state stranded.
 
+An invoke that ends in the at-most-once 502 ("session invoke failed") is
+uncertain, but the control plane has already decided its guest's fate:
+`Session.fail_and_stop` durably moves the session to `failed` with terminal
+reason `failed` before it replies, then tears the VM down, and `failed` has no
+outgoing transition. With `FACTORY_INVOKE_FAILURE_CESSATION_ENABLED`, stop
+supervision accepts that view of the exact recorded guest as cessation
+evidence when the failing invoke started inside this dispatch, never
+completed, carries no drain `interrupted_turn`, and matches any saved stop
+identity. It settles the run, start and permit failed at unknown cost in the
+usual transaction and the node's ordinary retry budget decides what runs next.
+It sends the guest no stop and no destroy. `failed/brick_gone` keeps its own
+proof, and a committed result receipt is adopted first as before. On
+2026-09-30 a noded container restart closed the node channel under six
+in-flight turns; each guest read back exactly this shape within a millisecond
+of its 502, and no other proof accepted it, so the attempts held six of ten
+delivery lanes until an operator started supervised cessation by hand.
+
 ### Supervised cessation
 
 Cessation evidence may be produced by supervised termination, not only waited
