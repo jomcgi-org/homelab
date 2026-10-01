@@ -1532,6 +1532,8 @@ def test_drain_relay_yields_to_a_result_committed_before_it(database, monkeypatc
     # The relay refused under the receipt lock and the final read adopted it.
     assert outcome["status"] == "adopted"
     assert len(requests) == 1
+
+
 def _cancel_mid_delivery(database, monkeypatch, *, posted: bool):
     """Cancel the executor as a replica shutdown would, mid-delivery.
 
