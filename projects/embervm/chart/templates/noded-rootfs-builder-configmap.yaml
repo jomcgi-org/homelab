@@ -77,12 +77,17 @@ data:
     trap terminate_children EXIT
     trap 'exit 0' INT TERM
     while true; do
+      mapfile -t desired_lines < "$desired_set"
+      retry_later=false
       if [ -n "$child_pid" ] && ! kill -0 "$child_pid" 2>/dev/null; then
-        if ! wait "$child_pid"; then echo "rootfs baker: bake failed; retrying" >&2; fi
+        if ! wait "$child_pid"; then
+          echo "rootfs baker: bake failed; retrying next poll" >&2
+          retry_later=true
+        fi
         child_pid=""
         clear_markers
       fi
-      if [ -z "$child_pid" ]; then
+      if [ -z "$child_pid" ] && ! "$retry_later"; then
         tuples=()
         # Space is intentionally not IFS: all four fields are tab-separated.
         while IFS=$'\t' read -r name image path memory; do
@@ -94,7 +99,7 @@ data:
           touch -- "$path.pending"
           pending_paths+=("$path")
           tuples+=("$name" "$image" "$path" "$memory")
-        done < "$desired_set"
+        done < <(printf '%s\n' "${desired_lines[@]}")
         if [ "${#tuples[@]}" -gt 0 ]; then
           /bin/bash "$driver" "$max_concurrency" "$class_ceiling_mib" "${tuples[@]}" &
           child_pid="$!"
