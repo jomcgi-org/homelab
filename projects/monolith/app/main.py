@@ -62,7 +62,15 @@ if __name__ == "__main__":
 
     if rollout_handoff_enabled():
         RolloutHandoffServer(
-            uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+            # Lifespan handoff follows HTTP drain. Bound that wait at 5s so
+            # the 15s executor budget fits inside the chart's 30s grace (#6670).
+            uvicorn.Config(
+                app,
+                host="0.0.0.0",
+                port=8000,
+                log_level="warning",
+                timeout_graceful_shutdown=5,
+            )
         ).run()
     else:
         uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
