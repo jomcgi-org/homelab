@@ -12,7 +12,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
 from core.db import get_session
-from observability.factory_goals import goals_payload, list_active_goals
+from observability.factory_goals import (
+    goals_payload,
+    list_active_goals,
+    list_goal_issues,
+)
 from observability.merged_prs import MERGE_TYPES, MergedPR
 
 router = APIRouter(prefix="/api/agents/public", tags=["observability"])
@@ -157,8 +161,12 @@ def _goals_payload(session: Session, now: datetime) -> dict:
             .order_by(MergedPR.merged_at.desc())
         ).all()
     )
-    merges = [{"title": row.title, "merged_at": _iso(row.merged_at)} for row in rows]
-    return goals_payload(goals, merges, now)
+    merges = [
+        {"number": row.number, "title": row.title, "merged_at": _iso(row.merged_at)}
+        for row in rows
+    ]
+    numbers = {number for goal in goals for number in goal["issue_numbers"]}
+    return goals_payload(goals, merges, now, list_goal_issues(session, numbers))
 
 
 @router.get("/factory/goals")

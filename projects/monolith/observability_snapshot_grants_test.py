@@ -77,6 +77,13 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
                     """
                 )
             )
+            session.execute(
+                text("""
+                INSERT INTO observability.factory_goal_issues
+                    (number, state, closing_prs, snapshotted_at)
+                VALUES (5927, 'CLOSED', ARRAY[6412], now())
+            """)
+            )
             session.commit()
 
             count = session.execute(
@@ -102,5 +109,12 @@ def test_snapshot_upsert_idempotent_and_public_reader_can_read(pg):
                 text("SELECT statement FROM observability.factory_goals")
             ).first()
             assert goal[0] == "Land declared goals"
+            issue = session.execute(
+                text("""
+                SELECT state, closing_prs FROM observability.factory_goal_issues
+                WHERE number = 5927
+            """)
+            ).first()
+            assert issue == ("CLOSED", [6412])
     finally:
         engine.dispose()

@@ -22,6 +22,8 @@ import app.jobs_main as jobs_main
 from factory.execution.models import AgentSession, AgentTurn
 from faas.reconcile import ReconcileReport
 from knowledge.models import RawInput
+from observability.factory_goals import FactoryGoal, FactoryGoalIssue
+from observability.merged_prs import MergedPR
 
 runner = CliRunner()
 
@@ -105,15 +107,18 @@ def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
     session.__enter__.return_value.exec.return_value.one.return_value = watermark
     with (
         mock.patch("core.db.get_engine", return_value=object()),
-        mock.patch("sqlmodel.Session", return_value=session),
         mock.patch(
             "core.github.fetch_merged_pull_requests", return_value=pulls
         ) as fetch,
         mock.patch(
             "observability.merged_prs_writer.write_snapshot", return_value=(1, 2)
         ) as write,
+        mock.patch("sqlmodel.Session", return_value=session),
         mock.patch.object(jobs_main, "configure_logging"),
         mock.patch.object(jobs_main.logger, "info") as log,
+        mock.patch("observability.factory_goals.list_active_goals", return_value=[]),
+        mock.patch("observability.factory_goals.upsert_goal_issues") as write_issues,
+        mock.patch("core.github.fetch_issue_states") as fetch_issues,
     ):
         result = runner.invoke(jobs_main.app, ["snapshot-merged-prs"])
 
@@ -122,6 +127,89 @@ def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
     fetch.assert_called_once_with(cutoff, watermark=watermark)
     write.assert_called_once_with(pulls, cutoff)
     log.assert_called_once_with("Snapshots %d PRs, deleted %d old rows", 1, 2)
+    fetch_issues.assert_not_called()
+    assert write_issues.call_args.args[1:] == ([], set())
+
+
+@pytest.mark.parametrize("fetch_fails", [False, True])
+def test_snapshot_job_commits_merges_before_issue_fetch_and_prunes(
+    tmp_path, fetch_fails
+):
+    engine = create_engine(f"sqlite:///{tmp_path / 'goal-snapshot.db'}")
+    tables = [FactoryGoal.__table__, FactoryGoalIssue.__table__, MergedPR.__table__]
+    schemas = [table.schema for table in tables]
+    for table in tables:
+        table.schema = None
+    now = datetime.now(timezone.utc)
+    issue = {
+        "number": 5927,
+        "state": "CLOSED",
+        "closed_at": now,
+        "closing_prs": [6412],
+        "last_closing_merge_at": now,
+    }
+    try:
+        SQLModel.metadata.create_all(engine, tables=tables)
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    FactoryGoal(
+                        statement="Ship goals", issue_numbers=[5927], declared_by="opus"
+                    ),
+                    FactoryGoal(
+                        statement="Old goal",
+                        issue_numbers=[5784],
+                        declared_by="opus",
+                        active=False,
+                    ),
+                    FactoryGoalIssue(number=5784, state="OPEN", snapshotted_at=now),
+                ]
+            )
+            session.commit()
+
+        def fetch(numbers):
+            assert numbers == [5927]
+            with Session(engine) as session:
+                assert session.get(MergedPR, 6412) is not None
+            if fetch_fails:
+                raise httpx.ConnectError("issue fetch failed")
+            return [issue]
+
+        with (
+            mock.patch("core.db.get_engine", return_value=engine),
+            mock.patch(
+                "core.github.fetch_merged_pull_requests",
+                return_value=[
+                    {
+                        "number": 6412,
+                        "title": "feat(factory): goals",
+                        "merged_at": now,
+                        "additions": 1,
+                        "deletions": 0,
+                        "changed_files": 1,
+                    }
+                ],
+            ),
+            mock.patch("core.github.fetch_issue_states", side_effect=fetch),
+            mock.patch.object(jobs_main, "configure_logging"),
+        ):
+            result = runner.invoke(jobs_main.app, ["snapshot-merged-prs"])
+        if result.exception is not None and not fetch_fails:
+            raise result.exception
+        with Session(engine) as session:
+            assert session.get(MergedPR, 6412) is not None
+            if fetch_fails:
+                assert result.exit_code != 0
+                assert isinstance(result.exception, httpx.ConnectError)
+                assert session.get(FactoryGoalIssue, 5784) is not None
+            else:
+                assert result.exit_code == 0, result.exception
+                assert session.get(FactoryGoalIssue, 5927).closing_prs == [6412]
+                assert session.get(FactoryGoalIssue, 5784) is None
+    finally:
+        for table, schema in zip(tables, schemas):
+            table.schema = schema
+        engine.dispose()
 
 
 def test_publish_facts_command():

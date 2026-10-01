@@ -167,10 +167,12 @@
 
   function declaredMeta(goal) {
     const issues = goal.issue_numbers.map((issue) => `#${issue}`).join(", ");
+    const state = `issues ${goal.issues_closed}/${goal.linked_issues} closed`;
+    const unknown = goal.issues_unknown ? ` / ${goal.issues_unknown} unknown` : "";
     const activity = goal.last_activity
-      ? `last ref ${goal.last_activity.slice(0, 10)}`
-      : "no linked merges yet";
-    return `issues ${issues} / ${goal.merged_refs} refs / ${activity}`;
+      ? `last activity ${goal.last_activity.slice(0, 10)}`
+      : "no linked activity yet";
+    return `${state}${unknown} (${issues}) / ${goal.merged_refs} refs / ${activity}`;
   }
 
   $effect(() => {

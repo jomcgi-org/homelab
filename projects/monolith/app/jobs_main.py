@@ -681,7 +681,8 @@ def snapshot_merged_prs() -> None:
     from sqlmodel import Session, select
 
     from core.db import get_engine
-    from core.github import fetch_merged_pull_requests
+    from core.github import fetch_issue_states, fetch_merged_pull_requests
+    from observability.factory_goals import list_active_goals, upsert_goal_issues
     from observability.merged_prs import MergedPR
     from observability.merged_prs_writer import write_snapshot
 
@@ -692,6 +693,23 @@ def snapshot_merged_prs() -> None:
     pulls = fetch_merged_pull_requests(cutoff, watermark=watermark)
     snapshotted, deleted = write_snapshot(pulls, cutoff)
     logger.info("Snapshots %d PRs, deleted %d old rows", snapshotted, deleted)
+    # Merges are committed before GitHub issue reads, so a failed fetch cannot
+    # discard the merge snapshot. Only active declarations bound this table.
+    with Session(get_engine()) as session:
+        numbers = {
+            number
+            for goal in list_active_goals(session)
+            for number in goal["issue_numbers"]
+        }
+    issues = fetch_issue_states(sorted(numbers)) if numbers else []
+    with Session(get_engine()) as session:
+        # Re-read links after network I/O in case declarations changed.
+        current = {
+            number
+            for goal in list_active_goals(session)
+            for number in goal["issue_numbers"]
+        }
+        upsert_goal_issues(session, issues, current)
 
 
 @app.command("hikes-scrape-walks")

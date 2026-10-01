@@ -4,14 +4,12 @@ The factory goal panel used to infer intent from merged PRs. Goals are
 intent, so the orchestrator declares them as rows in
 ``observability.factory_goals`` (see
 ``chart/migrations/20260924070000_factory_goals.sql``) and the panel renders
-those rows. Progress is scored here from ``observability.merged_prs`` rows,
-never narrated: a merged PR counts toward a goal when its title references
-one of the goal's linked issues as ``#<number>``.
+those rows. Progress uses linked issue state in ``factory_goal_issues`` and
+distinct merged PR numbers: title references in ``merged_prs`` or GitHub's
+merged closing refs. Last activity includes issue closure and merge times.
 
 Every shaping helper takes plain dicts so the unit tests run without a
-database. Only ``list_active_goals`` touches a session, and it reads the
-goals table and nothing else, which keeps the public tier on plain SQL over
-granted tables.
+database. Public reads use only plain SQL over granted snapshot tables.
 """
 
 from __future__ import annotations
@@ -19,7 +17,9 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, JSON
+from sqlalchemy import Column, DateTime, Integer, JSON, delete
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlmodel import Field, Session, SQLModel, select
 
@@ -49,6 +49,22 @@ class FactoryGoal(SQLModel, table=True):
         sa_type=DateTime(timezone=True),
     )
     active: bool = True
+
+
+class FactoryGoalIssue(SQLModel, table=True):
+    __tablename__ = "factory_goal_issues"
+    __table_args__ = {"schema": "observability", "extend_existing": True}
+
+    number: int = Field(primary_key=True)
+    state: str
+    closed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    closing_prs: list[int] = Field(
+        default_factory=list, sa_column=Column(_INT_ARRAY, nullable=False)
+    )
+    last_closing_merge_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    snapshotted_at: datetime = Field(sa_type=DateTime(timezone=True))
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -114,9 +130,11 @@ def score_goals(
     goals: list[dict],
     merges: list[dict],
     now: datetime,
+    issues: list[dict] | None = None,
 ) -> list[dict]:
     """Score declared goals against merged PRs, newest declaration first."""
     now_utc = _as_utc(now) or _utc_now()
+    issues_by_number = {row["number"]: row for row in issues or []}
     scored = []
     for goal in goals:
         linked = set(goal.get("issue_numbers") or [])
@@ -125,7 +143,15 @@ def score_goals(
             for row in merges
             if linked and linked & _referenced_issues(row.get("title"))
         ]
+        snapshots = [issues_by_number[n] for n in linked if n in issues_by_number]
+        refs = {row["number"] for row in hits}
         hit_times = []
+        for issue in snapshots:
+            refs.update(issue["closing_prs"])
+            for field in ("closed_at", "last_closing_merge_at"):
+                stamp = _as_utc(issue.get(field))
+                if stamp is not None:
+                    hit_times.append(stamp)
         for row in hits:
             merged_at = row.get("merged_at")
             if isinstance(merged_at, str):
@@ -150,7 +176,10 @@ def score_goals(
                 "age_days": age_days,
                 "stale": age_days is None or age_days > STALE_AFTER_DAYS,
                 "linked_issues": len(linked),
-                "merged_refs": len(hits),
+                "issues_open": sum(row["state"] == "OPEN" for row in snapshots),
+                "issues_closed": sum(row["state"] == "CLOSED" for row in snapshots),
+                "issues_unknown": len(linked) - len(snapshots),
+                "merged_refs": len(refs),
                 "last_activity": _iso(max(hit_times)) if hit_times else None,
             }
         )
@@ -162,9 +191,10 @@ def goals_payload(
     goals: list[dict],
     merges: list[dict],
     now: datetime,
+    issues: list[dict] | None = None,
 ) -> dict:
     """Shape the public goals payload with declaration-age freshness."""
-    scored = score_goals(goals, merges, now)
+    scored = score_goals(goals, merges, now, issues)
     stamps = [row["declared_at"] for row in scored if row["declared_at"]]
     newest = max(stamps) if stamps else None
     return {
@@ -193,3 +223,52 @@ def list_active_goals(session: Session) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def list_goal_issues(session: Session, numbers: set[int]) -> list[dict]:
+    """Read the public issue snapshots linked by the active declarations."""
+    if not numbers:
+        return []
+    rows = session.exec(
+        select(FactoryGoalIssue).where(FactoryGoalIssue.number.in_(numbers))
+    ).all()
+    return [row.model_dump() for row in rows]
+
+
+def upsert_goal_issues(
+    session: Session,
+    issues: list[dict],
+    numbers: set[int],
+    *,
+    snapshotted_at: datetime | None = None,
+) -> tuple[int, int]:
+    """Replace resolved issue snapshots and prune unlinked or unresolved rows."""
+    snapshot_time = snapshotted_at or _utc_now()
+    rows = [
+        {**issue, "snapshotted_at": snapshot_time}
+        for issue in issues
+        if issue["number"] in numbers
+    ]
+    table = FactoryGoalIssue.__table__
+    if rows:
+        insert_fn = (
+            sqlite_insert
+            if session.get_bind().dialect.name == "sqlite"
+            else postgresql_insert
+        )
+        statement = insert_fn(table).values(rows)
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.number],
+            set_={
+                column.name: getattr(statement.excluded, column.name)
+                for column in table.columns
+                if column.name != "number"
+            },
+        )
+        session.exec(statement)
+    resolved = {row["number"] for row in rows}
+    result = session.exec(
+        delete(FactoryGoalIssue).where(FactoryGoalIssue.number.not_in(resolved))
+    )
+    session.commit()
+    return len(rows), result.rowcount or 0

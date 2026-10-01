@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from core.db import get_session
 from observability import public_router
-from observability.factory_goals import FactoryGoal
+from observability.factory_goals import FactoryGoal, FactoryGoalIssue
 from observability.merged_prs import MergedPR
 
 _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
@@ -18,7 +18,7 @@ _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 @pytest.fixture(name="session")
 def session_fixture(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'merged-pr-router.db'}")
-    tables = [MergedPR.__table__, FactoryGoal.__table__]
+    tables = [MergedPR.__table__, FactoryGoal.__table__, FactoryGoalIssue.__table__]
     original_schemas = [table.schema for table in tables]
     for table in tables:
         table.schema = None
@@ -178,6 +178,39 @@ def test_public_factory_goals_scores_declared_goals(client, session):
     assert goal["stale"] is False
     assert "public" in response.headers["Cache-Control"]
     assert response.headers["ETag"]
+
+
+def test_public_goals_include_issue_states_and_body_closing_refs(client, session):
+    session.add(
+        FactoryGoal(
+            statement="Ship declared goals",
+            issue_numbers=[5927, 5784, 9999],
+            declared_by="opus",
+            declared_at=_NOW,
+            active=True,
+        )
+    )
+    session.add_all(
+        [
+            FactoryGoalIssue(
+                number=5927,
+                state="CLOSED",
+                closing_prs=[123],
+                closed_at=_NOW,
+                last_closing_merge_at=_NOW - timedelta(hours=1),
+                snapshotted_at=_NOW,
+            ),
+            FactoryGoalIssue(number=5784, state="OPEN", snapshotted_at=_NOW),
+        ]
+    )
+    session.add(_row(123, timedelta(hours=1), title="feat(factory): ship goals"))
+    session.commit()
+    goal = client.get("/api/agents/public/factory/goals").json()["goals"][0]
+    assert goal["issues_open"] == 1
+    assert goal["issues_closed"] == 1
+    assert goal["issues_unknown"] == 1
+    assert goal["merged_refs"] == 1
+    assert goal["last_activity"] == "2026-09-07T12:00:00Z"
 
 
 def test_public_factory_goals_counts_refs_older_than_seven_days(client, session):
