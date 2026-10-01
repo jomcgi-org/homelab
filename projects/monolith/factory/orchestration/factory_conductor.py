@@ -2623,15 +2623,29 @@ def _notify_person_once(
     """One successful Discord summary per task and kind; failed sends can retry."""
     from factory.orchestration.factory_models import FactoryAudit
 
+    from factory.orchestration import factory_notify_policy
+
     key = f"factory-person:{task_id}:{kind}"
     with Session(get_engine()) as db:
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,
-                FactoryAudit.action == "task_needs_person_notified",
+                FactoryAudit.action.in_(
+                    ("task_needs_person_notified", factory_notify_policy.DIGESTED)
+                ),
             )
         ).all()
     if any(json.loads(raw).get("workflow_id") == key for raw in previous):
+        return True
+    if not factory_notify_policy.pages(kind):
+        # Recorded for the daily digest instead of a page. The card, where
+        # there is one, is on the escalations page either way.
+        _audit_once(
+            task_id,
+            key,
+            factory_notify_policy.DIGESTED,
+            {"kind": kind, "message": message[:1500]},
+        )
         return True
     try:
         from agent.api import notify
@@ -7198,6 +7212,12 @@ def tick() -> None:
         sync_pointers(actor=ACTOR)
     except Exception:  # noqa: BLE001 - pointer failure must not stall reconciliation
         logger.exception("work item pointer sync failed")
+    try:
+        from factory.orchestration.factory_notify_policy import digest_tick
+
+        digest_tick()
+    except Exception:  # noqa: BLE001 - the digest must not stall reconciliation
+        logger.exception("factory digest failed")
     if snapshot["state"] != "enabled":
         return
     from factory.orchestration.factory_intake import concurrency_limit

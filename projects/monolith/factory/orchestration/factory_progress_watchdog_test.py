@@ -791,3 +791,116 @@ def test_deterministic_loop_shapes():
     assert "no new commit" in watchdog.deterministic_loop(no_commit)[0]
     two_refusals = {**empty, "runs": [], "refusals": ["x", "x", "y"]}
     assert watchdog.deterministic_loop(two_refusals) is None
+
+
+# ---------------------------------------------------------------------------
+# Notification policy and the daily digest (factory_notify_policy).
+
+
+def test_only_authority_kinds_page_once_the_digest_is_on(monkeypatch):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.delenv("FACTORY_NOTIFY_DIGEST_ENABLED", raising=False)
+    assert all(
+        policy.pages(kind)
+        for kind in ("refine", "escalation", "intervention", "deadline", "landing")
+    )
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "true")
+    assert not policy.pages("refine")
+    assert not policy.pages("intervention") and not policy.pages("deadline")
+    assert policy.pages("escalation") and policy.pages("landing")
+    assert policy.pages("watchdog:2")
+    # With nothing to release a stranded slot, an intervention is a person's.
+    monkeypatch.setenv("FACTORY_ACTIVE_CESSATION_ENABLED", "false")
+    assert policy.pages("intervention") and policy.pages("deadline")
+
+
+def test_a_digested_notice_is_recorded_once_and_not_sent(db, notices, monkeypatch):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
+    task_id, _policy = admitted()
+    for _ in range(2):
+        assert conductor._notify_person_once(task_id, "refine question", kind="refine")
+    assert notices == []
+    (row,) = audits(db, policy.DIGESTED)
+    assert row["kind"] == "refine" and row["message"] == "refine question"
+    # An escalation still pages.
+    assert conductor._notify_person_once(task_id, "decide this", kind="escalation")
+    assert notices == [("decide this", "warn")]
+
+
+def _audit(task_id, action, **detail):
+    with controls._locked_session() as (session, _control):
+        controls._audit(session, "test", action, task_id=task_id, **detail)
+
+
+def test_the_daily_digest_lists_what_the_factory_decided_once_a_day(
+    db, notices, monkeypatch
+):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
+    task_id, _policy = admitted()
+    _audit(
+        task_id,
+        "funding_granted",
+        reason="Two commits and green checks; only review is left.",
+        requested_task_budget_usd=80.0,
+        granted_task_budget_usd=60.0,
+        merit_ceiling={"ceiling_usd": 60.0},
+    )
+    # An operator's dispatch-refusal grant is not an auto-approval.
+    _audit(task_id, "funding_granted", reason="operator", merit_ceiling=None)
+    _audit(
+        task_id,
+        "watchdog_assessed",
+        verdict="progressing",
+        short_circuit=False,
+        spend_usd=21.5,
+        reason="Each attempt narrows the bug.",
+    )
+    _audit(
+        task_id,
+        "repository_scope_delivered",
+        issue_number=6288,
+        delivered_prs=[6334, 6495],
+        child_number=6570,
+    )
+    _audit(
+        task_id,
+        policy.DIGESTED,
+        kind="refine",
+        message="Factory refine needs a human on owner/repo#7",
+    )
+
+    assert policy.digest_tick() == "sent"
+    ((message, level),) = notices
+    assert level == "info"
+    assert "Funding the judge approved (1)" in message
+    assert "task budget $60 (asked $80)" in message
+    assert "Watchdog let continue (1)" in message
+    assert "#6288 delivered in #6334, #6495, live checks in #6570" in message
+    assert "[refine] Factory refine needs a human" in message
+    assert "private.jomcgi.dev/agents/escalations" in message
+    assert len(message) <= policy.MESSAGE_LIMIT
+
+    # Once a day: the next tick is not due, and nothing is sent twice.
+    assert policy.digest_tick() == "not_due"
+    assert len(notices) == 1
+
+
+def test_an_empty_day_sends_nothing(db, notices, monkeypatch):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
+    assert policy.digest_tick() == "empty"
+    assert notices == []
+
+
+def test_the_digest_is_off_by_default(db, notices, monkeypatch):
+    from factory.orchestration import factory_notify_policy as policy
+
+    monkeypatch.delenv("FACTORY_NOTIFY_DIGEST_ENABLED", raising=False)
+    assert policy.digest_tick() == "disabled"
