@@ -74,6 +74,33 @@ defmodule Embervm.DrainCoordinatorTest do
     assert finished.pod_uid == "uid-old"
   end
 
+  test "the session class receives the draining instance's pod_uid" do
+    test = self()
+
+    {:ok, pid} =
+      DrainCoordinator.start_link(
+        name: nil,
+        drain_fun: fn _class, _server, _node_id -> 0 end,
+        session_drain_fun: fn _server, node, pod_uid, deadline ->
+          send(test, {:session_instance, node, pod_uid, deadline})
+          1
+        end,
+        append_fun: fn _op_log, op ->
+          send(test, {:op, op.kind, op.payload})
+          {:ok, 1}
+        end
+      )
+
+    send(pid, {:node_draining, "node-4", "uid-2gi", 1_700_000_120_000})
+    assert_receive {:session_instance, "node-4", "uid-2gi", 1_700_000_120_000}
+    assert_receive {:op, :node_drain_finished, finished}
+    assert finished.session == 1
+
+    # The legacy 3-tuple carries no pod_uid; the session class gets "" (whole node).
+    send(pid, {:node_draining, "node-5", 1_700_000_120_000})
+    assert_receive {:session_instance, "node-5", "", 1_700_000_120_000}
+  end
+
   test "a class whose drain raises is skipped, the others still drain", %{pid: _pid} do
     test = self()
 

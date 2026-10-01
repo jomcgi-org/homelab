@@ -69,9 +69,14 @@ defmodule Embervm.DrainCoordinator do
         Keyword.get(opts, :drain_fun, fn _class, server, node_id ->
           server.drain_node(server, node_id)
         end),
-      session_drain_fun: Keyword.get(opts, :session_drain_fun, fn server, node_id, deadline ->
-        Embervm.SessionManager.drain_node(server, node_id, deadline)
-      end),
+      # Sessions are drained per INSTANCE (node + pod_uid): several bricks share a
+      # node, and an idle drain of an empty brick must not interrupt live turns on
+      # its siblings. SessionManager owns the gate and the placement evidence; a
+      # 3-arity fun (node-scoped) is still accepted.
+      session_drain_fun:
+        Keyword.get(opts, :session_drain_fun, fn server, node_id, pod_uid, deadline ->
+          Embervm.SessionManager.drain_instance(server, node_id, pod_uid, deadline)
+        end),
       # The op-log append, seamed for tests. Production appends the audit op to the
       # configured backend (op_log_mod); a test records it instead.
       append_fun: Keyword.get(opts, :append_fun, fn op_log, op -> op_log_mod.append(op_log, op) end)
@@ -82,12 +87,12 @@ defmodule Embervm.DrainCoordinator do
 
   @impl true
   # NodeRegistry sends the drain edge scoped to the INSTANCE (node + pod_uid, R0
-  # PR-2): a surge roll drains only the old pod. The sweepers key their live VMs by
-  # NODE (the daemon reports VMs per node, and today there is one instance per
-  # node), so force-bank is still dispatched per node; pod_uid is recorded on the
-  # op and span so an instance-scoped drain is auditable and a future
-  # instance-granular sweeper can consume it. The legacy 3-tuple (no pod_uid) is
-  # still accepted for a NodeRegistry that predates this change.
+  # PR-2): a surge roll drains only the old pod. Several brick instances now share
+  # a node (one per size class), so the session class receives the pod_uid and
+  # drains only that instance's sessions (SessionManager.drain_instance/4, gated).
+  # The stateful, group and serving sweepers still force-bank per node. The legacy
+  # 3-tuple (no pod_uid) is still accepted for a NodeRegistry that predates this
+  # change and drains the whole node.
   def handle_info({:node_draining, node_id, pod_uid, deadline_ms}, state) do
     handle_drain(state, node_id, pod_uid, deadline_ms)
     {:noreply, state}
@@ -137,7 +142,7 @@ defmodule Embervm.DrainCoordinator do
       counts = %{
         stateful: drain_class(state, :stateful, node_id),
         group: drain_class(state, :group, node_id),
-        session: drain_session(state, node_id, deadline_ms),
+        session: drain_session(state, node_id, pod_uid, deadline_ms),
         serving: drain_class(state, :serving, node_id)
       }
 
@@ -159,7 +164,18 @@ defmodule Embervm.DrainCoordinator do
   # Best-effort per class: a sweeper that is down or raises must not wedge the drain
   # of the other classes. Returns the count of instances whose bank was started, 0
   # on any failure.
-  defp drain_session(state, node_id, deadline_ms) do
+  defp drain_session(%{session_drain_fun: fun} = state, node_id, pod_uid, deadline_ms)
+       when is_function(fun, 4) do
+    fun.(state.session, node_id, pod_uid, deadline_ms)
+  rescue
+    e ->
+      Logger.warning("embervm session drain raised", error: inspect(e))
+      0
+  catch
+    _, _ -> 0
+  end
+
+  defp drain_session(state, node_id, _pod_uid, deadline_ms) do
     state.session_drain_fun.(state.session, node_id, deadline_ms)
   rescue
     e ->

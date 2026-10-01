@@ -260,6 +260,15 @@ nodeConfirmedDestroy: false
 # sibling nodeConfirmedDestroy above has had all along.
 asyncLifecycleWrites: false
 
+# Instance-scoped session drain. Read at boot as
+# EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. False (the default) keeps the old
+# behaviour: a brick drain edge interrupts and banks every running session on
+# the node. True drains only the sessions placed on the draining brick instance
+# (node + pod_uid), so the autoscaler's idle drain of an empty brick does not
+# interrupt live turns on a co-located brick of another size class. A session
+# whose placement is unknown is still drained.
+drainInstanceScopedSessions: false
+
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.

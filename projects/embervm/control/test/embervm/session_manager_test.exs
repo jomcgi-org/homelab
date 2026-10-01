@@ -285,6 +285,7 @@ defmodule Embervm.SessionManagerTest do
           :commit_session_vm_fun,
           :release_session_vm_fun,
           :node_confirmed_destroy,
+          :drain_instance_scoped,
           :destroying_alarm_ms,
           :orphan_grace_ms,
           :departure_retry_interval_ms,
@@ -5040,6 +5041,83 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
     assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
     assert Process.alive?(pid)
+  end
+
+  # 2026-10-01 00:44:42 and 02:04:42: the autoscaler idle-drained an EMPTY 2gi
+  # and then 4gi brick, and the node-scoped drain interrupted every live turn on
+  # the co-located 8gi brick. With the gate on, a drain edge for one instance
+  # leaves sessions placed on a sibling instance running.
+  defp drain_deadline, do: System.system_time(:millisecond) + 180_000
+
+  test "instance-scoped drain leaves a session on a co-located sibling brick running" do
+    ctx = start_stack(drain_instance_scoped: true)
+    put_session_workload(ctx, "wl-drain-sibling")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-sibling", "p1")
+    assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+
+    :sys.replace_state(ctx.mgr, fn st ->
+      %{st | session_dials: Map.put(st.session_dials, created.session_id, "node-4/pod-8gi")}
+    end)
+
+    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-2gi", drain_deadline()) == 0
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    assert Process.alive?(pid)
+    refute MapSet.member?(:sys.get_state(ctx.mgr).draining_sessions, created.session_id)
+    refute :sys.get_state(pid).draining
+
+    # The session's own instance draining still drains it.
+    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-8gi", drain_deadline()) == 1
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+  end
+
+  test "instance-scoped drain still drains a session whose placement is unknown" do
+    ctx = start_stack(drain_instance_scoped: true)
+    put_session_workload(ctx, "wl-drain-unknown")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-unknown", "p1")
+    refute Map.has_key?(:sys.get_state(ctx.mgr).session_dials, created.session_id)
+
+    # No dial and no surviving co-located instance reports the session: the
+    # draining instance is the only explanation, so the drain must reach it.
+    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-2gi", drain_deadline()) == 1
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
+  end
+
+  test "instance-scoped drain spares a missing-dial session a sibling reports" do
+    ctx = start_stack(drain_instance_scoped: true)
+    put_session_workload(ctx, "wl-drain-reported")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-reported", "p1")
+    {:ok, row} = SessionStore.get(ctx.store, created.session_id)
+    refute Map.has_key?(:sys.get_state(ctx.mgr).session_dials, created.session_id)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-8gi"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      pod_uid: "pod-8gi",
+      instance_id: "node-4/pod-8gi",
+      session_vms: [%{session_id: created.session_id, vm_id: row.vm_id}],
+      session_snapshots: [],
+      session_volumes: [],
+      workloads: %{},
+      updated_at: 5_000_001
+    })
+
+    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-2gi", drain_deadline()) == 0
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    refute :sys.get_state(pid).draining
+  end
+
+  test "with the gate off an instance drain keeps draining the whole node" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-drain-gate-off")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-gate-off", "p1")
+
+    :sys.replace_state(ctx.mgr, fn st ->
+      %{st | session_dials: Map.put(st.session_dials, created.session_id, "node-4/pod-8gi")}
+    end)
+
+    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-2gi", drain_deadline()) == 1
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
   end
 
   test "interrupt is exact, duplicate-safe, and leaves the session reusable" do

@@ -1151,6 +1151,7 @@ defmodule Embervm.Application do
       sweep_interval_ms: session_sweep_interval_ms(),
       disk_low_watermark_bytes: session_disk_low_watermark_bytes(),
       node_confirmed_destroy: node_confirmed_destroy_enabled(),
+      drain_instance_scoped: drain_instance_scoped_sessions_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
       create_concurrency: session_create_concurrency(),
@@ -1199,6 +1200,18 @@ defmodule Embervm.Application do
   # change, no code change. Nothing sets it on in this PR.
   defp node_confirmed_destroy_enabled do
     case trimmed_env("EMBERVM_NODE_CONFIRMED_DESTROY") do
+      v when v in ["1", "true", "TRUE", "True"] -> true
+      _ -> false
+    end
+  end
+
+  # EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. UNSET or "0"/"false"/"" (the chart
+  # default) => a brick drain edge interrupts and banks every running session on
+  # the NODE. "1"/"true" => only sessions placed on the draining brick instance
+  # (node + pod_uid) are drained, so an autoscaler idle drain of an empty brick
+  # no longer interrupts live turns on a co-located sibling brick.
+  defp drain_instance_scoped_sessions_enabled do
+    case trimmed_env("EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS") do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end
