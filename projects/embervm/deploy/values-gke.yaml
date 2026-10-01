@@ -1,8 +1,28 @@
 # GKE hub overrides. This file is applied after deploy/values.yaml.
 
 claudeRuntimeWorkload:
-  # Match the existing total-session limit; placement still checks node memory.
-  cap: 8
+  # cap must sit at or above the monolith's agentSessions.admission.total (24):
+  # every family but pi lands here, and a permit the guest cap refuses fails
+  # its turn with workload_cap instead of waiting. At 8 against 23 permits,
+  # everything past the eighth live session failed (2026-10-01). Placement
+  # still gates each create on real node memory, and three 8gi bricks at
+  # noded.maxLiveVMs 16 give 48 live slots, so 24 is the binding bound.
+  cap: 24
+  session:
+    # Live plus banked; stays above cap so a burst of creates can still bank.
+    maxSessions: 32
+  # 3 GiB, down from the base 4096. Measured 2026-10-01 on the one live 8gi
+  # brick: five claude-runtime guests at 274 MiB to 1.0 GiB Firecracker RSS,
+  # which is each guest's touched-page high-water mark (there is no balloon),
+  # so none had ever used more than a quarter of 4 GiB. Bazel no longer runs in
+  # session guests (CI on BuildBuddy builds), which was the case 4 GiB was
+  # sized for. Not 2 GiB: Opus planner turns hold up to 1M tokens of context
+  # in the CLI's V8 heap. 3072 + the 512 MiB reject floor fits a 4gi brick
+  # (usable 3840), so the 4gi class can now host sessions too. memMib is a
+  # base-signature input, so this rebuilds the claude-runtime base once.
+  # Rollback: delete this line. Watch for guest OOM until #5805 reports
+  # guest memory pressure.
+  memMib: 3072
 
 # The hub starts with node-local state only. An empty endpoint is the chart's
 # safe store-disabled mode, and no object-store credentials are rendered.
@@ -140,10 +160,11 @@ bricks:
   desiredReplicas:
     2gi: 1
     4gi: 1
-    # claude-runtime sessions (luna/terra/sol codex lane) are memMib 4096 and
-    # fit NOTHING smaller: 4gi usable is 3840, so with 8gi off every session
-    # create was denied :no_capacity (2026-09-01). One 8gi brick (usable 7936)
-    # hosts one live session; autoscale headroom adds a second for concurrency.
+    # claude-runtime sessions (luna/terra/sol codex lane) need memMib 3072 plus
+    # the 512 reject floor, so a 4gi (usable 3840) or 8gi brick. Placement
+    # admits on observed memory, not nominal memMib, so one 8gi brick (usable
+    # 7936) hosts several live sessions: five on 2026-10-01 at ~3.5 GiB
+    # resident in total.
     8gi: 1
     16gi: 0
   nodeFloors: []
@@ -159,9 +180,15 @@ bricks:
       # scale-from-zero records demand.
       8gi: 1
       16gi: 0
+    # 8gi up to 3: an ember-bricks node is an n2-standard-8 with ~27.5 GiB
+    # allocatable and an 8gi brick requests 6Gi (8Gi limit), so three bricks
+    # (18Gi requested, 24Gi limits) pack onto the one node already running,
+    # which was carrying a single brick and leaving ~20 GiB idle. The pool's
+    # autoscaler adds a node only when requests stop fitting. CPU, not memory,
+    # is the next ceiling: 2 vCPU guests share the node's 8.
     maxReplicas:
       4gi: 2
-      8gi: 2
+      8gi: 3
       16gi: 0
 
 # THIS DISARM is the load-bearing GKE safety piece. Base values arm destructive

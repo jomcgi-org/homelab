@@ -1460,25 +1460,24 @@ agentSessions:
   # clamps the two inner numbers, so they can never exceed it by a typo.
   #
   # total must stay at or below what EmberVM will actually create:
-  # claudeRuntimeWorkload concurrency cap in projects/embervm/deploy/values.yaml,
-  # raised to 16 alongside this, with session.maxSessions at 24. It is TOTAL
+  # claudeRuntimeWorkload cap, 24 on the hub (projects/embervm/deploy/
+  # values-gke.yaml, which overrides deploy/values.yaml's 16). It is TOTAL
   # that has to fit, not background: every model family except pi lands on
   # claude-runtime, so an interactive permit reaches the same workload. Above
   # the cap a permit is granted and the guest create takes a workload_cap
   # denial, which fails the turn instead of making it wait.
   #
-  # TEMPORARY +7 on total and background (2026-09-29): seven permits are stuck
-  # `uncertain` with no live guest (ids 6035, 6583, 7674, 7792, 7810, 9950,
-  # 9951; the last two are the 2026-09-29 Opus 5.5 CLI-gate 400s from #6468).
-  # They never time out by design and there is no operator release yet
-  # (#6025), so they held 7 of the 12 background slots and blocked every
-  # factory admission. The raise hands exactly those slots back; live guests
-  # stay within the 16/12 above because the stuck permits hold none. Revert to
-  # 16/12 once #6025 or #6468 settles them.
+  # 2026-10-01: the seven dead `uncertain` permits the 2026-09-29 +7 worked
+  # around are all settled (6035, 6583 and 7810 by operator release under
+  # #6025), so these are now real bounds, sized to EmberVM's GKE
+  # claudeRuntimeWorkload cap of 24 (projects/embervm/deploy/values-gke.yaml).
+  # background leaves 4 permits for interactive sessions. kg rises from 3 to 6
+  # so the KG drain can spend the Codex quota that was sitting unused (5% of
+  # the weekly window) while the factory keeps its 10 delivery lanes.
   admission:
-    total: 23
-    background: 19
-    kg: 3
+    total: 24
+    background: 20
+    kg: 6
 
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
 # enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_code python runs
