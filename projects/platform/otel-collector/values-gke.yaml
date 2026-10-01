@@ -22,10 +22,10 @@ httpcheck:
   # (O = Argo CD, self-signed, CA:FALSE), pinned per #6542. It expires
   # 2027-08-30 and must be re-pinned from argocd-secret tls.crt before then.
   # The mount and the argocd-server-ca ConfigMap must stay on while the target
-  # carries tls.ca_file: the template fails the render when caCert is empty,
-  # so a ca_file target can never ship without its CA (which would fail every
-  # probe and risks the collector failing to start, taking traces and metrics
-  # export with it).
+  # carries tls.ca_file: the template fails the render when the mount is on
+  # and caCert is empty or null, so a PEM-less CA cannot ship (a missing CA
+  # fails every probe and risks the collector failing to start, taking traces
+  # and metrics export with it). Turning caMount.enabled off is not guarded.
   enabled: true
   targets:
     - "https://jomcgi.dev/health"

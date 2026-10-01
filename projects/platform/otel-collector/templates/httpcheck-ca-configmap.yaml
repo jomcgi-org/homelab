@@ -1,5 +1,6 @@
 {{- if and .Values.httpcheck.enabled .Values.httpcheck.caMount.enabled }}
-{{- if not (trim (.Values.httpcheck.caMount.caCert | toString)) }}
+{{- $caCert := .Values.httpcheck.caMount.caCert | default "" | toString | trim }}
+{{- if not $caCert }}
 {{- fail "httpcheck.caMount.caCert is required when httpcheck.enabled and httpcheck.caMount.enabled are both true: set the pinned serving CA PEM" }}
 {{- end }}
 apiVersion: v1
@@ -11,5 +12,5 @@ metadata:
     {{- include "otel-collector.labels" . | nindent 4 }}
 data:
   {{ .Values.httpcheck.caMount.key }}: |
-    {{- trim (.Values.httpcheck.caMount.caCert | toString) | nindent 4 }}
+    {{- $caCert | nindent 4 }}
 {{- end }}

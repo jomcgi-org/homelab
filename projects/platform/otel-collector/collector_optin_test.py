@@ -523,6 +523,16 @@ def test_gke_empty_cacert_fails_render():
     assert "httpcheck.caMount.caCert" in result.stderr
 
 
+def test_gke_null_cacert_fails_render():
+    """A null caCert (bare YAML key, ~, --set ...=null) must fail like an
+    empty string rather than render a non-PEM ConfigMap."""
+    result = _run_render(
+        ["values", "values-gke"], ["--set", "httpcheck.caMount.caCert=null"]
+    )
+    assert result.returncode != 0
+    assert "httpcheck.caMount.caCert" in result.stderr
+
+
 def test_base_empty_cacert_fails_render_when_mount_enabled():
     result = _run_render(
         ["values"],
