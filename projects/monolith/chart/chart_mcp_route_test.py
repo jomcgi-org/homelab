@@ -194,8 +194,7 @@ def _assert_enabled_route(
             )
             match_labels = selector.get("matchLabels", {})
             assert not all(
-                route_labels.get(key) == value
-                for key, value in match_labels.items()
+                route_labels.get(key) == value for key, value in match_labels.items()
             ), (obj["metadata"]["name"], selector)
 
 
@@ -214,13 +213,11 @@ def test_production_chain_advertises_the_verifier_issuer() -> None:
     authorization_server = None
     for values_file in [CHART / "values.yaml", *(MONOLITH / o for o in chain)]:
         values = yaml.safe_load(values_file.read_text())
-        issuer = values.get("auth", {}).get("authentik", {}).get(
-            "issuer", issuer
-        )
+        issuer = values.get("auth", {}).get("authentik", {}).get("issuer", issuer)
         authorization_server = (
-            values.get("cfIngress", {}).get("mcp", {}).get(
-                "authorizationServer", authorization_server
-            )
+            values.get("cfIngress", {})
+            .get("mcp", {})
+            .get("authorizationServer", authorization_server)
         )
     assert authorization_server == issuer
     objects = _render(chain, settings=("cfIngress.mcp.enabled=true",))
