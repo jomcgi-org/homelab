@@ -235,9 +235,13 @@ def test_factory_webhook_and_pointer_ship_staged_off(chart_context):
 def test_session_stop_control_is_default_off_and_wires_both_containers(
     chart_context,
 ):
-    """Backend enforcement and frontend visibility share one explicit flag."""
+    """Backend enforcement and frontend visibility share one explicit flag.
+
+    The chart default stays off; production enables it in deploy/values.yaml
+    for the live checks on #6564, and both containers must agree.
+    """
     pattern = r'- name: AGENT_SESSION_STOP_CONTROL_ENABLED\n\s+value: "(true|false)"'
-    assert re.findall(pattern, chart_context["rendered"]) == ["false", "false"]
+    assert re.findall(pattern, chart_context["rendered"]) == ["true", "true"]
 
     chart_dir = chart_context["chart_dir"]
     helm_bin = os.environ.get("HELM_BIN", "helm")
@@ -254,13 +258,29 @@ def test_session_stop_control_is_default_off_and_wires_both_containers(
             "--values",
             str(chart_context["deploy_values_file"]),
             "--set",
-            "agents.sessions.stopControlEnabled=true",
+            "agents.sessions.stopControlEnabled=false",
         ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert re.findall(pattern, result.stdout) == ["true", "true"]
+    assert re.findall(pattern, result.stdout) == ["false", "false"]
+    chart_default = subprocess.run(
+        [
+            helm_bin,
+            "template",
+            "monolith",
+            str(chart_dir),
+            "--namespace",
+            "default",
+            "--values",
+            str(chart_dir / "values.yaml"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert chart_default.returncode == 0, chart_default.stderr
+    assert re.findall(pattern, chart_default.stdout) == ["false", "false"]
 
 
 def test_factory_lost_before_session_sweep_ships_staged_off(chart_context):
