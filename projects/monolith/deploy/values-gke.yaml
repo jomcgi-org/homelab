@@ -15,7 +15,11 @@ frontend:
 
 tokenBroker:
   spiffe:
-    enabled: false
+    # Stage 1 of #5791: login/start, login/status, refresh and quota go to the
+    # broker's SPIFFE mTLS port (8443) through the spiffe-helper sidecar. The
+    # broker listener went live first (embervm values-gke.yaml). Port 8080 is
+    # still served, so rollback is setting this back to false.
+    enabled: true
 
 swarm:
   # Make the bounded reconciler available on the existing GKE stack. Durable
