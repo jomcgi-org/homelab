@@ -1,0 +1,11 @@
+# The operator copies this label onto the repository Secret for ArgoCD.
+# The item supplies name/url/type/enableOCI/username/password; #6605 checks sync.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: repo-weave-hand-charts
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+spec:
+  itemPath: vaults/k8s-homelab/items/argocd-repo-weave-hand-charts

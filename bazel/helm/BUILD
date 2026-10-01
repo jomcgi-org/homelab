@@ -24,11 +24,18 @@ exports_files([
 
 MANIFEST_SETS = [
     # Raw kustomize manifests, not a Helm render.
+    "//projects/gke-apps/loom:application.yaml",
+    "//projects/loom/deploy:argocd-repo-cred.yaml",
     "//projects/loom/deploy:cnpg-cluster.yaml",
     "//projects/loom/deploy:cnpg-metrics-service.yaml",
     "//projects/loom/deploy:cnpg-scheduledbackup.yaml",
+    "//projects/loom/deploy:httproute.yaml",
+    "//projects/loom/deploy:image-pull-secret.yaml",
     "//projects/loom/deploy:namespace.yaml",
     "//projects/loom/deploy:onepassworditem-cnpg-backup-gcs.yaml",
+    "//projects/loom/deploy:onepassworditem-r2.yaml",
+    # Pinned external loom chart with hub values.
+    "//projects/loom/deploy:manifests/all.yaml",
     # First-party applications rendered with their deploy values.
     "//projects/embervm/deploy:manifests/all.yaml",
     "//projects/embervm/deploy:manifests_gke/all.yaml",

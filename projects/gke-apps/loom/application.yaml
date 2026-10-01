@@ -1,0 +1,45 @@
+# Default-off: this directory is not registered in the hub kustomization.
+# #6605 verifies chart 0.2.0 and sha-e6ca13c images in ghcr before enabling it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loom
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/weave-hand/charts
+      chart: loom
+      # 0.2.0 carries the current templates (weave-hand/loom#691).
+      # 0.1.0 lacks the required components and values; edge is forbidden.
+      targetRevision: 0.2.0
+      helm:
+        releaseName: loom
+        valueFiles:
+          - $values/projects/loom/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/loom/deploy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: loom
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

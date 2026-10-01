@@ -18,6 +18,14 @@ filegroup(
     visibility = ["//projects/platform/renovate:__pkg__"],
 )
 
+exports_files(
+    [
+        "gke-apps/kustomization.yaml",
+        "gke-apps/context-forge-gateway/application.yaml",
+    ],
+    visibility = ["//projects/loom/deploy:__pkg__"],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
