@@ -257,7 +257,28 @@ def _deaths(data: dict, cite: Citer, run_cost: dict) -> list[str]:
     return lines
 
 
+_MISSING_THING = re.compile(
+    r"`([^`]{2,80})` (?:is )?(?:missing|not found)"
+    r"|No such file or directory: '([^']{2,80})'"
+    r"|([\w./-]{2,60}): (?:command )?not found",
+    re.IGNORECASE,
+)
+
+
+def _turn_heads(data: dict) -> dict[tuple, str]:
+    """The last recorded result head of each node attempt's session."""
+    heads: dict[tuple, str] = {}
+    for turn in data.get("turns", []):
+        parts = _session_parts(turn.get("local_session_id"))
+        if parts is None:
+            continue
+        attempt = int(parts[2]) if parts[2].isdigit() else parts[2]
+        heads[(parts[0], parts[1], attempt)] = str(turn.get("result_head") or "")
+    return heads
+
+
 def _failures(data: dict, cite: Citer) -> list[str]:
+    heads = _turn_heads(data)
     groups: dict[str, list[dict]] = defaultdict(list)
     for run in data.get("runs", []):
         if run.get("status") not in ("failed", "escalated", "uncertain"):
@@ -279,6 +300,20 @@ def _failures(data: dict, cite: Citer) -> list[str]:
             f"- {len(rows)} runs on {len(tasks)} tasks ({dict(models)}): {key}"
             f"\n  - e.g. {examples}"
         )
+        # What the model itself said: one reason can hide unrelated causes,
+        # such as a broken guest tool behind a missing artifact.
+        said = Counter(
+            _NOISE.sub(
+                "N",
+                _one_line(
+                    heads.get((r["task_id"], r["node_key"], r["attempt"]), ""), 110
+                ),
+            )
+            for r in rows
+        )
+        for text, count in said.most_common(3):
+            if text and (count > 1 or len(rows) <= 3):
+                lines.append(f'  - {count} of these said: "{text}"')
     return lines
 
 
@@ -298,7 +333,23 @@ def _harness(data: dict, cite: Citer) -> list[str]:
             continue
         key = _NOISE.sub("N", _one_line(text, 100))
         groups[key].append((*parts, _f(turn.get("list_cost_usd"))))
+    missing: dict[str, list[tuple]] = defaultdict(list)
+    for turn in data.get("turns", []):
+        match = _MISSING_THING.search(str(turn.get("result_head") or ""))
+        parts = _session_parts(turn.get("local_session_id"))
+        if match and parts is not None:
+            thing = next(group for group in match.groups() if group)
+            missing[thing].append((*parts, _f(turn.get("list_cost_usd"))))
     lines = []
+    for thing, rows in sorted(missing.items(), key=lambda item: -len(item[1])):
+        tasks = {row[0] for row in rows}
+        if len(rows) < 3 or len(tasks) < 2:
+            continue
+        examples = ", ".join(cite(row[0], row[1], row[2]) for row in rows[:3])
+        lines.append(
+            f"- missing in the guest: `{thing}` named by {len(rows)} turns on "
+            f"{len(tasks)} tasks, ${sum(r[3] for r in rows):.2f} list\n  - e.g. {examples}"
+        )
     for key, rows in sorted(groups.items(), key=lambda item: -len(item[1])):
         tasks = {row[0] for row in rows}
         if len(rows) < 3 or len(tasks) < 2:
