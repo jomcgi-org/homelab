@@ -29,7 +29,12 @@ NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 
 def png(viewport):
     def chunk(kind, data):
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data))
+        )
 
     width, height = viewport
     return (
@@ -53,7 +58,10 @@ def record(data, kind="screenshot", viewport=DEFAULT_VIEWPORTS[0]):
         media_type="image/png" if kind == "screenshot" else "application/json",
         sha256=hashlib.sha256(data).hexdigest(),
         size_bytes=len(data),
-        storage={"backend": "test", "uri": "artifact:" + hashlib.sha256(data).hexdigest()},
+        storage={
+            "backend": "test",
+            "uri": "artifact:" + hashlib.sha256(data).hexdigest(),
+        },
         expires_at="2026-10-02T00:00:00Z",
         link="https://artifacts.example.test/1",
         upload_status="uploaded",
@@ -127,7 +135,12 @@ def test_artifact_failure(evidence, changes, expected):
     records[0] = replace(original, **changes)
     # Fetch the original bytes even when the declared digest is wrong.
     assert expected in codes(
-        verify_evidence(records, None, NOW, lambda r: blobs[original.sha256] if r is records[0] else blobs[r.sha256])
+        verify_evidence(
+            records,
+            None,
+            NOW,
+            lambda r: blobs[original.sha256] if r is records[0] else blobs[r.sha256],
+        )
     )
 
 
@@ -143,7 +156,16 @@ def test_png_failures(evidence, data, expected):
 
 
 @pytest.mark.parametrize("category", ["functional", "accessibility"])
-@pytest.mark.parametrize("status, expected", [("skipped", "check_skipped"), ("errored", "check_errored"), ("failed", "check_failed"), (None, "check_missing"), ([], "check_invalid")])
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("skipped", "check_skipped"),
+        ("errored", "check_errored"),
+        ("failed", "check_failed"),
+        (None, "check_missing"),
+        ([], "check_invalid"),
+    ],
+)
 def test_check_failures(evidence, category, status, expected):
     records, blobs, outcome = evidence
     outcome["viewports"]["1440x900"][category][category] = status
@@ -164,22 +186,37 @@ def test_failed_navigation(evidence):
 
 def test_accessibility_is_not_visual(evidence):
     records, blobs, _ = evidence
-    snapshots = [replace(r, kind="accessibility_snapshot", viewport=None) for r in records[:2]]
+    snapshots = [
+        replace(r, kind="accessibility_snapshot", viewport=None) for r in records[:2]
+    ]
     assert "screenshot_missing" in codes(verdict(snapshots + records[2:], blobs))
     with pytest.raises(ValueError, match="screenshot_missing"):
         image_blocks_for_review(snapshots, lambda r: blobs[r.sha256], now=NOW)
 
 
-@pytest.mark.parametrize("revision", ["A" * 40, "a" * 39, "g" * 40, "main", "a" * 40 + "\n"])
+@pytest.mark.parametrize(
+    "revision", ["A" * 40, "a" * 39, "g" * 40, "main", "a" * 40 + "\n"]
+)
 def test_bad_app_commit(revision):
     with pytest.raises(ValueError, match="app_commit"):
         replace(record(png((1, 1)), viewport=(1, 1)), app_commit=revision)
 
 
-@pytest.mark.parametrize("capture, expiry", [("2026-09-30", "2026-10-02T00:00:00Z"), ("2026-09-30T00:00:00-01:00", "2026-10-02T00:00:00Z"), ("2026-09-30T00:00:00Z", "2026-09-29T00:00:00Z")])
+@pytest.mark.parametrize(
+    "capture, expiry",
+    [
+        ("2026-09-30", "2026-10-02T00:00:00Z"),
+        ("2026-09-30T00:00:00-01:00", "2026-10-02T00:00:00Z"),
+        ("2026-09-30T00:00:00Z", "2026-09-29T00:00:00Z"),
+    ],
+)
 def test_invalid_times(capture, expiry):
     with pytest.raises(ValueError):
-        replace(record(png((1, 1)), viewport=(1, 1)), capture_time=capture, expires_at=expiry)
+        replace(
+            record(png((1, 1)), viewport=(1, 1)),
+            capture_time=capture,
+            expires_at=expiry,
+        )
 
 
 def test_wrong_identity(evidence):
@@ -188,7 +225,13 @@ def test_wrong_identity(evidence):
     assert "identity_mismatch" in codes(verdict(records, blobs))
 
 
-@pytest.mark.parametrize("capture, count, byte_limit", [(capture_console, CONSOLE_MAX_ENTRIES, CONSOLE_MAX_BYTES), (capture_network, NETWORK_MAX_ENTRIES, NETWORK_MAX_BYTES)])
+@pytest.mark.parametrize(
+    "capture, count, byte_limit",
+    [
+        (capture_console, CONSOLE_MAX_ENTRIES, CONSOLE_MAX_BYTES),
+        (capture_network, NETWORK_MAX_ENTRIES, NETWORK_MAX_BYTES),
+    ],
+)
 def test_capture_bounds(capture, count, byte_limit):
     result = capture(["x"] * (count + 3))
     assert len(result.entries) == count
@@ -210,7 +253,9 @@ def test_review_receives_bytes(evidence):
         assert base64.b64decode(block["source"]["data"]) == blobs[rec.sha256]
 
 
-@pytest.mark.parametrize("fetch", [lambda r: None, lambda r: r.link, lambda r: b"corrupt"])
+@pytest.mark.parametrize(
+    "fetch", [lambda r: None, lambda r: r.link, lambda r: b"corrupt"]
+)
 def test_review_refuses_url_only_or_corrupt(evidence, fetch):
     with pytest.raises(ValueError, match="incomplete image evidence"):
         image_blocks_for_review(evidence[0], fetch, now=NOW)
@@ -222,7 +267,9 @@ def test_summary_bounds(evidence):
     full = bounded_summary(records, result, 10000)
     for rec in records:
         assert rec.kind in full and rec.sha256[:12] in full
-        assert str(rec.size_bytes) in full and rec.expires_at in full and rec.link in full
+        assert (
+            str(rec.size_bytes) in full and rec.expires_at in full and rec.link in full
+        )
     assert "1440x900" in full and "390x844" in full and "complete" in full
     for limit in (0, 1, 10, 100):
         assert len(bounded_summary(records, result, limit)) <= limit
@@ -230,6 +277,8 @@ def test_summary_bounds(evidence):
 
 def test_absent_outcome_and_invalid_requirements(evidence):
     records, blobs, _ = evidence
-    assert {"outcome_missing", "navigation_missing", "check_missing"} <= codes(verdict(records[:2], blobs))
+    assert {"outcome_missing", "navigation_missing", "check_missing"} <= codes(
+        verdict(records[:2], blobs)
+    )
     with pytest.raises(ValueError):
         EvidenceRequirements(functional_checks=())

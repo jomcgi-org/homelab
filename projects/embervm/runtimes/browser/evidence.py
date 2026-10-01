@@ -88,12 +88,21 @@ class EvidenceRecord:
             raise ValueError("source_url must be an HTTP(S) URL without userinfo")
         if any(
             not isinstance(value, str) or not value
-            for value in (self.task_id, self.run_id, self.session_id, self.media_type, self.link)
+            for value in (
+                self.task_id,
+                self.run_id,
+                self.session_id,
+                self.media_type,
+                self.link,
+            )
         ):
             raise ValueError("artifact identity, media_type and link are required")
         if type(self.size_bytes) is not int or self.size_bytes < 0:
             raise ValueError("size_bytes must be a nonnegative integer")
-        if not isinstance(self.storage, dict) or set(self.storage) != {"backend", "uri"}:
+        if not isinstance(self.storage, dict) or set(self.storage) != {
+            "backend",
+            "uri",
+        }:
             raise ValueError("storage requires backend and uri")
         if any(not isinstance(v, str) or not v for v in self.storage.values()):
             raise ValueError("storage fields must be nonempty strings")
@@ -205,7 +214,13 @@ def verify_evidence(
             reasons.append({"code": "invalid_record", "artifact": index})
             continue
         identities.add(
-            (record.source_url, record.app_commit, record.task_id, record.run_id, record.session_id)
+            (
+                record.source_url,
+                record.app_commit,
+                record.task_id,
+                record.run_id,
+                record.session_id,
+            )
         )
         data, errors = _artifact_bytes(record, now, fetch_bytes)
         reasons.extend({"code": code, "artifact": index} for code in errors)
@@ -225,13 +240,23 @@ def verify_evidence(
         reasons.append({"code": "identity_mismatch"})
     for viewport in required.viewports:
         if tuple(viewport) not in screenshots:
-            reasons.append({"code": "screenshot_missing", "viewport": viewport_key(viewport)})
+            reasons.append(
+                {"code": "screenshot_missing", "viewport": viewport_key(viewport)}
+            )
     if len(outcomes) != 1:
-        reasons.append({"code": "outcome_missing" if not outcomes else "outcome_ambiguous"})
+        reasons.append(
+            {"code": "outcome_missing" if not outcomes else "outcome_ambiguous"}
+        )
     outcome = outcomes[0] if len(outcomes) == 1 else {}
     navigation = outcome.get("navigation")
     if navigation != "passed":
-        reasons.append({"code": "navigation_missing" if navigation is None else "navigation_failed"})
+        reasons.append(
+            {
+                "code": "navigation_missing"
+                if navigation is None
+                else "navigation_failed"
+            }
+        )
     views = outcome.get("viewports", {})
     for viewport in required.viewports:
         key = viewport_key(viewport)
@@ -244,14 +269,23 @@ def verify_evidence(
             for check in checks:
                 status = statuses.get(check) if isinstance(statuses, dict) else None
                 if status != "passed":
-                    code = {
-                        None: "check_missing",
-                        "skipped": "check_skipped",
-                        "errored": "check_errored",
-                        "failed": "check_failed",
-                    }.get(status, "check_invalid") if isinstance(status, (str, type(None))) else "check_invalid"
+                    code = (
+                        {
+                            None: "check_missing",
+                            "skipped": "check_skipped",
+                            "errored": "check_errored",
+                            "failed": "check_failed",
+                        }.get(status, "check_invalid")
+                        if isinstance(status, (str, type(None)))
+                        else "check_invalid"
+                    )
                     reasons.append(
-                        {"code": code, "viewport": key, "category": category, "check": check}
+                        {
+                            "code": code,
+                            "viewport": key,
+                            "category": category,
+                            "check": check,
+                        }
                     )
     return EvidenceVerdict("incomplete" if reasons else "complete", tuple(reasons))
 
@@ -285,7 +319,9 @@ def capture_network(entries) -> BoundedCapture:
     return _bounded_capture(entries, NETWORK_MAX_ENTRIES, NETWORK_MAX_BYTES)
 
 
-def image_blocks_for_review(records, fetch_bytes: FetchBytes, *, now=None) -> list[dict]:
+def image_blocks_for_review(
+    records, fetch_bytes: FetchBytes, *, now=None
+) -> list[dict]:
     """Return base64 image content. Raise if any screenshot cannot be verified."""
     now = now or datetime.now(timezone.utc)
     blocks = []
