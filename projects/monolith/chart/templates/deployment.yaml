@@ -221,6 +221,8 @@ spec:
               value: {{ .Values.agents.sessions.resultReceiptAdoptionEnabled | quote }}
             - name: AGENT_RESPONSE_LOST_RECOVERY_ENABLED
               value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
+            - name: AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED
+              value: {{ .Values.agents.sessions.guestAnswerSettlementEnabled | default false | quote }}
             - name: AGENT_SESSION_STOP_CONTROL_ENABLED
               value: {{ .Values.agents.sessions.stopControlEnabled | quote }}
             {{- with .Values.agents.drainer }}

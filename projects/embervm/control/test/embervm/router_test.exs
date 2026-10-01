@@ -237,6 +237,8 @@ defmodule Embervm.RouterTest do
            status_code: 503,
            headers: %{
              "content-type" => "application/json",
+             # A guest cannot claim the control plane's outcome marker.
+             "x-ember-invoke-outcome" => "forged",
              "x-ember-phase-hydration-ms" => "0",
              "x-ember-phase-hydration-start-offset-ms" => "0",
              "x-ember-phase-hydration-status" => "failed",
@@ -2101,6 +2103,39 @@ defmodule Embervm.RouterTest do
              "session_state" => "banked",
              "node_id" => "node-4"
            }
+  end
+
+  test "a guest-answered invoke is marked as such and control-plane failures are not" do
+    with_session_fakes()
+
+    guest =
+      req(
+        :post,
+        "/v1/sessions/s-workspace-missing/invoke",
+        auth("sess-token-workspace-missing"),
+        "x"
+      )
+
+    assert guest.status == 503
+    assert header(guest, "x-ember-invoke-outcome") == "guest_response"
+
+    assert Enum.count(guest.headers, fn {k, _v} ->
+             String.downcase(k) == "x-ember-invoke-outcome"
+           end) == 1
+
+    ok = req(:post, "/v1/sessions/s-live/invoke", auth("sess-token-live"), "x")
+    assert ok.status == 200
+    assert header(ok, "x-ember-invoke-outcome") == "guest_response"
+
+    for {id, token} <- [
+          {"s-unavailable", "sess-token-unavailable"},
+          {"s-snapshot", "sess-token-snapshot"},
+          {"s-brick-gone", "sess-token-brick"}
+        ] do
+      resp = req(:post, "/v1/sessions/#{id}/invoke", auth(token), "x")
+      assert resp.status in [502, 503]
+      refute has_resp_header?(resp, "x-ember-invoke-outcome")
+    end
   end
 
   test "classify_error_as_retryable handles nested errors and other statuses" do
