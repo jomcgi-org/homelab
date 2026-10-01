@@ -184,7 +184,7 @@ def test_character_creation_locks_and_refreshes_membership(harness, monkeypatch,
 
     def record_locks(statement, *args, **kwargs):
         sql = str(statement.compile(dialect=postgresql.dialect()))
-        if "FOR UPDATE" in sql:
+        if "FOR NO KEY UPDATE" in sql or "FOR UPDATE" in sql:
             locked.append((sql, statement.get_execution_options()))
         return original_exec(statement, *args, **kwargs)
 
@@ -197,6 +197,7 @@ def test_character_creation_locks_and_refreshes_membership(harness, monkeypatch,
     assert response.status_code == 200, response.text
     if route == "assign":
         assert len(locked) == 2
+        assert "FOR NO KEY UPDATE" in locked[0][0]
         assert "FROM campaign \n" in locked[0][0]
         assert "campaign.id =" in locked[0][0]
     else:
