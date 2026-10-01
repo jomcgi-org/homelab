@@ -70,6 +70,7 @@ signals, and admission control are the product surface instead).
 | Cells / multi-cell | **Not planned** | No cell seams exist; [#3855](https://github.com/jomcgi-org/homelab/issues/3855) and [#4753](https://github.com/jomcgi-org/homelab/issues/4753) closed without the unmerged [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069) |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
+| Browser evidence worker (#5814) | **Staged, not deployed** | Offline contracts and tests; guest packaging and live acceptance remain on #5814 |
 
 **Why.** The original single-node RPC path had no durable task record, ownership,
 managed retry, cross-node placement, or fairness (ADR embervm/001). Argo
@@ -1833,6 +1834,46 @@ this table when the work ships or the issue closes without it.
 | Per-VM host resource gauges on an interval | section 7 | #4773 | gated on a named sizing decision |
 | Isolated per-request lane on the shared task library | section 3 | #3864 | gated on #6132 library plus a named workload |
 | Control-plane replica loss without a single-active gap | section 11 | #3862 | gated on a named availability requirement; fence first |
+
+### Staged browser evidence worker (#5814)
+
+`runtimes/browser/` contains repository-only contracts and tests. Nothing is
+deployed, enabled, authorized or selected:
+
+- `evidence.py`: `EvidenceRecord` and `verify_evidence` fail closed on missing,
+  expired, corrupt or unretrievable artifacts. `DEFAULT_VIEWPORTS` are 1440x900
+  and 390x844. Console and network capture are bounded; PNG bytes are verified.
+  `image_blocks_for_review` supplies image bytes and `bounded_summary` limits text.
+- `grants.py`: `ActionGrant` and `check` bind navigate, click, fill, submit,
+  upload and script actions to a task owner, expiry and exact origins. `origin`
+  refuses ambiguous or credentialed URLs. This module issues no grants.
+- `session.py`: `Supervisor` bounds per-owner processes for a separate browser
+  guest. `CessationReport` records termination for complete, cancel,
+  idle_timeout, max_lifetime, worker_replacement and launch_failure.
+- `trial.py`: `schedule` randomizes the layout, interaction, diagnostics and
+  review scenarios. `account_usage` avoids double counting. `select` requires
+  complete, blind run records and applies the lexicographic `SELECTION_RULE`
+  with `RELATIVE_TOLERANCE`. This is an offline comparison, not a completed trial.
+
+**Why.** Browser state belongs in a separate task worker and never in the
+stateless monolith-agents process (#5810). Browser actions are an execution
+capability outside the read-only operations profile. The planned worker
+composes with #5789 authority and fencing, #5804 admission bounds, #5419's task
+DAG and #5786 evidence. Those integrations remain staged.
+
+For #5785 workflow guidance, no browser tool is deployed or authorized and no
+interface is selected until the recorded trial runs; mentioning Playwright in
+a guide grants no browser capability.
+
+Not yet, all remaining on #5814:
+
+- Guest image with Chromium, Node, pinned `@playwright/mcp` and `@playwright/cli`.
+- Guest PID 1.
+- Default-off chart `Workload`.
+- Gateway routing.
+- Preview egress.
+- Artifact storage.
+- Live trial and staged deployment verification.
 
 ---
 
