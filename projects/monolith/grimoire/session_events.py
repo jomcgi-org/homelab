@@ -7,6 +7,7 @@ The play flag is an HTTP boundary dependency, not a storage write restriction.
 
 import os
 from typing import get_args
+from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -80,7 +81,7 @@ def append_event(
                 )
             ).all()
         )
-        if campaign_pc_ids != audience.pc_ids:
+        if {UUID(pc) for pc in campaign_pc_ids} != {UUID(pc) for pc in audience.pc_ids}:
             raise InvalidEventAudienceError("Audience PCs must belong to this campaign")
     next_seq = session.exec(
         select(func.coalesce(func.max(SessionEvent.seq), 0) + 1).where(
@@ -88,6 +89,8 @@ def append_event(
         )
     ).one()
     columns = audience.to_columns()
+    if audience.kind == "pcs":
+        columns["audience_pc_ids"] = sorted(campaign_pc_ids)
     columns["author_member_id"] = author_member_id
     row = SessionEvent(
         campaign_id=locked.campaign_id,

@@ -115,9 +115,22 @@ CASES = {
     ),
     ("GET", PREFIX + "/search"): Case(query={"q": "$private.name", "k": 50}),
     ("POST", PREFIX + "/sessions"): Case(),
+    ("GET", PREFIX + "/sessions"): Case(),
+    ("GET", PREFIX + "/sessions/current"): Case(state="play"),
     ("PATCH", PREFIX + "/sessions/{session_id}"): Case(
         params={"session_id": "$campaign_session.id"},
         body={"status": "paused"},
+    ),
+    ("POST", PREFIX + "/sessions/{session_id}/events"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={"kind": "narration", "audience": "table", "body": {"text": "Welcome"}},
+        state="play",
+    ),
+    ("GET", PREFIX + "/sessions/{session_id}/events"): Case(
+        params={"session_id": "$campaign_session.id"},
+    ),
+    ("POST", PREFIX + "/sessions/{session_id}/events/{event_id}/retract"): Case(
+        params={"session_id": "$campaign_session.id", "event_id": "$event_table.id"},
     ),
     ("POST", PREFIX + "/invitations"): Case(body={"email": "$email.outsider"}),
     ("GET", PREFIX + "/invitations"): Case(),
@@ -130,6 +143,7 @@ CASES = {
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "inventory.db") as h:
         monkeypatch.setattr(search, "knn_embeddings", fake_knn)
         yield h
@@ -158,7 +172,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 27
+    assert len(enumerated) == 32
 
 
 def test_route_inventory(harness):
@@ -363,7 +377,7 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 158
+    assert len(tokens) == 174
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
