@@ -254,6 +254,8 @@ func (v *modelCacheVisitor) updateStatus(newState sm.ModelCacheState) VisitResul
 	// until the user modifies the spec again.
 	newState.Resource().Status.ObservedGeneration = newState.Resource().Generation
 
+	// An SSA apply body needs apiVersion and kind; typed reads can leave TypeMeta empty.
+	newState.Resource().SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("ModelCache"))
 	patch, err := sm.SSAPatch(newState)
 	if err != nil {
 		return VisitResult{Error: fmt.Errorf("failed to create SSA patch: %w", err)}
