@@ -10,11 +10,17 @@ py_library(
     srcs = [
         "__init__.py",
         "audience_matrix.py",
+        "leak_harness.py",
     ],
     imports = ["../.."],
     visibility = ["//projects/monolith:__pkg__"],
     deps = [
+        "//projects/monolith:pkg_auth",
+        "//projects/monolith:pkg_core",
         "//projects/monolith:pkg_grimoire",
+        "//projects/monolith:pkg_knowledge",
+        "@pip//fastapi",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )

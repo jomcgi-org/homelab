@@ -6438,6 +6438,19 @@ py_test(
     ],
 )
 
+py_test(
+    name = "grimoire_route_inventory_test",
+    srcs = ["grimoire/route_inventory_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
 # Hand-registered because grimoire is gazelle-excluded: the bounded v1 sheet
 # contract, version history, workflow transitions, and campaign/role ACLs.
 py_test(

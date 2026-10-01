@@ -43,6 +43,33 @@ images fail closed unless the book is explicitly classified as open-licensed;
 copyrighted books expose only derived entities, graph structure, and bounded
 snippets.
 
+## Audience contract
+
+`Audience` in `audience.py` has three values: `table`, `dm`, and `pcs` with a
+non-empty set of player-character ids. DMs see every row. A player with a
+character sees table rows, rows addressed to that character, and authored rows
+with a recognized audience. A characterless member sees only table rows, even
+when they authored a restricted row. Non-members cannot use the contract;
+routes authorize membership and scope the campaign first.
+
+Play tables store `audience` as a string, `audience_pc_ids` as JSONB on Postgres
+and JSON on SQLite, and nullable `author_member_id` as a UUID on Postgres and
+a 36-character string on SQLite. `Audience.to_columns()` validates the kind and
+sorts and deduplicates character ids. `audience_predicate` filters SQL rows;
+`can_see` checks the same policy in Python. The seeded agreement matrix runs
+against SQLite and real Postgres, including exact JSON membership and unknown
+audiences. Unknown kinds fail closed for non-DMs.
+
+`testing/leak_harness.py` seeds private entities, grants, character sheets,
+administrative rows, relationships, and another campaign with per-field wire
+canaries. `route_inventory_test.py` registers both production routers and
+checks every campaign route against its explicit `CASES` table. Each case has
+an authorized success control, denied callers, cross-campaign resource checks,
+and database snapshots for rejected writes. Every new campaign route needs a
+`CASES` entry. Every new play table filters with `audience_predicate`, composed
+with its campaign predicate. Existing corpus entities retain the grant overlay
+in `visibility.py`; this change adds no play table.
+
 ## Ingestion
 
 Batch commands in `app/jobs_main.py` invoke the domain jobs:
