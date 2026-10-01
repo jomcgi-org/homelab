@@ -38,7 +38,7 @@ func TestRootfsPending(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), pendingRootName())
 			if tc.marker {
-				if err := os.WriteFile(path+".pending", nil, 0600); err != nil {
+				if err := os.WriteFile(path+".pending", nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
 				stamp := now.Add(-tc.age)
@@ -67,7 +67,7 @@ func TestBuildBaseRootfsPendingBothLanes(t *testing.T) {
 				dir := t.TempDir()
 				path := filepath.Join(dir, pendingRootName())
 				if mode != "absent" {
-					if err := os.WriteFile(path+".pending", nil, 0600); err != nil {
+					if err := os.WriteFile(path+".pending", nil, 0o600); err != nil {
 						t.Fatal(err)
 					}
 					if mode == "stale" {
@@ -81,15 +81,17 @@ func TestBuildBaseRootfsPendingBothLanes(t *testing.T) {
 					writeExt4Rootfs(t, dir, pendingRootName(), testRootfsUUIDA)
 				}
 				if mode == "invalid" {
-					if err := os.WriteFile(path, make([]byte, ext4HeaderSize), 0600); err != nil {
+					if err := os.WriteFile(path, make([]byte, ext4HeaderSize), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
 				snapshotRoot := t.TempDir()
 				build := &fakeDriver{snapshotRoot: snapshotRoot}
 				s := New(Options{
-					Config: config.Config{Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
-						BootReadyTimeout: time.Second, Images: map[string]config.Image{"img:1": {RootfsPath: path}}},
+					Config: config.Config{
+						Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
+						BootReadyTimeout: time.Second, Images: map[string]config.Image{"img:1": {RootfsPath: path}},
+					},
 					Driver: &fakeDriver{}, Transport: &fakeTransport{},
 					NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 					Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -99,11 +101,14 @@ func TestBuildBaseRootfsPendingBothLanes(t *testing.T) {
 				}
 				changes := make(chan struct{}, 1)
 				s.subs[changes] = struct{}{}
-				req := &nodev1.BuildBaseRequest{Trace: &nodev1.Trace{Workload: "echo"}, ImageRef: "img:1",
-					WorkloadRevision: "r1", ReadyPath: "/shim/ready", Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128}}
+				req := &nodev1.BuildBaseRequest{
+					Trace: &nodev1.Trace{Workload: "echo"}, ImageRef: "img:1",
+					WorkloadRevision: "r1", ReadyPath: "/shim/ready", Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
+				}
 				if zipLane {
 					req.Source = &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
-						RuntimeImageRef: "img:1", ArchiveUrl: "http://unused.invalid/archive.zip", ArchiveSha256: "archive-sha"}}
+						RuntimeImageRef: "img:1", ArchiveUrl: "http://unused.invalid/archive.zip", ArchiveSha256: "archive-sha",
+					}}
 					// Stop at archive validation after the UUID gate without a network fetch.
 				}
 				_, err := s.BuildBase(context.Background(), req)

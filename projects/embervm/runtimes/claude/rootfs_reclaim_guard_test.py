@@ -50,13 +50,17 @@ def _eventually(predicate, timeout=8):
 @pytest.mark.parametrize("outcome", ["success", "failure", "skip", "terminate"])
 def test_rootfs_baker_pending_marker_lifecycle(tmp_path: Path, outcome: str):
     baker = _rootfs_baker(tmp_path)
-    path = tmp_path / ("rootfs-runtime-claude-sha256-" + "a" * 64 + "-size-4G-format-b2.ext4")
+    path = tmp_path / (
+        "rootfs-runtime-claude-sha256-" + "a" * 64 + "-size-4G-format-b2.ext4"
+    )
     marker = Path(str(path) + ".pending")
     desired = tmp_path / "desired-set"
-    desired.write_text(f"claude\tghcr.io/jomcgi/runtime@sha256:{'a' * 64}\t{path}\t{8192 if outcome == 'skip' else 1024}\n")
+    desired.write_text(
+        f"claude\tghcr.io/jomcgi/runtime@sha256:{'a' * 64}\t{path}\t{8192 if outcome == 'skip' else 1024}\n"
+    )
     driver = tmp_path / "fake-driver.sh"
     driver.write_text(
-        '#!/bin/bash\nset -eu\n'
+        "#!/bin/bash\nset -eu\n"
         'trap "exit 0" TERM\n'
         'test -e "$5.pending"\n'
         'touch "$TEST_DIR/launched"\n'
@@ -67,10 +71,15 @@ def test_rootfs_baker_pending_marker_lifecycle(tmp_path: Path, outcome: str):
     with log.open("w") as output:
         process = subprocess.Popen(
             ["bash", str(baker), "2", "2048", "1"],
-            env={**os.environ, "ROOTFS_DESIRED_SET_FILE": str(desired),
-                 "ROOTFS_SET_SCRIPT": str(driver), "TEST_DIR": str(tmp_path),
-                 "TEST_OUTCOME": outcome},
-            stdout=output, stderr=subprocess.STDOUT,
+            env={
+                **os.environ,
+                "ROOTFS_DESIRED_SET_FILE": str(desired),
+                "ROOTFS_SET_SCRIPT": str(driver),
+                "TEST_DIR": str(tmp_path),
+                "TEST_OUTCOME": outcome,
+            },
+            stdout=output,
+            stderr=subprocess.STDOUT,
         )
         try:
             if outcome == "skip":
@@ -80,7 +89,9 @@ def test_rootfs_baker_pending_marker_lifecycle(tmp_path: Path, outcome: str):
                 _eventually(lambda: (tmp_path / "launched").exists())
                 assert marker.exists()
                 stamp = marker.stat().st_mtime_ns
-                _eventually(lambda: marker.exists() and marker.stat().st_mtime_ns > stamp)
+                _eventually(
+                    lambda: marker.exists() and marker.stat().st_mtime_ns > stamp
+                )
                 if outcome != "terminate":
                     (tmp_path / "release").touch()
                     _eventually(lambda: not marker.exists())
@@ -96,13 +107,20 @@ def test_rootfs_baker_rereads_changed_desired_set(tmp_path: Path):
     baker = _rootfs_baker(tmp_path)
     desired = tmp_path / "desired-set"
     desired.write_text("")
-    path = tmp_path / ("rootfs-runtime-pi-sha256-" + "b" * 64 + "-size-4G-format-b2.ext4")
+    path = tmp_path / (
+        "rootfs-runtime-pi-sha256-" + "b" * 64 + "-size-4G-format-b2.ext4"
+    )
     driver = tmp_path / "publish.sh"
     driver.write_text('test -e "$5.pending" && touch "$5"\n')
     process = subprocess.Popen(
         ["bash", str(baker), "2", "2048", "1"],
-        env={**os.environ, "ROOTFS_DESIRED_SET_FILE": str(desired), "ROOTFS_SET_SCRIPT": str(driver)},
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        env={
+            **os.environ,
+            "ROOTFS_DESIRED_SET_FILE": str(desired),
+            "ROOTFS_SET_SCRIPT": str(driver),
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
     try:
         desired.write_text(f"pi\tghcr.io/jomcgi/pi@sha256:{'b' * 64}\t{path}\t1024\n")
@@ -112,6 +130,7 @@ def test_rootfs_baker_rereads_changed_desired_set(tmp_path: Path):
         process.terminate()
         process.wait(timeout=8)
     assert process.returncode == 0
+
 
 # The harness below replaces the builder's `sleep 5` lock-poll tick with this
 # (see _rootfs_download_harness). Four builders serialise on the lock, so the
