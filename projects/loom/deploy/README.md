@@ -11,7 +11,9 @@ is absent from `projects/gke-apps/kustomization.yaml`. #6605 enables it after
 the operator checks below. Its three sources combine the upstream chart, this
 repo's values and this directory's kustomize manifests. The manifest guard
 checks that resource set, and Linux CI renders the pinned chart and validates
-every resource against the pinned Kubernetes and operator schemas.
+every resource against the pinned Kubernetes and operator schemas. The ArgoCD
+OCI repository credential lives in `projects/gke-apps/loom`, not here, so the
+hub root applies it before the Application pulls the private chart.
 
 ## Chart and images
 

@@ -18,7 +18,6 @@ MANIFESTS = [
     "httproute.yaml",
     "image-pull-secret.yaml",
     "onepassworditem-r2.yaml",
-    "argocd-repo-cred.yaml",
 ]
 
 
@@ -60,8 +59,7 @@ def test_resources_belong_to_loom_namespace(documents):
     for name in MANIFESTS:
         for document in documents[name]:
             if document["kind"] != "Namespace":
-                expected = "argocd" if name == "argocd-repo-cred.yaml" else "loom"
-                assert document["metadata"]["namespace"] == expected
+                assert document["metadata"]["namespace"] == "loom"
 
 
 def test_cluster_identity_and_pg17_system_image(cluster):

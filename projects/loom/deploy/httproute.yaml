@@ -23,9 +23,16 @@ spec:
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
+      # group/kind/weight are Gateway API defaults, spelled out so this
+      # ServerSideApply Application never diffs against the defaulted live
+      # object (the same trap context-forge-gateway pins with
+      # ignoreDifferences).
       backendRefs:
-        - name: loom-query-api
+        - group: ""
+          kind: Service
+          name: loom-query-api
           port: 8080
+          weight: 1
 ---
 # The slash makes the SPA's relative config.js and app.js resolve under loom.
 apiVersion: gateway.networking.k8s.io/v1

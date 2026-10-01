@@ -1,6 +1,7 @@
 exports_files(
     [
         "application.yaml",
+        "argocd-repo-cred.yaml",
         "kustomization.yaml",
     ],
     visibility = [

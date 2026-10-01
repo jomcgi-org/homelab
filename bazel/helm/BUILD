@@ -25,7 +25,7 @@ exports_files([
 MANIFEST_SETS = [
     # Raw kustomize manifests, not a Helm render.
     "//projects/gke-apps/loom:application.yaml",
-    "//projects/loom/deploy:argocd-repo-cred.yaml",
+    "//projects/gke-apps/loom:argocd-repo-cred.yaml",
     "//projects/loom/deploy:cnpg-cluster.yaml",
     "//projects/loom/deploy:cnpg-metrics-service.yaml",
     "//projects/loom/deploy:cnpg-scheduledbackup.yaml",
