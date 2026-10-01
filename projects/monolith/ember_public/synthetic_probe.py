@@ -88,6 +88,19 @@ def _correlate(
     return correlated
 
 
+def _finish_root(span, demo: str, result: dict) -> None:
+    """Record the final outcome on an ember.probe.<demo> root span."""
+    span.set_attributes(
+        {
+            "ember.probe.demo": demo,
+            "ember.probe.ok": result["ok"],
+            "ember.probe.detail": result["detail"][:_SPAN_DETAIL_MAX_CHARS],
+        }
+    )
+    if not result["ok"]:
+        span.set_status(Status(StatusCode.ERROR))
+
+
 async def _probe_attempt(demo: str, probe, number: int) -> dict:
     with _tracer.start_as_current_span(f"ember.probe.{demo}.attempt") as span:
         result = await probe()
@@ -124,16 +137,8 @@ async def _retry_probe(demo: str, probe, *, retry: bool = True) -> dict:
         if result["ok"] and retries:
             result = dict(result)
             result["detail"] += f" (recovered after {retries} retries)"
-        span.set_attributes(
-            {
-                "ember.probe.demo": demo,
-                "ember.probe.ok": result["ok"],
-                "ember.probe.retries": retries,
-                "ember.probe.detail": result["detail"][:_SPAN_DETAIL_MAX_CHARS],
-            }
-        )
-        if not result["ok"]:
-            span.set_status(Status(StatusCode.ERROR))
+        span.set_attribute("ember.probe.retries", retries)
+        _finish_root(span, demo, result)
         return _correlate(result, trace_id)
 
 
@@ -296,8 +301,7 @@ async def probe_spark() -> dict:
     return await _probe_session("spark", "spark")
 
 
-async def _probe_session(demo: str, model: str) -> dict:
-    """Run one session synthetic under an independent trace root."""
+async def _run_session_probe(demo: str, model: str, trace_id: str | None) -> dict:
     started = perf_counter()
     ember_session_id = None
 
@@ -305,76 +309,84 @@ async def _probe_session(demo: str, model: str) -> dict:
         nonlocal ember_session_id
         ember_session_id = session_id
 
-    with _tracer.start_as_current_span(f"ember.probe.{demo}", context=Context()):
-        trace_id = _current_trace_id()
-        try:
-            from factory.execution.api import run_synthetic_session
+    try:
+        from factory.execution.api import run_synthetic_session
 
-            if demo == "codex":
-                from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
+        if demo == "codex":
+            from factory.execution.constants import CODEX_SYNTHETIC_PROMPT
 
-                prompt = CODEX_SYNTHETIC_PROMPT
-            elif demo == "spark":
-                from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
+            prompt = CODEX_SYNTHETIC_PROMPT
+        elif demo == "spark":
+            from factory.execution.constants import SPARK_SYNTHETIC_PROMPT
 
-                prompt = SPARK_SYNTHETIC_PROMPT
-            else:
-                raise ValueError(f"unknown session probe {demo!r}")
+            prompt = SPARK_SYNTHETIC_PROMPT
+        else:
+            raise ValueError(f"unknown session probe {demo!r}")
 
-            turn = await run_synthetic_session(
-                prompt,
-                model=model,
-                on_ember_session_id=capture_ember_session_id,
-            )
-            if turn is None:
-                # Another replica claimed this run's pending message and is
-                # delivering it. Nothing was proven, but nothing is known broken
-                # either, so report ok rather than paging.
-                return _correlate(
-                    {
-                        "ok": True,
-                        "detail": "another replica delivered this run",
-                        "latency_ms": (perf_counter() - started) * 1000,
-                    },
-                    trace_id,
-                    ember_session_id,
-                )
-            if turn.terminal_reason not in {"completed", "stop"}:
-                return _correlate(
-                    {
-                        "ok": False,
-                        "detail": f"turn reason {turn.terminal_reason!r}",
-                        "latency_ms": (perf_counter() - started) * 1000,
-                    },
-                    trace_id,
-                    ember_session_id,
-                )
-            if not turn.result.strip():
-                return _correlate(
-                    {
-                        "ok": False,
-                        "detail": "completed turn had an empty result",
-                        "latency_ms": (perf_counter() - started) * 1000,
-                    },
-                    trace_id,
-                    ember_session_id,
-                )
-            elapsed_ms = (perf_counter() - started) * 1000
+        turn = await run_synthetic_session(
+            prompt,
+            model=model,
+            on_ember_session_id=capture_ember_session_id,
+        )
+        if turn is None:
+            # Another replica claimed this run's pending message and is
+            # delivering it. Nothing was proven, but nothing is known broken
+            # either, so report ok rather than paging.
             return _correlate(
                 {
                     "ok": True,
-                    "detail": f"completed, destroyed, {elapsed_ms:.0f}ms",
-                    "latency_ms": elapsed_ms,
+                    "detail": "another replica delivered this run",
+                    "latency_ms": (perf_counter() - started) * 1000,
                 },
                 trace_id,
                 ember_session_id,
             )
-        except Exception as exc:  # noqa: BLE001 - probes report failures in-band
-            return _failure(
-                exc,
-                trace_id=trace_id,
-                ember_session_id=ember_session_id,
+        if turn.terminal_reason not in {"completed", "stop"}:
+            return _correlate(
+                {
+                    "ok": False,
+                    "detail": f"turn reason {turn.terminal_reason!r}",
+                    "latency_ms": (perf_counter() - started) * 1000,
+                },
+                trace_id,
+                ember_session_id,
             )
+        if not turn.result.strip():
+            return _correlate(
+                {
+                    "ok": False,
+                    "detail": "completed turn had an empty result",
+                    "latency_ms": (perf_counter() - started) * 1000,
+                },
+                trace_id,
+                ember_session_id,
+            )
+        elapsed_ms = (perf_counter() - started) * 1000
+        return _correlate(
+            {
+                "ok": True,
+                "detail": f"completed, destroyed, {elapsed_ms:.0f}ms",
+                "latency_ms": elapsed_ms,
+            },
+            trace_id,
+            ember_session_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - probes report failures in-band
+        return _failure(
+            exc,
+            trace_id=trace_id,
+            ember_session_id=ember_session_id,
+        )
+
+
+async def _probe_session(demo: str, model: str) -> dict:
+    """Run one session synthetic under an independent trace root."""
+    with _tracer.start_as_current_span(
+        f"ember.probe.{demo}", context=Context()
+    ) as span:
+        result = await _run_session_probe(demo, model, _current_trace_id())
+        _finish_root(span, demo, result)
+        return result
 
 
 def _record_sync(demo: str, result: dict) -> None:

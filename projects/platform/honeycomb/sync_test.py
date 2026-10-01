@@ -164,7 +164,10 @@ def test_ember_probe_trigger_counts_final_failed_roots_by_demo_and_trace():
     assert probe.alert_type == "on_change"
     assert probe.recipients == (RECIPIENT,)
     assert probe.tags == {"service": "monolith", "signal": "ember-probe"}
-    assert all(demo in probe.description for demo in ("bazel", "pages", "postgres"))
+    assert all(
+        demo in probe.description
+        for demo in ("bazel", "pages", "postgres", "codex", "spark")
+    )
     assert len(probe.description) <= 1023
 
 

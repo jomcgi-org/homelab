@@ -402,6 +402,9 @@ async def test_probe_codex_success(monkeypatch, exported_spans):
     assert result["ember_session_id"] == "ember-codex"
     assert root.name == "ember.probe.codex"
     assert root.parent is None
+    assert root.attributes["ember.probe.demo"] == "codex"
+    assert root.attributes["ember.probe.ok"] is True
+    assert root.status.status_code is not StatusCode.ERROR
 
 
 @pytest.mark.asyncio
@@ -468,6 +471,39 @@ async def test_probe_codex_exception(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("run", "demo"), [(probe.probe_codex, "codex"), (probe.probe_spark, "spark")]
+)
+@pytest.mark.parametrize("failure", ["reason", "empty", "exception"])
+async def test_failed_session_probe_root_matches_trigger_filter(
+    monkeypatch, exported_spans, run, demo, failure
+):
+    class Turn:
+        terminal_reason = "pending" if failure == "reason" else "completed"
+        result = "" if failure == "empty" else "not done"
+
+    async def run_session(*_, **__):
+        if failure == "exception":
+            raise RuntimeError("x" * 1000)
+        return Turn()
+
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
+
+    result = await run()
+
+    assert result["ok"] is False
+    (root,) = exported_spans.get_finished_spans()
+    assert root.name == f"ember.probe.{demo}"
+    assert root.parent is None
+    assert root.attributes["ember.probe.demo"] == demo
+    assert root.attributes["ember.probe.ok"] is False
+    assert root.attributes["ember.probe.detail"] == result["detail"][:512]
+    assert len(root.attributes["ember.probe.detail"]) <= 512
+    assert root.status.status_code is StatusCode.ERROR
+    assert result["trace_id"] == f"{root.context.trace_id:032x}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("session_probe", "blocked_module"),
     [
         (probe.probe_codex, "factory.execution.constants"),
@@ -516,6 +552,9 @@ async def test_probe_spark_success(monkeypatch, exported_spans):
     assert result["ember_session_id"] == "ember-spark"
     assert root.name == "ember.probe.spark"
     assert root.parent is None
+    assert root.attributes["ember.probe.demo"] == "spark"
+    assert root.attributes["ember.probe.ok"] is True
+    assert root.status.status_code is not StatusCode.ERROR
 
 
 @pytest.mark.asyncio
