@@ -10301,10 +10301,11 @@ def test_interrupt_honors_window_and_resignals_only_once(
 def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
     """Interrupted background completion must not become the next result (#6600).
 
-    Shape from session 13949: the resumed CLI replays the interrupted turn's
-    background-task completion (result "", num_turns 0, zero usage, prior
-    cost) before the follow-up answer. The turn must skip it and return the
-    follow-up's own answer and usage.
+    Shape from session 13949 (CLI 2.1.284): the resumed CLI replays the
+    interrupted turn's background-task completion as a "success" result with
+    origin kind "task-notification", result "", num_turns 0, zero-filled usage
+    and turn 1's modelUsage and cost, before the follow-up answer. The turn
+    must skip it and return the follow-up's own answer and usage.
     """
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
@@ -10318,30 +10319,47 @@ def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
         "if '--version' in sys.argv:\n"
         "    sys.exit(0)\n"
         "line = sys.stdin.readline()\n"
+        "zero = {'input_tokens': 0, 'output_tokens': 0,\n"
+        "        'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0,\n"
+        "        'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0},\n"
+        "        'service_tier': 'standard',\n"
+        "        'cache_creation': {'ephemeral_1h_input_tokens': 0,\n"
+        "                           'ephemeral_5m_input_tokens': 0},\n"
+        "        'iterations': []}\n"
         "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
         "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
-        "print(json.dumps({'type': 'result', 'result': '', 'subtype': 'background',\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': '',\n"
         "                  'is_error': False, 'num_turns': 0, 'session_id': 's',\n"
-        "                  'usage': {}, 'total_cost_usd': 0.0277152,\n"
-        "                  'modelUsage': {'input': 1}}), flush=True)\n"
-        "print(json.dumps({'type': 'result', 'result': 'OK',\n"
+        "                  'origin': {'kind': 'task-notification'},\n"
+        "                  'usage': zero, 'total_cost_usd': 0.0277152,\n"
+        "                  'modelUsage': {'model': {'inputTokens': 9}}}), flush=True)\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'OK',\n"
         "                  'is_error': False, 'num_turns': 1, 'session_id': 's',\n"
         "                  'usage': {'input_tokens': 5}, 'total_cost_usd': 0.001,\n"
-        "                  'modelUsage': {'input': 5}}), flush=True)\n"
+        "                  'modelUsage': {'model': {'inputTokens': 5}}}), flush=True)\n"
     )
     os.chmod(executable, 0o755)
     manager = shim.ClaudeProcess(str(workspace), str(executable))
     monkeypatch.setattr(manager, "_configure_git", lambda: None)
 
+    notification = {
+        "type": "result",
+        "subtype": "success",
+        "result": "",
+        "num_turns": 0,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "origin": {"kind": "task-notification"},
+    }
+    assert shim._is_stale_background_turn_result(notification) is True
     assert (
         shim._is_stale_background_turn_result(
-            {"type": "result", "result": "", "num_turns": 0, "usage": {}}
+            {**notification, "origin": {"kind": "human"}}
         )
-        is True
+        is False
     )
     assert (
         shim._is_stale_background_turn_result(
-            {"type": "result", "result": "OK", "num_turns": 1, "usage": {}}
+            {"type": "result", "result": "", "num_turns": 0}
         )
         is False
     )
