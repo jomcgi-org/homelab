@@ -806,7 +806,7 @@
               All tasks <span class="mono">{tasks.length}</span>
             </div>
             <ul class="tasks">
-              {#each [...tasks].sort( (left, right) => (left.due_on ?? "9999").localeCompare(right.due_on ?? "9999"), ) as task (task.id)}
+              {#each [...tasks].sort( (left, right) => (left.due_on ?? "9999").localeCompare(right.due_on ?? "9999") ) as task (task.id)}
                 {@const due = taskDueView(task.due_on, now)}
                 <li class:done={task.done_at != null} class="task">
                   <input
