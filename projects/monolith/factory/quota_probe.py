@@ -8,7 +8,7 @@ another request from accumulating behind a lost response.
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone
+from datetime import timedelta, timezone
 import logging
 import math
 from uuid import uuid4
@@ -16,7 +16,13 @@ from uuid import uuid4
 from sqlalchemy import or_
 from sqlmodel import select
 
-from factory.execution.models import AgentSession, PendingMessage
+from factory.execution.models import (
+    AgentCapacityReservation,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
+from factory.execution.constants import UNKNOWN_INVOCATION
 from factory.execution.review_leases import PREFIX as REVIEW_PREFIX
 from factory.execution import store
 from factory.orchestration import factory_controls as controls
@@ -39,6 +45,9 @@ CODEX_STARTED_ACTION = "codex_quota_probe_started"
 CODEX_OBSERVED_ACTION = "codex_quota_probe_observed"
 CODEX_NO_OBSERVATION_ACTION = "codex_quota_probe_no_observation"
 CODEX_FAILED_ACTION = "codex_quota_probe_failed"
+# Four times the KG freshness ceiling (900s), thirty turn timeouts (120s).
+# Only orphaned evidence expires here; bound or running guests always fence.
+CODEX_ORPHAN_FENCE_SECONDS = 3600
 
 
 def _codex_probe_model() -> str:
@@ -230,28 +239,61 @@ def codex_claim(payload: dict) -> str | None:
                 created = created.replace(tzinfo=timezone.utc)
             if (now - created).total_seconds() < interval:
                 return None
-        # No second Codex guest while a prior one is running, still bound,
-        # or has an unresolved pending turn. The Claude prefix is out of
-        # scope here so the two probes never block each other.
+        # Orphan evidence can outlive its guest. Age each pending/unknown row,
+        # never the session: recent evidence on an old session still fences.
+        cutoff = now - timedelta(seconds=CODEX_ORPHAN_FENCE_SECONDS)
         pending = (
             select(PendingMessage.id)
-            .where(PendingMessage.session_id == AgentSession.id)
+            .where(
+                PendingMessage.session_id == AgentSession.id,
+                PendingMessage.created_at >= cutoff,
+            )
             .exists()
         )
+        unknown = or_(
+            select(AgentTurn.id)
+            .where(
+                AgentTurn.session_id == AgentSession.id,
+                AgentTurn.stop_reason == UNKNOWN_INVOCATION,
+                AgentTurn.created_at >= cutoff,
+            )
+            .exists(),
+            select(AgentCapacityReservation.id)
+            .where(
+                AgentCapacityReservation.session_id == AgentSession.id,
+                AgentCapacityReservation.state == "uncertain",
+                AgentCapacityReservation.created_at >= cutoff,
+            )
+            .exists(),
+        )
         unresolved = db.exec(
-            select(AgentSession.id)
+            select(AgentSession, pending, unknown)
             .where(
                 AgentSession.local_session_id.startswith(CODEX_PREFIX),
                 or_(
                     AgentSession.status == "running",
                     AgentSession.ember_session_id.is_not(None),
                     pending,
-                    store._unknown_outcome_exists(AgentSession.id),
+                    unknown,
                 ),
             )
+            .order_by(AgentSession.id)
             .limit(1)
         ).first()
         if unresolved is not None:
+            row, has_pending, _has_unknown = unresolved
+            reason = (
+                "bound guest"
+                if row.ember_session_id is not None
+                else "running"
+                if row.status == "running"
+                else "pending turn"
+                if has_pending
+                else "unknown outcome"
+            )
+            logger.info(
+                "Codex quota probe suppressed: session %s has %s", row.id, reason
+            )
             return None
         key = CODEX_PREFIX + str(uuid4())
         controls._audit(
@@ -278,25 +320,35 @@ def _cleanup_candidates() -> list[str]:
             .where(PendingMessage.session_id == AgentSession.id)
             .exists()
         )
-        rows = db.exec(
-            select(AgentSession)
-            .where(
-                or_(
-                    AgentSession.local_session_id.startswith(PREFIX),
-                    AgentSession.local_session_id.startswith(CODEX_PREFIX),
-                    AgentSession.local_session_id.startswith(REVIEW_PREFIX),
-                ),
-                AgentSession.ember_session_id.is_not(None),
-                AgentSession.status != "running",
-                ~pending,
-            )
-            .limit(5)
-        ).all()
-        return [
-            row.ember_session_id
-            for row in rows
-            if store.guest_cleanup_hold(db, row.id, row.ember_session_id) is None
-        ]
+        guests = []
+        after_id = 0
+        # Advance past held rows in bounded query pages, as guest_cleanup does.
+        # The output bound applies to unheld guests, not scanned candidates.
+        while True:
+            rows = db.exec(
+                select(AgentSession)
+                .where(
+                    AgentSession.id > after_id,
+                    or_(
+                        AgentSession.local_session_id.startswith(PREFIX),
+                        AgentSession.local_session_id.startswith(CODEX_PREFIX),
+                        AgentSession.local_session_id.startswith(REVIEW_PREFIX),
+                    ),
+                    AgentSession.ember_session_id.is_not(None),
+                    AgentSession.status != "running",
+                    ~pending,
+                )
+                .order_by(AgentSession.id)
+                .limit(5)
+            ).all()
+            for row in rows:
+                if store.guest_cleanup_hold(db, row.id, row.ember_session_id) is None:
+                    guests.append(row.ember_session_id)
+                    if len(guests) == 5:
+                        return guests
+            if len(rows) < 5:
+                return guests
+            after_id = rows[-1].id
 
 
 async def _cleanup() -> None:
