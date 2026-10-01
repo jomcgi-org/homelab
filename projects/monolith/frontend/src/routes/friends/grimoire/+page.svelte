@@ -73,19 +73,110 @@
               : "Player"}
         </p>
         <h3>{campaign.name}</h3>
+        {#if campaign.needs_character}
+          <form method="POST" action="?/createCharacter">
+            <input type="hidden" name="campaign_id" value={campaign.id} />
+            <label
+              >Character name <input
+                name="name"
+                required
+                maxlength="120"
+              /></label
+            >
+            <button>Create your character</button>
+          </form>
+        {:else if campaign.role === "player"}
+          <p>Your character: {campaign.character_name}</p>
+        {/if}
         <a href="/grimoire/sheets">Open character sheets</a>
-        {#if campaign.is_owner}
+        {#if campaign.role === "dm"}
           <details>
-            <summary>Players and invitations</summary>
+            <summary
+              >{campaign.is_owner
+                ? "Players and invitations"
+                : "Players"}</summary
+            >
             <ul>
               {#each campaign.members as member (member.id)}
                 <li>
                   <span
-                    >{member.email} · {member.role === "dm"
-                      ? "DM"
-                      : "Player"}</span
+                    >{member.email} · {member.role === "dm" ? "DM" : "Player"} · {member.character_name ||
+                      "No character"}</span
                   >
                   {#if member.role === "player"}
+                    <details class="assignment">
+                      <summary>Assign character</summary>
+                      {#if campaign.unassigned_characters.length}
+                        <form method="POST" action="?/assign">
+                          <input
+                            type="hidden"
+                            name="campaign_id"
+                            value={campaign.id}
+                          />
+                          <input
+                            type="hidden"
+                            name="member_id"
+                            value={member.id}
+                          />
+                          <input type="hidden" name="mode" value="existing" />
+                          <label
+                            >Unassigned character
+                            <select name="player_character_id" required>
+                              <option value="">Choose a character</option>
+                              {#each campaign.unassigned_characters as character (character.id)}
+                                <option value={character.id}
+                                  >{character.character_name}</option
+                                >
+                              {/each}
+                            </select></label
+                          >
+                          <button>Assign existing character</button>
+                        </form>
+                      {:else}
+                        <p>No unassigned characters. Create one below.</p>
+                      {/if}
+                      <form method="POST" action="?/assign">
+                        <input
+                          type="hidden"
+                          name="campaign_id"
+                          value={campaign.id}
+                        />
+                        <input
+                          type="hidden"
+                          name="member_id"
+                          value={member.id}
+                        />
+                        <input type="hidden" name="mode" value="new" />
+                        <label
+                          >New character name <input
+                            name="name"
+                            required
+                            maxlength="120"
+                          /></label
+                        >
+                        <button>Create and assign character</button>
+                      </form>
+                      {#if member.player_character_id}
+                        <form method="POST" action="?/assign">
+                          <input
+                            type="hidden"
+                            name="campaign_id"
+                            value={campaign.id}
+                          />
+                          <input
+                            type="hidden"
+                            name="member_id"
+                            value={member.id}
+                          />
+                          <input type="hidden" name="mode" value="clear" />
+                          <button class="secondary"
+                            >Clear character assignment</button
+                          >
+                        </form>
+                      {/if}
+                    </details>
+                  {/if}
+                  {#if campaign.is_owner && member.role === "player"}
                     <form method="POST" action="?/remove">
                       <input
                         type="hidden"
@@ -99,30 +190,32 @@
                 </li>
               {/each}
             </ul>
-            <form method="POST" action="?/invite">
-              <input type="hidden" name="campaign_id" value={campaign.id} />
-              <label
-                >Registered player's email <input
-                  type="email"
-                  name="email"
-                  required
-                  maxlength="320"
-                /></label
-              >
-              <button>Invite player</button>
-            </form>
-            <p class="hint">
-              They must have signed in to Grimoire once. They get access after
-              accepting.
-            </p>
-            {#each campaign.invitations as invite (invite.id)}
-              <form method="POST" action="?/cancel">
-                <span>{invite.invitee_email} · Pending</span>
+            {#if campaign.is_owner}
+              <form method="POST" action="?/invite">
                 <input type="hidden" name="campaign_id" value={campaign.id} />
-                <input type="hidden" name="invitation_id" value={invite.id} />
-                <button class="secondary">Cancel invitation</button>
+                <label
+                  >Registered player's email <input
+                    type="email"
+                    name="email"
+                    required
+                    maxlength="320"
+                  /></label
+                >
+                <button>Invite player</button>
               </form>
-            {/each}
+              <p class="hint">
+                They must have signed in to Grimoire once. They get access after
+                accepting.
+              </p>
+              {#each campaign.invitations as invite (invite.id)}
+                <form method="POST" action="?/cancel">
+                  <span>{invite.invitee_email} · Pending</span>
+                  <input type="hidden" name="campaign_id" value={campaign.id} />
+                  <input type="hidden" name="invitation_id" value={invite.id} />
+                  <button class="secondary">Cancel invitation</button>
+                </form>
+              {/each}
+            {/if}
           </details>
         {/if}
       </article>
@@ -200,7 +293,8 @@
     flex: 1;
     min-width: 180px;
   }
-  input {
+  input,
+  select {
     padding: 0.7rem;
     font: inherit;
     border: 1px solid var(--grim-line);
@@ -223,6 +317,13 @@
   }
   details {
     margin-top: 1.5rem;
+  }
+  .assignment {
+    flex-basis: 100%;
+    margin-top: 0;
+  }
+  .assignment form {
+    margin-top: 1rem;
   }
   summary {
     cursor: pointer;
