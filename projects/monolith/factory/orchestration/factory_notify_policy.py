@@ -174,7 +174,7 @@ def sections(rows) -> dict[str, list[str]]:
                 )
             }
             out["rollout_waits"].append(
-                f"#{values['pr_number']} (issue #{values['issue_number']}, {task}): "
+                f"#{values['pr_number']} (issue #{values['issue_number']}, {row.task_id or 'unknown'}): "
                 f"{values['waited_minutes']}m on {values['application']} "
                 f"{values['resource']} ({values['reason']})"
             )

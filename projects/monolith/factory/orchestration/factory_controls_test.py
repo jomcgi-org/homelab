@@ -152,6 +152,7 @@ def test_status_rollout_waits_are_durable_and_exclude_finished(db, policy, monke
                         actor="test",
                         task_id=task_id,
                         state="landing",
+                        policy_json=json.dumps(policy),
                     ),
                     FactoryAudit(
                         actor="test",
@@ -207,6 +208,10 @@ def test_status_rollout_waits_are_durable_and_exclude_finished(db, policy, monke
             "resource": "Deployment/embervm/backend",
         }
     ]
+
+
+def test_status_before_configuration_has_no_rollout_waits(db):
+    assert controls.status()["rollout_waits"] == []
 
 
 def test_escalation_view_carries_work_item_id_from_receipt_snapshot(db):

@@ -948,7 +948,7 @@ def test_rollout_wait_digest_unknown_parts_and_message_bounds():
     )
     groups = policy.sections([row])
     assert groups["rollout_waits"] == [
-        "#unknown (issue #unknown, ?): unknownm on unknown unknown (unknown)"
+        "#unknown (issue #unknown, unknown): unknownm on unknown unknown (unknown)"
     ]
     groups["rollout_waits"] = ["wait " + str(i) for i in range(11)]
     message = policy.compose(groups)

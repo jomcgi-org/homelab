@@ -467,6 +467,8 @@ def _rollout_wait(item: dict, now: datetime) -> dict | None:
 
 def rollout_waits(policy: dict, *, session=None) -> list[dict]:
     """Bounded durable landing evidence only, safe for status readers."""
+    if not policy.get("repo"):
+        return []
     now = _now()
     return [
         wait
