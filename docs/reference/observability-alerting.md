@@ -22,8 +22,9 @@ Probe targets live under `httpcheck.targets` in
 Revalidate any proposed in-cluster target against the destination's current
 reachability and access controls. The removed Cilium policies provide no ingress
 enforcement. The GKE overlay additionally enables a live Argo CD in-cluster
-target with the pinned serving CA from #6542; the render fails when the pinned
-cert is empty, so the `ca_file` target always ships with its CA mount.
+target with the pinned serving CA from #6542; with the CA mount on, the render
+fails when the pinned cert is empty or null. Turning the mount off is not
+guarded, so keep it on while the `ca_file` target is enabled.
 
 ## Collector metamonitoring
 

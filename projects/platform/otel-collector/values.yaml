@@ -229,8 +229,8 @@ httpcheck:
   intervalSeconds: 60
   targets: []
   caMount:
-    # Opt in only after the named ConfigMap contains a verified serving CA.
-    # Keeping this off means the chart has no dependency on that ConfigMap.
+    # Opt in by setting caCert below: the chart renders the named ConfigMap
+    # from it. Keeping this off renders no ConfigMap, volume or mount.
     enabled: false
     configMapName: argocd-server-ca
     key: ca.crt
