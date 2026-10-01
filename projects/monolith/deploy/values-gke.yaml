@@ -159,6 +159,11 @@ agents:
     # through the drain relay, instead of settling it unknown (session 13635
     # on 2026-10-01). factoryDrainRelayContinuationEnabled is already on.
     responseLostDrainRelayEnabled: true
+    # A cancelled executor that never sent its invoke POST records not_invoked
+    # at once, and supervision settles a non-factory permit whose guest never
+    # ran an invoke and has no receipt (permit 10690's shape, 2026-10-01).
+    executorNotInvokedRecordEnabled: true
+    neverInvokedGuestSettlementEnabled: true
     resultReceiptAdoptionEnabled: true
     # Settle a non-factory permit on the guest's own error answer. At
     # 01:25-01:30 on 2026-10-01 six KG permits sat uncertain after their
