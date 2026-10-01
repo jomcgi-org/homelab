@@ -167,7 +167,6 @@ _BACKEND_SRCS = glob(
         "**/test_*.py",
         "*/tests/**/*.py",
         "shared/testing/**/*.py",
-        "grimoire/testing/**",
         # Offline grid generator: run by hand, not part of the runtime image.
         "stars/grid_gen/**",
         # Run-by-hand S3->Postgres backfill, not part of the runtime image.
@@ -1261,7 +1260,6 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
-            "grimoire/testing/**",
         ],
     ),
     imports = ["."],
@@ -1291,17 +1289,6 @@ py_library(
         "@pip//sqlmodel",
         "@pip//tzdata",
         "@pip//uvicorn",
-    ],
-)
-
-py_library(
-    name = "pkg_grimoire_testing",
-    testonly = True,
-    srcs = glob(["grimoire/testing/**/*.py"]),
-    imports = ["."],
-    deps = [
-        ":pkg_grimoire",
-        "@pip//sqlalchemy",
     ],
 )
 
@@ -1709,7 +1696,6 @@ py_library(
             "**/test_*.py",
             "*/tests/**/*.py",
             "shared/testing/**/*.py",
-            "grimoire/testing/**",
             # Offline grid generator: run by hand, not part of the runtime image.
             "stars/grid_gen/**",
             # Run-by-hand S3->Postgres backfill (boto3/typer/httpx orchestration)
@@ -1894,7 +1880,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
-    "grimoire/testing/**",
     "stars/grid_gen/**",
     "trips/backfill/**",
     # Whole private domains.
@@ -6396,7 +6381,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
-        ":pkg_grimoire_testing",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
         "@pip//pytest",
         "@pip//sqlalchemy",
     ],
@@ -6661,7 +6646,7 @@ bdd_test(
     name = "grimoire_audience_postgres_test",
     srcs = ["grimoire/audience_postgres_test.py"],
     deps = [
-        ":pkg_grimoire_testing",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
         "@pip//sqlalchemy",
     ],
 )
