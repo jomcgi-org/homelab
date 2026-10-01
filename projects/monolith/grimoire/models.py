@@ -13,6 +13,7 @@ from typing import Literal
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -28,6 +29,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import JSON, Field, SQLModel
+
+from grimoire.audience import (
+    AUDIENCE_PC_IDS_TYPE,
+    AUDIENCE_TYPE,
+    AUTHOR_MEMBER_ID_TYPE,
+    AudienceKind,
+)
 
 # Mirror of the CHECK constraint in
 # chart/migrations/20260703070000_grimoire_schema.sql, expanded by
@@ -72,6 +80,9 @@ CharacterSheetStatus = Literal["draft", "submitted", "approved", "returned"]
 EmbeddableKind = Literal["entity", "chunk", "transcript"]
 AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
+EventKind = Literal[
+    "narration", "action", "roll", "reveal", "handout", "turn", "system", "utterance"
+]
 GrantScope = Literal["full", "partial", "name_only"]
 # Mirror of the CHECK constraint in
 # chart/migrations/20260703120000_grimoire_chunk_extraction.sql - keep in sync.
@@ -87,11 +98,15 @@ _JSONB = JSONB().with_variant(JSON(), "sqlite")
 
 
 def _uuid_column(
-    *, primary_key: bool = False, nullable: bool = True, fk: str | None = None
+    *,
+    primary_key: bool = False,
+    nullable: bool = True,
+    fk: str | None = None,
+    ondelete: str | None = None,
 ) -> Column:
     # SQLModel's Field(foreign_key=...) is not supported alongside sa_column,
     # so the FK constraint is attached directly to the Column here.
-    args = [_UUID] if fk is None else [_UUID, ForeignKey(fk)]
+    args = [_UUID] if fk is None else [_UUID, ForeignKey(fk, ondelete=ondelete)]
     return Column(*args, primary_key=primary_key, nullable=nullable)
 
 
@@ -863,6 +878,84 @@ class GameSession(SQLModel, table=True):
     # campaign) is a Postgres partial unique index
     # (idx_grimoire_game_session_one_active), not representable in SQLite
     # create_all fixtures; enforce it in application code on the write path.
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (retracted_at is NULL until retraction)
+class SessionEvent(SQLModel, table=True):
+    """Audience-scoped log row, written only through session_events.append_event."""
+
+    __tablename__ = "session_event"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('narration', 'action', 'roll', 'reveal', 'handout', 'turn', 'system', 'utterance')",
+            name="session_event_kind_chk",
+        ),
+        CheckConstraint(
+            "audience IN ('table', 'dm', 'pcs')", name="session_event_audience_chk"
+        ),
+        CheckConstraint("seq > 0", name="session_event_seq_chk"),
+        CheckConstraint(
+            "CASE WHEN jsonb_typeof(audience_pc_ids) = 'array' THEN "
+            "CASE WHEN audience = 'pcs' THEN jsonb_array_length(audience_pc_ids) > 0 "
+            "ELSE jsonb_array_length(audience_pc_ids) = 0 END ELSE false END",
+            name="session_event_audience_pc_ids_chk",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "CASE WHEN json_type(audience_pc_ids) = 'array' THEN "
+            "CASE WHEN audience = 'pcs' THEN json_array_length(audience_pc_ids) > 0 "
+            "ELSE json_array_length(audience_pc_ids) = 0 END ELSE false END",
+            name="session_event_audience_pc_ids_chk",
+        ).ddl_if(dialect="sqlite"),
+        UniqueConstraint("session_id", "seq", name="session_event_session_id_seq_key"),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign.id", ondelete="CASCADE"
+        )
+    )
+    session_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.game_session.id", ondelete="CASCADE"
+        )
+    )
+    seq: int = Field(sa_column=Column(BigInteger, nullable=False))
+    kind: EventKind = Field(sa_column=Column(String, nullable=False))
+    author_member_id: str | None = Field(
+        default=None,
+        sa_column=Column(
+            AUTHOR_MEMBER_ID_TYPE,
+            ForeignKey("grimoire.campaign_member.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    audience: AudienceKind = Field(sa_column=Column(AUDIENCE_TYPE, nullable=False))
+    audience_pc_ids: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(
+            AUDIENCE_PC_IDS_TYPE, nullable=False, server_default=text("'[]'")
+        ),
+    )
+    body: dict = Field(
+        default_factory=dict,
+        sa_column=Column(_JSONB, nullable=False, server_default=text("'{}'")),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    retracted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
 
 
 class KnowledgeGrant(SQLModel, table=True):
