@@ -321,8 +321,9 @@ def test_session_status_separates_explicit_zero_from_missing_cost(session):
 
     assert status["cost_usd"] == 0.0
     assert status["reported_cost_missing_turns"] == 1
-    assert status["list_cost_usd"] == pytest.approx(0.000102)
-    assert status["list_cost_missing_turns"] == 1
+    # Both turns carry a list price now; a reported 0.0 does not suppress it.
+    assert status["list_cost_usd"] == pytest.approx(0.0001021)
+    assert status["list_cost_missing_turns"] == 0
 
 
 def test_send_persists_and_returns_immediately(session):
