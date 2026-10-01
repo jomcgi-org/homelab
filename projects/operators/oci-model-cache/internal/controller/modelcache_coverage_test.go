@@ -82,9 +82,9 @@ func makeReadyMC(name string) *v1alpha1.ModelCache {
 // TestReconcile_Resolving_JobAlreadyExists verifies that when creating a copy
 // Job returns AlreadyExists (e.g. controller restarted mid-reconcile), the
 // controller transitions to Syncing via JobCreated rather than failing.
-// The transition uses SSA patch, which the fake client rejects — we verify that
-// the SSA step is reached (proving the AlreadyExists branch was taken) rather
-// than a generic error from Create.
+// The transition uses an SSA status patch, which the fake client applies; we
+// verify the resulting Syncing status (proving the AlreadyExists branch was
+// taken) rather than a generic error from Create.
 func TestReconcile_Resolving_JobAlreadyExists(t *testing.T) {
 	mc := makeResolvingMC("llama")
 
@@ -126,20 +126,20 @@ func TestReconcile_Resolving_JobAlreadyExists(t *testing.T) {
 	assert.True(t, createCalled, "Create should have been called for the copy Job")
 
 	// After AlreadyExists, the controller calls updateStatus(s.JobCreated(job.Name))
-	// which uses SSA patch — the fake client rejects that with "apply patches are not
-	// supported", not a logic error.
-	if err != nil {
-		assert.Contains(t, err.Error(), "apply patches are not supported",
-			"expected SSA error (not a logic error) after AlreadyExists branch")
-	}
+	// which applies the Syncing status via SSA patch.
+	require.NoError(t, err, "AlreadyExists must not surface as a reconcile error")
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, intercepted.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhaseSyncing, got.Status.Phase)
+	assert.NotEmpty(t, got.Status.SyncJobName)
 }
 
 // --- Test 2: VisitSyncing isJobFailed path ---
 
 // TestReconcile_Syncing_JobFailed verifies that a copy Job in Failed state
-// causes the controller to transition ModelCache to Failed via SSA patch.
-// The fake client rejects SSA, so we assert the SSA error is reached — proving
-// the controller walked the isJobFailed → MarkFailed → updateStatus path.
+// causes the controller to transition ModelCache to Failed via SSA patch,
+// proving the controller walked the isJobFailed → MarkFailed → updateStatus path.
 func TestReconcile_Syncing_JobFailed(t *testing.T) {
 	mc := makeTestMC("llama", sm.PhaseSyncing)
 	mc.Status.ResolvedRef = "ghcr.io/jomcgi/models/llama:rev-main"
@@ -168,10 +168,14 @@ func TestReconcile_Syncing_JobFailed(t *testing.T) {
 
 	_, err := r.Reconcile(context.Background(), req)
 
-	// Failed job → MarkFailed → updateStatus → SSA patch (rejected by fake client).
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "apply patches are not supported",
+	// Failed job → MarkFailed → updateStatus → SSA patch.
+	require.NoError(t, err)
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, r.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhaseFailed, got.Status.Phase,
 		"job failure should trigger SSA status update to Failed phase")
+	assert.Equal(t, "BackoffLimitExceeded: job reached backoff limit", got.Status.ErrorMessage)
 }
 
 // TestIsJobFailed_TableDriven verifies the isJobFailed helper for all conditions.
@@ -248,9 +252,9 @@ func TestJobFailureReason_TableDriven(t *testing.T) {
 
 // TestReconcile_Ready_SpecChanged_TriggersResync verifies that when a Ready
 // ModelCache has its spec generation bumped (HasSpecChanged = true), the
-// controller calls s.Resync() → updateStatus(newState) which uses SSA patch.
-// The fake client rejects SSA, so we verify the SSA error is returned rather
-// than the "no op" RequeueAfter from the no-change path.
+// controller calls s.Resync() → updateStatus(newState) which uses SSA patch,
+// moving the resource back to Pending rather than the "no op" RequeueAfter
+// from the no-change path.
 func TestReconcile_Ready_SpecChanged_TriggersResync(t *testing.T) {
 	mc := makeReadyMC("llama")
 	mc.Generation = 2                // spec changed
@@ -262,8 +266,11 @@ func TestReconcile_Ready_SpecChanged_TriggersResync(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), req)
 
 	// VisitReady spec-change path: Resync() → updateStatus → SSA patch.
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "apply patches are not supported",
+	require.NoError(t, err)
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, r.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhasePending, got.Status.Phase,
 		"spec change in Ready should trigger SSA resync, not a no-op requeue")
 }
 

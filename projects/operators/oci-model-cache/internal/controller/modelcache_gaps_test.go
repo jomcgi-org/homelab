@@ -27,7 +27,7 @@ package controller
 //
 //  5. VisitPending cache-hit path — when the resolver returns Cached=true the
 //     controller calls CacheHit() → updateStatusAndUngateWaiters() which uses
-//     the SSA patch.  Verified by checking the SSA error is returned (proving
+//     the SSA patch.  Verified by checking the resulting Ready status (proving
 //     the cache-hit branch was taken rather than the Resolved branch).
 
 import (
@@ -369,11 +369,9 @@ func TestUngateWaitingPods_PatchFailsContinuesToNextPod(t *testing.T) {
 //	newState := s.CacheHit(result.Ref, result.Digest, ...)
 //	return v.updateStatusAndUngateWaiters(newState)
 //
-// updateStatusAndUngateWaiters calls updateStatus → SSA patch.  The fake client
-// rejects SSA patches, so the test verifies the SSA error is returned
-// (i.e., the cache-hit branch was taken, not the Resolved branch which would
-// call updateStatus(newState) for a Resolving state and produce a different
-// code path).
+// updateStatusAndUngateWaiters calls updateStatus → SSA patch.  The test
+// verifies the resulting Ready status (i.e., the cache-hit branch was taken,
+// not the Resolved branch which would produce a Resolving state).
 func TestReconcile_Pending_CacheHit_TriggersSSAUpdate(t *testing.T) {
 	mc := makeTestMC("llama-cached", sm.PhasePending)
 
@@ -396,24 +394,24 @@ func TestReconcile_Pending_CacheHit_TriggersSSAUpdate(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), req)
 
 	// The cache-hit path calls updateStatusAndUngateWaiters → SSA patch.
-	// The fake client rejects SSA patches.
-	require.Error(t, err,
-		"cache-hit path must attempt an SSA status update (rejected by the fake client)")
-	assert.Contains(t, err.Error(), "apply patches are not supported",
-		"the SSA error confirms the cache-hit branch reached updateStatusAndUngateWaiters")
+	require.NoError(t, err)
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, r.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhaseReady, got.Status.Phase,
+		"cache hit must skip straight to Ready via updateStatusAndUngateWaiters")
+	assert.Equal(t, "sha256:cached123", got.Status.Digest)
 }
 
 // TestReconcile_Pending_CacheHit_vs_CacheMiss_DifferentPaths verifies that
 // Cached=true and Cached=false take structurally different code paths in
 // VisitPending by comparing the errors they produce:
 //
-//   - Cache miss → Resolved() → updateStatus → SSA patch (also rejected)
-//   - Cache hit  → CacheHit() → updateStatusAndUngateWaiters → SSA patch
+//   - Cache miss → Resolved() → updateStatus → SSA patch (Resolving phase)
+//   - Cache hit  → CacheHit() → updateStatusAndUngateWaiters → SSA patch (Ready phase)
 //
-// Both paths hit the SSA rejection.  What matters is that Cached=false goes
-// through the Resolved/Resolving state transition which writes different status
-// fields — this can be detected by checking that neither path panics and both
-// error with the SSA message (proving both branches compile and run correctly).
+// Cached=false goes through the Resolved/Resolving state transition, which
+// writes the Resolving phase rather than Ready.
 func TestReconcile_Pending_CacheMiss_ReachesSSA(t *testing.T) {
 	mc := makeTestMC("llama-miss", sm.PhasePending)
 
@@ -436,8 +434,11 @@ func TestReconcile_Pending_CacheMiss_ReachesSSA(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), req)
 
 	// Cache-miss path: Resolved() → updateStatus → SSA patch.
-	require.Error(t, err,
-		"cache-miss path must attempt an SSA status update (rejected by the fake client)")
-	assert.Contains(t, err.Error(), "apply patches are not supported",
-		"the SSA error confirms the cache-miss branch reached updateStatus for the Resolving state")
+	require.NoError(t, err)
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, r.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhaseResolving, got.Status.Phase,
+		"cache miss must move to Resolving via updateStatus")
+	assert.Equal(t, "ghcr.io/jomcgi/models/bartowski-llama:rev-main", got.Status.ResolvedRef)
 }
