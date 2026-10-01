@@ -646,6 +646,23 @@ def _reject_plan_decision(
     if code == "envelope_exceeded":
         prefix = "envelope exceeded: "
         deficit = reason.removeprefix(prefix) if reason.startswith(prefix) else reason
+        # A deficit is an internal limit, and internal limits go to the
+        # funding judge rather than to a person (#6541). The judge never saw
+        # this one before: it is reached only when the planner itself emits
+        # request_funding, and a planner that keeps shrinking an edit by a
+        # dollar never does. The judge decides on the merits inside a policy
+        # ceiling; a deficit past that ceiling keeps this card.
+        from factory.orchestration import factory_funding
+
+        try:
+            structured = json.loads(deficit)
+        except ValueError:
+            structured = None
+        try:
+            if factory_funding.judge_deficit(task, structured, reason):
+                return
+        except Exception:  # noqa: BLE001 - the card below is the safe fallback
+            logger.exception("factory merit funding failed for %s", task["id"])
         question = (
             f"{lead} The unresolved deficit is {deficit}. Should the exact "
             "deficit be funded and the task resumed, or should the task remain "
@@ -679,6 +696,33 @@ def _reject_plan_decision(
         },
         cause,
         runs,
+    )
+
+
+def _escalate_funding_doubt(task_id: str, reason: str, cause: str | None) -> None:
+    """Hand a merit funding decision the judge would not take to a person."""
+    task = _task(task_id)
+    question = (
+        f"{reason[:1500]} Should the task be funded and resumed, or remain on hold?"
+    )
+    _escalate_task(
+        task,
+        {
+            "action": "pause",
+            "reason": "The funding judge escalated instead of approving.",
+            "question": question,
+            "options": [
+                {
+                    "key": "fund-and-resume",
+                    "label": "Fund and resume",
+                    "effect": CONTINUE_EFFECT,
+                    "detail": {"scope": question[:2000]},
+                },
+                {"key": "hold", "label": "Hold for review", "effect": "hold"},
+            ],
+        },
+        cause or f"funding-escalated:{task_id}",
+        graph.node_runs(task_id),
     )
 
 

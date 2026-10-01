@@ -455,6 +455,136 @@ def test_unreadable_assessment_fails_closed_to_a_pause(
     assert watchdog.check(task_id, policy) == "paused"
     (assessed,) = audits(db, watchdog.ASSESSED)
     assert assessed["reason"].startswith("assessment_unavailable")
+    # Only after the one retry: two calls, two unreadable answers.
+    assert len(model.calls) == watchdog.MODEL_ATTEMPTS == 2
+    assert assessed["attempts"] == 2
+
+
+def test_assessment_asks_for_minimal_reasoning_with_room_for_a_verdict(
+    db, github, notices, model, spans
+):
+    # 2026-10-01 (#6529, #6530): Spark spent 509 of 512 tokens reasoning and
+    # returned no verdict, so every model assessment paged Joe.
+    task_id, policy = admitted()
+    spend(db, task_id, 21.0)
+    run(db, task_id, "investigate_bug", "succeeded")
+    assert watchdog.check(task_id, policy) == "progressing"
+    (call,) = model.calls
+    assert call["reasoning_effort"] == "minimal"
+    assert call["max_tokens"] >= 2048
+
+
+def test_a_truncated_first_answer_is_retried_once_and_not_paged(
+    db, github, notices, model, spans, monkeypatch
+):
+    answers = [
+        {"content": "", "finish_reason": "length"},
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": '```json\n{"verdict": "Progressing", '
+                    '"reason": "Each attempt narrows the bug."}\n```',
+                }
+            ],
+            "finish_reason": "stop",
+        },
+    ]
+    calls = []
+
+    def post(url, *, headers, json, timeout):
+        calls.append(json)
+        answer = answers[len(calls) - 1]
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [
+                        {
+                            "message": {"content": answer["content"]},
+                            "finish_reason": answer["finish_reason"],
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 864,
+                        "completion_tokens": 512,
+                        "total_tokens": 1376,
+                        "completion_tokens_details": {"reasoning_tokens": 509},
+                    },
+                }
+
+        return Response()
+
+    monkeypatch.setattr(watchdog.httpx, "post", post)
+    task_id, policy = admitted()
+    spend(db, task_id, 21.0)
+    run(db, task_id, "investigate_bug", "succeeded")
+
+    assert watchdog.check(task_id, policy) == "progressing"
+    assert len(calls) == 2
+    assert not receipt(db, task_id).task_paused
+    assert notices == []
+    (assessed,) = audits(db, watchdog.ASSESSED)
+    assert assessed["verdict"] == "progressing" and assessed["attempts"] == 2
+    assert "finish_reason=length" in assessed["error"]
+    assert "reasoning_tokens=509" in assessed["error"]
+
+
+def test_merit_judging_gives_the_watchdog_progress_and_value(
+    db, github, notices, model, spans, monkeypatch
+):
+    from factory.orchestration import factory_judge
+
+    merit = {
+        "progress": {"commits_pushed": 3},
+        "proximity": {"pull_request": 12, "checks": "success"},
+        "value": {"value_labels": ["roadmap"]},
+    }
+    seen = []
+    monkeypatch.setenv("FACTORY_MERIT_JUDGE_ENABLED", "true")
+    monkeypatch.setattr(
+        factory_judge,
+        "merit_evidence",
+        lambda task, runs: seen.append((task["id"], len(runs))) or merit,
+    )
+    task_id, policy = admitted()
+    spend(db, task_id, 21.0)
+    run(db, task_id, "investigate_bug", "succeeded")
+    assert watchdog.check(task_id, policy) == "progressing"
+    (call,) = model.calls
+    assert factory_judge.CRITERIA in call["messages"][0]["content"]
+    assert json.loads(call["messages"][1]["content"])["merit"] == merit
+    assert seen == [(task_id, 1)]
+
+
+def test_without_merit_judging_the_watchdog_brief_is_unchanged(
+    db, github, notices, model, spans, monkeypatch
+):
+    monkeypatch.delenv("FACTORY_MERIT_JUDGE_ENABLED", raising=False)
+    task_id, policy = admitted()
+    spend(db, task_id, 21.0)
+    run(db, task_id, "investigate_bug", "succeeded")
+    assert watchdog.check(task_id, policy) == "progressing"
+    (call,) = model.calls
+    assert call["messages"][0]["content"] == watchdog._SYSTEM
+    assert "merit" not in json.loads(call["messages"][1]["content"])
+
+
+def test_a_looping_verdict_still_pages_after_one_call(
+    db, github, notices, model, spans
+):
+    model.content = json.dumps(
+        {"verdict": "looping", "reason": "The same failure repeats unchanged."}
+    )
+    task_id, policy = admitted()
+    spend(db, task_id, 21.0)
+    run(db, task_id, "investigate_bug", "succeeded")
+    assert watchdog.check(task_id, policy) == "paused"
+    assert len(model.calls) == 1
+    assert len(notices) == 1
 
 
 def test_resume_from_the_card_rearms_from_current_spend(

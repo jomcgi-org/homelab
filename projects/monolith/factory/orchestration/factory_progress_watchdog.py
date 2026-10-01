@@ -10,11 +10,12 @@ The assessment is deterministic first. A refusal code recurring three times,
 a node key that was added again and failed again, three failures with the same
 reason, or three implementation attempts with no new commit between them are
 loops on their face and short-circuit without a model call. Anything else goes
-to one bounded chat-inference call (the classifier's endpoint and model, one
-request, a small token cap, list priced), which answers ``progressing`` or
-``looping``. An assessment that cannot be read fails closed to ``looping``:
-the task has spent the threshold with nothing to show and nothing vouching for
-it, which is exactly when a person should look.
+to one bounded chat-inference call (the classifier's endpoint and model,
+minimal reasoning effort, a bounded token cap, list priced), which answers
+``progressing`` or ``looping``. An unreadable answer is asked once more. Only
+two unreadable answers fail closed to ``looping``: the task has spent the
+threshold with nothing to show and nothing vouching for it, which is exactly
+when a person should look.
 
 ``progressing`` records an audit row and re-arms at the next step. ``looping``
 fences the task with the existing ``pause_task`` control, under this actor so
@@ -70,7 +71,15 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 HISTORY_LIMIT = 30
 TEXT_CHARS = 240
 MODEL_TIMEOUT_SECONDS = 20.0
-MODEL_MAX_TOKENS = 512
+# Spark always reasons, and reasoning tokens count against max_tokens. At 512
+# with the provider's default effort both 2026-10-01 assessments (#6529,
+# #6530) spent 509 of 512 tokens reasoning and returned no verdict, so every
+# model assessment failed closed to a page. Minimal effort keeps the
+# reasoning short; the larger ceiling leaves the verdict room when it is not.
+MODEL_MAX_TOKENS = 2048
+MODEL_REASONING_EFFORT = "minimal"
+# One retry before failing closed. A second unreadable answer still pages.
+MODEL_ATTEMPTS = 2
 
 RESUME_OPTION = "resume"
 STOP_OPTION = "stop"
@@ -297,6 +306,7 @@ def evidence(runs: list[dict], trail: list, adds: Counter, watch: dict) -> dict:
     ]
     return {
         "runs": recent,
+        "all_runs": runs,
         "history": history,
         "refusals": [code for code in refusals if isinstance(code, str) and code],
         "adds": adds,
@@ -350,6 +360,20 @@ def deterministic_loop(found: dict) -> tuple[str, list[str]] | None:
     return None
 
 
+def _content_text(content: object) -> str | None:
+    """The message text, whether the endpoint sent a string or content parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            part.get("text")
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        return "\n".join(parts) or None
+    return None
+
+
 def _parse(text: str | None) -> dict | None:
     if not text:
         return None
@@ -360,40 +384,104 @@ def _parse(text: str | None) -> dict | None:
         value = json.loads(text[start : end + 1])
     except ValueError:
         return None
-    if not isinstance(value, dict) or value.get("verdict") not in (
-        PROGRESSING,
-        LOOPING,
-    ):
+    if not isinstance(value, dict):
+        return None
+    verdict = str(value.get("verdict") or "").strip().lower()
+    if verdict not in (PROGRESSING, LOOPING):
         return None
     reason = " ".join(str(value.get("reason") or "").split())[:500]
     if not reason:
         return None
     facts = value.get("evidence")
     facts = [str(f)[:200] for f in facts[:8]] if isinstance(facts, list) else []
-    return {"verdict": value["verdict"], "reason": reason, "evidence": facts}
+    return {"verdict": verdict, "reason": reason, "evidence": facts}
 
 
-def model_assessment(task: dict, found: dict, spent: float, threshold: float) -> dict:
-    """One bounded chat-inference call. Never raises; fails closed to looping."""
+def _ask(
+    url: str, model: str, prompt: str, system: str = _SYSTEM
+) -> tuple[dict | None, float, str | None]:
+    """One request: (parsed verdict or None, priced cost, why it was unreadable)."""
     import shared.inference
     from shared.pricing import price_usage
 
+    response = httpx.post(
+        f"{url}/v1/chat/completions",
+        headers=shared.inference.auth_headers(url),
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": MODEL_MAX_TOKENS,
+            "reasoning_effort": MODEL_REASONING_EFFORT,
+        },
+        timeout=MODEL_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data = response.json()
+    usage = data.get("usage") or {}
+    shared.inference.record_usage(usage, model, "factory_watchdog")
+    priced = price_usage(
+        model,
+        {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    )
+    cost = round(priced.cost_usd, 6) if priced else 0.0
+    choice = (data.get("choices") or [{}])[0]
+    parsed = _parse(_content_text((choice.get("message") or {}).get("content")))
+    if parsed is not None:
+        return parsed, cost, None
+    # Say why, so an unreadable verdict is diagnosable from the audit row.
+    finish = choice.get("finish_reason")
+    details = usage.get("completion_tokens_details") or {}
+    why = (
+        f"unreadable: finish_reason={finish} "
+        f"completion_tokens={usage.get('completion_tokens')} "
+        f"reasoning_tokens={details.get('reasoning_tokens')}"
+    )
+    return None, cost, why
+
+
+def model_assessment(task: dict, found: dict, spent: float, threshold: float) -> dict:
+    """At most two bounded chat-inference calls. Never raises.
+
+    An unreadable answer is asked once more; only a second one fails closed
+    to looping.
+    """
+    import shared.inference
+
+    from factory.orchestration import factory_judge
+
     model = shared.inference.META_SPARK_MODEL
     url = os.environ.get("LLAMA_CPP_URL", "")
-    prompt = json.dumps(
-        {
-            "task": {
-                "title": str(task.get("title") or "")[:300],
-                "issue_number": task.get("issue_number"),
-            },
-            "spend_usd": spent,
-            "threshold_usd": threshold,
-            "attempts_in_flight": len(found["active"]),
-            "refusal_codes": found["refusals"][-HISTORY_LIMIT:],
-            "node_history": found["history"],
+    brief = {
+        "task": {
+            "title": str(task.get("title") or "")[:300],
+            "issue_number": task.get("issue_number"),
         },
-        sort_keys=True,
-    )
+        "spend_usd": spent,
+        "threshold_usd": threshold,
+        "attempts_in_flight": len(found["active"]),
+        "refusal_codes": found["refusals"][-HISTORY_LIMIT:],
+        "node_history": found["history"],
+    }
+    system = _SYSTEM
+    if url and factory_judge.enabled():
+        # Judge on the merits the operator would use: verified progress, how
+        # close the work is to landing and what it is worth. progressing
+        # resumes; looping is the doubt that asks a person.
+        brief["merit"] = factory_judge.merit_evidence(
+            task, found.get("all_runs") or found["runs"]
+        )
+        system = (
+            f"{_SYSTEM} {factory_judge.CRITERIA} Answer progressing when you "
+            "would approve, and looping only when you doubt it."
+        )
+    prompt = json.dumps(brief, sort_keys=True, default=str)
     result = {"model": model, "cost_usd": 0.0}
     if not url:
         return {
@@ -403,44 +491,30 @@ def model_assessment(task: dict, found: dict, spent: float, threshold: float) ->
             "evidence": [],
         }
     started = time.monotonic()
-    try:
-        response = httpx.post(
-            f"{url}/v1/chat/completions",
-            headers=shared.inference.auth_headers(url),
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": _SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0,
-                "max_tokens": MODEL_MAX_TOKENS,
-            },
-            timeout=MODEL_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        data = response.json()
-        usage = data.get("usage") or {}
-        shared.inference.record_usage(usage, model, "factory_watchdog")
-        priced = price_usage(
-            model,
-            {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-            },
-        )
-        result["cost_usd"] = round(priced.cost_usd, 6) if priced else 0.0
-        parsed = _parse(data["choices"][0]["message"]["content"])
-    except Exception as exc:  # noqa: BLE001 - an unreadable assessment fails closed
-        logger.warning("factory watchdog assessment failed for %s", task.get("id"))
-        parsed = None
-        result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    parsed = None
+    errors = []
+    for _attempt in range(MODEL_ATTEMPTS):
+        try:
+            parsed, cost, error = _ask(url, model, prompt, system)
+            result["cost_usd"] = round(result["cost_usd"] + cost, 6)
+        except Exception as exc:  # noqa: BLE001 - an unreadable assessment fails closed
+            logger.warning("factory watchdog assessment failed for %s", task.get("id"))
+            error = f"{type(exc).__name__}: {exc}"[:300]
+        if parsed is not None:
+            break
+        errors.append(error)
+    result["attempts"] = len(errors) + (parsed is not None)
+    if errors:
+        result["error"] = " | ".join(str(e) for e in errors)[:600]
     result["latency_ms"] = max(0, round((time.monotonic() - started) * 1000))
     if parsed is None:
         return {
             **result,
             "verdict": LOOPING,
-            "reason": "assessment_unavailable: the model gave no readable verdict",
+            "reason": (
+                "assessment_unavailable: the model gave no readable verdict "
+                f"in {MODEL_ATTEMPTS} attempts"
+            ),
             "evidence": [],
         }
     return {**result, **parsed}
@@ -792,6 +866,7 @@ def check(task_id: str, policy: dict) -> str:
         model=verdict.get("model"),
         cost_usd=verdict["cost_usd"],
         error=verdict.get("error"),
+        attempts=verdict.get("attempts"),
         spend_usd=spent,
         threshold_usd=threshold,
         crossing_usd=crossing,

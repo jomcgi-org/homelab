@@ -2257,6 +2257,91 @@ reviews wait five minutes before another bounded assessment. A stop decision
 retains the issue, PR, and findings without a human restart question. The
 normal independent exact-head delivery review remains required.
 
+#### Merit judging
+
+`FACTORY_MERIT_JUDGE_ENABLED` (`swarm.factoryMeritJudgeEnabled`, default
+false, needs funding on) has the funding judge and the no-progress watchdog
+decide the way the operator would: approve when he would likely approve, and
+ask him only when the judge doubts the work or a hard cap is hit. The criteria
+and the evidence brief live in `factory_judge.py`, which is the one place to
+tune them:
+
+- `CRITERIA` is the prose both prompts carry. It weighs verified progress
+  (commits, an open pull request, green checks, review rounds passed,
+  implementation nodes done), how close the work is to landing (a clean or
+  nearly green PR with only review or a correction left is close), and value
+  (`VALUE_LABELS` such as `critical`, `bug` and `severity:high`, a milestone,
+  open work the issue blocks, a `factory:` title, and the roadmap or
+  unblocking issues named in `swarm.factoryMeritJudgePriorityIssues`, since
+  this repository has no roadmap label). Money already spent is a reason to finish when
+  progress is real. The judge escalates only on doubt: little verified
+  progress, repeated failure on the same step, or drift from the issue.
+- `merit_evidence` is the server-read brief: node-run progress, the PR's
+  state, mergeability and combined status, and the issue's labels, milestone
+  and open `blocks` edges. It costs at most three GitHub reads, taken outside
+  the control lock, and states a failed read rather than raising.
+
+With merit judging on, a planner edit refused twice in a row with
+`envelope_exceeded` goes to the judge instead of raising the "Should the exact
+deficit be funded" card, whatever the size of the deficit, as long as it fits
+the hard ceiling. The ceiling is policy, not prose: the receipt's pinned
+`task_budget_usd` plus the smaller of `factoryMeritJudgeMaxExtensionMultiple`
+times it (default 1) and `factoryMeritJudgeMaxExtensionUsd` (default $50),
+and the pinned turn envelope plus the same multiple of it (at least two). It
+is measured from the pinned policy, never from the last grant, so a run of
+grants cannot ratchet a task past one total extension, and the $200
+per-issue objective ceiling still applies. A deficit past it audits
+`merit_funding_declined` and keeps the card.
+
+Every judge review then carries the criteria, the brief and the ceiling, and
+its verdict must include an `assessment` (one line each for progress,
+proximity and value, plus any doubts). The verdict is `continue`, `steer`,
+`stop` or `escalate`. A continue or steer grant is reduced to the ceiling and
+raised to a recorded dollar deficit, the way the turn grant is already raised
+to the turn deficit. `funding_granted` records `requested_task_budget_usd`,
+`granted_task_budget_usd`, `merit_ceiling` and the `assessment`, and it is the
+auto-approval the daily digest lists. `escalate`, or a grant the ceiling
+cannot hold, settles the review with `escalated` and raises a fund-or-hold
+card through the ordinary escalation path. `stop` still ends the task
+without a question. A review requested without merit judging refuses
+`escalate`, so a judge cannot page a person on a path that never offered it.
+
+**Why.** The judge was reachable only through the planner's own
+`request_funding`. On 2026-10-01 the planner for #6541 twice shrank an edit
+that was $0.65, then $1.20, over a $50 envelope, never asked for funding, and
+the second refusal paged a person (#6508 and #5938 had the same shape). The
+operator's rule is that a decision he would just approve (lots of progress,
+close to working, or very valuable) belongs to the judge, so the judge needs
+the evidence he would look at and an explicit way to hand back a doubt.
+
+#### No-progress watchdog assessment
+
+`factory_progress_watchdog` assesses an admitted delivery task each time it
+spends another `progress_watchdog.threshold_usd` (default $20) without a new
+commit or pull request. A plain loop short-circuits; anything else asks the
+classifier's chat model for a `progressing` or `looping` verdict. That call
+asks for minimal reasoning effort with a 2048-token ceiling, accepts string or
+content-part replies and a fenced JSON object, and asks once more when the
+answer cannot be read. Only a `looping` verdict, or two unreadable answers,
+pauses the task and raises the card. The assessment audit records `attempts`
+and, for an unreadable answer, its `finish_reason`, completion and reasoning
+token counts. With merit judging on, the system prompt adds
+`factory_judge.CRITERIA` and the user prompt adds the same `merit` brief the
+funding judge reads, so `progressing` means "would approve" and `looping`
+means "doubts it". The deterministic short-circuits (a refusal three times,
+a node re-added and failing again, identical failures, three implementation
+attempts without a commit) are that doubt on their face and still page.
+
+**Why.** Muse Spark always reasons, and reasoning counts against `max_tokens`.
+At the earlier 512-token cap both assessments on 2026-10-01 (#6529, #6530)
+spent 509 of their 512 tokens reasoning and returned no verdict, so every
+model assessment failed closed and paged. The Claude 5.5 profile change was
+not involved: the watchdog never calls a factory pool model. The threshold
+stays a flat dollar step. Both of those tasks had $50 envelopes, failed
+implementations and no commit at $20, which is the case the watchdog exists
+for. A step relative to the envelope would have asked later on the same
+evidence, so it is not clearly better.
+
 
 ### Conductor-owned reversible gates
 

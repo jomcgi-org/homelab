@@ -278,6 +278,14 @@ spec:
               value: {{ .Values.swarm.factoryWorkItemBaseUrl | default "https://jomcgi.dev/slop" | quote }}
             - name: FACTORY_CONDUCTOR_FUNDING_ENABLED
               value: {{ .Values.swarm.factoryConductorFundingEnabled | default false | quote }}
+            - name: FACTORY_MERIT_JUDGE_ENABLED
+              value: {{ .Values.swarm.factoryMeritJudgeEnabled | default false | quote }}
+            - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_MULTIPLE
+              value: {{ .Values.swarm.factoryMeritJudgeMaxExtensionMultiple | default 1 | quote }}
+            - name: FACTORY_MERIT_JUDGE_MAX_EXTENSION_USD
+              value: {{ .Values.swarm.factoryMeritJudgeMaxExtensionUsd | default 50 | quote }}
+            - name: FACTORY_MERIT_JUDGE_PRIORITY_ISSUES
+              value: {{ .Values.swarm.factoryMeritJudgePriorityIssues | default "" | quote }}
             - name: FACTORY_AUTONOMOUS_CONTINUATION_ENABLED
               value: {{ .Values.swarm.factoryAutonomousContinuationEnabled | default false | quote }}
             - name: FACTORY_STOP_SUPERVISION_ENABLED
