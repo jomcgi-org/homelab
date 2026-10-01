@@ -2022,6 +2022,43 @@ being disabled all leave the attempt on the existing path. On 2026-10-01 the
 its claim and 1.5 seconds after its guest was created. The guest read back
 parked with `turn_seq` 0, and the session had no receipt.
 
+`FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED` carries a brick-drain relay
+(#6256) through to an owner, in three places:
+
+- **Node workflow.** `read_factory_dispatch` used to report any second
+  dispatch of the node's turn as `unconfirmed`. That ended the workflow
+  `uncertain` as soon as the relay claimed its continuation. The flag accepts
+  a second or third dispatch when the turn row is the drain or
+  brick-preemption interruption that granted it. The workflow then waits for
+  the continuation's result under the same attempt and keeps the earliest
+  execution deadline it observed. A re-claim without that turn is still
+  `unconfirmed`.
+- **Retirement.** A continuation that outlives its terminal workflow is still
+  retired by `read_interrupted_factory_continuation`. Before, that proof
+  refused a priced interrupted turn, but every drain response carries the
+  spend of the dispatch it interrupted. The flag accepts a priced turn. The
+  conductor still settles it at unknown cost, so the reserved ceiling stays
+  charged.
+- **Stop supervision.** When the observer is lost before the relay (a monolith
+  rollout), the hold is settled as an unknown invocation, no pending row
+  remains, and the parked guest has no stop precondition. The flag lets stop
+  supervision settle that attempt when all of these hold:
+  - the guest is `parked` or `banked`;
+  - its `interrupted_turn` names this exact dispatch ID and a transcript path;
+  - its invoke started after dispatch and has completed;
+  - any saved stop identity matches.
+
+  This settlement is also at unknown cost.
+
+On 2026-10-01:
+
+- Sessions 13510, 13517 and 13518 ended `uncertain` 1 to 6 seconds after
+  their 00:44:45 relay claims. They were drained again at 00:48:00 and held
+  their lanes behind an unclaimed third grant that only the price check
+  refused.
+- Session 13635 lost its observer at 01:59. A brick idle drain then parked
+  its guest with exactly this marker.
+
 ### Supervised cessation
 
 Cessation evidence may be produced by supervised termination, not only waited

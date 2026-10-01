@@ -6966,6 +6966,122 @@ def test_ambiguous_never_invoked_evidence_does_not_permit_retry(
     ]
 
 
+def _drain_parked_view(s):
+    """The guest session 13635 left behind (2026-10-01).
+
+    Its observer was lost to a monolith rollout and the hold was later settled
+    unknown; a brick idle drain had already interrupted the invoke, flushed the
+    transcript and parked the guest with this exact dispatch's marker.
+    """
+    from factory.execution.constants import exact_dispatch_id
+
+    s.cp.update(
+        state="parked",
+        terminal_reason=None,
+        generation=0,
+        turn_seq=1,
+        last_invoke_at=s.invoke_started_at + 600_000,
+        updated_at=s.invoke_started_at + 600_500,
+        interrupted_turn={
+            "seq": 1,
+            "dispatch_id": exact_dispatch_id(
+                s.sid, "s-exact-factory", 1, "original-factory-executor", 1
+            ),
+            "cli_session_id": "cli-preserved",
+            "transcript_path": "/workspace/.ember/interrupted-turns/x.json",
+        },
+        stop_precondition=None,
+        node={"node_id": "node-1", "health": "healthy", "draining": False},
+    )
+
+
+@pytest.mark.parametrize("terminal_reason", [None, "interrupted_for_drain"])
+def test_drain_parked_dispatch_settles_unknown_attempt(
+    uncertain_factory, monkeypatch, terminal_reason
+):
+    from sqlmodel import Session, select
+    from factory.orchestration import factory_supervision as supervisor
+    from factory.orchestration.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
+    _drain_parked_view(s)
+    s.cp["terminal_reason"] = terminal_reason
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert [precondition for _guest, precondition in s.calls] == [None]
+    settled = _uncertain_snapshot(s)
+    assert settled["permits"][0]["state"] == "settled"
+    assert settled["runs"][0]["status"] == "failed"
+    assert settled["runs"][0]["accounted_cost_usd"] == s.run["pin"]["max_cost_usd"]
+    with Session(s.engine) as db:
+        event = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action == "stop_settled",
+            )
+        ).one()
+        proof = json.loads(event.detail_json)["completion"]
+    assert proof["cessation_evidence"] == "drain_interrupted_dispatch"
+    assert proof["transcript_path"].endswith("x.json")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "flag_off",
+        "running",
+        "relighting",
+        "foreign_dispatch",
+        "missing_marker",
+        "missing_transcript",
+        "invoke_open",
+        "stale_invoke",
+        "foreign_guest",
+    ],
+)
+def test_ambiguous_drain_parked_evidence_does_not_settle(
+    uncertain_factory, monkeypatch, change
+):
+    from datetime import timedelta
+    from factory.orchestration import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    if change != "flag_off":
+        monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
+    _drain_parked_view(s)
+    if change in {"running", "relighting"}:
+        s.cp["state"] = change
+        s.cp["terminal_reason"] = "interrupted_for_drain"
+    elif change == "foreign_dispatch":
+        s.cp["interrupted_turn"]["dispatch_id"] = "0" * 64
+    elif change == "missing_marker":
+        s.cp["interrupted_turn"] = None
+    elif change == "missing_transcript":
+        s.cp["interrupted_turn"]["transcript_path"] = ""
+    elif change == "invoke_open":
+        s.cp["last_invoke_at"] = s.invoke_started_at - 1
+    elif change == "stale_invoke":
+        s.cp["invoke_started_at"] = int(
+            (s.dispatched_at - timedelta(seconds=1)).timestamp() * 1000
+        )
+    else:
+        s.cp["session_id"] = "s-foreign"
+
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    snapshot = _uncertain_snapshot(s)
+    assert snapshot["permits"][0]["state"] == "uncertain"
+    assert [(run["attempt"], run["status"]) for run in snapshot["runs"]] == [
+        (1, "uncertain")
+    ]
+
+
 def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     uncertain_factory, monkeypatch
 ):
@@ -16233,6 +16349,42 @@ def test_interrupted_continuation_reconciles_without_remote_action(
             )
         ).all()
         assert len(audits) == 1
+
+
+def test_priced_drain_continuation_retires_at_reserved_cost_when_relay_enabled(
+    interrupted_continuation, monkeypatch
+):
+    """Sessions 13510, 13517 and 13518 (2026-10-01): drains carry their spend."""
+    import json
+    from sqlmodel import Session, select
+    from factory.execution.models import AgentTurn
+    from factory.orchestration import factory_controls as controls
+
+    s = interrupted_continuation
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
+    s.result.update(invocation_phase="not_invoked", capacity_denied=True)
+    _persist_uncertain_not_invoked(s)
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn).where(AgentTurn.session_id == s.sid)).one()
+        turn.cost_usd = 2.569547
+        db.add(turn)
+        db.commit()
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    outcome = json.loads(run["outcome_json"])
+    assert run["status"] == "failed"
+    assert outcome["invocation_phase"] == "interrupted_continuation_retired"
+    # Never a refund: unknown cost keeps the reserved ceiling charged.
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == run["pin"]["max_cost_usd"]
+    assert outcome["interrupted_continuation_retired"]["cost_usd"] == 2.569547
+    assert controls.task_snapshot(s.task["id"])["unresolved_starts"] == 0
+    after = s.native_snapshot()
+    assert after["pending_messages"] == []
+    assert after["capacity_reservations"][0]["outcome"] == (
+        "drain_continuation_retired"
+    )
 
 
 @pytest.mark.parametrize(

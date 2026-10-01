@@ -1656,10 +1656,15 @@ def read_interrupted_factory_continuation(
         identity = read_drained_lost_factory_attempt(db, pin, session_id)
     except ValueError:
         return None
+    # A drain response carries the spend of the dispatch it interrupted, so a
+    # priced interrupted turn is the ordinary shape, not a completed one. With
+    # the staged relay control it is retired like an unpriced one: the
+    # conductor still settles at unknown cost, so the reserved ceiling stays
+    # charged and nothing is refunded. On 2026-10-01 sessions 13510, 13517 and
+    # 13518 held their lanes after two drains because only this refused them.
     if (
-        identity["cost_usd"] is not None
-        or identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES
-    ):
+        identity["cost_usd"] is not None and not drain_relay_continuation_enabled()
+    ) or identity["dispatch_count"] > store.MAX_PENDING_DISPATCHES:
         return None
     agent = _locked_session(db, session_id)
     permit = db.get(AgentCapacityReservation, identity["permit_id"])
@@ -2196,8 +2201,58 @@ def settle_stranded_factory_attempt(
     db.flush()
 
 
+def drain_relay_continuation_enabled() -> bool:
+    """One read of the staged drain-relay control (#6256), shared by its owners."""
+    import os
+
+    return (
+        os.environ.get("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _relay_continuation(db: Session, session_id: int, row) -> bool:
+    """Whether a later dispatch count is this attempt's own relay continuation.
+
+    The claim path re-dispatches the same pending row only on an exact retry
+    grant (``store._retry_permission``): a drain or brick preemption the
+    durable writer recorded on this very turn, below MAX_PENDING_DISPATCHES.
+    The interrupted turn row stays in place while its continuation runs and
+    is replaced only by the continuation's own result, so its presence is
+    the evidence that the extra dispatch is the relay and not an unknown
+    re-claim.
+    """
+    from factory.execution import store
+    from factory.execution.models import AgentTurn
+
+    if (
+        not drain_relay_continuation_enabled()
+        or row.last_dispatch_at is None
+        or type(row.dispatch_count) is not int
+        or not 2 <= row.dispatch_count <= store.MAX_PENDING_DISPATCHES
+    ):
+        return False
+    turns = db.exec(
+        select(AgentTurn).where(AgentTurn.session_id == session_id).limit(2)
+    ).all()
+    if len(turns) != 1 or turns[0].seq != row.seq:
+        return False
+    turn = turns[0]
+    return turn.terminal_reason == "interrupted_for_drain" or (
+        turn.terminal_reason == "interrupted" and turn.stop_reason == "brick_preempted"
+    )
+
+
 def read_factory_dispatch(db: Session, pin: dict, session_id: int) -> dict:
-    """Project persisted claim evidence without treating a missing row as queued."""
+    """Project persisted claim evidence without treating a missing row as queued.
+
+    A second or third dispatch of the same row is unconfirmed unless it is the
+    attempt's own relay continuation (#6256). Without that, a brick drain that
+    interrupted the turn ended the node workflow as uncertain the moment the
+    relay claimed the continuation, and the continuation then had no owner:
+    on 2026-10-01 three review nodes ended this way at 00:44:46-53, one to
+    six seconds after their drain relays were claimed.
+    """
     from factory.execution.models import PendingMessage
 
     owner = _factory_owner(db, pin, session_id)
@@ -2213,6 +2268,10 @@ def read_factory_dispatch(db: Session, pin: dict, session_id: int) -> dict:
         return unknown
     row = pending[0]
     if row.last_dispatch_at is not None and row.dispatch_count == 1:
+        return {"state": "dispatched", "started_at": row.last_dispatch_at.isoformat()}
+    if owner is not None and _relay_continuation(db, session_id, row):
+        # The workflow keeps the earliest execution deadline it observed, so a
+        # later relay stamp cannot extend the turn bound.
         return {"state": "dispatched", "started_at": row.last_dispatch_at.isoformat()}
     if (
         row.dispatch_count
