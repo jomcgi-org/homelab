@@ -28,7 +28,7 @@ prototype's Firestore and polymorphic JSON model:
 - `alias_candidate` records review evidence, state hashes, explicit approvals,
   and completed alias-merge provenance.
 - `book` and `adventure` organize source material.
-- `campaign`, `player_character`, `game_session`, and `knowledge_grant` hold
+- `campaign`, `player_character`, `game_session`, `session_event`, and `knowledge_grant` hold
   mutable play state and per-player knowledge visibility.
 
 Queryable values use typed columns. Irregular display-only structures may use
@@ -68,7 +68,45 @@ an authorized success control, denied callers, cross-campaign resource checks,
 and database snapshots for rejected writes. Every new campaign route needs a
 `CASES` entry. Every new play table filters with `audience_predicate`, composed
 with its campaign predicate. Existing corpus entities retain the grant overlay
-in `visibility.py`; this change adds no play table.
+in `visibility.py`.
+
+## Session event log
+
+`grimoire.session_event` stores each session's ordered events: campaign and
+session ids, a positive `seq`, kind, author member, audience columns, JSON body,
+creation time, and optional retraction time. The unique `(session_id, seq)`
+index serves the feed's ascending keyset query. Polls select `seq > after` and
+apply `audience_predicate` in SQL before the limit, default 100 and maximum 500.
+The DM sees retracted bodies; other admitted viewers receive a null body and
+the retraction timestamp. Excluded viewers receive no event. Player responses
+omit other members' author ids and other characters' audience ids.
+
+`session_events.append_event` is the single insertion path for HTTP actions,
+the server-side roller (#6611), and utterance ingest (#6618). It locks and
+refreshes the game-session row, refuses ended sessions, validates the audience
+against that campaign, and allocates `max(seq) + 1` inside the caller's
+transaction. The helper flushes; the caller commits or rolls back. Retractions
+retain the row and sequence, lock the event row, and are idempotent, including
+after the session ends.
+
+**Why.** A Postgres sequence consumes numbers on rollback and would leave gaps.
+Locking the existing session row serializes writers within one session while
+other sessions can append independently. Allocation and insertion roll back
+together. The unique index also rejects a writer that bypasses serialization.
+
+The five new HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
+string `true`, read on each request before identity and membership checks.
+`grimoire.play.enabled` defaults to false in the chart; deployment values stay
+off. Existing session creation and status updates are unaffected. Campaign
+members may list sessions and poll events. DMs may append every kind except
+`utterance`; players may append only `action` with `dm` or `table` audience.
+HTTP utterances are refused for every caller because #6618 owns ingest. Player
+rolls use #6611's server-side roller and call the insertion helper directly.
+DMs may retract any event; players may retract only their authored actions.
+
+Part of #6610. The #6612 play-surface PR owns enabling
+`grimoire.play.enabled: true` in `projects/monolith/deploy/values.yaml` and
+verifying the live routes. No operational flag flip belongs to this change.
 
 ## Ingestion
 
