@@ -142,6 +142,7 @@ agents:
     uncertainPermitSupervisionEnabled: false
     # Stage the post-guest, zero-local-turn settlement proof from #6288. This
     # remains separate because it conditionally stops a healthy bound guest.
+    # Live validation is tracked on #6559.
     boundZeroTurnSettlementEnabled: false
     # Capture exact completed results before the guest's synchronous response.
     resultReceiptsEnabled: false

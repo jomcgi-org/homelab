@@ -1477,7 +1477,8 @@ uncertain in this shape settles on its task's next reconciler tick.
 #### Bound zero-turn settlement runbook
 
 `FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED` stages the post-guest proof from
-#6288 and defaults to false in both chart defaults and the GKE overlay. It is
+#6288 (live validation tracked on #6559) and defaults to false in both chart
+defaults and the GKE overlay. It is
 not a general uncertain-attempt sweeper. The owning DBOS workflow must already
 be terminal, and the exact factory run and start must still be active and
 unpriced. The session must still own one bound guest, zero `AgentTurn` rows, one
@@ -1528,7 +1529,7 @@ removes the current binding or record and cannot establish that no guest ever
 ran. Do not apply the SQL-shaped snippets from incident notes directly to
 production. They omit the run/start consistency, receipt, ownership and race
 fences above. If staged supervision cannot establish every prerequisite, leave
-all rows intact and use the issue's live-validation checklist rather than a
+all rows intact and use the live-validation checklist on #6559 rather than a
 blind database edit.
 
 The in-process operator repair is
