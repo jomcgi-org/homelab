@@ -1943,12 +1943,15 @@ _PLANNER_CHARTER = (
     "an allowed fallback review solely to obtain Opus provenance. "
     "Preserve any explicit model-specific acceptance "
     "requirement in the issue or operator direction. "
+    "A valid max_cost_usd above new_node_max_cost_usd (or the review "
+    "reservation for review nodes) is lowered to that ceiling and audited. "
+    "max_attempts and turn_timeout_seconds above policy are still refused "
+    "with bound_exceeds_policy. "
     "Size each node's turn_timeout_seconds to the work that node really "
     "does rather than leaving the policy maximum in place: roughly 900 to "
     "1800 seconds for investigation, 3600 to 7200 for implementation and "
-    "3600 for review. Never exceed the policy ceiling, which refuses the "
-    "edit with bound_exceeds_policy, and omitting the field takes that "
-    "ceiling. The number sizes the work and nothing else: supervision of a "
+    "3600 for review. Omitting the field takes the policy ceiling. "
+    "The number sizes the work and nothing else: supervision of a "
     "guest whose turn has already died is due a fixed grace after the "
     "failure, whatever the node's timeout says. "
     "Do not merge, deploy, alter credentials, modify other tasks, or expand "
@@ -3111,8 +3114,8 @@ class _EditRefused(ValueError):
 
 def _policy_bounds(
     policy: dict, source: dict, *, review_cost: float | None = None
-) -> dict:
-    """Per-node bounds, refusing anything a decision cannot widen."""
+) -> tuple[dict, dict | None]:
+    """Validate bounds, clamp excess cost, and refuse other policy widening."""
     limits = {
         "max_attempts": policy["max_attempts"],
         "max_cost_usd": policy["turn_budget_usd"]
@@ -3121,6 +3124,7 @@ def _policy_bounds(
         "turn_timeout_seconds": policy["turn_timeout_seconds"],
     }
     bounds = {name: source.get(name, limit) for name, limit in limits.items()}
+    cost_clamped = None
     for name, value in bounds.items():
         valid = (
             type(value) is int and value > 0
@@ -3133,8 +3137,11 @@ def _policy_bounds(
         if not valid:
             raise _EditRefused("bound_invalid", f"invalid {name}")
         if value > limits[name]:
-            raise _EditRefused("bound_exceeds_policy", f"{name} exceeds policy")
-    return bounds
+            if name != "max_cost_usd":
+                raise _EditRefused("bound_exceeds_policy", f"{name} exceeds policy")
+            bounds[name] = limits[name]
+            cost_clamped = {"requested": value, "applied": limits[name]}
+    return bounds, cost_clamped
 
 
 def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
@@ -3207,7 +3214,7 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         raise _EditRefused("model_not_allowed", "model is not allowed")
     review = role == "review"
     review_cost = _review_reservation_usd(task, policy, model) if review else None
-    bounds = _policy_bounds(policy, source, review_cost=review_cost)
+    bounds, cost_clamped = _policy_bounds(policy, source, review_cost=review_cost)
     if review_cost is not None:
         bounds["max_cost_usd"] = review_cost
     return {
@@ -3225,7 +3232,26 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         "max_attempts": bounds["max_attempts"],
         "turn_timeout_seconds": bounds["turn_timeout_seconds"],
         "stated_reason": stated_reason,
+        **({"cost_clamped": cost_clamped} if cost_clamped is not None else {}),
     }
+
+
+def _audit_clamped_bounds(task_id: str, cause: str, edits: list[dict]) -> None:
+    """Record each applied clamp once per decision cause and stored node key."""
+    for edit in edits:
+        if "cost_clamped" not in edit:
+            continue
+        _audit_once(
+            task_id,
+            f"{cause}:{edit['node_key']}",
+            "conductor_bound_clamped",
+            {
+                "cause": cause,
+                "node_key": edit["node_key"],
+                "field": "max_cost_usd",
+                **edit["cost_clamped"],
+            },
+        )
 
 
 def _rounds_remaining(task_id: str, policy: dict) -> int:
@@ -3506,12 +3532,14 @@ def _apply_decision(
                 {
                     field: value
                     for field, value in edit.items()
-                    if field not in ("role", "raw_prompt", "raw_node_key")
+                    if field
+                    not in ("role", "raw_prompt", "raw_node_key", "cost_clamped")
                 }
                 for edit in resolved
             ],
         )
         if result.ok:
+            _audit_clamped_bounds(task["id"], cause, resolved)
             _record_allowance(task["id"], policy, cause)
         else:
             _reject_plan_decision(
@@ -3551,6 +3579,7 @@ def _apply_decision(
             expected_version=decision.get("expected_version"),
         )
         if result.ok:
+            _audit_clamped_bounds(task["id"], cause, [edit])
             _record_allowance(task["id"], policy, cause)
         else:
             _reject_plan_decision(
