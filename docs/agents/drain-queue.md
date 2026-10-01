@@ -2,9 +2,10 @@
 
 The job kind (`qwen-drain`), PR label (`qwen-agent-for-review`), git identity
 (`qwen-drainer`) and branch prefix (`qwen/`) keep the name of the model the lane
-was built on. The worker is Luna: `DRAIN_MODEL = "luna"` in
+was built on. The default worker is Luna: `DRAIN_MODEL = "luna"` in
 `projects/monolith/factory/orchestration/drainer.py`, a Codex-family model on
-claude-runtime.
+claude-runtime. A `qwen-drain` job may name another model from `DRAIN_MODELS`
+(`luna`, `sol`) in `payload.model`; KG jobs always run on Luna.
 
 The drainer runs `claude_agent.routine_jobs` rows of kind `qwen-drain` as one
 fresh Luna session each, strictly serially, claimed by a `*/15` CronWorkflow
@@ -18,7 +19,14 @@ one-shot `qwen-drain` tasks for human-reviewed documentation PRs.
 Register with the MCP tool `monolith-agent-register-routine-job`:
 
 - `kind: "qwen-drain"`, `payload: {"prompt": ...}` (optional `repo`, `branch`,
-  `reasoning`).
+  `reasoning`, `model`, `digest`).
+- `model` picks the worker: `luna` (default) or `sol`. Any other value fails the
+  job before a session starts. The claim reservation, the session and the
+  quota check all use the job's model: the lane-wide gate judges Luna, and a
+  Sol job is also deferred when Sol's own provider is walled (Sol and Luna
+  share the Codex grants, so in practice the two readings agree).
+- `digest` appends a server-built evidence block to the prompt at claim time.
+  The only value is `factory-retro` (see below).
 - One-shot jobs: `interval_secs` null, `next_run_at` now. On completion
   `next_run_at` goes NULL and the job leaves the queue; `trigger-routine-job`
   re-arms it.
@@ -53,9 +61,10 @@ jobs by search space: per-file and per-directory questions converge, repo-wide
 sweeps do not. Split "audit all runbooks" into one job per runbook.
 
 `agents.drainer.reasoning` and `payload.reasoning` become the invoke's
-`thinking` field, which only pi sessions read. Luna's effort is pinned in the
-EmberVM shim's `CODEX_MODELS` table (`luna`: `medium`); change that table to
-change its depth. Nothing ends a looping Luna turn short of the timeouts, so
+`thinking` field, which only pi sessions read. Codex effort is pinned per model
+in the EmberVM shim's `CODEX_MODELS` table (`luna`: `medium`, `sol`: `high`),
+so choosing `payload.model` also chooses the depth; change that table to change
+it. There is no per-job effort. Nothing ends a looping Luna turn short of the timeouts, so
 fix a looping job's search space or prompt.
 
 ## Writing job prompts
@@ -169,6 +178,27 @@ Lane PRs are human-merged, except docs-only `docs:` PRs, which a
 on. The protected set (`knowledge/docfix.py`, `DOCFIX_PROTECTED_PATH_GLOBS`) is
 always human-merged. Cap a batch at what you are willing to review in one
 sitting.
+
+## The factory retro job
+
+`factory-retro-daily` is a recurring `qwen-drain` job on Sol with
+`payload.digest: "factory-retro"`. At claim time the drainer calls
+`factory/orchestration/retro.py`, which reads the last 72 hours of factory
+execution (node runs, planner refusals, infra deaths and repair re-plans,
+failing turn results, setup tool calls, review verdicts, list-price cost and
+cost per landed line, escalations) plus the open `factory:` / `embervm:`
+issues and every issue or comment carrying the `<!-- factory-retro -->`
+marker, and appends a bounded digest (under 48 KB) to the job's prompt. The
+guest has no database access and the public task pages only cover the board's
+live and most recent tasks, so the digest is built server side; its cites are
+public links where the page exists, else `#<issue> <node>/<attempt>`.
+
+The window is 72 hours although the job runs daily, because most patterns
+need several days to reach signal. The marker list is how a daily run
+dedupes: it comments on an existing issue rather than refiling. The guest
+files issues with `gh` through the egress-injected token (verified: create,
+comment and close work from a claude-runtime guest). To change the prompt,
+deregister and re-register with the same payload keys.
 
 ## Inspecting outcomes
 

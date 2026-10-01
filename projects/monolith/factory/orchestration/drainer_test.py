@@ -3590,3 +3590,92 @@ def test_lost_before_session_sweep_keeps_unknown_outcome_lease(
     assert _lock_holder(admission_database, "kg:parked") == (
         "luna-drainer:_drainer-worker:0:7:14"
     )
+
+
+def test_a_job_payload_model_reaches_the_session(monkeypatch):
+    jobs = [
+        {"name": "retro", "payload": {"prompt": "go", "model": "sol"}},
+        {"name": "plain", "payload": {"prompt": "go"}},
+    ]
+    _result, _claims, starts, completions, _n, _d = _run(monkeypatch, jobs)
+
+    assert [start[2] for start in starts] == ["sol", "luna"]
+    assert [c[1] for c in completions] == ["ok", "ok"]
+
+
+def test_an_unlisted_payload_model_fails_before_any_session(monkeypatch):
+    jobs = [{"name": "bad", "payload": {"prompt": "go", "model": "opus"}}]
+    _result, _claims, starts, completions, _n, _d = _run(monkeypatch, jobs)
+
+    assert starts == []
+    assert completions[0][:2] == ("bad", "error")
+    assert "model must be one of luna, sol" in completions[0][2]
+
+
+def test_job_model_is_lenient_for_the_claim_and_strict_for_the_start():
+    assert drainer._job_model({"prompt": "x"}) == "luna"
+    assert drainer._job_model({"model": "sol"}) == "sol"
+    assert drainer._job_model({"model": "opus"}) == "luna"
+    assert drainer._job_model(None) == "luna"
+    with pytest.raises(drainer.MalformedPayload):
+        drainer._job_model({"model": "opus"}, strict=True)
+
+
+def test_a_retro_digest_job_appends_the_server_built_digest(monkeypatch):
+    built = []
+
+    def build(instructions):
+        built.append(instructions)
+        return instructions + "\n\nDIGEST"
+
+    monkeypatch.setattr(drainer, "build_retro_prompt", build)
+    jobs = [
+        {
+            "name": "factory-retro-daily",
+            "payload": {"prompt": "judge", "model": "sol", "digest": "factory-retro"},
+        },
+        {"name": "odd", "payload": {"prompt": "x", "digest": "nope"}},
+    ]
+    _result, _claims, starts, completions, _n, _d = _run(monkeypatch, jobs)
+
+    assert built == ["judge"]
+    assert "judge\n\nDIGEST" in starts[0][1]
+    assert starts[0][2] == "sol"
+    assert len(starts) == 1
+    assert completions[1][:2] == ("odd", "error")
+
+
+def test_a_sol_job_reserves_sol_and_defers_on_its_own_provider(
+    admission_database, monkeypatch
+):
+    from sqlmodel import select
+    from factory.execution.models import AgentCapacityReservation
+
+    with Session(admission_database) as db:
+        db.execute(
+            text("""INSERT INTO routine_jobs (name,routine_kind,next_run_at,payload)
+            VALUES ('retro','qwen-drain','2026-01-01',:payload)"""),
+            {"payload": json.dumps({"prompt": "go", "model": "sol"})},
+        )
+        db.commit()
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    monkeypatch.setattr(drainer, "model_walled", lambda model: (True, "exhausted"))
+
+    assert _admitted_claim("wf-walled") is None
+    with Session(admission_database) as db:
+        assert db.exec(select(AgentCapacityReservation)).all() == []
+        job = db.execute(
+            text("SELECT locked_by FROM routine_jobs WHERE name='retro'")
+        ).one()
+        assert job.locked_by is None
+
+    checked = []
+    monkeypatch.setattr(
+        drainer, "model_walled", lambda model: checked.append(model) or (False, "ok")
+    )
+    claimed = _admitted_claim("wf-open")
+    assert claimed is not None and claimed["name"] == "retro"
+    assert checked == ["sol"]
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert [r.model for r in reservations] == ["sol"]

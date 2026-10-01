@@ -5475,6 +5475,16 @@ py_test(
 )
 
 py_test(
+    name = "swarm_retro_test",
+    srcs = ["factory/orchestration/retro_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_drainer_test",
     srcs = ["factory/orchestration/drainer_test.py"],
     imports = ["."],
