@@ -1557,6 +1557,7 @@ def test_rollout_page_real_notification_dedupe_and_failed_send_retry(db, monkeyp
     import agent.api
     from factory.orchestration import factory_conductor as conductor
 
+    monkeypatch.setattr(conductor, "get_engine", lambda: db)
     merged_delivery(db)
     pending_rollout(monkeypatch)
     monkeypatch.setenv("FACTORY_NOTIFY_DIGEST_ENABLED", "true")
