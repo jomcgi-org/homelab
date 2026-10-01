@@ -75,6 +75,64 @@ def _general_enabled():
     )
 
 
+def _never_invoked_enabled():
+    return (
+        os.environ.get("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
+    """Both halves of the never-invoked proof for a bound, quiescent guest.
+
+    The remote half is #6553's control-plane view: ``turn_seq`` 0 and no invoke
+    stamp, interruption or stop record on this exact guest. EmberVM writes the
+    stamp and the sequence durably before any invoke runs and never clears
+    them, so that guest has never run a model turn in any generation. The local
+    half: with result receipts enabled, the transport mints a receipt in its own
+    committed transaction before every invoke POST, and ``prepare_receipt``
+    requires the live claim a settled turn no longer has, so no receipt row for
+    this session means no executor reached a POST and none can.
+
+    Without this, a guest bound and then abandoned before its first invoke (an
+    executor cancelled by a rollout between claim and POST) has no stop
+    precondition and no terminal state, so the permit held its tier slot until
+    the guest happened to be evicted. #6553 closed this for factory attempts;
+    this is the same proof for kg, project and interactive permits.
+    """
+    from factory.execution import result_receipts
+    from factory.execution.models import AgentResultReceipt
+    from factory.orchestration.factory_supervision import (
+        _never_invoked_guest_cessation,
+    )
+
+    if (
+        not _general_enabled()
+        or not _never_invoked_enabled()
+        or not result_receipts.enabled()
+        or permit.outcome not in _NO_GUEST_OUTCOMES
+        or not isinstance(observed, dict)
+        or observed.get("state") not in {"parked", "banked"}
+        or _never_invoked_guest_cessation(observed, {"guest_id": guest_id}) is None
+        or agent.ember_session_id != guest_id
+        or agent.result_receipt_fence_id is not None
+        or _now() - _aware(turn.created_at)
+        >= timedelta(days=result_receipts.RETAIN_DAYS)
+    ):
+        return False
+    receipt = db.exec(
+        select(AgentResultReceipt.id)
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .limit(1)
+    ).first()
+    return receipt is None
+
+
 def _probe_enabled():
     return os.getenv("AGENT_PROBE_SUPERVISION_ENABLED", "false").lower() == "true"
 
@@ -670,7 +728,10 @@ def _record(candidate, observed, observed_at, node_names=None):
             # rejected. Generation, updated_at ordering and cessation_precedes_turn
             # are still enforced below: what is skipped is only the bounding of
             # an invocation that demonstrably never happened.
-            never_invoked = (
+            never_invoked_live = _never_invoked_live_guest(
+                db, permit, agent, turn, observed, candidate["guest_id"]
+            )
+            never_invoked = never_invoked_live or (
                 observed.get("state") in {"evicted", "destroyed"}
                 and observed.get("invoke_started_at") is None
                 and observed.get("last_invoke_at") is None
@@ -713,7 +774,10 @@ def _record(candidate, observed, observed_at, node_names=None):
                 # owning node has itself confirmed teardown. Probe-only mode
                 # stays on eviction alone so it does not depend on that gate.
                 terminal_states.add("destroyed")
-            if observed.get("state") not in terminal_states:
+            if never_invoked_live:
+                evidence["cessation_evidence"] = "never_invoked"
+                audit.evidence_json = json.dumps(evidence, sort_keys=True)
+            elif observed.get("state") not in terminal_states:
                 raise ValueError("awaiting_cessation")
             stop_completion = None
             if permit.outcome == "reservation_review_stop":
@@ -771,8 +835,12 @@ def _record(candidate, observed, observed_at, node_names=None):
             # Without an exact dispatch match, retain the legacy ordering guard.
             # Exact terminal evidence can precede the error it caused: the
             # client records the failed turn only after receiving that error.
-            if not exact_dispatch and updated <= int(
-                _aware(turn.created_at).timestamp() * 1000
+            # A guest that never ran an invoke has no cessation event to order:
+            # it was idle before the turn failed and it is idle now.
+            if (
+                not exact_dispatch
+                and not never_invoked_live
+                and updated <= int(_aware(turn.created_at).timestamp() * 1000)
             ):
                 raise ValueError("cessation_precedes_turn")
         except ValueError as exc:

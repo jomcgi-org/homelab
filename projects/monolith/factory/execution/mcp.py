@@ -1292,6 +1292,48 @@ async def _execute_pending_message(session_id: int) -> None:
         # the pod is inside its termination grace and a second cancellation
         # would take the await away, so the durable record is written first and
         # the recovering replica checks the guest.
+        # A cancellation that arrives before this delivery made any invoke POST
+        # has positive evidence: the transport marks the record attempted
+        # immediately before every POST and copies it here as the cancellation
+        # unwinds, so no guest was told to run this turn and nothing is running
+        # for it. Record that durably now (not_invoked, cessation confirmed) so
+        # the permit settles at zero cost instead of as an unknown outcome that
+        # waits for supervision. Synchronous and lock-bounded for the same
+        # reason as the hold below: this runs inside the termination grace.
+        # On 2026-10-01 the 01:37 rollout cancelled permit 10690's executor
+        # after its guest was created and before any invoke.
+        if (
+            executor_cancelled
+            and not claim_stolen
+            and not claim_released
+            and not response_lost_held
+            and claimed_dispatch_count is not None
+            and not invocation_record.get("attempted")
+            and store.executor_not_invoked_record_enabled()
+        ):
+            try:
+                claim_released = store.mark_turn_error_sync(
+                    session_id,
+                    claimed_seq,
+                    "Executor cancelled before invoking the guest",
+                    claim_owner,
+                    invocation_not_attempted=True,
+                    dispatch_count=claimed_dispatch_count,
+                    lock_timeout_seconds=SHUTDOWN_HOLD_LOCK_SECONDS,
+                )
+            except Exception:  # noqa: BLE001 - fall through to today's release.
+                logger.exception(
+                    "Could not record not-invoked turn %s in session %s",
+                    claimed_seq,
+                    session_id,
+                )
+            if claim_released:
+                logger.warning(
+                    "Executor cancelled before invoking turn %s in session %s; "
+                    "recorded not_invoked",
+                    claimed_seq,
+                    session_id,
+                )
         if executor_cancelled and _response_lost_eligible():
             try:
                 _record_response_lost(

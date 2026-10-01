@@ -1586,3 +1586,120 @@ def test_terminal_dispatch_can_precede_client_failure(
             )
         sweep(evidence)
         assert before(database, pid) == after
+
+
+def _never_invoked_view(guest, **updates):
+    """The control plane's view of a guest bound and parked before any invoke.
+
+    The 2026-10-01 permit 10690 shape: a rollout cancelled the executor after
+    the guest was created and before any invoke, so the guest parked with
+    turn_seq 0 and no invoke stamp, interruption or stop record.
+    """
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return dict(
+        {
+            "session_id": guest,
+            "state": "parked",
+            "generation": 0,
+            "turn_seq": 0,
+            "created_at": now - 30000,
+            "updated_at": now - 25000,
+            "invoke_started_at": None,
+            "last_invoke_at": None,
+            "interrupted_turn": None,
+            "stop_intent": None,
+            "stop_completion": None,
+            "stop_precondition": None,
+            "terminal_reason": None,
+        },
+        **updates,
+    )
+
+
+@pytest.fixture
+def never_invoked(database, monkeypatch):
+    from factory.execution.models import AgentResultReceipt
+
+    SQLModel.metadata.create_all(database, tables=[AgentResultReceipt.__table__])
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "true")
+    return database
+
+
+@pytest.mark.parametrize("tier", ["kg", "project", "interactive"])
+def test_never_invoked_parked_guest_settles_non_factory_permit(never_invoked, tier):
+    pid = seed(never_invoked, f"never-{tier}", tier=tier)
+    sweep(_never_invoked_view(f"guest-never-{tier}"))
+    after = before(never_invoked, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    # History, cost and the failed turn are kept exactly as they were.
+    assert after[2][-1]["stop_reason"] == UNKNOWN_INVOCATION
+    assert after[2][-1]["cost_usd"] is None
+    with Session(never_invoked) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == "guest_cessation_confirmed"
+        assert json.loads(audit.evidence_json)["cessation_evidence"] == "never_invoked"
+
+
+def test_never_invoked_settlement_is_off_by_default(never_invoked, monkeypatch):
+    monkeypatch.setenv("AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED", "false")
+    pid = seed(never_invoked, "never-off", tier="kg")
+    original = before(never_invoked, pid)
+    sweep(_never_invoked_view("guest-never-off"))
+    assert before(never_invoked, pid) == original
+    with Session(never_invoked) as db:
+        assert db.get(ProbeObservation, pid).reason == "malformed_identity"
+
+
+def test_never_invoked_settlement_refuses_a_session_with_a_receipt(never_invoked):
+    """A minted receipt means an executor reached the POST step."""
+    from factory.execution.models import AgentResultReceipt
+
+    pid = seed(never_invoked, "never-receipt", tier="kg")
+    with Session(never_invoked) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        now = datetime.now(timezone.utc)
+        db.add(
+            AgentResultReceipt(
+                id="r" * 32,
+                token_sha256="0" * 64,
+                session_id=permit.session_id,
+                local_session_id=permit.local_session_id,
+                seq=1,
+                dispatch_count=1,
+                claim_owner="worker",
+                guest_id="guest-never-receipt",
+                request_sha256="1" * 64,
+                created_at=now,
+                accept_until=now + timedelta(hours=1),
+                retain_until=now + timedelta(days=1),
+            )
+        )
+    original = before(never_invoked, pid)
+    sweep(_never_invoked_view("guest-never-receipt"))
+    assert before(never_invoked, pid) == original
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"turn_seq": 1},
+        {"invoke_started_at": 1},
+        {"last_invoke_at": 1},
+        {"interrupted_turn": {"seq": 1}},
+        {"stop_intent": {"generation": 0}},
+        {"stop_precondition": {"generation": 0}},
+        {"state": "running"},
+        {"state": "relighting"},
+        {"session_id": "another-guest"},
+    ],
+)
+def test_never_invoked_settlement_requires_the_exact_idle_guest(
+    never_invoked, change
+):
+    pid = seed(never_invoked, "never-exact", tier="kg")
+    original = before(never_invoked, pid)
+    sweep(_never_invoked_view("guest-never-exact", **change))
+    assert before(never_invoked, pid) == original

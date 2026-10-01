@@ -2650,19 +2650,32 @@ def mark_turn_error_sync(
     cessation_confirmed: bool = False,
     invocation_not_attempted: bool = False,
     dispatch_count: int | None = None,
-) -> None:
-    """Retain error progress and settle only with exact execution evidence."""
+    lock_timeout_seconds: float | None = None,
+) -> bool:
+    """Retain error progress and settle only with exact execution evidence.
+
+    Returns True only when this call wrote the error turn and settled the
+    permit. ``lock_timeout_seconds`` bounds the row-lock wait for a caller
+    inside a pod's termination grace, which must give up on the lock rather
+    than on the grace.
+    """
     if invocation_not_attempted and (not claim_owner or dispatch_count is None):
         raise ValueError("Not-invoked evidence requires exact dispatch ownership")
     with Session(get_engine()) as session:
+        if lock_timeout_seconds is not None and (
+            session.get_bind().dialect.name == "postgresql"
+        ):
+            session.execute(
+                text(f"SET LOCAL lock_timeout = '{int(lock_timeout_seconds * 1000)}ms'")
+            )
         sess = _lock_session(session, session_id)
         row = get_pending_message(session, session_id, turn_seq)
         if sess is None or row is None or _bound_zero_turn_cleanup_pending(sess):
-            return
+            return False
         if claim_owner is not None and row.claimed_by_replica != claim_owner:
-            return
+            return False
         if dispatch_count is not None and row.dispatch_count != dispatch_count:
-            return
+            return False
         permit = admission.reservation(session, sess.local_session_id, turn_seq)
         if invocation_not_attempted and (
             permit is None
@@ -2670,7 +2683,7 @@ def mark_turn_error_sync(
             or permit.owner != claim_owner
             or permit.state not in {"reserved", "running"}
         ):
-            return
+            return False
         existing = get_turn(session, session_id, turn_seq)
         if (
             existing is not None
@@ -2678,7 +2691,7 @@ def mark_turn_error_sync(
         ):
             session.delete(row)
             session.commit()
-            return
+            return False
         if existing is not None:
             session.delete(existing)
             session.flush()
@@ -2717,6 +2730,12 @@ def mark_turn_error_sync(
         session.add(sess)
         session.delete(row)
         session.commit()
+        return True
+
+
+def executor_not_invoked_record_enabled() -> bool:
+    """Staged control: a cancelled executor that never POSTed records not_invoked."""
+    return os.getenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "false").lower() == "true"
 
 
 def mark_turn_interrupted_sync(

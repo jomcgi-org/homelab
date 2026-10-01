@@ -223,6 +223,10 @@ spec:
               value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
             - name: AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED
               value: {{ .Values.agents.sessions.responseLostDrainRelayEnabled | default false | quote }}
+            - name: AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED
+              value: {{ .Values.agents.sessions.executorNotInvokedRecordEnabled | default false | quote }}
+            - name: AGENT_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED
+              value: {{ .Values.agents.sessions.neverInvokedGuestSettlementEnabled | default false | quote }}
             - name: AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED
               value: {{ .Values.agents.sessions.guestAnswerSettlementEnabled | default false | quote }}
             - name: AGENT_SESSION_STOP_CONTROL_ENABLED
