@@ -1464,7 +1464,7 @@ def test_only_the_live_owner_relays_a_drained_held_turn(database, monkeypatch):
     sid, _requests, _hold, view = _drained_case(database, monkeypatch)
     monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: view)
     assert node_workflows._recover_response_lost(
-        {"artifact_path": ARTIFACT_PATH}, sid
+        {"artifact_path": ARTIFACT_PATH}, sid, relay_drained=False
     ) == {"status": "settled", "reason": "response_lost_unpublished"}
     assert_unknown(database, sid)
 

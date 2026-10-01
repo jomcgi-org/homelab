@@ -897,7 +897,7 @@ def _retire_parked_guest(view: dict) -> None:
 
 
 def _recover_response_lost(
-    pin: dict, session_id: int, *, relay_drained: bool = False
+    pin: dict, session_id: int, *, relay_drained: bool = True
 ) -> dict | None:
     """Adopt this attempt's committed result, or end a hold that cannot recover.
 
@@ -912,8 +912,11 @@ def _recover_response_lost(
     reconciliation already knows how to settle.
 
     A guest a drain interrupted on exactly this dispatch is the exception:
-    with ``relay_drained`` (the live owner only) the hold becomes the #6256
-    drain relay and the same guest resumes the turn.
+    the hold becomes the #6256 drain relay and the same guest resumes the
+    turn. Only the live owner (``_read_node_dispatch``) relays; the terminal
+    reconciler passes ``relay_drained=False`` because nothing would collect
+    the continuation. The default keeps ``_read_node_dispatch``, a durable
+    member of the node workflow version, byte-for-byte unchanged.
     """
     from factory.execution.api import (
         adopt_response_lost_result,
@@ -1015,9 +1018,7 @@ def _read_node_dispatch(pin: dict, session_id: int) -> dict:
     # interval so its next poll reads the turn that adoption just wrote. Any
     # failure here leaves the hold exactly as it was.
     try:
-        # Only the live owner may relay a drained turn: it is the workflow
-        # that will collect the continuation (#6256).
-        _recover_response_lost(pin, session_id, relay_drained=True)
+        _recover_response_lost(pin, session_id)
     except Exception as exc:  # noqa: BLE001 - recovery never fails a live node.
         logger.warning(
             "response-loss recovery failed for session %s: %s",
@@ -1363,7 +1364,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
     # Outside a read transaction: adoption is a write through the ordinary turn
     # writer and takes its own locks.
     try:
-        _recover_response_lost(pin, resolved)
+        _recover_response_lost(pin, resolved, relay_drained=False)
     except Exception as exc:  # noqa: BLE001 - reconciliation observes, never fails.
         logger.warning(
             "response-loss recovery failed for session %s: %s",
