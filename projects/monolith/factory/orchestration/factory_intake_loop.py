@@ -765,9 +765,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     receipt_rows = db.exec(
                         select(FactoryReceipt)
                         .where(FactoryReceipt.repo == slug, by_number_or_item)
-                        .order_by(
-                            FactoryReceipt.issue_number, FactoryReceipt.id.desc()
-                        )
+                        .order_by(FactoryReceipt.issue_number, FactoryReceipt.id.desc())
                     ).all()
             for item, labels in survivors:
                 number = item.get("number")
@@ -1018,9 +1016,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     "admitted_today": capped[first]["admitted_today"],
                     "max_per_day": capped[first]["max_per_day"],
                     "local_listed": local_listed,
-                    **(
-                        {"repos": capped} if len(repos) > 1 else {}
-                    ),
+                    **({"repos": capped} if len(repos) > 1 else {}),
                     **(
                         {"github": github_status, "listed": listed_total}
                         if github_status

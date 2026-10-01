@@ -521,9 +521,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             ).all(),
         ]
         busy = [(r.repo, r.issue_number) for r in owned]
-        busy_work_items = [
-            r.work_item_id for r in owned if r.work_item_id is not None
-        ]
+        busy_work_items = [r.work_item_id for r in owned if r.work_item_id is not None]
         base_query = select(FactoryReceipt).where(
             FactoryReceipt.state == "queued",
             FactoryReceipt.repo.in_(enabled),
@@ -579,9 +577,7 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # predicate, so make the hold visible once an hour whether or not a
         # later receipt was admitted past it.
         blocked_head = db.exec(ordered.where(~blocker_predicate)).first()
-        if blocked_head is not None and (
-            first is None or blocked_head.id != first.id
-        ):
+        if blocked_head is not None and (first is None or blocked_head.id != first.id):
             head_is_first = first is None or (
                 blocked_head.created_at,
                 blocked_head.id,
