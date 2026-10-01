@@ -135,14 +135,21 @@ def harness(tmp_path, monkeypatch):
         yield h
 
 
+CAMPAIGN_SHAPE = re.compile(r"^/api/grimoire/campaigns/\{[^}/]+\}(/|$)")
+
+
 def campaign_routes(app):
-    return {
-        (method, context.path)
-        for context in iter_route_contexts(app.routes)
-        if isinstance(context.original_route, APIRoute)
-        and (context.path == PREFIX or context.path.startswith(PREFIX + "/"))
-        for method in context.methods
-    }
+    routes = set()
+    for context in iter_route_contexts(app.routes):
+        if not CAMPAIGN_SHAPE.match(context.path):
+            continue
+        assert isinstance(context.original_route, APIRoute), (
+            "Uncovered non-APIRoute under campaign prefix: "
+            f"{type(context.original_route).__name__} {context.path}"
+        )
+        for method in context.methods:
+            routes.add((method, context.path))
+    return routes
 
 
 def assert_inventory(app):
@@ -156,6 +163,20 @@ def assert_inventory(app):
 
 def test_route_inventory(harness):
     assert_inventory(harness.app())
+
+
+def test_campaign_routes_match_renamed_path_param():
+    from fastapi import APIRouter, FastAPI
+
+    probed = APIRouter(prefix="/api/grimoire")
+
+    @probed.get("/campaigns/{cid}/notes")
+    def notes(cid: str):
+        return {"cid": cid}
+
+    app = FastAPI()
+    app.include_router(probed)
+    assert ("GET", "/api/grimoire/campaigns/{cid}/notes") in campaign_routes(app)
 
 
 def resolve(h, value):
