@@ -1,7 +1,6 @@
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 MANIFESTS = [
-    "argocd-repo-cred.yaml",
     "cnpg-cluster.yaml",
     "cnpg-metrics-service.yaml",
     "cnpg-scheduledbackup.yaml",

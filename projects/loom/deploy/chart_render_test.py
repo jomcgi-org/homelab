@@ -244,7 +244,15 @@ def test_private_route_matches_rendered_service_and_redirect(rendered):
             },
         }
     ]
-    assert rewrite["backendRefs"] == [{"name": "loom-query-api", "port": 8080}]
+    assert rewrite["backendRefs"] == [
+        {
+            "group": "",
+            "kind": "Service",
+            "name": "loom-query-api",
+            "port": 8080,
+            "weight": 1,
+        }
+    ]
     service = next(
         doc
         for doc in rendered

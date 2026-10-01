@@ -100,7 +100,8 @@ def test_application_sources_and_values_path_exist():
     assert value_path.removeprefix("$values/") == "projects/loom/deploy/values.yaml"
     assert (DEPLOY / "kustomization.yaml").is_file()
     assert load(APPLICATION.parent / "kustomization.yaml")["resources"] == [
-        "application.yaml"
+        "application.yaml",
+        "argocd-repo-cred.yaml",
     ]
 
 
@@ -122,7 +123,7 @@ def test_hub_default_off():
 
 
 def test_repository_credential_item_is_in_argocd_with_repository_label():
-    item = load(DEPLOY / "argocd-repo-cred.yaml")
+    item = load(APPLICATION.parent / "argocd-repo-cred.yaml")
     assert item == {
         "apiVersion": "onepassword.com/v1",
         "kind": "OnePasswordItem",

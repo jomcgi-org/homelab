@@ -1,3 +1,6 @@
+# This lives in the hub app directory, not projects/loom/deploy, so the
+# credential is applied by the hub root before the Application pulls the
+# private OCI chart. Default-off: ./loom is unregistered until #6605.
 # The operator copies this label onto the repository Secret for ArgoCD.
 # The item supplies name/url/type/enableOCI/username/password; #6605 checks sync.
 apiVersion: onepassword.com/v1
