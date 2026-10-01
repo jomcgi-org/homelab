@@ -1963,6 +1963,7 @@ def test_composed_interruption_reconciliation_survives_restart(
         ("binding", "prior_binding_evidence"),
         ("owner", "missing_dispatch_identity"),
         ("pending", "pending_executor"),
+        ("session", "identity_changed"),
     ],
 )
 def test_composed_interruption_refuses_stale_identity(
@@ -1980,6 +1981,12 @@ def test_composed_interruption_refuses_stale_identity(
             db.get(AgentSession, attempt["sid"]).prior_ember_lineage_id = "late-binding"
         elif change == "owner":
             db.get(AgentCapacityReservation, attempt["pid"]).owner = "other-executor"
+        elif change == "session":
+            # last_turn_at is covered by the identity hash but by no
+            # eligibility predicate, so only the hash re-check can refuse it.
+            db.get(AgentSession, attempt["sid"]).last_turn_at = datetime(
+                2026, 10, 1, 0, 0, 5, tzinfo=timezone.utc
+            )
         else:
             # A competing writer's queue is evidence, never execute it here.
             db.add(
