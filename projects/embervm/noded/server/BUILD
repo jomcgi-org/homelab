@@ -65,6 +65,7 @@ go_test(
         "register_test.go",
         "registry_workload_test.go",
         "rootfs_gc_test.go",
+        "rootfs_pending_test.go",
         "server_test.go",
         "serving_test.go",
         "silence_test.go",

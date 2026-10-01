@@ -518,8 +518,11 @@ def test_rootfs_parallel_memory_declarations_match_rendered_workloads(
     rendered = _render(
         "rootfs-memory",
         [Path(os.environ[name]) for name in values_names],
-        ["rootfsBuilder.parallelEnabled=true", "bricks.enabled=true",
-         f"rootfsBuilder.inPodBake.enabled={str(in_pod_bake).lower()}"],
+        [
+            "rootfsBuilder.parallelEnabled=true",
+            "bricks.enabled=true",
+            f"rootfsBuilder.inPodBake.enabled={str(in_pod_bake).lower()}",
+        ],
     )
     declared_by_image = {}
     for document in yaml.safe_load_all(rendered):
@@ -538,7 +541,8 @@ def test_rootfs_parallel_memory_declarations_match_rendered_workloads(
         desired_set = next(
             doc["data"]["rootfs-desired-set"]
             for doc in yaml.safe_load_all(rendered)
-            if doc and doc.get("kind") == "ConfigMap"
+            if doc
+            and doc.get("kind") == "ConfigMap"
             and doc["metadata"]["name"].endswith("-rootfs-builder")
         )
         tuples = [line.split("\t") for line in desired_set.splitlines()]

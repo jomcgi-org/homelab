@@ -119,10 +119,7 @@ py_test(
         "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(

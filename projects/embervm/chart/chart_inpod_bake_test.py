@@ -31,7 +31,9 @@ def _render(tmp_path, seed, enabled, daemonset=False):
         key: "sha256:" + hashlib.sha256(f"{seed}:{key}".encode()).hexdigest()
         for key in merged["workloads"]
     }
-    overlay = {key: {"guestImage": {"digest": digest}} for key, digest in digests.items()}
+    overlay = {
+        key: {"guestImage": {"digest": digest}} for key, digest in digests.items()
+    }
     overlay["rootfsBuilder"] = {"inPodBake": {"enabled": enabled}}
     if daemonset:
         overlay["bricks"] = {"enabled": False}
@@ -39,16 +41,33 @@ def _render(tmp_path, seed, enabled, daemonset=False):
     else:
         # GKE currently has no floors. Exercise the production floor template
         # with a real class and the supported anchor-selector placement shape.
-        overlay["bricks"] = {"nodeFloors": [{
-            "name": "anchor", "selector": {"homelab.io/anchor": "true"},
-            "class": merged["bricks"]["classes"][0]["name"],
-        }]}
+        overlay["bricks"] = {
+            "nodeFloors": [
+                {
+                    "name": "anchor",
+                    "selector": {"homelab.io/anchor": "true"},
+                    "class": merged["bricks"]["classes"][0]["name"],
+                }
+            ]
+        }
     file = tmp_path / f"{seed}-{enabled}-{daemonset}.yaml"
     file.write_text(yaml.safe_dump(overlay))
     result = subprocess.run(
-        [os.environ.get("HELM_BIN", "helm"), "template", "embervm", str(CHART),
-         "-f", str(DEPLOY), "-f", str(GKE), "-f", str(file)],
-        check=True, text=True, capture_output=True,
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "embervm",
+            str(CHART),
+            "-f",
+            str(DEPLOY),
+            "-f",
+            str(GKE),
+            "-f",
+            str(file),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
     )
     docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
     pods = {
@@ -57,8 +76,12 @@ def _render(tmp_path, seed, enabled, daemonset=False):
         if (doc["kind"] == "Deployment" and "-noded-brick-" in doc["metadata"]["name"])
         or (doc["kind"] == "DaemonSet" and doc["metadata"]["name"].endswith("-noded"))
     }
-    cm = next(doc for doc in docs if doc["kind"] == "ConfigMap"
-              and doc["metadata"]["name"].endswith("-rootfs-builder"))
+    cm = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "ConfigMap"
+        and doc["metadata"]["name"].endswith("-rootfs-builder")
+    )
     return pods, cm, digests
 
 
@@ -80,19 +103,36 @@ def test_digest_only_publish_hot_swaps_all_bricks_and_floors(tmp_path):
         for pod in a.values():
             spec = pod["spec"]
             assert "rootfs-baker" in [c["name"] for c in spec["containers"]]
-            assert not any(c["name"].startswith("build-") for c in spec.get("initContainers", []))
+            assert not any(
+                c["name"].startswith("build-") for c in spec.get("initContainers", [])
+            )
         old_a, _, _ = _render(tmp_path, "A", False, daemonset)
         old_b, _, _ = _render(tmp_path, "B", False, daemonset)
         assert old_a.keys() == old_b.keys() == a.keys()
-        assert all(old_a[name] != old_b[name] for name in a), "negative control must roll every pod"
+        assert all(old_a[name] != old_b[name] for name in a), (
+            "negative control must roll every pod"
+        )
 
 
 def test_flag_on_without_scratch_gates_omits_empty_init_containers(tmp_path):
     result = subprocess.run(
-        [os.environ.get("HELM_BIN", "helm"), "template", "embervm", str(CHART),
-         "--set", "rootfsBuilder.inPodBake.enabled=true"],
-        check=True, text=True, capture_output=True,
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "embervm",
+            str(CHART),
+            "--set",
+            "rootfsBuilder.inPodBake.enabled=true",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
     )
-    pod = next(doc["spec"]["template"]["spec"] for doc in yaml.safe_load_all(result.stdout)
-               if doc and doc["kind"] == "DaemonSet" and doc["metadata"]["name"].endswith("-noded"))
+    pod = next(
+        doc["spec"]["template"]["spec"]
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc
+        and doc["kind"] == "DaemonSet"
+        and doc["metadata"]["name"].endswith("-noded")
+    )
     assert "initContainers" not in pod
