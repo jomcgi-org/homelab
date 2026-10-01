@@ -2295,6 +2295,7 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
     import json
     from datetime import datetime, timezone
     from sqlalchemy import or_
+    from factory.execution import store
     from factory.execution.models import AgentTurn, PendingMessage
 
     admission.lock_pool(db)
@@ -2386,7 +2387,14 @@ def cancel_queued_factory_attempt(db: Session, pin: dict, session_id: int | None
             terminal_reason="error",
             stop_reason="cancelled_before_dispatch",
             result_text="Factory reconciliation cancelled this queued attempt after its workflow timed out. No agent invocation was dispatched.",
-            usage_json=json.dumps(sanitize_payload(_cancelled_before_dispatch_usage())),
+            usage_json=json.dumps(
+                sanitize_payload(
+                    {
+                        **_cancelled_before_dispatch_usage(),
+                        "observation": store.turn_observation(row),
+                    }
+                )
+            ),
         )
     )
     owner.status = "warn"

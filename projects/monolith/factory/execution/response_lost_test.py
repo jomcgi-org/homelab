@@ -311,6 +311,11 @@ def test_lost_response_recovers_the_exact_result_without_re_executing(
     assert turn["stop_reason"] == "end_turn"
     assert turn["result_text"] == record["result"]
     assert turn["cost_usd"] == 0.125
+    observation = json.loads(turn["usage_json"])["observation"]
+    assert observation["executor_elapsed_ms"] is None
+    assert observation["runtime_duration_ms"] == record["duration_ms"]
+    assert observation["dispatch_count"] == 1
+    assert observation["provider_retries"] is None
     assert zlib.decompress(turn["diff_blob"]) == b"native diff bytes"
     assert turn["diff_base_sha"] == "a" * 40
     assert turn["artifact_path"] == ARTIFACT_PATH
