@@ -633,3 +633,44 @@ def test_agent_activity_snapshot_aggregates_turns_at_list_price(session):
     assert week["list_cost_usd"] == 0.4
     assert week["unpriced"] == 0
     assert report["spend_7d_usd"] == payload["totals_7d"]["combined"]["spend_usd"]
+
+
+def test_agent_activity_counts_each_local_run_once_at_its_latest_snapshot(session):
+    """The collector re-uploads a growing session; only its last upload counts."""
+
+    def raw(raw_id, session_id, started_at, cost):
+        extra = {
+            "session_id": session_id,
+            "started_at": started_at,
+            "model": "gpt-6-astra",
+            "usage": {"input_tokens": 1000, "output_tokens": 10},
+            "usage_cost_usd": cost,
+        }
+        session.execute(
+            text(
+                "INSERT INTO knowledge.raw_inputs "
+                "(raw_id, path, source, content_hash, extra) "
+                "VALUES (:raw_id, :path, 'codex-session', :hash, CAST(:extra AS jsonb))"
+            ),
+            {
+                "raw_id": raw_id,
+                "path": f"sessions/{raw_id}.md",
+                "hash": raw_id,
+                "extra": json.dumps(extra),
+            },
+        )
+
+    # Two cumulative snapshots of one run, then a fork with its own start.
+    raw("snap-1", "run-a", "2026-10-01T01:00:00Z", 10.0)
+    raw("snap-2", "run-a", "2026-10-01T01:00:00Z", 25.0)
+    raw("fork-1", "run-a", "2026-10-01T03:00:00Z", 5.0)
+    session.flush()
+
+    publication.write_agent_activity_snapshot(session)
+
+    payload = session.execute(
+        text("SELECT payload FROM public_api.agent_activity_snapshot WHERE id = 1")
+    ).one()[0]
+    local = payload["totals_7d"]["local"]
+    assert local["sessions"] == 2
+    assert local["list_cost_usd"] == 30.0
