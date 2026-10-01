@@ -352,6 +352,78 @@ class DeploySurface:
         return exact, prefixes
 
 
+def _http_code(exc) -> int | None:
+    return getattr(exc, "status", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+
+
+def _chart_exists(surface, path: str) -> bool:
+    """True when Chart.yaml exists at an owned path; 404 means absent."""
+    norm = repo_path(path)
+    location = "Chart.yaml" if norm == "." else norm + "/Chart.yaml"
+    try:
+        content = surface.read(location)
+    except Exception as exc:
+        if _http_code(exc) == 404:
+            return False
+        raise
+    chart = content_yaml(content)
+    if not isinstance(chart, dict):
+        raise Pending("deploy_surface_unreadable")
+    return True
+
+
+def _owned_is_helm(source: dict, surface) -> bool:
+    """Owned path sources render as Helm with an explicit helm key.
+
+    Without one, Argo auto-detects a chart directory: Chart.yaml present
+    and no kustomize source key. Anything else uses Kustomize traversal.
+    """
+    if "helm" in source:
+        return True
+    if source.get("kustomize") is not None:
+        return False
+    return _chart_exists(surface, source["path"])
+
+
+def _helm_file_dep_dirs(surface, path: str, seen=None, depth=0) -> set[str]:
+    """Local file:// chart dependency directories, transitively."""
+    norm = repo_path(path)
+    if depth > 4:
+        raise Pending("deploy_surface_unreadable")
+    if seen is None:
+        seen = set()
+    if norm in seen:
+        return set()
+    seen.add(norm)
+    location = "Chart.yaml" if norm == "." else norm + "/Chart.yaml"
+    chart = content_yaml(surface.read(location))
+    if not isinstance(chart, dict):
+        raise Pending("deploy_surface_unreadable")
+    dependencies = chart.get("dependencies", [])
+    if dependencies is None:
+        dependencies = []
+    if not isinstance(dependencies, list):
+        raise Pending("deploy_surface_unreadable")
+    dirs: set[str] = set()
+    for dependency in dependencies:
+        if not isinstance(dependency, dict):
+            raise Pending("deploy_surface_unreadable")
+        repository = dependency.get("repository", "")
+        if not isinstance(repository, str):
+            raise Pending("deploy_surface_unreadable")
+        if not repository.startswith("file://"):
+            continue
+        relative = repository[len("file://") :]
+        if not relative:
+            raise Pending("deploy_surface_unreadable")
+        dep_dir = repo_path(posixpath.join(norm, relative))
+        dirs.add(dep_dir)
+        dirs.update(_helm_file_dep_dirs(surface, dep_dir, seen, depth + 1))
+    return dirs
+
+
 def application_in_scope(repo, app, files, catalog, surface) -> bool:
     if files is None:
         return True
@@ -375,11 +447,25 @@ def application_in_scope(repo, app, files, catalog, surface) -> bool:
                 if source.get("chart"):
                     return True
                 if source.get("path"):
-                    exact, prefixes = surface.directory(source["path"])
-                    if files & exact or any(
-                        f.startswith(p) for f in files for p in prefixes
-                    ):
-                        return True
+                    if _owned_is_helm(source, surface):
+                        norm = repo_path(source["path"])
+                        prefix = "" if norm == "." else norm + "/"
+                        if any(f.startswith(prefix) for f in files):
+                            return True
+                        dep_dirs = _helm_file_dep_dirs(surface, norm)
+                        for dep_dir in dep_dirs:
+                            dep_prefix = "" if dep_dir == "." else dep_dir + "/"
+                            if any(
+                                f == dep_dir or f.startswith(dep_prefix)
+                                for f in files
+                            ):
+                                return True
+                    else:
+                        exact, prefixes = surface.directory(source["path"])
+                        if files & exact or any(
+                            f.startswith(p) for f in files for p in prefixes
+                        ):
+                            return True
                 elif not source.get("ref"):
                     return True
             for value in source.get("helm", {}).get("valueFiles", []):
@@ -391,9 +477,19 @@ def application_in_scope(repo, app, files, catalog, surface) -> bool:
                         return True
                     if repo_path(path) in files:
                         return True
-                elif registry or owned:
-                    # Relative value files are not a recognized owned-ref shape.
+                elif registry:
                     return True
+                elif owned:
+                    if not source.get("path"):
+                        return True
+                    if _owned_is_helm(source, surface):
+                        resolved = repo_path(
+                            posixpath.join(repo_path(source["path"]), value)
+                        )
+                        if resolved in files:
+                            return True
+                    else:
+                        return True
         return False
     except Exception:  # noqa: BLE001 - unknown mapping includes the Application
         return True

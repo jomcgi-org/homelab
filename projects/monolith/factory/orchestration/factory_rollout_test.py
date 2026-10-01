@@ -467,12 +467,16 @@ def fleet_github(moved=(), documents=None, directories=()):
         if not path.startswith("contents/"):
             return github(repo, path)
         location, ref = path.removeprefix("contents/").split("?ref=")
-        if location.endswith("/Chart.yaml"):
-            name = location.split("/")[1]
-            version = "1.2.2" if ref == MERGE and name in moved else "1.2.3"
-            return encoded(f"name: {name}\nversion: {version}\n")
         if location in documents:
             return encoded(documents[location])
+        if location.endswith("/Chart.yaml"):
+            # Registry chart identities synthesize; owned chart directories
+            # only exist when the test declares them in documents, so
+            # auto-detect does not mistake every kustomize directory for Helm.
+            if ref != MERGE or location.endswith("/chart/Chart.yaml"):
+                name = location.split("/")[1]
+                version = "1.2.2" if ref == MERGE and name in moved else "1.2.3"
+                return encoded(f"name: {name}\nversion: {version}\n")
         if location in directories:
             return []
         raise httpx.HTTPStatusError(
@@ -519,6 +523,154 @@ def test_unrelated_unhealthy_application_does_not_block():
     assert result["verified"] is True
     assert result["scoped_applications"] == ["monolith"]
     assert result["changed_files_count"] == 1
+
+
+def owned_helm_app(name, path, value_files):
+    source = {
+        "repoURL": "https://github.com/owner/repo.git",
+        "targetRevision": "HEAD",
+        "path": path,
+        "helm": {"releaseName": name, "valueFiles": value_files},
+    }
+    return {
+        "metadata": {"name": name, "uid": f"{name}-uid"},
+        "spec": {"source": deepcopy(source)},
+        "status": {
+            "health": {"status": "Progressing"},
+            "sync": {
+                "status": "Synced",
+                "revision": SOURCE,
+                "comparedTo": {"source": deepcopy(source)},
+            },
+            "resources": [
+                {
+                    "kind": "Deployment",
+                    "namespace": name,
+                    "name": "server",
+                    "health": {"status": "Progressing"},
+                }
+            ],
+        },
+    }
+
+
+def authentik_documents():
+    return {
+        "projects/platform/authentik/Chart.yaml": (
+            "apiVersion: v2\nname: authentik\nversion: 1.0.0\n"
+            "dependencies:\n- name: cf-ingress\n  version: 0.1.0\n"
+            "  repository: file://../cf-ingress-library\n"
+        ),
+        "projects/platform/authentik/kustomization.yaml": (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources:\n- application.yaml\n"
+        ),
+        "projects/platform/cf-ingress-library/Chart.yaml": (
+            "apiVersion: v2\nname: cf-ingress\nversion: 0.1.0\n"
+        ),
+    }
+
+
+def test_owned_helm_platform_app_does_not_block_unrelated_pr():
+    state = fleet()
+    state["applications"].append(
+        owned_helm_app(
+            "authentik",
+            "projects/platform/authentik",
+            ["values.yaml", "values-gke.yaml"],
+        )
+    )
+    get = fleet_github(moved=["monolith"], documents=authentik_documents())
+    result = scoped_verify(["projects/monolith/app/main.py"], state, get=get)
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    result = scoped_verify(["projects/loom/deploy/values.yaml"], state, get=get)
+    assert result["verified"] is True
+    assert result["scoped_applications"] == []
+    assert result["scope"] == "no_live_application"
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "projects/platform/authentik/templates/deployment.yaml",
+        "projects/platform/authentik/Chart.yaml",
+        "projects/platform/authentik/values.yaml",
+        "projects/platform/authentik/values-gke.yaml",
+        "projects/platform/cf-ingress-library/templates/route.yaml",
+    ],
+)
+def test_owned_helm_platform_app_scopes_chart_values_and_library(changed):
+    state = fleet()
+    state["applications"].append(
+        owned_helm_app(
+            "authentik",
+            "projects/platform/authentik",
+            ["values.yaml", "values-gke.yaml"],
+        )
+    )
+    get = fleet_github(documents=authentik_documents())
+    result = scoped_verify([changed], state, get=get)
+    assert "authentik" in result["scoped_applications"]
+    assert result["application"] == "authentik"
+    assert result["resource"] == "Deployment/authentik/server"
+
+
+def test_owned_helm_gateway_scopes_parent_values_and_library():
+    state = fleet()
+    state["applications"].append(
+        owned_helm_app(
+            "context-forge-gateway",
+            "projects/mcp/context-forge-gateway/chart",
+            ["values.yaml", "../deploy/values.yaml", "../deploy/values-gke.yaml"],
+        )
+    )
+    documents = {
+        "projects/mcp/context-forge-gateway/chart/Chart.yaml": (
+            "apiVersion: v2\nname: context-forge\nversion: 3.2.0\n"
+            "dependencies:\n- name: homelab-library\n  version: 0.6.0\n"
+            "  repository: file://../../../shared/helm/homelab-library/chart\n"
+        ),
+        "projects/shared/helm/homelab-library/chart/Chart.yaml": (
+            "apiVersion: v2\nname: homelab-library\nversion: 0.6.0\n"
+        ),
+    }
+    get = fleet_github(documents=documents)
+    for changed in (
+        "projects/mcp/context-forge-gateway/chart/templates/deploy.yaml",
+        "projects/mcp/context-forge-gateway/deploy/values.yaml",
+        "projects/shared/helm/homelab-library/chart/templates/helper.tpl",
+    ):
+        result = scoped_verify([changed], state, get=get)
+        assert "context-forge-gateway" in result["scoped_applications"]
+    result = scoped_verify(["projects/loom/deploy/values.yaml"], state, get=get)
+    assert "context-forge-gateway" not in result["scoped_applications"]
+
+
+def test_inference_helm_shape_scopes_template_change():
+    state = fleet()
+    state["applications"].append(
+        owned_helm_app("inference", "projects/inference/deploy", ["values.yaml"])
+    )
+    documents = {
+        "projects/inference/deploy/Chart.yaml": (
+            "apiVersion: v2\nname: inference\nversion: 2.5.4\n"
+            "dependencies:\n- name: cf-ingress\n  version: 0.1.0\n"
+            "  repository: file://../../platform/cf-ingress-library\n"
+        ),
+        "projects/inference/deploy/kustomization.yaml": (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\nresources:\n- application.yaml\n"
+        ),
+        "projects/platform/cf-ingress-library/Chart.yaml": (
+            "apiVersion: v2\nname: cf-ingress\nversion: 0.1.0\n"
+        ),
+    }
+    get = fleet_github(documents=documents)
+    result = scoped_verify(
+        ["projects/inference/deploy/templates/deployment.yaml"], state, get=get
+    )
+    assert "inference" in result["scoped_applications"]
 
 
 def test_own_application_unhealthy_names_application_and_resource():
