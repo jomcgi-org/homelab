@@ -80,8 +80,9 @@ to the live value before running `--apply`.
 | `kargo-promotion-failed.yaml` | `k8s-logs` | no, logs not shipped yet |
 
 Each file's `description` says what the query measures and where its
-threshold came from. The thresholds were set from the 7 days of data to
-2026-09-30.
+threshold came from. The existing thresholds were set from the 7 days of data
+to 2026-09-30. The Ember demo probe threshold instead alerts on one final
+failure after retries.
 
 To enable the log triggers: once the collector ships pod logs, confirm the
 dataset slug and the `body`, `k8s.namespace.name` and `k8s.container.name`
