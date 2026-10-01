@@ -2574,8 +2574,11 @@ def enable(policy, monkeypatch):
 
 def test_legacy_policy_normalizes_to_single_primary_repo_entry(db, policy):
     validated = controls.validate_policy(dict(policy))
-    assert set(validated["repos"]) == {"owner/repo"}
-    entry = validated["repos"]["owner/repo"]
+    # Nothing is materialized into the stored policy: the primary entry is
+    # resolved from the global blocks at read time.
+    assert "repos" not in validated
+    assert set(controls.repos_map(validated)) == {"owner/repo"}
+    entry = controls.repo_entry(validated, "owner/repo")
     assert entry["enabled"] is True
     assert entry["paused"] is False
     assert entry["labels"] == validated["intake"]["labels"]
@@ -2712,7 +2715,7 @@ def test_repo_switches_refuse_unknown_repo_without_mutation(db, policy, monkeypa
 def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
     validated = controls.validate_policy(dict(policy))
     migrated = controls.migration_policy_with_loom(validated)
-    loom = migrated["repos"]["weave-hand/loom"]
+    loom = controls.repo_entry(migrated, "weave-hand/loom")
     assert loom["enabled"] is False
     assert loom["paused"] is False
     assert loom["max_per_day"] == controls.LOOM_STAGED_MAX_PER_DAY == 2
@@ -2723,7 +2726,13 @@ def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
         == controls.LOOM_CHARTER
         == controls.repo_charter("weave-hand/loom")
     )
-    assert migrated["repos"]["owner/repo"] == validated["repos"]["owner/repo"]
+    # The payload adds only the sparse loom entry; the primary is not copied
+    # in, so homelab keeps following the global blocks.
+    assert set(migrated["repos"]) == {"weave-hand/loom"}
+    assert migrated["repos"]["weave-hand/loom"] == controls.staged_loom_repo_entry()
+    assert controls.repo_entry(migrated, "owner/repo") == controls.repo_entry(
+        validated, "owner/repo"
+    )
     with pytest.raises(ValueError):
         controls.migration_policy_with_loom(migrated)
     enable(migrated, monkeypatch)
@@ -2732,6 +2741,115 @@ def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
     admission = admit_next("scheduler")
     assert admission["ok"] and admission["receipt"]["repo"] == "owner/repo"
     assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+
+
+def _merge_stored_policy(db, **changes):
+    """A direct JSON merge of the stored policy, as a SQL migration does."""
+    with Session(db) as session:
+        control = session.get(FactoryControl, "factory")
+        stored = json.loads(control.policy_json)
+        for key, value in changes.items():
+            if isinstance(value, dict) and isinstance(stored.get(key), dict):
+                stored[key] = {**stored[key], **value}
+            else:
+                stored[key] = value
+        control.policy_json = json.dumps(stored)
+        session.add(control)
+        session.commit()
+
+
+def test_homelab_entry_follows_global_policy_edits(db, policy, monkeypatch):
+    # The documented staged step posts the loom payload. The homelab entry
+    # must stay sparse afterwards, so later global edits still reach it.
+    policy["issue_numbers"] = [1, 2, 3, 4]
+    migrated = controls.migration_policy_with_loom(controls.validate_policy(policy))
+    enable(migrated, monkeypatch)
+    assert controls.status()["policy"]["repos"] == {
+        "weave-hand/loom": controls.staged_loom_repo_entry()
+    }
+    # Status, edit, re-post: the raised budget is what homelab admits under.
+    edited = controls.status()["policy"]
+    edited["task_budget_usd"] = 8.0
+    assert controls.set_control("configure", "operator", policy=edited)["ok"]
+    receive("owner/repo", 1)
+    first = admit_next("scheduler")
+    assert first["ok"] and first["policy"]["task_budget_usd"] == 8.0
+    with Session(db) as session:
+        assert session.get(SwarmTask, first["task_id"]).budget_usd == 8.0
+    # A direct JSON merge (the budget-raise migration pattern) reaches
+    # homelab admission too: budget, delivery lane cap and daily cap.
+    _merge_stored_policy(
+        db,
+        task_budget_usd=9.0,
+        max_tasks={"delivery": 3, "advisory": 0},
+        intake={"max_per_day": 7},
+    )
+    for number in (2, 3, 4):
+        receive("owner/repo", number)
+    second = admit_next("scheduler")
+    assert second["ok"] and second["policy"]["task_budget_usd"] == 9.0
+    third = admit_next("scheduler")
+    assert third["ok"], third
+    assert admit_next("scheduler")["reason"] == "wip_limit"
+    live = controls.status()["policy"]
+    homelab = controls.repo_entry(live, "owner/repo")
+    assert homelab["max_per_day"] == 7
+    assert homelab["max_tasks"] == {"delivery": 3, "advisory": 0}
+    assert homelab["task_budget_usd"] == 9.0
+    # Loom keeps its own staged cap and inherits the rest.
+    loom = controls.repo_entry(live, "weave-hand/loom")
+    assert loom["max_per_day"] == 2 and loom["task_budget_usd"] == 9.0
+
+
+def test_an_identical_repost_with_the_primary_named_empty_compares_equal(
+    db, policy, monkeypatch
+):
+    enable(policy, monkeypatch)
+    receive("owner/repo", 1)
+    assert admit_next("scheduler")["ok"]
+    named = {**policy, "repos": {"owner/repo": {}}}
+    assert controls.set_control("configure", "operator", policy=named)["ok"]
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+
+
+def test_a_loom_delivery_never_enters_homelab_landing(db, policy, monkeypatch):
+    policy["auto_merge"] = True
+    upcoming = controls.migration_policy_with_loom(controls.validate_policy(policy))
+    enable(upcoming, monkeypatch)
+    assert controls.set_control("enable_repo", "operator", repo="weave-hand/loom")["ok"]
+    live = controls.status()["policy"]
+    assert controls.repo_auto_merge_enabled(live, "owner/repo") is True
+    assert controls.repo_auto_merge_enabled(live, "weave-hand/loom") is False
+    receive("weave-hand/loom", 1)
+    admission = admit_next("scheduler")
+    assert admission["ok"] and admission["receipt"]["repo"] == "weave-hand/loom"
+    assert admission["policy"]["auto_merge"] is False
+    evidence = {
+        "pr_url": "https://github.com/weave-hand/loom/pull/3",
+        "head_sha": "a" * 40,
+        "review_session_id": 7,
+        "state": "ready_for_review",
+    }
+    task = admission["task_id"]
+    assert controls.finish_task(task, "succeeded", "scheduler", evidence=evidence)[
+        "state"
+    ] == ("succeeded")
+    assert controls.task_snapshot(task)["state"] == "succeeded"
+    with Session(db) as session:
+        assert session.get(SwarmTask, task).settled_at is not None
+    # A loom entry that asks for auto_merge still cannot land: landing
+    # serves only the primary repo.
+    armed = {
+        **live,
+        "repos": {
+            "weave-hand/loom": {
+                **live["repos"]["weave-hand/loom"],
+                "auto_merge": True,
+                "landing": "merge_queue",
+            }
+        },
+    }
+    assert controls.repo_auto_merge_enabled(armed, "weave-hand/loom") is False
 
 
 def test_repo_charter_is_empty_except_for_loom():

@@ -2269,3 +2269,34 @@ def test_without_the_flag_rescoped_work_is_admitted_as_before(db, monkeypatch):
     fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
     admitted = intake_loop.intake_tick(policy(), generation=2)
     assert [row["receipt"]["issue_number"] for row in admitted] == [11]
+
+
+def test_a_capped_loom_never_starves_homelab_delivery_intake(db, monkeypatch):
+    # The loom issue is older, so it ranks first in the delivery lane. Loom
+    # is at its daily cap, so the delivery slot must fall through to homelab
+    # rather than being taken and then skipped every tick.
+    fake_repo_pages(
+        monkeypatch,
+        {
+            "owner/repo": [issue(5, ["agent-ready"])],
+            "weave-hand/loom": [loom_issue(2, ["agent-ready"])],
+        },
+    )
+    with Session(db) as session:
+        for number in (90, 91):
+            intake_receipt(
+                session,
+                number,
+                repo="weave-hand/loom",
+                url=f"https://github.com/weave-hand/loom/issues/{number}",
+            )
+        session.commit()
+    admitted = intake_loop.intake_tick(multi_repo_policy(), generation=0)
+    assert [
+        (row["receipt"]["repo"], row["receipt"]["issue_number"]) for row in admitted
+    ] == [("owner/repo", 5)]
+    detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
+    assert detail["reason"] == "daily_cap"
+    assert detail["repos"] == {
+        "weave-hand/loom": {"admitted_today": 2, "max_per_day": 2}
+    }

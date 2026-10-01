@@ -306,6 +306,17 @@ other repo's queue. Admission checks lane room, the daily cap and the budget
 envelope against the receipt's own repo. Any entry that is not the legacy
 primary repo defaults to disabled.
 
+Entries are stored sparse: an entry holds only the keys an operator set, and
+every other key is read from the global block (`intake`, `max_tasks`,
+`task_budget_usd`, `turn_budget_usd`, `auto_merge`) at the moment it is
+used. Raising a global value, through `configure` or a direct JSON merge,
+therefore reaches every repo that did not override it, and the legacy
+primary never carries a frozen copy. Landing serves only the primary repo:
+a delivery on any other repo settles at ready for review, whatever its
+entry says about `auto_merge`. In the intake sweep a repo at its daily cap
+is skipped while each lane picks its candidate, so a capped repo never takes
+the delivery slot from another repo with room.
+
 The staged `weave-hand/loom` entry ships default-off. Enabling it is a
 separate operator act: post the payload from
 `migration_policy_with_loom` (staged daily cap 2, landing `none`, loom
@@ -328,7 +339,10 @@ the loom fragment (its GitHub Actions workflow with buck2, no merge queue,
 Staged loom enablement, in order: set
 `swarm.factoryGithubWebhookRepositories` to `weave-hand/loom`, post the
 `migration_policy_with_loom` payload through `configure`, confirm the loom
-entry is present and disabled, then enable it. Operational acceptance stays
+entry is present and disabled, then enable it. Adding the entry changes the
+policy, so `configure` refuses it with `generation_not_advanced` while any
+task is admitted or uncertain, and advancing the generation instead retires
+homelab's queued receipts. Post the payload while the lane is idle. Operational acceptance stays
 on the issue: enable with `max_per_day: 2`, submit one loom ready issue,
 and confirm a PR opens on loom with green CI and an independent review
 artifact.
