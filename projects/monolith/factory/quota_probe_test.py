@@ -389,6 +389,117 @@ def test_claude_unresolved_does_not_block_codex_probe(db, luna_model):
     assert probe.codex_claim(codex_payload(grants)) is not None
 
 
+def test_cleanup_advances_past_held_rows_and_bounds_unheld_guests(db):
+    with Session(db) as session:
+        rows = [
+            AgentSession(
+                local_session_id=prefix + str(index),
+                workspace="<guest>",
+                branch="main",
+                status="idle",
+                ember_session_id=f"guest-{index}",
+                result_receipt_fence_id="held" if index < 6 else None,
+            )
+            for index, prefix in enumerate(
+                [probe.PREFIX, probe.REVIEW_PREFIX, probe.CODEX_PREFIX] * 4
+            )
+        ]
+        session.add_all(rows)
+        session.commit()
+    # Six held rows precede six unheld rows, including a completed Codex guest.
+    assert probe._cleanup_candidates() == [
+        "guest-6",
+        "guest-7",
+        "guest-8",
+        "guest-9",
+        "guest-10",
+    ]
+
+
+@pytest.mark.parametrize("evidence", ["pending", "turn", "reservation"])
+@pytest.mark.parametrize("age, blocked", [(3599, True), (3600, True), (3601, False)])
+def test_codex_orphan_fence_ages_evidence(
+    db, luna_model, caplog, evidence, age, blocked
+):
+    assert probe.CODEX_ORPHAN_FENCE_SECONDS == 3600
+    assert probe.TURN_TIMEOUT_SECONDS == 120
+    assert probe.CODEX_ORPHAN_FENCE_SECONDS >= 4 * 900
+    with Session(db) as session:
+        row = AgentSession(
+            local_session_id=probe.CODEX_PREFIX + "orphan",
+            workspace="<guest>",
+            branch="main",
+            status="idle",
+            created_at=NOW - timedelta(days=3),
+            last_turn_at=NOW - timedelta(days=3),
+        )
+        session.add(row)
+        session.flush()
+        created_at = NOW - timedelta(seconds=age)
+        if evidence == "pending":
+            item = PendingMessage(
+                session_id=row.id, seq=1, message_text="OK", created_at=created_at
+            )
+        elif evidence == "turn":
+            item = AgentTurn(
+                session_id=row.id,
+                seq=1,
+                prompt="OK",
+                result_text="",
+                stop_reason="invocation_outcome_unknown",
+                created_at=created_at,
+            )
+        else:
+            item = AgentCapacityReservation(
+                session_id=row.id,
+                local_session_id=row.local_session_id,
+                pending_seq=1,
+                tier="probe",
+                state="uncertain",
+                created_at=created_at,
+            )
+        session.add(item)
+        session.commit()
+    with caplog.at_level("INFO", logger=probe.__name__):
+        key = probe.codex_claim(codex_payload({"codex-b": codex_grant(5000.0)}))
+    assert (key is None) is blocked
+    reason = "pending turn" if evidence == "pending" else "unknown outcome"
+    if blocked:
+        assert f"Codex quota probe suppressed: session 1 has {reason}" in caplog.text
+    else:
+        assert "Codex quota probe suppressed" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "status, guest, reason",
+    [
+        ("idle", "guest", "bound guest"),
+        ("running", None, "running"),
+    ],
+)
+def test_codex_bound_or_running_fence_never_ages_out(
+    db, luna_model, caplog, status, guest, reason
+):
+    with Session(db) as session:
+        session.add(
+            AgentSession(
+                local_session_id=probe.CODEX_PREFIX + "old",
+                workspace="<guest>",
+                branch="main",
+                status=status,
+                ember_session_id=guest,
+                created_at=NOW - timedelta(days=3),
+                last_turn_at=NOW - timedelta(days=3),
+            )
+        )
+        session.commit()
+    with caplog.at_level("INFO", logger=probe.__name__):
+        assert (
+            probe.codex_claim(codex_payload({"codex-b": codex_grant(5000.0)})) is None
+        )
+    assert f"Codex quota probe suppressed: session 1 has {reason}" in caplog.text
+
+
 def test_codex_tick_sends_unpinned_luna_probe(db, monkeypatch, luna_model):
     from factory.execution import execution_api, provider_quota
 
