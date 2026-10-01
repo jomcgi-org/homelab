@@ -1532,3 +1532,75 @@ def test_drain_relay_yields_to_a_result_committed_before_it(database, monkeypatc
     # The relay refused under the receipt lock and the final read adopted it.
     assert outcome["status"] == "adopted"
     assert len(requests) == 1
+def _cancel_mid_delivery(database, monkeypatch, *, posted: bool):
+    """Cancel the executor as a replica shutdown would, mid-delivery.
+
+    ``posted`` chooses whether the cancellation lands before the invoke POST
+    (the 2026-10-01 permit 10690 shape: the guest was created, no invoke was
+    sent) or while the POST is in flight.
+    """
+    sid = queue(database)
+
+    async def scenario():
+        reached = asyncio.Event()
+
+        async def handler(request):
+            reached.set()
+            await asyncio.Event().wait()
+
+        fake_http(monkeypatch, handler, working_guest(sid))
+        if not posted:
+            real = mcp._transport.deliver
+
+            async def deliver_blocked_before_post(*args, **kwargs):
+                reached.set()
+                await asyncio.Event().wait()
+                return await real(*args, **kwargs)
+
+            monkeypatch.setattr(mcp._transport, "deliver", deliver_blocked_before_post)
+        task = asyncio.create_task(mcp._execute_pending_message(sid))
+        await asyncio.wait_for(reached.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 10)
+
+    asyncio.run(scenario())
+    return sid
+
+
+def test_cancelled_executor_that_never_posted_records_not_invoked(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
+    sid = _cancel_mid_delivery(database, monkeypatch, posted=False)
+    state = snapshot(database, sid)
+    assert state["pending"] == []
+    assert len(state["turns"]) == 1
+    turn = state["turns"][0]
+    assert turn["terminal_reason"] == "error"
+    assert turn["stop_reason"] != UNKNOWN_INVOCATION
+    assert turn["cost_usd"] is None
+    recovery = json.loads(turn["usage_json"])["recovery"]
+    assert recovery["invocation_phase"] == "not_invoked"
+    # Settled at once with cessation confirmed: nothing is running for it.
+    assert [row["state"] for row in state["permits"]] == ["settled"]
+    assert state["permits"][0]["outcome"] == "not_invoked"
+    assert state["session"]["status"] == "warn"
+
+
+def test_cancelled_executor_that_never_posted_is_unknown_with_the_record_off(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "false")
+    sid = _cancel_mid_delivery(database, monkeypatch, posted=False)
+    assert_unknown(database, sid)
+
+
+def test_cancelled_executor_with_a_post_in_flight_is_never_not_invoked(
+    database, monkeypatch
+):
+    """A POST that may have reached the guest keeps today's conservative hold."""
+    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
+    sid = _cancel_mid_delivery(database, monkeypatch, posted=True)
+    state = assert_held(database, sid, "replica_shutdown")
+    assert state["permits"][0]["outcome"] is None

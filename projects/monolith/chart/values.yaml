@@ -160,6 +160,17 @@ agents:
     # Requires responseLostRecoveryEnabled and, for factory nodes,
     # swarm.factoryDrainRelayContinuationEnabled.
     responseLostDrainRelayEnabled: false
+    # When a replica shutdown cancels a turn's executor before it sent the
+    # invoke POST (the transport marks every POST attempted before it is
+    # sent), record the turn not_invoked at once, under a bounded lock wait,
+    # so the permit settles at zero cost instead of as an unknown outcome.
+    executorNotInvokedRecordEnabled: false
+    # Supervision backstop for kg, project and interactive permits: settle an
+    # uncertain permit whose bound guest the control plane shows never ran an
+    # invoke (turn_seq 0, no invoke stamp or stop record) and for which no
+    # result receipt was ever minted. Requires resultReceiptsEnabled and
+    # uncertainPermitSupervisionEnabled.
+    neverInvokedGuestSettlementEnabled: false
     # Settle a non-factory permit when the invoke failed with the guest's own
     # 4xx/5xx answer, which EmberVM marks with x-ember-invoke-outcome:
     # guest_response. The turn ended inside the guest, so nothing is still
