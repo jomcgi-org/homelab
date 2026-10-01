@@ -6452,6 +6452,11 @@ py_test(
     ],
 )
 
+bdd_test(
+    name = "grimoire_character_assignment_postgres_test",
+    srcs = ["grimoire/character_assignment_postgres_test.py"],
+)
+
 py_test(
     name = "grimoire_router_test",
     srcs = ["grimoire/router_test.py"],

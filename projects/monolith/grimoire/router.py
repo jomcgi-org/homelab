@@ -833,9 +833,13 @@ def assign_member_character(
 ) -> MemberView:
     _require_dm(session, campaign_id, email)
     session.exec(
-        select(Campaign).where(Campaign.id == campaign_id).with_for_update()
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update(key_share=True)
     ).one()
     # Self creation locks this row too; serialize against it before reading the link.
+    # FOR NO KEY UPDATE still serializes concurrent PUTs but does not block
+    # the FOR KEY SHARE a concurrent self-create insert takes on this row.
     member = session.exec(
         select(CampaignMember)
         .where(
