@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/broker"
@@ -94,6 +96,12 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	refreshAge, err := configuredCodexUsageRefresh()
+	if err != nil {
+		return err
+	}
 	listeners, err := configuredListeners()
 	if err != nil {
 		return err
@@ -164,21 +172,23 @@ func run(logger *slog.Logger) error {
 		tokenRequests: tokenRequests,
 	}
 	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
+	refresher := newCodexUsageRefresher(s, refreshAge, env("TOKENBROKER_CODEX_USAGE_BASE_URL", "https://chatgpt.com/backend-api"), m.CodexUsage)
+	go refresher.run(ctx)
 	plaintextServer := &http.Server{
 		Addr:              listeners.listenAddr,
 		Handler:           s.plaintextMux(listeners),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	if listeners.tlsListenAddr == "" {
-		logger.Info("token broker listening", "addr", listeners.listenAddr)
-		return plaintextServer.ListenAndServe()
-	}
+	defer plaintextServer.Close()
 
 	serverErrors := make(chan error, 2)
 	go func() {
 		logger.Info("token broker plaintext listener started", "addr", listeners.listenAddr)
 		serverErrors <- fmt.Errorf("plaintext listener stopped: %w", plaintextServer.ListenAndServe())
 	}()
+	if listeners.tlsListenAddr == "" {
+		return waitForListener(ctx, serverErrors)
+	}
 
 	source, err := waitForX509Source(x509SourceTimeout, newWorkloadX509Source)
 	if err != nil {
@@ -201,12 +211,22 @@ func run(logger *slog.Logger) error {
 			tlsconfig.AuthorizeOneOf(listeners.spiffeClientIDs...),
 		),
 	}
+	defer mtlsServer.Close()
 
 	go func() {
 		logger.Info("token broker SPIFFE mTLS listener started", "addr", listeners.tlsListenAddr)
 		serverErrors <- fmt.Errorf("SPIFFE mTLS listener stopped: %w", mtlsServer.ListenAndServeTLS("", ""))
 	}()
-	return <-serverErrors
+	return waitForListener(ctx, serverErrors)
+}
+
+func waitForListener(ctx context.Context, serverErrors <-chan error) error {
+	select {
+	case err := <-serverErrors:
+		return err
+	case <-ctx.Done():
+		return nil
+	}
 }
 
 func (s *server) plaintextMux(listeners listenerConfig) *http.ServeMux {
@@ -452,6 +472,14 @@ func (s *server) acceptQuota(provider, grant string, w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusBadRequest, map[string]string{"reason": "invalid_observation"})
 		return
 	}
+	if err := s.recordQuota(provider, grant, obs, receivedAt); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"reason": "quota_persistence_failed"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) recordQuota(provider, grant string, obs quota.Observation, receivedAt time.Time) error {
 	var err error
 	if grant != "" {
 		err = s.quotaStore.PutGrant(grant, provider, obs, receivedAt)
@@ -460,11 +488,10 @@ func (s *server) acceptQuota(provider, grant string, w http.ResponseWriter, r *h
 	}
 	if err != nil {
 		s.logger.Error("tokenbroker quota observation persistence failed", "provider", provider, "grant", grant, "err", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"reason": "quota_persistence_failed"})
-		return
+		return err
 	}
 	s.logger.Info("tokenbroker quota observation accepted", "provider", provider, "grant", grant, "status", obs.Status, "windows", len(obs.Windows))
-	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 func (s *server) grantsHandler(mtlsListener, mtlsEnabled bool) http.HandlerFunc {

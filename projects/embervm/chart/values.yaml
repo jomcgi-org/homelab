@@ -411,6 +411,9 @@ service:
 
 tokenBroker:
   enabled: true
+  # Per-grant Codex usage observation refresh age in seconds. Zero disables
+  # inference-free GET /wham/usage reads; enabled brokers check every 60 seconds.
+  codexUsageRefreshSeconds: 0
   plaintext:
     # Final retirement gate for credential and quota routes on port 8080.
     # Health and metrics stay operational. Keep false through staged mTLS
