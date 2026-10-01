@@ -1388,7 +1388,7 @@ cdHealth:
   # `chart_repo_suffix` selects that chart out of a Freight's repoURL. The
   # optional `chart_path` lets deployment observations resolve the exact bot
   # write-back commit without changing this advisory check.
-  # clock stays "oldest unpromoted Freight" per app, and the whole component
+  # The clock stays "oldest unpromoted Freight" per app, and the whole component
   # stays advisory: it pages nobody. Empty (the default) keeps the chart inert,
   # and the check then reports a fault rather than a vacuous healthy, because
   # a signal watching nothing must not read as green. Adding a pipeline in the
@@ -1404,6 +1404,11 @@ cdHealth:
 # separately authorized. This switch does not alter cdHealth or podRestartWatch.
 deploymentObservations:
   enabled: false
+  # Bounds one observation cycle. The cycle runs after the cd probe latch is
+  # written, so it cannot delay the latch itself, but it plus probeIntervalSeconds
+  # must stay under the public reader's 750s staleness constant
+  # (home/module.py _CD_STALENESS_S), or the next latch write could land late.
+  timeoutSeconds: 120
 
 # Private-tier pod restart watcher. Armed 2026-09-16 after chart 0.505.0 rolled
 # out with the loop dark and the backend came up clean: leader election active,

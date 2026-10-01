@@ -491,6 +491,8 @@ spec:
               value: {{ .Values.cdHealth.probeEnabled | quote }}
             - name: DEPLOYMENT_OBSERVATIONS_ENABLED
               value: {{ .Values.deploymentObservations.enabled | quote }}
+            - name: DEPLOYMENT_OBSERVATIONS_TIMEOUT_S
+              value: {{ .Values.deploymentObservations.timeoutSeconds | quote }}
             # Last-seen restart counts for live pods. This loop is dark by
             # default and must be enabled separately after live verification.
             - name: POD_RESTART_WATCH_ENABLED

@@ -202,3 +202,78 @@ def test_multichunk_facts_require_full_coverage(tmp_path):
         assert merge_clones(session) == [
             {"survivor": "complete", "invalidated": ["clone"]}
         ]
+
+
+def test_clone_merge_never_touches_deployment_observations(tmp_path):
+    """Observations are identical by construction; only the ordinary pair merges."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import Session, SQLModel, create_engine, select
+    from knowledge.gardener import merge_clones
+    from knowledge.models import (
+        AtomRawProvenance,
+        Chunk,
+        Dispute,
+        Note,
+        NoteLink,
+        RawInput,
+    )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'observation-clones.db'}"
+    ).execution_options(schema_translate_map={"knowledge": None})
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            Note.__table__,
+            Chunk.__table__,
+            RawInput.__table__,
+            AtomRawProvenance.__table__,
+            Dispute.__table__,
+            NoteLink.__table__,
+        ],
+    )
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    with Session(engine) as session:
+        for key, source, scope, valid_until in [
+            ("obs-a", "deployment-observation", "environment:homelab", future),
+            ("obs-b", "deployment-observation", "environment:homelab", future),
+            ("plain-a", None, "repo:acme/repo", None),
+            ("plain-b", None, "repo:acme/repo", None),
+        ]:
+            note = Note(
+                note_id=key,
+                path=key,
+                title=key,
+                content_hash=key,
+                type="fact",
+                scope=scope,
+                source=source,
+                valid_until=valid_until,
+                confidence=0.9 if key.endswith("-a") else 0.8,
+                verification_state="verified",
+            )
+            session.add(note)
+            session.flush()
+            session.add(
+                Chunk(
+                    note_fk=note.id,
+                    chunk_index=0,
+                    chunk_text=key,
+                    embedding=[1.0] + [0.0] * 1023,
+                )
+            )
+        session.commit()
+
+        plans = merge_clones(session)
+        assert plans == [{"survivor": "plain-a", "invalidated": ["plain-b"]}]
+
+        assert merge_clones(session, apply=True) == plans
+        session.expire_all()
+        states = {
+            note.note_id: note.verification_state
+            for note in session.exec(select(Note)).all()
+        }
+        assert states["obs-a"] == "verified"
+        assert states["obs-b"] == "verified"
+        assert states["plain-b"] == "invalidated"
