@@ -18,6 +18,14 @@ port, binary and identity. Nothing else in the cluster calls Context Forge's
 MCP endpoint. Its one in-cluster caller is the team-mapping CronJob, which uses
 the REST API with an admin JWT it mints itself.
 
+The direct `mcp.jomcgi.dev` route is staged, not live until the hub value flips
+(#3832). The monolith chart gates it on `cfIngress.mcp.enabled: false` and uses
+the private Gateway. Envoy serves RFC 9728 metadata at the exact well-known path
+and forwards `/mcp` unchanged to the monolith Service's API port, 8000.
+`PrincipalMiddleware` verifies the bearer; the route carries no ingress-tier
+label or `SecurityPolicy`. The values-only cutover pairs enabling this route
+with Context Forge's `httpRoute.rootMcp.enabled: false`.
+
 ```
 Claude.ai / Claude Code ──► Cloudflare ──► Envoy ──► Context Forge ──► monolith /mcp (port 8000)
                                                      (mcp ns, hub)      registrations: monolith (enabled)
@@ -479,7 +487,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | State | #3832, #3833 | not started |
+| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | ADR agents/059, Accepted 2026-09-11, execution #3832 | #3832, #3833 | chart route staged default-off in the monolith chart; live cutover and decommission remain open |
 | Guest egress tokens are swapped per tier so each tier reaches only its allow-listed tool set, and guests cannot reach the main MCP port | Routing | #3838 | not started |
 | `monolith-agents` federates upstream MCP servers (BuildBuddy, Honeycomb, GitHub, and more) as namespaced tools on its own endpoint | Tool catalogue refresh | #5636 | not started |
 
@@ -500,4 +508,4 @@ Rationale only. None of these describes current state.
 | `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | deleted |
 | `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | deleted |
 | `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 retains the gated direction, and no monolith broker is selected or shipped | deleted |
-| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Draft, not executed: Context Forge is still the front door, `mcp-friends` still advertises no DCR endpoint (2026-09-05), the monolith serves no RFC 9728 document. #3832, #3833 | deleted |
+| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11, execution #3832; chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door until #3832; decommission is #3833 | deleted |

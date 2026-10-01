@@ -1151,6 +1151,14 @@ not be the party that asserts its provenance.
 
 ## 7. MCP surface
 
+The direct `mcp.jomcgi.dev` route is staged, not live until the hub value flips
+(#3832). `cfIngress.mcp.enabled` defaults to false. When enabled, the chart uses
+the private Gateway to serve RFC 9728 metadata at
+`/.well-known/oauth-protected-resource/mcp` and forward `/mcp` unchanged to the
+monolith Service's API port, 8000. `PrincipalMiddleware` verifies the bearer
+without an ingress-tier label or `SecurityPolicy` on this route. The values-only
+cutover pairs enabling it with Context Forge's `httpRoute.rootMcp.enabled: false`.
+
 Two MCP surfaces exist. Context Forge remains the front door for people and
 hosted agents and stores the private monolith `/mcp` server as a registered
 streamable-HTTP upstream. That mount is one shared FastMCP instance populated

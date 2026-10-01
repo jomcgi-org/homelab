@@ -2019,6 +2019,16 @@ imgproxySigning:
     itemPath: ""
 
 cfIngress:
+  # Staged for #3832. The live flip is a values-only change paired with
+  # Context Forge's httpRoute.rootMcp.enabled: false.
+  mcp:
+    enabled: false
+    hostname: mcp.jomcgi.dev
+    authorizationServer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
+    scopes:
+      - openid
+      - profile
+      - email
   # The legacy ships.jomcgi.dev -> /app/ships redirect. Gated so a second
   # deployment of this chart (dev) does not claim a production hostname on the
   # shared cloudflare-ingress Gateway. True here, false in dev's overlay.
