@@ -70,6 +70,23 @@ http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_
 
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 
+# Loom 0.2.0 templates from weave-hand/loom#691. Package publication is an
+# operator check in #6605; the unregistered hub Application stays default-off.
+http_archive(
+    name = "loom_chart_0_2_0",
+    build_file_content = """
+exports_files(["Chart.yaml"], visibility = ["//visibility:public"])
+filegroup(
+    name = "chart_files",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "ddbfeafb4173365593c31dc63b33c7c4ec7a0197a4ebaba460cf614dd68d866d",
+    strip_prefix = "loom-15b16649e851331b9f912e87666e724747f4c32d/deploy/chart/chart",
+    urls = ["https://github.com/weave-hand/loom/archive/15b16649e851331b9f912e87666e724747f4c32d.tar.gz"],
+)
+
 http_archive(
     name = "kubernetes_json_schema_1_36_3",
     build_file_content = """

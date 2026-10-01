@@ -1,0 +1,97 @@
+# Bump all four image tags together to one upstream main sha-<short>, keep
+# digest: "", and keep the chart pin's templates in step with that commit.
+# Chart 0.2.0 and sha-e6ca13c publication in ghcr remain #6605 live checks.
+ingest:
+  image:
+    repository: ghcr.io/weave-hand/loom-ingest
+    tag: sha-e6ca13c
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+queryApi:
+  image:
+    repository: ghcr.io/weave-hand/loom-query-api
+    tag: sha-e6ca13c
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+engine:
+  image:
+    repository: ghcr.io/weave-hand/loom-engine
+    tag: sha-e6ca13c
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+
+worker:
+  # At e6ca13c, .github/workflows/release.yml has no main-push trigger;
+  # it delegates main publishing to buildbuddy.yaml. Keep the fallback at zero
+  # until #6605 verifies the pinned worker image, then enable the queue drainer.
+  replicas: 0
+  image:
+    repository: ghcr.io/weave-hand/loom-worker
+    tag: sha-e6ca13c
+    digest: ""
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+
+imagePullSecrets:
+  - name: ghcr-imagepull-secret
+serviceAccount:
+  create: true
+
+# Avoid the ArgoCD hook/health deadlock. sqlx serialises on-boot migrations.
+migrations:
+  mode: onBoot
+postgres:
+  enabled: false
+  external:
+    existingSecret: loom-pg-app
+    keys:
+      host: host
+      port: port
+      user: username
+      password: password
+      dbname: dbname
+
+objectStore:
+  s3:
+    enabled: true
+    bucket: loom
+    prefix: ""
+    endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+    region: auto
+    port: 443
+    credentialsSecret: loom-s3-credentials
+    # OnePasswordItem preserves item field names; map them at the chart edge.
+    credentialsKeys:
+      accessKeyId: access-key-id
+      secretAccessKey: secret-access-key
+
+# Match the homelab convention: no chart-managed NetworkPolicy.
+networkPolicy:
+  enabled: false
+ui:
+  apiBase: /app/loom

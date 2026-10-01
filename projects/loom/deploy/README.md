@@ -1,15 +1,56 @@
-# loom Postgres deployment
+# loom hub deployment
 
-Loom source lives in `weave-hand/loom`. This directory holds only the cluster
-wiring for loom's Postgres control plane: the `loom` namespace, `loom-pg` CNPG
-cluster, daily backup, 1Password credential reference and metrics Service.
+Loom source lives in `weave-hand/loom`. This directory holds the cluster
+wiring for loom and its Postgres control plane: the `loom` namespace, `loom-pg`
+CNPG cluster, daily backup, 1Password references and metrics Service.
 Loom runs its own sqlx migrations and needs no Postgres extensions. CNPG creates
 the `loom-pg-app` Secret for application access.
 
-This configuration is default-off. No Application or `projects/gke-apps`
-entry references it. #6603 adds the Application; #6605 enables it. The manifest
-guard checks the kustomize resource set, and Linux CI validates each resource
-against the pinned Kubernetes and operator schemas.
+This configuration is default-off. The Application at `projects/gke-apps/loom`
+is absent from `projects/gke-apps/kustomization.yaml`. #6605 enables it after
+the operator checks below. Its three sources combine the upstream chart, this
+repo's values and this directory's kustomize manifests. The manifest guard
+checks that resource set, and Linux CI renders the pinned chart and validates
+every resource against the pinned Kubernetes and operator schemas.
+
+## Chart and images
+
+The Application pins chart `loom` to `0.2.0` from
+`ghcr.io/weave-hand/charts` (weave-hand/loom#691). Version `0.1.0` has the June
+MVP templates and lacks the required engine, worker, UI, migrations, S3 and
+image-pull-secret values. `0.0.0-edge` and `bleeding-edge` are forbidden by
+#6603. The hermetic render uses upstream source commit
+`15b16649e851331b9f912e87666e724747f4c32d`, with its archive checksum pinned
+in `MODULE.bazel`. This source declares chart version `0.2.0`; package
+publication remains an operator check.
+
+All four images use `sha-e6ca13c` with `digest: ""`. Bump all four tags
+together to one upstream main `sha-<short>` and keep the chart pin's templates
+in step with that commit. `worker.replicas` stays at zero: at `e6ca13c`,
+`.github/workflows/release.yml` delegates main-push publishing to
+`buildbuddy.yaml` and has no main-push trigger. #6605 verifies the worker image
+before enabling the queue drainer. The rendered worker pod still has explicit
+worker and engine resources.
+
+Loom uses the CNPG-generated `loom-pg-app` Secret. On-boot migrations avoid
+the ArgoCD hook/health deadlock. The R2 warehouse is `s3://loom`, region `auto`,
+on the existing account endpoint. The operator syncs `r2-s3-credentials` to
+`loom-s3-credentials`; chart values map its `access-key-id` and
+`secret-access-key` fields. The chart creates the `loom` ServiceAccount with
+`ghcr-imagepull-secret`. No hand-written ServiceAccount or S3 Secret is needed.
+The private gateway serves the UI and API at `private.jomcgi.dev/app/loom/`,
+rewriting the prefix and redirecting the bare path to its trailing slash.
+
+## Operator checks (#6605)
+
+- Confirm chart `0.2.0` and all four `sha-e6ca13c` images exist in ghcr. The
+  agent token cannot read packages; CI validates source rendering only.
+- Confirm `argocd-repo-weave-hand-charts` and `r2-s3-credentials` exist and sync
+  into `repo-weave-hand-charts` in `argocd` and `loom-s3-credentials` in `loom`.
+  Confirm the existing pull item syncs `ghcr-imagepull-secret` in `loom`.
+- Confirm the R2 bucket `loom` exists before enabling the Application.
+- Enable the Application through Git, enable the worker after its image check,
+  then verify rollout, migrations, queue draining and the private UI/API.
 
 ## Backup credential
 

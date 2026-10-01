@@ -1,4 +1,4 @@
-"""Guard the default-off loom Postgres manifest set without cluster access."""
+"""Guard the default-off loom raw manifest set without cluster access."""
 
 import os
 import re
@@ -15,6 +15,10 @@ MANIFESTS = [
     "cnpg-scheduledbackup.yaml",
     "onepassworditem-cnpg-backup-gcs.yaml",
     "cnpg-metrics-service.yaml",
+    "httproute.yaml",
+    "image-pull-secret.yaml",
+    "onepassworditem-r2.yaml",
+    "argocd-repo-cred.yaml",
 ]
 
 
@@ -23,6 +27,7 @@ def documents():
     return {
         path.name: list(yaml.safe_load_all(path.read_text()))
         for path in DEPLOY.glob("*.yaml")
+        if path.name != "values.yaml"
     }
 
 
@@ -31,16 +36,20 @@ def cluster(documents):
     return documents["cnpg-cluster.yaml"][0]
 
 
-def test_kustomization_has_exact_complete_single_document_resource_set(documents):
-    for parsed in documents.values():
-        assert len(parsed) == 1
-        assert isinstance(parsed[0], dict)
+def test_kustomization_has_exact_complete_resource_set(documents):
+    for name, parsed in documents.items():
+        assert len(parsed) == (2 if name == "httproute.yaml" else 1)
+        assert all(isinstance(document, dict) for document in parsed)
     kustomization = documents["kustomization.yaml"][0]
     assert kustomization["apiVersion"] == "kustomize.config.k8s.io/v1beta1"
     assert kustomization["kind"] == "Kustomization"
     assert kustomization["resources"] == MANIFESTS
     assert all((DEPLOY / name).is_file() for name in MANIFESTS)
     assert set(documents) - {"kustomization.yaml"} == set(MANIFESTS)
+    assert {path.name for path in DEPLOY.glob("*.yaml")} == set(MANIFESTS) | {
+        "kustomization.yaml",
+        "values.yaml",
+    }
 
 
 def test_resources_belong_to_loom_namespace(documents):
@@ -49,9 +58,10 @@ def test_resources_belong_to_loom_namespace(documents):
     assert namespace["kind"] == "Namespace"
     assert namespace["metadata"]["name"] == "loom"
     for name in MANIFESTS:
-        document = documents[name][0]
-        if document["kind"] != "Namespace":
-            assert document["metadata"]["namespace"] == "loom"
+        for document in documents[name]:
+            if document["kind"] != "Namespace":
+                expected = "argocd" if name == "argocd-repo-cred.yaml" else "loom"
+                assert document["metadata"]["namespace"] == expected
 
 
 def test_cluster_identity_and_pg17_system_image(cluster):
