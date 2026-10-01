@@ -510,13 +510,16 @@ def test_rootfs_remote_retention_is_default_off_with_current_inventory() -> None
     "values_names",
     [("PROD_VALUES",), ("PROD_VALUES", "GKE_VALUES")],
 )
+@pytest.mark.parametrize("in_pod_bake", [False, True])
 def test_rootfs_parallel_memory_declarations_match_rendered_workloads(
     values_names: tuple[str, ...],
+    in_pod_bake: bool,
 ) -> None:
     rendered = _render(
         "rootfs-memory",
         [Path(os.environ[name]) for name in values_names],
-        ["rootfsBuilder.parallelEnabled=true", "bricks.enabled=true"],
+        ["rootfsBuilder.parallelEnabled=true", "bricks.enabled=true",
+         f"rootfsBuilder.inPodBake.enabled={str(in_pod_bake).lower()}"],
     )
     declared_by_image = {}
     for document in yaml.safe_load_all(rendered):
@@ -531,13 +534,22 @@ def test_rootfs_parallel_memory_declarations_match_rendered_workloads(
                 int(memory), declared_by_image.get(image_ref, int(memory))
             )
 
-    first_driver = next(
-        container
-        for _name, pod_spec in _noded_pod_specs(rendered)
-        for container in pod_spec.get("initContainers", [])
-        if container["name"] == "build-all-rootfs"
-    )
-    tuples = _driver_tuples(first_driver)
+    if in_pod_bake:
+        desired_set = next(
+            doc["data"]["rootfs-desired-set"]
+            for doc in yaml.safe_load_all(rendered)
+            if doc and doc.get("kind") == "ConfigMap"
+            and doc["metadata"]["name"].endswith("-rootfs-builder")
+        )
+        tuples = [line.split("\t") for line in desired_set.splitlines()]
+    else:
+        first_driver = next(
+            container
+            for _name, pod_spec in _noded_pod_specs(rendered)
+            for container in pod_spec.get("initContainers", [])
+            if container["name"] == "build-all-rootfs"
+        )
+        tuples = _driver_tuples(first_driver)
     planned_by_image = {image: memory for _name, image, _path, memory in tuples}
     for image_ref, memory in declared_by_image.items():
         assert planned_by_image[image_ref] == str(memory)

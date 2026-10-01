@@ -90,7 +90,8 @@ data:
       if [ -z "$child_pid" ] && ! "$retry_later"; then
         tuples=()
         # Space is intentionally not IFS: all four fields are tab-separated.
-        while IFS=$'\t' read -r name image path memory; do
+        for line in "${desired_lines[@]}"; do
+          IFS=$'\t' read -r name image path memory <<< "$line"
           [ -n "$name" ] || continue
           if [[ "$memory" =~ ^[1-9][0-9]*$ ]] && [ -n "$class_ceiling_mib" ] &&
             [ "$memory" -gt "$class_ceiling_mib" ]; then continue; fi
@@ -99,7 +100,7 @@ data:
           touch -- "$path.pending"
           pending_paths+=("$path")
           tuples+=("$name" "$image" "$path" "$memory")
-        done < <(printf '%s\n' "${desired_lines[@]}")
+        done
         if [ "${#tuples[@]}" -gt 0 ]; then
           /bin/bash "$driver" "$max_concurrency" "$class_ceiling_mib" "${tuples[@]}" &
           child_pid="$!"
