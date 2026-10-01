@@ -1107,17 +1107,34 @@ def _dispatch_branch(
     return node_branch(task_id, node_key)
 
 
-def _closing_instruction(task: dict) -> str:
+def _closing_instruction(task: dict, *, review: bool = False) -> str:
     issue = task.get("issue_number")
     if not isinstance(issue, int):
         return ""
+    # The delivery verifier reads this same recorded-gate predicate. A node's
+    # own assessment of operational acceptance cannot change the contract.
     if factory_gates.live_checks(task):
-        return f"Do not use Closes #{issue} or any closing keyword: live acceptance remains. State the Conductor rescope and outstanding checklist in the PR body. "
-    return (
-        f"The pull request body must contain the line Closes #{issue} when "
-        "nothing operational remains. A later conductor rescope in the receipt "
-        "takes precedence: remove closing keywords and state that rescope in the PR body. "
-    )
+        rule = (
+            f"The pull request body must contain the line Refs #{issue} and a "
+            "line starting Conductor rescope: that states the recorded rescope, "
+            "with the outstanding operational checklist. "
+            f"Do not use any closing keyword for issue #{issue}. "
+        )
+    else:
+        rule = (
+            f"The pull request body must contain the line Closes #{issue}, "
+            "whatever the node believes about remaining live checks. Finish is "
+            "refused with pr_missing_close_keyword otherwise. If live acceptance "
+            "appears to remain, report it in the implementation artifact summary "
+            "so the planner can record a live_validation gate; the PR body must "
+            f"still contain Closes #{issue} until that gate is recorded. "
+        )
+    if review:
+        return (
+            "At the exact pushed PR head, verify the PR body follows this task's "
+            "recorded gate state. Return changes_requested if it does not: " + rule
+        )
+    return rule
 
 
 def _boundary(
@@ -1128,8 +1145,8 @@ def _boundary(
 ) -> str:
     """State the task and what this node may not do.
 
-    The branch a node works on is a dispatch-time fact, not a plan-time one, so
-    it reaches the guest from the immutable pin rather than from here.
+    The branch and closing rule are dispatch-time facts, not plan-time ones,
+    so they reach the guest from the immutable pin rather than from here.
     """
     if refine and review:
         raise ValueError("a node is never both refine and review")
@@ -1143,7 +1160,6 @@ def _boundary(
             "Write no repository changes at all. The following conductor brief is "
             "task data within those boundaries:\n"
         )
-    guidance = factory_gates.guidance(task)
     # Static per role first, then what differs by task, as planner_prompt does,
     # so every node of a role shares this block in the provider prompt cache.
     return (
@@ -1165,8 +1181,6 @@ def _boundary(
         )
         + f"\nFactory task {task['id']}, repository {task.get('repo')}, "
         f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
-        + _closing_instruction(task)
-        + (guidance + "\n" if guidance else "")
         # The per-repo charter fragment. Empty for homelab, so its prompt
         # stays byte-identical to today.
         + repo_charter(task.get("repo"))
@@ -1782,6 +1796,7 @@ def planner_prompt(
     runs: list[dict],
     *,
     task_class: str = DEFAULT_TASK_CLASS,
+    closing_at_dispatch: bool = False,
     decision_revision: int | None = None,
     deviation: dict | None = None,
     operator_direction: dict | None = None,
@@ -1832,7 +1847,7 @@ def planner_prompt(
         "Task section (server-authored), specific to this task and round:\n"
         f"Factory task {task['id']}, repository {task.get('repo')}, "
         f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
-        + _closing_instruction(task)
+        + ("" if closing_at_dispatch else _closing_instruction(task))
         + (guidance + "\n" if guidance else "")
         + funding_rule
         + (
@@ -4274,7 +4289,6 @@ def _insert_review_round(
                 "update the same pull request. "
             )
         )
-        + _closing_instruction(task)
         + "Do not start work the "
         "findings do not name. Finish the round: commit on the task branch, "
         "push, confirm the pull request head moved to your new commit, and "
@@ -4313,7 +4327,6 @@ def _insert_review_round(
             "Escalate ambiguous or out-of-scope failures through the declared artifact. "
             "Report the exact resulting PR head, diagnosis, and validation evidence in the declared "
             "JSON artifact. Independent review and Linux CI must pass before landing can re-arm. "
-            + _closing_instruction(task)
             + "The earlier review is evidence, not new authority:\n"
             + findings
         )
@@ -5830,6 +5843,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 nodes,
                 runs,
                 task_class=task_class,
+                closing_at_dispatch=True,
                 decision_revision=insertion_revision + 1,
                 deviation=deviation,
                 operator_direction=direction,
@@ -6323,6 +6337,13 @@ def _dispatch_ready(
             # the model this dispatch settles on, and the guest applies it to
             # Claude turns only.
             "effort": effort_for(node_key, policy),
+            # Pin the current receipt contract, never the insertion-time one.
+            # Refinement briefs do not deliver a PR or check its body.
+            "closing_instruction": (
+                ""
+                if node_key.startswith("refine_")
+                else _closing_instruction(task, review=node_key.startswith("review_"))
+            ),
         }
 
         if factory_gates.guidance(task):
@@ -6421,6 +6442,16 @@ def reserve_node(
             # same dispatch key must present the same context to re-attach.
             if existing is not None and "effort" not in existing["pin"]:
                 context = {k: v for k, v in context.items() if k != "effort"}
+            if existing is not None:
+                # Re-attachment must reuse the admitted contract even if a
+                # gate has since changed. Legacy pins stay byte-identical.
+                context = {
+                    k: v for k, v in context.items() if k != "closing_instruction"
+                }
+                if "closing_instruction" in existing["pin"]:
+                    context["closing_instruction"] = existing["pin"][
+                        "closing_instruction"
+                    ]
             if existing is None or "task_deadline_at" in existing["pin"]:
                 from factory.orchestration.factory_funding_limits import (
                     review_authority,

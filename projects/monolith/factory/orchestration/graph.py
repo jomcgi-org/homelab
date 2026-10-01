@@ -59,6 +59,7 @@ _CONTEXT_FIELDS = frozenset(
         "retry_context",
         "task_deadline_at",
         "effort",
+        "closing_instruction",
     )
 )
 
