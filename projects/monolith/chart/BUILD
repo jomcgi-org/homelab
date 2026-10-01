@@ -76,6 +76,27 @@ argocd_app(
 )
 
 py_test(
+    name = "grimoire_play_test",
+    srcs = ["grimoire_play_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+    },
+    deps = ["@pip//pytest", "@pip//pyyaml"],
+)
+
+py_test(
     name = "tailnet_service_test",
     srcs = ["tailnet_service_test.py"],
     data = [
