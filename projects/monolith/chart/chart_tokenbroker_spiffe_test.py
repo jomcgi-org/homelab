@@ -155,18 +155,15 @@ def test_enabled_render_rejects_non_tls_url_and_missing_server_identity() -> Non
             raise AssertionError(f"accepted invalid SPIFFE settings: {settings}")
 
 
-def test_checked_in_overlays_keep_spiffe_off_except_the_hub() -> None:
+def test_all_checked_in_environment_overlays_keep_spiffe_default_off() -> None:
     projects = _chart_dir().parents[1]
     paths = [
         _chart_dir() / "values.yaml",
         projects / "monolith/deploy/values.yaml",
+        projects / "monolith/deploy/values-gke.yaml",
         projects / "monolith/dev/deploy/values.yaml",
         projects / "monolith/dev/deploy/values-recovery-gke.yaml",
     ]
     for path in paths:
         values = yaml.safe_load(path.read_text())
         assert values["tokenBroker"]["spiffe"]["enabled"] is False, path
-
-    # #5791 stage 1: only the hub overlay turns the mTLS client on.
-    hub = yaml.safe_load((projects / "monolith/deploy/values-gke.yaml").read_text())
-    assert hub["tokenBroker"]["spiffe"]["enabled"] is True
