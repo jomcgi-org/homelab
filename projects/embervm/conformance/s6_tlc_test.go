@@ -90,6 +90,32 @@ func TestS6TLCDoubleDispatchFailsEndToEnd(t *testing.T) {
 	}
 }
 
+// TestS6TLCVerdictsUnderChartJavaToolOptions runs the pass and a fail window
+// with the JAVA_TOOL_OPTIONS the chart renders when conformance.s6.enabled is
+// on (conformance.s6.tlc.javaToolOptions in chart/values.yaml). The JVM echoes
+// the variable on stderr, which the runner classifies with stdout, so this
+// proves the banner moves no verdict and the worker count stays pinned.
+func TestS6TLCVerdictsUnderChartJavaToolOptions(t *testing.T) {
+	cfg := mustS6TLCTestConfig(t)
+	t.Setenv("JAVA_TOOL_OPTIONS", "-XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=50")
+
+	verdict, detail, output := runS6TLCWithOutput(context.Background(), cfg, s6TLCPassWindow())
+	if !strings.Contains(output, "Picked up JAVA_TOOL_OPTIONS") {
+		t.Fatalf("JVM did not pick up JAVA_TOOL_OPTIONS; output:\n%s", output)
+	}
+	if !strings.Contains(output, "with 2 workers") {
+		t.Fatalf("-workers auto did not follow ActiveProcessorCount=2; output:\n%s", output)
+	}
+	if verdict != verdictPass || !tlcQueueDrained(output) {
+		t.Fatalf("pass window verdict = %q, want an exhaustive pass; detail=%s", verdict, detail)
+	}
+
+	verdict, detail, _ = runS6TLCWithOutput(context.Background(), cfg, s6TLCDoubleDispatchWindow())
+	if verdict != verdictFail || !strings.Contains(detail, "NoDoubleAssign") {
+		t.Fatalf("double-dispatch verdict = %q, want fail naming NoDoubleAssign; detail=%s", verdict, detail)
+	}
+}
+
 func TestS6TLCThinWindowNeverReachesTLC(t *testing.T) {
 	// No toolchain resolution here: this test runs everywhere, including
 	// plain `go test` with no Bazel data. The toolchain paths below must

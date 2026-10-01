@@ -78,6 +78,12 @@ func TestClassifyS6TLCOutput(t *testing.T) {
 	failOutput := "TLC2 Version 2.19\nInvariant NoDestroyBeforeConfirm is violated.\n10 states generated, 8 distinct states found, 0 destroyed, 2 states left on queue.\n"
 	truncatedOutput := "TLC2 Version 2.19\n100000 states generated, 90000 distinct states found, 0 destroyed, 15000 states left on queue.\n"
 	crashOutput := "Exception in thread \"main\" java.lang.OutOfMemoryError\n"
+	// The chart sets JAVA_TOOL_OPTIONS with S6 on, and the JVM announces it on
+	// stderr, which the runner merges into the classified output.
+	javaToolOptionsBanner := "Picked up JAVA_TOOL_OPTIONS: -XX:ActiveProcessorCount=2 -XX:MaxRAMPercentage=50\n"
+	// A run the budget kills mid-search leaves only TLC's periodic progress
+	// lines, which also end "0 states left on queue" on a linear trace replay.
+	killedOutput := "TLC2 Version 2.19\nProgress(923) at 2026-10-01 02:57:33: 923 states generated (529 s/min), 923 distinct states found (529 ds/min), 0 states left on queue.\n"
 
 	tests := []struct {
 		name    string
@@ -89,6 +95,9 @@ func TestClassifyS6TLCOutput(t *testing.T) {
 		{name: "named violation fails with invariant", output: failOutput, verdict: verdictFail, detail: "NoDestroyBeforeConfirm"},
 		{name: "truncated run is incomplete", output: truncatedOutput, verdict: verdictIncomplete, detail: "withheld"},
 		{name: "crash names no invariant so never fail", output: crashOutput, verdict: verdictIncomplete, detail: "withheld"},
+		{name: "java tool options banner keeps a clean run passing", output: javaToolOptionsBanner + passOutput, verdict: verdictPass, detail: "coverage=7"},
+		{name: "java tool options banner keeps a truncated run incomplete", output: javaToolOptionsBanner + truncatedOutput, verdict: verdictIncomplete, detail: "withheld"},
+		{name: "killed run with only progress lines is incomplete", output: killedOutput, verdict: verdictIncomplete, detail: "withheld"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

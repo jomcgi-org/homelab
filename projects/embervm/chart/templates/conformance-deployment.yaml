@@ -2,6 +2,8 @@
 {{- if eq .Release.Namespace "embervm" }}
 {{- fail "conformance runner is dev-only and must not be enabled in the embervm production namespace" }}
 {{- end }}
+{{- $s6 := .Values.conformance.s6 | default dict }}
+{{- $tlc := $s6.tlc | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -65,8 +67,35 @@ spec:
             - { name: S6_ENABLED, value: {{ .Values.conformance.s6.enabled | quote }} }
             - { name: S6_BUDGET, value: {{ .Values.conformance.budgets.s6 | quote }} }
             - { name: S6_MIN_TRACE_EVENTS, value: {{ .Values.conformance.s6.minTraceEvents | quote }} }
+            {{- if $s6.enabled }}
+            # The TLC toolchain the image ships under /opt/tla (conformance BUILD
+            # :tla_tar_amd64). Only rendered with S6 on, so the S1..S5 pod is
+            # unchanged while S6 is staged off.
+            - { name: S6_TLC_JAVA, value: {{ $tlc.java | default "/opt/tla/jre/bin/java" | quote }} }
+            - { name: S6_TLC_JAR, value: {{ $tlc.jar | default "/opt/tla/tla2tools.jar" | quote }} }
+            - { name: S6_TLC_SPEC_DIR, value: {{ $tlc.specDir | default "/opt/tla/specs" | quote }} }
+            {{- with $tlc.javaToolOptions }}
+            - { name: JAVA_TOOL_OPTIONS, value: {{ . | quote }} }
+            {{- end }}
+            {{- end }}
           resources:
+            {{- if $s6.enabled }}
+            {{- toYaml (required "conformance.s6.resources is required when conformance.s6.enabled is true" $s6.resources) | nindent 12 }}
+            {{- else }}
             {{- toYaml .Values.conformance.resources | nindent 12 }}
+            {{- end }}
           readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 5, periodSeconds: 5 }
           livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 30 }
+          {{- if $s6.enabled }}
+          # The root filesystem stays read-only. The runner stages each TLC run
+          # under os.MkdirTemp (TLC's states/ dir lands there too) and TLC
+          # extracts its standard modules into java.io.tmpdir, both /tmp.
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          {{- end }}
+      {{- if $s6.enabled }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: {{ $s6.tmpSizeLimit | default "64Mi" | quote }} }
+      {{- end }}
 {{- end }}

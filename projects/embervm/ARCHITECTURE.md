@@ -16,7 +16,7 @@ the section 2 vocabulary. Claims carry four flags:
 **model-checked** means the named TLA+ spec in `projects/embervm/specs/`
 satisfies the stated property under TLC in the build. It is not an
 implementation claim: `adoption.tla`'s invariants are checked against dev's
-live trace by a hand-written checker, and TLC trace validation is **Planned**
+live trace by a hand-written checker, and TLC trace validation is **Staged**
 (#6415).
 
 ---
@@ -923,8 +923,10 @@ never stores or witnesses anything that scales with the fleet.
   **Staged**: the TLC tier, trace validation of `adoption.tla` against dev
   SpecTrace windows (#6415), ships default-off behind `conformance.s6.enabled`
   (adoption_trace.tla plus the S6 runner feeding `/verdict`, provable in CI on
-  fixture windows with no live cluster). Live embervm-dev validation remains
-  open on the issue. The broader ADR embervm/034 harness beyond that
+  fixture windows with no live cluster). The runner image carries the pinned
+  JRE and TLC under `/opt/tla`; turning the key on renders the `S6_TLC_*` env,
+  a `/tmp` emptyDir and JVM-sized memory (`conformance.s6` in the chart
+  values). Live embervm-dev validation remains open on the issue. The broader ADR embervm/034 harness beyond that
   is not planned (#4761, #4763 closed).
 - **Cells are not an active programme**: no `cell_id`, workload-to-cell
   assignment or per-cell dial-home address exists. The implementation proposal
