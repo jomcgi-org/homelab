@@ -13,6 +13,7 @@ from factory.execution.reconciliation import (
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     confirm_reconciled_unbound_attempt as confirm_reconciled_unbound_attempt,
     factory_attempt_never_posted as factory_attempt_never_posted,
+    drain_relay_continuation_enabled as drain_relay_continuation_enabled,
     fence_bound_zero_turn_factory_attempt as fence_bound_zero_turn_factory_attempt,
     inspect_lost_before_guest_factory_attempt as inspect_lost_before_guest_factory_attempt,
     inspect_lost_before_session_factory_attempt as inspect_lost_before_session_factory_attempt,

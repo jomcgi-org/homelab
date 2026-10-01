@@ -1873,6 +1873,59 @@ def test_dispatch_read_uses_persisted_timestamp_and_rejects_second_claim(
         )
 
 
+@pytest.mark.parametrize(
+    "case",
+    ["drain", "brick_preempted", "flag_off", "no_turn", "unknown_turn", "past_bound"],
+)
+def test_dispatch_read_keeps_a_relay_continuation_on_its_attempt(
+    queued_attempt, monkeypatch, case
+):
+    """2026-10-01: three review nodes ended uncertain as their drain relay ran."""
+    from factory.execution.api import read_factory_dispatch
+    from factory.execution.models import PendingMessage
+    from sqlmodel import select
+
+    if case != "flag_off":
+        monkeypatch.setenv("FACTORY_DRAIN_RELAY_CONTINUATION_ENABLED", "true")
+    with Session(queued_attempt.engine) as db:
+        row = db.exec(select(PendingMessage)).one()
+        row.dispatch_count = 4 if case == "past_bound" else 2
+        row.last_dispatch_at = nodes._timestamp(NOW)
+        row.claimed_by_replica = "relay-executor"
+        row.claimed_at = row.last_dispatch_at
+        if case != "no_turn":
+            db.add(
+                AgentTurn(
+                    session_id=7,
+                    seq=1,
+                    prompt="original prompt",
+                    result_text="interrupted",
+                    terminal_reason=(
+                        "interrupted"
+                        if case == "brick_preempted"
+                        else "error"
+                        if case == "unknown_turn"
+                        else "interrupted_for_drain"
+                    ),
+                    stop_reason=(
+                        "brick_preempted"
+                        if case == "brick_preempted"
+                        else UNKNOWN_INVOCATION
+                        if case == "unknown_turn"
+                        else "interrupted_for_drain"
+                    ),
+                )
+            )
+        db.add(row)
+        db.commit()
+        observed = read_factory_dispatch(db, queued_attempt.pin, 7)
+    if case in {"drain", "brick_preempted"}:
+        assert observed["state"] == "dispatched"
+        assert nodes._timestamp(observed["started_at"]) == nodes._timestamp(NOW)
+    else:
+        assert observed["state"] == "unconfirmed"
+
+
 def test_concurrent_queued_cancellation_creates_one_terminal_turn(queued_attempt):
     from concurrent.futures import ThreadPoolExecutor
     from factory.execution.api import cancel_queued_factory_attempt

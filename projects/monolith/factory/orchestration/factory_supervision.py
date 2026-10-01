@@ -19,6 +19,7 @@ from sqlmodel import select
 
 from factory.execution.api import (
     factory_attempt_never_posted,
+    drain_relay_continuation_enabled,
     fence_bound_zero_turn_factory_attempt,
     read_bound_zero_turn_factory_attempt,
     read_drained_lost_factory_attempt,
@@ -765,6 +766,83 @@ def _never_invoked_guest_cessation(view, identity, saved=None):
         "invoke_started_at": None,
         "last_invoke_at": None,
         "cessation_evidence": "never_invoked_guest",
+    }
+
+
+def _drain_interrupted_dispatch_cessation(view, identity, saved=None):
+    """Prove a drain ended this exact dispatch's invoke and parked its guest.
+
+    A drain interrupts the running invoke, the guest flushes its transcript
+    and writes ``interrupted_turn`` naming the opaque dispatch ID, and the
+    session is parked or banked at the safe point. It can only run again on
+    a new invoke. When the observer that would have relayed the drain is
+    gone first (a monolith rollout), the hold machinery records the turn as
+    an unknown invocation, and no pending row remains to relay it. The guest
+    then has no stop precondition, so the attempt held its lane on
+    ``missing_stop_precondition``. On 2026-10-01 session 13635 (permit
+    10713) lost its observer to the 01:58 rollout. A brick idle drain then
+    interrupted it at 02:04:42 and the guest parked with exactly this marker.
+
+    The marker must carry the exact dispatch ID computed from the recorded
+    session, guest, turn, claim owner and dispatch count. The invoke must have
+    started after dispatch and completed, and any saved stop identity must
+    match. Running, relighting, terminal, foreign, stale or malformed views
+    prove nothing here.
+    """
+    from factory.execution.constants import exact_dispatch_id
+
+    if (
+        not isinstance(view, dict)
+        or view.get("session_id") != identity["guest_id"]
+        or view.get("state") not in {"parked", "banked"}
+    ):
+        return None
+    interrupted = view.get("interrupted_turn")
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    completed = view.get("last_invoke_at")
+    expected_dispatch = exact_dispatch_id(
+        identity["session_id"],
+        identity["guest_id"],
+        identity["seq"],
+        identity["claim_owner"],
+        identity["dispatch_count"],
+    )
+    if (
+        not isinstance(interrupted, dict)
+        or interrupted.get("dispatch_id") != expected_dispatch
+        or not isinstance(interrupted.get("transcript_path"), str)
+        or not interrupted["transcript_path"]
+        or type(generation) is not int
+        or generation < 0
+        or type(started) is not int
+        or type(completed) is not int
+        or completed < started
+    ):
+        return None
+    dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
+    if started <= dispatched_at:
+        return None
+    if saved is not None:
+        try:
+            expected = _precondition(saved.get("precondition"), identity["guest_id"])
+        except ValueError:
+            return None
+        if (
+            generation != expected["generation"]
+            or started != expected["invoke_started_at"]
+        ):
+            return None
+    return {
+        "session_id": identity["guest_id"],
+        "state": view["state"],
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": completed,
+        "updated_at": view.get("updated_at"),
+        "dispatch_id": expected_dispatch,
+        "transcript_path": interrupted["transcript_path"],
+        "cessation_evidence": "drain_interrupted_dispatch",
     }
 
 
@@ -2255,17 +2333,30 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         # The control plane answered for this exact guest, so any absence run
         # in progress is over. Recorded before anything else acts on the view.
         _record_presence(pin, identity)
-        if view.get("terminal_reason") == "interrupted_for_drain" and view.get(
-            "state"
-        ) in {"running", "banking", "banked", "parked", "relighting"}:
+        drained_dispatch = None
+        if cessation_enabled and drain_relay_continuation_enabled():
+            # Read before the relay hand-off below. read_uncertain_factory_attempt
+            # has already proved no pending row exists, so no relay can resume
+            # this dispatch and leaving it to one would hold the lane.
+            drained_dispatch = _drain_interrupted_dispatch_cessation(
+                view, identity, saved
+            )
+        if (
+            drained_dispatch is None
+            and view.get("terminal_reason") == "interrupted_for_drain"
+            and view.get("state")
+            in {"running", "banking", "banked", "parked", "relighting"}
+        ):
             _resolve_transient_retry(
                 pin, session_id, identity, "drain_interruption_observed"
             )
             return False
-        if _destroy_guest_on_departed_node(pin, identity, view):
+        if drained_dispatch is None and _destroy_guest_on_departed_node(
+            pin, identity, view
+        ):
             return False
-        cessation = None
-        if cessation_enabled:
+        cessation = drained_dispatch
+        if cessation_enabled and cessation is None:
             cessation = _control_plane_cessation(view, identity, saved)
             if cessation is None:
                 cessation = _brick_restart_cessation(view, identity, saved)

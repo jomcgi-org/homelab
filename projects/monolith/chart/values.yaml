@@ -1599,6 +1599,13 @@ swarm:
   # rollout that cancels the executor between claim and POST otherwise holds
   # the lane on missing_stop_precondition until supervised cessation.
   factoryNeverInvokedGuestSettlementEnabled: false
+  # Carry a brick-drain relay through to its owner (#6256). The node workflow
+  # treats the relay's own continuation dispatch as the same attempt instead of
+  # ending uncertain; a terminal workflow may retire a priced drain
+  # continuation at unknown cost; and stop supervision settles an unknown
+  # attempt whose guest a drain parked with this exact dispatch's
+  # interrupted_turn marker.
+  factoryDrainRelayContinuationEnabled: false
   # Settle only a drained factory continuation whose exact dispatch is proven
   # permanently lost by the control plane. Staged off until the live checks in
   # FACTORY.md have exercised the proof and refusal paths.
