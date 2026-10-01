@@ -310,3 +310,7 @@ statefulSweeper:
 # brick (2026-10-01 00:44:42 and 02:04:42). A session with unknown placement
 # is still drained. Revert is this one line.
 drainInstanceScopedSessions: true
+rootfsBuilder:
+  inPodBake:
+    # This flag flip rolls bricks once. Delete this enabled line to roll back.
+    enabled: true
