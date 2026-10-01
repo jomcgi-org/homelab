@@ -2174,3 +2174,312 @@ def test_refused_eight_turn_plan_is_funded_without_a_third_refusal(db, monkeypat
             )
         ).all()
     assert len(refusals) == 1
+
+
+MERIT = {
+    "progress": {"commits_pushed": 2, "reviews_approved": 0},
+    "proximity": {"pull_request": 6546, "checks": "success"},
+    "value": {"labels": ["bug"], "value_labels": ["bug"]},
+}
+ASSESSMENT = {
+    "progress": "Two commits and an open PR with green checks.",
+    "proximity": "Only the independent review is left.",
+    "value": "A real bug on the delivery lane.",
+}
+
+
+def _merit_judge(monkeypatch):
+    from factory.orchestration import factory_judge
+
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setenv("FACTORY_MERIT_JUDGE_ENABLED", "true")
+    monkeypatch.setattr(factory_judge, "merit_evidence", lambda _task, _runs: MERIT)
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {
+            "number": ISSUE,
+            "state": "open",
+            "title": "Fix conductor livelock",
+            "body": "Keep funding bounded and closeable.",
+            "updated_at": "now",
+        },
+    )
+
+
+def _repeated_deficit(monkeypatch, task, policy, deficit):
+    """Two matching envelope refusals with merit judging on; the cards raised."""
+    _merit_judge(monkeypatch)
+    monkeypatch.setattr(
+        conductor,
+        "_envelope_refusal",
+        lambda *_args, **_kwargs: "envelope exceeded: " + json.dumps(deficit),
+    )
+    escalations = []
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda _task, decision, _cause, _runs: escalations.append(decision),
+    )
+    decision = plan_for_five_more()
+    conductor._apply_decision(task, policy, decision, "decision:1", [])
+    conductor._apply_decision(task, policy, decision, "decision:2", [])
+    return escalations
+
+
+def _pending(task):
+    with controls._read_session() as session:
+        return funding.pending(session, task["id"])
+
+
+def _grant(task):
+    with controls._read_session() as session:
+        return funding.amendment(session, task["id"])
+
+
+def _settled(task):
+    with controls._read_session() as session:
+        return funding.latest(session, task["id"], "funding_review_settled")
+
+
+def test_a_repeated_deficit_goes_to_the_merit_judge_not_a_person(db, monkeypatch):
+    # #6541: $1.20 over a $50 envelope paged a person although the funding
+    # judge was on, because only a planner-emitted request_funding reached it.
+    task, policy = envelope_task()
+    deficit = {
+        "spare_turns": 2,
+        "spare_usd": 1.0,
+        "turns": {"allowed": 6, "needed": 6},
+        "usd": {"allowed": 30.0, "needed": 31.2},
+    }
+    assert _repeated_deficit(monkeypatch, task, policy, deficit) == []
+    request = _pending(task)
+    # Pinned $30 plus min(1 x $30, $50): the hard ceiling is $60.
+    assert request["merit"]["ceiling"]["ceiling_usd"] == 60.0
+    assert request["merit"]["ceiling"]["turn_ceiling"] == 12
+    assert request["merit"]["evidence"] == MERIT
+    (node,) = [
+        n
+        for n in conductor.graph.load_graph(task["id"])
+        if n["node_key"] == request["node_key"]
+    ]
+    assert "Verified progress" in node["prompt"]
+    assert "money already spent is a reason to finish" in node["prompt"]
+    assert '"pull_request": 6546' in node["prompt"]
+
+    # The judge asks for more than policy allows: the grant is capped and the
+    # verdict, with its reasoning, is on the audit.
+    settle_funding_request(
+        task,
+        request,
+        funding_decision(task_budget_usd=95.0, assessment=ASSESSMENT),
+    )
+    grant = _grant(task)
+    assert grant["policy_overlay"]["task_budget_usd"] == 60.0
+    assert grant["requested_task_budget_usd"] == 95.0
+    assert grant["granted_task_budget_usd"] == 60.0
+    assert grant["assessment"] == ASSESSMENT
+    assert grant["merit_ceiling"]["ceiling_usd"] == 60.0
+    assert _settled(task)["assessment"] == ASSESSMENT
+
+
+def test_a_judge_figure_below_the_deficit_is_raised_to_the_need(db, monkeypatch):
+    task, policy = envelope_task()
+    deficit = {"usd": {"allowed": 30.0, "needed": 31.2}}
+    assert _repeated_deficit(monkeypatch, task, policy, deficit) == []
+    settle_funding_request(
+        task,
+        _pending(task),
+        funding_decision(task_budget_usd=30.0, assessment=ASSESSMENT),
+    )
+    assert _grant(task)["policy_overlay"]["task_budget_usd"] == 31.2
+
+
+def test_a_deficit_past_the_hard_ceiling_asks_a_person(db, monkeypatch):
+    task, policy = envelope_task()
+    deficit = {"usd": {"allowed": 30.0, "needed": 61.0}}
+    escalations = _repeated_deficit(monkeypatch, task, policy, deficit)
+    assert len(escalations) == 1
+    assert "Should the exact deficit be funded" in escalations[0]["question"]
+    assert _pending(task) is None
+    with controls._read_session() as session:
+        declined = funding.latest(session, task["id"], "merit_funding_declined")
+    assert declined["refusal"] == "usd_over_ceiling"
+    assert declined["ceiling"]["ceiling_usd"] == 60.0
+
+
+def test_a_judge_that_doubts_the_work_escalates_to_a_person(db, monkeypatch):
+    task, policy = envelope_task()
+    deficit = {"usd": {"allowed": 30.0, "needed": 31.2}}
+    escalations = _repeated_deficit(monkeypatch, task, policy, deficit)
+    assert escalations == []
+    settle_funding_request(
+        task,
+        _pending(task),
+        funding_decision(
+            action="escalate",
+            reason="The same correction failed three times on one step.",
+            task_budget_usd=0,
+            additional_work_turns=0,
+            lease_minutes=0,
+            assessment={**ASSESSMENT, "doubts": ["repeated failure on one step"]},
+        ),
+    )
+    assert _grant(task) is None
+    settled = _settled(task)
+    assert settled["refusal"] is None
+    assert "doubts this task" in settled["escalated"]
+    (card,) = escalations
+    assert "same correction failed" in card["question"]
+    assert card["options"][0]["key"] == "fund-and-resume"
+
+
+def test_a_grant_the_hard_ceiling_cannot_hold_escalates(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_MERIT_JUDGE_MAX_EXTENSION_MULTIPLE", "0")
+    task, policy = envelope_task()
+    add_spent_turns(db, task, count=8)
+    deficit = {"usd": {"allowed": 30.0, "needed": 29.0}}
+    escalations = _repeated_deficit(monkeypatch, task, policy, deficit)
+    assert escalations == []
+    request = _pending(task)
+    assert request["merit"]["ceiling"]["turn_ceiling"] == 8
+    settle_funding_request(task, request, funding_decision(assessment=ASSESSMENT))
+    assert _grant(task) is None
+    assert "policy ceiling" in _settled(task)["escalated"]
+    assert len(escalations) == 1
+
+
+def test_a_merit_verdict_without_its_assessment_is_refused(db, monkeypatch):
+    task, policy = envelope_task()
+    deficit = {"usd": {"allowed": 30.0, "needed": 31.2}}
+    assert _repeated_deficit(monkeypatch, task, policy, deficit) == []
+    settle_funding_request(task, _pending(task), funding_decision())
+    assert _grant(task) is None
+    assert _settled(task)["refusal"] == "a merit verdict needs its assessment"
+
+
+def test_escalate_is_refused_on_a_review_without_merit_judging(db, monkeypatch):
+    task, _policy = envelope_task()
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(
+        funding,
+        "_issue",
+        lambda _task: {
+            "number": ISSUE,
+            "state": "open",
+            "title": "Fix conductor livelock",
+            "body": "Keep funding bounded and closeable.",
+            "updated_at": "now",
+        },
+    )
+    assert funding.request(task, "Assess value")
+    settle_funding_request(
+        task,
+        _pending(task),
+        funding_decision(
+            action="escalate",
+            task_budget_usd=0,
+            additional_work_turns=0,
+            lease_minutes=0,
+        ),
+    )
+    assert _settled(task)["refusal"] == "escalate is honoured only on a merit review"
+
+
+def test_merit_judging_is_off_by_default(db, monkeypatch):
+    task, _policy = envelope_task()
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.delenv("FACTORY_MERIT_JUDGE_ENABLED", raising=False)
+    assert funding.judge_deficit(task, {"usd": {"needed": 30.5}}, "r") is False
+
+
+def test_the_merit_ceiling_takes_the_smaller_of_multiple_and_cap(monkeypatch):
+    from factory.orchestration import factory_judge
+
+    monkeypatch.setenv("FACTORY_MERIT_JUDGE_MAX_EXTENSION_USD", "40")
+    bound = factory_judge.ceiling({"task_budget_usd": 200.0, "max_task_turns_hard": 9})
+    assert bound["max_extension_usd"] == 40.0 and bound["ceiling_usd"] == 240.0
+    assert bound["turn_ceiling"] == 18
+    small = factory_judge.ceiling({"task_budget_usd": 20.0, "max_turns_per_task": 4})
+    assert small["ceiling_usd"] == 40.0 and small["turn_ceiling"] == 8
+    refusal = factory_judge.deficit_refusal
+    assert refusal({"usd": {"needed": 241}}, bound) == "usd_over_ceiling"
+    assert refusal({"turns": {"needed": 19}}, bound) == "turns_over_ceiling"
+    assert refusal({"spare_usd": 1}, bound) == "deficit_unreadable"
+    assert refusal({"usd": {"needed": 239.9}, "turns": {"needed": 18}}, bound) is None
+
+
+def test_merit_evidence_reads_progress_proximity_and_value(monkeypatch):
+    from factory.orchestration import factory_judge
+
+    head = "a" * 40
+    reads = {
+        "pulls/6546": {
+            "state": "open",
+            "draft": False,
+            "mergeable_state": "clean",
+            "head": {"sha": head},
+        },
+        f"commits/{head}/status": {"state": "success"},
+        f"issues/{ISSUE}": {
+            "title": "factory: fix conductor livelock",
+            "labels": [{"name": "bug"}, {"name": "roadmap"}],
+            "milestone": {"title": "Factory MVP"},
+        },
+    }
+    monkeypatch.setattr(conductor, "github_get", lambda _repo, suffix: reads[suffix])
+    monkeypatch.setattr(factory_judge, "_blocks_open", lambda _task: 2)
+    monkeypatch.setenv("FACTORY_MERIT_JUDGE_PRIORITY_ISSUES", f"6463, #{ISSUE}")
+
+    def run(ident, key, status, **artifact):
+        return {
+            "id": ident,
+            "node_key": key,
+            "status": status,
+            "outcome_json": json.dumps({"value": artifact}),
+        }
+
+    runs = [
+        run(1, "implement_fix", "failed"),
+        run(2, "implement_fix", "succeeded", head_sha=head, pr_number=6546),
+        run(3, "review_fix", "succeeded", verdict="changes_requested"),
+        run(4, "correct_fix", "succeeded", head_sha=head),
+        run(5, "review_fix_2", "succeeded", verdict="approve"),
+    ]
+    found = factory_judge.merit_evidence(
+        {"id": "t", "repo": REPO, "issue_number": ISSUE}, runs
+    )
+    assert found["progress"]["commits_pushed"] == 1
+    assert found["progress"]["implementation_succeeded"] == 2
+    assert found["progress"]["review_verdicts"] == ["changes_requested", "approve"]
+    assert found["progress"]["reviews_approved"] == 1
+    assert found["proximity"] == {
+        "pull_request": 6546,
+        "state": "open",
+        "merged": False,
+        "draft": False,
+        "mergeable_state": "clean",
+        "head": head[:12],
+        "checks": "success",
+    }
+    assert found["value"]["value_labels"] == ["bug", "roadmap"]
+    assert found["value"]["named_priority"] is True
+    assert found["value"]["factory_work"] is True
+    assert found["value"]["milestone"] == "Factory MVP"
+    assert found["value"]["blocks_open_work"] == 2
+
+
+def test_merit_evidence_states_a_failed_read_instead_of_raising(monkeypatch):
+    from factory.orchestration import factory_judge
+
+    def broken(_repo, _suffix):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(conductor, "github_get", broken)
+    monkeypatch.setattr(factory_judge, "_blocks_open", lambda _task: 0)
+    found = factory_judge.merit_evidence(
+        {"id": "t", "repo": REPO, "issue_number": ISSUE, "delivery_pr_number": 9},
+        [],
+    )
+    assert found["proximity"]["unavailable"] == "ConnectError"
+    assert found["value"]["unavailable"] == "ConnectError"

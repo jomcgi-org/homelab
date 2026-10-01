@@ -1580,6 +1580,19 @@ swarm:
   factoryWorkItemPointerEnabled: false
   factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false
+  # Merit judging (factory_judge). The funding judge and the no-progress
+  # watchdog decide on verified progress, proximity to landing and issue
+  # value; a planner edit refused twice for an envelope deficit goes to the
+  # judge instead of a person; the judge may escalate when it doubts the work.
+  # Every judge grant is capped at the pinned task_budget_usd plus
+  # min(MaxExtensionMultiple x task_budget_usd, MaxExtensionUsd). A grant the
+  # cap cannot hold goes to a person. Needs factoryConductorFundingEnabled.
+  factoryMeritJudgeEnabled: false
+  factoryMeritJudgeMaxExtensionMultiple: 1
+  factoryMeritJudgeMaxExtensionUsd: 50
+  # Issue numbers the judge reads as roadmap or factory-unblocking work,
+  # comma separated. This repository has no roadmap label to read instead.
+  factoryMeritJudgePriorityIssues: ""
   factoryAutonomousContinuationEnabled: false
   factoryStopSupervisionEnabled: false
   # Sample transient stop refusals for a fixed bounded window before notifying.

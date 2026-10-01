@@ -9,7 +9,12 @@ import httpx
 
 from sqlmodel import select
 
-from factory.orchestration import factory_controls as controls, graph, model_pool
+from factory.orchestration import (
+    factory_controls as controls,
+    factory_judge,
+    graph,
+    model_pool,
+)
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
@@ -33,6 +38,7 @@ PREFIX = "conductor_funding_"
 REVIEW_SECONDS = 300
 FUNDING_REFUSAL_LIMIT = 6
 DISPATCH_GRANT_KIND = "dispatch_refusal"
+ESCALATE = "escalate"
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -45,12 +51,15 @@ SCHEMA = {
         "lease_minutes",
     ],
     "properties": {
-        "action": {"enum": ["continue", "steer", "stop"]},
+        # escalate is honoured only on a merit review (factory_judge); any
+        # other review that returns it is refused and retried.
+        "action": {"enum": ["continue", "steer", "stop", ESCALATE]},
         "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
         "next_plan": {"type": "string", "minLength": 1, "maxLength": 4000},
         "task_budget_usd": {"type": "number", "minimum": 0, "maximum": 200},
         "additional_work_turns": {"type": "integer", "minimum": 0, "maximum": 20},
         "lease_minutes": {"type": "integer", "minimum": 0, "maximum": 30},
+        "assessment": factory_judge.ASSESSMENT_SCHEMA,
     },
 }
 
@@ -271,6 +280,49 @@ def inherit_dispatch_grant(db, row, task, carried, policy):
     )
 
 
+def _pinned_ceiling(task_id):
+    """The policy ceiling for this task's judge grants, or None if unknown."""
+    with controls._read_session() as db:
+        row = controls._receipt(db, task_id)
+        if row is None or not row.policy_json:
+            return None
+        return factory_judge.ceiling(json.loads(row.policy_json))
+
+
+def judge_deficit(task, deficit, reason):
+    """Send a repeated envelope deficit to the judge instead of a person.
+
+    Returns True when a funding review is pending for the task, so the caller
+    raises no card. A deficit past the policy ceiling is a hard cap: it audits
+    ``merit_funding_declined`` and returns False, and the card stands.
+    """
+    if not factory_judge.enabled() or not (
+        enabled() or task.get("funding_enrolled", False)
+    ):
+        return False
+    bound = _pinned_ceiling(task["id"])
+    if bound is None:
+        return False
+    refusal = factory_judge.deficit_refusal(deficit, bound)
+    if refusal is not None:
+        with controls._locked_session() as (db, _control):
+            controls._audit(
+                db,
+                ACTOR,
+                "merit_funding_declined",
+                task_id=task["id"],
+                refusal=refusal,
+                deficit=deficit,
+                ceiling=bound,
+            )
+        return False
+    return request(
+        task,
+        "Planning was refused twice with envelope_exceeded. Decide on the "
+        "merits whether to fund the recorded deficit. " + str(reason)[:500],
+    )
+
+
 def request(task, reason, *, recover=False):
     """Reserve one exact judge decision, even when task soft limits ran out."""
     from factory.orchestration import factory_conductor as c
@@ -282,6 +334,20 @@ def request(task, reason, *, recover=False):
     issue = _issue(task)
     if issue.get("number") != task["issue_number"]:
         return False
+    merit = None
+    if factory_judge.enabled():
+        with controls._read_session() as db:
+            if pending(db, task["id"]):
+                return True
+        bound = _pinned_ceiling(task["id"])
+        if bound is not None:
+            # GitHub reads stay outside the control lock.
+            merit = {
+                "ceiling": bound,
+                "evidence": factory_judge.merit_evidence(
+                    task, graph.node_runs(task["id"])
+                ),
+            }
     with controls._locked_session() as (db, control):
         row = controls._receipt(db, task["id"])
         if (
@@ -402,6 +468,20 @@ def request(task, reason, *, recover=False):
         }
         if isinstance(deficit, dict):
             audit_detail["deficit"] = deficit
+        if merit is not None:
+            audit_detail["merit"] = merit
+            prompt += (
+                "\n" + factory_judge.CRITERIA + " "
+                "Return assessment with one line each for progress, proximity "
+                "and value, and any doubts. Use action escalate, with zeroes, "
+                "to hand the decision to the operator. Policy caps any continue "
+                f"or steer at task_budget_usd {merit['ceiling']['ceiling_usd']:g} "
+                f"and {merit['ceiling']['turn_ceiling']} total work turns: a "
+                "higher figure is reduced to that cap, and a dollar figure "
+                "below a recorded deficit is raised to it. Merit evidence "
+                "(server-read, untrusted):\n"
+                + json.dumps(merit["evidence"], default=str)
+            )
         controls._audit(
             db,
             ACTOR,
@@ -464,6 +544,7 @@ def settle(task, run, request):
         # Hold both through the evidence check and amendment commit.
         graph._lock_task(db, task["id"])
         refusal = None
+        escalation = None
         try:
             jsonschema.validate(decision, SCHEMA)
             if (
@@ -486,7 +567,14 @@ def settle(task, run, request):
             # result recovery can outlive it without changing the evidence.
             # The executor bounds the review turn; the locked checks above and
             # current accounting below fence this completed decision's authority.
-            if decision["action"] != "stop":
+            merit = request.get("merit")
+            if decision["action"] == ESCALATE:
+                if not isinstance(merit, dict):
+                    raise ValueError("escalate is honoured only on a merit review")
+                escalation = "The funding judge doubts this task: " + decision["reason"]
+            elif isinstance(merit, dict) and not decision.get("assessment"):
+                raise ValueError("a merit verdict needs its assessment")
+            if decision["action"] not in ("stop", ESCALATE):
                 if (
                     decision["additional_work_turns"] < 1
                     or decision["lease_minutes"] < 1
@@ -494,6 +582,7 @@ def settle(task, run, request):
                     raise ValueError("extension must have finite work and lease")
                 spent = controls._accounting(controls._starts(db, task["id"]))
                 turns_to_grant = decision["additional_work_turns"]
+                required_turns = 0
                 deficit = request.get("deficit")
                 deficit_turns = (
                     deficit.get("turns") if isinstance(deficit, dict) else None
@@ -511,6 +600,32 @@ def settle(task, run, request):
                     raise ValueError("extension exceeds work turn bound")
                 total = objective(db, task["id"])
                 ceiling = decision["task_budget_usd"]
+                if isinstance(merit, dict):
+                    # The judge decides whether; policy decides how much. As
+                    # with the turn deficit above, a dollar figure below the
+                    # recorded need is raised to it, and nothing passes the
+                    # policy ceiling. A grant the ceiling cannot hold is a hard
+                    # cap, and a hard cap is the operator's call.
+                    bound = merit["ceiling"]
+                    needed_usd = factory_judge.needed(deficit, "usd")
+                    if needed_usd is not None:
+                        ceiling = max(ceiling, needed_usd)
+                    ceiling = min(ceiling, float(bound["ceiling_usd"]))
+                    turns_to_grant = min(
+                        turns_to_grant, bound["turn_ceiling"] - spent["turns_used"]
+                    )
+                    if (
+                        turns_to_grant < max(1, required_turns)
+                        or ceiling <= spent["committed_cost_usd"]
+                        or (needed_usd is not None and ceiling < needed_usd)
+                    ):
+                        escalation = (
+                            "The funding judge would continue, but the policy "
+                            f"ceiling (${bound['ceiling_usd']:g}, "
+                            f"{bound['turn_ceiling']} work turns) cannot hold "
+                            "the work: " + decision["reason"]
+                        )
+            if decision["action"] not in ("stop", ESCALATE) and escalation is None:
                 if (
                     not math.isfinite(ceiling)
                     or ceiling <= spent["committed_cost_usd"]
@@ -564,6 +679,13 @@ def settle(task, run, request):
                     # when a steer would otherwise have funded another refusal.
                     requested_work_turns=decision["additional_work_turns"],
                     granted_work_turns=turns_to_grant,
+                    requested_task_budget_usd=decision["task_budget_usd"],
+                    granted_task_budget_usd=ceiling,
+                    # A merit grant is an auto-approval: it carries what the
+                    # judge weighed and the ceiling it was held under, for the
+                    # audit trail and the daily digest.
+                    merit_ceiling=merit.get("ceiling") if merit else None,
+                    assessment=decision.get("assessment"),
                 )
                 db.flush()
                 controls.record_allowance(
@@ -575,17 +697,23 @@ def settle(task, run, request):
                 )
         except (ValueError, jsonschema.ValidationError) as exc:
             refusal = str(exc).splitlines()[0][:300]
+            escalation = None
+        cause = f"factory-decision:{run['node_key']}:{run['attempt']}"
         controls._audit(
             db,
             ACTOR,
             "funding_review_settled",
             task_id=task["id"],
             request_id=request["audit_id"],
-            cause=f"factory-decision:{run['node_key']}:{run['attempt']}",
+            cause=cause,
             refusal=refusal,
             retry_after=(controls._now() + timedelta(minutes=5)).isoformat()
             if refusal
             else None,
+            escalated=escalation[:1500] if escalation else None,
+            assessment=(
+                decision.get("assessment") if isinstance(decision, dict) else None
+            ),
         )
         if not refusal and decision["action"] == "stop":
             controls.finish_task(
@@ -598,6 +726,9 @@ def settle(task, run, request):
                 },
                 session=db,
             )
+    if escalation and not refusal:
+        # Outside the control lock: the card writes to GitHub.
+        c._escalate_funding_doubt(task["id"], escalation, cause)
 
 
 def reconcile(task, policy, runs, permission):
@@ -737,6 +868,12 @@ def reconcile(task, policy, runs, permission):
                         task["id"], "succeeded", ACTOR, evidence=evidence, session=db
                     )
             return True
+    if last and last.get("escalated") and not last.get("refusal"):
+        # The judge handed this to the operator and the card has not settled
+        # the task yet (unresolved starts, most often). Raise it again rather
+        # than asking the judge a second time; the card writes are fenced.
+        c._escalate_funding_doubt(task["id"], last["escalated"], last.get("cause"))
+        return True
     if last and last.get("refusal"):
         if controls._now() < datetime.fromisoformat(last["retry_after"]):
             return True
