@@ -584,6 +584,7 @@ def test_owned_helm_platform_app_does_not_block_unrelated_pr():
     result = scoped_verify(["projects/monolith/app/main.py"], state, get=get)
     assert result["verified"] is True
     assert result["scoped_applications"] == ["monolith"]
+    get = fleet_github(documents=authentik_documents())
     result = scoped_verify(["projects/loom/deploy/values.yaml"], state, get=get)
     assert result["verified"] is True
     assert result["scoped_applications"] == []
@@ -611,9 +612,12 @@ def test_owned_helm_platform_app_scopes_chart_values_and_library(changed):
     )
     get = fleet_github(documents=authentik_documents())
     result = scoped_verify([changed], state, get=get)
-    assert "authentik" in result["scoped_applications"]
-    assert result["application"] == "authentik"
-    assert result["resource"] == "Deployment/authentik/server"
+    assert result == {
+        "verified": False,
+        "reason": "application_not_healthy_and_synced",
+        "application": "authentik",
+        "resource": "Deployment/authentik/server",
+    }
 
 
 def test_owned_helm_gateway_scopes_parent_values_and_library():
@@ -642,9 +646,15 @@ def test_owned_helm_gateway_scopes_parent_values_and_library():
         "projects/shared/helm/homelab-library/chart/templates/helper.tpl",
     ):
         result = scoped_verify([changed], state, get=get)
-        assert "context-forge-gateway" in result["scoped_applications"]
+        assert result == {
+            "verified": False,
+            "reason": "application_not_healthy_and_synced",
+            "application": "context-forge-gateway",
+            "resource": "Deployment/context-forge-gateway/server",
+        }
     result = scoped_verify(["projects/loom/deploy/values.yaml"], state, get=get)
-    assert "context-forge-gateway" not in result["scoped_applications"]
+    assert result["verified"] is True
+    assert result["scoped_applications"] == []
 
 
 def test_inference_helm_shape_scopes_template_change():
@@ -670,7 +680,12 @@ def test_inference_helm_shape_scopes_template_change():
     result = scoped_verify(
         ["projects/inference/deploy/templates/deployment.yaml"], state, get=get
     )
-    assert "inference" in result["scoped_applications"]
+    assert result == {
+        "verified": False,
+        "reason": "application_not_healthy_and_synced",
+        "application": "inference",
+        "resource": "Deployment/inference/server",
+    }
 
 
 def test_own_application_unhealthy_names_application_and_resource():
