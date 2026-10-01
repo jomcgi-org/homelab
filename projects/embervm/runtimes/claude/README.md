@@ -117,28 +117,9 @@ Two cautions when consuming it:
 ### Codex app-server acceptance map
 
 Issue #4361 was verified against the Codex app-server pinned in `MODULE.bazel`:
-release `rust-v0.159.3`, amd64 archive SHA256
-`b48ca1b2d6b1bf42b944e02c3d937c898e24651916684cdc35fdedf31b291bcb`, and
-tag commit `01fc69f4026735edfdf6789820549727a4867b11`.
-
-The 0.146.0 to 0.159.3 re-verification (issue #6471) diffed the
-`app-server generate-json-schema` output of the binaries: every request the
-shim sends and every notification it consumes is unchanged in required shape.
-`exec resume` still rejects `--sandbox` and `-C`, and `[tools].web_search` is
-still accepted. `enable_codex_api_key_env` is now an unrecognized setting, so
-the shim no longer writes it.
-
-One behaviour change does touch the shim. Since openai/codex#39214, a custom
-model provider no longer inherits the ChatGPT login from `auth.json` unless it
-sets `requires_openai_auth = true`. Without the flag, 0.158.0 sent
-`GET /backend-api/codex/models` and `POST /backend-api/codex/responses` with no
-`Authorization` header. The egress swap only credentials a chatgpt.com request
-that presents the header, so it denied them and every turn failed
-(#6489, reverted in #6498). The shim now sets the flag, and every chatgpt.com
-request carries the placeholder header again. The only header-free path left
-is the connector client's `/backend-api/ps/mcp`, which `injectAlwaysPaths`
-already covers. This was checked by driving `CodexProcess` against 0.146.0,
-0.158.0 and 0.159.3 behind a capture proxy that applies the same swap rule.
+release `rust-v0.146.0`, amd64 archive SHA256
+`5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`, and
+tag commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`.
 
 - **Turn accounting:** the pinned protocol puts `threadId` and `turnId` on
   `thread/tokenUsage/updated`, and puts `threadId` plus `turn.id` on both
