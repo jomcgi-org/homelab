@@ -133,3 +133,38 @@ def test_digest_is_bounded():
     digest = retro.build_retro_digest(_data(turns=many), NOW)
 
     assert len(digest) <= retro.DIGEST_MAX_CHARS + 100
+
+
+def test_failures_show_what_the_model_said_and_group_missing_tools():
+    missing = {"reason": "artifact_missing: no diff recorded for .factory/x.json"}
+    runs = [
+        _run(TASK, "conductor_5", 1, "failed", missing),
+        _run(OTHER, "conductor_6", 1, "failed", missing),
+        _run(OTHER, "conductor_6", 2, "failed", missing),
+    ]
+    turns = [
+        _turn(
+            TASK, "conductor_5", 1, result="Blocked: `/usr/local/bin/host` is missing."
+        ),
+        _turn(
+            OTHER,
+            "conductor_6",
+            1,
+            result="Could not write: `/usr/local/bin/host` is missing",
+        ),
+        _turn(
+            OTHER,
+            "conductor_6",
+            2,
+            result="Could not write: `/usr/local/bin/host` is missing",
+        ),
+    ]
+    digest = retro.build_retro_digest(_data(runs=runs, turns=turns), NOW)
+
+    assert (
+        "missing in the guest: `/usr/local/bin/host` named by 3 turns on 2 tasks"
+        in digest
+    )
+    assert (
+        '2 of these said: "Could not write: `/usr/local/bin/host` is missing"' in digest
+    )
