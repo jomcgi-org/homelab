@@ -64,7 +64,9 @@ def _client(body=None, *, main=None, status_code=200, response=None):
         requests.append(request)
         if request.url.path.endswith("...main"):
             sha = request.url.path.rsplit("/", 1)[-1].split("...")[0]
-            default_main = _main(base_commit={"sha": sha}, merge_base_commit={"sha": sha})
+            default_main = _main(
+                base_commit={"sha": sha}, merge_base_commit={"sha": sha}
+            )
             return httpx.Response(200, json=default_main if main is None else main)
         if response is not None:
             if isinstance(response, Exception):
@@ -262,7 +264,9 @@ def test_uppercase_shas_normalized():
     assert requests[0].url.path.endswith(f"/{BASE}...{HEAD}")
 
 
-@pytest.mark.parametrize("sha", [None, 123, True, [], {}, "", "a" * 39, "a" * 41, "g" * 40, BASE + "\n"])
+@pytest.mark.parametrize(
+    "sha", [None, 123, True, [], {}, "", "a" * 39, "a" * 41, "g" * 40, BASE + "\n"]
+)
 @pytest.mark.parametrize("position", ["base", "head", "main"])
 def test_invalid_sha_before_requests(sha, position):
     client, requests = _client()
@@ -278,7 +282,9 @@ def test_invalid_sha_before_requests(sha, position):
     assert requests == []
 
 
-@pytest.mark.parametrize("timeout", [None, True, "15", 0, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "timeout", [None, True, "15", 0, -1, float("nan"), float("inf")]
+)
 def test_invalid_timeout_before_requests(timeout):
     client, requests = _client()
     with client, pytest.raises(ValueError):
@@ -299,11 +305,19 @@ def test_redirects_followed_on_injected_client():
     def handler(request):
         requests.append(request)
         if "/repos/old/repo/" in request.url.path:
-            return httpx.Response(301, headers={"Location": str(request.url).replace("old/repo", "new/repo")})
-        return httpx.Response(200, json=_main() if request.url.path.endswith("...main") else _body())
+            return httpx.Response(
+                301,
+                headers={"Location": str(request.url).replace("old/repo", "new/repo")},
+            )
+        return httpx.Response(
+            200, json=_main() if request.url.path.endswith("...main") else _body()
+        )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        assert collect_repo_diff(BASE, HEAD, repo="old/repo", client=client).changed_files == 1
+        assert (
+            collect_repo_diff(BASE, HEAD, repo="old/repo", client=client).changed_files
+            == 1
+        )
     assert len(requests) == 4
 
 
@@ -318,7 +332,9 @@ def test_redirects_followed_on_injected_client():
     ],
 )
 def test_file_headers(status, previous, before, after):
-    client, _ = _client(_body(files=[_file("new.py", status=status, previous_filename=previous)]))
+    client, _ = _client(
+        _body(files=[_file("new.py", status=status, previous_filename=previous)])
+    )
     with client:
         patch = collect_repo_diff(BASE, HEAD, client=client).patch
     assert f"--- {before}\n+++ {after}\n" in patch
@@ -347,7 +363,20 @@ def test_omitted_patch_counted(patch):
 def test_absent_patch_and_malformed_file_items():
     binary = _file()
     del binary["patch"]
-    client, _ = _client(_body(files=[None, [], 3, {}, {"filename": None}, {"filename": 4}, {"filename": ""}, binary]))
+    client, _ = _client(
+        _body(
+            files=[
+                None,
+                [],
+                3,
+                {},
+                {"filename": None},
+                {"filename": 4},
+                {"filename": ""},
+                binary,
+            ]
+        )
+    )
     with client:
         evidence = collect_repo_diff(BASE, HEAD, client=client)
     assert evidence.changed_files == 1
@@ -365,18 +394,34 @@ def test_malformed_file_counts(field, value):
 
 def test_all_prompt_exclusions_are_declared():
     tree = ast.parse(Path(__file__).with_name("extraction.py").read_text())
-    prompt = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "build_repo_diff_prompt")
-    literals = " ".join(node.value for node in ast.walk(prompt) if isinstance(node, ast.Constant) and isinstance(node.value, str))
+    prompt = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_repo_diff_prompt"
+    )
+    literals = " ".join(
+        node.value
+        for node in ast.walk(prompt)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
     exclusions = literals.split("Exclude", 1)[1].split("Use git pathspec", 1)[0]
     assert set(re.findall(r"`([^`]+)`", exclusions)) == set(REPO_DIFF_EXCLUSIONS)
 
 
 def test_excluded_only_comparison():
     paths = [
-        "nested/a.lock", "nested/go.sum", "BUILD", "src/BUILD.bazel",
-        "src/foo_manifest.ndjson", "src/foo-manifest.json", "pnpm-lock.yaml",
-        "requirements.txt", "src/requirements-dev.txt", "db/atlas.sum",
-        "bazel-out/src/example.py", "bazel-bin/example.py",
+        "nested/a.lock",
+        "nested/go.sum",
+        "BUILD",
+        "src/BUILD.bazel",
+        "src/foo_manifest.ndjson",
+        "src/foo-manifest.json",
+        "pnpm-lock.yaml",
+        "requirements.txt",
+        "src/requirements-dev.txt",
+        "db/atlas.sum",
+        "bazel-out/src/example.py",
+        "bazel-bin/example.py",
     ]
     client, _ = _client(_body(files=[_file(path) for path in paths]))
     with client:
@@ -394,7 +439,12 @@ def test_nested_bazel_directory_is_not_top_level_exclusion():
 
 
 def test_large_comparison_capped_with_whole_files():
-    files = [_file("first.py"), _file("huge.py", patch="+" + "x" * REPO_DIFF_PATCH_CAP), _file("last.py"), _file("binary", patch=None)]
+    files = [
+        _file("first.py"),
+        _file("huge.py", patch="+" + "x" * REPO_DIFF_PATCH_CAP),
+        _file("last.py"),
+        _file("binary", patch=None),
+    ]
     client, _ = _client(_body(files=files))
     with client:
         evidence = collect_repo_diff(BASE, HEAD, client=client)
@@ -416,7 +466,10 @@ def test_cap_boundary_reserves_marker_by_removing_whole_file():
     client, _ = _client(_body(files=[_file("first.py", patch="x")]))
     with client:
         overhead = len(collect_repo_diff(BASE, HEAD, client=client).patch) - 1
-    files = [_file("first.py", patch="x" * (REPO_DIFF_PATCH_CAP - overhead)), _file("last.py")]
+    files = [
+        _file("first.py", patch="x" * (REPO_DIFF_PATCH_CAP - overhead)),
+        _file("last.py"),
+    ]
     client, _ = _client(_body(files=files))
     with client:
         evidence = collect_repo_diff(BASE, HEAD, client=client)
@@ -427,7 +480,9 @@ def test_cap_boundary_reserves_marker_by_removing_whole_file():
 
 @pytest.mark.parametrize("size,complete", [(299, True), (300, False), (301, False)])
 def test_file_list_cap_not_paged(size, complete):
-    client, requests = _client(_body(files=[_file(f"{i}.py", patch=None) for i in range(size)]))
+    client, requests = _client(
+        _body(files=[_file(f"{i}.py", patch=None) for i in range(size)])
+    )
     with client:
         evidence = collect_repo_diff(BASE, HEAD, client=client)
     assert evidence.coverage["file_list_complete"] is complete
