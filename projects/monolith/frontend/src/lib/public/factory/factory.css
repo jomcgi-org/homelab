@@ -181,6 +181,58 @@
   background: transparent;
 }
 
+/* Marks: one square, one meaning, shared by the ledger rows, the node strips,
+   the plan strip and the key. factory.css defines the square; these are this
+   view's vocabulary for what fills it. */
+.factory-page .mark.done,
+.factory-page .mark.landed {
+  background: var(--ink);
+}
+
+.factory-page .mark.running {
+  border-color: var(--accent-ink);
+  background: var(--accent-ink);
+}
+
+.factory-page .mark.queued {
+  background: transparent;
+}
+
+.factory-page .mark.failed {
+  border-color: var(--tone-disk);
+  background: var(--tone-disk);
+}
+
+.factory-page .mark.uncertain {
+  border-color: var(--tone-disk);
+  background: transparent;
+}
+
+.factory-page .mark.retired,
+.factory-page .mark.cancelled {
+  background: var(--hatch);
+}
+
+/* Anything running breathes, so a glance at a still page says whether the lane
+   is moving. Slow and shallow: this is a status light, not an attention grab. */
+@media (prefers-reduced-motion: no-preference) {
+  .factory-page .mark.running,
+  .factory-page .strip i.running {
+    animation: factory-breathe 2.8s ease-in-out infinite;
+  }
+
+  @keyframes factory-breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+
+    50% {
+      opacity: 0.3;
+    }
+  }
+}
+
 .factory-page .unavailable {
   margin: 0;
   padding: 0.45em 0.7em;
@@ -656,6 +708,97 @@
 
 .factory-page .goal-recent a:hover {
   color: var(--accent-ink);
+}
+
+/* The lane on the overview: one row per task, the mark and number first,
+   the title, then the state line. Each row is one link into the walkthrough. */
+.factory-page .goals .sec-label a.win {
+  color: var(--ink-2);
+  text-decoration: none;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.factory-page .goals .sec-label a.win:hover {
+  color: var(--accent-ink);
+}
+
+.factory-page .goals .goals-label {
+  margin-top: 1.2rem;
+}
+
+.factory-page .lane-list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.factory-page .lane-list > li {
+  border-top: 1px solid var(--line);
+}
+
+.factory-page .lane-list > li:first-child {
+  border-top: 0;
+}
+
+/* A heavier rule where the live rows end and the finished ones begin. */
+.factory-page .lane-list > li:not(.done) + li.done {
+  border-top-color: var(--stroke);
+}
+
+/* One line per task: mark, number, title, then the phase or the elapsed
+   time at the right. The title is the one cell that gives way. */
+.factory-page .lane-list a {
+  display: grid;
+  grid-template-columns: 0.6em auto minmax(0, 1fr) auto;
+  gap: 0.55em;
+  align-items: baseline;
+  overflow: hidden;
+  padding: 0.3em 0.4em;
+  border-left: 2px solid transparent;
+  text-decoration: none;
+}
+
+.factory-page .lane-list a:hover,
+.factory-page .lane-list a:focus-visible {
+  border-left-color: var(--accent-ink);
+  background: var(--band);
+  outline: 0;
+}
+
+.factory-page .lane-list a:hover .t {
+  color: var(--accent-ink);
+}
+
+.factory-page .lane-list .n,
+.factory-page .lane-list .m {
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.factory-page .lane-list .t {
+  overflow: hidden;
+  font-size: 0.86rem;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.factory-page .lane-list .m {
+  max-width: 14em;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 540px) {
+  .factory-page .lane-list .m {
+    display: none;
+  }
 }
 
 .factory-page .goals .stale-note {

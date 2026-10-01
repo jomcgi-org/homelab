@@ -1,17 +1,26 @@
 <script>
-  import { invalidateAll } from "$app/navigation";
+  import { invalidateAll, replaceState } from "$app/navigation";
+  import { page } from "$app/state";
   import { SchemeToggle, Seo } from "$lib/public/components";
   import {
     duration,
+    filterQuery,
+    filterTasks,
     groupByDay,
     isoClock,
+    LEDGER_PAGE,
+    LEDGER_SORTS,
+    LEDGER_STATES,
     ledger,
     ledgerMeta,
     money,
     nodeWord,
+    readFilters,
     relative,
     taskMark,
+    taskTypes,
   } from "$lib/public/factory/activity-view.js";
+  import { paginate } from "$lib/public/factory/model.js";
   import "$lib/public/factory/factory.css";
   import "$lib/public/factory/activity.css";
   import Trail from "../../Trail.svelte";
@@ -23,9 +32,23 @@
   // first client render agree; the effect below then tracks real time.
   let now = $state(data.board.snapshotted_at ?? new Date().toISOString());
 
+  // The filters are the page's URL state, read once from the address on both
+  // the server and the client so a shared link renders filtered. Each change
+  // is written back with replaceState, never pushed: the back button should
+  // leave the page, not walk back through every keystroke.
+  let filters = $state(readFilters(page.url.searchParams));
+
   const policy = $derived(data.board.policy ?? {});
   const book = $derived(ledger(data.board, now));
-  const days = $derived(groupByDay(book.done));
+  const everything = $derived([...book.live, ...book.queued, ...book.done]);
+  const types = $derived(taskTypes(everything));
+  const live = $derived(filterTasks([...book.live, ...book.queued], filters));
+  const done = $derived(filterTasks(book.done, filters));
+  const pages = $derived(paginate(done, filters.page - 1, LEDGER_PAGE));
+  const days = $derived(groupByDay(pages.rows));
+  const filtering = $derived(
+    Boolean(filters.q || filters.state || filters.type),
+  );
 
   const REFRESH_MS = 60_000;
 
@@ -47,6 +70,11 @@
     return () => clearInterval(timer);
   });
 
+  function set(patch) {
+    filters = { ...filters, page: 1, ...patch };
+    replaceState(`${location.pathname}${filterQuery(filters)}`, {});
+  }
+
   const nodeTitle = (task) =>
     (task.nodes ?? [])
       .map((node) => `${node.node_key}: ${nodeWord(node.state)}`)
@@ -54,17 +82,10 @@
 
   const startsOf = (task) => (task.state === "queued" ? null : task.turns_used);
 
-  // Each blocks below key on issue number AND position. A keyed each throws at
-  // runtime on a duplicate, and an issue re-admitted under a later generation
-  // appears twice in the completed ledger, so the number alone is not unique.
-  const LEGEND = [
-    ["done", "done"],
-    ["running", "running"],
-    ["queued", "queued"],
-    ["failed", "failed"],
-    ["uncertain", "uncertain"],
-    ["retired", "retired"],
-  ];
+  const rowMeta = (task) =>
+    [task.task_class, ledgerMeta(task, policy, now)]
+      .filter(Boolean)
+      .join(" · ");
 </script>
 
 <Seo
@@ -98,7 +119,7 @@
       >
       <span
         ><span class="t">{task.title}</span><span class="m"
-          >{ledgerMeta(task, policy, now)}</span
+          >{rowMeta(task)}</span
         ></span
       >
       <span class="strip-cell">
@@ -192,41 +213,85 @@
       </div>
     </div>
 
+    <div class="filters" role="search" aria-label="Filter the ledger">
+      <input
+        type="search"
+        placeholder="issue, title, phase"
+        aria-label="Search tasks"
+        autocomplete="off"
+        value={filters.q}
+        oninput={(event) => set({ q: event.currentTarget.value })}
+      />
+      <div class="chips" role="group" aria-label="State">
+        {#each ["", ...LEDGER_STATES] as state (state)}
+          <button
+            type="button"
+            class:on={filters.state === state}
+            aria-pressed={filters.state === state}
+            onclick={() => set({ state })}
+            >{#if state}<span class="mark {taskMark(state)}"
+              ></span>{/if}{state || "all"}</button
+          >
+        {/each}
+      </div>
+      <label
+        ><span class="k">type</span><select
+          value={filters.type}
+          onchange={(event) => set({ type: event.currentTarget.value })}
+        >
+          <option value="">all</option>
+          {#each types as type (type)}
+            <option value={type}>{type}</option>
+          {/each}
+        </select></label
+      >
+      <label
+        ><span class="k">sort</span><select
+          value={filters.sort}
+          onchange={(event) => set({ sort: event.currentTarget.value })}
+        >
+          {#each LEDGER_SORTS as sort (sort)}
+            <option value={sort}>{sort}</option>
+          {/each}
+        </select></label
+      >
+      <span class="count num"
+        >{live.length + done.length}{#if filtering}
+          of {everything.length}{/if}</span
+      >
+    </div>
+
     <section class="panel">
       <p class="sec-label">
         / In flight
         <span class="win"
           >{data.board.snapshotted_at
             ? `as of ${isoClock(data.board.snapshotted_at)} UTC`
-            : "no snapshot yet"} · {book.live.length} running, {book.queued
-            .length} queued</span
+            : "no snapshot yet"} · {live.length}</span
         >
       </p>
       <ul class="rows">
         {@render ledgerHead()}
-        {#each book.live as task, index (`${task.issue_number}-${index}`)}
-          {@render row(task, relative(task.admitted_at, now))}
-        {/each}
-        {#each book.queued as task, index (`${task.issue_number}-${index}`)}
-          {@render row(task, "–")}
+        {#each live as task, index (`${task.issue_number}-${index}`)}
+          {@render row(
+            task,
+            task.state === "queued" ? "–" : relative(task.admitted_at, now),
+          )}
         {/each}
       </ul>
-      {#if !book.live.length && !book.queued.length}
-        <p class="none">Nothing is in the lane right now.</p>
+      {#if !live.length}
+        <p class="empty">
+          {filtering ? "nothing matches" : "nothing in the lane"}
+        </p>
       {/if}
-      <div class="legend">
-        {#each LEGEND as [state, label] (state)}
-          <span><span class="mark {state}"></span>{label}</span>
-        {/each}
-      </div>
     </section>
 
     <section class="panel">
       <p class="sec-label">
         / Completed
         <span class="win"
-          >{book.done.length
-            ? `last ${book.done.length}, newest first`
+          >{done.length
+            ? `${pages.start}–${pages.end} of ${done.length}`
             : "nothing yet"}</span
         >
       </p>
@@ -239,16 +304,27 @@
           {/each}
         {/each}
       </ul>
-      {#if !book.done.length}
-        <p class="none">Nothing has finished yet.</p>
+      {#if !done.length}
+        <p class="empty">
+          {filtering ? "nothing matches" : "nothing finished yet"}
+        </p>
+      {/if}
+      {#if pages.pageCount > 1}
+        <div class="pager">
+          <span class="num">page {pages.page + 1} of {pages.pageCount}</span>
+          <span
+            ><button
+              type="button"
+              onclick={() => set({ page: pages.page })}
+              disabled={pages.page === 0}>prev</button
+            ><button
+              type="button"
+              onclick={() => set({ page: pages.page + 2 })}
+              disabled={pages.page >= pages.pageCount - 1}>next</button
+            ></span
+          >
+        </div>
       {/if}
     </section>
-
-    <p class="foot">
-      Each row is one GitHub issue admitted to the lane: planned by the
-      conductor, built and reviewed by workers, verified, then its PR enqueued.
-      Nothing here merges itself. Open a row for the plan, each step, and the
-      transcript behind it.
-    </p>
   </div>
 </main>

@@ -70,58 +70,6 @@
   margin-bottom: 1rem;
 }
 
-/* Marks: one square, one meaning, shared by the ledger rows, the node strips,
-   the plan strip and the key. factory.css defines the square; these are this
-   view's vocabulary for what fills it. */
-.factory-page.activity-page .mark.done,
-.factory-page.activity-page .mark.landed {
-  background: var(--ink);
-}
-
-.factory-page.activity-page .mark.running {
-  border-color: var(--accent-ink);
-  background: var(--accent-ink);
-}
-
-.factory-page.activity-page .mark.queued {
-  background: transparent;
-}
-
-.factory-page.activity-page .mark.failed {
-  border-color: var(--tone-disk);
-  background: var(--tone-disk);
-}
-
-.factory-page.activity-page .mark.uncertain {
-  border-color: var(--tone-disk);
-  background: transparent;
-}
-
-.factory-page.activity-page .mark.retired,
-.factory-page.activity-page .mark.cancelled {
-  background: var(--hatch);
-}
-
-/* Anything running breathes, so a glance at a still page says whether the lane
-   is moving. Slow and shallow: this is a status light, not an attention grab. */
-@media (prefers-reduced-motion: no-preference) {
-  .factory-page.activity-page .mark.running,
-  .factory-page.activity-page .strip i.running {
-    animation: factory-breathe 2.8s ease-in-out infinite;
-  }
-
-  @keyframes factory-breathe {
-    0%,
-    100% {
-      opacity: 1;
-    }
-
-    50% {
-      opacity: 0.3;
-    }
-  }
-}
-
 .factory-page.activity-page .legend {
   padding-left: 0;
   margin-top: 0.6em;
@@ -131,6 +79,135 @@
   display: inline-flex;
   gap: 0.4em;
   align-items: center;
+}
+
+/* The filter bar: a search field, one chip per board state, the type and
+   sort selects, and the count. One strip, outlined once, divided inside. */
+.factory-page.activity-page .filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  align-items: stretch;
+  margin-bottom: 1.6rem;
+  border: 1px solid var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
+.factory-page.activity-page .filters > * {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-right: 1px solid var(--stroke);
+}
+
+.factory-page.activity-page .filters > :last-child {
+  border-right: 0;
+}
+
+.factory-page.activity-page .filters input[type="search"] {
+  flex: 1 1 12em;
+  min-width: 9em;
+  padding: 0.45em 0.7em;
+  border: 0;
+  background: var(--sheet);
+  font: inherit;
+}
+
+.factory-page.activity-page .filters input[type="search"]::placeholder {
+  color: var(--ink-3);
+}
+
+.factory-page.activity-page .filters .chips {
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+}
+
+.factory-page.activity-page .filters .chips button {
+  display: inline-flex;
+  gap: 0.45em;
+  align-items: center;
+  padding: 0.45em 0.65em;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .filters .chips button:last-child {
+  border-right: 0;
+}
+
+.factory-page.activity-page .filters .chips button:hover {
+  color: var(--accent-ink);
+}
+
+.factory-page.activity-page .filters .chips button.on {
+  background: var(--band);
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent-ink);
+}
+
+.factory-page.activity-page .filters label {
+  gap: 0.5em;
+  padding: 0 0.7em;
+}
+
+.factory-page.activity-page .filters label .k {
+  color: var(--ink-3);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.factory-page.activity-page .filters select {
+  padding: 0.35em 0;
+  border: 0;
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.factory-page.activity-page .filters .count {
+  margin-left: auto;
+  padding: 0 0.7em;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .filters :focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: -2px;
+}
+
+.factory-page.activity-page .pager {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.6em;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+}
+
+.factory-page.activity-page .pager button {
+  padding: 0.1em 0.5em;
+  border: 1px solid var(--stroke);
+  background: var(--sheet);
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+}
+
+.factory-page.activity-page .pager button + button {
+  margin-left: 0.3em;
+}
+
+.factory-page.activity-page .pager button:disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 /* Ledgers: each row is one link. Hovering paints the band and the 2px accent
@@ -1426,6 +1503,30 @@
 
   .factory-page.activity-page .masthead .trail-row {
     flex-wrap: wrap;
+  }
+
+  .factory-page.activity-page .filters > * {
+    border-right: 0;
+    border-bottom: 1px solid var(--stroke);
+  }
+
+  .factory-page.activity-page .filters input[type="search"] {
+    flex-basis: 100%;
+  }
+
+  .factory-page.activity-page .filters .chips {
+    flex-basis: 100%;
+  }
+
+  .factory-page.activity-page .filters label {
+    flex: 1 1 auto;
+    padding: 0.2em 0.7em;
+    border-bottom: 0;
+  }
+
+  .factory-page.activity-page .filters .count {
+    padding: 0.2em 0.7em;
+    border-bottom: 0;
   }
 
   .factory-page.activity-page .sec-label {

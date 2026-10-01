@@ -647,3 +647,86 @@ export function turnMeta(turn) {
 export function sessionHref(issue, nodeKey, attempt) {
   return `/slop/factory/activity/${issue}/${encodeURIComponent(nodeKey)}/${attempt}`;
 }
+
+// The ledger's filter vocabulary. Each state chip is one board word; "all"
+// is no chip. Sorts name the key a reader would reach for, newest first by
+// default because the lane is read as a log.
+export const LEDGER_STATES = [
+  "in flight",
+  "landing",
+  "uncertain",
+  "queued",
+  "landed",
+  "failed",
+  "cancelled",
+];
+export const LEDGER_SORTS = ["newest", "oldest", "spend", "time"];
+export const LEDGER_PAGE = 20;
+
+/** Filters from a query string: unknown words fall back to the default. */
+export function readFilters(params) {
+  const get = (key) => params?.get?.(key) ?? "";
+  const state = get("state");
+  const sort = get("sort");
+  const page = Number.parseInt(get("page"), 10);
+  return {
+    q: get("q").trim().slice(0, 120),
+    state: LEDGER_STATES.includes(state) ? state : "",
+    type: get("type").trim().slice(0, 40),
+    sort: LEDGER_SORTS.includes(sort) ? sort : "newest",
+    page: Number.isFinite(page) && page > 1 ? page : 1,
+  };
+}
+
+/** The query string for a filter set, empty when everything is default. */
+export function filterQuery(filters) {
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.state) params.set("state", filters.state);
+  if (filters.type) params.set("type", filters.type);
+  if (filters.sort && filters.sort !== "newest")
+    params.set("sort", filters.sort);
+  if (filters.page > 1) params.set("page", String(filters.page));
+  const text = params.toString();
+  return text ? `?${text}` : "";
+}
+
+const stamp = (task) => task.finished_at ?? task.admitted_at ?? "";
+const elapsedOf = (task) =>
+  task.admitted_at
+    ? new Date(task.finished_at ?? Date.now()).getTime() -
+      new Date(task.admitted_at).getTime()
+    : 0;
+
+/** Tasks that pass the search, state and type filters, in the sort's order. */
+export function filterTasks(tasks, filters) {
+  const needle = (filters.q ?? "").toLowerCase();
+  const kept = (tasks ?? []).filter((task) => {
+    if (filters.state && task.state !== filters.state) return false;
+    if (filters.type && task.task_class !== filters.type) return false;
+    if (!needle) return true;
+    const hay =
+      `#${task.issue_number} ${task.title ?? ""} ${task.phase ?? ""}`.toLowerCase();
+    return hay.includes(needle);
+  });
+  const by = {
+    newest: (a, b) => stamp(b).localeCompare(stamp(a)),
+    oldest: (a, b) => stamp(a).localeCompare(stamp(b)),
+    spend: (a, b) =>
+      (Number(b.committed_cost_usd) || 0) - (Number(a.committed_cost_usd) || 0),
+    time: (a, b) => elapsedOf(b) - elapsedOf(a),
+  }[filters.sort ?? "newest"];
+  return kept.sort(by);
+}
+
+/** The task classes on the board, for the type filter, most common first. */
+export function taskTypes(tasks) {
+  const counts = new Map();
+  for (const task of tasks ?? []) {
+    const type = task.task_class;
+    if (type) counts.set(type, (counts.get(type) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([type]) => type);
+}
