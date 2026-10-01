@@ -1086,6 +1086,11 @@ def adopt_completed_factory_receipt(db: Session, pin: dict, identity: dict) -> d
 
     previous = json.loads(json.dumps(original.model_dump(), default=encode))
     usage = sanitize_payload({**turn.usage, "activities": turn.activities})
+    # This recovery runs after the pending row is gone. Preserve the previous
+    # row in the recovery archive; its clocks may belong to an earlier dispatch.
+    usage["observation"] = store.turn_observation(
+        None, runtime_duration_ms=turn.duration_ms
+    )
     usage["native_result_receipt"] = captured["provenance"]
     usage["factory_receipt_recovery"] = {
         "identity": identity,

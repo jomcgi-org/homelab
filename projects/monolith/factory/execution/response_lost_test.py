@@ -1437,6 +1437,14 @@ def test_factory_drained_held_turn_relays_instead_of_settling(database, monkeypa
     usage = json.loads(turn["usage_json"])
     assert usage["retry_dispatch_count"] == 1
     assert usage["recovery"]["response_lost_drain"]["receipt_id"] == hold["receipt_id"]
+    observation = usage["observation"]
+    assert observation["schema"] == "turn-observation/1"
+    assert observation["dispatch_count"] == 1
+    assert observation["queued_at"] is not None
+    assert observation["dispatched_at"] is not None
+    assert observation["executor_elapsed_ms"] is None
+    assert observation["runtime_duration_ms"] is None
+    assert observation["provider_retries"] is None
     assert state["session"]["status"] == "recovering"
     assert state["session"]["cli_session_id"] == "codex-thread-1"
 

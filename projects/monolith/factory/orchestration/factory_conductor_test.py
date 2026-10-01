@@ -17018,11 +17018,15 @@ def completed_receipt_factory(uncertain_factory):
     return s
 
 
+@pytest.mark.parametrize("duration", [0, 123])
 def test_completed_receipt_recovers_result_once_without_refunding_prefix(
     completed_receipt_factory,
+    duration,
 ):
+    import hashlib
     from factory.execution.models import (
         AgentCapacityReservation,
+        AgentResultReceipt,
         AgentSession,
         AgentTurn,
         PendingMessage,
@@ -17031,6 +17035,15 @@ def test_completed_receipt_recovers_result_once_without_refunding_prefix(
     from factory.orchestration.factory_supervision import recover_completed_receipt
 
     s = completed_receipt_factory
+    with Session(s.engine) as db:
+        receipt = db.get(AgentResultReceipt, "completed-receipt-2")
+        body = json.loads(receipt.result_body)
+        body["duration_ms"] = duration
+        body["usage"]["observation"] = {"schema": "guest-spoof"}
+        receipt.result_body = json.dumps(body).encode()
+        receipt.result_sha256 = hashlib.sha256(receipt.result_body).hexdigest()
+        db.add(receipt)
+        db.commit()
     assert recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
     assert not recover_completed_receipt(s.run["pin"], s.sid, "SUCCESS")
     assert s.calls == []
@@ -17043,6 +17056,16 @@ def test_completed_receipt_recovers_result_once_without_refunding_prefix(
         assert usage["factory_receipt_recovery"]["previous_turn"] == s.previous_turn
         assert len(usage["factory_receipt_recovery"]["dispatch_receipts"]) == 2
         assert usage["native_result_receipt"]["receipt_id"] == "completed-receipt-2"
+        observation = usage["observation"]
+        assert observation["schema"] == "turn-observation/1"
+        assert observation["runtime_duration_ms"] == duration
+        assert observation["executor_elapsed_ms"] is None
+        assert observation["queued_at"] is None
+        assert observation["dispatched_at"] is None
+        assert observation["queue_wait_ms"] is None
+        assert observation["dispatch_count"] is None
+        assert observation["requested_model"] is None
+        assert observation["provider_retries"] is None
         assert (
             db.get(AgentSession, s.sid).result_receipt_fence_id == "completed-receipt-2"
         )

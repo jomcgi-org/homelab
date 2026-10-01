@@ -662,6 +662,27 @@ pending sequence; the factory node attempt and CLI loop count remain separate.
 Drain continuations retain each prior observation under `drain_continuations`
 and write a fresh observation without adding elapsed times. Guest usage cannot
 override the server-owned block.
+Completed-receipt reconciliation also writes this block. Its pending row is
+already gone, so queue identity and executor timing are null; the final native
+receipt supplies runtime duration. The original row survives in
+`factory_receipt_recovery.previous_turn`. A drained response-loss hold writes
+an observation before releasing its claim and retains the pending row for
+the next dispatch. The not-invoked error path snapshots its pending row before
+deletion. Claim heartbeats do not write turns.
+
+`create_turn` remains a low-level writer: direct callers must supply their
+observation. Duplicate-terminal cleanup preserves the existing turn without
+rewriting it, including legacy rows without observations.
+`settle_interrupted_factory_continuation` retains the interrupted turn while
+deleting its unused continuation, as does `settle_drained_lost_factory_attempt`.
+`settle_stranded_factory_attempt` preserves existing turns while consuming
+pending rows. `settle_never_dispatched_factory_attempt` and
+`settle_bound_zero_turn_factory_attempt` consume pending rows without creating
+turns. Those paths retain their existing settlement semantics and do not
+backfill observations. `delete_pending_message_sync` assumes a persisted turn.
+The drainer's `destroy_drainer_session` bulk cleanup cancels queued messages
+and deletes them without writing turns; no dispatch observation is created
+for that lifecycle cleanup.
 (see: /projects/monolith/factory/execution/store.py)
 (see: /projects/monolith/factory/execution/mcp.py)
 (see: /projects/monolith/factory/execution/reconciliation.py)
