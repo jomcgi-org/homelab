@@ -160,9 +160,7 @@ def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
                 return assign_member_character(
                     seed.campaign_id,
                     seed.player_member_id,
-                    MemberCharacterRequest(
-                        new=CharacterNameRequest(name="DM PC")
-                    ),
+                    MemberCharacterRequest(new=CharacterNameRequest(name="DM PC")),
                     seed.dm_email,
                     session,
                 )
@@ -181,9 +179,7 @@ def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
 
     with _session(lane.observer) as session:
         assert session.get(PlayerCharacter, self_character.id) is not None
-        assert (
-            session.get(PlayerCharacter, dm_view.player_character_id) is not None
-        )
+        assert session.get(PlayerCharacter, dm_view.player_character_id) is not None
         member = session.get(CampaignMember, seed.player_member_id)
         assert member.player_character_id == dm_view.player_character_id
         remaining = session.exec(
