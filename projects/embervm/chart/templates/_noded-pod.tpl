@@ -70,6 +70,7 @@ it without moving the pod's bind.
 {{- end -}}
 {{- $nodeSelector := .nodeSelector | default $ctx.Values.noded.nodeSelector -}}
 {{- $parallelEnabled := $ctx.Values.rootfsBuilder.parallelEnabled -}}
+{{- $inPodBake := $ctx.Values.rootfsBuilder.inPodBake.enabled -}}
 {{- $maxConcurrencyText := $ctx.Values.rootfsBuilder.maxConcurrency | toString -}}
 {{- if not (regexMatch "^[1-9][0-9]*$" $maxConcurrencyText) -}}
 {{- fail "rootfsBuilder.maxConcurrency must be an integer from 1 through 16" -}}
@@ -79,7 +80,7 @@ it without moving the pod's bind.
 {{- fail "rootfsBuilder.maxConcurrency must be an integer from 1 through 16" -}}
 {{- end -}}
 {{- $classMemoryCeilingMib := "" -}}
-{{- if and $parallelEnabled $sizeClass -}}
+{{- if and (or $parallelEnabled $inPodBake) $sizeClass -}}
 {{- $classMemoryLimit := .resources.limits.memory | toString -}}
 {{- if not (regexMatch "^[1-9][0-9]*Gi$" $classMemoryLimit) -}}
 {{- fail (printf "rootfs class filtering requires a whole-Gi memory limit, got %q for class %s" $classMemoryLimit $sizeClass) -}}
@@ -110,7 +111,7 @@ tolerations:
 securityContext:
   runAsUser: 0
   runAsGroup: 0
-{{- if or $scratchGate $sharedOn $ctx.Values.workloads }}
+{{- if or $scratchGate $sharedOn (and (not $inPodBake) $ctx.Values.workloads) }}
 # Build each workload's base rootfs in-cluster from its pinned guest image
 # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
 # manual sudo rootfs placement. The default keeps one sequential builder per
@@ -160,7 +161,7 @@ initContainers:
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
         mountPropagation: HostToContainer
   {{- end }}
-  {{- if $ctx.Values.workloads }}
+  {{- if and (not $inPodBake) $ctx.Values.workloads }}
   {{- if $parallelEnabled }}
   # One opt-in bounded driver. Its argv is a sequence of
   # name/image/base-path/declared-memory tuples. Empty memory is intentional:
@@ -319,6 +320,70 @@ initContainers:
   {{- end }}
 {{- end }}
 containers:
+  {{- if and $inPodBake $ctx.Values.workloads }}
+  # Background bakes do not gate daemon readiness; pending roots return ABORTED.
+  # nosemgrep: require-readiness-probe, require-resource-limits
+  - name: rootfs-baker
+    image: "{{ $ctx.Values.rootfsBuilder.image.repository }}@{{ $ctx.Values.rootfsBuilder.image.digest }}"
+    command: ["/bin/bash", "/scripts/rootfs-baker.sh"]
+    args:
+      - {{ $maxConcurrency | quote }}
+      - {{ $classMemoryCeilingMib | quote }}
+      - {{ $ctx.Values.rootfsBuilder.inPodBake.pollSeconds | quote }}
+    env:
+      - name: ROOTFS_SIZE
+        value: {{ $ctx.Values.rootfsBuilder.rootfsSize | quote }}
+      - name: ROOTFS_BAKE_FORMAT
+        value: {{ $ctx.Values.rootfsBuilder.bakeFormatVersion | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_ENABLED
+        value: {{ $ctx.Values.rootfsReclaim.enabled | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT
+        value: {{ printf "%s/embervm-noded/snapshots" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
+      - name: EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES
+        value: {{ $ctx.Values.rootfsReclaim.targetFreeBytes | quote }}
+      {{- if $ctx.Values.noded.store.endpoint }}
+      - name: EMBERVM_NODED_STORE_ENDPOINT
+        value: {{ $ctx.Values.noded.store.endpoint | quote }}
+      - name: EMBERVM_NODED_STORE_BUCKET
+        value: {{ $ctx.Values.noded.store.bucket | quote }}
+      {{- if $ctx.Values.noded.store.credentials.enabled }}
+      - name: EMBERVM_NODED_STORE_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.accessKeyIdKey }}
+      - name: EMBERVM_NODED_STORE_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
+      {{- end }}
+      {{- end }}
+      {{- if $ctx.Values.imagePullSecret.enabled }}
+      - name: DOCKER_CONFIG
+        value: /ghcr
+      {{- end }}
+    volumeMounts:
+      - name: nvme
+        mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        {{- if $sharedOn }}
+        subPath: {{ $shared.subPath }}
+        {{- else }}
+        mountPropagation: HostToContainer
+        {{- end }}
+      - name: rootfs-builder-script
+        mountPath: /scripts
+        readOnly: true
+      - name: rootfs-builder-work
+        mountPath: /work
+      {{- if $ctx.Values.imagePullSecret.enabled }}
+      - name: ghcr-creds
+        mountPath: /ghcr
+        readOnly: true
+      {{- end }}
+    resources:
+      {{- toYaml $ctx.Values.rootfsBuilder.inPodBake.resources | nindent 6 }}
+  {{- end }}
   # This is a defined template PARTIAL, not a standalone manifest, so the
   # manifest-shape k8s rules mis-parse the fragment: the noded container DOES have
   # a readinessProbe (below) and resources (rendered from .resources via toYaml,
@@ -351,6 +416,10 @@ containers:
         containerPort: {{ $ctx.Values.noded.activatorPort }}
         protocol: TCP
     env:
+      {{- if $inPodBake }}
+      - name: EMBERVM_NODED_ROOTFS_PENDING_MAX_AGE
+        value: {{ $ctx.Values.rootfsBuilder.inPodBake.pendingMaxAge | quote }}
+      {{- end }}
       {{- if $ctx.Values.noded.plaintextGrpc.enabled }}
       - name: EMBERVM_NODED_LISTEN_ADDR
         value: ":{{ $ctx.Values.noded.grpcPort }}"

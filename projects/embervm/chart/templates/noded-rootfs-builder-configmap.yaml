@@ -34,6 +34,81 @@ metadata:
   labels:
     {{- include "embervm.noded.labels" . | nindent 4 }}
 data:
+  {{- if .Values.rootfsBuilder.inPodBake.enabled }}
+  rootfs-desired-set: |
+    {{- range $name, $wl := .Values.workloads }}
+    {{- $top := index $.Values $name }}
+    {{- if and $top $top.guestImage $top.guestImage.repository }}
+    {{ printf "%s\t%s@%s\t%s\t%s" $name $top.guestImage.repository $top.guestImage.digest (include "embervm.noded.rootfsPath" (dict "wl" $wl "top" $top "rootfsBuilder" $.Values.rootfsBuilder)) (include "embervm.rootfs.workloadMemoryMib" (dict "ctx" $ "name" $name)) }}
+    {{- end }}
+    {{- end }}
+  rootfs-baker.sh: |
+    #!/bin/bash
+    # Poll the directory-mounted desired set, including while a bake is running.
+    # Only markers are removed here. Published roots and reclaim stay untouched.
+    set -euo pipefail
+    max_concurrency="${1:?concurrency required}"
+    class_ceiling_mib="${2-}"
+    poll_seconds="${3:-30}"
+    if ! [[ "$poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
+      echo "invalid rootfs baker poll seconds '$poll_seconds'" >&2
+      exit 2
+    fi
+    desired_set="${ROOTFS_DESIRED_SET_FILE:-/scripts/rootfs-desired-set}"
+    driver="${ROOTFS_SET_SCRIPT:-/scripts/build-rootfs-set.sh}"
+    child_pid=""
+    sleep_pid=""
+    declare -a pending_paths=()
+    clear_markers() {
+      local path
+      for path in "${pending_paths[@]}"; do rm -f -- "$path.pending"; done
+      pending_paths=()
+    }
+    terminate_children() {
+      trap - INT TERM
+      if [ -n "$sleep_pid" ]; then kill -TERM "$sleep_pid" 2>/dev/null || true; fi
+      if [ -n "$child_pid" ]; then
+        # The driver owns process groups and forwards TERM to every worker.
+        kill -TERM "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+      fi
+      clear_markers
+    }
+    trap terminate_children EXIT
+    trap 'exit 0' INT TERM
+    while true; do
+      if [ -n "$child_pid" ] && ! kill -0 "$child_pid" 2>/dev/null; then
+        if ! wait "$child_pid"; then echo "rootfs baker: bake failed; retrying" >&2; fi
+        child_pid=""
+        clear_markers
+      fi
+      if [ -z "$child_pid" ]; then
+        tuples=()
+        # Space is intentionally not IFS: all four fields are tab-separated.
+        while IFS=$'\t' read -r name image path memory; do
+          [ -n "$name" ] || continue
+          if [[ "$memory" =~ ^[1-9][0-9]*$ ]] && [ -n "$class_ceiling_mib" ] &&
+            [ "$memory" -gt "$class_ceiling_mib" ]; then continue; fi
+          [ ! -f "$path" ] || continue
+          mkdir -p -- "$(dirname "$path")"
+          touch -- "$path.pending"
+          pending_paths+=("$path")
+          tuples+=("$name" "$image" "$path" "$memory")
+        done < "$desired_set"
+        if [ "${#tuples[@]}" -gt 0 ]; then
+          /bin/bash "$driver" "$max_concurrency" "$class_ceiling_mib" "${tuples[@]}" &
+          child_pid="$!"
+        fi
+      fi
+      for path in "${pending_paths[@]}"; do
+        if [ -f "$path" ]; then rm -f -- "$path.pending"; else touch -- "$path.pending"; fi
+      done
+      sleep "$poll_seconds" &
+      sleep_pid="$!"
+      wait "$sleep_pid"
+      sleep_pid=""
+    done
+  {{- end }}
   build-rootfs-set.sh: |
     #!/bin/bash
     # argv: max-concurrency, class-memory-ceiling-mib (empty for wildcard), then
