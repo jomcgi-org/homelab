@@ -41,8 +41,8 @@ from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
     Campaign,
-    CampaignMember,
     CampaignInvitation,
+    CampaignMember,
     CharacterSheetStatus,
     CharacterSheetVersion,
     Entity,
@@ -64,8 +64,8 @@ from grimoire.session_events import (
     append_event,
     require_play_enabled,
 )
-from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
 from grimoire.search import search_campaign
+from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
 from grimoire.visibility import (
     Viewer,
     entity_belongs_to_campaign,

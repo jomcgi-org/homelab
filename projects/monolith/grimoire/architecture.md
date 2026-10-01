@@ -209,8 +209,28 @@ replayed. Ownership controls invitations and membership removal; the existing
 DM role continues to control gameplay. The old direct provisioning endpoint is
 an operator repair path and is not exposed through the friend UI.
 
-The first delivery includes the lobby and access to the existing sheet editor.
-Player-created characters and a session screen remain separate follow-up work.
+The campaign DM assigns characters with
+`PUT /campaigns/{campaign_id}/members/{member_id}/character`: supply either
+`{player_character_id}` for an existing character in this campaign or
+`{new: {name}}` to create and assign one. A character can belong to only one
+player membership. Reassignment replaces the membership link and leaves the
+previous character unassigned. Passing `{player_character_id: null}` clears
+the link while retaining the character, its sheet versions and its knowledge
+grants. Grants follow the character; the former player loses access on the
+next request, and a newly assigned player receives that character's grants.
+
+An accepted player without a character uses
+`POST /campaigns/{campaign_id}/characters/self` with `{name}` to create and
+link their own character. A seated player receives 409; the DM uses the
+assignment route. Creation adds no sheet version. The existing draft,
+submission and DM approval flow is unchanged. The DM-only members list
+includes each assigned character's name. Lobby campaign entries include only
+the caller's own `player_character_id` and `character_name`, both null when
+unassigned. A session screen remains follow-up work.
+
+**Why.** Character-owned sheets and grants survive seating changes without
+moving knowledge between accounts. Campaign-scoped roles let a DM seat their
+own table without operator access.
 
 ### Deployment and verification
 
