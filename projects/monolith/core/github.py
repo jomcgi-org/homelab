@@ -18,6 +18,7 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO", "jomcgi-org/homelab")
 logger = logging.getLogger(__name__)
 
 _MAX_PULL_PAGES = 120
+_MAX_CLOSING_REFS = 20
 _MAX_REQUEST_ATTEMPTS = 4
 _RETRY_BACKOFF_SECONDS = (2, 4, 8, 16)
 _RETRY_STATUS_CODES = frozenset({502, 503, 504})
@@ -121,7 +122,7 @@ def fetch_issue_states(
     fields = "\n".join(
         f"""{alias}: issue(number: {number}) {{
           number state closedAt
-          closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {{
+          closedByPullRequestsReferences(first: {_MAX_CLOSING_REFS}, includeClosedPrs: true) {{
             nodes {{ number merged mergedAt }}
             pageInfo {{ hasNextPage }}
           }}
@@ -160,7 +161,7 @@ def fetch_issue_states(
             if issue is None:
                 continue
             connection = issue["closedByPullRequestsReferences"]
-            # Keep the scoped first:20 query, but never publish partial counts.
+            # Keep the scoped _MAX_CLOSING_REFS query, but never publish partial counts.
             if connection["pageInfo"]["hasNextPage"]:
                 raise RuntimeError(
                     f"GitHub closing refs truncated for issue #{issue['number']}"

@@ -9,7 +9,9 @@ distinct merged PR numbers: title references in ``merged_prs`` or GitHub's
 merged closing refs. Last activity includes issue closure and merge times.
 
 Every shaping helper takes plain dicts so the unit tests run without a
-database. Public reads use only plain SQL over granted snapshot tables.
+database. Only ``list_active_goals`` and ``list_goal_issues`` touch a
+session, and they read granted tables and nothing else, which keeps the
+public tier on plain SQL over granted tables.
 """
 
 from __future__ import annotations
@@ -17,9 +19,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, JSON, delete
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import Column, DateTime, Integer, JSON
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlmodel import Field, Session, SQLModel, select
 
@@ -233,42 +233,3 @@ def list_goal_issues(session: Session, numbers: set[int]) -> list[dict]:
         select(FactoryGoalIssue).where(FactoryGoalIssue.number.in_(numbers))
     ).all()
     return [row.model_dump() for row in rows]
-
-
-def upsert_goal_issues(
-    session: Session,
-    issues: list[dict],
-    numbers: set[int],
-    *,
-    snapshotted_at: datetime | None = None,
-) -> tuple[int, int]:
-    """Replace resolved issue snapshots and prune unlinked or unresolved rows."""
-    snapshot_time = snapshotted_at or _utc_now()
-    rows = [
-        {**issue, "snapshotted_at": snapshot_time}
-        for issue in issues
-        if issue["number"] in numbers
-    ]
-    table = FactoryGoalIssue.__table__
-    if rows:
-        insert_fn = (
-            sqlite_insert
-            if session.get_bind().dialect.name == "sqlite"
-            else postgresql_insert
-        )
-        statement = insert_fn(table).values(rows)
-        statement = statement.on_conflict_do_update(
-            index_elements=[table.c.number],
-            set_={
-                column.name: getattr(statement.excluded, column.name)
-                for column in table.columns
-                if column.name != "number"
-            },
-        )
-        session.exec(statement)
-    resolved = {row["number"] for row in rows}
-    result = session.exec(
-        delete(FactoryGoalIssue).where(FactoryGoalIssue.number.not_in(resolved))
-    )
-    session.commit()
-    return len(rows), result.rowcount or 0
