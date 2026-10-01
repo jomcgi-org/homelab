@@ -4,6 +4,7 @@ import asyncio
 import collections
 import json
 import logging
+import os
 import platform
 import re
 import secrets
@@ -35,6 +36,7 @@ from factory.execution.transport import (
     EmberTurnNotInvoked,
     EmberVmShimTransport,
     Turn,
+    guest_answered_invoke,
 )
 from core.db import get_engine
 from core.github import GITHUB_REPO
@@ -605,6 +607,22 @@ def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
     store.delete_pending_message_sync(session_id, turn_seq)
 
 
+def _guest_answer_settles(session_row, exc: BaseException) -> bool:
+    """Whether a failed invoke carries the guest's own answer as evidence.
+
+    Staged behind AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED. Factory sessions are
+    excluded: their uncertain permit is the handle stop supervision settles
+    the graph attempt and start through, and settling it here would strand
+    that attempt (read_uncertain_factory_attempt requires it uncertain).
+    """
+    if os.getenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "false").lower() != "true":
+        return False
+    local_session_id = getattr(session_row, "local_session_id", None) or ""
+    if local_session_id.startswith("factory:"):
+        return False
+    return guest_answered_invoke(exc)
+
+
 def _mark_turn_error_sync(
     session_id: int,
     turn_seq: int,
@@ -1148,6 +1166,23 @@ async def _execute_pending_message(session_id: int) -> None:
             return
         except Exception as exc:
             if await _abort_stolen_executor_confirmed("delivery error"):
+                return
+            if _guest_answer_settles(session_row, exc):
+                # The control plane marked this 4xx/5xx as the guest's own
+                # answer, so the invoke ended inside the guest and nothing is
+                # still running for this turn: a workspace that failed to
+                # mount, a CLI that exited. That is cessation evidence, not
+                # the at-most-once 502 or a lost response, so the permit
+                # settles with the error and the owner may retry.
+                await asyncio.to_thread(
+                    _mark_turn_error_sync,
+                    session_id,
+                    claimed_seq,
+                    str(exc),
+                    claim_owner,
+                    cessation_confirmed=True,
+                )
+                _clear_negative_oracle_verdict(session_id)
                 return
             # A response this executor never received is not a turn that never
             # happened. While the control plane still shows the guest invoking

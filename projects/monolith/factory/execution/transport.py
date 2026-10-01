@@ -281,6 +281,36 @@ def _record_create_status(exc: httpx.HTTPStatusError) -> None:
         create_outcome.record(False, f"{status} from control plane")
 
 
+# EmberVM sets this on a session invoke response the guest itself answered,
+# whatever its status, and reserves it so a guest cannot forge it. Every
+# control-plane-authored failure (the at-most-once 502, the never-called 503,
+# brick_gone, gone, queue full) is sent without it.
+INVOKE_OUTCOME_HEADER = "x-ember-invoke-outcome"
+GUEST_RESPONSE = "guest_response"
+
+
+def guest_answered_invoke(exc: BaseException) -> bool:
+    """True when a failed invoke's HTTP error was the guest's own answer.
+
+    Follows only explicit ``raise ... from`` causes, as the invoke path wraps
+    its HTTPStatusError, and reads the first status error it meets. A missing
+    header (an older control plane, a control-plane failure, a transport
+    error, a timeout) is never this evidence.
+    """
+    current: BaseException | None = exc
+    for _ in range(8):
+        if current is None:
+            return False
+        if isinstance(current, httpx.HTTPStatusError):
+            response = current.response
+            return (
+                response is not None
+                and response.headers.get(INVOKE_OUTCOME_HEADER) == GUEST_RESPONSE
+            )
+        current = current.__cause__
+    return False
+
+
 def _status_error_detail(exc: httpx.HTTPStatusError) -> str:
     """The status line PLUS a bounded slice of the response body.
 

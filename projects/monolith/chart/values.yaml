@@ -153,6 +153,12 @@ agents:
     # Requires resultReceiptsEnabled: without a receipt there is nothing to
     # recover and the hold would only delay the same unknown outcome.
     responseLostRecoveryEnabled: false
+    # Settle a non-factory permit when the invoke failed with the guest's own
+    # 4xx/5xx answer, which EmberVM marks with x-ember-invoke-outcome:
+    # guest_response. The turn ended inside the guest, so nothing is still
+    # running for it. Without the marker (an older control plane, the
+    # at-most-once 502, a lost response) the permit stays uncertain as before.
+    guestAnswerSettlementEnabled: false
     # Thread-bound sessions always post into their Discord thread. For sessions
     # started elsewhere, post only turns that need a human by default.
     channelNotify: "needs-input"

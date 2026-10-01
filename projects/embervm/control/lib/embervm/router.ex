@@ -68,6 +68,8 @@ defmodule Embervm.Router do
   # workload without parsing hosts (standing decision 3). Its presence on an
   # otherwise-unmatched request is what marks the request as a serving miss.
   @workload_header "x-ember-workload"
+  # Control-plane-owned marker on a session invoke the guest itself answered.
+  @invoke_outcome_header "x-ember-invoke-outcome"
   # Default task-record lifetime; Task 5 will source this from the workload's
   # invocation.resultTtlSeconds once the catalog exists.
   @default_task_ttl_ms 86_400_000
@@ -1724,7 +1726,17 @@ defmodule Embervm.Router do
         case result do
           {:ok, %{status_code: code, headers: headers, body: resp_body}} ->
             SessionTelemetry.mark_guest_response(code, resp_body)
-            send_guest_result(conn, code, resp_body, headers)
+
+            # The guest answered this invoke, whatever its status: the turn
+            # ended inside the guest and the session stays live. Every
+            # control-plane-authored failure below is send_json without this
+            # header, so a caller can tell a guest's own 4xx/5xx (a workspace
+            # that failed to mount, a CLI that exited) from the at-most-once
+            # 502 and the never-called 503. Reserved in @denied_guest_headers
+            # so a guest cannot forge it.
+            conn
+            |> put_resp_header(@invoke_outcome_header, "guest_response")
+            |> send_guest_result(code, resp_body, headers)
 
           {:error, {:gone, reason}} ->
             SessionTelemetry.mark_expected({:gone, reason})
@@ -2731,6 +2743,7 @@ defmodule Embervm.Router do
   # they are the connection's business, not the payload's. Compared lowercased.
   # `x-ember-truncated` is also reserved (set by the caller above, never overwritten).
   @denied_guest_headers MapSet.new([
+                          "x-ember-invoke-outcome",
                           "content-length",
                           "transfer-encoding",
                           "connection",

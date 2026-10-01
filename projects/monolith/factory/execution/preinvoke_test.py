@@ -584,6 +584,96 @@ def test_real_model_post_failure_keeps_hold_even_if_binding_disappears(
     assert drainer._turn_has_unknown_outcome(state["turns"][0], sid)
 
 
+def _guest_answer(marked=True):
+    """The 2026-10-01 KG shape: the guest's own 503 relayed by EmberVM."""
+
+    async def handler(request):
+        assert request.url.path == "/v1/sessions/existing-guest/invoke"
+        headers = {"x-ember-invoke-outcome": "guest_response"} if marked else {}
+        return httpx.Response(
+            503,
+            json={"error": "workspace does not exist: /workspace/src"},
+            headers=headers,
+            request=request,
+        )
+
+    return handler
+
+
+def test_guest_answered_error_settles_the_permit_on_evidence(database, monkeypatch):
+    monkeypatch.setenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "true")
+    sid = _queue(database, bound=True)
+    _http(monkeypatch, _guest_answer())
+    asyncio.run(mcp._execute_pending_message(sid))
+    state = _snapshot(database, sid)
+    assert state["pending"] == []
+    assert state["permit"]["state"] == "settled"
+    assert state["permit"]["outcome"] == "delivery_error"
+    turn = state["turns"][0]
+    assert turn["terminal_reason"] == "error"
+    assert turn["stop_reason"] is None
+    assert "workspace does not exist" in turn["result_text"]
+    # The guest is live and idle, so the binding is kept for the next turn.
+    assert state["session"]["ember_session_id"] == "existing-guest"
+    assert not drainer._turn_has_unknown_outcome(turn, sid)
+
+
+@pytest.mark.parametrize("case", ["flag_off", "unmarked"])
+def test_guest_answer_settlement_needs_flag_and_marker(database, monkeypatch, case):
+    monkeypatch.setenv(
+        "AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED",
+        "false" if case == "flag_off" else "true",
+    )
+    sid = _queue(database, bound=True)
+    _http(monkeypatch, _guest_answer(marked=case != "unmarked"))
+    asyncio.run(mcp._execute_pending_message(sid))
+    state = _snapshot(database, sid)
+    # Without all three, the at-most-once handling is unchanged.
+    assert state["permit"]["state"] == "uncertain"
+    assert state["permit"]["outcome"] == "delivery_error"
+    assert drainer._turn_has_unknown_outcome(state["turns"][0], sid)
+
+
+def test_guest_answer_never_settles_a_factory_permit(monkeypatch):
+    """Factory stop supervision settles through the uncertain permit."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("AGENT_GUEST_ANSWER_SETTLEMENT_ENABLED", "true")
+    monkeypatch.setattr(mcp, "guest_answered_invoke", lambda _exc: True)
+    factory = SimpleNamespace(local_session_id="factory:t-guest:implement_x:1")
+    drainer_row = SimpleNamespace(
+        local_session_id="_drainer-worker:1:1520:kg-drain:kg:x"
+    )
+    assert not mcp._guest_answer_settles(factory, RuntimeError("guest"))
+    assert mcp._guest_answer_settles(drainer_row, RuntimeError("guest"))
+
+
+def test_guest_answered_invoke_reads_only_the_control_plane_marker():
+    request = httpx.Request("POST", "http://cp/v1/sessions/s/invoke")
+
+    def failure(headers):
+        response = httpx.Response(503, headers=headers, request=request)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            try:
+                raise transport.EmberVMTransportError("wrapped") from exc
+            except transport.EmberVMTransportError as wrapped:
+                return wrapped
+
+    assert transport.guest_answered_invoke(
+        failure({"x-ember-invoke-outcome": "guest_response"})
+    )
+    assert not transport.guest_answered_invoke(failure({}))
+    assert not transport.guest_answered_invoke(
+        failure({"x-ember-invoke-outcome": "something_else"})
+    )
+    assert not transport.guest_answered_invoke(httpx.ReadError("lost"))
+    assert not transport.guest_answered_invoke(
+        transport.EmberControlPlaneUnavailable("lost")
+    )
+
+
 def test_exact_not_invoked_writer_preserves_bound_guest_and_partial_evidence(database):
     sid = _queue(database, bound=True)
     count = _claim(database, sid)
