@@ -1,6 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# The chart mounts this script and runs it with the image's Python.
+# Keep it as chart data without a generated Bazel binary or nested package.
+# gazelle:exclude files/backup_check.py
+
 helm_chart(
     name = "chart",
     lint = False,

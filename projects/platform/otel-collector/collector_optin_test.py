@@ -643,6 +643,34 @@ def test_loom_is_default_off_in_every_overlay(values_name):
     assert not any("loom" in d["metadata"]["name"] for d in docs)
 
 
+@pytest.mark.parametrize(
+    "values_name,expected_sha256",
+    [
+        (
+            "values",
+            "4c95f1f321a8654313113f4f600efbb48b092a1f402adf639a2d631f52923c9d",
+        ),
+        (
+            "values-prod",
+            "d36ecc6c0724118964642b3059176805d1508aa67f228ae434a1cef9db482b6b",
+        ),
+        (
+            "values-gke",
+            "e52f89f65f14a99b445b2c14437d474c3392755a6cbbccd215943d4ef7561258",
+        ),
+    ],
+)
+def test_loom_default_off_preserves_collector_config(values_name, expected_sha256):
+    # Literal fingerprints from main before Loom monitoring was added.
+    docs = _render_overlay(values_name)
+    config = next(
+        d["data"]["collector.yaml"]
+        for d in docs
+        if d["kind"] == "ConfigMap" and "collector.yaml" in d.get("data", {})
+    )
+    assert hashlib.sha256(config.encode()).hexdigest() == expected_sha256
+
+
 def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
     docs = _render_overlay("values-gke", ["--set", "loom.enabled=true"])
     config = _collector_config(docs)
