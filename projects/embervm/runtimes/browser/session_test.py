@@ -68,7 +68,11 @@ def test_termination_reaps_and_removes(supervisor, reason):
 
 def test_ignores_sigterm_and_all_pids_reaped(tmp_path):
     script = "import signal,time,pathlib; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path('ready').touch(); time.sleep(60)"
-    worker = Supervisor({arm: ((sys.executable, "-c", script), COMMAND) for arm in COMMANDS}, kill_grace_s=0.05, parent_dir=tmp_path)
+    worker = Supervisor(
+        {arm: ((sys.executable, "-c", script), COMMAND) for arm in COMMANDS},
+        kill_grace_s=0.05,
+        parent_dir=tmp_path,
+    )
     try:
         session = worker.create(OWNER, "mcp")
         deadline = time.monotonic() + 5
@@ -83,10 +87,18 @@ def test_ignores_sigterm_and_all_pids_reaped(tmp_path):
         worker.shutdown()
 
 
-@pytest.mark.parametrize("expiry, expected", ((5, "idle_timeout"), (10, "max_lifetime")))
+@pytest.mark.parametrize(
+    "expiry, expected", ((5, "idle_timeout"), (10, "max_lifetime"))
+)
 def test_expiry_at_boundary(tmp_path, expiry, expected):
     now = [0.0]
-    worker = Supervisor(COMMANDS, max_lifetime_s=10, idle_timeout_s=5, clock=lambda: now[0], parent_dir=tmp_path)
+    worker = Supervisor(
+        COMMANDS,
+        max_lifetime_s=10,
+        idle_timeout_s=5,
+        clock=lambda: now[0],
+        parent_dir=tmp_path,
+    )
     try:
         session = worker.create(OWNER, "mcp")
         now[0] = 4
@@ -105,7 +117,13 @@ def test_expiry_at_boundary(tmp_path, expiry, expected):
 
 def test_sweep_and_replacement(tmp_path):
     now = [0]
-    worker = Supervisor(COMMANDS, max_sessions=2, idle_timeout_s=5, clock=lambda: now[0], parent_dir=tmp_path)
+    worker = Supervisor(
+        COMMANDS,
+        max_sessions=2,
+        idle_timeout_s=5,
+        clock=lambda: now[0],
+        parent_dir=tmp_path,
+    )
     first = worker.create(OWNER, "mcp")
     now[0] = 5
     assert worker.sweep()[0].reason == "idle_timeout"
@@ -128,7 +146,11 @@ def test_partial_launch_cleanup(tmp_path):
         calls.append(process)
         return process
 
-    worker = Supervisor({arm: (COMMAND, COMMAND) for arm in COMMANDS}, launcher=launcher, parent_dir=tmp_path)
+    worker = Supervisor(
+        {arm: (COMMAND, COMMAND) for arm in COMMANDS},
+        launcher=launcher,
+        parent_dir=tmp_path,
+    )
     with pytest.raises(LaunchFailed) as failure:
         worker.create(OWNER, "mcp")
     assert failure.value.report.status == "ceased"
@@ -141,7 +163,10 @@ def test_failed_cleanup_is_unconfirmed_and_holds_slot(tmp_path, monkeypatch):
     worker = Supervisor(COMMANDS, parent_dir=tmp_path)
     session = worker.create(OWNER, "mcp")
     with monkeypatch.context() as patch:
-        patch.setattr("session.shutil.rmtree", lambda _: (_ for _ in ()).throw(OSError("blocked cleanup")))
+        patch.setattr(
+            "session.shutil.rmtree",
+            lambda _: (_ for _ in ()).throw(OSError("blocked cleanup")),
+        )
         report = worker.terminate(session.session_id, OWNER, "complete")
         assert report.status == "unconfirmed" and not report.dirs_gone
         assert "cleanup" in report.errors[0]
@@ -154,7 +179,11 @@ def test_failed_reap_is_unconfirmed(tmp_path, monkeypatch):
     worker = Supervisor(COMMANDS, kill_grace_s=0, parent_dir=tmp_path)
     session = worker.create(OWNER, "cli")
     with monkeypatch.context() as patch:
-        patch.setattr(session.processes[0], "wait", lambda **_: (_ for _ in ()).throw(subprocess.TimeoutExpired("test", 0)))
+        patch.setattr(
+            session.processes[0],
+            "wait",
+            lambda **_: (_ for _ in ()).throw(subprocess.TimeoutExpired("test", 0)),
+        )
         report = worker.terminate(session.session_id, OWNER, "complete")
         assert report.status == "unconfirmed" and not report.processes[0].reaped
     assert worker.shutdown()[0].status == "ceased"
@@ -179,7 +208,16 @@ def test_invalid_grace(value):
         Supervisor(COMMANDS, kill_grace_s=value)
 
 
-@pytest.mark.parametrize("commands", (None, {}, {"mcp": (COMMAND,)}, {"mcp": (), "cli": (COMMAND,)}, {"mcp": ((None,),), "cli": (COMMAND,)}))
+@pytest.mark.parametrize(
+    "commands",
+    (
+        None,
+        {},
+        {"mcp": (COMMAND,)},
+        {"mcp": (), "cli": (COMMAND,)},
+        {"mcp": ((None,),), "cli": (COMMAND,)},
+    ),
+)
 def test_invalid_commands(commands):
     with pytest.raises(ValueError):
         Supervisor(commands)

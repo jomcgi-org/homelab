@@ -57,7 +57,11 @@ def origin(url: str) -> str:
 
 
 def _timestamp(value):
-    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
         raise ValueError("time must be timezone-aware")
     if not math.isfinite(value.timestamp()):
         raise ValueError("time must be finite")
@@ -73,7 +77,10 @@ class ActionGrant:
     expires_at: datetime | None = None
 
     def __post_init__(self):
-        if any(not isinstance(v, str) or not v.strip() for v in (self.task_id, self.principal)):
+        if any(
+            not isinstance(v, str) or not v.strip()
+            for v in (self.task_id, self.principal)
+        ):
             raise ValueError("task_id and principal are required")
         if not isinstance(self.allowed_origins, tuple):
             raise ValueError("origins must be a tuple")
@@ -82,7 +89,10 @@ class ActionGrant:
         for allowed in self.allowed_origins:
             if origin(allowed) != allowed:
                 raise ValueError("allowed origins require exact scheme, host and port")
-        if not isinstance(self.allowed_actions, frozenset) or not self.allowed_actions <= ACTIONS:
+        if (
+            not isinstance(self.allowed_actions, frozenset)
+            or not self.allowed_actions <= ACTIONS
+        ):
             raise ValueError("unknown actions or invalid action set")
         if self.expires_at is not None:
             _timestamp(self.expires_at)
