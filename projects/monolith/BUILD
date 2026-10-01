@@ -167,6 +167,7 @@ _BACKEND_SRCS = glob(
         "**/test_*.py",
         "*/tests/**/*.py",
         "shared/testing/**/*.py",
+        "grimoire/testing/**",
         # Offline grid generator: run by hand, not part of the runtime image.
         "stars/grid_gen/**",
         # Run-by-hand S3->Postgres backfill, not part of the runtime image.
@@ -1261,6 +1262,7 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
+            "grimoire/testing/**",
         ],
     ),
     imports = ["."],
@@ -1290,6 +1292,17 @@ py_library(
         "@pip//sqlmodel",
         "@pip//tzdata",
         "@pip//uvicorn",
+    ],
+)
+
+py_library(
+    name = "pkg_grimoire_testing",
+    testonly = True,
+    srcs = glob(["grimoire/testing/**/*.py"]),
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//sqlalchemy",
     ],
 )
 
@@ -1697,6 +1710,7 @@ py_library(
             "**/test_*.py",
             "*/tests/**/*.py",
             "shared/testing/**/*.py",
+            "grimoire/testing/**",
             # Offline grid generator: run by hand, not part of the runtime image.
             "stars/grid_gen/**",
             # Run-by-hand S3->Postgres backfill (boto3/typer/httpx orchestration)
@@ -1881,6 +1895,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "**/test_*.py",
     "*/tests/**/*.py",
     "shared/testing/**/*.py",
+    "grimoire/testing/**",
     "stars/grid_gen/**",
     "trips/backfill/**",
     # Whole private domains.
@@ -6377,6 +6392,18 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_audience_test",
+    srcs = ["grimoire/audience_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        ":pkg_grimoire_testing",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+py_test(
     name = "grimoire_router_test",
     srcs = ["grimoire/router_test.py"],
     imports = ["."],
@@ -6629,6 +6656,15 @@ py_test(
 bdd_test(
     name = "grimoire_aliases_postgres_test",
     srcs = ["grimoire/aliases_postgres_test.py"],
+)
+
+bdd_test(
+    name = "grimoire_audience_postgres_test",
+    srcs = ["grimoire/audience_postgres_test.py"],
+    deps = [
+        ":pkg_grimoire_testing",
+        "@pip//sqlalchemy",
+    ],
 )
 
 py_test(
