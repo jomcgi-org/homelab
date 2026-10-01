@@ -2051,3 +2051,116 @@ def test_a_cancelled_ineligible_receipt_frees_its_lane_but_not_its_issue(
     assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
     assert detail["excluded"] == {"cooldown": 1}
+
+
+def _rescoped_history(db, number=11, task_id="t-rescoped", pr=6401):
+    """An earlier task that rescoped to live validation and drafted a PR.
+
+    The 2026-09-30 shape (#4321 and six others): the receipt failed on an old
+    generation, the PR merged later, and only live checks remain.
+    """
+    with Session(db) as session:
+        session.add(SwarmTask(id=task_id, task_text="t", conductor_model="opus"))
+        session.flush()
+        intake_receipt(
+            session,
+            number,
+            state="failed",
+            generation=1,
+            task_id=task_id,
+            created_at=NOW - timedelta(days=8),
+            updated_at=NOW - timedelta(days=8),
+        )
+        session.add_all(
+            [
+                FactoryAudit(
+                    actor="factory:conductor",
+                    action="conductor_gate_decided",
+                    task_id=task_id,
+                    detail_json=json.dumps(
+                        {"gate": {"kind": "live_validation", "scope": "s"}}
+                    ),
+                ),
+                FactoryAudit(
+                    actor="factory:pr-lifecycle",
+                    action="factory_pr_settlement_complete",
+                    task_id=task_id,
+                    detail_json=json.dumps({"pr_number": pr, "outcome": "drafted"}),
+                ),
+            ]
+        )
+        session.commit()
+
+
+def _pulls(monkeypatch, pulls):
+    from factory.orchestration import factory_conductor
+
+    reads = []
+
+    def github_get(_repo, suffix):
+        reads.append(suffix)
+        return pulls[suffix]
+
+    monkeypatch.setattr(factory_conductor, "github_get", github_get)
+    return reads
+
+
+def test_merged_rescoped_repository_work_is_not_admitted_again(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    _rescoped_history(db)
+    reads = _pulls(
+        monkeypatch,
+        {
+            "pulls/6401": {
+                "merged": True,
+                "merged_at": "2026-09-27T00:00:00Z",
+                "title": "feat: stop control",
+                "body": "Refs #11\n\nConductor rescope: default off.",
+            }
+        },
+    )
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    assert intake_loop.intake_tick(policy(), generation=2) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"repository_delivered": 1}
+    assert reads == ["pulls/6401"]
+    (recorded,) = audits(db, "repository_scope_delivered")
+    assert json.loads(recorded.detail_json)["delivered_prs"] == [6401]
+
+    # The proof is on the record now, so the next sweep reads no PR.
+    release_sweep(db)
+    assert intake_loop.intake_tick(policy(), generation=3) == []
+    assert reads == ["pulls/6401"]
+
+
+def test_an_unmerged_rescoped_pr_leaves_the_issue_admissible(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    _rescoped_history(db)
+    _pulls(monkeypatch, {"pulls/6401": {"merged": False, "body": "Refs #11"}})
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    admitted = intake_loop.intake_tick(policy(), generation=2)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [11]
+
+
+def test_a_failed_delivery_check_defers_rather_than_admits(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    _rescoped_history(db)
+
+    def broken(_repo, _suffix):
+        raise RuntimeError("rate limited")
+
+    from factory.orchestration import factory_conductor
+
+    monkeypatch.setattr(factory_conductor, "github_get", broken)
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    assert intake_loop.intake_tick(policy(), generation=2) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"delivery_check_deferred": 1}
+
+
+def test_without_the_flag_rescoped_work_is_admitted_as_before(db, monkeypatch):
+    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
+    _rescoped_history(db)
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    admitted = intake_loop.intake_tick(policy(), generation=2)
+    assert [row["receipt"]["issue_number"] for row in admitted] == [11]

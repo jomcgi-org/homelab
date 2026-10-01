@@ -2483,3 +2483,185 @@ def test_merit_evidence_states_a_failed_read_instead_of_raising(monkeypatch):
     )
     assert found["proximity"]["unavailable"] == "ConnectError"
     assert found["value"]["unavailable"] == "ConnectError"
+
+
+def _split_children(db, receipt_id, children):
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        document = json.loads(row.escalation_json)
+        document["options"][0]["detail"]["children"] = children
+        row.escalation_json = json.dumps(document)
+        session.add(row)
+        session.commit()
+
+
+SPLIT_CHILDREN = [
+    {"title": "Validate the flip on hub", "body": "b", "operational": True},
+    {
+        "title": "factory: live-validate bound zero-turn settlement before enabling it",
+        "body": "b",
+    },
+    {"title": "The API", "body": "The decision endpoint."},
+]
+
+
+def test_an_operational_split_child_opens_with_needs_human(db, github, monkeypatch):
+    # #6559 (receipt 724): a live-check child opened without an exclusion
+    # label and intake briefed it within seconds.
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    receipt_id = escalate(db, "split")
+    _split_children(db, receipt_id, SPLIT_CHILDREN)
+    decisions.apply_decision(receipt_id, "split", "joe@example.test")
+    created = [write[2] for write in github.writes if write[1] == "issues"]
+    assert [child.get("labels") for child in created] == [
+        ["needs-human"],
+        ["needs-human"],
+        None,
+    ]
+
+
+def test_without_the_flag_split_children_carry_no_label(db, github, monkeypatch):
+    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
+    receipt_id = escalate(db, "split")
+    _split_children(db, receipt_id, SPLIT_CHILDREN)
+    decisions.apply_decision(receipt_id, "split", "joe@example.test")
+    created = [write[2] for write in github.writes if write[1] == "issues"]
+    assert all("labels" not in child for child in created)
+
+
+def test_the_option_schema_accepts_an_operational_child():
+    option = options("split")[0]
+    option["detail"]["children"][0]["operational"] = True
+    assert (
+        controls.verify_option_list([option, options("split")[1]], subject="x") is None
+    )
+
+
+def _delivered_pause(**gate):
+    return {
+        "action": "pause",
+        "reason": "Delivered versus requested: the repository scope is on main.",
+        "question": "Only live checks remain. Enable the flag or leave the lane?",
+        "options": options("deliver")[:2],
+        "gate": {
+            "kind": "repository_delivered",
+            "classification": "reversible",
+            "reason": "PR #6334 merged the repository scope default-off.",
+            "live_checks": ["Enable the proof on the hub", "Watch one settlement"],
+            "delivered_prs": [6334],
+            **gate,
+        },
+    }
+
+
+def _merged_pulls(monkeypatch, github, pulls):
+    def get(repo, suffix):
+        if suffix.startswith("pulls/"):
+            return pulls[suffix]
+        return github.get(repo, suffix)
+
+    monkeypatch.setattr(conductor, "github_get", get)
+
+
+MERGED_6334 = {
+    "pulls/6334": {
+        "merged": True,
+        "merged_at": "2026-09-28T00:00:00Z",
+        "title": "feat(factory): bound zero-turn settlement",
+        "body": f"Refs #{ISSUE}\n\nConductor rescope: default off.",
+        "base": {"repo": {"full_name": REPO}},
+    }
+}
+
+
+def _handoff_task(db, monkeypatch, github):
+    monkeypatch.setenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", "true")
+    task, _policy = envelope_task()
+    github.labels = {"agent-ready"}
+    _merged_pulls(monkeypatch, github, MERGED_6334)
+    return task
+
+
+def test_only_live_checks_left_hands_off_without_a_card(db, github, monkeypatch):
+    # #6288 and six others on 2026-09-30: the planner found the repository
+    # work merged and paged a person about the live checks.
+    task = _handoff_task(db, monkeypatch, github)
+    conductor._escalate_task(task, _delivered_pause(), "factory-decision:c_1:1", [])
+
+    (child,) = [write[2] for write in github.writes if write[1] == "issues"]
+    assert child["labels"] == ["needs-human"]
+    assert "- [ ] Enable the proof on the hub" in child["body"]
+    assert f"Live checks for #{ISSUE}" in child["title"]
+    assert "agent-ready" not in github.labels
+    assert "needs-human" not in github.labels
+    assert github.state == "open"
+    (comment,) = github.comments
+    assert "#101" in comment["body"] and "#6334" in comment["body"]
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert row.state == "cancelled"
+        assert row.escalation_json is None
+        recorded = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.action == "repository_scope_delivered"
+            )
+        ).one()
+    detail = json.loads(recorded.detail_json)
+    assert detail["delivered_prs"] == [6334] and detail["child_number"] == 101
+    assert "task_needs_person_notified" not in audit_actions(db)
+    assert "conductor_escalated" not in audit_actions(db)
+
+
+def test_checks_tracked_elsewhere_close_the_issue_as_delivered(db, github, monkeypatch):
+    task = _handoff_task(db, monkeypatch, github)
+    conductor._escalate_task(
+        task, _delivered_pause(tracked_in=5706), "factory-decision:c_1:1", []
+    )
+    assert [write for write in github.writes if write[1] == "issues"] == []
+    assert github.state == "closed"
+    assert (
+        "PATCH",
+        f"issues/{ISSUE}",
+        {"state": "closed", "state_reason": "completed"},
+    ) in github.writes
+    assert "#5706" in github.comments[0]["body"]
+
+
+def test_an_unverified_delivery_keeps_the_decision_card(db, github, monkeypatch):
+    task = _handoff_task(db, monkeypatch, github)
+    _merged_pulls(
+        monkeypatch,
+        github,
+        {
+            "pulls/6334": {
+                **MERGED_6334["pulls/6334"],
+                "merged": False,
+                "merged_at": None,
+            }
+        },
+    )
+    conductor._escalate_task(task, _delivered_pause(), "factory-decision:c_1:1", [])
+    assert "needs-human" in github.labels
+    assert "operational_handoff_refused" in audit_actions(db)
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        assert row.state == "escalated"
+
+
+def test_without_the_flag_a_delivered_gate_keeps_the_card(db, github, monkeypatch):
+    task = _handoff_task(db, monkeypatch, github)
+    monkeypatch.delenv("FACTORY_OPERATIONAL_HANDOFF_ENABLED", raising=False)
+    conductor._escalate_task(task, _delivered_pause(), "factory-decision:c_1:1", [])
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).one().state == "escalated"
+
+
+def test_the_issue_reference_must_be_this_issue():
+    from factory.orchestration import factory_operational_handoff as handoff
+
+    assert handoff.references_issue("Refs #7", REPO, 7)
+    assert handoff.references_issue(f"Refs {REPO}#7", REPO, 7)
+    assert handoff.references_issue(f"https://github.com/{REPO}/issues/7", REPO, 7)
+    assert not handoff.references_issue("Refs #70", REPO, 7)
+    assert not handoff.references_issue("Refs other/repo#7", REPO, 7)
+    assert not handoff.references_issue("Refs ##7", REPO, 7)

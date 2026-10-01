@@ -31,6 +31,7 @@ from factory.orchestration.factory_intake import (
     open_lanes,
     receive_issue,
 )
+from factory.orchestration import factory_operational_handoff as handoff
 from factory.orchestration.factory_models import (
     FactoryAudit,
     FactoryReceipt,
@@ -72,6 +73,8 @@ _EXCLUSION_REASONS = (
     "excluded_label",
     "linked_pr",
     "delivered",
+    "repository_delivered",
+    "delivery_check_deferred",
     "escalated",
     "cooldown",
     "already_received",
@@ -640,6 +643,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     if 1 <= number <= 2**31 - 1:
                         linked.add(number)
 
+        delivery_check_budget = {"reads": handoff.INTAKE_READS_PER_SWEEP}
         survivors = []
         for item in issues:
             if not isinstance(item, dict):
@@ -793,6 +797,15 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             if not room.get(lane):
                 exclude("lane_full")
                 continue
+            if handoff.enabled():
+                # Finished repository work with only live checks left is
+                # delivered, whatever generation re-read its labels (#6288).
+                handed_off = handoff.intake_exclusion(
+                    repo, number, rows, delivery_check_budget
+                )
+                if handed_off is not None:
+                    exclude(handed_off)
+                    continue
             candidates.append(
                 {
                     "issue": item,

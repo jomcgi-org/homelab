@@ -1595,6 +1595,12 @@ swarm:
   # server flag and remains off until trusted binding and live queue checks are
   # complete.
   factoryAgentBoardPollEnabled: false
+  # Hand live checks to a person without paging (factory_operational_handoff):
+  # a delivery whose repository scope is already merged moves its live checks
+  # to a needs-human issue and settles; intake treats such issues, and issues
+  # whose live-validation rescope PR has merged, as delivered; operational
+  # split children open with needs-human.
+  factoryOperationalHandoffEnabled: false
   factoryWorkItemPointerEnabled: false
   factoryWorkItemBaseUrl: https://jomcgi.dev/slop
   factoryConductorFundingEnabled: false

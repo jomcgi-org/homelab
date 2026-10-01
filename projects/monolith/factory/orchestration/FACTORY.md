@@ -2382,6 +2382,47 @@ verified without closing the issue. Required Linux CI and independent exact-head
 Refine decisions carry into delivery admission; the receipt preserves decisions
 across restarts and every planner and worker receives the current scope.
 
+#### Handing off live checks
+
+`FACTORY_OPERATIONAL_HANDOFF_ENABLED` (`swarm.factoryOperationalHandoffEnabled`,
+default false) makes "the repository work is delivered, only live checks
+remain" an autonomous outcome rather than a page. Enabling a production flag
+stays a person's decision; the hand-off records that ask, it does not page it.
+
+- **Planner.** A delivery planner that finds its scope already merged returns
+  a `repository_delivered` gate (`delivered_prs`, `live_checks`, optional
+  `tracked_in`) with its pause. The server verifies each PR is merged in this
+  repository and references the issue (`#N`, `owner/repo#N` or its URL). It
+  then opens one child issue carrying the checks and `needs-human`, never
+  `agent-ready` (fenced by `operational_handoff_child_created`), or uses the
+  open `tracked_in` issue the rescope already names; takes `agent-ready` off
+  the original, closing it as `completed` only in the `tracked_in` case; posts
+  one marker-fenced comment; audits `repository_scope_delivered`; and settles
+  the task `cancelled` with state `repository_delivered`. No decision card and
+  no Discord message are raised: the daily digest lists the audit. A PR that
+  does not verify audits `operational_handoff_refused` and keeps the card. A
+  refine gate never takes this path, because a resolved refine gate applies
+  `agent-ready`.
+- **Intake.** An issue whose receipts carry `repository_scope_delivered` is
+  excluded as `repository_delivered`, like `delivered`. So is one whose earlier
+  task recorded a `live_validation` gate and whose factory PR (from
+  `factory_pr_settlement_complete` or the receipt's delivery target) has since
+  merged and references the issue; the proof is recorded as
+  `repository_scope_delivered` so later sweeps read no PR. Those reads are
+  bounded at five per sweep; a candidate left unproven by the budget or a
+  failed read is excluded as `delivery_check_deferred` for that sweep rather
+  than admitted on a guess.
+- **Split children.** A `split` child marked `operational: true`, or whose
+  title names a live or operational step (`OPERATIONAL_TITLE`), opens with
+  `needs-human`, so intake does not brief it.
+
+**Why.** On 2026-09-30 the generation bump from 13 to 14 re-admitted #6288,
+#5803, #5787, #5758, #5757, #5699 and #4321, whose earlier receipts had failed
+or escalated after their `live_validation` rescopes. Each conductor correctly
+found the repository work merged and only live checks left, then paged.
+Deciding those cards with `split` opened children without an exclusion label,
+and intake admitted #6559 as a refine task (receipt 724) seconds later.
+
 Before its first node, a delivery task discovers open PRs closing its issue,
 including operator re-posts. It adopts the oldest matching PR (preferring an
 already granted match), records the branch and PR on the receipt, and directs
