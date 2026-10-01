@@ -31,3 +31,15 @@ py_test(
     imports = ["."],
     deps = ["@pip//pytest"],
 )
+
+py_test(
+    name = "trial_test",
+    srcs = [
+        "evidence.py",
+        "grants.py",
+        "trial.py",
+        "trial_test.py",
+    ],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
