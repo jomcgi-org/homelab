@@ -150,9 +150,10 @@ def test_validation_render_routes_every_store_consumer_to_dev() -> None:
                 control_planes.append(env)
             if container.get("name") == "noded":
                 nodeds.append(env)
-            if container.get("name", "").startswith("build-") and container.get(
-                "name", ""
-            ).endswith("-rootfs"):
+            if container.get("name") in ("rootfs-baker", "build-all-rootfs") or (
+                container.get("name", "").startswith("build-")
+                and container.get("name", "").endswith("-rootfs")
+            ):
                 rootfs_builders.append(env)
 
     assert control_planes

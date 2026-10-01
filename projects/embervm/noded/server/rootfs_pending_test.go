@@ -97,6 +97,8 @@ func TestBuildBaseRootfsPendingBothLanes(t *testing.T) {
 				if mode != "env unset" {
 					s.cfg.RootfsPendingMaxAge = 1800 * time.Second
 				}
+				changes := make(chan struct{}, 1)
+				s.subs[changes] = struct{}{}
 				req := &nodev1.BuildBaseRequest{Trace: &nodev1.Trace{Workload: "echo"}, ImageRef: "img:1",
 					WorkloadRevision: "r1", ReadyPath: "/shim/ready", Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128}}
 				if zipLane {
@@ -125,6 +127,11 @@ func TestBuildBaseRootfsPendingBothLanes(t *testing.T) {
 				if mode == "fresh" {
 					if len(bases) != 0 || s.nodeStatus().GetBuildError() != "" {
 						t.Fatalf("pending build recorded failure: %+v", bases)
+					}
+					select {
+					case <-changes:
+						t.Fatal("pending build signalled a status change")
+					default:
 					}
 				} else if len(bases) != 1 || bases[0].state != nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED {
 					t.Fatalf("missing/invalid root did not failBuild: %+v", bases)
