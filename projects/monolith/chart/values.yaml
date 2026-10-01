@@ -1471,13 +1471,20 @@ agentSessions:
   # around are all settled (6035, 6583 and 7810 by operator release under
   # #6025), so these are now real bounds, sized to EmberVM's GKE
   # claudeRuntimeWorkload cap of 24 (projects/embervm/deploy/values-gke.yaml).
-  # background leaves 4 permits for interactive sessions. kg rises from 3 to 6
-  # so the KG drain can spend the Codex quota that was sitting unused (5% of
-  # the weekly window) while the factory keeps its 10 delivery lanes.
+  # background leaves 4 permits for interactive sessions.
+  #
+  # kg stays at 3. It was raised to 6 on 2026-10-01 and the first 6-wide KG
+  # drain (01:25-01:29) filled the brick node's shared 34 GiB scratch loop:
+  # noded logged "no space left on device" provisioning session volumes, and
+  # every guest failed workspace hydration (503) or codex sqlite init (422).
+  # Every concurrent session holds a workspace volume on that one loop, so KG
+  # width is bounded by scratch, not CPU or quota. Raise it again only after
+  # the node carries the larger scratch (embervm values-gke scratchSizeGi) or
+  # placement refuses on disk the way it already refuses on memory.
   admission:
     total: 24
     background: 20
-    kg: 6
+    kg: 3
 
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
 # enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_code python runs
