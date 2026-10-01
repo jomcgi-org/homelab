@@ -2795,6 +2795,14 @@ py_test(
 )
 
 py_test(
+    name = "repo_docs_drop_migration_test",
+    srcs = ["knowledge/repo_docs_drop_migration_test.py"],
+    data = ["//projects/monolith/chart:migrations"],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "agent_board_catalogue_test",
     srcs = ["app/agent_board_catalogue_test.py"],
     data = [
