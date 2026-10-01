@@ -1,8 +1,11 @@
 """Publication and live revision evidence, with no network or cluster access."""
 
-from copy import deepcopy
+import asyncio
 import base64
+from copy import deepcopy
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from factory.orchestration import factory_rollout as rollout
@@ -308,6 +311,8 @@ def test_upstream_exception_does_not_copy_sensitive_message_into_audit():
         "verified": False,
         "reason": "observation_unavailable",
         "error_type": "RuntimeError",
+        "application": None,
+        "resource": None,
     }
 
 
@@ -408,3 +413,578 @@ def test_ready_flag_without_running_container_state_is_not_proof():
         "waiting": {"reason": "CrashLoopBackOff"}
     }
     assert verify(state)["reason"] == "running_image_unconfirmed"
+
+
+def encoded(text):
+    return {
+        "type": "file",
+        "encoding": "base64",
+        "content": base64.b64encode(text.encode()).decode(),
+    }
+
+
+def fleet():
+    """Two live chart Applications with separate workload and pod namespaces."""
+    state = {"applications": [], "workloads": {}, "pods": {}, "unreadable": {}}
+    for name in ("monolith", "embervm"):
+        item = snapshot()
+        app = item["applications"][0]
+        app["metadata"]["name"] = name
+        for source in (
+            app["spec"]["sources"][0],
+            app["status"]["sync"]["comparedTo"]["sources"][0],
+        ):
+            source["chart"] = name
+            source["helm"] = {
+                "valueFiles": [f"$values/projects/{name}/deploy/values.yaml"]
+            }
+        resource = app["status"]["resources"][0]
+        resource["namespace"] = name
+        workload = next(iter(item["workloads"].values()))
+        workload["metadata"]["namespace"] = name
+        state["applications"].append(app)
+        state["workloads"][("Deployment", name, "backend")] = workload
+        state["pods"][name] = item["pods"]["demo"]
+    return state
+
+
+def fleet_commit():
+    value = commit()
+    value["commit"]["message"] = value["commit"]["message"].replace(
+        "Chart-Published: projects/demo/chart 1.2.3\n",
+        "Chart-Published: projects/monolith/chart 1.2.3\n"
+        "Chart-Published: projects/embervm/chart 1.2.3\n",
+    )
+    return value
+
+
+def fleet_github(moved=(), documents=None, directories=()):
+    documents = documents or {}
+
+    def get(repo, path):
+        if not path.startswith("contents/"):
+            return github(repo, path)
+        location, ref = path.removeprefix("contents/").split("?ref=")
+        if location.endswith("/Chart.yaml"):
+            name = location.split("/")[1]
+            version = "1.2.2" if ref == MERGE and name in moved else "1.2.3"
+            return encoded(f"name: {name}\nversion: {version}\n")
+        if location in documents:
+            return encoded(documents[location])
+        if location in directories:
+            return []
+        raise httpx.HTTPStatusError(
+            "not found",
+            request=httpx.Request("GET", "https://example.com"),
+            response=httpx.Response(404),
+        )
+
+    return get
+
+
+def scoped_verify(
+    files, state=None, *, get=None, listing=None, commits=None, pr_number=6660
+):
+    def list_page(_repo, path):
+        if path.startswith("commits?"):
+            return [fleet_commit()] if commits is None else commits
+        return [{"filename": f} for f in files]
+
+    return rollout.verify(
+        "owner/repo",
+        MERGE,
+        pr_number,
+        get=get or fleet_github(),
+        listing=listing or list_page,
+        snapshot=fleet() if state is None else state,
+    )
+
+
+def test_unrelated_unhealthy_application_does_not_block():
+    state = fleet()
+    embervm = state["applications"][1]
+    embervm["status"]["health"]["status"] = "Progressing"
+    state["workloads"][("Deployment", "embervm", "backend")]["status"][
+        "readyReplicas"
+    ] = 0
+    state["pods"]["embervm"][0]["status"]["containerStatuses"][0]["state"] = {
+        "waiting": {"reason": "CrashLoopBackOff"}
+    }
+    state["unreadable"]["embervm"] = "ApiException"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], state, get=fleet_github(moved=["monolith"])
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    assert result["changed_files_count"] == 1
+
+
+def test_own_application_unhealthy_names_application_and_resource():
+    state = fleet()
+    embervm = state["applications"][1]
+    embervm["status"]["health"]["status"] = "Progressing"
+    embervm["status"]["resources"][0]["health"] = {"status": "Progressing"}
+    result = scoped_verify(
+        ["projects/embervm/bricks.go"], state, get=fleet_github(moved=["embervm"])
+    )
+    assert result == {
+        "verified": False,
+        "reason": "application_not_healthy_and_synced",
+        "application": "embervm",
+        "resource": "Deployment/embervm/backend",
+    }
+
+
+def test_unregistered_manifests_verify_on_merge_with_render_check():
+    state = fleet()
+    for app in state["applications"]:
+        app["status"]["health"]["status"] = "Degraded"
+    files = [
+        "projects/loom/deploy/values.yaml",
+        "projects/gke-apps/loom/application.yaml",
+    ]
+    state["applications"].append(hub())
+    get = hub_github()
+    result = scoped_verify(files, state, get=get)
+    assert result["verified"] is True
+    assert result["applications"] == []
+    assert result["scoped_applications"] == []
+    assert result["changed_files_count"] == 2
+    assert result["scope"] == "no_live_application"
+    assert result["render_check"] == {
+        "context": "pr-checks",
+        "state": "success",
+        "commit_sha": "b" * 40,
+    }
+    assert (
+        scoped_verify(files, state, get=get, commits=[])["reason"]
+        == "publication_receipt_missing"
+    )
+
+
+def test_listing_failure_is_observation_unavailable():
+    def listing(_repo, path):
+        if path.startswith("commits?"):
+            return [fleet_commit()]
+        raise RuntimeError("sensitive upstream response")
+
+    assert scoped_verify([], listing=listing) == {
+        "verified": False,
+        "reason": "observation_unavailable",
+        "error_type": "RuntimeError",
+        "application": None,
+        "resource": None,
+    }
+
+
+def test_thirty_full_pages_fall_back_to_all_managed_applications():
+    calls = []
+
+    def listing(_repo, path):
+        if path.startswith("commits?"):
+            return [fleet_commit()]
+        calls.append(path)
+        return [{"filename": f"docs/file-{len(calls)}-{i}.md"} for i in range(100)]
+
+    state = fleet()
+    state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    result = scoped_verify([], state, listing=listing)
+    assert result["reason"] == "application_not_healthy_and_synced"
+    assert result["application"] == "embervm"
+    assert len(calls) == 30
+    assert calls[-1] == "pulls/6660/files?per_page=100&page=30"
+    state["applications"][1]["status"]["health"]["status"] = "Healthy"
+    result = scoped_verify([], state, listing=listing)
+    assert result["scoped_applications"] == ["embervm", "monolith"]
+    assert result["changed_files_count"] is None
+
+
+def test_missing_pr_number_falls_back_to_all_managed_applications():
+    state = fleet()
+    state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    assert scoped_verify([], state, pr_number=None)["application"] == "embervm"
+    result = scoped_verify([], pr_number=None)
+    assert result["scoped_applications"] == ["embervm", "monolith"]
+    assert result["changed_files_count"] is None
+
+
+def test_changed_files_pages_and_previous_filename_are_in_scope():
+    calls = []
+
+    def listing(_repo, path):
+        if path.startswith("commits?"):
+            return [fleet_commit()]
+        calls.append(path)
+        if len(calls) == 1:
+            return [{"filename": f"docs/{i}.md"} for i in range(100)]
+        return [
+            {
+                "filename": "docs/moved.yaml",
+                "previous_filename": "projects/monolith/chart/old.yaml",
+            }
+        ]
+
+    result = scoped_verify([], listing=listing)
+    assert result["scoped_applications"] == ["monolith"]
+    assert result["changed_files_count"] == 102
+    assert calls == [
+        "pulls/6660/files?per_page=100&page=1",
+        "pulls/6660/files?per_page=100&page=2",
+    ]
+
+
+def test_chart_missing_from_receipt_is_in_scope_and_not_deployed():
+    value = fleet_commit()
+    value["commit"]["message"] = value["commit"]["message"].replace(
+        "Chart-Published: projects/embervm/chart 1.2.3\n", ""
+    )
+    result = scoped_verify(["docs/readme.md"], commits=[value])
+    assert result["reason"] == "published_chart_not_deployed"
+    assert result["application"] == "embervm"
+
+
+def test_unreadable_chart_at_merge_is_in_scope():
+    fallback = fleet_github()
+
+    def get(repo, path):
+        if path == f"contents/projects/embervm/chart/Chart.yaml?ref={MERGE}":
+            raise RuntimeError("unreadable")
+        return fallback(repo, path)
+
+    assert scoped_verify(["docs/readme.md"], get=get)["scoped_applications"] == [
+        "embervm"
+    ]
+
+
+def test_owned_ref_values_file_scopes_only_its_application():
+    result = scoped_verify(["projects/embervm/deploy/values.yaml"])
+    assert result["scoped_applications"] == ["embervm"]
+    assert (
+        scoped_verify(["projects/embervm/deploy/values.yaml.bak"])[
+            "scoped_applications"
+        ]
+        == []
+    )
+
+
+def hub(path="projects/gke-cluster"):
+    app = snapshot()["applications"][0]
+    source = {
+        "repoURL": "https://github.com/owner/repo.git",
+        "path": path,
+        "targetRevision": "HEAD",
+    }
+    app["metadata"]["name"] = "hub"
+    app["spec"] = {"source": source}
+    app["status"]["sync"] = {
+        "status": "Synced",
+        "revision": SOURCE,
+        "comparedTo": {"source": deepcopy(source)},
+    }
+    app["status"]["resources"] = []
+    return app
+
+
+def hub_github():
+    return fleet_github(
+        documents={
+            "projects/gke-cluster/kustomization.yaml": "resources:\n- ../../projects/platform-gke\n- ../../projects/gke-apps\n",
+            "projects/platform-gke/kustomization.yaml": "resources: []\n",
+            "projects/gke-apps/kustomization.yaml": "resources:\n- ./monolith\n- ./embervm\n",
+            "projects/gke-apps/monolith/kustomization.yaml": "resources: [application.yaml]\n",
+            "projects/gke-apps/monolith/application.yaml": "kind: Application\n",
+            "projects/gke-apps/embervm/kustomization.yaml": "resources: [application.yaml]\n",
+            "projects/gke-apps/embervm/application.yaml": "kind: Application\n",
+        },
+        directories=[
+            "projects/platform-gke",
+            "projects/gke-apps",
+            "projects/gke-apps/monolith",
+            "projects/gke-apps/embervm",
+        ],
+    )
+
+
+def test_kustomize_recursion_maps_registered_application_to_hub():
+    state = fleet()
+    state["applications"].append(hub())
+    result = scoped_verify(
+        ["projects/gke-apps/monolith/application.yaml"], state, get=hub_github()
+    )
+    assert result["scoped_applications"] == ["hub"]
+
+
+@pytest.mark.parametrize(
+    "filename", ["kustomization.yaml", "kustomization.yml", "Kustomization"]
+)
+def test_kustomize_file_resource_and_config_itself_are_exact_surfaces(filename):
+    state = fleet()
+    state["applications"].append(hub("projects/config"))
+    get = fleet_github(
+        documents={
+            f"projects/config/{filename}": "resources: [./sub/../manifest.yaml, https://example.com/remote.yaml]\n",
+            "projects/config/manifest.yaml": "kind: ConfigMap\n",
+        }
+    )
+    for path in (f"projects/config/{filename}", "projects/config/manifest.yaml"):
+        assert scoped_verify([path], state, get=get)["scoped_applications"] == ["hub"]
+    assert (
+        scoped_verify(["projects/config/manifest.yaml.bak"], state, get=get)[
+            "scoped_applications"
+        ]
+        == []
+    )
+
+
+def test_kustomization_with_patches_uses_whole_prefix():
+    state = fleet()
+    state["applications"].append(hub("projects/config"))
+    get = fleet_github(
+        documents={"projects/config/kustomization.yaml": "resources: []\npatches: []\n"}
+    )
+    assert scoped_verify(["projects/config/patch.yaml"], state, get=get)[
+        "scoped_applications"
+    ] == ["hub"]
+
+
+def test_no_kustomization_uses_prefix_but_non_404_is_fail_closed():
+    state = fleet()
+    state["applications"].append(hub("projects/config"))
+    assert scoped_verify(["projects/config/chart.yaml"], state)[
+        "scoped_applications"
+    ] == ["hub"]
+    assert (
+        scoped_verify(["projects/config-other/chart.yaml"], state)[
+            "scoped_applications"
+        ]
+        == []
+    )
+    fallback = fleet_github()
+
+    def get(repo, path):
+        if "kustomization" in path:
+            raise RuntimeError("not a 404")
+        return fallback(repo, path)
+
+    assert scoped_verify(["docs/readme.md"], state, get=get)["scoped_applications"] == [
+        "hub"
+    ]
+
+
+@pytest.mark.parametrize("resource", ["../../../outside", "/outside"])
+def test_resource_outside_repo_is_fail_closed(resource):
+    state = fleet()
+    state["applications"].append(hub("projects/config"))
+    get = fleet_github(
+        documents={"projects/config/kustomization.yaml": f"resources: [{resource}]\n"}
+    )
+    assert scoped_verify(["docs/readme.md"], state, get=get)["scoped_applications"] == [
+        "hub"
+    ]
+
+
+def test_kustomization_recursion_bound_is_six():
+    for depth, names in ((6, []), (7, ["hub"])):
+        state = fleet()
+        state["applications"].append(hub("projects/n0"))
+        documents = {
+            f"projects/n{i}/kustomization.yaml": f"resources: [../n{i + 1}]\n"
+            for i in range(depth)
+        }
+        documents[f"projects/n{depth}/kustomization.yaml"] = "resources: []\n"
+        get = fleet_github(
+            documents=documents,
+            directories=[f"projects/n{i}" for i in range(1, depth + 1)],
+        )
+        assert (
+            scoped_verify(["docs/readme.md"], state, get=get)["scoped_applications"]
+            == names
+        )
+
+
+def test_kustomization_read_bound_is_sixty_four_shared_per_verify():
+    for count, names in ((64, []), (65, ["hub"])):
+        state = fleet()
+        state["applications"].append(hub("projects/root"))
+        documents = {
+            "projects/root/kustomization.yaml": "resources: ["
+            + ",".join(f"../n{i}" for i in range(count - 1))
+            + "]\n"
+        }
+        documents.update(
+            {
+                f"projects/n{i}/kustomization.yaml": "resources: []\n"
+                for i in range(count - 1)
+            }
+        )
+        base = fleet_github(
+            documents=documents,
+            directories=[f"projects/n{i}" for i in range(count - 1)],
+        )
+        reads = []
+
+        def get(repo, path, reads=reads, base=base):
+            if "/kustomization.yaml?" in path:
+                reads.append(path)
+            return base(repo, path)
+
+        assert (
+            scoped_verify(["docs/readme.md"], state, get=get)["scoped_applications"]
+            == names
+        )
+        assert len(reads) == 64
+
+
+def test_unknown_owned_source_or_value_ref_is_fail_closed():
+    state = fleet()
+    app = state["applications"][0]
+    app["spec"]["sources"][0]["helm"]["valueFiles"] = [
+        "$missing/projects/monolith/deploy/values.yaml"
+    ]
+    app["status"]["sync"]["comparedTo"]["sources"] = deepcopy(app["spec"]["sources"])
+    assert scoped_verify(["docs/readme.md"], state)["scoped_applications"] == [
+        "monolith"
+    ]
+    app = hub()
+    del app["spec"]["source"]["path"]
+    app["status"]["sync"]["comparedTo"]["source"] = deepcopy(app["spec"]["source"])
+    state["applications"] = [app]
+    assert scoped_verify(["docs/readme.md"], state)["scoped_applications"] == ["hub"]
+
+
+@pytest.mark.parametrize(
+    "change", ["stale", "missing_workload", "unreadable", "OutOfSync"]
+)
+def test_all_checks_skip_out_of_scope_applications(change):
+    state = fleet()
+    if change == "stale":
+        state["applications"][1]["spec"]["sources"][0]["targetRevision"] = "9.9.9"
+    elif change == "missing_workload":
+        state["workloads"].pop(("Deployment", "embervm", "backend"))
+    elif change == "unreadable":
+        state["unreadable"]["embervm"] = "ApiException"
+    else:
+        state["applications"][1]["status"]["sync"]["status"] = change
+    assert (
+        scoped_verify(["projects/monolith/chart/templates/deploy.yaml"], state)[
+            "verified"
+        ]
+        is True
+    )
+
+
+def test_in_scope_unreadable_workload_is_pending_with_application():
+    state = fleet()
+    state["unreadable"]["embervm"] = "ApiException"
+    assert scoped_verify(["projects/embervm/deploy/values.yaml"], state) == {
+        "verified": False,
+        "reason": "workload_unreadable",
+        "application": "embervm",
+        "resource": None,
+    }
+
+
+def test_workload_and_pod_blockers_name_workload():
+    state = fleet()
+    state["pods"]["monolith"][0]["status"]["phase"] = "Pending"
+    result = scoped_verify(["projects/monolith/deploy/values.yaml"], state)
+    assert result["reason"] == "pod_not_running"
+    assert result["application"] == "monolith"
+    assert result["resource"] == "Deployment/monolith/backend"
+
+
+def snapshot_client(monkeypatch, *, failure=None, incomplete_apps=False):
+    from kubernetes_asyncio import client, config
+
+    state = fleet()
+    reads = []
+
+    class Api:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def sanitize_for_serialization(self, value):
+            return value
+
+    class Custom:
+        async def list_namespaced_custom_object(self, *_args, **kwargs):
+            assert kwargs == {"limit": 200}
+            return {
+                "items": state["applications"],
+                "metadata": {"continue": "next" if incomplete_apps else ""},
+            }
+
+    class Apps:
+        async def read_namespaced_deployment(self, name, namespace):
+            reads.append((name, namespace))
+            if failure == "workload" and namespace == "embervm":
+                raise client.ApiException(status=404, reason="sensitive response")
+            return state["workloads"][("Deployment", namespace, name)]
+
+        read_namespaced_stateful_set = read_namespaced_deployment
+        read_namespaced_daemon_set = read_namespaced_deployment
+
+    class Core:
+        async def list_namespaced_pod(self, namespace, **kwargs):
+            assert kwargs == {"limit": 500}
+            if failure == "pod_error" and namespace == "embervm":
+                raise RuntimeError("sensitive response")
+            return SimpleNamespace(
+                metadata=SimpleNamespace(
+                    _continue="next"
+                    if failure == "pods" and namespace == "embervm"
+                    else ""
+                ),
+                items=state["pods"][namespace],
+            )
+
+    monkeypatch.setattr(config, "load_incluster_config", lambda: None)
+    monkeypatch.setattr(client, "ApiClient", Api)
+    monkeypatch.setattr(client, "CustomObjectsApi", lambda _api: Custom())
+    monkeypatch.setattr(client, "AppsV1Api", lambda _api: Apps())
+    monkeypatch.setattr(client, "CoreV1Api", lambda _api: Core())
+    return state, reads
+
+
+@pytest.mark.parametrize(
+    "failure,reason",
+    [
+        ("workload", "ApiException"),
+        ("pods", "pod_inventory_incomplete"),
+        ("pod_error", "RuntimeError"),
+    ],
+)
+def test_snapshot_isolates_unreadable_application(monkeypatch, failure, reason):
+    _, reads = snapshot_client(monkeypatch, failure=failure)
+    observed = asyncio.run(rollout.cluster_snapshot("owner/repo"))
+    assert reads == [("backend", "monolith"), ("backend", "embervm")]
+    assert observed["unreadable"] == {"embervm": reason}
+    assert (
+        scoped_verify(["projects/monolith/deploy/values.yaml"], observed)["verified"]
+        is True
+    )
+    assert (
+        scoped_verify(["projects/embervm/deploy/values.yaml"], observed)["reason"]
+        == "workload_unreadable"
+    )
+
+
+def test_snapshot_inventory_failure_is_not_isolated(monkeypatch):
+    snapshot_client(monkeypatch, incomplete_apps=True)
+    with pytest.raises(rollout.Pending, match="application_inventory_incomplete"):
+        asyncio.run(rollout.cluster_snapshot("owner/repo"))
+
+
+def test_incomplete_namespace_marks_every_using_application(monkeypatch):
+    state, _ = snapshot_client(monkeypatch, failure="pods")
+    other = deepcopy(state["applications"][1])
+    other["metadata"]["name"] = "embervm-dev"
+    state["applications"].append(other)
+    observed = asyncio.run(rollout.cluster_snapshot("owner/repo"))
+    assert observed["unreadable"] == {
+        "embervm": "pod_inventory_incomplete",
+        "embervm-dev": "pod_inventory_incomplete",
+    }

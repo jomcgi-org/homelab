@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import datetime, timezone
-from functools import lru_cache
+import posixpath
 import re
 import time
+from datetime import datetime, timezone
+from functools import lru_cache
 
 import yaml
 
@@ -32,7 +33,7 @@ def _cached(key: tuple, read):
     else:
         try:
             value = read()
-        except Exception as exc:  # Failure stays a failure, never an empty inventory.
+        except Exception as exc:  # noqa: BLE001 - cache failures, never an empty inventory
             value = exc.with_traceback(None)
         if len(_recent) >= 64:
             _recent.pop(next(iter(_recent)))
@@ -67,6 +68,11 @@ def _listing(repo: str, path: str):
 
 class Pending(ValueError):
     """An observation cannot yet prove rollout, never a success by omission."""
+
+    def __init__(self, reason: str, *, application=None, resource=None):
+        super().__init__(reason)
+        self.application = application
+        self.resource = resource
 
 
 def publication(commit: dict) -> dict | None:
@@ -175,13 +181,18 @@ def managed(repo: str, app: dict) -> bool:
     return any(owned_git(repo, s) or s.get("repoURL") == REGISTRY for s in sources(app))
 
 
-def chart_versions(repo: str, receipt: dict, get) -> dict[str, str]:
+def content_yaml(content):
+    if content.get("encoding") != "base64" or content.get("type") != "file":
+        raise Pending("chart_identity_unreadable")
+    return yaml.safe_load(base64.b64decode(content["content"]))
+
+
+def chart_catalog(repo: str, receipt: dict, get) -> dict[str, tuple[str, str]]:
+    """Read each publication chart identity once, retaining its deploy directory."""
     result = {}
     for path, version in receipt["charts"].items():
         content = get(repo, f"contents/{path}/Chart.yaml?ref={receipt['source_sha']}")
-        if content.get("encoding") != "base64" or content.get("type") != "file":
-            raise Pending("chart_identity_unreadable")
-        chart = yaml.safe_load(base64.b64decode(content["content"]))
+        chart = content_yaml(content)
         name = chart.get("name") if isinstance(chart, dict) else None
         if (
             not isinstance(name, str)
@@ -189,8 +200,167 @@ def chart_versions(repo: str, receipt: dict, get) -> dict[str, str]:
             or name in result
         ):
             raise Pending("chart_identity_ambiguous")
-        result[name] = version
+        result[name] = (path, version)
     return result
+
+
+def chart_versions(repo: str, receipt: dict, get) -> dict[str, str]:
+    return {
+        name: version
+        for name, (_, version) in chart_catalog(repo, receipt, get).items()
+    }
+
+
+def changed_files(repo: str, pr_number: int | None, listing) -> set[str] | None:
+    """None means unbounded, including GitHub's possibly truncated 3000 files."""
+    if pr_number is None:
+        return None
+    paths = set()
+    for page in range(1, 31):
+        files = listing(repo, f"pulls/{pr_number}/files?per_page=100&page={page}")
+        for file in files:
+            paths.add(file["filename"])
+            if file.get("previous_filename"):
+                paths.add(file["previous_filename"])
+        if len(files) < 100:
+            return paths
+    return None
+
+
+def repo_path(path: str) -> str:
+    """Normalize local paths without allowing resources outside the repository."""
+    if not isinstance(path, str) or not path or path.startswith("/"):
+        raise Pending("deploy_surface_unreadable")
+    path = posixpath.normpath(path)
+    if path == ".." or path.startswith("../"):
+        raise Pending("deploy_surface_unreadable")
+    return path
+
+
+class DeploySurface:
+    """Bounded, immutable kustomize resource traversal shared by one verification."""
+
+    def __init__(self, repo, merge_sha, get):
+        self.repo, self.merge_sha, self.get = repo, merge_sha, get
+        self.reads = 0
+        self.cache = {}
+
+    def read(self, path):
+        return self.get(self.repo, f"contents/{path}?ref={self.merge_sha}")
+
+    def directory(self, path, depth=0):
+        path = repo_path(path)
+        if depth > 6:
+            raise Pending("deploy_surface_unreadable")
+        cache_key = (path, depth)
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        prefix = "" if path == "." else path + "/"
+        exact, prefixes = set(), set()
+        for filename in ("kustomization.yaml", "kustomization.yml", "Kustomization"):
+            self.reads += 1
+            if self.reads > 64:
+                raise Pending("deploy_surface_unreadable")
+            location = prefix + filename
+            try:
+                content = self.read(location)
+            except Exception as exc:
+                # Only an actual HTTP 404 means this spelling does not exist.
+                code = getattr(exc, "status", None) or getattr(
+                    getattr(exc, "response", None), "status_code", None
+                )
+                if code == 404:
+                    continue
+                raise
+            config = content_yaml(content)
+            if not isinstance(config, dict):
+                raise Pending("deploy_surface_unreadable")
+            exact.add(location)
+            known = {
+                "apiVersion",
+                "kind",
+                "resources",
+                "namespace",
+                "commonLabels",
+                "labels",
+                "commonAnnotations",
+                "namePrefix",
+                "nameSuffix",
+            }
+            if config.keys() - known:
+                prefixes.add(prefix)
+            resources = config.get("resources", [])
+            if not isinstance(resources, list):
+                raise Pending("deploy_surface_unreadable")
+            for resource in resources:
+                if not isinstance(resource, str):
+                    raise Pending("deploy_surface_unreadable")
+                if "://" in resource or resource.startswith("git::"):
+                    continue
+                if resource.startswith("/"):
+                    raise Pending("deploy_surface_unreadable")
+                target = repo_path(posixpath.join(path, resource))
+                entry = self.read(target)
+                if isinstance(entry, list) or entry.get("type") == "dir":
+                    child_exact, child_prefixes = self.directory(target, depth + 1)
+                    exact.update(child_exact)
+                    prefixes.update(child_prefixes)
+                elif entry.get("type") == "file":
+                    exact.add(target)
+                else:
+                    raise Pending("deploy_surface_unreadable")
+            break
+        else:
+            prefixes.add(prefix)
+        self.cache[cache_key] = exact, prefixes
+        return exact, prefixes
+
+
+def application_in_scope(repo, app, files, catalog, surface) -> bool:
+    if files is None:
+        return True
+    try:
+        app_sources = sources(app)
+        refs = {s["ref"] for s in app_sources if owned_git(repo, s) and s.get("ref")}
+        for source in app_sources:
+            registry = source.get("repoURL") == REGISTRY
+            owned = owned_git(repo, source)
+            if registry:
+                chart = source.get("chart")
+                if chart not in catalog:
+                    return True
+                path, version = catalog[chart]
+                merged = content_yaml(surface.read(path + "/Chart.yaml"))
+                if merged["version"] != version or any(
+                    f.startswith(path + "/") for f in files
+                ):
+                    return True
+            elif owned:
+                if source.get("chart"):
+                    return True
+                if source.get("path"):
+                    exact, prefixes = surface.directory(source["path"])
+                    if files & exact or any(
+                        f.startswith(p) for f in files for p in prefixes
+                    ):
+                        return True
+                elif not source.get("ref"):
+                    return True
+            for value in source.get("helm", {}).get("valueFiles", []):
+                if not isinstance(value, str):
+                    return True
+                if value.startswith("$"):
+                    ref, sep, path = value[1:].partition("/")
+                    if ref not in refs or not sep:
+                        return True
+                    if repo_path(path) in files:
+                        return True
+                elif registry or owned:
+                    # Relative value files are not a recognized owned-ref shape.
+                    return True
+        return False
+    except Exception:  # noqa: BLE001 - unknown mapping includes the Application
+        return True
 
 
 def selected(labels: dict, selector: dict) -> bool:
@@ -304,66 +474,110 @@ def workload_evidence(workload: dict, pods: list[dict], *, pinned: bool) -> dict
 
 
 def evaluate(
-    repo: str, receipt: dict, snapshot: dict, versions: dict, get
+    repo: str,
+    receipt: dict,
+    snapshot: dict,
+    versions: dict,
+    get,
+    scoped_applications: set[str] | None = None,
 ) -> list[dict]:
     applications = [app for app in snapshot["applications"] if managed(repo, app)]
     if not applications:
         raise Pending("managed_applications_missing")
     evidence = []
     for app in applications:
-        name, status = app["metadata"]["name"], app.get("status", {})
-        sync = status.get("sync", {})
-        if (
-            status.get("health", {}).get("status") != "Healthy"
-            or sync.get("status") != "Synced"
-        ):
-            raise Pending("application_not_healthy_and_synced")
-        app_sources = sources(app)
-        compared = sync.get("comparedTo", {})
-        observed_sources = compared.get("sources") or (
-            [compared["source"]] if compared.get("source") else []
+        name = app["metadata"]["name"]
+        if scoped_applications is not None and name not in scoped_applications:
+            continue
+        try:
+            evidence.append(
+                application_evidence(repo, receipt, snapshot, versions, get, app)
+            )
+        except Pending as exc:
+            exc.application = name
+            raise
+    return evidence
+
+
+def resource_name(resource: dict) -> str:
+    return "/".join(
+        str(resource[k]) for k in ("kind", "namespace", "name") if resource.get(k)
+    )
+
+
+def application_evidence(repo, receipt, snapshot, versions, get, app):
+    name, status = app["metadata"]["name"], app.get("status", {})
+    sync = status.get("sync", {})
+    if (
+        status.get("health", {}).get("status") != "Healthy"
+        or sync.get("status") != "Synced"
+    ):
+        resources = status.get("resources", [])
+        unhealthy = next(
+            (
+                r
+                for r in resources
+                if r.get("health", {}).get("status")
+                and r["health"]["status"] != "Healthy"
+            ),
+            None,
         )
-        if normalized(observed_sources) != normalized(app_sources):
-            raise Pending("application_comparison_stale")
-        revisions = sync.get("revisions") or (
-            [sync["revision"]] if sync.get("revision") else []
+        unhealthy = unhealthy or next(
+            (r for r in resources if r.get("status") == "OutOfSync"), None
         )
-        if len(revisions) != len(app_sources):
-            raise Pending("deployed_revision_missing")
-        pinned = False
-        for source, revision in zip(app_sources, revisions, strict=True):
-            if source.get("repoURL") == REGISTRY:
-                pinned = True
-                if (
-                    source.get("chart") not in versions
-                    or versions[source["chart"]] != revision
-                ):
-                    raise Pending("published_chart_not_deployed")
-            elif owned_git(repo, source):
-                if not ancestor(repo, receipt["source_sha"], revision, get):
-                    raise Pending("git_revision_not_deployed")
-        if "resources" not in status:
-            raise Pending("application_resources_missing")
-        workloads = []
-        for resource in status["resources"]:
-            if resource.get("kind") not in WORKLOADS:
-                continue
-            key = (resource["kind"], resource["namespace"], resource["name"])
+        raise Pending(
+            "application_not_healthy_and_synced",
+            resource=resource_name(unhealthy) if unhealthy else None,
+        )
+    if name in snapshot.get("unreadable", {}):
+        raise Pending("workload_unreadable")
+    app_sources = sources(app)
+    compared = sync.get("comparedTo", {})
+    observed_sources = compared.get("sources") or (
+        [compared["source"]] if compared.get("source") else []
+    )
+    if normalized(observed_sources) != normalized(app_sources):
+        raise Pending("application_comparison_stale")
+    revisions = sync.get("revisions") or (
+        [sync["revision"]] if sync.get("revision") else []
+    )
+    if len(revisions) != len(app_sources):
+        raise Pending("deployed_revision_missing")
+    pinned = False
+    for source, revision in zip(app_sources, revisions, strict=True):
+        if source.get("repoURL") == REGISTRY:
+            pinned = True
+            if (
+                source.get("chart") not in versions
+                or versions[source["chart"]] != revision
+            ):
+                raise Pending("published_chart_not_deployed")
+        elif owned_git(repo, source):
+            if not ancestor(repo, receipt["source_sha"], revision, get):
+                raise Pending("git_revision_not_deployed")
+    if "resources" not in status:
+        raise Pending("application_resources_missing")
+    workloads = []
+    for resource in status["resources"]:
+        if resource.get("kind") not in WORKLOADS:
+            continue
+        key = (resource["kind"], resource["namespace"], resource["name"])
+        try:
             workload = snapshot["workloads"].get(key)
             if workload is None:
                 raise Pending("workload_missing")
             workloads.append(
                 workload_evidence(workload, snapshot["pods"][key[1]], pinned=pinned)
             )
-        evidence.append(
-            {
-                "application": name,
-                "uid": app["metadata"]["uid"],
-                "revisions": revisions,
-                "workloads": workloads,
-            }
-        )
-    return evidence
+        except Pending as exc:
+            exc.resource = resource_name(resource)
+            raise
+    return {
+        "application": name,
+        "uid": app["metadata"]["uid"],
+        "revisions": revisions,
+        "workloads": workloads,
+    }
 
 
 async def cluster_snapshot(repo: str) -> dict:
@@ -381,7 +595,13 @@ async def cluster_snapshot(repo: str) -> dict:
         )
         if found.get("metadata", {}).get("continue"):
             raise Pending("application_inventory_incomplete")
-        result = {"applications": found["items"], "workloads": {}, "pods": {}}
+        result = {
+            "applications": found["items"],
+            "workloads": {},
+            "pods": {},
+            "unreadable": {},
+        }
+        pod_failures = {}
         for app in found["items"]:
             if not managed(repo, app):
                 continue
@@ -395,35 +615,61 @@ async def cluster_snapshot(repo: str) -> dict:
                     "StatefulSet": apps.read_namespaced_stateful_set,
                     "DaemonSet": apps.read_namespaced_daemon_set,
                 }[kind]
-                result["workloads"][(kind, ns, name)] = api.sanitize_for_serialization(
-                    await reader(name, ns)
-                )
-                if ns not in result["pods"]:
-                    pods = await core.list_namespaced_pod(ns, limit=500)
-                    if pods.metadata._continue:
-                        raise Pending("pod_inventory_incomplete")
-                    result["pods"][ns] = [
-                        api.sanitize_for_serialization(p) for p in pods.items
-                    ]
+                try:
+                    result["workloads"][(kind, ns, name)] = (
+                        api.sanitize_for_serialization(await reader(name, ns))
+                    )
+                    if ns in pod_failures:
+                        raise Pending(pod_failures[ns])
+                    if ns not in result["pods"]:
+                        try:
+                            pods = await core.list_namespaced_pod(ns, limit=500)
+                            if pods.metadata._continue:
+                                raise Pending("pod_inventory_incomplete")
+                            result["pods"][ns] = [
+                                api.sanitize_for_serialization(p) for p in pods.items
+                            ]
+                        except Exception as exc:
+                            pod_failures[ns] = (
+                                str(exc)
+                                if isinstance(exc, Pending)
+                                else type(exc).__name__
+                            )
+                            raise
+                except Exception as exc:  # noqa: BLE001 - isolate per-Application reads
+                    result["unreadable"][app["metadata"]["name"]] = (
+                        str(exc) if isinstance(exc, Pending) else type(exc).__name__
+                    )
         result["observed_at"] = datetime.now(timezone.utc).isoformat()
         return result
 
 
-def verify(repo: str, merge_sha: str, *, get=None, listing=None, snapshot=None) -> dict:
+def verify(
+    repo: str, merge_sha: str, pr_number=None, *, get=None, listing=None, snapshot=None
+) -> dict:
     get, listing = get or _get, listing or _listing
     try:
         if not isinstance(merge_sha, str) or not SHA.fullmatch(merge_sha):
             raise Pending("merge_identity_missing")
         receipt = receipt_for(repo, merge_sha, get, listing)
-        versions = chart_versions(repo, receipt, get)
+        catalog = chart_catalog(repo, receipt, get)
+        versions = {name: version for name, (_, version) in catalog.items()}
+        files = changed_files(repo, pr_number, listing)
         if snapshot is None:
 
             async def observe():
                 return await asyncio.wait_for(cluster_snapshot(repo), timeout=30)
 
             snapshot = _cached(("snapshot", repo), lambda: asyncio.run(observe()))
-        apps = evaluate(repo, receipt, snapshot, versions, get)
-        return {
+        surface = DeploySurface(repo, merge_sha, get)
+        scoped = {
+            app["metadata"]["name"]
+            for app in snapshot["applications"]
+            if managed(repo, app)
+            and application_in_scope(repo, app, files, catalog, surface)
+        }
+        apps = evaluate(repo, receipt, snapshot, versions, get, scoped)
+        result = {
             "verified": True,
             "merge_commit_sha": merge_sha,
             "publication_commit_sha": receipt["commit_sha"],
@@ -431,12 +677,31 @@ def verify(repo: str, merge_sha: str, *, get=None, listing=None, snapshot=None) 
             "observed_at": snapshot.get("observed_at")
             or datetime.now(timezone.utc).isoformat(),
             "applications": apps,
+            "scoped_applications": sorted(scoped),
+            "changed_files_count": len(files) if files is not None else None,
         }
+        if not scoped:
+            result.update(
+                scope="no_live_application",
+                render_check={
+                    "context": "pr-checks",
+                    "state": "success",
+                    "commit_sha": receipt["source_sha"],
+                },
+            )
+        return result
     except Pending as exc:
-        return {"verified": False, "reason": str(exc)}
+        return {
+            "verified": False,
+            "reason": str(exc),
+            "application": exc.application,
+            "resource": exc.resource,
+        }
     except Exception as exc:  # noqa: BLE001 - failed observation is never proof
         return {
             "verified": False,
             "reason": "observation_unavailable",
             "error_type": type(exc).__name__,
+            "application": None,
+            "resource": None,
         }
