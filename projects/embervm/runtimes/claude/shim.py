@@ -737,8 +737,12 @@ CLI_UID_ENV = "EMBER_CLI_UID"
 CLI_GID_ENV = "EMBER_CLI_GID"
 DEFAULT_CLI_UID = 65532
 DEFAULT_CLI_GID = 65532
-# Staged only. No chart or base setting enables this by default.
+# On by default. Set EMBER_MUSE_BINARY_PREFLIGHT to 0, false, no or off
+# (case-insensitive, surrounding whitespace ignored) to skip the preflight.
+# An operator passes it as an ember.env.EMBER_MUSE_BINARY_PREFLIGHT boot arg,
+# which guest-init decodes into the environment before exec'ing the shim.
 MUSE_BINARY_PREFLIGHT_ENV = "EMBER_MUSE_BINARY_PREFLIGHT"
+MUSE_BINARY_PREFLIGHT_OPTOUTS = ("0", "false", "no", "off")
 PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
 DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
 GUEST_INIT_PATH = "/usr/local/bin/ember-runtime-guest-init"
@@ -899,6 +903,21 @@ def _muse_executable_candidates(executable, child_env, cwd):
             candidates.append(candidate)
             seen.add(candidate)
     return candidates
+
+
+def _muse_binary_preflight_enabled(child_env):
+    """Return whether the Muse executable preflight runs for this spawn.
+
+    The preflight is on by default so a missing binary fails diagnosably
+    before Popen. Only an explicit opt-out (0, false, no or off,
+    case-insensitive, surrounding whitespace ignored) skips it. Unset, empty,
+    truthy and unrecognised values all run the preflight. Reads from the
+    child env, the same source the spawn path passes to Popen.
+    """
+    return (
+        child_env.get(MUSE_BINARY_PREFLIGHT_ENV, "").strip().lower()
+        not in MUSE_BINARY_PREFLIGHT_OPTOUTS
+    )
 
 
 def _require_muse_executable(executable, child_env, cwd, privilege_kwargs):
@@ -4513,12 +4532,7 @@ class MuseProcess:
         try:
             child_env = self._child_env()
             privilege_kwargs = _cli_privilege_kwargs()
-            if child_env.get(MUSE_BINARY_PREFLIGHT_ENV, "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            ):
+            if _muse_binary_preflight_enabled(child_env):
                 _require_muse_executable(
                     self.executable,
                     child_env,
