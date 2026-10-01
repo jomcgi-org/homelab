@@ -1398,9 +1398,9 @@ def test_turn_observation_survives_pending_deletion(uncertain_lane, duration, ex
             "provider_retries": None,
             "clocks": {
                 "queued_at": "monolith_wall",
-                "dispatched_at": "monolith_wall",
+                "dispatched_at": "database_transaction_start",
                 "recorded_at": "monolith_wall",
-                "queue_wait_ms": "monolith_wall",
+                "queue_wait_ms": "monolith_wall+database_transaction_start",
                 "executor_elapsed_ms": "executor_monotonic",
                 "runtime_duration_ms": "guest_reported",
             },

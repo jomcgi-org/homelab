@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 from collections.abc import Callable
 from uuid import uuid4
 
@@ -328,6 +329,7 @@ async def run_synthetic_session(
         receipt_kwargs = (
             {"receipt_claim_owner": claim_owner} if result_receipts.enabled() else {}
         )
+        deliver_started = time.monotonic()
         turn, _returned_ember = await transport.deliver(
             None,
             None,
@@ -345,6 +347,7 @@ async def run_synthetic_session(
                 else {}
             ),
         )
+        executor_elapsed_ms = int((time.monotonic() - deliver_started) * 1000)
         ember = _returned_ember
         result_received = True
         if claim_stolen:
@@ -370,6 +373,7 @@ async def run_synthetic_session(
             turn.model or model,
             claim_owner,
             dispatch_count,
+            executor_elapsed_ms=executor_elapsed_ms,
         )
         result_persisted = True
         await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)

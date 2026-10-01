@@ -59,7 +59,9 @@ def test_run_synthetic_session_claims_pending_before_deliver(
         api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
     )
     monkeypatch.setattr(api._transport, "deliver", deliver)
-    monkeypatch.setattr(api, "_persist_turn_from_pending_sync", lambda *args: None)
+    monkeypatch.setattr(
+        api, "_persist_turn_from_pending_sync", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         api,
         "_delete_pending_message_sync",
@@ -151,7 +153,7 @@ def test_run_synthetic_session_persists_actual_guest_model(
     monkeypatch.setattr(
         api,
         "_persist_turn_from_pending_sync",
-        lambda *args: persisted.append(args),
+        lambda *args, **kwargs: persisted.append((args, kwargs)),
     )
     monkeypatch.setattr(api, "_delete_pending_message_sync", lambda *args: None)
     monkeypatch.setattr(
@@ -161,8 +163,52 @@ def test_run_synthetic_session_persists_actual_guest_model(
     result = asyncio.run(api.run_synthetic_session("probe", model="luna"))
 
     assert result is turn
-    assert persisted[0][7] == "terra"
-    assert persisted[0][-1] == 3
+    assert persisted[0][0][7] == "terra"
+    assert persisted[0][0][-1] == 3
+
+
+def test_run_synthetic_session_measures_the_deliver_await(
+    monkeypatch, synthetic_claim
+):
+    from types import SimpleNamespace
+
+    row = AgentSession(
+        id=48,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    turn = _completed_synthetic_turn()
+    persisted = []
+    clock = {"now": 100.0}
+    monkeypatch.setattr(
+        api, "time", SimpleNamespace(monotonic=lambda: clock["now"])
+    )
+
+    async def deliver(*args, **kwargs):
+        clock["now"] += 2.5
+        return turn, None
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
+    )
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(
+        api,
+        "_persist_turn_from_pending_sync",
+        lambda *args, **kwargs: persisted.append((args, kwargs)),
+    )
+    monkeypatch.setattr(api, "_delete_pending_message_sync", lambda *args: None)
+    monkeypatch.setattr(
+        api, "_release_pending_message_claim_sync", lambda *args, **kwargs: None
+    )
+
+    result = asyncio.run(api.run_synthetic_session("probe"))
+
+    assert result is turn
+    assert persisted[0][1]["executor_elapsed_ms"] == 2500
 
 
 def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
@@ -244,7 +290,7 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(
     monkeypatch.setattr(
         api,
         "_persist_turn_from_pending_sync",
-        lambda *args: persisted.append(args),
+        lambda *args, **kwargs: persisted.append((args, kwargs)),
     )
     monkeypatch.setattr(
         api,
@@ -285,7 +331,7 @@ def test_run_synthetic_session_does_not_assume_integrity_error_means_duplicate(
     async def deliver(*args, **kwargs):
         return turn, None
 
-    def persist_turn(*args):
+    def persist_turn(*args, **kwargs):
         raise IntegrityError("INSERT", {}, Exception("duplicate seq"))
 
     monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
@@ -362,7 +408,9 @@ def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_woul
     monkeypatch.setattr(api, "_refresh_claim_sync", refresh_claim)
     monkeypatch.setattr(api.asyncio, "sleep", sleep)
     monkeypatch.setattr(api._transport, "deliver", deliver)
-    monkeypatch.setattr(api, "_persist_turn_from_pending_sync", lambda *args: None)
+    monkeypatch.setattr(
+        api, "_persist_turn_from_pending_sync", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         api,
         "_delete_pending_message_sync",

@@ -264,6 +264,10 @@ def assert_held(database, sid, reason):
     recovery = json.loads(turn["usage_json"])["recovery"]
     assert recovery["invocation_phase"] == RESPONSE_LOST
     assert recovery["response_lost"]["reason"] == reason
+    observation = json.loads(turn["usage_json"])["observation"]
+    assert observation["schema"] == "turn-observation/1"
+    assert observation["dispatch_count"] == 1
+    assert observation["dispatched_at"] is not None
     # The permit is neither released nor made uncertain: the guest is still
     # holding the capacity this attempt was admitted for.
     assert [row["state"] for row in state["permits"]] == ["running"]
