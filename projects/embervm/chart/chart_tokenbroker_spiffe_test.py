@@ -119,33 +119,23 @@ def test_plaintext_retirement_is_explicit_and_requires_mtls() -> None:
         raise AssertionError("accepted plaintext retirement without mTLS")
 
 
-def test_production_overlay_stages_allowlist_but_keeps_both_gates_off() -> None:
+def test_production_overlay_enables_stage_one_but_keeps_plaintext_retirement_off() -> None:
+    """#5791 stage 1: listener and egress client on together, port 8080 still served."""
     defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
     gke = yaml.safe_load((_chart_dir().parent / "deploy/values-gke.yaml").read_text())
 
     assert defaults["tokenBroker"]["spiffe"]["enabled"] is False
     assert defaults["tokenBroker"]["plaintext"]["retireProtectedRoutes"] is False
-    assert gke["tokenBroker"]["spiffe"]["enabled"] is False
+    assert defaults["egress"]["tokenBroker"]["spiffe"]["enabled"] is False
+    assert gke["tokenBroker"]["spiffe"]["enabled"] is True
+    # The listener makes plaintext /token answer 403, so the egress-proxy
+    # client must flip in the same overlay.
+    assert gke["egress"]["tokenBroker"]["spiffe"]["enabled"] is True
     assert gke["tokenBroker"]["plaintext"]["retireProtectedRoutes"] is False
     assert gke["tokenBroker"]["spiffe"]["clientSpiffeIds"] == [
         "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded",
         "spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith",
     ]
-
-    rendered = _render(
-        "embervm",
-        ["tokenBroker.spiffe.enabled=true"],
-        value_files=[_chart_dir().parent / "deploy/values-gke.yaml"],
-    )
-    deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
-    assert (
-        "spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded,"
-        "spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith"
-    ) in deployment
-    assert (
-        '- { name: BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES, value: "false" }'
-        in deployment
-    )
 
 
 def _egress_settings() -> list[str]:
@@ -168,25 +158,46 @@ def test_egress_defaults_preserve_plaintext_without_csi_mount() -> None:
     assert "spiffe-workload-api" not in noded
 
 
-def test_production_values_preserve_default_off_broker_and_client() -> None:
+def test_home_values_preserve_default_off_broker_and_client() -> None:
+    prod_values = Path(os.environ["PROD_VALUES"])
+
+    rendered = _render("production-home", value_files=[prod_values])
+    deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
+    service = _source_document(rendered, "tokenbroker-service.yaml")
+
+    assert "BROKER_TLS_LISTEN_ADDR" not in deployment
+    assert "BROKER_SPIFFE_CLIENT_IDS" not in deployment
+    assert "name: https" not in deployment
+    assert "spiffe-workload-api" not in deployment
+    assert "name: https" not in service
+    assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" not in rendered
+    assert ".svc.cluster.local:8080" in rendered
+
+
+def test_hub_values_render_listener_and_egress_client_together() -> None:
     prod_values = Path(os.environ["PROD_VALUES"])
     gke_values = Path(os.environ["GKE_VALUES"])
 
-    for name, value_files in (
-        ("home", [prod_values]),
-        ("hub", [prod_values, gke_values]),
-    ):
-        rendered = _render(f"production-{name}", value_files=value_files)
-        deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
-        service = _source_document(rendered, "tokenbroker-service.yaml")
+    rendered = _render("embervm", value_files=[prod_values, gke_values])
+    deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
+    service = _source_document(rendered, "tokenbroker-service.yaml")
 
-        assert "BROKER_TLS_LISTEN_ADDR" not in deployment
-        assert "BROKER_SPIFFE_CLIENT_IDS" not in deployment
-        assert "name: https" not in deployment
-        assert "spiffe-workload-api" not in deployment
-        assert "name: https" not in service
-        assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" not in rendered
-        assert ".svc.cluster.local:8080" in rendered
+    assert '- { name: BROKER_TLS_LISTEN_ADDR, value: ":8443" }' in deployment
+    assert (
+        "- { name: BROKER_SPIFFE_CLIENT_IDS, value: "
+        '"spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded,'
+        'spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith" }'
+    ) in deployment
+    assert (
+        '- { name: BROKER_RETIRE_PLAINTEXT_PROTECTED_ROUTES, value: "false" }'
+        in deployment
+    )
+    assert "driver: csi.spiffe.io" in deployment
+    assert "- { name: https, port: 8443, targetPort: https }" in service
+    # Every egress-proxy sidecar dials the mTLS port; none is left on plaintext.
+    assert 'value: "https://embervm-embervm-tokenbroker.embervm.svc:8443"' in rendered
+    assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" in rendered
+    assert "embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080" not in rendered
 
 
 def test_egress_mtls_wires_daemonset_and_bricks_with_exact_broker_identity() -> None:

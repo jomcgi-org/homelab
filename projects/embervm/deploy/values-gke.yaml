@@ -103,11 +103,17 @@ tokenBroker:
   networkPolicy:
     enabled: false
   plaintext:
+    # Stage 2 of #5791, a separate decision. Port 8080 keeps serving refresh,
+    # login/* and quota until this is armed.
     retireProtectedRoutes: false
   spiffe:
-    enabled: false
-    # Inert while disabled. Once the listener is staged, both existing noded
-    # callers and the production monolith ServiceAccount are authorized.
+    # Stage 1 of #5791: serve the SPIFFE mTLS listener on 8443. With it on,
+    # GET /grants/<g>/token is mTLS-only, so egress.tokenBroker.spiffe below
+    # flips in the same commit. Rollback is both back to false; no credential
+    # or data change is involved.
+    enabled: true
+    # The noded ServiceAccount (egress-proxy sidecar) and the production
+    # monolith ServiceAccount (login proxy and quota reader).
     clientSpiffeIds:
       - spiffe://embervm.jomcgi.dev/ns/embervm/sa/embervm-embervm-noded
       - spiffe://embervm.jomcgi.dev/ns/monolith/sa/monolith
@@ -247,6 +253,12 @@ warmthS3Gc:
 # Only services reachable from the hub belong on the internal lane. Meta Spark
 # uses the external credentialed egress catalog instead.
 egress:
+  # Stage 1 of #5791: the egress-proxy sidecar fetches tokens and reports quota
+  # over the broker's SPIFFE mTLS port. Paired with tokenBroker.spiffe.enabled;
+  # SPIRE agent and CSI driver run on every hub node pool.
+  tokenBroker:
+    spiffe:
+      enabled: true
   internal:
     allowlist:
       - monolith.monolith.svc.cluster.local:8091
