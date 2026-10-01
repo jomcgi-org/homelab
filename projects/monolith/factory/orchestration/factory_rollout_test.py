@@ -911,7 +911,64 @@ def test_later_publication_does_not_pull_an_unrelated_chart_into_scope():
     )
     assert result["verified"] is True
     assert result["scoped_applications"] == ["monolith"]
-    assert result["publication_commit_sha"] == "c" * 40
+    assert result["publication_commit_sha"] == "e" * 40
+    assert result["scope_publication_commit_sha"] == "c" * 40
+
+
+def test_healthy_newer_publication_can_verify_the_original_merge():
+    later = fleet_commit()
+    later["sha"] = "e" * 40
+    later["commit"]["message"] = (
+        later["commit"]["message"]
+        .replace(SOURCE, "f" * 40)
+        .replace("projects/monolith/chart 1.2.3", "projects/monolith/chart 1.2.4")
+    )
+    state = fleet()
+    app = state["applications"][0]
+    app["spec"]["sources"][0]["targetRevision"] = "1.2.4"
+    app["status"]["sync"]["comparedTo"]["sources"][0]["targetRevision"] = "1.2.4"
+    app["status"]["sync"]["revisions"] = ["1.2.4", "f" * 40]
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"],
+        state,
+        get=fleet_github(moved=("monolith",)),
+        commits=[later, fleet_commit()],
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    assert result["publication_commit_sha"] == "e" * 40
+
+
+def test_delayed_pre_merge_source_receipt_does_not_end_scope_search():
+    later = fleet_commit()
+    later["sha"] = "e" * 40
+    later["commit"]["message"] = (
+        later["commit"]["message"]
+        .replace(SOURCE, "f" * 40)
+        .replace("projects/embervm/chart 1.2.3", "projects/embervm/chart 1.2.4")
+    )
+    delayed = fleet_commit()
+    delayed["sha"] = "1" * 40
+    delayed["commit"]["message"] = delayed["commit"]["message"].replace(
+        SOURCE, "0" * 40
+    )
+    fallback = fleet_github(moved=("monolith",))
+
+    def get(repo, path):
+        if path == f"compare/{MERGE}...{'0' * 40}?per_page=1":
+            return {"status": "behind"}
+        return fallback(repo, path)
+
+    state = fleet()
+    state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"],
+        state,
+        get=get,
+        commits=[later, delayed, fleet_commit()],
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
 
 
 def test_unknown_kustomize_dependency_key_cannot_exclude_affected_application():

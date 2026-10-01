@@ -462,7 +462,9 @@ the issue (#6002).
 files deploy through: registry chart versions moved since the merge, git paths
 and their kustomize surface, and `$values` files (#6660). Chart scope uses the
 first provable publication covering the merge; later unrelated chart bumps do
-not widen it. Unknown kustomize keys include the Application conservatively, and
+not widen it. Deployment proof can use a newer successful publication containing
+the merge. The receipt commit bounds the history search even when an older-source
+publisher finishes late. Unknown kustomize keys include the Application conservatively, and
 workload reads begin after scope selection. Anything unreadable fails closed.
 A PR reaching no live Application verifies against its publication
 receipt's successful `pr-checks` render check. A wait reaches status and the daily
