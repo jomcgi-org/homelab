@@ -1102,6 +1102,10 @@ async def _execute_pending_message(session_id: int) -> None:
                     _transport._workload_for(effective_model),
                 ):
                     raise EmberVMTransportError("Shared execution admission is fenced")
+                # SIGTERM may arrive while either admission read is off-thread.
+                # Do not yield to the physical POST after that fence closes.
+                if rollout_shutdown_in_progress():
+                    raise asyncio.CancelledError
 
             deliver_kwargs["admission_check"] = shared_admission_check
             from factory.orchestration.api import declared_artifact_path

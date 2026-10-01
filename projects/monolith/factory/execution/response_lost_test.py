@@ -1804,6 +1804,14 @@ def test_shutdown_during_receipt_preparation_fences_the_physical_post(
     monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
     sid = queue(database)
     prepare = result_receipts.prepare_receipt
+    recheck = admission.recheck
+    admission_calls = []
+
+    def checking(*args, **kwargs):
+        admission_calls.append(args)
+        return recheck(*args, **kwargs)
+
+    monkeypatch.setattr(admission, "recheck", checking)
 
     def preparing(*args, **kwargs):
         receipt = prepare(*args, **kwargs)
@@ -1825,6 +1833,47 @@ def test_shutdown_during_receipt_preparation_fences_the_physical_post(
             await mcp._execute_pending_message(sid)
 
     asyncio.run(run())
+    assert len(admission_calls) == 1
+    assert len(requests) == (0 if enabled else 1)
+    state = snapshot(database, sid)
+    assert state["permits"][0]["outcome"] == ("not_invoked" if enabled else "end_turn")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_shutdown_during_final_admission_recheck_fences_the_physical_post(
+    database, monkeypatch, enabled
+):
+    monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
+    monkeypatch.setenv("AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED", "true")
+    sid = queue(database)
+    recheck = admission.recheck
+    admission_calls = []
+
+    def checking(*args, **kwargs):
+        allowed = recheck(*args, **kwargs)
+        admission_calls.append(args)
+        # Enabled delivery checks twice, the final check follows receipt
+        # preparation. SIGTERM arrives while that DB call is off-thread.
+        if len(admission_calls) == (2 if enabled else 1):
+            mcp.begin_rollout_shutdown()
+        return allowed
+
+    monkeypatch.setattr(admission, "recheck", checking)
+
+    async def handler(request):
+        return httpx.Response(200, json=native_record(artifact=False), request=request)
+
+    requests = fake_http(monkeypatch, handler)
+
+    async def run():
+        if enabled:
+            with pytest.raises(asyncio.CancelledError):
+                await mcp._execute_pending_message(sid)
+        else:
+            await mcp._execute_pending_message(sid)
+
+    asyncio.run(run())
+    assert len(admission_calls) == (2 if enabled else 1)
     assert len(requests) == (0 if enabled else 1)
     state = snapshot(database, sid)
     assert state["permits"][0]["outcome"] == ("not_invoked" if enabled else "end_turn")
