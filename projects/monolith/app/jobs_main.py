@@ -61,33 +61,29 @@ class RawPricingBackfillReport:
 
 
 def _usage_has_tokens(usage: object) -> bool:
-    if not isinstance(usage, dict):
-        return False
-    token_keys = {
-        "input_tokens",
-        "output_tokens",
-        "cache_read_tokens",
-        "cache_write_tokens",
-        "cache_read_input_tokens",
-        "cache_creation_input_tokens",
-        "cached_input_tokens",
-        "cache_write_input_tokens",
-    }
-    return any(
-        isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
-        for key, value in usage.items()
-        if key in token_keys
-    )
+    from shared.pricing import usage_has_tokens
+
+    return usage_has_tokens(usage)
 
 
 def _price_turns_backfill_core(
     engine, chunk_size: int = 500
 ) -> TurnPricingBackfillReport:
-    """Price eligible tracked turns, committing each bounded result page."""
+    """List-price every tracked turn that has none, one bounded page at a time.
+
+    A provider-reported cost does not exempt a turn: the public pages show list
+    price for every model, so Claude turns get one too (shared/pricing.py
+    list_price_usd says why that is their reported figure). The turn's own
+    model wins; rows written before turns carried one, or with an empty one,
+    fall back to their session's model. Turns with no tokens and no reported
+    cost stay NULL (see create_turn). Only the columns pricing needs are read,
+    never the diff or artifact blobs.
+    """
+    from sqlalchemy import update
     from sqlmodel import Session, select
 
-    from factory.execution.models import AgentTurn
-    from shared.pricing import price_usage
+    from factory.execution.models import AgentSession, AgentTurn
+    from shared.pricing import list_price_usd
 
     priced_count = 0
     skipped_unknown_model = 0
@@ -96,13 +92,18 @@ def _price_turns_backfill_core(
     with Session(engine) as session:
         while True:
             rows = session.exec(
-                select(AgentTurn)
+                select(
+                    AgentTurn.id,
+                    AgentTurn.model,
+                    AgentSession.model,
+                    AgentTurn.usage_json,
+                    AgentTurn.cost_usd,
+                )
+                .join(AgentSession, AgentSession.id == AgentTurn.session_id)
                 .where(
                     AgentTurn.id > last_id,
-                    AgentTurn.cost_usd.is_(None),
                     AgentTurn.list_cost_usd.is_(None),
                     AgentTurn.usage_json.is_not(None),
-                    AgentTurn.model.is_not(None),
                 )
                 .order_by(AgentTurn.id)
                 .limit(chunk_size)
@@ -110,26 +111,36 @@ def _price_turns_backfill_core(
             if not rows:
                 break
 
-            for row in rows:
+            for turn_id, turn_model, session_model, usage_json, reported in rows:
                 try:
-                    usage = json.loads(row.usage_json or "{}")
-                    if not _usage_has_tokens(usage):
+                    usage = json.loads(usage_json or "{}")
+                    reported_cost = float(reported) if reported is not None else None
+                    if not _usage_has_tokens(usage) and not reported_cost:
                         skipped_zero += 1
                         continue
-                    calculated = price_usage(row.model, usage)
+                    calculated = list_price_usd(
+                        turn_model or session_model, usage, reported_cost
+                    )
                     if calculated is None:
                         skipped_unknown_model += 1
                         continue
-                    row.list_cost_usd = calculated.cost_usd
+                    session.exec(
+                        update(AgentTurn)
+                        .where(
+                            AgentTurn.id == turn_id,
+                            AgentTurn.list_cost_usd.is_(None),
+                        )
+                        .values(list_cost_usd=calculated)
+                    )
                     priced_count += 1
                 except Exception:
                     logger.warning(
                         "price-turns-backfill: failed to price turn id=%s",
-                        row.id,
+                        turn_id,
                         exc_info=True,
                     )
 
-            last_id = rows[-1].id
+            last_id = rows[-1][0]
             session.commit()
 
     return TurnPricingBackfillReport(
@@ -672,6 +683,34 @@ def factory_public_snapshot() -> None:
         report["snapshotted_at"],
     )
     # Skipped rows are reported, but do not keep the public board stale.
+
+
+@app.command("agent-activity-snapshot")
+def agent_activity_snapshot() -> None:
+    """Snapshot the /slop/factory overview's activity aggregates at list price.
+
+    Aggregating turn usage parses each turn's usage_json, which carries its
+    whole tool-call list, so it takes seconds; the public route used to do it
+    per request. This job does it once per cadence and upserts the single
+    public_api.agent_activity_snapshot row the route reads."""
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from factory.publication import write_agent_activity_snapshot
+
+    configure_logging()
+    started = time.monotonic()
+    with Session(get_engine()) as session:
+        report = write_agent_activity_snapshot(session)
+    logger.info(
+        "agent-activity-snapshot: spend_7d=%s spend_30d=%s unpriced_7d=%d "
+        "at %s in %.1fs",
+        report["spend_7d_usd"],
+        report["spend_30d_usd"],
+        report["unpriced_7d"],
+        report["snapshotted_at"],
+        time.monotonic() - started,
+    )
 
 
 @app.command("snapshot-merged-prs")

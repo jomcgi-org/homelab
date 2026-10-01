@@ -365,6 +365,7 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
                 local_session_id="backfill",
                 workspace="<guest>",
                 branch="main",
+                model="luna",
             )
             session.add(agent)
             session.commit()
@@ -396,13 +397,47 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
                         usage_json=json.dumps({"input_tokens": 1_000}),
                         list_cost_usd=0.123,
                     ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=4,
+                        prompt="reported but not list priced",
+                        result_text="done",
+                        model="luna",
+                        usage_json=json.dumps({"input_tokens": 2_000_000}),
+                        cost_usd=0.5,
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=5,
+                        prompt="never reached a model",
+                        result_text="error",
+                        model="astra",
+                        usage_json=json.dumps({"activities": [], "recovery": {}}),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=6,
+                        prompt="no turn model",
+                        result_text="done",
+                        model=None,
+                        usage_json=json.dumps({"input_tokens": 1_000_000}),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=7,
+                        prompt="claude code reported",
+                        result_text="done",
+                        model="opus",
+                        usage_json=json.dumps({"input_tokens": 10}),
+                        cost_usd=1.5,
+                    ),
                 ]
             )
             session.commit()
 
             report = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
 
-            assert report == jobs_main.TurnPricingBackfillReport(1, 1, 0)
+            assert report == jobs_main.TurnPricingBackfillReport(4, 1, 1)
             rows = session.exec(select(AgentTurn).order_by(AgentTurn.seq)).all()
             assert rows[0].cost_usd is None
             assert rows[0].list_cost_usd == pytest.approx(0.10)
@@ -410,6 +445,12 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
             assert rows[1].list_cost_usd is None
             assert rows[2].cost_usd is None
             assert rows[2].list_cost_usd == pytest.approx(0.123)
+            assert rows[3].cost_usd == pytest.approx(0.5)
+            assert rows[3].list_cost_usd == pytest.approx(0.20)
+            assert rows[4].list_cost_usd is None
+            # Falls back to the session's model.
+            assert rows[5].list_cost_usd == pytest.approx(0.10)
+            assert rows[6].list_cost_usd == pytest.approx(1.5)
 
             rerun = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
             assert rerun.priced == 0

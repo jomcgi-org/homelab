@@ -192,6 +192,7 @@ def _seed_board(session, *, state: str = "admitted") -> FactoryReceipt:
                 }
             ),
             cost_usd=0.75,
+            list_cost_usd=0.4,
             created_at=now - timedelta(minutes=20),
         )
     )
@@ -375,6 +376,15 @@ def test_writer_publishes_the_board_the_task_and_the_session(session):
     assert summary["phase"] == NODE_KEY
     assert summary["nodes"] == [{"node_key": NODE_KEY, "state": "done"}]
     assert summary["allowance_turns"] is not None
+    # List price from the task's sessions, not the 0.75 the provider reported.
+    assert summary["cost_usd"] == 0.4
+    assert board["totals_7d"] == {
+        "window_days": 7,
+        "cost_basis": "list",
+        "landed": 0,
+        "escalated": 0,
+        "spend_usd": 0.4,
+    }
 
     tasks = _task_payloads(session)
     assert list(tasks) == [ISSUE_NUMBER]
@@ -384,6 +394,8 @@ def test_writer_publishes_the_board_the_task_and_the_session(session):
     digest = task["nodes"][0]["attempts"][0]["turns"][0]
     assert digest["seq"] == 1
     assert digest["activities"] == [{"type": "bash", "command": "ci lint"}]
+    assert digest["cost_usd"] == 0.4
+    assert task["nodes"][0]["attempts"][0]["cost_usd"] == 0.4
     # A walkthrough digest never carries the diff; that is the session page.
     assert "diff" not in digest
 
@@ -396,6 +408,7 @@ def test_writer_publishes_the_board_the_task_and_the_session(session):
     assert payload["session"]["attempt"] == 1
     assert payload["session"]["turn_count"] == 1
     assert payload["session"]["guest_bound"] is True
+    assert payload["session"]["cost_usd"] == 0.4
     turn = payload["turns"][0]
     assert turn["diff"] == DIFF_TEXT
     assert turn["diff_truncated"] is False
@@ -559,7 +572,64 @@ def test_public_reader_can_read_back_what_the_writer_published(session, pg):
                 "factory_task_snapshot",
                 "factory_session_snapshot",
                 "factory_work_item_snapshot",
+                "agent_activity_snapshot",
             ):
                 reader.execute(text(f"SELECT * FROM public_api.{table}")).all()
     finally:
         engine.dispose()
+
+
+def test_ledger_counts_every_receipt_that_finished_this_week(session):
+    """The 7-day strip is not capped by the board's recent list."""
+    receipt = _seed_board(session, state="succeeded")
+    session.flush()
+
+    board = publication.build_public_snapshot(session).activity
+    assert board["totals_7d"]["landed"] == 1
+    assert board["totals_7d"]["escalated"] == 0
+
+    receipt.state = "failed"
+    session.add(receipt)
+    session.flush()
+    board = publication.build_public_snapshot(session).activity
+    assert board["totals_7d"]["landed"] == 0
+    assert board["totals_7d"]["escalated"] == 1
+
+
+def test_agent_activity_snapshot_aggregates_turns_at_list_price(session):
+    _seed_board(session)
+    agent = session.execute(
+        text(
+            "SELECT id FROM agent_sessions.agent_sessions WHERE local_session_id = :k"
+        ),
+        {"k": SESSION_KEY},
+    ).one()
+    # A turn whose session create failed: no tokens, no price, and free.
+    session.add(
+        AgentTurn(
+            session_id=agent[0],
+            seq=2,
+            prompt="retry",
+            result_text="Error executing turn: 500",
+            terminal_reason="error",
+            usage_json=json.dumps({"activities": [], "recovery": {"cause": "500"}}),
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+    session.flush()
+
+    report = publication.write_agent_activity_snapshot(session)
+
+    payload = session.execute(
+        text("SELECT payload FROM public_api.agent_activity_snapshot WHERE id = 1")
+    ).one()[0]
+    assert payload["cost_basis"] == "list"
+    today = payload["spend_daily"][-1]
+    assert today["day"] == datetime.now(timezone.utc).date().isoformat()
+    assert today["ember_usd"] == 0.4
+    week = payload["totals_7d"]["ember"]
+    assert week["turns"] == 2
+    assert week["input_tokens"] == 120
+    assert week["list_cost_usd"] == 0.4
+    assert week["unpriced"] == 0
+    assert report["spend_7d_usd"] == payload["totals_7d"]["combined"]["spend_usd"]

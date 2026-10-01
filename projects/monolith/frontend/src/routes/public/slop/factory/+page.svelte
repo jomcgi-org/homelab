@@ -88,7 +88,7 @@
       spark: tiles.tokens.spark,
     },
     {
-      key: "Reported spend, 7d",
+      key: "Spend, 7d (list)",
       value: formatSpend(tiles.spend.value),
       spark: tiles.spend.spark,
     },

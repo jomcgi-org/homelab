@@ -154,9 +154,10 @@ export function stepsOf(task) {
 
 /**
  * Split the board payload into the two ledgers and the numbers above them.
- * Completed tasks sort newest first; the seven-day counts are what the strip
- * reports, and spend counts committed cost on live tasks too because that money
- * is already gone.
+ * Completed tasks sort newest first. The seven-day strip comes from the
+ * snapshot's totals_7d, counted over every receipt and every factory turn at
+ * list price; `recent` is capped at a dozen tasks, so it is only the fallback
+ * for a snapshot written before totals_7d existed.
  */
 export function ledger(activity, now) {
   const live = activity?.active ?? [];
@@ -170,8 +171,19 @@ export function ledger(activity, now) {
   const week = done.filter(
     (task) => task.finished_at && new Date(task.finished_at).getTime() >= edge,
   );
+  const totals = activity?.totals_7d;
+  if (totals) {
+    return {
+      live,
+      queued,
+      done,
+      landed: Number(totals.landed) || 0,
+      escalated: Number(totals.escalated) || 0,
+      spend: Number(totals.spend_usd) || 0,
+    };
+  }
   const spend = [...week, ...live].reduce(
-    (total, task) => total + (Number(task.committed_cost_usd) || 0),
+    (total, task) => total + (Number(task.cost_usd) || 0),
     0,
   );
   return {
@@ -325,7 +337,7 @@ export function taskSpec(task, policy, now) {
     },
     {
       label: "Spend",
-      value: `${money(task.committed_cost_usd)} of ${money(policy?.task_budget_usd)}`,
+      value: `${money(task.cost_usd)} of ${money(policy?.task_budget_usd)}`,
       num: true,
     },
     { label: "Elapsed", value: elapsed, num: true },

@@ -57,7 +57,7 @@ const LIVE_TASK = {
   deadline_at: "2026-09-11T20:14:00Z",
   turns_used: 7,
   allowance_turns: 12,
-  committed_cost_usd: 3.42,
+  cost_usd: 3.42,
   pr: { number: 5996, url: "https://example.test/pull/5996", state: "draft" },
   nodes: [
     {
@@ -114,7 +114,7 @@ const LANDED_TASK = {
   finished_at: "2026-09-10T16:41:00Z",
   turns_used: 5,
   allowance_turns: 8,
-  committed_cost_usd: 1.94,
+  cost_usd: 1.94,
   pr: { number: 5991, url: "https://example.test/pull/5991", state: "merged" },
   nodes: [],
   stop_events: [],
@@ -210,9 +210,7 @@ describe("state vocabulary", () => {
 describe("ledger", () => {
   const board = {
     active: [LIVE_TASK],
-    queued: [
-      { issue_number: 5992, state: "queued", committed_cost_usd: 0, nodes: [] },
-    ],
+    queued: [{ issue_number: 5992, state: "queued", cost_usd: 0, nodes: [] }],
     recent: [
       { ...LANDED_TASK, finished_at: "2026-09-09T12:31:00Z" },
       LANDED_TASK,
@@ -220,14 +218,14 @@ describe("ledger", () => {
         issue_number: 5971,
         state: "failed",
         finished_at: "2026-09-09T21:40:00Z",
-        committed_cost_usd: 2.15,
+        cost_usd: 2.15,
         nodes: [],
       },
       {
         issue_number: 5000,
         state: "landed",
         finished_at: "2026-08-01T10:00:00Z",
-        committed_cost_usd: 9,
+        cost_usd: 9,
         nodes: [],
       },
     ],
@@ -245,6 +243,20 @@ describe("ledger", () => {
     expect(result.escalated).toBe(1);
     // 1.94 + 1.94 + 2.15 in the window, plus 3.42 already committed live.
     expect(result.spend).toBeCloseTo(9.45, 5);
+  });
+
+  it("reads the snapshot's seven-day totals over the capped recent list", () => {
+    const result = ledger(
+      {
+        ...board,
+        totals_7d: { landed: 20, escalated: 10, spend_usd: 34.04 },
+      },
+      NOW,
+    );
+    expect(result.landed).toBe(20);
+    expect(result.escalated).toBe(10);
+    expect(result.spend).toBeCloseTo(34.04, 5);
+    expect(result.done).toHaveLength(4);
   });
 
   it("survives an empty payload", () => {

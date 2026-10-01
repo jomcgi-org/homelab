@@ -392,6 +392,30 @@ def test_public_reader_cannot_write_the_factory_snapshot_tables(pg):
         engine.dispose()
 
 
+def test_public_reader_reads_but_cannot_write_the_activity_snapshot(pg):
+    """The overview reads one snapshot row; only the private job writes it."""
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE public_reader"))
+            session.execute(
+                text(
+                    "SELECT payload, snapshotted_at "
+                    "FROM public_api.agent_activity_snapshot"
+                )
+            ).all()
+            with pytest.raises(Exception) as exc:
+                session.execute(
+                    text(
+                        "INSERT INTO public_api.agent_activity_snapshot "
+                        "(id, payload, snapshotted_at) VALUES (1, '{}'::jsonb, now())"
+                    )
+                )
+            assert "permission denied" in str(exc.value).lower()
+    finally:
+        engine.dispose()
+
+
 def test_local_session_view_aggregates_collector_usage(session):
     view_day = session.execute(text("SELECT CURRENT_DATE")).scalar_one()
     session.execute(

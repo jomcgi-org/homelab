@@ -36,7 +36,7 @@ from factory.execution.models import (
 from factory.execution.transport import Turn, parse_native_turn
 from factory.utils import sanitize_payload
 from core.db import get_engine
-from shared.pricing import price_usage
+from shared.pricing import list_price_usd
 
 logger = logging.getLogger(__name__)
 
@@ -1749,13 +1749,16 @@ def create_turn(
         usage_json=json.dumps(sanitize_payload(usage or {})),
         cost_usd=cost_usd,
     )
-    if cost_usd is None:
-        try:
-            priced = price_usage(model, usage)
-            if priced is not None:
-                row.list_cost_usd = priced.cost_usd
-        except Exception as exc:
-            logger.warning("Failed to price turn: %s", exc, exc_info=True)
+    # Every turn gets a list price, including ones the provider reported a
+    # cost for: the public pages show list price for every model. Settlement
+    # still prefers the reported cost (node_workflows._settlement_cost). A
+    # turn with no tokens and no reported cost stays NULL: reconciliation reads
+    # a NULL list cost on an error turn as part of its proof that the turn
+    # never reached a guest.
+    try:
+        row.list_cost_usd = list_price_usd(model, usage, cost_usd)
+    except Exception as exc:
+        logger.warning("Failed to price turn: %s", exc, exc_info=True)
     session.add(row)
     if commit:
         session.commit()
@@ -2573,15 +2576,16 @@ def persist_turn_from_pending_sync(
         if drain_continuation:
             # Price this physical turn alone, then add the captured prefix. The
             # replaced ORM row has already been deleted and flushed above.
-            current_list_cost = row.list_cost_usd
-            if current_list_cost is None:
-                try:
-                    priced = price_usage(model, usage)
-                    current_list_cost = priced.cost_usd if priced is not None else None
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to price drain continuation: %s", exc, exc_info=True
-                    )
+            # create_turn priced the row from the summed reported cost, which
+            # already includes the prefix; price this physical turn on its own
+            # reported cost so the prefix is not counted twice.
+            try:
+                current_list_cost = list_price_usd(model, usage, turn.total_cost_usd)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to price drain continuation: %s", exc, exc_info=True
+                )
+                current_list_cost = None
             row.list_cost_usd = (
                 current_list_cost + prior_list_cost
                 if current_list_cost is not None and prior_list_cost is not None

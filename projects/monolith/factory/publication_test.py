@@ -135,7 +135,8 @@ def _turn(**extra):
         "diff_base_sha": None,
         "usage_json": '{"input_tokens": 120, "output_tokens": 30, '
         '"activities": [{"type": "edit", "file_path": "a.py"}]}',
-        "cost_usd": 0.25,
+        "cost_usd": 0.3,
+        "list_cost_usd": 0.25,
         "created_at": "2026-09-11T09:05:00+00:00",
     }
     turn.update(extra)
@@ -512,7 +513,7 @@ def test_task_payload_adds_the_brief_plan_and_stop_events_to_the_summary():
 
 
 def test_digest_tolerates_a_turn_with_no_usable_usage_json():
-    digest = turn_digest(_turn(usage_json="not json", cost_usd=None))
+    digest = turn_digest(_turn(usage_json="not json", list_cost_usd=None))
     assert digest["activities"] == []
     assert digest["cost_usd"] is None
 
@@ -533,7 +534,11 @@ def test_session_payload_totals_the_turns_and_excludes_session_identity():
         6014,
         "implement_fix",
         2,
-        [_turn(seq=1, cost_usd=0.25), _turn(seq=2, cost_usd=0.75)],
+        # Reported costs are ignored: the public pages show list price.
+        [
+            _turn(seq=1, cost_usd=9.0, list_cost_usd=0.25),
+            _turn(seq=2, cost_usd=9.0, list_cost_usd=0.75),
+        ],
         "2026-09-11T10:00:00+00:00",
     )
 
@@ -558,13 +563,13 @@ def test_session_payload_totals_the_turns_and_excludes_session_identity():
     assert "ember_session_id" not in payload["session"]
 
 
-def test_session_payload_has_a_null_cost_when_no_turn_recorded_one():
+def test_session_payload_has_a_null_cost_when_no_turn_could_be_priced():
     payload = session_payload(
         {"local_session_id": "factory:t:n:1", "ember_session_id": None},
         None,
         "n",
         1,
-        [_turn(cost_usd=None)],
+        [_turn(cost_usd=None, list_cost_usd=None)],
         "2026-09-11T10:00:00+00:00",
     )
     assert payload["session"]["cost_usd"] is None
@@ -587,3 +592,141 @@ def test_payload_encoding_keeps_non_ascii_as_utf8():
 
     assert "\\u00b7" not in _encode({"label": "implement \u00b7 fix"})
     assert "\u00b7" in _encode({"label": "implement \u00b7 fix"})
+
+
+def test_turn_list_cost_reads_tokenless_turns_as_free_and_unknown_as_null():
+    from factory.publication import turn_list_cost
+
+    assert turn_list_cost(_turn(list_cost_usd=0.4)) == 0.4
+    # A turn whose session create failed recorded no tokens and cost nothing.
+    assert (
+        turn_list_cost(
+            _turn(list_cost_usd=None, usage_json='{"activities": [], "recovery": {}}')
+        )
+        == 0.0
+    )
+    # Tokens on a model the price table does not know stay unknown.
+    assert turn_list_cost(_turn(list_cost_usd=None)) is None
+    assert turn_list_cost(_turn(list_cost_usd=None, usage_json=None)) is None
+
+
+def test_attempt_and_task_costs_are_list_price_not_the_budget_ledger():
+    node = _node(
+        "implement_fix",
+        "done",
+        [
+            _attempt(1, "failed", 10, "2026-09-11T09:01:00+00:00"),
+            _attempt(2, "succeeded", 11, "2026-09-11T09:10:00+00:00"),
+            _attempt(3, "reserved", None, "2026-09-11T09:20:00+00:00"),
+        ],
+    )
+    shaped = shape_node(
+        node,
+        {10: "k1", 11: "k2"},
+        {
+            10: [_turn(list_cost_usd=0.5), _turn(seq=4, list_cost_usd=0.25)],
+            11: [_turn(list_cost_usd=None, usage_json='{"activities": []}')],
+        },
+    )
+    # The settlement figure (_attempt's 0.5) is not what the page shows.
+    assert [attempt["cost_usd"] for attempt in shaped["attempts"]] == [
+        0.75,
+        0.0,
+        None,
+    ]
+
+    summary = task_summary(_receipt(), 3.5)
+    assert summary["cost_usd"] == 3.5
+    assert summary["committed_cost_usd"] == 1.25
+    assert task_summary(_receipt())["cost_usd"] is None
+
+
+def _ember(day, model, *, sessions=1, list_cost=None, unpriced=0):
+    return {
+        "day": day,
+        "model": model,
+        "sessions": sessions,
+        "turns": sessions * 2,
+        "input_tokens": 10,
+        "output_tokens": 1,
+        "cache_read_tokens": 5,
+        "list_cost_usd": list_cost,
+        "unpriced_turns": unpriced,
+        # A private column a future query might return must not leak.
+        "session_id": 99,
+    }
+
+
+def _local(day, model, *, list_cost=None, unpriced=0):
+    return {
+        "day": day,
+        "model": model,
+        "source": "codex-session",
+        "sessions": 1,
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "cache_read_tokens": 50,
+        "list_cost_usd": list_cost,
+        "unpriced_sessions": unpriced,
+    }
+
+
+def test_agent_activity_sums_ember_and_local_at_list_price_over_both_windows():
+    from datetime import date, datetime, timedelta
+
+    from factory.publication import shape_agent_activity
+
+    today = date(2026, 10, 1)
+
+    def ago(days):
+        return today - timedelta(days=days)
+
+    payload = shape_agent_activity(
+        {
+            "active_last_hour": 3,
+            "sessions_today": 5,
+            "running": 2,
+            "last_turn_at": datetime(2026, 10, 1, 11, 30),
+        },
+        [
+            _ember(today, "opus", list_cost=2.0),
+            _ember(today, "astra", list_cost=1.0, unpriced=1),
+            # An outage day: turns that never reached a model cost 0.0.
+            _ember(ago(5), "astra", sessions=280, list_cost=0.0),
+            _ember(ago(10), "sol", list_cost=4.0),
+            # Only unpriced spend: the day is unknown, not free.
+            _ember(ago(12), "mystery", list_cost=None, unpriced=3),
+            _ember(ago(30), "sol", list_cost=100.0),
+        ],
+        [
+            _local(today, "gpt-6-astra", list_cost=10.0),
+            _local(ago(8), "claude-opus-5-5", list_cost=20.0),
+            _local(ago(29), "gpt-6-astra", list_cost=0.5),
+        ],
+        today=today,
+        snapshotted_at="2026-10-01T12:00:00+00:00",
+    )
+
+    assert payload["cost_basis"] == "list"
+    assert payload["now"]["last_turn_at"] == "2026-10-01T11:30:00+00:00"
+    assert "session_id" not in payload["daily"][0]
+    assert ago(30).isoformat() not in {row["day"] for row in payload["daily"]}
+
+    spend = {row["day"]: row["spend_usd"] for row in payload["spend_daily"]}
+    assert len(payload["spend_daily"]) == 30
+    assert spend[today.isoformat()] == 13.0
+    assert spend[ago(5).isoformat()] == 0.0
+    assert spend[ago(1).isoformat()] == 0.0
+    assert spend[ago(12).isoformat()] is None
+    assert spend[ago(8).isoformat()] == 20.0
+
+    week = payload["totals_7d"]
+    assert week["ember"]["list_cost_usd"] == 3.0
+    assert week["local"]["list_cost_usd"] == 10.0
+    assert week["combined"]["spend_usd"] == 13.0
+    assert week["combined"]["unpriced"] == 1
+    assert week["combined"]["sessions"] == 1 + 1 + 280 + 1
+
+    month = payload["totals_30d"]["combined"]
+    assert month["spend_usd"] == 2.0 + 1.0 + 4.0 + 10.0 + 20.0 + 0.5
+    assert month["unpriced"] == 4

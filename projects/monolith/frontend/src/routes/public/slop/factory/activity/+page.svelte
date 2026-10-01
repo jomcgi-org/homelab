@@ -118,7 +118,7 @@
           >{/if}</span
       >
       <span class="r num"
-        >{task.state === "queued" ? "–" : money(task.committed_cost_usd)}</span
+        >{task.state === "queued" ? "–" : money(task.cost_usd)}</span
       >
       <span class="r num">{time}</span>
       <span class="go" aria-hidden="true">›</span>

@@ -38,7 +38,7 @@ import logging
 import re
 import zlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import BigInteger, Integer, String, bindparam
 from sqlalchemy.exc import SQLAlchemyError
@@ -257,8 +257,14 @@ def review_rounds(nodes: list[dict] | None) -> int:
     )
 
 
-def task_summary(receipt: dict) -> dict:
-    """One board card: the task's identity, budget, and where it has got to."""
+def task_summary(receipt: dict, cost_usd: float | None = None) -> dict:
+    """One board card: the task's identity, budget, and where it has got to.
+
+    ``cost_usd`` is the task's spend at list price across every session it
+    ran (planner, workers, reviewers). ``committed_cost_usd`` stays the budget
+    ledger's figure, which mixes provider-reported costs with reserved
+    ceilings and is what the task budget is enforced against.
+    """
     nodes = receipt.get("nodes") or []
     state = receipt.get("state")
     allowance = receipt.get("allowance") or {}
@@ -279,6 +285,7 @@ def task_summary(receipt: dict) -> dict:
         "planner_turns_used": receipt.get("planner_turns_used"),
         "allowance_turns": allowance.get("turns"),
         "committed_cost_usd": _float(receipt.get("committed_cost_usd")),
+        "cost_usd": cost_usd,
         "review_rounds": review_rounds(nodes),
         "pr": shape_pr(receipt.get("evidence")),
         "nodes": [
@@ -418,6 +425,48 @@ def shape_permission_denials(value) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
+_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+)
+
+
+def _has_tokens(usage: dict | None) -> bool:
+    return any((_int((usage or {}).get(key)) or 0) > 0 for key in _TOKEN_KEYS)
+
+
+def turn_list_cost(turn: dict, usage: dict | None = None) -> float | None:
+    """A turn's cost at list price, the only basis the public pages show.
+
+    The turn store prices every turn (shared/pricing.py). A turn that never
+    reached a model records no tokens and is left unpriced there, but it cost
+    nothing, so it reads 0.0 here rather than unknown. None means tokens were
+    spent on a model the price table does not know.
+    """
+    listed = _float(turn.get("list_cost_usd"))
+    if listed is not None:
+        return listed
+    if usage is None:
+        usage = load_usage(turn.get("usage_json"))
+    if usage is None:
+        return None
+    return None if _has_tokens(usage) else 0.0
+
+
+def sum_list_costs(turns: list[dict]) -> float | None:
+    """Total list cost of some turns, or None when none of them is known."""
+    known = [
+        cost for cost in (turn_list_cost(turn) for turn in turns) if cost is not None
+    ]
+    return float(sum(known)) if known else None
+
+
 def turn_digest(turn: dict) -> dict:
     """What a turn looks like inside a task walkthrough: no diff, no rationale."""
     usage = load_usage(turn.get("usage_json"))
@@ -426,7 +475,7 @@ def turn_digest(turn: dict) -> dict:
         "prompt": turn.get("prompt"),
         "activities": shape_activities(usage),
         "result_text": turn.get("result_text"),
-        "cost_usd": _float(turn.get("cost_usd")),
+        "cost_usd": turn_list_cost(turn, usage),
         "commit_sha": turn.get("commit_sha"),
     }
 
@@ -460,7 +509,11 @@ def shape_node(
             {
                 "attempt": attempt.get("attempt"),
                 "status": attempt.get("status"),
-                "cost_usd": _float(attempt.get("cost_usd")),
+                # List price of the attempt's own turns, not the settlement
+                # figure the budget books (provider-reported or reserved).
+                "cost_usd": (
+                    sum_list_costs(turns[session_id]) if session_id in turns else None
+                ),
                 "session_key": session_keys.get(session_id),
                 "created_at": _iso(attempt.get("created_at")),
                 "finished_at": _iso(attempt.get("finished_at")),
@@ -485,13 +538,14 @@ def task_payload(
     session_keys: dict[int, str],
     turns: dict[int, list],
     snapshotted_at: str,
+    cost_usd: float | None = None,
 ) -> dict:
     """One task's walkthrough page."""
     return {
         "snapshotted_at": snapshotted_at,
         "policy": policy,
         "task": {
-            **task_summary(receipt),
+            **task_summary(receipt, cost_usd),
             "brief": shape_brief(body),
             "evidence_reason": (receipt.get("evidence") or {}).get("reason"),
             "nodes": [
@@ -512,8 +566,6 @@ def session_payload(
     snapshotted_at: str,
 ) -> dict:
     """One attempt's full record."""
-    costs = [_float(turn.get("cost_usd")) for turn in turns]
-    known = [cost for cost in costs if cost is not None]
     last = turns[-1] if turns else {}
     return {
         "snapshotted_at": snapshotted_at,
@@ -529,7 +581,7 @@ def session_payload(
             "last_turn_at": _iso(row.get("last_turn_at")),
             "terminal_reason": last.get("terminal_reason"),
             "turn_count": len(turns),
-            "cost_usd": sum(known) if known else None,
+            "cost_usd": sum_list_costs(turns),
         },
         "turns": [turn_record(turn) for turn in turns],
     }
@@ -659,6 +711,7 @@ _TURN_COLUMNS = (
     "diff_base_sha",
     "usage_json",
     "cost_usd",
+    "list_cost_usd",
     "created_at",
 )
 _SESSION_COLUMNS = (
@@ -696,11 +749,87 @@ def _sessions_and_turns(
     return sessions, turns
 
 
+# Factory sessions are keyed factory:<task_id>:<node_key>:<attempt>, planner
+# and conductor rounds included, so the task id prefix finds every session a
+# task ran without walking its plan. NULL list costs are turns that recorded
+# no tokens (see turn_list_cost); they cost nothing.
+_TASK_LIST_COST = text(
+    """
+    SELECT split_part(s.local_session_id, ':', 2) AS task_id,
+           COALESCE(SUM(t.list_cost_usd), 0) AS list_cost_usd
+    FROM agent_sessions.agent_sessions s
+    JOIN agent_sessions.agent_turns t ON t.session_id = s.id
+    WHERE s.local_session_id LIKE 'factory:%'
+      AND split_part(s.local_session_id, ':', 2) IN :task_ids
+    GROUP BY 1
+    """
+).bindparams(bindparam("task_ids", expanding=True, type_=String()))
+
+LEDGER_WINDOW_DAYS = 7
+# The board's 7-day strip, counted over every receipt rather than the board's
+# capped recent list. A task finishes when its last node run does; a receipt
+# that settled without running one (cancelled from the queue) falls back to
+# its last update.
+_LEDGER_OUTCOMES = text(
+    """
+    WITH finished AS (
+        SELECT r.state,
+               COALESCE(
+                   (SELECT MAX(n.finished_at)
+                    FROM swarm.swarm_node_run n
+                    WHERE n.task_id = r.task_id),
+                   r.updated_at
+               ) AS finished_at
+        FROM swarm.factory_receipt r
+        WHERE r.state IN ('succeeded', 'failed', 'escalated')
+    )
+    SELECT
+        COUNT(*) FILTER (WHERE state = 'succeeded') AS landed,
+        COUNT(*) FILTER (WHERE state IN ('failed', 'escalated')) AS escalated
+    FROM finished
+    WHERE finished_at >= :since
+    """
+)
+_LEDGER_SPEND = text(
+    """
+    SELECT COALESCE(SUM(t.list_cost_usd), 0) AS spend_usd,
+           COUNT(*) AS turns
+    FROM agent_sessions.agent_turns t
+    JOIN agent_sessions.agent_sessions s ON s.id = t.session_id
+    WHERE t.created_at >= :since
+      AND s.local_session_id LIKE 'factory:%'
+    """
+)
+
+
+def _task_list_costs(db: Session, task_ids: set[str]) -> dict[str, float]:
+    """List-price spend per task across every session it ran."""
+    if not task_ids:
+        return {}
+    rows = db.execute(_TASK_LIST_COST, {"task_ids": sorted(task_ids)}).all()
+    return {row.task_id: float(row.list_cost_usd) for row in rows}
+
+
+def ledger_totals(db: Session, now: datetime) -> dict:
+    """Landed, escalated and list-price spend over the last seven days."""
+    since = now - timedelta(days=LEDGER_WINDOW_DAYS)
+    outcomes = db.execute(_LEDGER_OUTCOMES, {"since": since}).one()
+    spend = db.execute(_LEDGER_SPEND, {"since": since}).one()
+    return {
+        "window_days": LEDGER_WINDOW_DAYS,
+        "cost_basis": "list",
+        "landed": int(outcomes.landed or 0),
+        "escalated": int(outcomes.escalated or 0),
+        "spend_usd": float(spend.spend_usd or 0),
+    }
+
+
 def build_public_snapshot(session: Session) -> PublicSnapshot:
     """Read the factory once and shape everything the public pages serve."""
     from factory.private_view import build_factory_view
 
-    snapshotted_at = _iso(datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    snapshotted_at = _iso(now)
     work_items = _public_work_items(session, snapshotted_at)
     task_ids, bodies = _board_task_ids(session)
     board = build_factory_view(session=session, plan_tasks=task_ids)
@@ -715,6 +844,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
                 "active": [],
                 "queued": [],
                 "recent": [],
+                "totals_7d": ledger_totals(session, now),
             },
             tasks={},
             sessions={},
@@ -736,14 +866,30 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
     }
     session_rows, turns = _sessions_and_turns(session, session_ids)
     session_keys = {sid: row["local_session_id"] for sid, row in session_rows.items()}
+    task_costs = _task_list_costs(
+        session, {card["task_id"] for card in cards if card.get("task_id")}
+    )
+
+    def card_cost(card: dict) -> float | None:
+        task_id = card.get("task_id")
+        if not task_id:
+            return None
+        return task_costs.get(task_id, 0.0)
 
     activity = {
         "snapshotted_at": snapshotted_at,
         "state": board.get("state"),
         "policy": policy,
-        "active": [task_summary(card) for card in board.get("active") or []],
-        "queued": [task_summary(card) for card in board.get("queued") or []],
-        "recent": [task_summary(card) for card in board.get("recent") or []],
+        "active": [
+            task_summary(card, card_cost(card)) for card in board.get("active") or []
+        ],
+        "queued": [
+            task_summary(card, card_cost(card)) for card in board.get("queued") or []
+        ],
+        "recent": [
+            task_summary(card, card_cost(card)) for card in board.get("recent") or []
+        ],
+        "totals_7d": ledger_totals(session, now),
     }
 
     tasks: dict[int, dict] = {}
@@ -760,6 +906,7 @@ def build_public_snapshot(session: Session) -> PublicSnapshot:
             session_keys,
             turns,
             snapshotted_at,
+            card_cost(card),
         )
         for node in card.get("nodes") or []:
             for attempt in node.get("attempts") or []:
@@ -948,4 +1095,324 @@ def write_public_snapshot(session: Session) -> dict:
         "sessions_skipped": sessions_skipped,
         "work_items_skipped": work_items_skipped,
         "snapshotted_at": at,
+    }
+
+
+# --- Agent activity: the /slop/factory overview's aggregate payload ---------
+#
+# public_view.get_public_agent_activity used to aggregate the public_api
+# agent_activity views on every request, which parses every turn's usage_json
+# (each carries the turn's tool-call list) and took 4 to 6 seconds. This builds
+# the same aggregates once per cadence, all at list price, and the public
+# route reads the single row. Ember turns and local Mac sessions are summed on
+# one basis so the overview's spend covers both.
+
+ACTIVITY_DAILY_WINDOW_DAYS = 30
+ACTIVITY_TOTAL_WINDOWS = {"totals_7d": 7, "totals_30d": 30}
+
+_NUMERIC = r"^[0-9]+([.][0-9]+)?$"
+
+# usage_json is parsed once per turn in the MATERIALIZED CTE; the NUL guard
+# keeps a \u0000 escape (which jsonb refuses) from failing the whole snapshot.
+# A turn with a NULL list cost and no tokens never reached a model and counts
+# as 0.0; one with tokens and no price is counted as unpriced.
+_ACTIVITY_DAILY = text(
+    rf"""
+    WITH parsed AS MATERIALIZED (
+        SELECT t.created_at, t.session_id, t.list_cost_usd,
+               CASE
+                   WHEN t.usage_json LIKE '{{%'
+                    AND t.usage_json !~ '(^|[^\\])(\\\\)*\\u0000'
+                   THEN t.usage_json::jsonb
+               END AS u
+        FROM agent_sessions.agent_turns t
+        WHERE t.created_at >= :since
+    ),
+    turns AS (
+        SELECT (p.created_at AT TIME ZONE 'UTC')::date AS day,
+               p.session_id,
+               p.list_cost_usd,
+               CASE WHEN p.u->>'input_tokens' ~ '{_NUMERIC}'
+                    THEN (p.u->>'input_tokens')::numeric END AS input_tokens,
+               CASE WHEN p.u->>'output_tokens' ~ '{_NUMERIC}'
+                    THEN (p.u->>'output_tokens')::numeric END AS output_tokens,
+               CASE WHEN COALESCE(p.u->>'cache_read_tokens',
+                                  p.u->>'cache_read_input_tokens',
+                                  p.u->>'cached_input_tokens') ~ '{_NUMERIC}'
+                    THEN COALESCE(p.u->>'cache_read_tokens',
+                                  p.u->>'cache_read_input_tokens',
+                                  p.u->>'cached_input_tokens')::numeric
+               END AS cache_read_tokens,
+               CASE WHEN COALESCE(p.u->>'cache_write_tokens',
+                                  p.u->>'cache_creation_input_tokens',
+                                  p.u->>'cache_write_input_tokens') ~ '{_NUMERIC}'
+                    THEN COALESCE(p.u->>'cache_write_tokens',
+                                  p.u->>'cache_creation_input_tokens',
+                                  p.u->>'cache_write_input_tokens')::numeric
+               END AS cache_write_tokens
+        FROM parsed p
+    )
+    SELECT turns.day,
+           COALESCE(s.model, 'unknown') AS model,
+           COUNT(DISTINCT turns.session_id) AS sessions,
+           COUNT(*) AS turns,
+           COALESCE(SUM(turns.input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(turns.output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(turns.cache_read_tokens), 0) AS cache_read_tokens,
+           SUM(
+               CASE
+                   WHEN turns.list_cost_usd IS NOT NULL THEN turns.list_cost_usd
+                   WHEN COALESCE(turns.input_tokens, 0)
+                      + COALESCE(turns.output_tokens, 0)
+                      + COALESCE(turns.cache_read_tokens, 0)
+                      + COALESCE(turns.cache_write_tokens, 0) = 0 THEN 0
+               END
+           ) AS list_cost_usd,
+           COUNT(*) FILTER (
+               WHERE turns.list_cost_usd IS NULL
+                 AND COALESCE(turns.input_tokens, 0)
+                   + COALESCE(turns.output_tokens, 0)
+                   + COALESCE(turns.cache_read_tokens, 0)
+                   + COALESCE(turns.cache_write_tokens, 0) > 0
+           ) AS unpriced_turns
+    FROM turns
+    JOIN agent_sessions.agent_sessions s ON s.id = turns.session_id
+    GROUP BY 1, 2
+    """
+)
+# Local Mac sessions (the claude-session and codex-session collectors). The
+# collector, or price-raws-backfill, stores each session's list price as
+# extra.usage_cost_usd.
+_LOCAL_ACTIVITY_DAILY = text(
+    rf"""
+    WITH raws AS (
+        SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
+               COALESCE(extra->>'model', 'unknown') AS model,
+               source,
+               NULLIF(regexp_replace(extra->'usage'->>'input_tokens', '[^0-9]', '', 'g'), '')::numeric AS input_tokens,
+               NULLIF(regexp_replace(extra->'usage'->>'output_tokens', '[^0-9]', '', 'g'), '')::numeric AS output_tokens,
+               NULLIF(regexp_replace(extra->'usage'->>'cache_read_tokens', '[^0-9]', '', 'g'), '')::numeric AS cache_read_tokens,
+               CASE WHEN extra->>'usage_cost_usd' ~ '{_NUMERIC}'
+                    THEN (extra->>'usage_cost_usd')::numeric END AS list_cost_usd
+        FROM knowledge.raw_inputs
+        WHERE source IN ('claude-session', 'codex-session')
+          AND extra ? 'usage'
+          AND jsonb_typeof(extra->'usage') = 'object'
+          AND created_at >= :since
+    )
+    SELECT day, model, source,
+           COUNT(*) AS sessions,
+           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+           SUM(
+               CASE
+                   WHEN list_cost_usd IS NOT NULL THEN list_cost_usd
+                   WHEN COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                      + COALESCE(cache_read_tokens, 0) = 0 THEN 0
+               END
+           ) AS list_cost_usd,
+           COUNT(*) FILTER (
+               WHERE list_cost_usd IS NULL
+                 AND COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                   + COALESCE(cache_read_tokens, 0) > 0
+           ) AS unpriced_sessions
+    FROM raws
+    GROUP BY 1, 2, 3
+    """
+)
+_ACTIVITY_NOW = text(
+    """
+    SELECT
+      (SELECT COUNT(*) FROM agent_sessions.agent_sessions
+        WHERE last_turn_at > now() - interval '1 hour') AS active_last_hour,
+      (SELECT COUNT(*) FROM agent_sessions.agent_sessions
+        WHERE created_at >= date_trunc('day', now())) AS sessions_today,
+      (SELECT MAX(last_turn_at) FROM agent_sessions.agent_sessions) AS last_turn_at,
+      (SELECT COUNT(*) FROM agent_sessions.agent_sessions
+        WHERE status = 'running') AS running
+    """
+)
+_AGENT_ACTIVITY_UPSERT = text(
+    """
+    INSERT INTO public_api.agent_activity_snapshot (id, payload, snapshotted_at)
+    VALUES (1, CAST(:payload AS jsonb), :snapshotted_at)
+    ON CONFLICT (id) DO UPDATE
+    SET payload = EXCLUDED.payload, snapshotted_at = EXCLUDED.snapshotted_at
+    """
+)
+
+
+def _row_value(row, name: str):
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return mapping[name]
+    if isinstance(row, dict):
+        return row[name]
+    return getattr(row, name)
+
+
+def _day_iso(value) -> str:
+    if isinstance(value, datetime):
+        value = value.date()
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _activity_totals(rows: list[dict]) -> dict:
+    fields = ("sessions", "turns", "input_tokens", "output_tokens", "cache_read_tokens")
+    result = {field: sum(row[field] for row in rows) for field in fields}
+    known = [row["list_cost_usd"] for row in rows if row["list_cost_usd"] is not None]
+    result["list_cost_usd"] = float(sum(known)) if known else None
+    result["unpriced"] = sum(row["unpriced"] for row in rows)
+    return result
+
+
+def shape_agent_activity(
+    now_row,
+    daily_rows: list,
+    local_daily_rows: list,
+    *,
+    today,
+    snapshotted_at: str | None = None,
+) -> dict:
+    """Shape the overview's activity payload, every cost at list price.
+
+    ``spend_daily`` carries every day of the 30-day window, ember and local
+    together, so a quiet day reads $0 rather than a gap. A day is null only
+    when everything it spent was on models the price table cannot price.
+    """
+    daily_start = today - timedelta(days=ACTIVITY_DAILY_WINDOW_DAYS - 1)
+
+    def in_window(row) -> str | None:
+        day = _row_value(row, "day")
+        if isinstance(day, datetime):
+            day = day.date()
+        if day < daily_start or day > today:
+            return None
+        return _day_iso(day)
+
+    daily = []
+    for row in daily_rows:
+        day = in_window(row)
+        if day is None:
+            continue
+        daily.append(
+            {
+                "day": day,
+                "model": _row_value(row, "model"),
+                "sessions": int(_row_value(row, "sessions") or 0),
+                "turns": int(_row_value(row, "turns") or 0),
+                "input_tokens": int(_row_value(row, "input_tokens") or 0),
+                "output_tokens": int(_row_value(row, "output_tokens") or 0),
+                "cache_read_tokens": int(_row_value(row, "cache_read_tokens") or 0),
+                "list_cost_usd": _float(_row_value(row, "list_cost_usd")),
+                "unpriced": int(_row_value(row, "unpriced_turns") or 0),
+            }
+        )
+    daily.sort(key=lambda row: row["model"])
+    daily.sort(key=lambda row: row["day"], reverse=True)
+
+    local_daily = []
+    for row in local_daily_rows:
+        day = in_window(row)
+        if day is None:
+            continue
+        local_daily.append(
+            {
+                "day": day,
+                "model": _row_value(row, "model"),
+                "source": _row_value(row, "source"),
+                "sessions": int(_row_value(row, "sessions") or 0),
+                "turns": 0,
+                "input_tokens": int(_row_value(row, "input_tokens") or 0),
+                "output_tokens": int(_row_value(row, "output_tokens") or 0),
+                "cache_read_tokens": int(_row_value(row, "cache_read_tokens") or 0),
+                "list_cost_usd": _float(_row_value(row, "list_cost_usd")),
+                "unpriced": int(_row_value(row, "unpriced_sessions") or 0),
+            }
+        )
+    local_daily.sort(key=lambda row: (row["model"], row["source"]))
+    local_daily.sort(key=lambda row: row["day"], reverse=True)
+
+    payload = {
+        "snapshotted_at": snapshotted_at,
+        "cost_basis": "list",
+        "now": {
+            "active_last_hour": int(_row_value(now_row, "active_last_hour") or 0),
+            "sessions_today": int(_row_value(now_row, "sessions_today") or 0),
+            "running": int(_row_value(now_row, "running") or 0),
+            "last_turn_at": _iso(_row_value(now_row, "last_turn_at")),
+        },
+        "daily": daily,
+        "local_daily": local_daily,
+    }
+
+    spend_daily = []
+    for offset in range(ACTIVITY_DAILY_WINDOW_DAYS - 1, -1, -1):
+        day = (today - timedelta(days=offset)).isoformat()
+        ember = _activity_totals([row for row in daily if row["day"] == day])
+        local = _activity_totals([row for row in local_daily if row["day"] == day])
+        known = [
+            value
+            for value in (ember["list_cost_usd"], local["list_cost_usd"])
+            if value is not None
+        ]
+        has_rows = any(row["day"] == day for row in (*daily, *local_daily))
+        spend_daily.append(
+            {
+                "day": day,
+                "spend_usd": (
+                    float(sum(known)) if known else (None if has_rows else 0.0)
+                ),
+                "ember_usd": ember["list_cost_usd"],
+                "local_usd": local["list_cost_usd"],
+            }
+        )
+    payload["spend_daily"] = spend_daily
+
+    for key, days in ACTIVITY_TOTAL_WINDOWS.items():
+        start = (today - timedelta(days=days - 1)).isoformat()
+        ember = _activity_totals([row for row in daily if row["day"] >= start])
+        local = _activity_totals([row for row in local_daily if row["day"] >= start])
+        combined = _activity_totals(
+            [row for row in (*daily, *local_daily) if row["day"] >= start]
+        )
+        # spend_usd is what the overview tile reads; it is the same list-price
+        # total as combined.list_cost_usd, kept under its old name.
+        combined["spend_usd"] = combined["list_cost_usd"]
+        payload[key] = {"ember": ember, "local": local, "combined": combined}
+    return payload
+
+
+def build_agent_activity(session: Session, now: datetime | None = None) -> dict:
+    """Run the three aggregate reads and shape the overview payload."""
+    now = now or datetime.now(timezone.utc)
+    today = now.astimezone(timezone.utc).date()
+    since = datetime.combine(
+        today - timedelta(days=ACTIVITY_DAILY_WINDOW_DAYS - 1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    now_row = session.execute(_ACTIVITY_NOW).one()
+    daily_rows = list(session.execute(_ACTIVITY_DAILY, {"since": since}).all())
+    local_rows = list(session.execute(_LOCAL_ACTIVITY_DAILY, {"since": since}).all())
+    return shape_agent_activity(
+        now_row, daily_rows, local_rows, today=today, snapshotted_at=_iso(now)
+    )
+
+
+def write_agent_activity_snapshot(session: Session) -> dict:
+    """Build the overview payload and upsert it into its one public row."""
+    payload = build_agent_activity(session)
+    session.execute(
+        _AGENT_ACTIVITY_UPSERT,
+        {"payload": _encode(payload), "snapshotted_at": payload["snapshotted_at"]},
+    )
+    session.commit()
+    totals = payload["totals_7d"]["combined"]
+    return {
+        "snapshotted_at": payload["snapshotted_at"],
+        "spend_7d_usd": totals["spend_usd"],
+        "unpriced_7d": totals["unpriced"],
+        "spend_30d_usd": payload["totals_30d"]["combined"]["spend_usd"],
     }

@@ -261,3 +261,65 @@ def price_usage(
     except (KeyError, TypeError, ValueError, OverflowError):
         logger.debug("Invalid usage for model %r", model, exc_info=True)
         return None
+
+
+_TOKEN_KEYS = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+    }
+)
+
+
+def usage_has_tokens(usage: object) -> bool:
+    """True when usage carries at least one positive token counter."""
+    if not isinstance(usage, Mapping):
+        return False
+    return any(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+        for key, value in usage.items()
+        if key in _TOKEN_KEYS
+    )
+
+
+# Claude Code computes a turn's total_cost_usd itself, from Anthropic's list
+# prices, over every API call the turn made: subagents, helper-model calls and
+# 1-hour cache writes included. The usage block it reports covers only the
+# main loop, so repricing that usage undercounts (by about a third over
+# September 2026). For these models the reported figure is the list price.
+_CLAUDE_CODE_ALIASES = frozenset({"opus", "sonnet", "fable", "haiku"})
+
+
+def reports_list_cost(model: str | None) -> bool:
+    """True when the runtime's reported cost is itself a list-price figure."""
+    if not model:
+        return False
+    return model in _CLAUDE_CODE_ALIASES or model.startswith("claude-")
+
+
+def list_price_usd(
+    model: str | None,
+    usage: Mapping[str, Any] | None,
+    reported_cost_usd: float | None = None,
+) -> float | None:
+    """One turn's cost at list price, or None when it cannot be priced.
+
+    A positive reported cost from a Claude Code model is taken as is (see
+    _CLAUDE_CODE_ALIASES). Everything else prices from its token usage; a
+    reported 0.0 from a non-Claude runtime is not evidence of a free turn.
+    """
+    if (
+        reported_cost_usd is not None
+        and reports_list_cost(model)
+        and math.isfinite(reported_cost_usd)
+        and reported_cost_usd > 0
+    ):
+        return float(reported_cost_usd)
+    priced = price_usage(model, usage)
+    return priced.cost_usd if priced is not None else None
