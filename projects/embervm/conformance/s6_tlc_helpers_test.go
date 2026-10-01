@@ -78,6 +78,7 @@ func s6TLCFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
 }
+
 func s6TLCRecord(seq int64, action string, vars map[string]any) traceRecord {
 	return traceRecord{
 		RunID:  "run-1",
