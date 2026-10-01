@@ -155,6 +155,53 @@ bazelQueryWorkload:
 # not fit the current node adds one. 8gi/16gi stay off; explicit zeros
 # prevent deep-merge leakage. #5459 tracks the fuller session-class design.
 bricks:
+  # CPU requests sized to measured noded use on the hub (2026-10-01, under
+  # factory and KG load): 2gi 1.1-1.5 cores, 4gi 1.7-1.9, 8gi 1.7-2.4. The
+  # home ladder requests 0.5/1/1, so the scheduler saw room for every brick on
+  # one n2-standard-8 while it ran at 92-101% CPU and the pool autoscaler never
+  # added a node. With requests near real use, a third brick no longer fits
+  # one node and lands on a second Spot node, which the pool drains away when
+  # idle. Memory requests and limits are unchanged. Helm replaces lists, so
+  # this repeats the whole ladder from deploy/values.yaml; keep maxLiveVMs and
+  # memory in sync with it.
+  classes:
+    - name: 1gi
+      maxLiveVMs: 6
+      resources:
+        requests:
+          cpu: 500m
+          memory: 768Mi
+        limits:
+          memory: 1Gi
+    - name: 2gi
+      maxLiveVMs: 14
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1536Mi
+        limits:
+          memory: 2Gi
+    - name: 4gi
+      resources:
+        requests:
+          cpu: "2"
+          memory: 3Gi
+        limits:
+          memory: 4Gi
+    - name: 8gi
+      resources:
+        requests:
+          cpu: "3"
+          memory: 6Gi
+        limits:
+          memory: 8Gi
+    - name: 16gi
+      resources:
+        requests:
+          cpu: "4"
+          memory: 12Gi
+        limits:
+          memory: 16Gi
   # progressDeadlineSeconds is the chart default (3600s): a healthy cold brick
   # rebuild still needs it, and the drain no longer waits on a factory turn.
   desiredReplicas:

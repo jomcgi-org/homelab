@@ -1086,6 +1086,11 @@ def test_production_brick_caps_and_resources_survive_values_overlays(
             "limits": {"memory": "16Gi"},
         },
     }
+    if "GKE_VALUES" in values_names:
+        # The hub sizes CPU requests to measured noded use so bricks spread
+        # across Spot nodes instead of oversubscribing one.
+        for size_class, cpu in {"2gi": "1", "4gi": "2", "8gi": "3", "16gi": "4"}.items():
+            expected_resources[size_class]["requests"]["cpu"] = cpu
 
     actual_counts = {name: 0 for name in expected_counts}
     for deployment in deployments:
