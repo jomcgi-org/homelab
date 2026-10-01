@@ -10298,49 +10298,113 @@ def test_interrupt_honors_window_and_resignals_only_once(
     assert len(signals) == 2
 
 
-def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
-    """Interrupted background completion must not become the next result (#6600).
+_COST_CLI = """#!/usr/bin/env python3
+import json, os, sys
+if '--version' in sys.argv:
+    sys.exit(0)
+scenario = json.load(open(%(scenario)r))
+log = %(log)r
+with open(log, 'a') as stream:
+    stream.write(json.dumps(sys.argv[1:]) + '\\n')
+with open(log) as stream:
+    spawn = len(stream.readlines()) - 1
+print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',
+                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)
+for batch in scenario[spawn]:
+    sys.stdin.readline()
+    if batch is None:
+        sys.exit(1)
+    for event in batch:
+        print(json.dumps(event), flush=True)
+"""
 
-    Shape from session 13949 (CLI 2.1.284): the resumed CLI replays the
-    interrupted turn's background-task completion as a "success" result with
-    origin kind "task-notification", result "", num_turns 0, zero-filled usage
-    and turn 1's modelUsage and cost, before the follow-up answer. The turn
-    must skip it and return the follow-up's own answer and usage.
+
+def _cost_result(cumulative, result, usage, input_tokens, origin=None):
+    event = {
+        "type": "result",
+        "subtype": "success",
+        "result": result,
+        "is_error": False,
+        "num_turns": 1 if result else 0,
+        "session_id": "s",
+        "usage": usage,
+        "total_cost_usd": cumulative,
+        "modelUsage": {
+            "model": {
+                "inputTokens": input_tokens,
+                "costUSD": cumulative,
+                "contextWindow": 200000,
+            }
+        },
+    }
+    if origin:
+        event["origin"] = {"kind": origin}
+    return event
+
+
+def _cost_manager(tmp_path, monkeypatch, scenario, transcript=None):
+    """A ClaudeProcess over a fake CLI that plays one scenario entry per spawn.
+
+    scenario is a list per CLI process of a list per prompt, each prompt an
+    event list or None for a CLI that dies without answering. Returns the
+    manager and the file the CLI logs its argv to, one JSON line per spawn.
     """
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     monkeypatch.setenv("EMBER_GIT_USER_NAME", "Test User")
     monkeypatch.setenv("EMBER_GIT_USER_EMAIL", "test@example.invalid")
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    executable = tmp_path / "stale-background-cli"
-    executable.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, sys\n"
-        "if '--version' in sys.argv:\n"
-        "    sys.exit(0)\n"
-        "line = sys.stdin.readline()\n"
-        "zero = {'input_tokens': 0, 'output_tokens': 0,\n"
-        "        'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0,\n"
-        "        'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0},\n"
-        "        'service_tier': 'standard',\n"
-        "        'cache_creation': {'ephemeral_1h_input_tokens': 0,\n"
-        "                           'ephemeral_5m_input_tokens': 0},\n"
-        "        'iterations': []}\n"
-        "print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',\n"
-        "                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)\n"
-        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': '',\n"
-        "                  'is_error': False, 'num_turns': 0, 'session_id': 's',\n"
-        "                  'origin': {'kind': 'task-notification'},\n"
-        "                  'usage': zero, 'total_cost_usd': 0.0277152,\n"
-        "                  'modelUsage': {'model': {'inputTokens': 9}}}), flush=True)\n"
-        "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'OK',\n"
-        "                  'is_error': False, 'num_turns': 1, 'session_id': 's',\n"
-        "                  'usage': {'input_tokens': 5}, 'total_cost_usd': 0.001,\n"
-        "                  'modelUsage': {'model': {'inputTokens': 5}}}), flush=True)\n"
-    )
+    if transcript is not None:
+        directory = home / ".claude" / "projects" / str(workspace).replace("/", "-")
+        directory.mkdir(parents=True)
+        (directory / "s.jsonl").write_text(
+            "".join(
+                line if isinstance(line, str) else json.dumps(line) + "\n"
+                for line in transcript
+            )
+        )
+    scenario_path = tmp_path / "scenario.json"
+    scenario_path.write_text(json.dumps(scenario))
+    log = tmp_path / "argv.log"
+    executable = tmp_path / "cost-cli"
+    executable.write_text(_COST_CLI % {"scenario": str(scenario_path), "log": str(log)})
     os.chmod(executable, 0o755)
     manager = shim.ClaudeProcess(str(workspace), str(executable))
     monkeypatch.setattr(manager, "_configure_git", lambda: None)
+    return manager, log
+
+
+_OK_USAGE = {"input_tokens": 5, "output_tokens": 2}
+
+
+def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
+    """Interrupted background completion must not become the next result (#6600).
+
+    Shape from session 13949 (CLI 2.1.284): Stop interrupts turn 1, which is
+    billed at its cumulative 0.0277152. The resumed CLI replays the background
+    task completion as a "success" result with origin kind "task-notification",
+    result "", num_turns 0, zero-filled usage and turn 1's modelUsage and
+    cumulative cost, before the follow-up answer. The turn must skip it and
+    return the follow-up's own answer and usage, billing only the follow-up's
+    0.001 so turn 1's spend is billed once.
+    """
+    zero = {"input_tokens": 0, "output_tokens": 0}
+    manager, log = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [[_cost_result(0.0277152, "", {"input_tokens": 9}, 9)]],
+            [
+                [
+                    _cost_result(0.0277152, "", zero, 9, origin="task-notification"),
+                    _cost_result(0.0287152, "OK", _OK_USAGE, 14),
+                ]
+            ],
+        ],
+    )
 
     notification = {
         "type": "result",
@@ -10364,9 +10428,177 @@ def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
         is False
     )
 
+    first = manager.turn("Run a background shell task")
+    assert first["total_cost_usd"] == pytest.approx(0.0277152)
+    # interrupt() closes the CLI after SIGINT, so the next turn resumes it.
+    manager._close_process(kill=True)
+    second = manager.turn("Reply with only the word OK")
+    assert second["result"] == "OK"
+    assert second["num_turns"] == 1
+    assert second["usage"] == {"input_tokens": 5, "output_tokens": 2}
+    assert second["total_cost_usd"] == pytest.approx(0.001)
+    assert second["cumulative_total_cost_usd"] == pytest.approx(0.0287152)
+    assert second["modelUsage"]["model"]["inputTokens"] == 5
+    assert second["modelUsage"]["model"]["costUSD"] == pytest.approx(0.001)
+    assert second["modelUsage"]["model"]["contextWindow"] == 200000
+    assert first["total_cost_usd"] + second["total_cost_usd"] == pytest.approx(
+        0.0287152
+    )
+    argv = [json.loads(line) for line in log.read_text().splitlines()]
+    assert "--resume" not in argv[0]
+    assert argv[1][argv[1].index("--resume") + 1] == "s"
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_bills_each_result_its_own_cost_in_one_process(
+    tmp_path, monkeypatch
+):
+    manager, _ = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [
+                [_cost_result(0.01, "one", _OK_USAGE, 5)],
+                [_cost_result(0.025, "two", _OK_USAGE, 12)],
+            ]
+        ],
+    )
+    first = manager.turn("one")
+    second = manager.turn("two")
+    assert first["total_cost_usd"] == pytest.approx(0.01)
+    assert second["total_cost_usd"] == pytest.approx(0.015)
+    assert first["total_cost_usd"] + second["total_cost_usd"] == pytest.approx(0.025)
+    assert second["modelUsage"]["model"]["inputTokens"] == 7
+    assert second["modelUsage"]["model"]["costUSD"] == pytest.approx(0.015)
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_bills_unreported_interrupted_spend_on_the_next_result(
+    tmp_path, monkeypatch
+):
+    """An interrupt that returns only _partial_turn bills its spend once, later.
+
+    Turn 1 dies with no result, so nothing is reported and the baseline stays
+    at the new session's zero, even though the CLI saved 0.0277152 in the
+    transcript on SIGINT. The stale notification is skipped without advancing
+    the baseline, so the follow-up bills the whole 0.0287152.
+    """
+    zero = {"input_tokens": 0, "output_tokens": 0}
+    manager, _ = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [None],
+            [
+                [
+                    _cost_result(0.0277152, "", zero, 9, origin="task-notification"),
+                    _cost_result(0.0287152, "OK", _OK_USAGE, 14),
+                ]
+            ],
+        ],
+        transcript=[
+            {"type": "user", "sessionId": "s"},
+            {"type": "cost-state", "sessionId": "s", "totalCostUSD": 0.0277152},
+        ],
+    )
+    with pytest.raises(RuntimeError, match="crashed during turn"):
+        manager.turn("Run a background shell task")
+    assert manager.session_id == "s"
     record = manager.turn("Reply with only the word OK")
     assert record["result"] == "OK"
-    assert record["num_turns"] == 1
-    assert record["usage"] == {"input_tokens": 5}
-    assert record["total_cost_usd"] == 0.001
+    assert record["total_cost_usd"] == pytest.approx(0.0287152)
+    assert record["modelUsage"]["model"]["inputTokens"] == 14
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_seeds_a_resumed_session_from_its_transcript(
+    tmp_path, monkeypatch, capsys
+):
+    transcript = [
+        {"type": "user", "sessionId": "s"},
+        {
+            "type": "cost-state",
+            "sessionId": "s",
+            "totalCostUSD": 0.01,
+            "modelUsage": {"model": {"inputTokens": 3, "costUSD": 0.01}},
+        },
+        {"type": "cost-state", "sessionId": "other", "totalCostUSD": 9.0},
+        'not json but mentions a "cost-state"\n',
+        {
+            "type": "cost-state",
+            "sessionId": "s",
+            "totalCostUSD": 0.0277152,
+            "modelUsage": {"model": {"inputTokens": 9, "costUSD": 0.0277152}},
+        },
+        {"type": "assistant", "sessionId": "s"},
+    ]
+    follow_up = [[[_cost_result(0.0287152, "OK", _OK_USAGE, 14)]]]
+    manager, _ = _cost_manager(tmp_path, monkeypatch, follow_up, transcript=transcript)
+    record = manager.turn("Reply with only the word OK", session_id="s")
+    assert record["total_cost_usd"] == pytest.approx(0.001)
+    assert record["modelUsage"]["model"]["inputTokens"] == 5
+    assert record["modelUsage"]["model"]["costUSD"] == pytest.approx(0.001)
+    assert "no saved cost state" not in capsys.readouterr().err
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_without_a_transcript_bills_the_raw_cumulative_cost(
+    tmp_path, monkeypatch, capsys
+):
+    manager, _ = _cost_manager(
+        tmp_path, monkeypatch, [[[_cost_result(0.0287152, "OK", _OK_USAGE, 14)]]]
+    )
+    record = manager.turn("Reply with only the word OK", session_id="s")
+    assert record["total_cost_usd"] == pytest.approx(0.0287152)
+    assert "no saved cost state for session s" in capsys.readouterr().err
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_in_memory_baseline_wins_over_the_transcript(tmp_path, monkeypatch):
+    manager, _ = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [[_cost_result(0.01, "one", _OK_USAGE, 5)]],
+            [[_cost_result(0.025, "two", _OK_USAGE, 12)]],
+        ],
+        transcript=[{"type": "cost-state", "sessionId": "s", "totalCostUSD": 0.002}],
+    )
+    first = manager.turn("one")
+    manager._close_process(kill=True)
+    second = manager.turn("two")
+    assert first["total_cost_usd"] == pytest.approx(0.01)
+    assert second["total_cost_usd"] == pytest.approx(0.015)
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_zeroed_crash_result_neither_bills_nor_lowers_the_baseline(
+    tmp_path, monkeypatch
+):
+    manager, _ = _cost_manager(
+        tmp_path,
+        monkeypatch,
+        [
+            [
+                [_cost_result(0.01, "one", _OK_USAGE, 5)],
+                [_cost_result(0, "", {}, 0)],
+                [_cost_result(0.025, "three", _OK_USAGE, 12)],
+            ]
+        ],
+    )
+    billed = [manager.turn(name)["total_cost_usd"] for name in ("one", "two", "three")]
+    assert billed == pytest.approx([0.01, 0.0, 0.015])
+    manager._close_process(kill=True)
+
+
+def test_claude_turn_leaves_a_record_without_a_numeric_cost_alone(
+    tmp_path, monkeypatch
+):
+    result = _cost_result(0.01, "one", _OK_USAGE, 5)
+    result["total_cost_usd"] = "free"
+    manager, _ = _cost_manager(tmp_path, monkeypatch, [[[result]]])
+    record = manager.turn("one")
+    assert record["total_cost_usd"] == "free"
+    assert "cumulative_total_cost_usd" not in record
+    assert record["modelUsage"]["model"]["costUSD"] == 0.01
     manager._close_process(kill=True)
