@@ -1991,6 +1991,37 @@ in-flight turns; each guest read back exactly this shape within a millisecond
 of its 502, and no other proof accepted it, so the attempts held six of ten
 delivery lanes until an operator started supervised cessation by hand.
 
+A monolith rollout can cancel an executor after it has bound a fresh guest
+and before it sends the invoke POST. The turn is recorded
+`invocation_outcome_unknown` (cause `executor_cancelled`) because the
+executor does not record how far it got, and the guest sits idle, then
+parked, with no invoke stamp. A guest that has never been invoked has no stop
+precondition, so stop supervision refused it as `missing_stop_precondition`
+and the attempt held its lane until supervised cessation, two hours past the
+task deadline. With `FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED`, stop
+supervision settles it on two pieces of evidence, both of which must hold:
+
+- The control plane says the exact recorded guest has never started an
+  invoke. Its view has `turn_seq` 0 and no `invoke_started_at`,
+  `last_invoke_at`, `interrupted_turn`, stop intent, stop completion or stop
+  precondition. EmberVM writes the invoke stamp and the `turn_seq` increment
+  in one durable append before the invoke worker runs, and never clears
+  either.
+- The local receipt ledger says no POST was sent for this attempt, and none
+  can be sent later (`factory_attempt_never_posted`). With result receipts
+  enabled, the transport commits a receipt before every physical invoke POST.
+  `prepare_receipt` refuses to mint one once the claim and pending row are
+  gone. So if no receipt row exists inside the receipt retention window, no
+  executor reached a POST before the fence, and none can after it.
+
+The attempt settles failed at unknown cost in the usual transaction. No stop
+or destroy is sent, and the idle guest expires on its own TTL. A minted
+receipt, any invoke stamp, a drain marker, a saved stop intent, or receipts
+being disabled all leave the attempt on the existing path. On 2026-10-01 the
+01:37 rollout cancelled the executor for permit 10690 eleven seconds after
+its claim and 1.5 seconds after its guest was created. The guest read back
+parked with `turn_seq` 0, and the session had no receipt.
+
 ### Supervised cessation
 
 Cessation evidence may be produced by supervised termination, not only waited

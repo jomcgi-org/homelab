@@ -284,6 +284,8 @@ spec:
               value: {{ .Values.swarm.factoryTransientStopRetryEnabled | default false | quote }}
             - name: FACTORY_INVOKE_FAILURE_CESSATION_ENABLED
               value: {{ .Values.swarm.factoryInvokeFailureCessationEnabled | default false | quote }}
+            - name: FACTORY_NEVER_INVOKED_GUEST_SETTLEMENT_ENABLED
+              value: {{ .Values.swarm.factoryNeverInvokedGuestSettlementEnabled | default false | quote }}
             - name: FACTORY_DRAINED_LOSS_SETTLEMENT_ENABLED
               value: {{ .Values.swarm.factoryDrainedLossSettlementEnabled | default false | quote }}
             - name: FACTORY_ENFORCE_COST_CEILING_ENABLED
