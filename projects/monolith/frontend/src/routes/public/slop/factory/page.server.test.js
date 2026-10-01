@@ -16,6 +16,13 @@ const payloads = {
     contradictions: 0,
   },
   "/slop/factory/goals": { goals: [], declared_at: null, stale: true },
+  "/slop/factory/data/board": {
+    state: "enabled",
+    policy: { generation: 7 },
+    active: [{ issue_number: 5980 }],
+    queued: [],
+    recent: [],
+  },
 };
 
 function response(path, ok = true) {
@@ -36,11 +43,13 @@ describe("factory overview loader", () => {
       "/slop/factory/merges",
       "/slop/factory/facts",
       "/slop/factory/goals",
+      "/slop/factory/data/board",
     ]);
     expect(result.activity).toEqual(payloads["/slop/factory/data/activity"]);
     expect(result.merges).toEqual(payloads["/slop/factory/merges"]);
     expect(result.facts).toEqual(payloads["/slop/factory/facts"]);
     expect(result.goals).toEqual(payloads["/slop/factory/goals"]);
+    expect(result.board).toEqual(payloads["/slop/factory/data/board"]);
   });
 
   it.each([
@@ -48,6 +57,7 @@ describe("factory overview loader", () => {
     ["/slop/factory/merges", "merges"],
     ["/slop/factory/facts", "facts"],
     ["/slop/factory/goals", "goals"],
+    ["/slop/factory/data/board", "board"],
   ])("keeps rendering when %s returns 503", async (failedPath, section) => {
     const fetch = vi.fn((path) =>
       Promise.resolve(response(path, path !== failedPath)),
@@ -62,6 +72,9 @@ describe("factory overview loader", () => {
         spend_daily: [],
         totals_7d: { combined: {} },
       });
+    }
+    if (section === "board") {
+      expect(result.board).toMatchObject({ active: [], recent: [] });
     }
   });
 });

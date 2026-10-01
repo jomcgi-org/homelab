@@ -17,6 +17,12 @@
     spendSeries,
     tileDerivations,
   } from "$lib/public/factory/model.js";
+  import {
+    duration,
+    ledger,
+    relative,
+    taskMark,
+  } from "$lib/public/factory/activity-view.js";
   import "$lib/public/factory/factory.css";
   import Trail from "../Trail.svelte";
 
@@ -66,6 +72,19 @@
   const goalData = $derived(
     goalSummary(data.merges.week, data.merges.snapshotted_at),
   );
+  // The lane: what the factory is on now and what it last finished, each a
+  // link into the task walkthrough. The column has room for about a dozen
+  // rows beside the merged list; the ledger holds the rest.
+  const LANE_LIVE = 6;
+  const LANE_DONE = 5;
+  const laneNow = $derived(
+    data.board.snapshotted_at ?? new Date().toISOString(),
+  );
+  const book = $derived(ledger(data.board, laneNow));
+  const lane = $derived({
+    live: book.live.slice(0, LANE_LIVE),
+    done: book.done.slice(0, LANE_DONE),
+  });
   const stats = $derived([
     {
       key: "Live",
@@ -377,11 +396,56 @@
 
         <div class="goals">
           <p class="sec-label">
-            / Factory goals
-            <span class="fresh" class:stale={data.goals.stale}
-              >{freshLabel}</span
-            >
+            / Lane
+            <a class="win" href="/slop/factory/activity">all activity ›</a>
           </p>
+          {#if data.unavailable.board}
+            <p class="none">Unavailable right now.</p>
+          {:else if lane.live.length || lane.done.length}
+            <ol class="lane-list">
+              {#each lane.live as task, index (`${task.issue_number}-${index}`)}
+                <li>
+                  <a href={`/slop/factory/activity/${task.issue_number}`}>
+                    <span class="mark {taskMark(task.state)}"></span>
+                    <span class="n num">#{task.issue_number}</span>
+                    <span class="t">{task.title}</span>
+                    <span class="m"
+                      >{task.phase} · {relative(
+                        task.admitted_at,
+                        laneNow,
+                      )}</span
+                    >
+                  </a>
+                </li>
+              {/each}
+              {#each lane.done as task, index (`${task.issue_number}-${index}`)}
+                <li class="done">
+                  <a href={`/slop/factory/activity/${task.issue_number}`}>
+                    <span class="mark {taskMark(task.state)}"></span>
+                    <span class="n num">#{task.issue_number}</span>
+                    <span class="t">{task.title}</span>
+                    <span class="m"
+                      >{task.state === "failed" ? "escalated" : task.state} · {duration(
+                        task.admitted_at,
+                        task.finished_at,
+                      )}</span
+                    >
+                  </a>
+                </li>
+              {/each}
+            </ol>
+          {:else}
+            <p class="none">Nothing in the lane.</p>
+          {/if}
+
+          {#if data.unavailable.goals || data.goals.goals.length}
+            <p class="sec-label goals-label">
+              / Factory goals
+              <span class="fresh" class:stale={data.goals.stale}
+                >{freshLabel}</span
+              >
+            </p>
+          {/if}
           {#if data.unavailable.goals}
             <p class="none">Goals unavailable right now.</p>
           {:else if data.goals.goals.length}
@@ -411,8 +475,6 @@
                 </li>
               {/each}
             </ol>
-          {:else}
-            <p class="none">No declared goals.</p>
           {/if}
           <details class="merge-secondary">
             <summary>

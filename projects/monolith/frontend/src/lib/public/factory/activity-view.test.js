@@ -8,6 +8,8 @@ import {
   commitUrl,
   diffStat,
   duration,
+  filterQuery,
+  filterTasks,
   groupByDay,
   ledger,
   ledgerMeta,
@@ -17,6 +19,7 @@ import {
   planStrip,
   plural,
   prettyCommand,
+  readFilters,
   relative,
   reviewRounds,
   sessionHref,
@@ -27,6 +30,7 @@ import {
   stripRationale,
   taskMark,
   taskSpec,
+  taskTypes,
   tokens,
   toolLabel,
   turnMeta,
@@ -815,5 +819,111 @@ describe("activityRow labels", () => {
   it("says when a bash command was not recorded", () => {
     expect(activityRow({ type: "bash" }).what).toBe("(command not recorded)");
     expect(activityRow({ type: "bash", command: "ci" }).what).toBe("ci");
+  });
+});
+
+describe("ledger filters", () => {
+  const TASKS = [
+    {
+      issue_number: 1,
+      title: "embervm: scale",
+      state: "landed",
+      task_class: "bug-fix",
+      phase: "done",
+      admitted_at: "2026-09-10T10:00:00Z",
+      finished_at: "2026-09-10T12:00:00Z",
+      committed_cost_usd: 3,
+    },
+    {
+      issue_number: 2,
+      title: "factory: refine briefs",
+      state: "failed",
+      task_class: "refine",
+      phase: "refine_1",
+      admitted_at: "2026-09-11T10:00:00Z",
+      finished_at: "2026-09-11T10:30:00Z",
+      committed_cost_usd: 9,
+    },
+    {
+      issue_number: 3,
+      title: "embervm: traces",
+      state: "in flight",
+      task_class: "bug-fix",
+      phase: "review_1",
+      admitted_at: "2026-09-11T11:00:00Z",
+      finished_at: null,
+      committed_cost_usd: 1,
+    },
+  ];
+
+  it("reads a query string and falls back on unknown words", () => {
+    const params = new URLSearchParams(
+      "q=ember&state=landed&type=bug-fix&sort=spend&page=3",
+    );
+    expect(readFilters(params)).toEqual({
+      q: "ember",
+      state: "landed",
+      type: "bug-fix",
+      sort: "spend",
+      page: 3,
+    });
+    expect(
+      readFilters(new URLSearchParams("state=nope&sort=x&page=-2")),
+    ).toEqual({ q: "", state: "", type: "", sort: "newest", page: 1 });
+    expect(readFilters(null).sort).toBe("newest");
+  });
+
+  it("writes only the filters that differ from the default", () => {
+    expect(
+      filterQuery({ q: "", state: "", type: "", sort: "newest", page: 1 }),
+    ).toBe("");
+    expect(
+      filterQuery({
+        q: "a b",
+        state: "landed",
+        type: "",
+        sort: "time",
+        page: 2,
+      }),
+    ).toBe("?q=a+b&state=landed&sort=time&page=2");
+  });
+
+  it("filters on state, type and a search over number, title and phase", () => {
+    const base = { q: "", state: "", type: "", sort: "newest", page: 1 };
+    expect(
+      filterTasks(TASKS, { ...base, state: "landed" }).map(
+        (t) => t.issue_number,
+      ),
+    ).toEqual([1]);
+    expect(
+      filterTasks(TASKS, { ...base, type: "bug-fix" }).map(
+        (t) => t.issue_number,
+      ),
+    ).toEqual([3, 1]);
+    expect(
+      filterTasks(TASKS, { ...base, q: "EMBER" }).map((t) => t.issue_number),
+    ).toEqual([3, 1]);
+    expect(
+      filterTasks(TASKS, { ...base, q: "#2" }).map((t) => t.issue_number),
+    ).toEqual([2]);
+    expect(
+      filterTasks(TASKS, { ...base, q: "review_1" }).map((t) => t.issue_number),
+    ).toEqual([3]);
+  });
+
+  it("sorts by the chosen key", () => {
+    const base = { q: "", state: "", type: "", page: 1 };
+    const ids = (sort) =>
+      filterTasks(TASKS, { ...base, sort }).map((t) => t.issue_number);
+    expect(ids("newest")).toEqual([3, 2, 1]);
+    expect(ids("oldest")).toEqual([1, 2, 3]);
+    expect(ids("spend")).toEqual([2, 1, 3]);
+    expect(ids("time")[0]).toBe(3);
+    expect(filterTasks(null, base)).toEqual([]);
+  });
+
+  it("lists the task classes on the board, most common first", () => {
+    expect(taskTypes(TASKS)).toEqual(["bug-fix", "refine"]);
+    expect(taskTypes([])).toEqual([]);
   });
 });
