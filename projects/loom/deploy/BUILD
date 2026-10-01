@@ -75,12 +75,12 @@ py_test(
         "//projects/gke-apps/loom:application.yaml",
         "//projects/gke-apps/loom:kustomization.yaml",
         "//projects:gke-apps/kustomization.yaml",
-        "//projects:gke-apps/context-forge-gateway/application.yaml",
+        "//projects/gke-apps/context-forge-gateway:application.yaml",
     ],
     env = {
         "LOOM_APPLICATION": "$(rootpath //projects/gke-apps/loom:application.yaml)",
         "HUB_KUSTOMIZATION": "$(rootpath //projects:gke-apps/kustomization.yaml)",
-        "GATEWAY_APPLICATION": "$(rootpath //projects:gke-apps/context-forge-gateway/application.yaml)",
+        "GATEWAY_APPLICATION": "$(rootpath //projects/gke-apps/context-forge-gateway:application.yaml)",
     },
     deps = ["@pip//pytest", "@pip//pyyaml"],
 )
