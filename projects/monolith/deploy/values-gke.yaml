@@ -90,6 +90,10 @@ swarm:
   # asking the question. Revalidation paces itself at 15 minutes and makes no
   # GitHub call while this is false.
   factoryEscalationRevalidationEnabled: true
+  # Cards on still-active receipts are decidable across a generation bump.
+  # On 2026-10-01 receipts 700/703 (generation 13, admitted) had watchdog
+  # cards factory_decide refused once the policy moved to 14.
+  factoryActiveReceiptDecisionsEnabled: true
   # Stop an attempt at its cost ceiling rather than judging it afterwards
   # (#6169): the template landed one PR earlier, this is the behaviour flip.
   # max_cost_usd was a post-mortem verdict, so a node ran to completion, the
