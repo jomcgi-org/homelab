@@ -53,6 +53,10 @@ noded:
     # actually gives, so the separate short budget remains load-bearing.
     # preemptionTimeoutSeconds stays at the chart default (20s).
     preemptionNoticeEnabled: true
+    # Drain exports used to die with SIGTERM ("post artifact wrap request:
+    # context canceled" on every brick roll on 2026-10-01), so parked sessions
+    # never reached the store and were evicted node_gone when their node left.
+    exportsOutliveSignal: true
   firecracker:
     # Whole-string override: repeat the production progress token from the
     # home values alongside the GKE agent MCP token. guest-init decodes

@@ -465,10 +465,34 @@ func enumerateArtifactFiles(localDir string) ([]string, error) {
 // or the drain deadline. Called once from the daemon entrypoint after the
 // startup reconcile sequence; ctx cancels every loop on shutdown.
 func (s *Server) StartStoreLoops(ctx context.Context) {
+	s.StartStoreLoopsWithExportContext(ctx, ctx)
+}
+
+// DrainExportContext returns the context the export workers run under. When
+// outliveSignal is false it returns signalCtx unchanged (the old behaviour).
+// When true it returns a context that keeps signalCtx's values but not its
+// cancellation, cancelled only by the returned func, which the daemon defers
+// until after the drain has finished.
+func DrainExportContext(signalCtx context.Context, outliveSignal bool) (context.Context, context.CancelFunc) {
+	if !outliveSignal {
+		return signalCtx, func() {}
+	}
+	return context.WithCancel(context.WithoutCancel(signalCtx))
+}
+
+// StartStoreLoopsWithExportContext is StartStoreLoops with a separate lifetime
+// for the export and restore worker pools. The drain path (WaitForManagedDrain)
+// runs AFTER the shutdown signal has cancelled ctx, and it relies on those
+// workers to move banked sessions and parked workspaces into the store. Workers
+// bound to the signal context exit on SIGTERM and cancel their in-flight
+// uploads, so every drain export failed "context canceled" and the drain export
+// budget always ran out (2026-10-01: every brick roll). Passing an exportCtx
+// that outlives the signal keeps them running until the daemon exits.
+func (s *Server) StartStoreLoopsWithExportContext(ctx, exportCtx context.Context) {
 	// Local additive discovery also runs without a remote store. It never builds
 	// or reclaims shared bases and never blocks the WatchNode heartbeat.
 	s.startBaseDiscovery(ctx)
-	s.startExportQueue(ctx)
+	s.startExportQueue(exportCtx)
 	s.startStoreProbe(ctx)
 	s.enqueueReconcileExports(ctx)
 	s.enqueueRetirementSweep(ctx)

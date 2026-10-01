@@ -1575,6 +1575,11 @@ noded:
     # Watches GCE's instance/preempted metadata value with hanging GETs. Landed
     # off so a deployment can verify the mechanism before arming it in values.
     preemptionNoticeEnabled: false
+    # Keep the artifact export and restore workers running after SIGTERM so the
+    # drain can actually move parked workspaces and banked sessions into the
+    # store. Off, the workers stop with the signal and every drain export fails
+    # "context canceled", so a parked session can only relight on its own node.
+    exportsOutliveSignal: false
     # GCE's approximately 30s Spot shutdown period, less notice-observation
     # latency and noded's final stop, leaves 20s to publish to the control plane.
     # Re-derive this from the GCE contract if that contract changes. Do not tune

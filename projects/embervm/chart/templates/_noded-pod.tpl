@@ -511,6 +511,8 @@ containers:
         value: {{ $ctx.Values.noded.drain.preemptionNoticeEnabled | quote }}
       - name: EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT
         value: "{{ $ctx.Values.noded.drain.preemptionTimeoutSeconds }}s"
+      - name: EMBERVM_NODED_DRAIN_EXPORTS_OUTLIVE_SIGNAL
+        value: {{ $ctx.Values.noded.drain.exportsOutliveSignal | default false | quote }}
       {{- if $ctx.Values.egress.enabled }}
       # Guest egress lane (ADR 023). Serve the vsock egress port per guest and
       # tunnel to the sidecar above. The workload list is load-bearing because
