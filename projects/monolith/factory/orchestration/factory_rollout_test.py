@@ -462,6 +462,8 @@ def fleet_github(moved=(), documents=None, directories=()):
     documents = documents or {}
 
     def get(repo, path):
+        if path == f"compare/{'f' * 40}...{SOURCE}?per_page=1":
+            return {"status": "behind"}
         if not path.startswith("contents/"):
             return github(repo, path)
         location, ref = path.removeprefix("contents/").split("?ref=")
@@ -969,6 +971,62 @@ def test_delayed_pre_merge_source_receipt_does_not_end_scope_search():
     )
     assert result["verified"] is True
     assert result["scoped_applications"] == ["monolith"]
+
+
+def test_receipts_are_ordered_by_source_ancestry_not_publisher_finish_time():
+    later = fleet_commit()
+    later["sha"] = "e" * 40
+    later["commit"]["message"] = (
+        later["commit"]["message"]
+        .replace(SOURCE, "f" * 40)
+        .replace("projects/monolith/chart 1.2.3", "projects/monolith/chart 1.2.4")
+        .replace("projects/embervm/chart 1.2.3", "projects/embervm/chart 1.2.4")
+    )
+    delayed = fleet_commit()
+    delayed["sha"] = "1" * 40
+    fallback = fleet_github(moved=("monolith",))
+
+    def get(repo, path):
+        if path == f"compare/{'f' * 40}...{SOURCE}?per_page=1":
+            return {"status": "behind"}
+        return fallback(repo, path)
+
+    state = fleet()
+    app = state["applications"][0]
+    app["spec"]["sources"][0]["targetRevision"] = "1.2.4"
+    app["status"]["sync"]["comparedTo"]["sources"][0]["targetRevision"] = "1.2.4"
+    app["status"]["sync"]["revisions"] = ["1.2.4", "f" * 40]
+    state["applications"][1]["status"]["health"]["status"] = "Progressing"
+    result = scoped_verify(
+        ["projects/monolith/app/main.py"], state, get=get, commits=[delayed, later]
+    )
+    assert result["verified"] is True
+    assert result["scoped_applications"] == ["monolith"]
+    assert result["scope_publication_commit_sha"] == "1" * 40
+    assert result["publication_commit_sha"] == "e" * 40
+
+
+def test_unordered_publication_sources_fail_closed():
+    later = fleet_commit()
+    later["sha"] = "e" * 40
+    later["commit"]["message"] = later["commit"]["message"].replace(SOURCE, "f" * 40)
+    fallback = fleet_github()
+
+    def get(repo, path):
+        if path in (
+            f"compare/{'f' * 40}...{SOURCE}?per_page=1",
+            f"compare/{SOURCE}...{'f' * 40}?per_page=1",
+        ):
+            return {"status": "diverged"}
+        return fallback(repo, path)
+
+    result = scoped_verify(
+        ["projects/monolith/deploy/values.yaml"],
+        get=get,
+        commits=[later, fleet_commit()],
+    )
+    assert result["verified"] is False
+    assert result["reason"] == "publication_source_not_ordered"
 
 
 def test_unknown_kustomize_dependency_key_cannot_exclude_affected_application():
