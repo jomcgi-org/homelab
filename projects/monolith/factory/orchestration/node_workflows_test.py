@@ -481,7 +481,7 @@ def test_partial_duplicate_or_modified_artifact_fallback_is_refused(diff):
         (
             {"artifact_blob": None, "artifact_outcome": "missing"},
             "missing",
-            "was not written",
+            "declared artifact was not written",
         ),
         ({"artifact_blob": None}, "invalid", "content is absent or exceeds cap"),
         ({"stored_path": "wrong.json"}, "invalid", "path does not match declaration"),
@@ -515,45 +515,96 @@ def test_explicit_whole_file_failure_is_never_hidden_by_valid_diff(
 def test_artifact_failure_reasons_survive_into_distinct_retro_groups(harness):
     from factory.orchestration import retro
 
-    reasons = []
-    metadata_cases = [
-        {"artifact_blob": None, "artifact_outcome": "missing"},
-        {"stored_path": None, "artifact_blob": None, "artifact_outcome": None},
-        {
-            "stored_path": None,
-            "artifact_blob": None,
-            "artifact_outcome": None,
-            "diff_blob": zlib.compress(
-                added_diff()
-                .replace("new file mode 100644\n", "")
-                .replace("--- /dev/null", "--- a/" + pin()["artifact_path"])
-                .encode()
-            ),
-        },
-    ]
-    for metadata in metadata_cases:
-        harness.stored = stored(**metadata)
-        result = nodes.execute_node.__wrapped__(pin())
+    prod_task = "t-0123abcd-0000-4000-8000-000000000000"
+    first = pin(
+        task_id=prod_task,
+        node_key="implement_rebase_repair",
+        artifact_path=f".factory/{prod_task}/implement_rebase_repair-1.json",
+    )
+    second = pin(
+        task_id=prod_task,
+        node_key="review_artifact_wiring",
+        artifact_path=f".factory/{prod_task}/review_artifact_wiring-1.json",
+    )
+
+    def run_missing(node_pin):
+        harness.stored = stored(
+            stored_path=node_pin["artifact_path"],
+            path=node_pin["artifact_path"],
+            artifact_blob=None,
+            artifact_outcome="missing",
+            diff_blob=None,
+            diff_truncated=False,
+        )
+        result = nodes.execute_node.__wrapped__(node_pin)
         assert result["status"] == "failed"
-        reasons.append(result["reason"])
+        return result["reason"]
+
+    missing_first = run_missing(first)
+    missing_second = run_missing(second)
+
+    harness.stored = stored(
+        stored_path=None,
+        path=first["artifact_path"],
+        artifact_blob=None,
+        artifact_outcome=None,
+        diff_blob=None,
+        diff_truncated=False,
+    )
+    no_diff = nodes.execute_node.__wrapped__(first)
+    assert no_diff["status"] == "failed"
+
+    harness.stored = stored(
+        stored_path=None,
+        path=first["artifact_path"],
+        artifact_blob=None,
+        artifact_outcome=None,
+        diff_blob=zlib.compress(
+            added_diff(path=first["artifact_path"])
+            .replace("new file mode 100644\n", "")
+            .replace("--- /dev/null", "--- a/" + first["artifact_path"])
+            .encode()
+        ),
+        diff_truncated=False,
+    )
+    not_added = nodes.execute_node.__wrapped__(first)
+    assert not_added["status"] == "failed"
+
+    reasons = [missing_first, no_diff["reason"], not_added["reason"]]
     assert reasons == [
-        f"artifact_missing: {pin()['artifact_path']} was not written: no file at the declared path when the turn ended",
-        f"artifact_missing: no diff recorded for {pin()['artifact_path']}",
+        "artifact_missing: declared artifact was not written: no file at "
+        f"{first['artifact_path']} when the turn ended",
+        f"artifact_missing: no diff recorded for {first['artifact_path']}",
         "artifact_invalid: artifact is not a complete newly added file",
     ]
+    assert missing_second == (
+        "artifact_missing: declared artifact was not written: no file at "
+        f"{second['artifact_path']} when the turn ended"
+    )
     keys = [retro._NOISE.sub("N", retro._one_line(reason, 90)) for reason in reasons]
+    assert "not written" in keys[0]
+    missing_keys = [
+        retro._NOISE.sub("N", retro._one_line(reason, 90))
+        for reason in (missing_first, missing_second)
+    ]
+    assert missing_keys[0] == missing_keys[1]
     assert len(set(keys)) == 3
     data = {
         "runs": [
             {
-                "task_id": "t-11",
-                "node_key": "implement",
-                "attempt": index,
+                "task_id": prod_task,
+                "node_key": node_key,
+                "attempt": attempt,
                 "status": "failed",
                 "model": "luna",
                 "outcome_json": json.dumps({"reason": reason}),
             }
-            for index, reason in enumerate(reasons, 1)
+            for node_key, attempt, reason in [
+                ("implement_rebase_repair", 1, missing_first),
+                ("review_artifact_wiring", 1, missing_second),
+                ("implement_rebase_repair", 2, no_diff["reason"]),
+                ("implement_rebase_repair", 3, not_added["reason"]),
+            ]
         ]
     }
     lines = retro._failures(data, lambda *args: "example")

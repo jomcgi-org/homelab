@@ -146,7 +146,7 @@ class TestEvaluateContent:
         outcome = ta.evaluate_content(None, "plan.json", SCHEMA)
         assert outcome.status == ta.MISSING
         assert outcome.errors == [
-            "plan.json was not written: no file at the declared path when the turn ended"
+            "declared artifact was not written: no file at plan.json when the turn ended"
         ]
 
     def test_decodes_bytes_as_utf8(self):

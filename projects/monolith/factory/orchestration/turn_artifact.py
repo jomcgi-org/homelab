@@ -110,7 +110,7 @@ def evaluate_content(raw, path: str, schema: dict) -> ArtifactOutcome:
         return ArtifactOutcome(
             MISSING,
             errors=[
-                f"{path} was not written: no file at the declared path when the turn ended"
+                f"declared artifact was not written: no file at {path} when the turn ended"
             ],
         )
     return _evaluate_raw(raw, path, schema)
