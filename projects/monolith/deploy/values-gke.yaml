@@ -43,6 +43,13 @@ swarm:
   # precondition and held a delivery lane. Both facts are durable and the
   # proof only observes.
   factoryNeverInvokedGuestSettlementEnabled: true
+  # Carry brick-drain relay continuations through to an owner (#6256). On
+  # 2026-10-01 three review nodes ended uncertain as their 00:44 relay was
+  # claimed and then held lanes behind an unclaimed grant after the 00:48
+  # brick roll, and session 13635's drain-parked guest held one on
+  # missing_stop_precondition. Every settlement is at unknown cost and every
+  # proof reads durable, dispatch-exact markers.
+  factoryDrainRelayContinuationEnabled: true
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true
