@@ -37,14 +37,18 @@ py_test(
 
 genrule(
     name = "manifests",
-    srcs = ["values.yaml", "@loom_chart_0_2_0//:Chart.yaml", "@loom_chart_0_2_0//:chart_files"],
+    srcs = [
+        "values.yaml",
+        "@loom_chart_0_2_0//:Chart.yaml",
+        "@loom_chart_0_2_0//:chart_files",
+    ],
     outs = ["manifests/all.yaml"],
     cmd = "$(location @multitool//tools/helm) template loom " +
           "$$(dirname $(location @loom_chart_0_2_0//:Chart.yaml)) " +
           "--namespace loom --include-crds --values $(location values.yaml) > $@",
-    tools = ["@multitool//tools/helm"],
     local = True,
     tags = ["manual"],
+    tools = ["@multitool//tools/helm"],
     visibility = ["//bazel/helm:__pkg__"],
 )
 
@@ -63,7 +67,10 @@ py_test(
         "LOOM_CHART_YAML": "$(rootpath @loom_chart_0_2_0//:Chart.yaml)",
         "LOOM_APPLICATION": "$(rootpath //projects/gke-apps/loom:application.yaml)",
     },
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(
@@ -72,17 +79,20 @@ py_test(
     data = MANIFESTS + [
         "kustomization.yaml",
         "values.yaml",
-        "//projects/gke-apps/loom:application.yaml",
-        "//projects/gke-apps/loom:kustomization.yaml",
         "//projects:gke-apps/kustomization.yaml",
         "//projects/gke-apps/context-forge-gateway:application.yaml",
+        "//projects/gke-apps/loom:application.yaml",
+        "//projects/gke-apps/loom:kustomization.yaml",
     ],
     env = {
         "LOOM_APPLICATION": "$(rootpath //projects/gke-apps/loom:application.yaml)",
         "HUB_KUSTOMIZATION": "$(rootpath //projects:gke-apps/kustomization.yaml)",
         "GATEWAY_APPLICATION": "$(rootpath //projects/gke-apps/context-forge-gateway:application.yaml)",
     },
-    deps = ["@pip//pytest", "@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446).

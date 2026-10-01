@@ -3,5 +3,8 @@ exports_files(
         "application.yaml",
         "kustomization.yaml",
     ],
-    visibility = ["//projects/loom/deploy:__pkg__", "//bazel/helm:__pkg__"],
+    visibility = [
+        "//bazel/helm:__pkg__",
+        "//projects/loom/deploy:__pkg__",
+    ],
 )
