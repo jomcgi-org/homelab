@@ -1652,7 +1652,11 @@ def test_unbound_recovery_rolls_back_when_audit_fails(database, monkeypatch):
 
 
 class NoGuestTransport:
+    def __init__(self):
+        self.accesses = []
+
     def __getattr__(self, name):
+        self.accesses.append(name)
         raise AssertionError(f"Unbound recovery contacted guest transport: {name}")
 
 
@@ -1803,6 +1807,7 @@ def interrupted_dispatch(database, monkeypatch):
 def assert_interrupted_evidence(attempt, *, settled, active_count=None):
     """Every scenario preserves the exact lost turn and accounts for capacity."""
     from factory.execution import mcp
+    from factory.execution.models import ProbeObservation
 
     with Session(attempt["engine"]) as db:
         after = reconciliation.read_reconciliation_state(
@@ -1820,6 +1825,13 @@ def assert_interrupted_evidence(attempt, *, settled, active_count=None):
         assert permit.outcome == ("no_guest_bound" if settled else "executor_cancelled")
         assert (permit.settled_at is not None) == settled
         assert len(db.exec(select(RoutineReconciliation)).all()) == int(settled)
+        observation = db.get(ProbeObservation, attempt["pid"])
+        if settled:
+            assert observation is not None
+            assert observation.reason == "no_guest_bound"
+            assert observation.settled_at == permit.settled_at
+        elif observation is not None:
+            assert observation.settled_at is None
         active = db.exec(
             select(AgentCapacityReservation).where(
                 AgentCapacityReservation.state != "settled"
@@ -1839,7 +1851,10 @@ def sweep_interrupted(attempt):
     from factory.execution import permit_supervision as supervision
 
     attempt["clock"] += timedelta(seconds=15)
-    asyncio.run(supervision.sweep_once(NoGuestTransport()))
+    transport = NoGuestTransport()
+    asyncio.run(supervision.sweep_once(transport))
+    # sweep_once catches exceptions, so the tripwire alone cannot prove this.
+    assert transport.accesses == []
 
 
 def test_composed_interruption_rearms_once_after_commit(
@@ -1885,26 +1900,38 @@ def test_composed_interruption_reconciliation_survives_restart(
     interrupted_dispatch, monkeypatch
 ):
     """Cases b and f: fail after the real writes, reopen, then reconcile once."""
-    from agent import api
     from factory.execution import permit_supervision as supervision
     from factory.execution.models import ProbeObservation
 
     attempt = interrupted_dispatch
-    reconcile = api.reconcile_held_job
     candidate = supervision._prepare(attempt["pid"])
     assert candidate is not None
+    add = Session.add
+    flushed_settlements = []
 
-    def interrupt_after_writes(**kwargs):
-        result = reconcile(**kwargs)
-        db = kwargs["session"]
-        assert db.exec(select(RoutineReconciliation)).one()
-        assert db.get(AgentCapacityReservation, attempt["pid"]).state == "settled"
-        assert result is not None
-        raise RuntimeError("process interrupted after reconciliation writes")
+    def interrupt_after_observation_write(db, instance, *args, **kwargs):
+        result = add(db, instance, *args, **kwargs)
+        if isinstance(instance, ProbeObservation) and instance.settled_at is not None:
+            # Fail only after *all* settlement writes have reached the database,
+            # including the observation timestamp, before the outer commit.
+            db.flush()
+            assert db.exec(select(RoutineReconciliation)).one()
+            assert db.get(AgentCapacityReservation, attempt["pid"]).state == "settled"
+            assert db.exec(select(ProbeObservation.settled_at)).one() is not None
+            assert (
+                reconciliation.read_reconciliation_state(
+                    db, attempt["name"], attempt["sid"]
+                )["next_run_at"]
+                is not None
+            )
+            flushed_settlements.append(instance.settled_at)
+            raise RuntimeError("process interrupted after settlement writes")
+        return result
 
-    monkeypatch.setattr(api, "reconcile_held_job", interrupt_after_writes)
+    monkeypatch.setattr(Session, "add", interrupt_after_observation_write)
     with pytest.raises(RuntimeError, match="process interrupted"):
         supervision._record_no_guest(candidate)
+    assert len(flushed_settlements) == 1
     attempt["engine"].dispose()
     attempt["engine"] = create_engine(
         attempt["engine"].url,
@@ -1920,7 +1947,7 @@ def test_composed_interruption_reconciliation_survives_restart(
         assert state["state_sha256"] == attempt["before"]["state_sha256"]
     assert routine_jobs.claim_job("restarted-too-early", 2100, kind="kg-drain") is None
     assert_interrupted_evidence(attempt, settled=False)
-    monkeypatch.setattr(api, "reconcile_held_job", reconcile)
+    monkeypatch.setattr(Session, "add", add)
     sweep_interrupted(attempt)
     sweep_interrupted(attempt)
     assert_interrupted_evidence(attempt, settled=True)
