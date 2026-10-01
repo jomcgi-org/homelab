@@ -6438,6 +6438,20 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_character_assignment_test",
+    srcs = ["grimoire/character_assignment_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_router_test",
     srcs = ["grimoire/router_test.py"],
     imports = ["."],
