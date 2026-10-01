@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import math
-import posixpath
 import re
 import zlib
 
@@ -27,6 +26,7 @@ from factory.execution.constants import (
     INTERRUPTED_TERMINAL_REASONS,
     UNKNOWN_INVOCATION,
 )
+from factory.orchestration.api import _check_relative_path
 from factory.orchestration.factory_models import MAX_CAPACITY_DENIED_ATTEMPTS
 from factory.orchestration.graph import MAX_ATTEMPTS
 from factory.orchestration.steps import observe_clock, poll_turn, read_branch_head
@@ -64,18 +64,6 @@ _REQUIRED_PIN_KEYS = (
 
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _check_relative_path(path: str) -> None:
-    if "\x00" in path or "\\" in path:
-        raise ValueError("pin['artifact_path'] must use relative POSIX syntax")
-    if posixpath.isabs(path):
-        raise ValueError("pin['artifact_path'] must be relative, not absolute")
-    segments = path.split("/")
-    if any(segment in ("", ".", "..") for segment in segments):
-        raise ValueError("pin['artifact_path'] must not escape its directory")
-    if posixpath.normpath(path).startswith(".."):
-        raise ValueError("pin['artifact_path'] must not escape its directory")
 
 
 def _validate_pin(pin: dict) -> dict:

@@ -132,7 +132,7 @@ def test_execute_pending_message_forwards_reasoning_when_enabled(monkeypatch, se
     assert delivered[0]["reasoning"] is True
 
 
-def test_factory_executor_declares_exact_pin_before_session_binding(monkeypatch, session):
+def _factory_artifact_session(monkeypatch, session):
     from core import db as core_db
 
     monkeypatch.setattr(core_db, "get_engine", lambda: session.bind)
@@ -140,6 +140,185 @@ def test_factory_executor_declares_exact_pin_before_session_binding(monkeypatch,
         "factory.orchestration.api.factory_session_allowed", lambda _key: True
     )
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+    row = store.create_session(
+        session, "factory:t-path:implement:2", "/workspace", "main"
+    )
+    row.workflow_id = "dispatch-2"
+    row.node_key = "implement"
+    row.node_attempt = 2
+    session.add_all(
+        [
+            row,
+            SwarmNodeRun(
+                task_id="t-path",
+                node_key="implement",
+                attempt=1,
+                dispatch_key="dispatch-1",
+                status="running",
+                pin_json=json.dumps({"artifact_path": ".factory/first.json"}),
+            ),
+            SwarmNodeRun(
+                task_id="t-path",
+                node_key="implement",
+                attempt=2,
+                dispatch_key="dispatch-2",
+                session_id=None,
+                status="running",
+                pin_json=json.dumps({"artifact_path": ".factory/second.json"}),
+            ),
+            SwarmNodeRun(
+                task_id="t-path",
+                node_key="implement",
+                attempt=3,
+                dispatch_key="dispatch-3",
+                status="running",
+                pin_json=json.dumps({"artifact_path": ".factory/latest.json"}),
+            ),
+        ]
+    )
+    session.commit()
+    return row
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_factory_executor_declares_exact_pin_before_session_binding(
+    monkeypatch, session, retry
+):
+    row = _factory_artifact_session(monkeypatch, session)
+    delivered = []
+
+    async def deliver(*args, **kwargs):
+        delivered.append(kwargs)
+        if retry and len(delivered) == 1:
+            raise EmberBrickGone("lineage-1", "failed", "spot-node-1")
+        return _completed_delivery(args[2])
+
+    async def notify(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_notify_terminal", notify)
+    store.create_pending_message(session, row.id, "work")
+    asyncio.run(mcp._execute_pending_message(row.id))
+    if retry:
+        asyncio.run(mcp._execute_pending_message(row.id))
+    assert [item["artifact_path"] for item in delivered] == [".factory/second.json"] * (
+        2 if retry else 1
+    )
+    assert [item["dispatch_count"] for item in delivered] == ([1, 2] if retry else [1])
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_declared_artifact_resolver_accepts_exact_attempt(monkeypatch, session, bound):
+    from factory.orchestration.api import declared_artifact_path
+
+    row = _factory_artifact_session(monkeypatch, session)
+    if bound:
+        run = session.exec(select(SwarmNodeRun).where(SwarmNodeRun.attempt == 2)).one()
+        run.session_id = row.id
+        session.commit()
+    assert (
+        declared_artifact_path(
+            row.id,
+            row.local_session_id,
+            row.workflow_id,
+            row.node_key,
+            row.node_attempt,
+        )
+        == ".factory/second.json"
+    )
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"session_id": 999}, "bound to another session"),
+        ({"dispatch_key": "other-dispatch"}, "disagrees with session workflow"),
+        (
+            {"local_session_id": "factory:t-path:other:2"},
+            "disagrees with session attempt",
+        ),
+        (
+            {"local_session_id": "factory:t-path:implement:1"},
+            "disagrees with session attempt",
+        ),
+        (
+            {"local_session_id": "factory:t-path:implement:x"},
+            "malformed factory session identity",
+        ),
+        (
+            {"local_session_id": "factory:t-path:implement:2:extra"},
+            "malformed factory session identity",
+        ),
+        (
+            {"local_session_id": "factory::implement:2"},
+            "malformed factory session identity",
+        ),
+        (
+            {"local_session_id": "factory:t-missing:implement:2"},
+            "exact admitted attempt is absent",
+        ),
+        ({"pin_json": '{"artifact_path":"/absolute.json"}'}, "must be relative"),
+        ({"pin_json": '{"artifact_path":"../escape.json"}'}, "must not escape"),
+        ({"pin_json": '{"artifact_path":"a/../escape.json"}'}, "must not escape"),
+        ({"pin_json": '{"artifact_path":"a\\\\b.json"}'}, "relative POSIX syntax"),
+        ({"pin_json": "{}"}, "no non-empty artifact path"),
+        ({"pin_json": '{"artifact_path":""}'}, "no non-empty artifact path"),
+        ({"pin_json": '{"artifact_path":7}'}, "no non-empty artifact path"),
+        ({"pin_json": "["}, "Expecting value"),
+        ({"pin_json": "[]"}, "has no attribute"),
+        ({"pin_json": None}, "JSON object must be"),
+    ],
+)
+def test_declared_artifact_resolver_rejects_conflicts(
+    monkeypatch, session, caplog, change, reason
+):
+    from factory.orchestration.api import declared_artifact_path
+
+    row = _factory_artifact_session(monkeypatch, session)
+    run = session.exec(select(SwarmNodeRun).where(SwarmNodeRun.attempt == 2)).one()
+    identity = change.get("local_session_id", row.local_session_id)
+    for key, value in change.items():
+        if key != "local_session_id":
+            setattr(run, key, value)
+    session.commit()
+    assert (
+        declared_artifact_path(
+            row.id, identity, row.workflow_id, row.node_key, row.node_attempt
+        )
+        is None
+    )
+    assert f"session {row.id}:" in caplog.text
+    assert reason in caplog.text
+
+
+def test_declared_artifact_lookup_failure_does_not_raise(monkeypatch, session, caplog):
+    from core import db as core_db
+    from factory.orchestration.api import declared_artifact_path
+
+    row = _factory_artifact_session(monkeypatch, session)
+
+    def unavailable():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(core_db, "get_engine", unavailable)
+    assert (
+        declared_artifact_path(
+            row.id,
+            row.local_session_id,
+            row.workflow_id,
+            row.node_key,
+            row.node_attempt,
+        )
+        is None
+    )
+    assert f"session {row.id}: database unavailable" in caplog.text
+
+
+def test_non_factory_executor_omits_artifact_declaration(monkeypatch, session):
+    row = _factory_artifact_session(monkeypatch, session)
+    row.local_session_id = "interactive:t-path:implement:2"
+    session.commit()
     delivered = []
 
     async def deliver(*args, **kwargs):
@@ -150,30 +329,11 @@ def test_factory_executor_declares_exact_pin_before_session_binding(monkeypatch,
         return None
 
     monkeypatch.setattr(mcp._transport, "deliver", deliver)
-    monkeypatch.setattr(mcp.agent_api, "notify", notify)
-    row = store.create_session(session, "factory:t-path:implement:2", "/workspace", "main")
-    row.workflow_id = "dispatch-2"
-    row.node_key = "implement"
-    row.node_attempt = 2
-    session.add_all(
-        [
-            row,
-            SwarmNodeRun(
-                task_id="t-path", node_key="implement", attempt=1,
-                dispatch_key="dispatch-1", status="running",
-                pin_json=json.dumps({"artifact_path": ".factory/first.json"}),
-            ),
-            SwarmNodeRun(
-                task_id="t-path", node_key="implement", attempt=2,
-                dispatch_key="dispatch-2", session_id=None, status="running",
-                pin_json=json.dumps({"artifact_path": ".factory/second.json"}),
-            ),
-        ]
-    )
-    session.commit()
+    monkeypatch.setattr(mcp, "_notify_terminal", notify)
     store.create_pending_message(session, row.id, "work")
     asyncio.run(mcp._execute_pending_message(row.id))
-    assert delivered[0]["artifact_path"] == ".factory/second.json"
+    assert len(delivered) == 1
+    assert "artifact_path" not in delivered[0]
 
 
 def test_execute_pending_message_forwards_session_effort(monkeypatch, session):

@@ -153,7 +153,17 @@ def harness(monkeypatch):
     return state
 
 
-def test_success_uses_real_whole_file_schema_and_explicit_parent(harness):
+@pytest.mark.parametrize("diff_kind", ["absent", "truncated", "modified"])
+def test_success_uses_real_whole_file_schema_and_explicit_parent(harness, diff_kind):
+    if diff_kind == "truncated":
+        harness.stored["diff_truncated"] = True
+    elif diff_kind == "modified":
+        modified = (
+            added_diff()
+            .replace("new file mode 100644\n", "")
+            .replace("--- /dev/null", "--- a/" + pin()["artifact_path"])
+        )
+        harness.stored["diff_blob"] = zlib.compress(modified.encode())
     result = nodes.execute_node.__wrapped__(pin())
     assert result["status"] == "succeeded"
     assert result["artifact"] == {"status": "ok", "value": {"ok": True}, "errors": []}
@@ -465,17 +475,33 @@ def test_partial_duplicate_or_modified_artifact_fallback_is_refused(diff):
 
 
 @pytest.mark.parametrize(
-    "metadata,status",
+    "metadata,status,error",
     [
-        ({"artifact_blob": b"broken"}, "unparsable"),
-        ({"artifact_blob": None, "artifact_outcome": "missing"}, "missing"),
-        ({"artifact_blob": None}, "invalid"),
-        ({"stored_path": "wrong.json"}, "invalid"),
-        ({"artifact_outcome": "missing"}, "invalid"),
-        ({"artifact_outcome": "unexpected"}, "invalid"),
+        ({"artifact_blob": b"broken"}, "unparsable", "not valid JSON"),
+        (
+            {"artifact_blob": None, "artifact_outcome": "missing"},
+            "missing",
+            "was not written",
+        ),
+        ({"artifact_blob": None}, "invalid", "content is absent or exceeds cap"),
+        ({"stored_path": "wrong.json"}, "invalid", "path does not match declaration"),
+        (
+            {"artifact_outcome": "missing"},
+            "invalid",
+            "missing artifact unexpectedly carries content",
+        ),
+        ({"artifact_outcome": "unexpected"}, "invalid", "outcome is invalid"),
+        (
+            {"artifact_blob": b" " * (256 * 1024 + 1) + b'{"ok":true}'},
+            "invalid",
+            "content is absent or exceeds cap",
+        ),
+        ({"artifact_blob": b'{"ok":"true"}'}, "invalid", "not of type 'boolean'"),
     ],
 )
-def test_explicit_whole_file_failure_is_never_hidden_by_valid_diff(metadata, status):
+def test_explicit_whole_file_failure_is_never_hidden_by_valid_diff(
+    metadata, status, error
+):
     result = nodes._evaluate_stored_artifact(
         **stored(
             diff_blob=zlib.compress(added_diff().encode()),
@@ -483,6 +509,56 @@ def test_explicit_whole_file_failure_is_never_hidden_by_valid_diff(metadata, sta
         )
     )
     assert result["status"] == status
+    assert error in "; ".join(result["errors"])
+
+
+def test_artifact_failure_reasons_survive_into_distinct_retro_groups(harness):
+    from factory.orchestration import retro
+
+    reasons = []
+    metadata_cases = [
+        {"artifact_blob": None, "artifact_outcome": "missing"},
+        {"stored_path": None, "artifact_blob": None, "artifact_outcome": None},
+        {
+            "stored_path": None,
+            "artifact_blob": None,
+            "artifact_outcome": None,
+            "diff_blob": zlib.compress(
+                added_diff()
+                .replace("new file mode 100644\n", "")
+                .replace("--- /dev/null", "--- a/" + pin()["artifact_path"])
+                .encode()
+            ),
+        },
+    ]
+    for metadata in metadata_cases:
+        harness.stored = stored(**metadata)
+        result = nodes.execute_node.__wrapped__(pin())
+        assert result["status"] == "failed"
+        reasons.append(result["reason"])
+    assert reasons == [
+        f"artifact_missing: {pin()['artifact_path']} was not written: no file at the declared path when the turn ended",
+        f"artifact_missing: no diff recorded for {pin()['artifact_path']}",
+        "artifact_invalid: artifact is not a complete newly added file",
+    ]
+    keys = [retro._NOISE.sub("N", retro._one_line(reason, 90)) for reason in reasons]
+    assert len(set(keys)) == 3
+    data = {
+        "runs": [
+            {
+                "task_id": "t-11",
+                "node_key": "implement",
+                "attempt": index,
+                "status": "failed",
+                "model": "luna",
+                "outcome_json": json.dumps({"reason": reason}),
+            }
+            for index, reason in enumerate(reasons, 1)
+        ]
+    }
+    lines = retro._failures(data, lambda *args: "example")
+    assert len(lines) == 3
+    assert all(any(key in line for line in lines) for key in keys)
 
 
 def test_outage_after_start_counts_against_prestart_deadline(monkeypatch):

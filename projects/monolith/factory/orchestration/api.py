@@ -4,6 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
+
+
+def _check_relative_path(path: str) -> None:
+    if "\x00" in path or "\\" in path:
+        raise ValueError("pin['artifact_path'] must use relative POSIX syntax")
+    if posixpath.isabs(path):
+        raise ValueError("pin['artifact_path'] must be relative, not absolute")
+    segments = path.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        raise ValueError("pin['artifact_path'] must not escape its directory")
+    if posixpath.normpath(path).startswith(".."):
+        raise ValueError("pin['artifact_path'] must not escape its directory")
 
 
 def declared_artifact_path(
@@ -21,7 +34,6 @@ def declared_artifact_path(
 
         from core.db import get_engine
         from factory.orchestration.models import SwarmNodeRun
-        from factory.orchestration.node_workflows import _check_relative_path
 
         fields = local_session_id.split(":")
         if len(fields) != 4 or not fields[1] or not fields[3].isdigit():
