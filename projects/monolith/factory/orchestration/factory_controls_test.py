@@ -2609,9 +2609,10 @@ def test_repos_map_tolerates_a_stored_policy_without_defaulted_blocks(policy):
         entries["owner/repo"]["exclude_labels"]
         == controls.intake_policy(policy)["exclude_labels"]
     )
-    assert entries["owner/repo"]["max_per_day"] == controls.intake_policy(policy)[
-        "max_per_day"
-    ]
+    assert (
+        entries["owner/repo"]["max_per_day"]
+        == controls.intake_policy(policy)["max_per_day"]
+    )
     assert entries["owner/repo"]["max_tasks"] == controls.lane_max_tasks(policy)
     assert controls.enabled_repos(dict(policy)) == ["owner/repo"]
     # A policy stored before auto_merge existed carries no key at all, and
@@ -2650,9 +2651,7 @@ def test_two_repos_admit_independently_under_own_caps(db, policy, monkeypatch):
     assert second["policy"]["task_budget_usd"] == 9.0
     assert second["receipt"]["policy"]["repo"] == "weave-hand/loom"
     with Session(db) as session:
-        tasks = {
-            task.id: task for task in session.exec(select(SwarmTask)).all()
-        }
+        tasks = {task.id: task for task in session.exec(select(SwarmTask)).all()}
         assert tasks[first["task_id"]].budget_usd == 5.0
         assert tasks[first["task_id"]].repo == "owner/repo"
         assert tasks[second["task_id"]].budget_usd == 9.0
@@ -2686,14 +2685,12 @@ def test_disabled_repo_admits_nothing_until_enabled(db, policy, monkeypatch):
     receive("weave-hand/loom", 1)
     assert admit_next("scheduler")["reason"] == "no_eligible_issue"
     assert controls.status()["admitted_count"] == 0
-    assert controls.set_control(
-        "enable_repo", "operator", repo="weave-hand/loom"
-    )["ok"]
+    assert controls.set_control("enable_repo", "operator", repo="weave-hand/loom")["ok"]
     admission = admit_next("scheduler")
     assert admission["ok"] and admission["receipt"]["repo"] == "weave-hand/loom"
-    assert controls.set_control(
-        "disable_repo", "operator", repo="weave-hand/loom"
-    )["ok"]
+    assert controls.set_control("disable_repo", "operator", repo="weave-hand/loom")[
+        "ok"
+    ]
     receive("weave-hand/loom", 2)
     assert admit_next("scheduler")["reason"] == "no_eligible_issue"
 
@@ -2721,8 +2718,10 @@ def test_staged_loom_migration_is_default_off(db, policy, monkeypatch):
     assert loom["max_per_day"] == controls.LOOM_STAGED_MAX_PER_DAY == 2
     assert loom["landing"] == "none"
     assert loom["auto_merge"] is False
-    assert loom["charter"] == controls.LOOM_CHARTER == controls.repo_charter(
-        "weave-hand/loom"
+    assert (
+        loom["charter"]
+        == controls.LOOM_CHARTER
+        == controls.repo_charter("weave-hand/loom")
     )
     assert migrated["repos"]["owner/repo"] == validated["repos"]["owner/repo"]
     with pytest.raises(ValueError):

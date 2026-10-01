@@ -280,9 +280,7 @@ def test_enabled_policy_repo_is_accepted_per_repo(tmp_path, monkeypatch):
         ),
     )
     loom_payload = _payload(repo="weave-hand/loom")
-    loom_payload["issue"]["html_url"] = (
-        "https://github.com/weave-hand/loom/issues/6257"
-    )
+    loom_payload["issue"]["html_url"] = "https://github.com/weave-hand/loom/issues/6257"
     response = _post(
         client,
         loom_payload,

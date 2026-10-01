@@ -1003,9 +1003,7 @@ def _validate_repos(value: object, policy: dict) -> dict:
         )
     if primary not in result:
         result = {
-            primary: _validate_repo_entry(
-                primary, {}, is_primary=True, policy=policy
-            ),
+            primary: _validate_repo_entry(primary, {}, is_primary=True, policy=policy),
             **result,
         }
     return result
@@ -1019,9 +1017,7 @@ def repos_map(policy: dict) -> dict:
     primary = policy.get("repo")
     if not primary:
         return {}
-    return {
-        primary: _validate_repo_entry(primary, {}, is_primary=True, policy=policy)
-    }
+    return {primary: _validate_repo_entry(primary, {}, is_primary=True, policy=policy)}
 
 
 def enabled_repos(policy: dict) -> list[str]:
