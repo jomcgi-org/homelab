@@ -1534,6 +1534,20 @@ def test_observation_without_pending_identity_is_unavailable():
     assert observation["requested_model"] is None
 
 
+@pytest.mark.parametrize("model", ["opus", "luna", "muse"])
+@pytest.mark.parametrize("tokens", [{}, {"input_tokens": 100, "output_tokens": 50}])
+def test_observation_does_not_change_top_level_pricing(model, tokens):
+    from shared.pricing import list_price_usd, price_usage, usage_has_tokens
+
+    observed = {
+        **tokens,
+        "observation": {**store.turn_observation(None), "input_tokens": 10**9},
+    }
+    assert usage_has_tokens(observed) == usage_has_tokens(tokens)
+    assert price_usage(model, observed) == price_usage(model, tokens)
+    assert list_price_usd(model, observed, 0.25) == list_price_usd(model, tokens, 0.25)
+
+
 @pytest.mark.parametrize("finish", ["error", "not_invoked", "unknown"])
 def test_terminal_progress_rows_keep_observations_and_settlement(
     uncertain_lane, finish
