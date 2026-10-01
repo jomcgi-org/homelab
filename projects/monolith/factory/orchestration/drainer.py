@@ -1076,9 +1076,8 @@ def _lost_owner_workflow(permit) -> str | None:
     return workflow_id
 
 
-# Deliberately not a DBOS step: adding a step to drain_cycle shifts the
-# function ids a PENDING cycle replays against after a rollout, and that
-# mismatch (DBOSUnexpectedStepError) is what orphaned permit 10732. The sweep
+# Deliberately not a DBOS step: preserve drain_cycle's checkpoint baseline.
+# Future step changes must follow the DBOS.patch rule in FACTORY.md. The sweep
 # is idempotent and re-proves everything under the pool lock, so re-running
 # it on replay is safe.
 def settle_lost_drainer_reservations(
