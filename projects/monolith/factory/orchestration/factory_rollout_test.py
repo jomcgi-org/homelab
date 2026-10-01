@@ -988,3 +988,105 @@ def test_incomplete_namespace_marks_every_using_application(monkeypatch):
         "embervm": "pod_inventory_incomplete",
         "embervm-dev": "pod_inventory_incomplete",
     }
+
+
+def test_kustomization_read_budget_is_shared_between_applications():
+    state = fleet()
+    documents, directories = {}, []
+    for name in ("first", "second"):
+        app = hub(f"projects/{name}")
+        app["metadata"]["name"] = name
+        state["applications"].append(app)
+        documents[f"projects/{name}/kustomization.yaml"] = (
+            "resources: [" + ",".join(f"./n{i}" for i in range(32)) + "]\n"
+        )
+        for i in range(32):
+            path = f"projects/{name}/n{i}"
+            directories.append(path)
+            documents[path + "/kustomization.yaml"] = "resources: []\n"
+    get = fleet_github(documents=documents, directories=directories)
+    # Each app needs 33 reads, but together they exceed the literal 64-read budget.
+    assert scoped_verify(["docs/readme.md"], state, get=get)["scoped_applications"] == [
+        "second"
+    ]
+
+
+def test_cached_surface_cannot_bypass_depth_bound_for_another_application():
+    state = fleet()
+    app = hub("projects/n6")
+    app["metadata"]["name"] = "shallow"
+    state["applications"].extend([app, hub("projects/n0")])
+    documents = {
+        f"projects/n{i}/kustomization.yaml": f"resources: [../n{i + 1}]\n"
+        for i in range(7)
+    }
+    documents["projects/n7/kustomization.yaml"] = "resources: []\n"
+    get = fleet_github(
+        documents=documents, directories=[f"projects/n{i}" for i in range(1, 8)]
+    )
+    assert scoped_verify(["docs/readme.md"], state, get=get)["scoped_applications"] == [
+        "hub"
+    ]
+
+
+def test_resource_blocker_prioritizes_health_then_sync_and_cluster_scope():
+    state = fleet()
+    app = state["applications"][1]
+    app["status"]["health"]["status"] = "Progressing"
+    app["status"]["resources"] = [
+        {
+            "kind": "ConfigMap",
+            "namespace": "embervm",
+            "name": "config",
+            "status": "OutOfSync",
+        },
+        {"kind": "Node", "name": "worker", "health": {"status": "Degraded"}},
+    ]
+    result = scoped_verify(["projects/embervm/deploy/values.yaml"], state)
+    assert result["resource"] == "Node/worker"
+    app["status"]["resources"][1]["health"]["status"] = "Healthy"
+    assert (
+        scoped_verify(["projects/embervm/deploy/values.yaml"], state)["resource"]
+        == "ConfigMap/embervm/config"
+    )
+
+
+def test_immutable_mapper_reads_use_merge_ref(monkeypatch):
+    calls = []
+    fallback = hub_github()
+
+    def get(repo, path):
+        calls.append(path)
+        return fallback(repo, path)
+
+    monkeypatch.setattr(rollout, "_immutable_get", get)
+    surface = rollout.DeploySurface("owner/repo", MERGE, rollout._get)
+    assert (
+        "projects/gke-apps/monolith/application.yaml"
+        in surface.directory("projects/gke-cluster")[0]
+    )
+    assert calls
+    assert all(path.endswith("?ref=" + "a" * 40) for path in calls)
+
+
+def test_deliveries_share_snapshot_but_not_application_scope(monkeypatch):
+    monkeypatch.setattr(rollout, "_recent", {})
+    reads = []
+
+    async def observe(repo):
+        reads.append(repo)
+        return fleet()
+
+    def listing(_repo, path):
+        if path.startswith("commits?"):
+            return [fleet_commit()]
+        name = "monolith" if path.startswith("pulls/1/") else "embervm"
+        return [{"filename": f"projects/{name}/deploy/values.yaml"}]
+
+    monkeypatch.setattr(rollout, "cluster_snapshot", observe)
+    for number, name in ((1, "monolith"), (2, "embervm")):
+        result = rollout.verify(
+            "owner/repo", MERGE, number, get=fleet_github(), listing=listing
+        )
+        assert result["scoped_applications"] == [name]
+    assert reads == ["owner/repo"]
