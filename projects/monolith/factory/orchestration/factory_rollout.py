@@ -121,6 +121,7 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
     # A bounded search may defer, but may never turn an absent receipt into a
     # no-op publication. Lists come from main, not a PR or merge-queue ref.
     candidate = None
+    latest = None
     complete = False
     for page in (1, 2):
         commits = listing(repo, f"commits?sha=main&per_page=100&page={page}")
@@ -128,15 +129,22 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
             receipt = publication(commit)
             if receipt is None:
                 continue
+            # Publisher source commits can finish out of order. Only the
+            # actual write-back commit can prove we passed the merge in main.
+            comparison = get(
+                repo, f"compare/{merge_sha}...{receipt['commit_sha']}?per_page=1"
+            )
+            if comparison.get("status") == "behind":
+                complete = True
+                break
             if not ancestor(repo, merge_sha, receipt["source_sha"], get):
-                if candidate is not None:
-                    complete = True
-                    break
                 continue
             if not ancestor(repo, receipt["source_sha"], receipt["commit_sha"], get):
                 raise Pending("publication_source_not_on_main")
             # Main's commit list is newest first. Scope belongs to the first
             # publication covering this merge, before unrelated later bumps.
+            if latest is None:
+                latest = receipt
             candidate = receipt
         if complete:
             break
@@ -147,11 +155,14 @@ def receipt_for(repo: str, merge_sha: str, get, listing) -> dict:
         raise Pending("publication_receipt_missing")
     if not complete:
         raise Pending("publication_scope_incomplete")
-    ci = get(repo, f"commits/{candidate['source_sha']}/status")
-    required = [s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"]
-    if len(required) != 1 or required[0].get("state") != "success":
-        raise Pending("publication_ci_not_successful")
-    return candidate
+    for source_sha in dict.fromkeys((candidate["source_sha"], latest["source_sha"])):
+        ci = get(repo, f"commits/{source_sha}/status")
+        required = [
+            s for s in ci.get("statuses", []) if s.get("context") == "pr-checks"
+        ]
+        if len(required) != 1 or required[0].get("state") != "success":
+            raise Pending("publication_ci_not_successful")
+    return {**latest, "scope_receipt": candidate}
 
 
 def sources(app: dict) -> list[dict]:
@@ -680,6 +691,12 @@ def verify(
             raise Pending("merge_identity_missing")
         receipt = receipt_for(repo, merge_sha, get, listing)
         catalog = chart_catalog(repo, receipt, get)
+        scope_receipt = receipt["scope_receipt"]
+        scope_catalog = (
+            chart_catalog(repo, scope_receipt, get)
+            if scope_receipt["commit_sha"] != receipt["commit_sha"]
+            else catalog
+        )
         versions = {name: version for name, (_, version) in catalog.items()}
         files = changed_files(repo, pr_number, listing)
         surface = DeploySurface(repo, merge_sha, get)
@@ -697,7 +714,7 @@ def verify(
             app["metadata"]["name"]
             for app in applications
             if managed(repo, app)
-            and application_in_scope(repo, app, files, catalog, surface)
+            and application_in_scope(repo, app, files, scope_catalog, surface)
         }
         if snapshot is None:
 
@@ -715,6 +732,7 @@ def verify(
             "verified": True,
             "merge_commit_sha": merge_sha,
             "publication_commit_sha": receipt["commit_sha"],
+            "scope_publication_commit_sha": scope_receipt["commit_sha"],
             "source_commit_sha": receipt["source_sha"],
             "observed_at": snapshot.get("observed_at")
             or datetime.now(timezone.utc).isoformat(),
