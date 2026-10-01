@@ -118,6 +118,11 @@ agents:
     resultReceiptsEnabled: true
     responseLostRecoveryEnabled: true
     resultReceiptAdoptionEnabled: true
+    # Settle a non-factory permit on the guest's own error answer. At
+    # 01:25-01:30 on 2026-10-01 six KG permits sat uncertain after their
+    # guests answered 503/422 (workspace volume not mounted, CLI exit). Inert
+    # until the control plane sends x-ember-invoke-outcome.
+    guestAnswerSettlementEnabled: true
 
 postgres:
   storage:
