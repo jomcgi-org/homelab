@@ -30,6 +30,12 @@ swarm:
   # Repository-staged for #6266. Live brick-roll, restart, and uncertain DELETE
   # checks must pass before this hub behavior is enabled.
   factoryTransientStopRetryEnabled: false
+  # Accept EmberVM's failed/failed record for the exact guest whose invoke
+  # failed inside this dispatch as cessation evidence. On 2026-09-30 noded
+  # restarts at 21:22 and 23:27 left six attempts holding six of ten delivery
+  # lanes on exactly this view until a manual cessation. The state is absorbing
+  # and written before the 502 is sent, and the proof only observes.
+  factoryInvokeFailureCessationEnabled: true
   # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
   # the template landed one PR earlier; this is the behaviour flip.
   factoryLostBeforeGuestSettlementEnabled: true
