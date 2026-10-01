@@ -70,6 +70,7 @@ to the live value before running `--apply`.
 | `jomcgi-dev-health.yaml` | `metrics` | yes (imported from `aJgkA4vC2m8`) |
 | `jomcgi-dev-health-probe-absent.yaml` | `metrics` | no, staged until hub probe data and alert behavior are verified (#6507) |
 | `embervm-session-create-denials.yaml` | `embervm-control` | yes |
+| `ember-demo-probe-failed.yaml` | `monolith-backend` | yes, sees data once the monolith rollout carrying the final probe attributes is live |
 | `agent-turns-none-successful-codex.yaml` | `monolith-backend` | yes |
 | `agent-turns-none-successful-claude.yaml` | `monolith-backend` | yes |
 | `agent-turns-none-successful-muse.yaml` | `monolith-backend` | yes |

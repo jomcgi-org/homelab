@@ -147,6 +147,27 @@ def test_imported_trigger_is_kept():
     assert "jomcgi.dev /health composite unhealthy" in names
 
 
+def test_ember_probe_trigger_counts_final_failed_roots_by_demo_and_trace():
+    specs = {s.source: s for s in load_specs(DEFAULT_SPEC_DIR)}
+    probe = specs["ember-demo-probe-failed.yaml"]
+    assert probe.dataset == "monolith-backend"
+    assert probe.enabled
+    assert probe.query == {
+        "time_range": 3600,
+        "calculations": [{"op": "COUNT"}],
+        "filters": [{"column": "ember.probe.ok", "op": "=", "value": False}],
+        "breakdowns": ["ember.probe.demo", "trace.trace_id"],
+    }
+    assert probe.query["filters"][0]["value"] is False
+    assert probe.frequency == 900
+    assert probe.threshold == {"op": ">", "value": 0, "exceeded_limit": 1}
+    assert probe.alert_type == "on_change"
+    assert probe.recipients == (RECIPIENT,)
+    assert probe.tags == {"service": "monolith", "signal": "ember-probe"}
+    assert all(demo in probe.description for demo in ("bazel", "pages", "postgres"))
+    assert len(probe.description) <= 1023
+
+
 def test_hub_probe_absence_stays_staged_and_scoped():
     specs = {s.name: s for s in load_specs(DEFAULT_SPEC_DIR)}
     probe = specs["jomcgi.dev /health probe absent"]

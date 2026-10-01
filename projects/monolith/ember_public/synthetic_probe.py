@@ -17,11 +17,12 @@ from datetime import datetime, timezone
 from time import perf_counter
 
 import httpx
+from core.db import get_engine
 from opentelemetry import trace
 from opentelemetry.context import Context
+from opentelemetry.trace import Status, StatusCode
 from sqlmodel import Session
 
-from core.db import get_engine
 from ember_public import bazel_core, core
 from ember_public.synthetic_models import EmberSyntheticProbe
 
@@ -50,6 +51,7 @@ EMBER_SYNTHETIC_RETRY_BUDGET_S = float(
     os.environ.get("EMBER_SYNTHETIC_RETRY_BUDGET_S", "90.0")
 )
 EMBER_SYNTHETIC_RETRY_INTERVAL_S = 15.0
+_SPAN_DETAIL_MAX_CHARS = 512
 
 
 def _failure(
@@ -86,12 +88,29 @@ def _correlate(
     return correlated
 
 
+async def _probe_attempt(demo: str, probe, number: int) -> dict:
+    with _tracer.start_as_current_span(f"ember.probe.{demo}.attempt") as span:
+        result = await probe()
+        span.set_attributes(
+            {
+                "ember.probe.attempt.number": number,
+                "ember.probe.attempt.ok": result["ok"],
+                "ember.probe.attempt.detail": result["detail"][:_SPAN_DETAIL_MAX_CHARS],
+            }
+        )
+        if not result["ok"]:
+            span.set_status(Status(StatusCode.ERROR))
+        return result
+
+
 async def _retry_probe(demo: str, probe, *, retry: bool = True) -> dict:
-    with _tracer.start_as_current_span(f"ember.probe.{demo}", context=Context()):
+    with _tracer.start_as_current_span(
+        f"ember.probe.{demo}", context=Context()
+    ) as span:
         trace_id = _current_trace_id()
         started = perf_counter()
         retries = 0
-        result = await probe()
+        result = await _probe_attempt(demo, probe, retries + 1)
         while retry and not result["ok"]:
             elapsed = perf_counter() - started
             if (
@@ -100,11 +119,21 @@ async def _retry_probe(demo: str, probe, *, retry: bool = True) -> dict:
             ):
                 break
             await asyncio.sleep(EMBER_SYNTHETIC_RETRY_INTERVAL_S)
-            result = await probe()
+            result = await _probe_attempt(demo, probe, retries + 2)
             retries += 1
         if result["ok"] and retries:
             result = dict(result)
             result["detail"] += f" (recovered after {retries} retries)"
+        span.set_attributes(
+            {
+                "ember.probe.demo": demo,
+                "ember.probe.ok": result["ok"],
+                "ember.probe.retries": retries,
+                "ember.probe.detail": result["detail"][:_SPAN_DETAIL_MAX_CHARS],
+            }
+        )
+        if not result["ok"]:
+            span.set_status(Status(StatusCode.ERROR))
         return _correlate(result, trace_id)
 
 
