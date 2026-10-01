@@ -1182,10 +1182,32 @@ _ACTIVITY_DAILY = text(
 )
 # Local Mac sessions (the claude-session and codex-session collectors). The
 # collector, or price-raws-backfill, stores each session's list price as
-# extra.usage_cost_usd.
+# extra.usage_cost_usd. The collector re-uploads a session as it grows, and
+# each upload is a cumulative snapshot of the same run (same session_id and
+# started_at, later ended_at), sometimes byte-identical. Only the latest
+# snapshot of each run counts, on the day it was uploaded; summing every
+# snapshot counted one $45 session nine times. Codex forks share a session_id
+# but start at different times, so they stay separate runs.
 _LOCAL_ACTIVITY_DAILY = text(
     rf"""
-    WITH raws AS (
+    WITH latest AS (
+        SELECT DISTINCT ON (
+                   source,
+                   COALESCE(extra->>'session_id', raw_id),
+                   COALESCE(extra->>'started_at', '')
+               )
+               created_at, source, extra
+        FROM knowledge.raw_inputs
+        WHERE source IN ('claude-session', 'codex-session')
+          AND extra ? 'usage'
+          AND jsonb_typeof(extra->'usage') = 'object'
+          AND created_at >= :since
+        ORDER BY source,
+                 COALESCE(extra->>'session_id', raw_id),
+                 COALESCE(extra->>'started_at', ''),
+                 id DESC
+    ),
+    raws AS (
         SELECT (created_at AT TIME ZONE 'UTC')::date AS day,
                COALESCE(extra->>'model', 'unknown') AS model,
                source,
@@ -1194,11 +1216,7 @@ _LOCAL_ACTIVITY_DAILY = text(
                NULLIF(regexp_replace(extra->'usage'->>'cache_read_tokens', '[^0-9]', '', 'g'), '')::numeric AS cache_read_tokens,
                CASE WHEN extra->>'usage_cost_usd' ~ '{_NUMERIC}'
                     THEN (extra->>'usage_cost_usd')::numeric END AS list_cost_usd
-        FROM knowledge.raw_inputs
-        WHERE source IN ('claude-session', 'codex-session')
-          AND extra ? 'usage'
-          AND jsonb_typeof(extra->'usage') = 'object'
-          AND created_at >= :since
+        FROM latest
     )
     SELECT day, model, source,
            COUNT(*) AS sessions,
