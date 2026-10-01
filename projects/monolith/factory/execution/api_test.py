@@ -167,9 +167,7 @@ def test_run_synthetic_session_persists_actual_guest_model(
     assert persisted[0][0][-1] == 3
 
 
-def test_run_synthetic_session_measures_the_deliver_await(
-    monkeypatch, synthetic_claim
-):
+def test_run_synthetic_session_measures_the_deliver_await(monkeypatch, synthetic_claim):
     from types import SimpleNamespace
 
     row = AgentSession(
@@ -181,9 +179,7 @@ def test_run_synthetic_session_measures_the_deliver_await(
     turn = _completed_synthetic_turn()
     persisted = []
     clock = {"now": 100.0}
-    monkeypatch.setattr(
-        api, "time", SimpleNamespace(monotonic=lambda: clock["now"])
-    )
+    monkeypatch.setattr(api, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
 
     async def deliver(*args, **kwargs):
         clock["now"] += 2.5
