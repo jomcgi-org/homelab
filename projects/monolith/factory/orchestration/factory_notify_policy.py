@@ -15,6 +15,7 @@ What pages:
   holds). The planner charter reserves pause for human authority.
 - ``watchdog:*``: a looping verdict, or two unreadable answers.
 - ``landing``: a pull request left for a person to merge.
+- ``rollout``: a merged delivery still blocked on rollout after 60 minutes.
 - ``intervention`` and ``deadline``, but only while nothing will release the
   slot on its own. With active cessation or the deadline backstop on, the
   factory settles these without a person (every one of the 24 intervention
@@ -102,6 +103,7 @@ def _items(db, watermark: int) -> list:
                     "funding_granted",
                     "watchdog_assessed",
                     "repository_scope_delivered",
+                    "rollout_wait_reported",
                 )
             ),
         )
@@ -123,6 +125,7 @@ def sections(rows) -> dict[str, list[str]]:
         "funded": [],
         "resumed": [],
         "handed_off": [],
+        "rollout_waits": [],
         "notices": [],
     }
     for row in rows:
@@ -158,6 +161,23 @@ def sections(rows) -> dict[str, list[str]]:
             prs = ", ".join(f"#{pr}" for pr in detail.get("delivered_prs") or [])
             target = f", live checks in #{child}" if child else ""
             out["handed_off"].append(f"#{issue} delivered in {prs}{target}")
+        elif row.action == "rollout_wait_reported":
+            values = {
+                key: detail.get(key) if detail.get(key) is not None else "unknown"
+                for key in (
+                    "pr_number",
+                    "issue_number",
+                    "waited_minutes",
+                    "application",
+                    "resource",
+                    "reason",
+                )
+            }
+            out["rollout_waits"].append(
+                f"#{values['pr_number']} (issue #{values['issue_number']}, {task}): "
+                f"{values['waited_minutes']}m on {values['application']} "
+                f"{values['resource']} ({values['reason']})"
+            )
         elif row.action == DIGESTED:
             message = " ".join(str(detail.get("message") or "").split())[:160]
             out["notices"].append(f"[{detail.get('kind')}] {message}")
@@ -168,6 +188,7 @@ TITLES = {
     "funded": "Funding the judge approved",
     "resumed": "Watchdog let continue",
     "handed_off": "Repository work delivered, live checks handed off",
+    "rollout_waits": "Landings waiting on rollout",
     "notices": "Notices that did not need you at once",
 }
 

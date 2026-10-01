@@ -455,9 +455,16 @@ hand puts it in the same queue, and landing selects on landing state rather than
 recency so a burst of newer settlements cannot evict the armed delivery from the
 batch that observes it. An ejection is a state the lane names and re-arms once
 rather than a wedge, and a head that moves under an armed pull request takes the
-arming back off. Landing stops at the merge: verifying the
-chart write-back and the live rollout is a node that does not exist yet
-(#6002).
+arming back off. Landing verifies publication and the live rollout before closing
+the issue (#6002).
+
+**Why.** Rollout verification gates only on the Applications the merged PR's
+files deploy through: registry chart versions moved since the merge, git paths
+and their kustomize surface, and `$values` files (#6660). Anything unreadable
+fails closed. A PR reaching no live Application verifies against its publication
+receipt's successful `pr-checks` render check. A wait reaches status and the daily
+digest at 30 minutes and pages once at 60 minutes. Landing keeps polling each
+minute and closes the issue only after verification.
 
 **Why.** Landing recovery is recorded from durable recovery structure, not a
 node-name convention. A request-bound engine edit is the normal proof that a
