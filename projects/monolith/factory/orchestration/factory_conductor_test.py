@@ -9181,6 +9181,29 @@ def test_plan_clamps_cost_and_audits_the_applied_node(feedback_db):
         "requested": 99.0,
         "applied": 2.0,
     }
+    # The clamp marker must not leak into the recorded graph edit: dropping
+    # the cost_clamped strip would persist it via _plan_edit_args, which
+    # records every field except the prompt body.
+    import json
+
+    from sqlmodel import Session, select
+
+    from factory.orchestration.models import SwarmConductorCall
+
+    with Session(feedback_db) as db:
+        calls = db.exec(
+            select(SwarmConductorCall).where(
+                SwarmConductorCall.tool == "apply_edits"
+            )
+        ).all()
+    assert calls, "expected an apply_edits call for the clamped plan"
+    recorded = [
+        edit
+        for call in calls
+        for edit in json.loads(call.args_json)["edits"]
+    ]
+    assert recorded
+    assert all("cost_clamped" not in edit for edit in recorded)
 
 
 def test_single_add_node_clamps_cost_and_audits_once(feedback_db):
