@@ -9,9 +9,16 @@ packages:
 # - Delay new registry releases for three days, matching Renovate's default.
 # - Reject a release if an earlier-published version had stronger npm trusted
 #   publisher or provenance evidence.
-# - No package-name cooldown or trust exceptions are configured. Renovate's
-#   vulnerabilityAlerts path intentionally skips its own cooldown, but it does
-#   not automatically bypass pnpm's independent check during lockfile updates.
+# - No package-name cooldown is configured, and exactly two version-pinned
+#   trust exceptions are configured: undici-types@6.21.0 (required as ~6.21.0
+#   by every @types/node 22.x) and semver@6.3.1 (the 6.x backport @babel/core
+#   needs). Both were published without the provenance that earlier releases
+#   carry. Both were already locked before the policy landed and frozen
+#   installs already install them, so the exception only lets the resolver keep
+#   them. Any other version still fails the check, and reverting to [] removes
+#   it. Renovate's vulnerabilityAlerts path intentionally skips its own
+#   cooldown, but it does not automatically bypass pnpm's independent check
+#   during lockfile updates.
 #   For a narrowly reviewed, one-off security fix, run that lockfile update with
 #   `pnpm install --config.minimum-release-age=0`. This CLI override applies
 #   only to that invocation; review the resulting lockfile without changing
@@ -25,5 +32,7 @@ packages:
 minimumReleaseAge: 4320
 minimumReleaseAgeExclude: []
 trustPolicy: no-downgrade
-trustPolicyExclude: []
+trustPolicyExclude:
+  - semver@6.3.1
+  - undici-types@6.21.0
 blockExoticSubdeps: true

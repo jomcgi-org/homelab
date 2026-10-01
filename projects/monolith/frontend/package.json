@@ -25,19 +25,19 @@
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0",
     "maplibre-gl": "^6.4.1",
-    "marked": "^18.0.0",
-    "mermaid": "^11.16.1",
+    "marked": "^18.0.10",
+    "mermaid": "^11.17.0",
     "roughjs": "^4.6.6"
   },
   "devDependencies": {
     "@esbuild/linux-x64": "0.27.4",
     "@rollup/rollup-linux-x64-gnu": "4.59.0",
-    "@sveltejs/adapter-node": "5.5.4",
-    "@sveltejs/kit": "2.70.2",
+    "@sveltejs/adapter-node": "5.5.7",
+    "@sveltejs/kit": "2.70.3",
     "@sveltejs/vite-plugin-svelte": "4.0.4",
     "mdsvex": "0.12.7",
-    "svelte": "5.56.4",
+    "svelte": "5.56.9",
     "vite": "6.4.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }
