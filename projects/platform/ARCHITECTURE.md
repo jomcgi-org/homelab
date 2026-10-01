@@ -196,7 +196,11 @@ node, which the disposable value cannot.
 
 Trace admission is deny-by-default by construction. With an empty `allowedServices` the chart renders no `otlp` receiver, no traces pipeline and no OTLP ports, so an unlisted service gets connection refused. Both production overlays list the same four services (`embervm-control`, `monolith-backend`, `monolith-jobs`, `monolith-public`), so the receiver is rendered on both clusters; a `filter` processor then drops any span whose `service.name` is absent or unlisted, and one `composite` tail-sampling policy spends a spans-per-second budget across its sub-policies. Adding a service is a one-line values edit. A `memory_limiter` runs first in every pipeline.
 
-The metrics pipeline accepts the `http_check` receiver only: both overlays probe `https://jomcgi.dev/health` and `https://jomcgi.dev/`, and the hub keeps an ArgoCD in-cluster target staged behind its CA mount (#6507). Arbitrary OTLP metrics are never accepted.
+The metrics pipeline accepts the `http_check` receiver only: both overlays probe
+`https://jomcgi.dev/health` and `https://jomcgi.dev/`. The hub's Argo CD in-cluster
+target is live with its self-signed serving leaf pinned per #6542. The
+certificate expires 2027-08-30 and must be re-pinned from `argocd-secret`
+`tls.crt` before then. Arbitrary OTLP metrics are never accepted.
 
 UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator is installed at home only and renders no `Instrumentation` resources. There is no in-repository trace query surface; the retired private waterfall is not being restored.
 
@@ -231,12 +235,16 @@ crossing that boundary is the cost, accepted because the alternative (dropping
 re-diverged on every upgrade.
 
 **Why.** The hub runs the public jomcgi.dev probe because the home cluster is
-residual and its collector is not the signal to keep; the Argo CD in-cluster
-target stays staged behind the CA mount because rendering a ca_file target
-without the mount fails every probe and risks the collector failing to start,
-which would also stop traces and metrics export. The absence trigger exists
-because a disabled or dead probe makes the composite trigger silent by design
-(it evaluates only received metrics), which is what happened in the 2026-09-30
+residual and its collector is not the signal to keep. Pinning Argo CD's
+self-signed serving leaf preserves TLS verification without
+`insecure_skip_verify` and leaves `server.insecure` false. With both
+`httpcheck.enabled` and `httpcheck.caMount.enabled` on, rendering fails if
+`httpcheck.caMount.caCert` is empty, null or whitespace-only. Turning the CA
+mount off is not guarded: the enabled target still renders with `tls.ca_file`,
+and the missing file fails probes and risks the collector failing to start,
+stopping traces and metrics export. The absence trigger exists because a
+disabled or dead probe makes the composite trigger silent by design (it
+evaluates only received metrics), which is what happened in the 2026-09-30
 EmberVM session-create denial incident.
 
 ---
