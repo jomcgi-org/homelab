@@ -212,7 +212,7 @@ type Server struct {
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
 
-	vmLifecycleMu sync.Mutex // task-to-session identity transfer
+	vmLifecycleMu sync.Mutex // attachment publication and task-to-session identity transfer
 	vms           *vmRegistry
 	bases         *baseRegistry
 	// scratchGeneration is the marker value whose on-disk base inventory was
@@ -1524,14 +1524,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	rtCancel()
 
-	if req.GetLineageId() != "" {
-		s.invalidateWorkspace(base.workload, req.GetLineageId())
-		if err := s.volumes.AttachLineage(base.workload, req.GetLineageId(), h.ID); err != nil {
-			s.reap(h, func() {})
-			return nil, status.Errorf(codes.FailedPrecondition, "noded: attach session volume: %v", err)
-		}
-	}
-	s.vms.add(&vmEntry{
+	entry := &vmEntry{
 		id:           h.ID,
 		workload:     base.workload,
 		snapshotRef:  ref,
@@ -1539,7 +1532,20 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		handle:       h,
 		egressCancel: s.startEgress(uds, h.ID, base.workload),
 		state:        vmPrimed,
-	})
+	}
+	// Attachment publication and registry insertion must be atomic to readers
+	// that prune attachment records for VMs absent from the live registries.
+	s.vmLifecycleMu.Lock()
+	if req.GetLineageId() != "" {
+		s.invalidateWorkspace(base.workload, req.GetLineageId())
+		if err := s.volumes.AttachLineage(base.workload, req.GetLineageId(), h.ID); err != nil {
+			s.vmLifecycleMu.Unlock()
+			s.reap(h, entry.egressCancel)
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: attach session volume: %v", err)
+		}
+	}
+	s.vms.add(entry)
+	s.vmLifecycleMu.Unlock()
 	s.signalChange()
 	return &nodev1.PrimeResponse{VmId: h.ID}, nil
 }
@@ -2943,6 +2949,14 @@ func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {
 }
 
 func (s *Server) lineageAttached(workload, lineageID string) bool {
+	s.vmLifecycleMu.Lock()
+	defer s.vmLifecycleMu.Unlock()
+	key := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}, s.cfg.CpuVendor)
+	if _, idle := s.exported.workspaceEpoch(key); !idle {
+		// A guest can own the disk before its registry/attachment is published.
+		// Never prune an attachment while that ownership handoff is pending.
+		return true
+	}
 	ids := s.vms.lineageVMIDs()
 	for _, e := range s.sessionVMs.snapshot() {
 		ids[e.vmID] = struct{}{}

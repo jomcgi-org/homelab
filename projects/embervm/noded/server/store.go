@@ -570,6 +570,8 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	if prefix == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
 	}
+	unlockWorkspaceExport := s.lockWorkspaceExport(ref, prefix)
+	defer unlockWorkspaceExport()
 	workspaceEpoch, exportable := s.workspaceExportEpoch(ref, prefix)
 	if !exportable {
 		return nil, status.Error(codes.FailedPrecondition, "noded: session workspace is in use")
@@ -1439,6 +1441,16 @@ func (s *Server) invalidateWorkspace(workload, lineageID string) {
 	s.signalChange()
 }
 
+// Inline and queued exports share a mutable workspace's store key. Serialize
+// the whole transfer so an old metadata PUT cannot follow a newer acknowledged
+// upload. Provisioning can still proceed and invalidate the transfer's epoch.
+func (s *Server) lockWorkspaceExport(ref *nodev1.ArtifactRef, key string) func() {
+	if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		return func() {}
+	}
+	return s.exported.lockWorkspaceExport(key)
+}
+
 // workspaceExportEpoch captures the fence before any workspace file is read.
 // Other artifact kinds retain their existing generation/presence semantics.
 func (s *Server) workspaceExportEpoch(ref *nodev1.ArtifactRef, key string) (uint64, bool) {
@@ -1566,6 +1578,8 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	if s.unexportable.contains(job.key) {
 		return
 	}
+	unlockWorkspaceExport := s.lockWorkspaceExport(job.ref, job.key)
+	defer unlockWorkspaceExport()
 	workspaceEpoch, exportable := s.workspaceExportEpoch(job.ref, job.key)
 	if !exportable {
 		s.logger.Info("noded: export skipped, session workspace in use (will retry on reconcile)", "artifact", job.key)
@@ -2168,14 +2182,27 @@ func (s *Server) storeReachableNow() bool {
 // the NodeStatus projection reads it to set the per-artifact `exported` bool and
 // Volume.exported_generation. Safe for concurrent use.
 type exportedCache struct {
-	mu              sync.RWMutex
-	gens            map[string]uint64 // prefix -> exported generation (0 for non-volume kinds)
-	workspaceEpochs map[string]uint64
-	workspaceUsers  map[string]uint64 // provisioning/restoring before attach is visible
+	mu               sync.RWMutex
+	gens             map[string]uint64 // prefix -> exported generation (0 for non-volume kinds)
+	workspaceEpochs  map[string]uint64
+	workspaceUsers   map[string]uint64 // provisioning/restoring before attach is visible
+	workspaceExports map[string]*sync.Mutex
 }
 
 func newExportedCache() *exportedCache {
-	return &exportedCache{gens: make(map[string]uint64), workspaceEpochs: make(map[string]uint64), workspaceUsers: make(map[string]uint64)}
+	return &exportedCache{gens: make(map[string]uint64), workspaceEpochs: make(map[string]uint64), workspaceUsers: make(map[string]uint64), workspaceExports: make(map[string]*sync.Mutex)}
+}
+
+func (c *exportedCache) lockWorkspaceExport(prefix string) func() {
+	c.mu.Lock()
+	lock := c.workspaceExports[prefix]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		c.workspaceExports[prefix] = lock
+	}
+	c.mu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 // mark records that an artifact's store copy is current at the given generation.

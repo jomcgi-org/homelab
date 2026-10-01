@@ -3488,7 +3488,7 @@ func TestSessionWorkspaceExportFencedBeforeAttach(t *testing.T) {
 	if s.exported.present(key) {
 		t.Fatal("the earlier mark must be cleared before the guest boots")
 	}
-	if s.lineageAttached(workload, lineage) {
+	if s.volumes.IsLineageAttached(workload, lineage, map[string]struct{}{}) {
 		t.Fatal("test must exercise the window before attachment")
 	}
 	s.runExportJob(ctx, exportJob{ref: ref, key: key})
@@ -3534,6 +3534,91 @@ func TestSessionWorkspaceRestoreInvalidatesAcknowledgement(t *testing.T) {
 	}
 	if s.exported.present(key) || s.exported.markWorkspace(key, 0, epoch) {
 		t.Fatal("restore must clear the mark and fence any older export")
+	}
+}
+
+func TestSessionWorkspaceStatusPreservesPendingAttachment(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload, lineage, vmID = "sbx", "lineage-handoff", "vm-handoff"
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	finish := s.beginWorkspaceUse(workload, lineage)
+	if err := s.volumes.AttachLineage(workload, lineage, vmID); err != nil {
+		t.Fatal(err)
+	}
+	// Pause the handoff after attachment, before publishing the VM registry.
+	if volumes := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() {
+		t.Fatalf("pending attachment status = %v, want exported=false", volumes)
+	}
+	if !s.volumes.IsLineageAttached(workload, lineage, map[string]struct{}{vmID: {}}) {
+		t.Fatal("NodeStatus pruned the attachment during a pending ownership handoff")
+	}
+	s.vms.add(&vmEntry{id: vmID, workload: workload, lineageID: lineage})
+	finish()
+	if !s.lineageAttached(workload, lineage) {
+		t.Fatal("attachment was lost after the registry handoff")
+	}
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
+	if _, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{Artifact: ref}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("export after attachment handoff = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestSessionWorkspaceInlineAndQueuedExportsSerialize(t *testing.T) {
+	fs := newFakeStore()
+	fs.exportStarted = make(chan string, 2)
+	fs.exportRelease = make(chan struct{})
+	s := newStoreTestServer(t, fs)
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-serial"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	if err := s.volumes.CreateSession(ref.Workload, ref.Ref, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inlineDone := make(chan error, 1)
+	go func() {
+		_, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref})
+		inlineDone <- err
+	}()
+	select {
+	case <-fs.exportStarted:
+	case <-time.After(time.Second):
+		t.Fatal("inline export did not start")
+	}
+	// Reuse the workspace while the old transfer is still writing the store.
+	finish := s.beginWorkspaceUse(ref.Workload, ref.Ref)
+	if err := os.WriteFile(s.volumes.SessionVolumePath(ref.Workload, ref.Ref), []byte("new workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finish()
+	queuedDone := make(chan struct{})
+	go func() {
+		s.runExportJob(ctx, exportJob{ref: ref, key: key})
+		close(queuedDone)
+	}()
+	select {
+	case <-fs.exportStarted:
+		t.Fatal("new export must not write the shared store key before the old transfer finishes")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(fs.exportRelease)
+	select {
+	case err := <-inlineDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inline export did not finish")
+	}
+	select {
+	case <-queuedDone:
+	case <-time.After(time.Second):
+		t.Fatal("queued export did not finish")
+	}
+	if fs.calls(key) != 2 || !s.exported.present(key) {
+		t.Fatalf("current copy must be acknowledged after serialized transfers: calls=%d exported=%t", fs.calls(key), s.exported.present(key))
 	}
 }
 
