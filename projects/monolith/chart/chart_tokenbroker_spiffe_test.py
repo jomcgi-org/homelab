@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,32 @@ def _env(container: dict) -> dict[str, str]:
     }
 
 
+def _file_mode(config: str, name: str) -> int:
+    matches = re.findall(
+        rf"^[ \t]*{name}[ \t]*=[ \t]*(.*?)[ \t]*$", config, re.MULTILINE
+    )
+    assert len(matches) == 1, f"expected exactly one {name}: {matches}"
+    assert re.fullmatch(r"0[0-7]{3}", matches[0]), f"invalid {name}: {matches[0]}"
+    return int(matches[0], 8)
+
+
+def test_file_mode_parser_rejects_missing_malformed_and_duplicate_modes() -> None:
+    for config in [
+        "",
+        "key_file_mode = ",
+        "key_file_mode = 0648",
+        "key_file_mode = 644",
+        'key_file_mode = "0640"',
+        "key_file_mode = 0640\nkey_file_mode = 0640",
+    ]:
+        try:
+            _file_mode(config, "key_file_mode")
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid file mode: {config!r}")
+
+
 def test_default_render_preserves_plaintext_and_omits_spiffe_runtime() -> None:
     objects = _render("monolith")
     deployment = _object(objects, "Deployment", "monolith")
@@ -99,6 +126,12 @@ def test_enabled_render_packages_helper_svid_and_exact_server_identity() -> None
     assert helper["securityContext"]["runAsUser"] == 65532
     assert helper["securityContext"]["runAsNonRoot"] is True
     assert helper["securityContext"]["readOnlyRootFilesystem"] is True
+    assert helper["securityContext"]["allowPrivilegeEscalation"] is False
+    assert helper["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert (
+        backend["securityContext"]["runAsUser"]
+        == (helper["securityContext"]["runAsUser"])
+    )
     assert helper["readinessProbe"]["httpGet"] == {
         "path": "/ready",
         "port": "spiffe-health",
@@ -125,8 +158,13 @@ def test_enabled_render_packages_helper_svid_and_exact_server_identity() -> None
         "data"
     ]["helper.conf"]
     assert 'hint = "monolith-platform"' in config
-    assert "cert_file_mode = 0444" in config
-    assert "key_file_mode = 0440" in config
+    cert_mode = _file_mode(config, "cert_file_mode")
+    key_mode = _file_mode(config, "key_file_mode")
+    assert cert_mode & 0o200, "certificate must remain owner-writable for rotation"
+    assert key_mode & 0o200, "key must remain owner-writable for rotation"
+    assert cert_mode & 0o400, "same-UID backend must be able to read certificate"
+    assert key_mode & 0o400, "same-UID backend must be able to read key"
+    assert key_mode & 0o007 == 0, "key must grant no permissions to other users"
     assert 'agent_address = "/spiffe-workload-api/spire-agent.sock"' in config
 
 

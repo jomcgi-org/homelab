@@ -22,8 +22,8 @@ data:
     svid_file_name = "svid.pem"
     svid_key_file_name = "svid_key.pem"
     svid_bundle_file_name = "svid_bundle.pem"
-    cert_file_mode = 0444
-    key_file_mode = 0440
+    cert_file_mode = 0644
+    key_file_mode = 0640
     health_checks {
       listener_enabled = true
       bind_port = {{ .Values.controlPlane.spiffe.helper.healthPort }}
