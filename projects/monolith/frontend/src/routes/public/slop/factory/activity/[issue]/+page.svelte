@@ -3,24 +3,25 @@
   import { invalidateAll, replaceState } from "$app/navigation";
   import { SchemeToggle, Seo } from "$lib/public/components";
   import {
-    activitySummary,
     attemptMark,
     attemptWord,
-    briefRuns,
-    clip,
-    commitUrl,
-    isoClock,
-    isoDay,
     money,
     nodeWord,
     outcome,
-    planLayout,
+    planStrip,
     plural,
     reviewRounds,
     sessionHref,
     stepsOf,
+    stopRows,
     taskSpec,
   } from "$lib/public/factory/activity-view.js";
+  import {
+    markdownBlocks,
+    plainPreview,
+  } from "$lib/public/factory/markdown.js";
+  import Markdown from "$lib/public/factory/Markdown.svelte";
+  import Turn from "$lib/public/factory/Turn.svelte";
   import "$lib/public/factory/factory.css";
   import "$lib/public/factory/activity.css";
   import Trail from "../../../Trail.svelte";
@@ -30,28 +31,30 @@
   let now = $state(data.snapshottedAt ?? new Date().toISOString());
   // 1-based, matching the step numbers on screen and in the #step-N fragment.
   let openStep = $state(null);
-  // The figure and the step list point at each other through the node key
-  // rather than through the DOM, so hovering either one lights both.
+  // The plan strip and the step list point at each other through the node
+  // key rather than through the DOM, so hovering either one lights both.
   let hotNode = $state(null);
-  // One record of which long prompts and replies have been opened, keyed by
-  // turn. Collapsed is the default: a conductor brief is thousands of
-  // characters and would otherwise bury every reply under it.
-  let openText = $state({});
-
-  const toggleText = (key) => (openText[key] = !openText[key]);
 
   const REFRESH_MS = 60_000;
 
   const task = $derived(data.task);
   const policy = $derived(data.policy ?? {});
   const steps = $derived(stepsOf(task));
-  const layout = $derived(planLayout(task.nodes ?? [], steps));
+  const plan = $derived(planStrip(task, steps));
   const runningStep = $derived(
     steps.findIndex((step) => attemptWord(step.attempt.status) === "running"),
   );
   const verdict = $derived(outcome(task, policy, now, runningStep));
   const spec = $derived(taskSpec(task, policy, now));
-  const rounds = $derived(reviewRounds(task));
+  const stops = $derived(stopRows(task));
+  // The snapshot keeps the first six paragraphs of the issue body, so the
+  // brief can end on a heading with nothing under it; that heading is noise.
+  const brief = $derived(
+    markdownBlocks((task.brief ?? []).join("\n\n")).filter(
+      (block, index, all) =>
+        !(index === all.length - 1 && block.type === "heading"),
+    ),
+  );
 
   function stepFromHash(hash) {
     const match = /^#step-(\d+)$/.exec(hash ?? "");
@@ -108,7 +111,7 @@
   // it while its transcript is still collapsed lands the viewport on the wrong
   // place and the expansion then pushes the content out from under the reader.
   async function openAndScroll(number) {
-    if (number < 1) return;
+    if (!number || number < 1) return;
     openStep = number;
     writeHash(`#step-${number}`);
     await tick();
@@ -117,15 +120,11 @@
       ?.scrollIntoView({ block: "center" });
   }
 
-  function nodeKeyDown(event, number) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    openAndScroll(number);
-  }
-
   const lastResult = (attempt) => {
     const turns = attempt.turns ?? [];
-    return turns.length ? turns[turns.length - 1].result_text : "no turns yet";
+    return turns.length
+      ? plainPreview(turns[turns.length - 1].result_text)
+      : "";
   };
 </script>
 
@@ -134,23 +133,6 @@
   description={`What the Ember Software Factory did on issue #${task.issue_number}: the plan, every attempt, and the outcome.`}
   path={`/slop/factory/activity/${task.issue_number}`}
 />
-
-{#snippet long(text, key, cls)}
-  {@const cut = clip(text ?? "")}
-  <p class={cls || undefined}>
-    {cut.clipped && !openText[key]
-      ? cut.head
-      : (text ?? "")}{#if cut.clipped}<button
-        class="more-tog"
-        type="button"
-        aria-expanded={Boolean(openText[key])}
-        onclick={() => toggleText(key)}
-        >{openText[key]
-          ? "hide −"
-          : `show all (${(text ?? "").length} chars) +`}</button
-      >{/if}
-  </p>
-{/snippet}
 
 <main class="td factory-page activity-page">
   <div class="frame">
@@ -176,69 +158,40 @@
     </header>
 
     <div class="task-head">
-      <div>
+      <div class="title-block">
         <div class="id">
-          task · issue <a href={task.url}>#{task.issue_number}</a> ·
-          {task.task_class} · generation {task.generation}
+          <a href={task.url}>#{task.issue_number}</a> · {task.task_class} · gen {task.generation}
         </div>
         <h2>{task.title}</h2>
         <div class="links">
           {#if task.pr}
-            <a href={task.pr.url}>PR #{task.pr.number} · {task.pr.state}</a>
-          {:else}
-            <span>no PR yet</span>
-          {/if}
-          <a href={task.url}>issue on GitHub</a>
-        </div>
-        {#if task.brief?.length}
-          <div class="brief">
-            {#each task.brief as paragraph, index (index)}
-              {@const runs = briefRuns(paragraph)}
-              {#if runs.length === 1 && runs[0].heading}
-                <p class="h">{runs[0].text}</p>
-              {:else}
-                <p>
-                  {#each runs as run, runIndex (runIndex)}{#if run.code}<span
-                        class="code">{run.text}</span
-                      >{:else if run.strong}<b>{run.text}</b
-                      >{:else}{run.text}{/if}{/each}
-                </p>
-              {/if}
-            {/each}
-          </div>
-        {/if}
-
-        <section class="panel outcome-panel">
-          <p class="sec-label">/ Outcome</p>
-          <div class="verdict {verdict.tone}">
-            <span class="big"
-              ><span class="mark {verdict.mark}"></span>{verdict.headline}</span
+            <a href={task.pr.url}
+              ><span class="mark {verdict.mark}"></span>PR #{task.pr.number} · {task
+                .pr.state}</a
             >
-            <p>
-              {#each verdict.parts as part, index (index)}{#if part.href}<a
-                    href={part.href}>{part.text}</a
-                  >{:else if part.code}<span class="code">{part.text}</span
-                  >{:else if part.step}<a
-                    href={`#step-${part.step}`}
-                    onclick={(event) => {
-                      event.preventDefault();
-                      openAndScroll(part.step);
-                    }}>{part.text}</a
-                  >{:else}{part.text}{/if}{/each}
-            </p>
-          </div>
-          {#each task.stop_events ?? [] as event, index (index)}
-            <div class="notice" class:warn={event.intervention_required}>
-              <b>{event.intervention_required ? "needs a person" : "note"}</b>
-              <span
-                >{event.reason}<span class="when"
-                  >{event.action} · {isoDay(event.at)}
-                  {isoClock(event.at)}</span
-                ></span
-              >
-            </div>
-          {/each}
-        </section>
+          {:else}
+            <span>no PR</span>
+          {/if}
+          <a href={task.url}>issue ›</a>
+        </div>
+
+        <div class="verdict {verdict.tone}">
+          <span class="big"
+            ><span class="mark {verdict.mark}"></span>{verdict.headline}</span
+          >
+          <p>
+            {#each verdict.parts as part, index (index)}{#if part.href}<a
+                  href={part.href}>{part.text}</a
+                >{:else if part.code}<span class="code">{part.text}</span
+                >{:else if part.step}<a
+                  href={`#step-${part.step}`}
+                  onclick={(event) => {
+                    event.preventDefault();
+                    openAndScroll(part.step);
+                  }}>{part.text}</a
+                >{:else}{part.text}{/if}{/each}
+          </p>
+        </div>
       </div>
 
       <div class="spec">
@@ -260,95 +213,95 @@
       </div>
     </div>
 
+    {#if stops.length}
+      <section class="panel">
+        <p class="sec-label">
+          / Stops
+          <span class="win"
+            >{plural(stops.length, "event")} · {stops.filter(
+              (row) => row.person,
+            ).length} needed a person</span
+          >
+        </p>
+        <ol class="stops">
+          {#each stops as row, index (index)}
+            <li class:warn={row.person}>
+              <span class="when num">{row.day} {row.clock}</span>
+              <span class="act">{row.action}</span>
+              <span class="why">{row.reason || "·"}</span>
+              <span class="who">{row.person ? "person" : ""}</span>
+            </li>
+          {/each}
+        </ol>
+      </section>
+    {/if}
+
+    {#if brief.length}
+      <section class="panel">
+        <p class="sec-label">/ Brief</p>
+        <div class="brief md"><Markdown blocks={brief} /></div>
+      </section>
+    {/if}
+
     <section class="panel">
       <p class="sec-label">
         / Plan
         <span class="win"
-          >conductor {policy.conductor_model} · click a node to open its step</span
+          >{plural(plan.length, "node")} · {plural(
+            reviewRounds(task),
+            "review round",
+          )}</span
         >
       </p>
-      {#if layout.nodes.length}
-        <div class="fig">
-          <svg
-            viewBox={`0 0 ${layout.width} ${layout.height}`}
-            width={layout.width}
-            height={layout.height}
-            role="group"
-            aria-label={`Plan: ${plural(layout.nodes.length, "node")} in ${plural(layout.stages, "stage")}`}
-          >
-            <defs>
-              <pattern
-                id="plan-hatch"
-                width="4"
-                height="4"
-                patternUnits="userSpaceOnUse"
-                patternTransform="rotate(45)"
-              >
-                <rect width="4" height="4" fill="var(--sheet)" />
-                <rect width="1" height="4" fill="var(--ink-3)" />
-              </pattern>
-            </defs>
-            {#each layout.edges as edge, index (index)}
-              <path class="edge" class:dead={edge.dead} d={edge.d} />
-              <path class="arrow" d={edge.arrow} />
-            {/each}
-            {#each layout.nodes as box (box.index)}
-              <g
-                class="node {box.node.state}"
-                class:hot={hotNode === box.node.node_key}
-                tabindex="0"
-                role="button"
-                aria-label={`${box.node.node_key}, ${nodeWord(box.node.state)}${box.step >= 0 ? `, open step ${box.step + 1}` : ""}`}
-                onmouseenter={() => (hotNode = box.node.node_key)}
+      {#if plan.length}
+        <ol class="plan-strip">
+          {#each plan as entry (entry.node.node_key + entry.number)}
+            <li
+              class="pnode {entry.node.state}"
+              class:hot={hotNode === entry.node.node_key}
+            >
+              <button
+                type="button"
+                disabled={!entry.step}
+                onmouseenter={() => (hotNode = entry.node.node_key)}
                 onmouseleave={() => (hotNode = null)}
-                onfocus={() => (hotNode = box.node.node_key)}
+                onfocus={() => (hotNode = entry.node.node_key)}
                 onblur={() => (hotNode = null)}
-                onclick={() => openAndScroll(box.step + 1)}
-                onkeydown={(event) => nodeKeyDown(event, box.step + 1)}
+                onclick={() => openAndScroll(entry.step)}
+                aria-label={`${entry.node.node_key}, ${nodeWord(entry.node.state)}${entry.step ? `, open step ${entry.step}` : ""}`}
               >
-                <title>{box.node.node_key}</title>
-                <rect
-                  class="box"
-                  x={box.x}
-                  y={box.y}
-                  width={box.width}
-                  height={box.height}
-                />
-                <text class="l" x={box.x + 10} y={box.y + 18}>{box.label}</text>
-                <text class="s" x={box.x + 10} y={box.y + 33}
-                  >{box.node.model} · {nodeWord(box.node.state)}</text
+                <span class="n num">{entry.number}</span>
+                <span class="k">{entry.node.node_key}</span>
+                <span class="s"
+                  ><span
+                    class="mark {attemptMark(
+                      entry.node.state === 'running'
+                        ? 'admitted'
+                        : entry.node.state === 'done'
+                          ? 'succeeded'
+                          : entry.node.state,
+                    )}"
+                  ></span>{nodeWord(entry.node.state)} · {entry.node
+                    .model}{#if entry.attempts > 1}
+                    · ×{entry.attempts}{/if}{#if entry.cost}
+                    · {money(entry.cost)}{/if}</span
                 >
-                <g class="n">
-                  <circle cx={box.x} cy={box.y} r="8" />
-                  <text x={box.x} y={box.y + 3.5} text-anchor="middle"
-                    >{box.number}</text
-                  >
-                </g>
-              </g>
-            {/each}
-          </svg>
-        </div>
-        <p class="cap">
-          <span><b>Fig 1</b> · the plan as applied, left to right</span>
-          <span
-            >{plural(layout.nodes.length, "node")} · {plural(
-              rounds,
-              "review round",
-            )} added by the engine</span
-          >
-        </p>
+                {#if entry.deps.length}
+                  <span class="d">after {entry.deps.join(", ")}</span>
+                {/if}
+              </button>
+            </li>
+          {/each}
+        </ol>
       {:else}
-        <p class="empty">Not planned yet.</p>
+        <p class="empty">not planned yet</p>
       {/if}
     </section>
 
     <section class="panel">
       <p class="sec-label">
         / Steps
-        <span class="win"
-          >one per attempt, in run order · open a step for its turns: the
-          instruction in grey, what the worker ran, its reply in black</span
-        >
+        <span class="win">{plural(steps.length, "attempt")}</span>
       </p>
       {#if steps.length}
         <ol class="steps">
@@ -379,18 +332,17 @@
                 aria-controls={`transcript-${number}`}
                 onclick={() => toggleStep(number)}
               >
-                <span class="no">{number}</span>
+                <span class="no num">{number}</span>
                 <span class="mark {attemptMark(step.attempt.status)}"></span>
-                <span
+                <span class="main"
                   ><span class="what"
                     >{step.node.node_key}<span class="who"
                       >{step.node.model} · attempt {step.attempt.attempt} of {policy.max_attempts}
-                      ·
-                      {attemptWord(step.attempt.status)}</span
+                      · {attemptWord(step.attempt.status)}</span
                     ></span
                   ><span class="said">{lastResult(step.attempt)}</span></span
                 >
-                <span class="cost"
+                <span class="cost num"
                   >{plural(turns.length, "turn")} · {money(
                     step.attempt.cost_usd,
                   )}</span
@@ -403,81 +355,25 @@
                 hidden={!open}
               >
                 {#if session}
-                  <a class="more" href={session}
-                    >full session: every turn, each edit's hunk, the patch ›</a
-                  >
+                  <a class="more" href={session}>session record ›</a>
                 {/if}
                 {#if turns.length}
                   {#each turns as turn, turnIndex (`${turn.seq}-${turnIndex}`)}
-                    <div class="turn">
-                      <span class="tn">{turn.seq}</span>
-                      {@render long(
-                        turn.prompt,
-                        `ask-${number}-${turn.seq}`,
-                        "ask",
-                      )}
-                      {#if turn.activities?.length}
-                        {@const digest = activitySummary(turn.activities)}
-                        <div class="digest">
-                          <p class="did">
-                            {#each digest.counts as count (count.kind)}
-                              <span>{plural(count.count, count.kind)}</span>
-                            {/each}
-                          </p>
-                          <ul class="did-rows">
-                            {#each digest.shown as row, rowIndex (rowIndex)}
-                              <li title={row.title}>
-                                <span class="ty">{row.type}</span>
-                                <span class="what">{row.text}</span>
-                              </li>
-                            {/each}
-                          </ul>
-                          {#if digest.hidden > 0}
-                            {#if session}
-                              <a class="more" href={session}
-                                >and {digest.hidden} more in the session ›</a
-                              >
-                            {:else}
-                              <!-- A span, not a paragraph: `.turn p` would win
-                                   the font size back off `.more`. -->
-                              <span class="more">and {digest.hidden} more</span>
-                            {/if}
-                          {/if}
-                        </div>
-                      {/if}
-                      {@render long(
-                        turn.result_text,
-                        `say-${number}-${turn.seq}`,
-                        "",
-                      )}
-                      <p class="meta">
-                        {money(turn.cost_usd)}{#if turn.commit_sha}
-                          · commit <a
-                            class="sha"
-                            href={commitUrl(turn.commit_sha)}
-                            >{turn.commit_sha}</a
-                          >{/if}
-                      </p>
-                    </div>
+                    <Turn {turn} {session} />
                   {/each}
                 {:else}
-                  <div class="turn">
-                    <span class="tn">·</span>
-                    <p class="ask">
-                      {attemptWord(step.attempt.status) === "running"
-                        ? "Running. The first turn has not returned yet."
-                        : "No turns were recorded for this attempt."}
-                    </p>
-                  </div>
+                  <p class="empty">
+                    {attemptWord(step.attempt.status) === "running"
+                      ? "running · no turn yet"
+                      : "no turns recorded"}
+                  </p>
                 {/if}
               </div>
             </li>
           {/each}
         </ol>
       {:else}
-        <p class="empty">
-          No steps yet. The conductor plans once a slot opens.
-        </p>
+        <p class="empty">no steps yet</p>
       {/if}
     </section>
 

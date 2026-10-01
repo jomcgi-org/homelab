@@ -4,20 +4,17 @@ import {
   activitySummary,
   attemptMark,
   attemptWord,
-  briefRuns,
   clip,
   commitUrl,
-  diffLines,
   diffStat,
   duration,
   groupByDay,
-  hunkFor,
   ledger,
   ledgerMeta,
   money,
   nodeWord,
   outcome,
-  planLayout,
+  planStrip,
   plural,
   prettyCommand,
   relative,
@@ -26,9 +23,12 @@ import {
   sessionSpec,
   stampUtc,
   stepsOf,
+  stopRows,
+  stripRationale,
   taskMark,
   taskSpec,
   tokens,
+  toolLabel,
   turnMeta,
 } from "./activity-view.js";
 
@@ -124,6 +124,10 @@ describe("formatting", () => {
   it("renders money to two places and tolerates a missing number", () => {
     expect(money(3.4)).toBe("$3.40");
     expect(money(null)).toBe("$0.00");
+  });
+
+  it("collapses millions of tokens to one decimal", () => {
+    expect(tokens(10_762_310)).toBe("10.8M");
   });
 
   it("collapses thousands of tokens to one decimal", () => {
@@ -282,13 +286,13 @@ describe("ledger", () => {
 describe("ledgerMeta", () => {
   it("names the phase and the deadline for a live task", () => {
     expect(ledgerMeta(LIVE_TASK, POLICY, NOW)).toBe(
-      "in flight · at review_1 · deadline 5h 42m left",
+      "in flight · review_1 · 5h 42m left",
     );
   });
 
-  it("says what a queued task is waiting for", () => {
-    expect(ledgerMeta({ state: "queued", nodes: [] }, POLICY, NOW)).toBe(
-      "queued · waits for a slot, 2 tasks at a time",
+  it("says how many slots a queued task waits on", () => {
+    expect(ledgerMeta({ state: "queued" }, POLICY, NOW)).toBe(
+      "queued · 2 slots",
     );
   });
 
@@ -296,74 +300,105 @@ describe("ledgerMeta", () => {
     expect(ledgerMeta(LANDED_TASK, POLICY, NOW)).toBe(
       "landed · PR #5991 merged · 0 review rounds",
     );
+    expect(ledgerMeta({ ...LANDED_TASK, pr: null }, POLICY, NOW)).toBe(
+      "landed · 0 review rounds",
+    );
   });
 
-  it("says an escalation waits for a person", () => {
-    expect(ledgerMeta({ state: "failed", nodes: [] }, POLICY, NOW)).toBe(
-      "escalated · waits for a person · 0 review rounds",
+  it("keeps a landing task's PR state", () => {
+    expect(
+      ledgerMeta(
+        { ...LIVE_TASK, state: "landing", pr: { number: 7, state: "queued" } },
+        POLICY,
+        NOW,
+      ),
+    ).toBe("landing · PR #7 queued · 1 review round");
+  });
+
+  it("marks an escalation and a cancellation by their word alone", () => {
+    expect(ledgerMeta({ state: "failed", review_rounds: 2 }, POLICY, NOW)).toBe(
+      "escalated · 2 review rounds",
+    );
+    expect(ledgerMeta({ state: "cancelled" }, POLICY, NOW)).toBe(
+      "cancelled · 0 review rounds",
     );
   });
 });
 
 describe("outcome", () => {
+  const text = (verdict) => verdict.parts.map((part) => part.text).join("");
+
   it("reports a landed task with its PR link", () => {
-    const result = outcome(LANDED_TASK, POLICY, NOW);
-    expect(result).toMatchObject({ tone: "landed", headline: "landed" });
-    expect(result.parts[1]).toEqual({
+    const verdict = outcome(LANDED_TASK, POLICY, NOW);
+    expect(verdict.headline).toBe("landed");
+    expect(verdict.tone).toBe("landed");
+    expect(verdict.parts[1]).toEqual({
       text: "#5991",
       href: "https://example.test/pull/5991",
     });
-    expect(result.parts[2].text).toContain("1h 39m from admission");
+    expect(text(verdict)).toBe("PR #5991 merged · 0 review rounds · 1h 39m");
   });
 
   it("points a live task at its running step and its draft PR", () => {
-    const result = outcome(LIVE_TASK, POLICY, NOW, 4);
-    expect(result.headline).toBe("in flight");
-    expect(result.parts.find((part) => part.code)).toEqual({
-      text: "review_1",
-      code: true,
+    const verdict = outcome(LIVE_TASK, POLICY, NOW, 4);
+    expect(verdict.headline).toBe("in flight");
+    expect(verdict.parts).toContainEqual({ text: "review_1", code: true });
+    expect(verdict.parts).toContainEqual({ text: "step 5", step: 5 });
+    expect(verdict.parts).toContainEqual({
+      text: "#5996",
+      href: "https://example.test/pull/5996",
     });
-    expect(result.parts.find((part) => part.step)).toEqual({
-      text: "step 5",
-      step: 5,
-    });
-    expect(result.parts.at(-1).text).toContain("7 of 12 starts used");
+    expect(text(verdict)).toBe(
+      "At review_1 (step 5) · PR #5996 draft · 7 of 12 starts · 5h 42m left",
+    );
   });
 
-  it("leads an escalation with the evidence and drops the gap without one", () => {
+  it("gives a landing task its PR state and the deadline", () => {
+    const verdict = outcome({ ...LIVE_TASK, state: "landing" }, POLICY, NOW);
+    expect(verdict.headline).toBe("landing");
+    expect(verdict.mark).toBe("running live");
+    expect(text(verdict)).toBe("PR #5996 draft · 1 review round · 5h 42m left");
+  });
+
+  it("leads an escalation with the evidence and says it waits without one", () => {
     const withReason = outcome(
-      {
-        state: "failed",
-        evidence_reason: "guest egress returned 422",
-        nodes: [],
-      },
+      { ...LANDED_TASK, state: "failed", evidence_reason: "Budget gone" },
       POLICY,
       NOW,
     );
-    expect(withReason.parts[0].text).toMatch(
-      /^guest egress returned 422\. The lane did not retry/,
-    );
-    const without = outcome({ state: "failed", nodes: [] }, POLICY, NOW);
-    expect(without.parts[0].text).toMatch(/^The lane did not retry/);
+    expect(withReason.headline).toBe("escalated");
+    expect(text(withReason)).toBe("Budget gone");
+    const bare = outcome({ ...LANDED_TASK, state: "failed" }, POLICY, NOW);
+    expect(text(bare)).toBe("Waits for a person.");
   });
 
-  it("gives a cancelled task the operator's reason", () => {
-    const result = outcome(
+  it("gives a cancelled task the record's own reason", () => {
+    const verdict = outcome(
       {
+        ...LANDED_TASK,
         state: "cancelled",
-        nodes: [],
-        stop_events: [{ reason: "superseded by #5485" }],
+        stop_events: [{ reason: "operator_release" }],
       },
       POLICY,
       NOW,
     );
-    expect(result).toMatchObject({ tone: "cancelled", headline: "cancelled" });
-    expect(result.parts[0].text).toBe("superseded by #5485");
+    expect(verdict.headline).toBe("cancelled");
+    expect(text(verdict)).toBe("operator_release");
+    expect(
+      text(outcome({ ...LANDED_TASK, state: "cancelled" }, POLICY, NOW)),
+    ).toBe("Cancelled by an operator.");
   });
 
   it("explains what a queued task waits on", () => {
-    const result = outcome({ state: "queued", nodes: [] }, POLICY, NOW);
-    expect(result.parts[0].text).toContain("runs 2 tasks at a time");
+    expect(text(outcome({ state: "queued" }, POLICY, NOW))).toBe(
+      "Waits for a slot · 2 slots",
+    );
+  });
+
+  it("names the phase an uncertain task is stuck at", () => {
+    const verdict = outcome({ ...LIVE_TASK, state: "uncertain" }, POLICY, NOW);
+    expect(verdict.tone).toBe("uncertain");
+    expect(verdict.parts).toContainEqual({ text: "review_1", code: true });
   });
 });
 
@@ -405,96 +440,6 @@ describe("specs", () => {
     expect(rows.find((row) => row.label === "Last turn").value).toBe("–");
     expect(rows.find((row) => row.label === "Guest").value).toBe("bound");
     expect(rows).toHaveLength(9);
-  });
-});
-
-describe("planLayout", () => {
-  it("puts each node one stage past its deepest dependency", () => {
-    const steps = stepsOf(LIVE_TASK);
-    const layout = planLayout(LIVE_TASK.nodes, steps);
-    expect(layout.stages).toBe(6);
-    expect(layout.nodes.map((box) => box.x)).toEqual([
-      16, 210, 404, 598, 792, 986,
-    ]);
-    expect(layout.nodes.every((box) => box.y === 16)).toBe(true);
-    expect(layout.width).toBe(1152);
-    expect(layout.height).toBe(76);
-  });
-
-  it("stacks siblings that share a stage", () => {
-    const nodes = [
-      { node_key: "plan", deps: [], state: "done", attempts: [] },
-      { node_key: "a", deps: ["plan"], state: "done", attempts: [] },
-      { node_key: "b", deps: ["plan"], state: "done", attempts: [] },
-    ];
-    const layout = planLayout(nodes);
-    expect(layout.stages).toBe(2);
-    expect(layout.nodes[1].y).toBe(16);
-    expect(layout.nodes[2].y).toBe(76);
-  });
-
-  it("draws one edge per dependency and dashes the ones out of a failed node", () => {
-    const nodes = [
-      { node_key: "plan", deps: [], state: "failed", attempts: [] },
-      { node_key: "implement", deps: ["plan"], state: "pending", attempts: [] },
-    ];
-    const layout = planLayout(nodes);
-    expect(layout.edges).toHaveLength(1);
-    expect(layout.edges[0].dead).toBe(true);
-    expect(layout.edges[0].d).toBe("M166 38 H188 V38 H205");
-  });
-
-  it("points each box at the first step that ran it", () => {
-    const steps = stepsOf(LIVE_TASK);
-    const layout = planLayout(LIVE_TASK.nodes, steps);
-    expect(layout.nodes.map((box) => box.step)).toEqual([0, 1, 2, 3, 4, -1]);
-  });
-
-  it("returns an empty figure for an unplanned task", () => {
-    expect(planLayout([])).toEqual({
-      nodes: [],
-      edges: [],
-      width: 0,
-      height: 0,
-      stages: 0,
-    });
-  });
-
-  it("widens every box to the longest node key in the plan", () => {
-    const nodes = [
-      { node_key: "conductor_1", deps: [], state: "done", attempts: [] },
-      {
-        node_key: "implement_fix_probe_worker_destroy",
-        deps: ["conductor_1"],
-        state: "done",
-        attempts: [],
-      },
-    ];
-    const layout = planLayout(nodes);
-    expect(layout.nodes.map((box) => box.width)).toEqual([245, 245]);
-    expect(layout.nodes[1].label).toBe("implement_fix_probe_worker_destroy");
-    expect(layout.nodes[1].x).toBe(305);
-    expect(layout.width).toBe(566);
-  });
-
-  it("truncates a key too long for the widest box and keeps the key itself", () => {
-    const key = "implement".repeat(7);
-    const layout = planLayout([
-      { node_key: key, deps: [], state: "done", attempts: [] },
-    ]);
-    expect(key).toHaveLength(63);
-    expect(layout.nodes[0].width).toBe(300);
-    expect(layout.nodes[0].label).toHaveLength(42);
-    expect(layout.nodes[0].label.endsWith("\u2026")).toBe(true);
-    expect(layout.nodes[0].node.node_key).toBe(key);
-  });
-
-  it("does not recurse forever on a dependency cycle", () => {
-    const nodes = [
-      { node_key: "a", deps: ["b"], state: "done", attempts: [] },
-      { node_key: "b", deps: ["a"], state: "done", attempts: [] },
-    ];
-    expect(() => planLayout(nodes)).not.toThrow();
   });
 });
 
@@ -541,131 +486,154 @@ describe("clip", () => {
   });
 });
 
-describe("briefRuns", () => {
-  it("turns a markdown heading paragraph into one heading run", () => {
-    expect(briefRuns("## What happened")).toEqual([
-      { text: "What happened", heading: true },
-    ]);
-    expect(briefRuns("###### Fix")).toEqual([{ text: "Fix", heading: true }]);
-  });
+const DIFF = [
+  "diff --git a/one.py b/one.py",
+  "--- a/one.py",
+  "+++ b/one.py",
+  "@@ -1,2 +1,3 @@",
+  " keep",
+  "-gone",
+  "+new",
+  "+also added",
+  "diff --git a/two.py b/two.py",
+  "--- a/two.py",
+  "+++ b/two.py",
+  "@@ -1 +1 @@",
+  "-old",
+  "+fresh",
+].join("\n");
 
-  it("marks inline code spans", () => {
-    expect(
-      briefRuns("parked sessions count toward `session.maxSessions`"),
-    ).toEqual([
-      { text: "parked sessions count toward " },
-      { text: "session.maxSessions", code: true },
-    ]);
-  });
-
-  it("marks bold spans", () => {
-    expect(briefRuns("left their guests **parked** with no id")).toEqual([
-      { text: "left their guests " },
-      { text: "parked", strong: true },
-      { text: " with no id" },
-    ]);
-  });
-
-  it("leaves every other markdown as plain text", () => {
-    expect(briefRuns("a [link](x) and *one star* and # not a heading")).toEqual(
-      [{ text: "a [link](x) and *one star* and # not a heading" }],
-    );
-  });
-
-  it("returns nothing for an empty paragraph", () => {
-    expect(briefRuns("")).toEqual([]);
-    expect(briefRuns(null)).toEqual([]);
-  });
-});
-
-const DIFF = `diff --git a/one.py b/one.py
---- a/one.py
-+++ b/one.py
-@@ -1,2 +1,3 @@
- keep
--gone
-+added
-+also added
-diff --git a/two.py b/two.py
---- a/two.py
-+++ b/two.py
-@@ -1 +1 @@
--old
-+new
-`;
-
-describe("diffs", () => {
+describe("diffStat", () => {
   it("counts files, additions and deletions without the file headers", () => {
     expect(diffStat(DIFF)).toEqual({ files: 2, additions: 3, deletions: 2 });
     expect(diffStat(null)).toBeNull();
   });
+});
 
-  it("slices out one file's hunk by its post-image path", () => {
-    expect(hunkFor(DIFF, "two.py")).toContain("-old");
-    expect(hunkFor(DIFF, "two.py")).not.toContain("also added");
-    expect(hunkFor(DIFF, "missing.py")).toBeNull();
-    expect(hunkFor(null, "two.py")).toBeNull();
+describe("planStrip", () => {
+  it("lists every node in plan order with its attempts folded in", () => {
+    const steps = stepsOf(LIVE_TASK);
+    const strip = planStrip(LIVE_TASK, steps);
+    expect(strip.map((entry) => entry.number)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(strip[0]).toMatchObject({
+      step: 1,
+      attempts: 1,
+      cost: 0,
+      deps: [],
+    });
+    expect(strip[1].deps).toEqual(["plan"]);
+    // A node that has not run yet points at no step.
+    expect(strip[5].step).toBeNull();
   });
 
-  it("classifies lines as rows rather than markup", () => {
-    const rows = diffLines(DIFF);
-    expect(rows[0]).toEqual({
-      cls: "fn",
-      text: "diff --git a/one.py b/one.py",
+  it("sums an attempt's cost into its node", () => {
+    const task = {
+      nodes: [
+        {
+          node_key: "a",
+          attempts: [
+            { attempt: 1, cost_usd: 1.25 },
+            { attempt: 2, cost_usd: 0.5 },
+          ],
+        },
+      ],
+    };
+    expect(planStrip(task, stepsOf(task))[0]).toMatchObject({
+      attempts: 2,
+      cost: 1.75,
     });
-    expect(rows[1].cls).toBe("hd");
-    expect(rows[3].cls).toBe("hd");
-    expect(rows[4]).toEqual({ cls: "", text: " keep" });
-    expect(rows[5].cls).toBe("del");
-    expect(rows[6].cls).toBe("add");
-    expect(diffLines(null)).toEqual([]);
+    expect(planStrip(null)).toEqual([]);
+  });
+});
+
+describe("stopRows", () => {
+  it("orders events newest first and splits their stamps", () => {
+    const rows = stopRows({
+      stop_events: [
+        { at: "2026-09-11T08:00:00Z", action: "stop_settled", reason: null },
+        {
+          at: "2026-09-11T09:30:00Z",
+          action: "stop_observation",
+          reason: "lost_before_guest",
+          intervention_required: true,
+        },
+      ],
+    });
+    expect(rows).toEqual([
+      {
+        day: "2026-09-11",
+        clock: "09:30",
+        action: "stop_observation",
+        reason: "lost_before_guest",
+        person: true,
+      },
+      {
+        day: "2026-09-11",
+        clock: "08:00",
+        action: "stop_settled",
+        reason: "",
+        person: false,
+      },
+    ]);
+    expect(stopRows(null)).toEqual([]);
+  });
+});
+
+describe("stripRationale", () => {
+  it("drops the trailer the record parsed out, and only that", () => {
+    const raw = "RATIONALE\n- path: a.py · why: it";
+    expect(stripRationale(`Done.\n\n${raw}`, { raw })).toBe("Done.");
+    expect(stripRationale("Done.", { raw })).toBe("Done.");
+    expect(stripRationale("Done.", null)).toBe("Done.");
+    expect(stripRationale(null, null)).toBe("");
+  });
+});
+
+describe("toolLabel", () => {
+  it("puts an MCP tool's own name first and its server second", () => {
+    expect(toolLabel("mcp__agents__search_knowledge")).toBe(
+      "search_knowledge · agents",
+    );
+    expect(toolLabel("ToolSearch")).toBe("ToolSearch");
+    expect(toolLabel(null)).toBe("tool");
   });
 });
 
 describe("activityRow", () => {
-  it("opens an edit on the file's hunk", () => {
-    const row = activityRow({ type: "edit", file_path: "two.py" }, DIFF);
+  it("points an edit at its file", () => {
+    const row = activityRow({ type: "edit", file_path: "two.py" });
     expect(row.type).toBe("edit");
     expect(row.what).toBe("two.py");
-    expect(row.hunk).toContain("-old");
+    expect(row.path).toBe("two.py");
   });
 
   it("leaves a command with nothing to open", () => {
-    expect(activityRow({ type: "bash", command: "ci" }, DIFF)).toEqual({
+    expect(activityRow({ type: "bash", command: "ci" })).toEqual({
       type: "bash",
       what: "ci",
       short: "ci",
-      hunk: null,
+      path: null,
     });
   });
 
   it("labels a tool call as tool and names the tool in the value column", () => {
     expect(
-      activityRow(
-        { type: "tool_use", name: "Read", file_path: "one.py" },
-        DIFF,
-      ),
+      activityRow({ type: "tool_use", name: "Read", file_path: "one.py" }),
     ).toEqual({
       type: "tool",
       what: "Read one.py",
       short: "one.py",
-      hunk: null,
+      path: null,
     });
   });
 
   it("shortens a path to its last segment for the digest line", () => {
-    const row = activityRow(
-      { type: "edit", file_path: "projects/monolith/ember/probes/deliver.py" },
-      DIFF,
-    );
+    const row = activityRow({
+      type: "edit",
+      file_path: "projects/monolith/ember/probes/deliver.py",
+    });
     expect(row.short).toBe("deliver.py");
     expect(row.what).toBe("projects/monolith/ember/probes/deliver.py");
-  });
-
-  it("gives an edit outside the diff nothing to open", () => {
-    expect(
-      activityRow({ type: "edit", file_path: "elsewhere.py" }, DIFF).hunk,
-    ).toBeNull();
   });
 });
 
@@ -825,24 +793,27 @@ describe("sessionHref", () => {
 
 describe("activityRow labels", () => {
   it("labels a tool row as tool and names the tool once, in the value column", () => {
-    const row = activityRow({ type: "tool_use", name: "read_skill" }, null);
+    const row = activityRow({ type: "tool_use", name: "read_skill" });
     expect(row.type).toBe("tool");
     expect(row.what).toBe("read_skill");
+    expect(
+      activityRow({ type: "tool_use", name: "mcp__agents__report_knowledge" })
+        .what,
+    ).toBe("report_knowledge · agents");
   });
 
   it("keeps a tool's path beside its name", () => {
-    const row = activityRow(
-      { type: "tool_use", name: "Read", file_path: "a/b/c.py" },
-      null,
-    );
+    const row = activityRow({
+      type: "tool_use",
+      name: "Read",
+      file_path: "a/b/c.py",
+    });
     expect(row.what).toBe("Read a/b/c.py");
     expect(row.short).toBe("c.py");
   });
 
   it("says when a bash command was not recorded", () => {
-    expect(activityRow({ type: "bash" }, null).what).toBe(
-      "(command not recorded)",
-    );
-    expect(activityRow({ type: "bash", command: "ci" }, null).what).toBe("ci");
+    expect(activityRow({ type: "bash" }).what).toBe("(command not recorded)");
+    expect(activityRow({ type: "bash", command: "ci" }).what).toBe("ci");
   });
 });

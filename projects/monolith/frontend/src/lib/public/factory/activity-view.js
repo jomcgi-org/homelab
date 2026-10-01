@@ -1,9 +1,10 @@
 /**
  * Pure derivations for /slop/factory/activity, its task pages, and its session
  * records. Everything the three views need that is not markup lives here:
- * formatting against an explicit `now`, the state vocabulary, the plan layout,
- * and diff parsing. The Svelte components stay dumb, so every rule below is
- * testable without a DOM and without a clock.
+ * formatting against an explicit `now`, the state vocabulary, the plan strip,
+ * and the activity rows. Diffs parse in diff.js and markdown in markdown.js.
+ * The Svelte components stay dumb, so every rule below is testable without a
+ * DOM and without a clock.
  */
 
 // The factory records commits by SHA only, so the record has to name the repo
@@ -23,6 +24,9 @@ const TEXT_CLIP = 600;
 // shared one that would quietly accept the wrong word.
 const TASK_MARK = {
   "in flight": "running live",
+  // A landing task is still live: its PR is enqueued and the lane holds the
+  // slot until the merge settles, so it breathes like a running one.
+  landing: "running live",
   uncertain: "uncertain",
   landed: "landed",
   failed: "failed",
@@ -40,21 +44,8 @@ const NODE_WORD = {
   retired: "retired",
 };
 
-// Plan figure geometry, in the SVG's own user units. The figure is drawn at one
-// unit per pixel, so a box is as wide as the longest node key needs at 11px
-// mono, and a column gap is wide enough for an elbow and its arrowhead.
-const NODE_MIN_WIDTH = 150;
-const NODE_MAX_WIDTH = 300;
-// 11px mono advances about 6.6 units per character, and the label sits in a
-// 10-unit gutter on each side of the box.
-const CHAR_WIDTH = 6.6;
-const NODE_PAD = 20;
-const NODE_HEIGHT = 44;
-const COLUMN_GAP = 44;
-const ROW_GAP = 16;
-const FIGURE_PAD = 16;
-const ARROW_LENGTH = 6;
-const ARROW_HALF_HEIGHT = 4;
+/** A task is live while the lane still holds its slot. */
+export const LIVE_STATES = new Set(["in flight", "landing", "uncertain"]);
 
 export function commitUrl(sha) {
   return sha ? `${REPO}/commit/${sha}` : null;
@@ -64,9 +55,11 @@ export function money(value) {
   return `$${(Number(value) || 0).toFixed(2)}`;
 }
 
-/** Token counts are read at a glance, so thousands collapse to one decimal. */
+/** Token counts are read at a glance, so thousands and millions collapse to
+ * one decimal. */
 export function tokens(value) {
   const count = Number(value) || 0;
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
   return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
 }
 
@@ -211,55 +204,57 @@ export function groupByDay(tasks) {
 /** The second line of a ledger row: where the task is, in one clause each. */
 export function ledgerMeta(task, policy, now) {
   const rounds = plural(reviewRounds(task), "review round");
+  const pr = task.pr ? `PR #${task.pr.number}` : null;
   if (task.state === "queued") {
-    return `queued · waits for a slot, ${plural(policy?.max_tasks ?? 0, "task")} at a time`;
+    return `queued · ${plural(policy?.max_tasks ?? 0, "slot")}`;
   }
   if (task.state === "in flight" || task.state === "uncertain") {
-    return `${task.state} · at ${task.phase} · deadline ${relative(task.deadline_at, now)}`;
+    return `${task.state} · ${task.phase} · ${relative(task.deadline_at, now)}`;
+  }
+  if (task.state === "landing") {
+    return [`landing`, pr && `${pr} ${task.pr.state}`, rounds]
+      .filter(Boolean)
+      .join(" · ");
   }
   if (task.state === "landed") {
-    return `landed · PR #${task.pr?.number ?? "?"} merged · ${rounds}`;
+    return [`landed`, pr && `${pr} merged`, rounds].filter(Boolean).join(" · ");
   }
   if (task.state === "failed") {
-    return `escalated · waits for a person · ${rounds}`;
+    return `escalated · ${rounds}`;
   }
-  return `cancelled by an operator · ${rounds}`;
+  return `cancelled · ${rounds}`;
 }
 
 /**
- * The task's verdict as a sentence, in pieces the view can render: plain text,
- * a link, an inline code span, or a link to one of the steps below it. Building
- * it here rather than in the template keeps the wording in one place and under
- * test.
+ * The task's verdict in pieces the view can render: plain text, a link, an
+ * inline code span, or a link to one of the steps below it. The words are the
+ * record's own (an evidence reason, a stop reason) wherever it has them.
  */
 export function outcome(task, policy, now, runningStep = -1) {
   const rounds = plural(reviewRounds(task), "review round");
   const mark = taskMark(task.state);
+  const prLink = task.pr
+    ? [{ text: "PR " }, { text: `#${task.pr.number}`, href: task.pr.url }]
+    : [];
   if (task.state === "landed") {
     return {
       tone: "landed",
       headline: "landed",
       mark,
       parts: [
-        { text: "PR " },
-        { text: `#${task.pr?.number ?? "?"}`, href: task.pr?.url },
+        ...prLink,
         {
-          text: ` merged to main after ${rounds}, ${duration(task.admitted_at, task.finished_at)} from admission.`,
+          text: `${task.pr ? " merged · " : ""}${rounds} · ${duration(task.admitted_at, task.finished_at)}`,
         },
       ],
     };
   }
   if (task.state === "failed") {
-    const reason = task.evidence_reason ? `${task.evidence_reason}. ` : "";
     return {
       tone: "failed",
       headline: "escalated",
       mark,
-      parts: [
-        {
-          text: `${reason}The lane did not retry: an escalation asks for a person, so the task waits for one.`,
-        },
-      ],
+      parts: [{ text: task.evidence_reason || "Waits for a person." }],
     };
   }
   if (task.state === "cancelled") {
@@ -269,7 +264,10 @@ export function outcome(task, policy, now, runningStep = -1) {
       mark,
       parts: [
         {
-          text: task.stop_events?.[0]?.reason ?? "Cancelled by an operator.",
+          text:
+            task.evidence_reason ||
+            task.stop_events?.[0]?.reason ||
+            "Cancelled by an operator.",
         },
       ],
     };
@@ -281,7 +279,7 @@ export function outcome(task, policy, now, runningStep = -1) {
       mark,
       parts: [
         {
-          text: `Waiting for a slot. The lane runs ${plural(policy?.max_tasks ?? 0, "task")} at a time; the conductor plans once one opens.`,
+          text: `Waits for a slot · ${plural(policy?.max_tasks ?? 0, "slot")}`,
         },
       ],
     };
@@ -292,13 +290,26 @@ export function outcome(task, policy, now, runningStep = -1) {
       headline: "uncertain",
       mark,
       parts: [
+        { text: "Outcome unknown at " },
+        { text: task.phase, code: true },
+        { text: " · holds its slot until reconciled" },
+      ],
+    };
+  }
+  if (task.state === "landing") {
+    return {
+      tone: "live",
+      headline: "landing",
+      mark,
+      parts: [
+        ...prLink,
         {
-          text: `An attempt at ${task.phase} has an unknown outcome. It keeps its whole reservation until someone reconciles it; nothing else starts on this task meanwhile.`,
+          text: `${task.pr ? ` ${task.pr.state} · ` : ""}${rounds} · ${relative(task.deadline_at, now)}`,
         },
       ],
     };
   }
-  const parts = [{ text: "Now at " }, { text: task.phase, code: true }];
+  const parts = [{ text: "At " }, { text: task.phase, code: true }];
   if (runningStep >= 0) {
     parts.push(
       { text: " (" },
@@ -307,14 +318,10 @@ export function outcome(task, policy, now, runningStep = -1) {
     );
   }
   if (task.pr) {
-    parts.push(
-      { text: ", draft PR " },
-      { text: `#${task.pr.number}`, href: task.pr.url },
-      { text: " open" },
-    );
+    parts.push({ text: " · " }, ...prLink, { text: ` ${task.pr.state}` });
   }
   parts.push({
-    text: `. ${task.turns_used} of ${task.allowance_turns} starts used, ${relative(task.deadline_at, now)} on the deadline.`,
+    text: ` · ${task.turns_used} of ${task.allowance_turns} starts · ${relative(task.deadline_at, now)}`,
   });
   return { tone: "live", headline: "in flight", mark, parts };
 }
@@ -401,137 +408,66 @@ export function clip(text, limit = TEXT_CLIP) {
   return { head: full.slice(0, cut), rest: full.slice(cut), clipped: true };
 }
 
-// The brief is a GitHub issue body, so it arrives as markdown. Exactly three
-// things earn a run and nothing else is interpreted: the rest of the markdown
-// is rarer here than the damage a half-built renderer would do.
-const HEADING = /^#{1,6}\s+(.+)$/;
-const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*/g;
-
 /**
- * One paragraph of the brief as runs the view paints: plain text, an inline
- * code span, bold, or the whole paragraph as a heading. Runs, never HTML: the
- * issue body is other people's text and must not reach the page as markup.
+ * The plan as a strip of nodes in the order the engine applied them, one
+ * entry per node with its attempts folded in. A DAG figure was tried here and
+ * dropped: real plans are chains of conductor turns with no declared
+ * dependencies, which laid out as one tall column of boxes. The dependencies
+ * that do exist are named on the entry instead.
  */
-export function briefRuns(paragraph) {
-  const text = (paragraph ?? "").trim();
-  if (!text) return [];
-  const heading = HEADING.exec(text);
-  if (heading) return [{ text: heading[1].trim(), heading: true }];
-  const runs = [];
-  let at = 0;
-  for (const match of text.matchAll(INLINE)) {
-    if (match.index > at) runs.push({ text: text.slice(at, match.index) });
-    if (match[1] != null) runs.push({ text: match[1], code: true });
-    else runs.push({ text: match[2], strong: true });
-    at = match.index + match[0].length;
-  }
-  if (at < text.length) runs.push({ text: text.slice(at) });
-  return runs;
-}
-
-/**
- * One width for every box in the figure, wide enough for the longest node key
- * it has to hold. Every box gets it, not just the long one: ragged columns
- * would read as a hierarchy the plan does not have.
- */
-function boxWidthFor(nodes) {
-  const longest = Math.max(
-    0,
-    ...nodes.map((node) => (node.node_key ?? "").length),
-  );
-  const wanted = Math.ceil(NODE_PAD + longest * CHAR_WIDTH);
-  return Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, wanted));
-}
-
-/**
- * The label a box of this width can hold. A key longer than the widest box is
- * cut to one ellipsis; the full key stays on the box for the view to title.
- */
-function fitLabel(key, boxWidth) {
-  const text = key ?? "";
-  const budget = Math.floor((boxWidth - NODE_PAD) / CHAR_WIDTH);
-  if (text.length <= budget) return text;
-  return `${text.slice(0, Math.max(0, budget - 1))}…`;
-}
-
-/**
- * Rank each node one past its deepest dependency, then lay the ranks out as
- * columns left to right. Returns absolute geometry so the figure is a `each`
- * over boxes and paths rather than a script inside the template.
- */
-export function planLayout(nodes = [], steps = []) {
-  if (!nodes.length) {
-    return { nodes: [], edges: [], width: 0, height: 0, stages: 0 };
-  }
-  const ranks = new Map();
-  const parentsOf = (node) =>
-    (node.deps ?? []).flatMap((key) =>
-      nodes.filter((candidate) => candidate.node_key === key),
-    );
-  const rankOf = (node, seen = new Set()) => {
-    if (ranks.has(node)) return ranks.get(node);
-    // A dependency cycle would otherwise recurse forever. The conductor does
-    // not emit one, but the figure must not be the thing that finds out.
-    if (seen.has(node)) return 0;
-    seen.add(node);
-    const parents = parentsOf(node);
-    const rank = parents.length
-      ? 1 + Math.max(...parents.map((parent) => rankOf(parent, seen)))
-      : 0;
-    ranks.set(node, rank);
-    return rank;
-  };
-  nodes.forEach((node) => rankOf(node));
-
-  const columns = new Map();
-  for (const node of nodes) {
-    const rank = ranks.get(node);
-    if (!columns.has(rank)) columns.set(rank, []);
-    columns.get(rank).push(node);
-  }
-  const stages = columns.size;
-  const tallest = Math.max(...[...columns.values()].map((c) => c.length));
-  const nodeWidth = boxWidthFor(nodes);
-  const width = FIGURE_PAD * 2 + stages * nodeWidth + (stages - 1) * COLUMN_GAP;
-  const height =
-    FIGURE_PAD * 2 + tallest * NODE_HEIGHT + (tallest - 1) * ROW_GAP;
-
-  const placed = new Map();
-  const laid = nodes.map((node, index) => {
-    const rank = ranks.get(node);
-    const row = columns.get(rank).indexOf(node);
-    const box = {
-      node,
-      index,
+export function planStrip(task, steps = []) {
+  return (task?.nodes ?? []).map((node, index) => {
+    const attempts = node.attempts ?? [];
+    const first = steps.findIndex((step) => step.node === node);
+    return {
       number: index + 1,
-      label: fitLabel(node.node_key, nodeWidth),
-      x: FIGURE_PAD + rank * (nodeWidth + COLUMN_GAP),
-      y: FIGURE_PAD + row * (NODE_HEIGHT + ROW_GAP),
-      width: nodeWidth,
-      height: NODE_HEIGHT,
-      step: steps.findIndex((step) => step.node === node),
+      node,
+      step: first >= 0 ? first + 1 : null,
+      attempts: attempts.length,
+      cost: attempts.reduce(
+        (sum, attempt) => sum + (Number(attempt.cost_usd) || 0),
+        0,
+      ),
+      deps: node.deps ?? [],
     };
-    placed.set(node, box);
-    return box;
   });
+}
 
-  const edges = [];
-  for (const box of laid) {
-    for (const parent of parentsOf(box.node)) {
-      const from = placed.get(parent);
-      const x1 = from.x + nodeWidth;
-      const y1 = from.y + NODE_HEIGHT / 2;
-      const x2 = box.x;
-      const y2 = box.y + NODE_HEIGHT / 2;
-      const elbow = x1 + COLUMN_GAP / 2;
-      edges.push({
-        d: `M${x1} ${y1} H${elbow} V${y2} H${x2 - 5}`,
-        arrow: `M${x2 - ARROW_LENGTH} ${y2 - ARROW_HALF_HEIGHT} L${x2} ${y2} L${x2 - ARROW_LENGTH} ${y2 + ARROW_HALF_HEIGHT} Z`,
-        dead: parent.state === "failed",
-      });
-    }
-  }
-  return { nodes: laid, edges, width, height, stages };
+/** Stop events newest first, with their stamps split for a table. */
+export function stopRows(task) {
+  return [...(task?.stop_events ?? [])]
+    .sort(
+      (a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime(),
+    )
+    .map((event) => ({
+      day: isoDay(event.at),
+      clock: isoClock(event.at),
+      action: event.action ?? "",
+      reason: event.reason ?? "",
+      person: Boolean(event.intervention_required),
+    }));
+}
+
+/**
+ * A reply without its rationale trailer, when the record parsed one out: the
+ * trailer is shown as its own block, so the reply must not carry it twice.
+ */
+export function stripRationale(text, rationale) {
+  const body = text ?? "";
+  const raw = rationale?.raw;
+  if (!raw || !body.endsWith(raw)) return body;
+  return body.slice(0, body.length - raw.length).replace(/\s+$/, "");
+}
+
+// The shim names MCP tools server__tool; the reader wants the tool and, in
+// second place, where it lives.
+const MCP_TOOL = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/;
+
+/** A tool name as a reader says it. */
+export function toolLabel(name) {
+  const text = name ?? "tool";
+  const mcp = MCP_TOOL.exec(text);
+  return mcp ? `${mcp[2]} · ${mcp[1]}` : text;
 }
 
 /** files, additions and deletions from a unified diff, or null for no diff. */
@@ -547,34 +483,6 @@ export function diffStat(diff) {
     else if (line.startsWith("-")) deletions += 1;
   }
   return { files, additions, deletions };
-}
-
-/** The one file's slice of a multi-file diff, matched on its post-image path. */
-export function hunkFor(diff, path) {
-  if (!diff || !path) return null;
-  const parts = diff.split(/(?=^diff --git )/m);
-  return parts.find((part) => part.includes(` b/${path}`)) ?? null;
-}
-
-/**
- * Classify a diff into rows the view paints. Rows, never HTML: the diff is
- * worker output, so it must never be able to reach the page as markup.
- */
-export function diffLines(diff) {
-  if (!diff) return [];
-  return diff.split("\n").map((text) => {
-    if (text.startsWith("diff --git")) return { cls: "fn", text };
-    if (
-      text.startsWith("+++") ||
-      text.startsWith("---") ||
-      text.startsWith("@@")
-    ) {
-      return { cls: "hd", text };
-    }
-    if (text.startsWith("+")) return { cls: "add", text };
-    if (text.startsWith("-")) return { cls: "del", text };
-    return { cls: "", text };
-  });
 }
 
 // The Codex runtime does not record the command a worker asked for. It records
@@ -609,11 +517,11 @@ export function prettyCommand(command) {
 }
 
 /**
- * One activity row. An edit or a write points at a file, so it can open that
- * file's hunk out of the turn diff; a command or a tool call has nothing to
- * open and stays a plain row.
+ * One activity row. An edit or a write points at a file, which the view can
+ * open out of the turn diff; a command or a tool call has nothing to open and
+ * stays a plain row.
  */
-export function activityRow(activity, diff) {
+export function activityRow(activity) {
   // A tool row is labelled "tool" and names the tool in the value column; the
   // name used to sit in both columns, where a long one overran the label's
   // fixed width and collided with itself. A bash row the shim recorded without
@@ -625,7 +533,7 @@ export function activityRow(activity, diff) {
       : (activity.file_path ?? null);
   const what =
     activity.type === "tool_use"
-      ? [activity.name ?? "tool", detail].filter(Boolean).join(" ")
+      ? [toolLabel(activity.name), detail].filter(Boolean).join(" ")
       : (detail ?? "(command not recorded)");
   // The turn digest has one line for every activity, so a path there is its
   // last segment; the full path stays on the row itself and in the title.
@@ -633,8 +541,12 @@ export function activityRow(activity, diff) {
     ? activity.file_path.split("/").filter(Boolean).pop() || what
     : what;
   const opens = activity.type === "edit" || activity.type === "write";
-  const hunk = opens ? hunkFor(diff, activity.file_path) : null;
-  return { type, what, short, hunk };
+  return {
+    type,
+    what,
+    short,
+    path: opens ? (activity.file_path ?? null) : null,
+  };
 }
 
 // The digest on the task page names kinds in the vocabulary the rows already
@@ -687,7 +599,7 @@ export function activitySummary(activities, limit = DIGEST_ROWS) {
     .map(([kind, count]) => ({ kind, count }))
     .sort((a, b) => rank(a.kind) - rank(b.kind));
   const shown = all.slice(0, Math.max(0, limit)).map((activity) => {
-    const row = activityRow(activity, null);
+    const row = activityRow(activity);
     return { type: row.type, text: oneLine(row.short), title: row.what };
   });
   return { counts, shown, hidden: all.length - shown.length };
