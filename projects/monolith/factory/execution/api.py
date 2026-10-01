@@ -96,6 +96,20 @@ def settle_response_lost_hold(
     )
 
 
+def response_lost_drain_evidence(hold: dict, view) -> dict | None:
+    """Exact proof that a drain, not a lost callback, ended a held invoke."""
+    from factory.execution import store
+
+    return store.response_lost_drain_evidence(hold, view)
+
+
+def relay_response_lost_drain(session_id: int, expected_hold: dict, evidence: dict):
+    """Resume a held turn a drain interrupted through the #6256 relay."""
+    from factory.execution import store
+
+    return store.relay_response_lost_drain_sync(session_id, expected_hold, evidence)
+
+
 def __getattr__(name: str):
     if name not in _EXECUTION_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

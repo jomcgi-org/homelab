@@ -153,6 +153,13 @@ agents:
     # Requires resultReceiptsEnabled: without a receipt there is nothing to
     # recover and the hold would only delay the same unknown outcome.
     responseLostRecoveryEnabled: false
+    # Resume, rather than settle, a held turn whose guest a brick drain
+    # interrupted on exactly this dispatch (the guest parked with an
+    # interrupted_turn naming it). The live node workflow turns the hold into
+    # the #6256 drain relay and the same guest resumes its CLI session.
+    # Requires responseLostRecoveryEnabled and, for factory nodes,
+    # swarm.factoryDrainRelayContinuationEnabled.
+    responseLostDrainRelayEnabled: false
     # Settle a non-factory permit when the invoke failed with the guest's own
     # 4xx/5xx answer, which EmberVM marks with x-ember-invoke-outcome:
     # guest_response. The turn ended inside the guest, so nothing is still
