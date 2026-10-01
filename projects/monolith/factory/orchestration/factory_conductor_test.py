@@ -9192,16 +9192,10 @@ def test_plan_clamps_cost_and_audits_the_applied_node(feedback_db):
 
     with Session(feedback_db) as db:
         calls = db.exec(
-            select(SwarmConductorCall).where(
-                SwarmConductorCall.tool == "apply_edits"
-            )
+            select(SwarmConductorCall).where(SwarmConductorCall.tool == "apply_edits")
         ).all()
     assert calls, "expected an apply_edits call for the clamped plan"
-    recorded = [
-        edit
-        for call in calls
-        for edit in json.loads(call.args_json)["edits"]
-    ]
+    recorded = [edit for call in calls for edit in json.loads(call.args_json)["edits"]]
     assert recorded
     assert all("cost_clamped" not in edit for edit in recorded)
 
