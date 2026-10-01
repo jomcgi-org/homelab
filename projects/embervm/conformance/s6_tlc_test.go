@@ -38,6 +38,7 @@ func mustS6TLCTestConfig(t *testing.T) config {
 		tlcSpecDir:     filepath.Dir(spec),
 	}
 }
+
 func TestS6TLCPassWindowEndToEnd(t *testing.T) {
 	cfg := mustS6TLCTestConfig(t)
 	records := s6TLCPassWindow()
