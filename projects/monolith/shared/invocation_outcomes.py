@@ -75,3 +75,48 @@ def parked_invocation_candidate(observed) -> bool:
         and type(updated) is int
         and updated >= started
     )
+
+
+def never_invoked_view(observed, guest_id) -> bool:
+    """Whether the control plane shows this exact guest never ran an invoke.
+
+    EmberVM stamps ``invoke_started_at`` and increments ``turn_seq`` in one
+    durable write before any invoke runs and never clears either, so
+    ``turn_seq`` 0 with no invoke stamp, interruption or stop record names a
+    guest that has never run a model turn in any generation. Remote evidence
+    only: a caller must pair it with local proof that no POST was ever sent.
+    Mirrors factory supervision's ``_never_invoked_guest_cessation`` (#6553).
+    """
+    required = {
+        "session_id",
+        "generation",
+        "turn_seq",
+        "created_at",
+        "invoke_started_at",
+        "last_invoke_at",
+        "interrupted_turn",
+        "stop_intent",
+        "stop_completion",
+    }
+    return bool(
+        isinstance(observed, dict)
+        and required.issubset(observed)
+        and observed["session_id"] == guest_id
+        and type(observed["turn_seq"]) is int
+        and observed["turn_seq"] == 0
+        and type(observed["generation"]) is int
+        and observed["generation"] >= 0
+        and type(observed["created_at"]) is int
+        and observed["created_at"] >= 1
+        and all(
+            observed[key] is None
+            for key in (
+                "invoke_started_at",
+                "last_invoke_at",
+                "interrupted_turn",
+                "stop_intent",
+                "stop_completion",
+            )
+        )
+        and observed.get("stop_precondition") is None
+    )

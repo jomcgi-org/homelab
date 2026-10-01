@@ -30,7 +30,7 @@ from factory.execution.models import (
     ProbeObservation,
 )
 from core.db import get_engine
-from shared.invocation_outcomes import terminal_dispatch_cessation
+from shared.invocation_outcomes import never_invoked_view, terminal_dispatch_cessation
 from factory.orchestration.factory_models import FactoryStart
 from factory.orchestration.models import SwarmNodeRun
 
@@ -100,20 +100,17 @@ def _never_invoked_live_guest(db, permit, agent, turn, observed, guest_id):
     the guest happened to be evicted. #6553 closed this for factory attempts;
     this is the same proof for kg, project and interactive permits.
     """
+    if not _general_enabled() or not _never_invoked_enabled():
+        return False
     from factory.execution import result_receipts
     from factory.execution.models import AgentResultReceipt
-    from factory.orchestration.factory_supervision import (
-        _never_invoked_guest_cessation,
-    )
 
     if (
-        not _general_enabled()
-        or not _never_invoked_enabled()
-        or not result_receipts.enabled()
+        not result_receipts.enabled()
         or permit.outcome not in _NO_GUEST_OUTCOMES
         or not isinstance(observed, dict)
         or observed.get("state") not in {"parked", "banked"}
-        or _never_invoked_guest_cessation(observed, {"guest_id": guest_id}) is None
+        or not never_invoked_view(observed, guest_id)
         or agent.ember_session_id != guest_id
         or agent.result_receipt_fence_id is not None
         or _now() - _aware(turn.created_at)
