@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "projects/embervm/runtimes/claude/apko.yaml",
-    "checksum": "sha256-lJ9nEiAsJXUi2+2pjaAeZ7c8rWHAH79sGxfVEQk5QCw="
+    "checksum": "sha256-bpjoDBHCi9LJrKcHxhGovk78QjhByRWcFSXKwFpD7Lk="
   },
   "contents": {
     "keyring": [
@@ -1144,23 +1144,23 @@
         "checksum": "Q1AquTdXIA4kp/y7M6zw3FDkfcg5c="
       },
       {
-        "name": "pnpm-11.8",
-        "url": "https://packages.wolfi.dev/os/x86_64/pnpm-11.8-11.8.0-r4.apk",
-        "version": "11.8.0-r4",
+        "name": "pnpm",
+        "url": "https://packages.wolfi.dev/os/x86_64/pnpm-10.33.1-r0.apk",
+        "version": "10.33.1-r0",
         "architecture": "x86_64",
         "signature": {
           "range": "",
           "checksum": ""
         },
         "control": {
-          "range": "bytes=0-5741",
-          "checksum": "sha1-F49gEtMEaWfJD4FNeL4nB3sJpes="
+          "range": "bytes=0-5121",
+          "checksum": "sha1-DXCDbstJN+zN/htiE6Oo40x1AoE="
         },
         "data": {
-          "range": "bytes=5742-8764322",
-          "checksum": "sha256-G/P9t+JI6hskH9pI4qwpG4Gkcveh4RhtdMX60WF+JLk="
+          "range": "bytes=5122-2039644",
+          "checksum": "sha256-/ZU64fxRGaZ3rNIdgBcQp8aefTlrwAOVxSu2DkXloh4="
         },
-        "checksum": "Q1F49gEtMEaWfJD4FNeL4nB3sJpes="
+        "checksum": "Q1DXCDbstJN+zN/htiE6Oo40x1AoE="
       },
       {
         "name": "mpdecimal",

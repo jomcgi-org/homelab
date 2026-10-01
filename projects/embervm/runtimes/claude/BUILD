@@ -238,6 +238,25 @@ py_test(
     ],
 )
 
+# Guard (#6642): the factory toolchains (helm 3, go, node, pnpm, pytest) in
+# apko.yaml, their lock resolution, the lock checksum, and guest-init's forced
+# PATH that makes them reachable. Reads guest-init's main.go for the PATH literal.
+# Hand-registered: gazelle does not generate py_test here.
+py_test(
+    name = "toolchain_guard_test",
+    srcs = ["toolchain_guard_test.py"],
+    data = [
+        "apko.lock.json",
+        "apko.yaml",
+        "//projects/embervm/runtimes/claude/guest-init/cmd:guest_init_source",
+    ],
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
