@@ -10,7 +10,10 @@ list in apko.yaml, and it has three ways to rot silently:
   * apko.yaml is edited without a relock, so the image build resolves the OLD
     lock, or the lock is hand-edited and drops a tool;
   * guest-init's forced PATH loses /usr/bin, and every tool above is installed
-    there but unreachable from a session.
+    there but unreachable from a session;
+  * the repo moves past the streams the guest ships (go.mod's go directive,
+    MODULE.bazel's node and pnpm), so apko.yaml's "matches the repo" rationale
+    goes false and, for go, GOTOOLCHAIN=auto downloads a toolchain on first use.
 
 Every expected value below is a literal, deliberately NOT read back from the file
 under test: a guard that derives its expectation from the thing it guards passes
@@ -75,6 +78,13 @@ def _repo_path(*parts: str) -> Path:
 APKO_YAML = "projects/embervm/runtimes/claude/apko.yaml"
 APKO_LOCK = "projects/embervm/runtimes/claude/apko.lock.json"
 GUEST_INIT_MAIN = "projects/embervm/runtimes/claude/guest-init/cmd/main.go"
+GO_MOD = "go.mod"
+MODULE_BAZEL = "MODULE.bazel"
+
+GO_DIRECTIVE = re.compile(r"^go\s+(\S+)\s*$", re.MULTILINE)
+GO_TOOLCHAIN_DIRECTIVE = re.compile(r"^toolchain\s+(\S+)\s*$", re.MULTILINE)
+NODE_VERSION = re.compile(r'node\.toolchain\([^)]*node_version\s*=\s*"([^"]+)"')
+PNPM_VERSION = re.compile(r'pnpm\.pnpm\([^)]*pnpm_version\s*=\s*"([^"]+)"')
 
 
 def _packages() -> list[str]:
@@ -143,4 +153,37 @@ def test_guest_init_forced_path_contains_usr_bin():
     assert match, "guest-init no longer sets PATH in setDefaultEnv"
     assert "/usr/bin" in match.group(1).split(":"), (
         f"guest-init PATH is {match.group(1)!r}; the toolchains live in /usr/bin"
+    )
+
+
+def test_go_mod_stays_within_the_shipped_go_stream():
+    """The guest ships go-1.26. A go.mod that moves past it (or adds a newer
+    `toolchain` line) makes Wolfi's GOTOOLCHAIN=auto download a toolchain on the
+    first go command of every session, the bootstrap #6642 removes."""
+    source = _repo_path(GO_MOD).read_text()
+    directive = GO_DIRECTIVE.search(source)
+    assert directive, "go.mod has no go directive"
+    assert directive.group(1).startswith("1.26."), (
+        f"go.mod says go {directive.group(1)}; the guest ships go-1.26. Bump "
+        "`go-1.26` in apko.yaml (and relock) in the same change."
+    )
+    toolchain = GO_TOOLCHAIN_DIRECTIVE.search(source)
+    assert toolchain is None or toolchain.group(1).startswith("go1.26."), (
+        f"go.mod toolchain line is {toolchain.group(1) if toolchain else None!r}; "
+        "the guest ships go-1.26"
+    )
+
+
+def test_module_bazel_node_and_pnpm_match_the_shipped_streams():
+    """apko.yaml ships nodejs-20 and pnpm~10 because MODULE.bazel pins those."""
+    source = _repo_path(MODULE_BAZEL).read_text()
+    node = NODE_VERSION.search(source)
+    assert node, "MODULE.bazel has no node.toolchain(node_version = ...)"
+    assert node.group(1).startswith("20."), (
+        f"MODULE.bazel node_version is {node.group(1)}; the guest ships nodejs-20"
+    )
+    pnpm = PNPM_VERSION.search(source)
+    assert pnpm, "MODULE.bazel has no pnpm.pnpm(pnpm_version = ...)"
+    assert pnpm.group(1).startswith("10."), (
+        f"MODULE.bazel pnpm_version is {pnpm.group(1)}; the guest ships pnpm~10"
     )
