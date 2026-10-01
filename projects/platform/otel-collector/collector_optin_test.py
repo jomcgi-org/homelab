@@ -614,6 +614,7 @@ def test_httpcheck_ca_checksum_annotation_moves_with_the_mount():
     "extra",
     [
         pytest.param([], id="empty-allowlist"),
+        pytest.param(["--set", "loom.enabled=true"], id="loom-enabled"),
         pytest.param(["--set", "allowedServices[0]=monolith"], id="one-service"),
         pytest.param(
             ["--set", "allowedServices[0]=a", "--set", "allowedServices[1]=b"],
@@ -626,6 +627,196 @@ def test_every_pipeline_references_only_defined_components(extra):
     an ArgoCD-green CrashLoop rather than a render failure."""
     config = _collector_config(_render(extra))
     _assert_pipelines_reference_defined_components(config)
+
+
+@pytest.mark.parametrize("values_name", ["values", "values-prod", "values-gke"])
+def test_loom_is_default_off_in_every_overlay(values_name):
+    docs = _render_overlay(values_name)
+    assert yaml.safe_load(_values("values").read_text())["loom"]["enabled"] is False
+    targets = (
+        (_collector_config(docs).get("receivers") or {})
+        .get("http_check", {})
+        .get("targets", [])
+    )
+    assert not any("loom" in target["endpoint"] for target in targets)
+    assert not any(d["kind"] in ("CronJob", "Role", "RoleBinding") for d in docs)
+    assert not any("loom" in d["metadata"]["name"] for d in docs)
+
+
+def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
+    docs = _render_overlay("values-gke", ["--set", "loom.enabled=true"])
+    config = _collector_config(docs)
+    assert config["receivers"]["http_check"]["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://jomcgi.dev/", "method": "GET"},
+        {
+            "endpoint": "https://argocd-server.argocd.svc:443/healthz",
+            "method": "GET",
+            "tls": {"ca_file": ARGOCD_CA_MOUNT_PATH},
+        },
+        {"endpoint": "http://loom-query-api.loom.svc:8080/docs", "method": "GET"},
+    ]
+    name = "otel-collector-loom-backup"
+    resources = {d["kind"]: d for d in docs if d["metadata"]["name"] == name}
+    assert set(resources) == {
+        "CronJob",
+        "ServiceAccount",
+        "Role",
+        "RoleBinding",
+        "ConfigMap",
+    }
+    for kind, doc in resources.items():
+        assert doc["metadata"]["namespace"] == (
+            "loom" if kind in ("Role", "RoleBinding") else RELEASE
+        )
+    assert resources["Role"]["rules"] == [
+        {
+            "apiGroups": ["postgresql.cnpg.io"],
+            "resources": ["clusters"],
+            "resourceNames": ["loom-pg"],
+            "verbs": ["get"],
+        }
+    ]
+    cron = resources["CronJob"]["spec"]
+    assert cron["schedule"] == "*/30 * * * *"
+    assert cron["concurrencyPolicy"] == "Forbid"
+    assert cron["startingDeadlineSeconds"] == 300
+    assert cron["successfulJobsHistoryLimit"] == 1
+    assert cron["failedJobsHistoryLimit"] == 2
+    job = cron["jobTemplate"]["spec"]
+    assert job["activeDeadlineSeconds"] == 120
+    assert job["ttlSecondsAfterFinished"] == 3600
+    assert job["backoffLimit"] == 0
+    pod = job["template"]["spec"]
+    assert pod["restartPolicy"] == "Never"
+    assert pod["serviceAccountName"] == name
+    assert resources["RoleBinding"]["subjects"] == [
+        {
+            "kind": "ServiceAccount",
+            "name": pod["serviceAccountName"],
+            "namespace": RELEASE,
+        }
+    ]
+    assert resources["RoleBinding"]["roleRef"] == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": name,
+    }
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 65532,
+        "runAsGroup": 65532,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    (container,) = pod["containers"]
+    assert container["securityContext"] == {
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+    assert container["resources"] == {
+        "requests": {"cpu": "10m", "memory": "32Mi"},
+        "limits": {"memory": "32Mi"},
+    }
+    assert (
+        container["image"]
+        == "cgr.dev/chainguard/python@sha256:125969103add9ace8bdbad31acbb07d2e5740e065312688534f0c666a181b987"
+    )
+    service = _of_kind(docs, "Service")
+    assert {
+        "name": "otlp-http",
+        "port": 4318,
+        "targetPort": "otlp-http",
+        "protocol": "TCP",
+    } in service["spec"]["ports"]
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env == {
+        "CNPG_NAMESPACE": "loom",
+        "CNPG_CLUSTER": "loom-pg",
+        "OTLP_METRICS_ENDPOINT": f"http://{service['metadata']['name']}.{service['metadata']['namespace']}.svc:4318/v1/metrics",
+    }
+    assert container["command"] == ["/usr/bin/python", "-B", "/check/backup_check.py"]
+    assert container["volumeMounts"] == [
+        {"name": "script", "mountPath": "/check", "readOnly": True}
+    ]
+    assert pod["volumes"] == [{"name": "script", "configMap": {"name": name}}]
+    assert resources["ConfigMap"]["data"] == {
+        "backup_check.py": (_chart_dir() / "files/backup_check.py").read_text()
+    }
+    _assert_pipelines_reference_defined_components(config)
+
+
+def test_loom_endpoint_can_switch_to_healthz():
+    endpoint = "http://loom-query-api.loom.svc:8080/healthz"
+    config = _collector_config(
+        _render_overlay(
+            "values-gke",
+            [
+                "--set",
+                "loom.enabled=true",
+                "--set",
+                f"loom.probeEndpoint={endpoint}",
+            ],
+        )
+    )
+    assert config["receivers"]["http_check"]["targets"][-1] == {
+        "endpoint": endpoint,
+        "method": "GET",
+    }
+
+
+def test_loom_checker_follows_release_and_cluster_overrides():
+    result = subprocess.run(
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "monitoring",
+            str(_chart_dir()),
+            "--namespace",
+            "observability",
+            "--values",
+            str(_values("values-gke")),
+            "--set",
+            "loom.enabled=true",
+            "--set",
+            "loom.namespace=restored-loom",
+            "--set",
+            "loom.cnpgCluster=loom-pg-r1",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    service = _of_kind(docs, "Service")
+    pod = _of_kind(docs, "CronJob")["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    env = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
+    assert service["metadata"]["name"] == "monitoring-otel-collector"
+    assert env == {
+        "CNPG_NAMESPACE": "restored-loom",
+        "CNPG_CLUSTER": "loom-pg-r1",
+        "OTLP_METRICS_ENDPOINT": "http://monitoring-otel-collector.observability.svc:4318/v1/metrics",
+    }
+    assert _of_kind(docs, "Role")["metadata"]["namespace"] == "restored-loom"
+    assert _of_kind(docs, "Role")["rules"][0]["resourceNames"] == ["loom-pg-r1"]
+    assert _of_kind(docs, "RoleBinding")["subjects"] == [
+        {
+            "kind": "ServiceAccount",
+            "name": pod["serviceAccountName"],
+            "namespace": "observability",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "override", ["allowedServices=null", "httpcheck.enabled=false"]
+)
+def test_loom_rejects_a_disabled_metrics_or_probe_path(override):
+    result = _run_render(
+        ["values", "values-gke"], ["--set", "loom.enabled=true", "--set", override]
+    )
+    assert result.returncode != 0
+    assert "loom.enabled requires" in result.stderr
 
 
 def test_health_route_rewrites_to_the_extension_root():

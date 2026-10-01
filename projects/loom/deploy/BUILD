@@ -57,6 +57,7 @@ py_test(
     data = MANIFESTS + [
         "values.yaml",
         "//projects/gke-apps/loom:application.yaml",
+        "//projects/platform/otel-collector:loom_monitoring_values",
         "@loom_chart_0_2_0//:Chart.yaml",
         "@loom_chart_0_2_0//:chart_files",
         "@multitool//tools/helm",
@@ -65,6 +66,7 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "LOOM_CHART_YAML": "$(rootpath @loom_chart_0_2_0//:Chart.yaml)",
         "LOOM_APPLICATION": "$(rootpath //projects/gke-apps/loom:application.yaml)",
+        "LOOM_MONITORING_VALUES": "$(rootpath //projects/platform/otel-collector:loom_monitoring_values)",
     },
     deps = [
         "@pip//pytest",

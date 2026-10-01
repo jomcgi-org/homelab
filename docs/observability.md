@@ -23,8 +23,20 @@ The collector's `http_check` receiver probes these public URLs every 60 seconds:
 - `https://jomcgi.dev/health`
 - `https://jomcgi.dev/`
 
-The metrics pipeline accepts only the `http_check` receiver. It has no OTLP
-metrics receiver, so workloads cannot send arbitrary metrics through it.
+The metrics pipeline accepts `http_check` and, when `allowedServices` is
+non-empty, the shared OTLP receiver. The allowlist filters traces only.
+The GKE overlay also probes Argo CD's in-cluster HTTPS health endpoint with
+its pinned serving CA.
+
+`loom.enabled` defaults off in all overlays. When enabled after #6605, it
+appends the in-cluster query-api `/docs` probe and creates a 30-minute CNPG
+backup-age CronJob. Its ServiceAccount can only get the named `loom-pg`
+Cluster. It emits `cnpg.backup.last_success_age_seconds` through the collector's
+OTLP/HTTP Service, using cluster creation time for a never-backed-up cluster.
+The flag requires HTTP probes and the shared OTLP receiver to be enabled.
+The rendered upstream Loom chart has no NetworkPolicies; reachability still
+needs live validation. Switch the probe and trigger filter to `/healthz` when
+weave-hand/loom#694 ships.
 
 UptimeRobot metamonitors the collector at
 `https://jomcgi.dev/health/otel-collector`. The `HTTPRoute` sends traffic
@@ -92,6 +104,19 @@ with no level at all, an error/traceback heuristic whose matches are marked
 `log.level_source=heuristic`. Everything below WARN is dropped at the node.
 Lines carrying `trace_id` pivot to the trace datasets; pod logs from other
 namespaces, and anything below WARN, still stay only in the pod logs.
+
+## Staged Loom alerts
+
+Loom's probe, backup-age and checker-absence specs are disabled until #6605,
+metric arrival and operator test-firing. They count successful 2xx probes over
+600 seconds, compare backup age with 129600 seconds (36 hours), and detect
+missing age datapoints over 7200 seconds. Connection errors record zero in
+every `httpcheck.status` class, so counting successes covers a down endpoint.
+The backup-age MAX needs its absence companion when the checker stops.
+No other CNPG cluster has repository backup-age alerting; monolith-pg needs
+the same checks. See `projects/loom/deploy/README.md` for the enable order.
+The specs live in `projects/platform/honeycomb/triggers/` and are applied by
+hand with `sync.py` after the operator checks.
 
 ## Network visibility
 

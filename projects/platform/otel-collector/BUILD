@@ -22,6 +22,12 @@ filegroup(
 )
 
 filegroup(
+    name = "loom_monitoring_values",
+    srcs = ["values.yaml"],
+    visibility = ["//projects/loom/deploy:__pkg__"],
+)
+
+filegroup(
     name = "gke_values",
     srcs = ["values-gke.yaml"],
     visibility = ["//projects/embervm/chart:__pkg__"],
@@ -83,6 +89,7 @@ py_test(
     ] + glob([
         "templates/**/*",
         "charts/**/*",
+        "files/**/*",
     ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
@@ -91,4 +98,11 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
+)
+
+py_test(
+    name = "backup_check_test",
+    srcs = ["backup_check_test.py"],
+    data = ["files/backup_check.py"],
+    deps = ["@pip//pytest"],
 )

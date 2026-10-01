@@ -66,6 +66,10 @@ data:
             {{- end }}
           {{- end }}
           {{- end }}
+          {{- if .Values.loom.enabled }}
+          - endpoint: {{ .Values.loom.probeEndpoint | quote }}
+            method: GET
+          {{- end }}
       {{- end }}
 
     processors:

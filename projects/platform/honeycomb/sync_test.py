@@ -188,6 +188,53 @@ def test_log_triggers_stay_disabled_until_logs_land():
             assert not s.enabled, s.name
 
 
+def test_loom_triggers_stay_staged_with_literal_thresholds():
+    specs = {s.source: s for s in load_specs(DEFAULT_SPEC_DIR)}
+    probe = specs["loom-query-api-unhealthy.yaml"]
+    age = specs["loom-pg-backup-stale.yaml"]
+    absent = specs["loom-pg-backup-check-absent.yaml"]
+    for s in (probe, age, absent):
+        assert not s.enabled
+        assert s.dataset == "metrics"
+        assert s.recipients == (RECIPIENT,)
+        assert s.tags["service"] == "loom"
+        assert s.query["filters"][0] == {
+            "column": "deployment.environment",
+            "op": "=",
+            "value": "homelab-hub",
+        }
+    assert probe.frequency == 300
+    assert probe.query["time_range"] == 600
+    assert probe.threshold == {"op": "<", "value": 1, "exceeded_limit": 1}
+    assert probe.query["calculations"] == [{"op": "COUNT"}]
+    assert probe.query["filters"][1:] == [
+        {
+            "column": "http.url",
+            "op": "=",
+            "value": "http://loom-query-api.loom.svc:8080/docs",
+        },
+        {"column": "http.status_class", "op": "=", "value": "2xx"},
+        {"column": "httpcheck.status", "op": "=", "value": 1},
+    ]
+    assert age.query["time_range"] == 3600
+    assert age.frequency == absent.frequency == 1800
+    assert age.threshold == {"op": ">", "value": 129600, "exceeded_limit": 1}
+    assert age.query["calculations"] == [
+        {"op": "MAX", "column": "cnpg.backup.last_success_age_seconds"}
+    ]
+    cluster_filters = [
+        {"column": "cnpg.cluster.name", "op": "=", "value": "loom-pg"},
+        {"column": "k8s.namespace.name", "op": "=", "value": "loom"},
+    ]
+    assert age.query["filters"][1:] == cluster_filters
+    assert absent.query["filters"][1:] == cluster_filters + [
+        {"column": "cnpg.backup.last_success_age_seconds", "op": "exists"}
+    ]
+    assert absent.query["time_range"] == 7200
+    assert absent.query["calculations"] == [{"op": "COUNT"}]
+    assert absent.threshold == {"op": "<", "value": 1, "exceeded_limit": 1}
+
+
 def test_duplicate_spec_names_are_rejected(tmp_path: Path):
     for name in ("a.yaml", "b.yaml"):
         (tmp_path / name).write_text(json.dumps(RAW))

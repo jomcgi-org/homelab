@@ -1,0 +1,113 @@
+{{- if .Values.loom.enabled }}
+{{- if or (not .Values.httpcheck.enabled) (not .Values.allowedServices) }}
+{{- fail "loom.enabled requires httpcheck.enabled and a non-empty allowedServices for OTLP metrics" }}
+{{- end }}
+{{- $name := printf "%s-loom-backup" (include "otel-collector.fullname" . | trunc 51 | trimSuffix "-") }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Values.loom.namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    resourceNames: [{{ .Values.loom.cnpgCluster | quote }}]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Values.loom.namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+data:
+  backup_check.py: |
+{{ .Files.Get "files/backup_check.py" | indent 4 }}
+---
+# Argo's singleNamespace controller only watches monolith-workflows. A native
+# CronJob runs in the collector namespace without expanding that controller.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.loom.backupCheck.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 120
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/component: loom-backup-check
+        spec:
+          serviceAccountName: {{ $name }}
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup-check
+              image: {{ .Values.loom.backupCheck.image | quote }}
+              command: ["/usr/bin/python", "-B", "/check/backup_check.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                {{- toYaml .Values.loom.backupCheck.resources | nindent 16 }}
+              env:
+                - name: CNPG_NAMESPACE
+                  value: {{ .Values.loom.namespace | quote }}
+                - name: CNPG_CLUSTER
+                  value: {{ .Values.loom.cnpgCluster | quote }}
+                - name: OTLP_METRICS_ENDPOINT
+                  value: {{ printf "http://%s.%s.svc:4318/v1/metrics" (include "otel-collector.fullname" .) .Release.Namespace | quote }}
+              volumeMounts:
+                - name: script
+                  mountPath: /check
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: {{ $name }}
+{{- end }}
