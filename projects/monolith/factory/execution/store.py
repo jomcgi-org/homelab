@@ -912,6 +912,203 @@ def settle_response_lost_hold(
         return True
 
 
+def response_lost_drain_relay_enabled() -> bool:
+    """Staged control for resuming a held turn a drain interrupted (default off)."""
+    return (
+        response_lost_recovery_enabled()
+        and os.getenv("AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def response_lost_drain_evidence(hold: dict, view: object) -> dict | None:
+    """Whether a drain, not a lost callback, ended the invoke this hold awaits.
+
+    A held turn's guest that a brick drain interrupts flushes its transcript,
+    records ``interrupted_turn`` naming the opaque dispatch ID, and parks or
+    banks at the safe point. That is a resumable turn, not a lost result: the
+    relay protocol (#6256) re-dispatches the same pending row and the guest
+    resumes its CLI session. Without this, the hold read "invoke finished,
+    nothing published" and settled the attempt as an unknown outcome. On
+    2026-10-01 session 13635 lost its observer to the 01:58 monolith rollout,
+    a brick drain interrupted it at 02:04:42, and the guest published no drain
+    receipt, so 14 minutes of work were settled instead of resumed.
+
+    Pure: the marker must name the exact dispatch ID computed from the hold's
+    session, guest, turn, claim owner and dispatch count, carry a transcript
+    and a CLI session to resume, and describe a completed invoke. Any
+    generation or invoke stamp the hold recorded must still match.
+    """
+    from factory.execution.constants import exact_dispatch_id
+
+    if (
+        not isinstance(view, dict)
+        or view.get("session_id") != hold.get("guest_id")
+        or view.get("state") not in {"parked", "banked"}
+    ):
+        return None
+    interrupted = view.get("interrupted_turn")
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    completed = view.get("last_invoke_at")
+    try:
+        expected_dispatch = exact_dispatch_id(
+            hold["session_id"],
+            hold["guest_id"],
+            hold["seq"],
+            hold["claim_owner"],
+            hold["dispatch_count"],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(interrupted, dict)
+        or interrupted.get("dispatch_id") != expected_dispatch
+        or interrupted.get("seq", hold["seq"]) != hold["seq"]
+        or not isinstance(interrupted.get("transcript_path"), str)
+        or not interrupted["transcript_path"]
+        or not isinstance(interrupted.get("cli_session_id"), str)
+        or not interrupted["cli_session_id"]
+        or type(generation) is not int
+        or generation < 0
+        or type(started) is not int
+        or started < 1
+        or type(completed) is not int
+        or completed < started
+    ):
+        return None
+    for field, observed in (("generation", generation), ("invoke_started_at", started)):
+        recorded = hold.get(field)
+        if recorded is not None and recorded != observed:
+            return None
+    return {
+        "guest_id": hold["guest_id"],
+        "dispatch_id": expected_dispatch,
+        "cli_session_id": interrupted["cli_session_id"],
+        "transcript_path": interrupted["transcript_path"],
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": completed,
+        "state": view["state"],
+    }
+
+
+def relay_response_lost_drain_sync(
+    session_id: int, expected_hold: dict, evidence: dict
+) -> bool:
+    """Turn a live hold over a drained guest into the #6256 drain relay.
+
+    Writes, under the session lock and in one transaction, exactly what the
+    turn writer records when a guest's drain response arrives: an
+    ``interrupted_for_drain`` turn carrying the retry grant for this dispatch
+    count, the guest's CLI session as the session to resume, and the pending
+    row released with its permit and seq retained. The next claim consumes the
+    grant and re-dispatches the same prompt to the same guest.
+
+    The drained physical invoke's cost is unknown (its result never reached
+    this database), so the turn records none and the continuation's total stays
+    unknown rather than understated. Refuses, writing nothing, when the gate is
+    off, the hold changed, the guest binding moved, a result committed in the
+    meantime (adoption then wins), the invoke predates this dispatch, or the
+    relay budget is spent; the caller then keeps today's settlement path.
+    """
+    if not response_lost_drain_relay_enabled():
+        return False
+    with Session(get_engine()) as session:
+        row = _lock_session(session, session_id)
+        pending = session.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == session_id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        if row is None or pending is None or _bound_zero_turn_cleanup_pending(row):
+            return False
+        turn = get_turn(session, session_id, pending.seq)
+        hold = _response_lost_hold(turn, pending)
+        if (
+            hold is None
+            or hold != expected_hold
+            or row.ember_session_id != hold["guest_id"]
+            or evidence.get("guest_id") != hold["guest_id"]
+            or row.result_receipt_fence_id is not None
+            or has_unknown_outcome(session, session_id)
+            or admission.cleanup_pending(session, row)
+            or type(pending.dispatch_count) is not int
+            or not 1 <= pending.dispatch_count < MAX_PENDING_DISPATCHES
+            or pending.last_dispatch_at is None
+        ):
+            return False
+        dispatched_at = pending.last_dispatch_at
+        if dispatched_at.tzinfo is None:
+            dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
+        if evidence["invoke_started_at"] <= int(dispatched_at.timestamp() * 1000):
+            return False
+        # Serialize with capture_result exactly as settlement does: a result
+        # that committed before this lock must be adopted, not relayed.
+        session.execute(
+            update(AgentResultReceipt)
+            .where(AgentResultReceipt.id == hold["receipt_id"])
+            .values(created_at=AgentResultReceipt.created_at)
+        )
+        receipt = session.exec(
+            select(AgentResultReceipt.id, AgentResultReceipt.result_sha256).where(
+                AgentResultReceipt.id == hold["receipt_id"]
+            )
+        ).one_or_none()
+        if receipt is None or receipt.result_sha256 is not None:
+            return False
+        permit = admission.reservation(session, row.local_session_id, pending.seq)
+        if (
+            permit is None
+            or permit.session_id != session_id
+            or permit.state not in {"reserved", "running"}
+        ):
+            return False
+        usage = _progress_usage(pending, "response_lost_drain_relay")
+        usage["retry_dispatch_count"] = pending.dispatch_count
+        usage["recovery"]["response_lost_drain"] = {
+            "receipt_id": hold["receipt_id"],
+            "hold_reason": hold.get("reason"),
+            **evidence,
+        }
+        usage["prior_interruption"] = {
+            "result_text": turn.result_text,
+            "usage_json": turn.usage_json,
+        }
+        session.delete(turn)
+        session.flush()
+        create_turn(
+            session,
+            session_id,
+            pending.seq,
+            pending.message_text,
+            "Resuming after a drain",
+            pending.partial_text
+            or "A brick drain interrupted this turn; it will resume on the same guest.",
+            terminal_reason="interrupted_for_drain",
+            stop_reason="interrupted_for_drain",
+            permission_denials=[],
+            commit_sha=None,
+            usage=usage,
+            cost_usd=None,
+            cli_session_id=evidence["cli_session_id"],
+            model=pending.model,
+            commit=False,
+        )
+        row.cli_session_id = evidence["cli_session_id"]
+        row.status = "recovering"
+        row.voice_summary = "Resuming after a drain"
+        row.last_turn_at = datetime.now(timezone.utc)
+        session.add(row)
+        pending.claimed_by_replica = None
+        pending.claimed_at = None
+        pending.partial_text = None
+        pending.partial_activities = None
+        session.add(pending)
+        session.commit()
+        return True
+
+
 def adopt_response_lost_result(
     session_id: int, artifact_path: str | None = None
 ) -> dict | None:

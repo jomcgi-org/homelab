@@ -1363,3 +1363,172 @@ def test_factory_never_retires_a_replacement_parked_invocation(database, monkeyp
     }
     assert_unknown(database, sid)
     assert len(requests) == 1
+
+
+def _drained_case(database, monkeypatch, *, relay_enabled=True):
+    """A held turn whose guest a brick drain interrupted on this dispatch.
+
+    The 2026-10-01 case 2 shape: the observer was lost to a rollout, then a
+    brick drain interrupted the still-working guest, which parked with an
+    ``interrupted_turn`` naming this exact dispatch and published nothing.
+    """
+    from factory.execution.constants import exact_dispatch_id
+
+    monkeypatch.setenv(
+        "AGENT_RESPONSE_LOST_DRAIN_RELAY_ENABLED", "true" if relay_enabled else "false"
+    )
+    started = int(datetime.now(timezone.utc).timestamp() * 1000) + 5_000
+    sid, requests = lose_the_response(
+        database, monkeypatch, guest_state=working_guest(1, started=started)
+    )
+    assert sid == 1
+    hold = hold_of(sid)
+    assert hold["invoke_started_at"] == started
+    view = {
+        "session_id": f"guest-{sid}",
+        "state": "parked",
+        "generation": 0,
+        "invoke_started_at": started,
+        "last_invoke_at": started + 600_000,
+        "updated_at": started + 600_500,
+        "interrupted_turn": {
+            "seq": 1,
+            "dispatch_id": exact_dispatch_id(
+                sid, f"guest-{sid}", 1, hold["claim_owner"], 1
+            ),
+            "cli_session_id": "codex-thread-1",
+            "transcript_path": "/workspace/.ember/interrupted-turns/x.json",
+        },
+    }
+    return sid, requests, hold, view
+
+
+def test_factory_drained_held_turn_relays_instead_of_settling(database, monkeypatch):
+    from factory.orchestration import node_workflows
+
+    sid, requests, hold, view = _drained_case(database, monkeypatch)
+    monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: view)
+    monkeypatch.setattr(
+        node_workflows,
+        "_retire_parked_guest",
+        lambda _: pytest.fail("a drained guest is resumed, never retired"),
+    )
+    assert node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid, relay_drained=True
+    ) == {"status": "relayed", "reason": "response_lost_drained"}
+
+    state = snapshot(database, sid)
+    # The prompt, its seq and the permit stay with the attempt; only the
+    # claim is released, exactly as a delivered drain response leaves it.
+    assert len(state["pending"]) == 1
+    assert state["pending"][0]["claimed_by_replica"] is None
+    assert state["pending"][0]["dispatch_count"] == 1
+    assert [row["state"] for row in state["permits"]] == ["running"]
+    assert state["permits"][0]["outcome"] is None
+    turn = state["turns"][0]
+    assert turn["terminal_reason"] == "interrupted_for_drain"
+    assert turn["stop_reason"] == "interrupted_for_drain"
+    assert turn["cost_usd"] is None
+    usage = json.loads(turn["usage_json"])
+    assert usage["retry_dispatch_count"] == 1
+    assert usage["recovery"]["response_lost_drain"]["receipt_id"] == hold["receipt_id"]
+    assert state["session"]["status"] == "recovering"
+    assert state["session"]["cli_session_id"] == "codex-thread-1"
+
+    # The relay consumes the grant: the same row is dispatched a second time.
+    assert store.claim_pending_message_for_session_sync(sid, "replica-2") == 1
+    after = snapshot(database, sid)
+    assert after["pending"][0]["dispatch_count"] == 2
+    assert after["pending"][0]["claimed_by_replica"] == "replica-2"
+    assert after["permits"][0]["owner"] == "replica-2"
+    assert len(requests) == 1
+
+
+def test_drained_held_turn_settles_as_today_with_the_relay_off(database, monkeypatch):
+    from factory.orchestration import node_workflows
+
+    sid, _requests, _hold, view = _drained_case(
+        database, monkeypatch, relay_enabled=False
+    )
+    monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: view)
+    assert node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid, relay_drained=True
+    ) == {"status": "settled", "reason": "response_lost_unpublished"}
+    assert_unknown(database, sid)
+
+
+def test_only_the_live_owner_relays_a_drained_held_turn(database, monkeypatch):
+    """The terminal-workflow reconciler has no one to collect a continuation."""
+    from factory.orchestration import node_workflows
+
+    sid, _requests, _hold, view = _drained_case(database, monkeypatch)
+    monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: view)
+    assert node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid
+    ) == {"status": "settled", "reason": "response_lost_unpublished"}
+    assert_unknown(database, sid)
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"interrupted_turn": {"dispatch_id": "another-dispatch"}},
+        {"interrupted_turn": {"transcript_path": ""}},
+        {"interrupted_turn": {"cli_session_id": None}},
+        {"interrupted_turn": {"seq": 2}},
+        {"state": "evicted"},
+        {"session_id": "another-guest"},
+    ],
+)
+def test_drain_relay_requires_the_exact_drained_dispatch(database, monkeypatch, patch):
+    from factory.orchestration import node_workflows
+
+    sid, _requests, _hold, view = _drained_case(database, monkeypatch)
+    patched = {**view, **{k: v for k, v in patch.items() if k != "interrupted_turn"}}
+    if "interrupted_turn" in patch:
+        patched["interrupted_turn"] = {
+            **view["interrupted_turn"],
+            **patch["interrupted_turn"],
+        }
+    monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: patched)
+    outcome = node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid, relay_drained=True
+    )
+    assert outcome is None or outcome["status"] != "relayed"
+    state = snapshot(database, sid)
+    assert all(t["terminal_reason"] != "interrupted_for_drain" for t in state["turns"])
+
+
+def test_drain_relay_refuses_an_invoke_that_predates_the_dispatch(
+    database, monkeypatch
+):
+    sid, _requests, hold, view = _drained_case(database, monkeypatch)
+    old = {**view, "invoke_started_at": 1, "last_invoke_at": 2}
+    evidence = store.response_lost_drain_evidence(
+        {**hold, "invoke_started_at": None}, old
+    )
+    assert evidence is not None
+    held = snapshot(database, sid)
+    assert store.relay_response_lost_drain_sync(sid, hold, evidence) is False
+    assert snapshot(database, sid) == held
+
+
+def test_drain_relay_yields_to_a_result_committed_before_it(database, monkeypatch):
+    from factory.orchestration import node_workflows
+    from factory.execution import api
+
+    sid, requests, _hold, view = _drained_case(database, monkeypatch)
+    monkeypatch.setattr(node_workflows, "_observe_held_guest", lambda _: view)
+    relay = api.relay_response_lost_drain
+
+    def race(session_id, expected_hold, evidence):
+        publish(native_record(), requests[0])
+        return relay(session_id, expected_hold, evidence)
+
+    monkeypatch.setattr(api, "relay_response_lost_drain", race)
+    outcome = node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid, relay_drained=True
+    )
+    # The relay refused under the receipt lock and the final read adopted it.
+    assert outcome["status"] == "adopted"
+    assert len(requests) == 1

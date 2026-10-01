@@ -896,7 +896,9 @@ def _retire_parked_guest(view: dict) -> None:
         logger.info("Parked retirement deferred for guest %s", view["session_id"])
 
 
-def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
+def _recover_response_lost(
+    pin: dict, session_id: int, *, relay_drained: bool = False
+) -> dict | None:
     """Adopt this attempt's committed result, or end a hold that cannot recover.
 
     A replica that dies mid-invoke loses the response, not the execution. The
@@ -908,10 +910,16 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
     or that has moved on to a different invoke or generation, can no longer
     produce the evidence, so the hold becomes the ordinary unknown outcome its
     reconciliation already knows how to settle.
+
+    A guest a drain interrupted on exactly this dispatch is the exception:
+    with ``relay_drained`` (the live owner only) the hold becomes the #6256
+    drain relay and the same guest resumes the turn.
     """
     from factory.execution.api import (
         adopt_response_lost_result,
         read_response_lost_hold,
+        relay_response_lost_drain,
+        response_lost_drain_evidence,
         response_lost_recovery_enabled,
         settle_response_lost_hold,
     )
@@ -945,6 +953,22 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
         # and capacity until a subsequent authoritative read sees destroyed.
         return outcome
     elif not invoke_in_progress(view):
+        # A drain that interrupted exactly this dispatch left a resumable turn,
+        # not a lost result: relay it to the same guest (#6256) instead of
+        # settling. Read the receipt once more first, as settlement does.
+        drained = (
+            response_lost_drain_evidence(hold, view) if relay_drained else None
+        )
+        if drained is not None:
+            retried = adopt_response_lost_result(session_id, pin["artifact_path"])
+            if retried is None or retried["status"] != "waiting":
+                return retried
+            if relay_response_lost_drain(session_id, hold, drained):
+                logger.warning(
+                    "Relaying drained turn for session %s after a lost response",
+                    session_id,
+                )
+                return {"status": "relayed", "reason": "response_lost_drained"}
         # The guest publishes its receipt before it answers, so a completed
         # invoke with nothing published means the callback failed rather than
         # that the result is still on its way.
@@ -993,7 +1017,9 @@ def _read_node_dispatch(pin: dict, session_id: int) -> dict:
     # interval so its next poll reads the turn that adoption just wrote. Any
     # failure here leaves the hold exactly as it was.
     try:
-        _recover_response_lost(pin, session_id)
+        # Only the live owner may relay a drained turn: it is the workflow
+        # that will collect the continuation (#6256).
+        _recover_response_lost(pin, session_id, relay_drained=True)
     except Exception as exc:  # noqa: BLE001 - recovery never fails a live node.
         logger.warning(
             "response-loss recovery failed for session %s: %s",
