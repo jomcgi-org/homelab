@@ -1309,6 +1309,9 @@ knowledge:
     repoDiff:
       # Hourly read-only scout feeding the normal knowledge extraction lane.
       enabled: false
+      reconcile:
+        # Default-off backfill of ranges ingested from placeholder evidence.
+        enabled: false
     docFixReview:
       # Demand-driven only. There is no schedule, so an idle queue costs nothing.
       enabled: false

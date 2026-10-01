@@ -548,6 +548,8 @@ spec:
               value: {{ .Values.knowledge.conductorContinuity.enabled | quote }}
             - name: KG_REPO_DIFF_ENABLED
               value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
+            - name: KG_REPO_DIFF_RECONCILE_ENABLED
+              value: {{ .Values.knowledge.feeds.repoDiff.reconcile.enabled | quote }}
             - name: KG_DOCFIX_REVIEW_ENABLED
               value: {{ .Values.knowledge.feeds.docFixReview.enabled | quote }}
             - name: KNOWLEDGE_LAYOUT_SCALING_RATIO

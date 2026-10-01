@@ -7,6 +7,7 @@ from collections.abc import Callable
 from fnmatch import fnmatchcase
 import hashlib
 import json
+import logging
 import os
 from pathlib import PurePosixPath
 import re
@@ -28,10 +29,14 @@ from knowledge.recall import _get_repo_scope, render_related_notes
 from knowledge.repo_diff_source import (
     REPO_DIFF_PATCH_CAP,
     RepoDiffEvidence,
+    RepoDiffRangeInvalid,
+    RepoDiffSourceUnavailable,
     collect_repo_diff,
     verify_on_main,
 )
 from shared.embedding import EmbeddingClient
+
+logger = logging.getLogger("monolith.knowledge.extraction")
 
 KG_JOB_KIND = "kg-drain"
 KG_NODE_KEY = "kg-drain"
@@ -357,6 +362,11 @@ def ensure_repo_diff_job(session: Session) -> bool:
 def sweep_unqueued_raws(session: Session, limit: int = 50) -> int:
     """Register extraction jobs missed by ingest or eligible after a failure."""
     ensure_repo_diff_job(session)
+    try:
+        reconcile_repo_diff_gaps(session)
+    except Exception:  # noqa: BLE001 - reconciliation must not break the sweep
+        logger.warning("repo-diff reconciliation failed", exc_info=True)
+        session.rollback()
     dialect = session.get_bind().dialect.name
     raw_table = "raw_inputs" if dialect == "sqlite" else "knowledge.raw_inputs"
     provenance_table = (
@@ -863,6 +873,208 @@ def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
         "changed_files": evidence.changed_files,
         "summary": f"raw={raw.raw_id} changed_files={evidence.changed_files}",
     }
+
+
+KG_REPO_DIFF_RECONCILE_ENV = "KG_REPO_DIFF_RECONCILE_ENABLED"
+_REPO_DIFF_URL_RE = re.compile(
+    r"^repo-diff:([0-9a-fA-F]{40})\.\.([0-9a-fA-F]{40})(?:#github-compare)?$"
+)
+
+
+def _reconcile_enabled() -> bool:
+    return os.environ.get(KG_REPO_DIFF_RECONCILE_ENV, "false").lower() == "true"
+
+
+def _extra_as_dict(extra: object) -> dict:
+    if extra is None:
+        return {}
+    if isinstance(extra, dict):
+        return extra
+    if isinstance(extra, str):
+        try:
+            decoded = json.loads(extra)
+        except ValueError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _valid_sha(value: object) -> str | None:
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        return value.lower()
+    return None
+
+
+def _repo_diff_range_from_url(original_path: object) -> tuple[str, str] | None:
+    if not isinstance(original_path, str):
+        return None
+    match = _REPO_DIFF_URL_RE.match(original_path.strip())
+    if match is None:
+        return None
+    base = _valid_sha(match.group(1))
+    head = _valid_sha(match.group(2))
+    if base is None or head is None:
+        return None
+    return base, head
+
+
+def _reconciled_original_url(base_sha: str, head_sha: str) -> str:
+    return f"repo-diff:{base_sha}..{head_sha}#github-compare"
+
+
+def _repo_diff_content_needs_reconcile(body: str | None) -> bool:
+    """Report whether stored content lacks authoritative diff headers.
+
+    A None body means the object store read failed, so the target stays for
+    a later pass instead of being reconciled blind. Any readable body
+    without a `diff --git ` header is placeholder or headerless evidence.
+    Bodies carrying real headers are left alone.
+    """
+    if body is None:
+        return False
+    return "diff --git " not in body
+
+
+def _repo_diff_rows_sql(session: Session) -> str:
+    """Render the reconcile scan with the session's table qualification."""
+    dialect = session.get_bind().dialect.name
+    table = "raw_inputs" if dialect == "sqlite" else "knowledge.raw_inputs"
+    return (
+        f"SELECT raw_id, original_path, content_hash, extra"
+        f" FROM {table} WHERE source = :source"
+        f" ORDER BY created_at ASC, id ASC"
+    )
+
+
+def _scan_repo_diff_rows(session: Session) -> list[dict]:
+    """Return repo-diff raw rows oldest first without ORM JSON decoding.
+
+    Reading extra through raw SQL keeps string, dict, and NULL extras
+    readable on both dialects, where ORM deserialization would reject a
+    non-JSON string before the caller can classify it.
+    """
+    return [
+        dict(row)
+        for row in session.execute(
+            text(_repo_diff_rows_sql(session)), {"source": "repo-diff"}
+        )
+        .mappings()
+        .all()
+    ]
+
+
+def _reconcile_targets(session: Session) -> list[tuple[str, str, str]]:
+    """Collect (base, head, reconciles) pairs oldest first, deduplicated.
+
+    Placeholder repo-diff raws come before job payload skipped entries.
+    Ranges already covered by a github-compare raw are filtered out so a
+    second pass writes nothing and makes no source calls.
+    """
+    raws = _scan_repo_diff_rows(session)
+    covered: set[tuple[str, str]] = set()
+    for raw in raws:
+        extra = _extra_as_dict(raw.get("extra"))
+        if extra.get("evidence_source") == "github-compare":
+            known_base = _valid_sha(extra.get("base_sha"))
+            known_head = _valid_sha(extra.get("head_sha"))
+            if known_base is not None and known_head is not None:
+                covered.add((known_base, known_head))
+        original_path = raw.get("original_path")
+        if isinstance(original_path, str) and original_path.strip().endswith(
+            "#github-compare"
+        ):
+            pair = _repo_diff_range_from_url(original_path)
+            if pair is not None:
+                covered.add(pair)
+    targets: list[tuple[str, str, str]] = []
+    for raw in raws:
+        extra = _extra_as_dict(raw.get("extra"))
+        if extra.get("evidence_source") == "github-compare":
+            continue
+        original_path = raw.get("original_path")
+        if isinstance(original_path, str) and original_path.strip().endswith(
+            "#github-compare"
+        ):
+            continue
+        base = _valid_sha(extra.get("base_sha"))
+        head = _valid_sha(extra.get("head_sha"))
+        if base is None or head is None:
+            url_pair = _repo_diff_range_from_url(original_path)
+            if url_pair is None:
+                continue
+            base, head = url_pair
+        content_hash = raw.get("content_hash")
+        body = (
+            raw_store.fetch_raw(content_hash)
+            if isinstance(content_hash, str) and content_hash
+            else None
+        )
+        if not _repo_diff_content_needs_reconcile(body):
+            continue
+        if (base, head) not in covered:
+            covered.add((base, head))
+            targets.append((base, head, raw["raw_id"]))
+    skipped = _stored_scout_payload(session, REPO_DIFF_JOB_NAME).get("skipped")
+    if isinstance(skipped, list):
+        for entry in skipped:
+            if not isinstance(entry, dict):
+                continue
+            base = _valid_sha(entry.get("base_sha"))
+            head = _valid_sha(entry.get("head_sha"))
+            if base is None or head is None:
+                continue
+            if (base, head) not in covered:
+                covered.add((base, head))
+                targets.append((base, head, "skipped"))
+    return targets
+
+
+def reconcile_repo_diff_gaps(session: Session, *, limit: int = 2) -> int:
+    """Backfill authoritative raws for ranges ingested from placeholder evidence.
+
+    Default-off behind KG_REPO_DIFF_RECONCILE_ENABLED. Each target range is
+    collected from the GitHub compare API and persisted as one new raw with
+    the deterministic original_url `repo-diff:<base>..<head>#github-compare`
+    and extra `reconciles` naming the original raw_id or "skipped". The
+    original raw, its notes and provenance rows, the scout cursor, and the
+    skipped list are never modified. Source failures defer the target to a
+    later pass. Returns the number of new raws persisted.
+    """
+    if not _reconcile_enabled():
+        return 0
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        return 0
+    reconciled = 0
+    for base_sha, head_sha, reconciles in _reconcile_targets(session)[:limit]:
+        try:
+            evidence = collect_repo_diff(base_sha, head_sha)
+        except (RepoDiffSourceUnavailable, RepoDiffRangeInvalid) as exc:
+            logger.warning(
+                "repo-diff reconcile deferred for %.7s..%.7s: %s",
+                base_sha,
+                head_sha,
+                exc,
+            )
+            continue
+        if evidence.changed_files == 0:
+            continue
+        markdown, extra = repo_diff_raw_content(evidence)
+        extra["reconciles"] = reconciles
+        from knowledge.raw_write import persist_raw_with_status
+
+        try:
+            persist_raw_with_status(
+                session,
+                content=markdown,
+                source="repo-diff",
+                original_url=_reconciled_original_url(base_sha, head_sha),
+                extra=extra,
+            )
+        except Exception:
+            session.rollback()
+            raise
+        reconciled += 1
+    return reconciled
 
 
 def _allowed_doc_path(doc_path: str) -> bool:
