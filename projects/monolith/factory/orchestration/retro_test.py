@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+
+from factory.orchestration import retro
+
+NOW = datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)
+TASK = "t-aaaaaaaa-1111"
+OTHER = "t-bbbbbbbb-2222"
+
+
+def _run(task, node, attempt, status="succeeded", outcome=None, run_id=None):
+    return {
+        "id": run_id,
+        "task_id": task,
+        "node_key": node,
+        "attempt": attempt,
+        "status": status,
+        "model": "opus",
+        "cost_usd": 1.0,
+        "outcome_json": json.dumps(outcome or {}),
+        "created_at": NOW,
+        "finished_at": NOW,
+    }
+
+
+def _turn(task, node, attempt, cost=0.5, commands=(), result="done", denials=None):
+    return {
+        "local_session_id": f"factory:{task}:{node}:{attempt}",
+        "list_cost_usd": cost,
+        "terminal_reason": "completed",
+        "permission_denials": json.dumps(denials or []),
+        "usage_json": json.dumps(
+            {"activities": [{"type": "bash", "command": c} for c in commands]}
+        ),
+        "result_head": result,
+    }
+
+
+def _data(**overrides):
+    death = {
+        "reason": "guest_cessation_confirmed: exact control-plane cessation",
+        "cessation": {"state": "evicted"},
+    }
+    repair = {
+        "artifact": {"value": {"reason": "Repair after guest_cessation_confirmed"}}
+    }
+    data = {
+        "runs": [
+            _run(TASK, "conductor_1", 1),
+            _run(TASK, "implement_x", 1, "failed", death, run_id=7),
+            _run(TASK, "conductor_2", 1, outcome=repair),
+            _run(OTHER, "correct_1", 1),
+        ],
+        "receipts": [
+            {"task_id": TASK, "issue_number": 101, "state": "admitted"},
+            {"task_id": OTHER, "issue_number": 202, "state": "succeeded"},
+        ],
+        "refusals": [
+            {
+                "task_id": TASK,
+                "detail_json": json.dumps(
+                    {
+                        "refusal_code": "bound_exceeds_policy",
+                        "cause": "factory-decision:conductor_1:1",
+                        "reason": "edit 0 (implement_x): max_cost_usd exceeds policy",
+                    }
+                ),
+            }
+        ],
+        "verdicts": [{"review_run_id": 7, "verdict": "blocked", "summary": ""}],
+        "turns": [
+            _turn(TASK, "conductor_1", 1, cost=0.75),
+            _turn(TASK, "conductor_2", 1, cost=1.25),
+            _turn(
+                OTHER,
+                "correct_1",
+                1,
+                commands=("pip install pytest", "curl https://get.helm.sh/helm.tgz"),
+            ),
+        ],
+        "task_costs": {TASK: 2.0, OTHER: 0.5},
+        "task_prs": {TASK: 9001},
+        "pr_sizes": {9001: 20},
+        "published": {f"factory:{TASK}:conductor_1:1": 101},
+        "github": {
+            "retro": [{"number": 7000, "state": "open", "title": "factory: old"}],
+            "open": [{"number": 7001, "title": "factory: something"}],
+        },
+    }
+    data.update(overrides)
+    return data
+
+
+def test_digest_cites_public_pages_only_where_they_exist():
+    digest = retro.build_retro_digest(_data(), NOW)
+
+    assert f"{retro.PUBLIC_BASE}/101/conductor_1/1" in digest
+    # Not published: falls back to issue, node, attempt and task id.
+    assert "#202 correct_1/1 (task t-bbbbbbbb)" in digest
+    assert retro.RETRO_MARKER in digest
+
+
+def test_digest_prices_refusals_deaths_repairs_and_setup_calls():
+    digest = retro.build_retro_digest(_data(), NOW)
+
+    assert "bound_exceeds_policy: 1 refusals on 1 tasks, $0.75 list" in digest
+    assert "1 of 4 node runs ended in an infrastructure death" in digest
+    assert "guest state evicted: 1" in digest
+    assert "1 successful planner runs cite an infra death" in digest
+    assert "$1.25 list" in digest
+    assert "pip install (pytest, requirements): 1 sessions" in digest
+    assert "helm download: 1 sessions" in digest
+    assert "plus 1 recorded as blocked that were infra deaths" in digest
+    assert "PR #9001: $2.00 for 20 lines" in digest
+
+
+def test_digest_lists_existing_issues_for_dedupe():
+    digest = retro.build_retro_digest(_data(), NOW)
+
+    assert "#7000 [open] factory: old" in digest
+    assert "#7001 factory: something" in digest
+    unavailable = retro.build_retro_digest(_data(github={"error": "HTTPError"}), NOW)
+    assert "GitHub issue list unavailable (HTTPError)" in unavailable
+
+
+def test_digest_is_bounded():
+    many = [
+        _turn(f"t-{i:08d}-x", "implement_y", 1, commands=("pip install pytest",) * 3)
+        for i in range(3000)
+    ]
+    digest = retro.build_retro_digest(_data(turns=many), NOW)
+
+    assert len(digest) <= retro.DIGEST_MAX_CHARS + 100

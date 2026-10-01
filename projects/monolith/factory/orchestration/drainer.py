@@ -30,6 +30,7 @@ from knowledge.api import (
     schedule_docfix_review,
 )
 from factory.orchestration.steps import send_agent_session_message, start_agent_session
+from factory.orchestration.retro import RETRO_DIGEST
 from factory.orchestration.tracing import set_attributes, tracer
 
 logger = logging.getLogger(__name__)
@@ -136,10 +137,14 @@ def pin_drainer_settings() -> dict:
         return settings
 
 
-# Every drain job runs on this model, in both the claim reservation and the
-# session it later starts. The two must agree: a reservation whose model
-# changed is refused, and a refused reservation never dispatches.
+# The default drain model, and the only one KG jobs use. A qwen-drain job may
+# name another model from DRAIN_MODELS in ``payload.model`` (the daily factory
+# retro runs on Sol). Whatever the job names is used in both the claim
+# reservation and the session it later starts. The two must agree: a
+# reservation whose model changed is refused, and a refused reservation never
+# dispatches. Both read the model through _job_model.
 DRAIN_MODEL = "luna"
+DRAIN_MODELS = ("luna", "sol")
 DRAINER_QUOTA_ROLE = "drainer"
 
 
@@ -168,6 +173,19 @@ def provider_walled() -> tuple[bool, str]:
         from factory.orchestration.model_pool import availability, quota_summary
 
         ok, reason = availability(DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE)
+        return (not ok), reason
+    # nosemgrep: no-broad-except-swallow
+    except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
+        logger.debug("drain provider quota unreadable", exc_info=True)
+        return False, "unreadable"
+
+
+def model_walled(model: str) -> tuple[bool, str]:
+    """provider_walled for a job's own model, when it is not DRAIN_MODEL."""
+    try:
+        from factory.orchestration.model_pool import availability, quota_summary
+
+        ok, reason = availability(model, quota_summary(), DRAINER_QUOTA_ROLE)
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
     except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
@@ -300,6 +318,21 @@ def claim_drainer_job(
                 return None
             is_kg = job["routine_kind"] == KG_JOB_KIND
             node_key = KG_NODE_KEY if is_kg else DRAINER_NODE_KEY
+            model = DRAIN_MODEL if is_kg else _job_model(job.get("payload"))
+            if model != DRAIN_MODEL:
+                # The lane gate above judged DRAIN_MODEL; a job on another
+                # model defers on its own provider's evidence.
+                walled, reason = model_walled(model)
+                if walled:
+                    set_attributes(span, {"drain.deferred": f"{model} {reason}"})
+                    logger.info(
+                        "drain claim deferred: %s provider is walled (%s)",
+                        model,
+                        reason,
+                    )
+                    savepoint.rollback()
+                    session.commit()
+                    return None
             local_id = _session_key(workflow_id, job["name"], node_key)
             daily = {}
             if is_kg:
@@ -329,7 +362,7 @@ def claim_drainer_job(
                 session,
                 local_id,
                 tier="kg" if is_kg else "project",
-                model=DRAIN_MODEL,
+                model=model,
                 routine_job_name=job["name"],
                 **daily,
             )
@@ -1211,6 +1244,49 @@ def _payload_values(payload: object, settings: dict) -> tuple[str, str, str, boo
     return prompt.strip(), repo.strip(), branch.strip(), reasoning
 
 
+def _job_model(payload: object, *, strict: bool = False) -> str:
+    """The model a qwen-drain job runs on: ``payload.model`` or DRAIN_MODEL.
+
+    The claim calls this non-strictly, so a bad value reserves DRAIN_MODEL and
+    the job then fails cleanly in the strict call before any session starts
+    (MalformedPayload cancels the reservation).
+    """
+    if isinstance(payload, str):
+        # A claim on SQLite returns the payload column as text.
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = None
+    model = payload.get("model", DRAIN_MODEL) if isinstance(payload, dict) else None
+    if model is None:
+        model = DRAIN_MODEL
+    if model in DRAIN_MODELS:
+        return model
+    if strict:
+        raise MalformedPayload(f"model must be one of {', '.join(DRAIN_MODELS)}")
+    return DRAIN_MODEL
+
+
+def _job_prompt(payload: dict, prompt: str) -> str:
+    """Append a server-built evidence digest when the job asks for one."""
+    digest = payload.get("digest") if isinstance(payload, dict) else None
+    if digest is None:
+        return prompt
+    if digest != RETRO_DIGEST:
+        raise MalformedPayload(f"unknown digest {digest!r}")
+    return build_retro_prompt(prompt)
+
+
+@DBOS.step()
+def build_retro_prompt(instructions: str) -> str:
+    from factory.orchestration.retro import build_factory_retro_prompt
+
+    with tracer.start_as_current_span("drain.build_retro_prompt") as span:
+        prompt = build_factory_retro_prompt(instructions)
+        set_attributes(span, {"drain.prompt_chars": len(prompt)})
+        return prompt
+
+
 def _kg_raw_id(payload: object) -> str:
     if not isinstance(payload, dict):
         raise MalformedPayload("missing raw_id in payload")
@@ -1479,16 +1555,20 @@ def drain_cycle() -> dict:
                         repo = settings["repo"]
                         branch = settings["branch"]
                         reasoning = settings.get("reasoning", False)
+                        model = DRAIN_MODEL
                     else:
                         prompt, repo, branch, reasoning = _payload_values(
                             job.get("payload"), settings
                         )
+                        model = _job_model(job.get("payload"), strict=True)
+                        prompt = _job_prompt(job.get("payload"), prompt)
                     set_attributes(
                         job_span,
                         {
                             "drain.repo": repo,
                             "drain.branch": branch,
                             "drain.reasoning": reasoning,
+                            "drain.model": model,
                         },
                     )
                     quota_attributes = _quota_span_attributes()
@@ -1506,7 +1586,7 @@ def drain_cycle() -> dict:
                     session_id = start_agent_session(
                         local_session_id,
                         prompt,
-                        DRAIN_MODEL,
+                        model,
                         repo,
                         branch,
                         workflow_id,
