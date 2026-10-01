@@ -45,6 +45,31 @@ contents:
     - blkid
     # The shim is stdlib python, matching the runtimes/python pattern.
     - python-3.12
+    # Factory toolchains (#6642). The retro found ~26% of factory sessions
+    # bootstrapping a toolchain (pip install pytest, downloading helm or Go)
+    # before doing any work, so the tools the repo's own validation needs ship in
+    # the base instead. Each lands on guest-init's forced PATH
+    # (/usr/bin:/bin:/usr/local/bin); the README records the dependency.
+    #
+    # helm 3, pinned to the 3 stream: the repo pins helm 3.16.4 in
+    # bazel/tools/tools.lock.json and Wolfi's plain `helm` is now 4.x, which
+    # renders charts differently. Wolfi only carries 3.19.x here, so this is the
+    # nearest 3 release rather than an exact match.
+    - helm-3
+    # go.mod says `go 1.26.0` with no toolchain line, so the packaged 1.26.x
+    # satisfies it without a toolchain download at first use.
+    - go-1.26
+    # node matches the Bazel node toolchain (node.toolchain 20.19.0 in
+    # MODULE.bazel) that the repo's JS builds and tests run under. The monolith
+    # frontend image runs nodejs-22, but nothing in a session builds that image.
+    # pnpm is the repo's JS package manager.
+    - nodejs-20
+    - pnpm
+    # Repo tests are pytest and import yaml almost everywhere. These are the
+    # python-3.12 system packages, importable by the shim's interpreter. A full
+    # bazel/requirements/all.txt venv is deliberately NOT shipped (see README).
+    - py3.12-pytest
+    - py3.12-pyyaml
 
 archs:
   - x86_64
