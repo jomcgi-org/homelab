@@ -127,6 +127,7 @@ def test_retry_defaults_and_environment_override(monkeypatch, budget):
     fresh = runpy.run_path(probe.__file__)
     assert fresh["EMBER_SYNTHETIC_RETRY_BUDGET_S"] == (90.0 if budget is None else 45.0)
     assert fresh["EMBER_SYNTHETIC_RETRY_INTERVAL_S"] == 15.0
+    assert fresh["_SPAN_DETAIL_MAX_CHARS"] == 512
 
 
 @pytest.mark.asyncio
