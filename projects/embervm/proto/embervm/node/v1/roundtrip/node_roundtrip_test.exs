@@ -104,7 +104,7 @@ defmodule Embervm.NodeRoundtripTest do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
     assert ns.node_id == "node-4"
     assert ns.max_live_vms == 10
-    assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512}] = ns.session_volumes
+    assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512, exported: true}] = ns.session_volumes
   end
 
   test "session verbs round-trip across the wire (R2 additive contract)", %{channel: ch} do

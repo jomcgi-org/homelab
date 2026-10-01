@@ -1429,6 +1429,10 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured; session persistence unavailable on this node")
 		}
 		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
+		// The guest can write before AttachLineage runs after boot. Hold the
+		// workspace export fence throughout provisioning and readiness.
+		finishWorkspaceUse := s.beginWorkspaceUse(base.workload, req.GetLineageId())
+		defer finishWorkspaceUse()
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
@@ -1521,6 +1525,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	rtCancel()
 
 	if req.GetLineageId() != "" {
+		s.invalidateWorkspace(base.workload, req.GetLineageId())
 		if err := s.volumes.AttachLineage(base.workload, req.GetLineageId(), h.ID); err != nil {
 			s.reap(h, func() {})
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: attach session volume: %v", err)
@@ -2929,7 +2934,10 @@ func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {
 	}
 	out := make([]*nodev1.SessionVolume, 0, len(inventory))
 	for _, v := range inventory {
-		out = append(out, &nodev1.SessionVolume{Workload: v.Workload, LineageId: v.LineageID, SizeBytes: v.SizeBytes, AllocatedBytes: v.AllocatedBytes})
+		out = append(out, &nodev1.SessionVolume{
+			Workload: v.Workload, LineageId: v.LineageID, SizeBytes: v.SizeBytes, AllocatedBytes: v.AllocatedBytes,
+			Exported: !s.lineageAttached(v.Workload, v.LineageID) && s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, v.Workload, v.LineageID),
+		})
 	}
 	return out
 }

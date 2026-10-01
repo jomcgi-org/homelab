@@ -440,7 +440,7 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 			},
 		},
 		SessionVolumes: []*nodev1.SessionVolume{
-			{Workload: "sandbox-session", LineageId: "s-sess3", SizeBytes: 1024, AllocatedBytes: 512},
+			{Workload: "sandbox-session", LineageId: "s-sess3", SizeBytes: 1024, AllocatedBytes: 512, Exported: true},
 		},
 		SnapshotDiskFreeBytes: 9_000_000_000,
 		SnapshotDiskUsedBytes: 1_000_000_000,

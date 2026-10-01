@@ -14,7 +14,7 @@ defmodule Embervm.NodeRegistryTest do
 
   alias Embervm.{NodeCapacity, NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, SessionVm, StatefulVm, WorkloadCapacity}
+  alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, SessionVm, SessionVolume, StatefulVm, WorkloadCapacity}
 
   # -- helpers ---------------------------------------------------------------
 
@@ -113,6 +113,25 @@ defmodule Embervm.NodeRegistryTest do
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].dispatchable
+  end
+
+  test "capacity carries workspace export acknowledgement and defaults missing flags to false" do
+    {clock, _advance} = new_clock()
+    {reg, table} = start_registry(clock: clock)
+    status = %NodeStatus{node_status() | session_volumes: [
+      %SessionVolume{workload: "sandbox", lineage_id: "archived", size_bytes: 1024, allocated_bytes: 512, exported: true},
+      %SessionVolume{workload: "sandbox", lineage_id: "pending", exported: false},
+      %SessionVolume{workload: "sandbox", lineage_id: "old-daemon"}
+    ]}
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.session_volumes == [
+      %{workload: "sandbox", lineage_id: "archived", size_bytes: 1024, allocated_bytes: 512, exported: true},
+      %{workload: "sandbox", lineage_id: "pending", size_bytes: 0, allocated_bytes: 0, exported: false},
+      %{workload: "sandbox", lineage_id: "old-daemon", size_bytes: 0, allocated_bytes: 0, exported: false}
+    ]
+    assert {:ok, ^facts} = NodeCapacity.fetch(table, "node-4")
   end
 
   test "capacity normalizes reported node names to the registration identity" do

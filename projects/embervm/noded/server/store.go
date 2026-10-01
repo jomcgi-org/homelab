@@ -570,6 +570,10 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	if prefix == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
 	}
+	workspaceEpoch, exportable := s.workspaceExportEpoch(ref, prefix)
+	if !exportable {
+		return nil, status.Error(codes.FailedPrecondition, "noded: session workspace is in use")
+	}
 	localDir := s.artifactLocalDir(ref)
 	if localDir == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: artifact kind %s not exportable on this node", ref.GetKind())
@@ -635,8 +639,7 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: export artifact %q: %v", prefix, err)
 	}
-	s.exported.mark(prefix, generation)
-	s.signalChange()
+	s.markArtifactExported(ref, prefix, generation, workspaceEpoch)
 	if skipped {
 		s.rewrapEnvelopeAfterAccess(ref, prefix)
 	}
@@ -800,12 +803,20 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// Every other (small) kind restores inline: the download is quick enough that
 	// the idle-flow-reap risk does not apply, and the caller's existing inline
 	// restore-on-miss semantics are unchanged.
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		finishWorkspaceUse := s.beginWorkspaceUse(ref.GetWorkload(), ref.GetRef())
+		defer finishWorkspaceUse()
+	}
 	moved, generation, err := s.store.Restore(ctx, prefix, localDir, dataKey)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: restore artifact %q download failed: %v", prefix, err)
 	}
 	s.reregisterRestored(ref)
-	s.exported.mark(prefix, generation)
+	// A workspace download invalidates the previous local-copy acknowledgement.
+	// Only a later export or checksum skip can confirm this mutable copy.
+	if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		s.exported.mark(prefix, generation)
+	}
 	s.signalChange()
 	if len(envelope) > 0 {
 		s.rewrapEnvelopeAfterAccess(ref, prefix)
@@ -1404,7 +1415,52 @@ type exportJob struct {
 func (s *Server) noteArtifactCreated(ref *nodev1.ArtifactRef) {
 	if key := artifactPrefix(ref, s.cfg.CpuVendor); key != "" {
 		s.unexportable.clear(key)
+		if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+			s.invalidateWorkspace(ref.GetWorkload(), ref.GetRef())
+		}
 	}
+}
+
+// beginWorkspaceUse fences exports before provisioning, boot or disk restore.
+// The final invalidation also rejects a job that overlapped a failed use.
+func (s *Server) beginWorkspaceUse(workload, lineageID string) func() {
+	key := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}, s.cfg.CpuVendor)
+	s.exported.beginWorkspaceUse(key)
+	s.signalChange()
+	return func() {
+		s.exported.endWorkspaceUse(key)
+		s.signalChange()
+	}
+}
+
+func (s *Server) invalidateWorkspace(workload, lineageID string) {
+	key := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}, s.cfg.CpuVendor)
+	s.exported.clear(key)
+	s.signalChange()
+}
+
+// workspaceExportEpoch captures the fence before any workspace file is read.
+// Other artifact kinds retain their existing generation/presence semantics.
+func (s *Server) workspaceExportEpoch(ref *nodev1.ArtifactRef, key string) (uint64, bool) {
+	if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		return 0, true
+	}
+	epoch, idle := s.exported.workspaceEpoch(key)
+	return epoch, idle && !s.lineageAttached(ref.GetWorkload(), ref.GetRef())
+}
+
+func (s *Server) markArtifactExported(ref *nodev1.ArtifactRef, key string, generation, workspaceEpoch uint64) bool {
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		if s.lineageAttached(ref.GetWorkload(), ref.GetRef()) || !s.exported.markWorkspace(key, generation, workspaceEpoch) {
+			s.logger.Info("noded: workspace export acknowledgement skipped, lineage changed during export", "artifact", key)
+			return false
+		}
+	} else {
+		s.exported.mark(key, generation)
+	}
+	// Includes checksum skips, which also confirm a current store copy.
+	s.signalChange()
+	return true
 }
 
 func (s *Server) enqueueCreatedExport(ref *nodev1.ArtifactRef) {
@@ -1508,6 +1564,11 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	// Check again at job entry because a permanent refusal can be recorded after
 	// this job was enqueued but before a worker starts it.
 	if s.unexportable.contains(job.key) {
+		return
+	}
+	workspaceEpoch, exportable := s.workspaceExportEpoch(job.ref, job.key)
+	if !exportable {
+		s.logger.Info("noded: export skipped, session workspace in use (will retry on reconcile)", "artifact", job.key)
 		return
 	}
 
@@ -1646,11 +1707,12 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 			"artifact", job.key, "kind", job.ref.GetKind().String(), "class", "retryable", "err", err)
 		return
 	}
-	s.exported.mark(job.key, generation)
+	if !s.markArtifactExported(job.ref, job.key, generation, workspaceEpoch) {
+		return
+	}
 	if !skipped {
 		s.logger.Info("noded: exported artifact off node", "artifact", job.key, "generation", generation)
 	}
-	s.signalChange()
 	s.completeRetirement(job.ref)
 }
 
@@ -1792,6 +1854,10 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 // and Store.Export's own Head-compare makes the final call.
 func (s *Server) alreadyDurable(ctx context.Context, ref *nodev1.ArtifactRef, prefix string) bool {
 	if s.store == nil || prefix == "" {
+		return false
+	}
+	// A mutable workspace's stable key cannot prove freshness after a restart.
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
 		return false
 	}
 	// A vendor-bound kind already durable under the legacy un-vendored prefix
@@ -2102,12 +2168,14 @@ func (s *Server) storeReachableNow() bool {
 // the NodeStatus projection reads it to set the per-artifact `exported` bool and
 // Volume.exported_generation. Safe for concurrent use.
 type exportedCache struct {
-	mu   sync.RWMutex
-	gens map[string]uint64 // prefix -> exported generation (0 for non-volume kinds)
+	mu              sync.RWMutex
+	gens            map[string]uint64 // prefix -> exported generation (0 for non-volume kinds)
+	workspaceEpochs map[string]uint64
+	workspaceUsers  map[string]uint64 // provisioning/restoring before attach is visible
 }
 
 func newExportedCache() *exportedCache {
-	return &exportedCache{gens: make(map[string]uint64)}
+	return &exportedCache{gens: make(map[string]uint64), workspaceEpochs: make(map[string]uint64), workspaceUsers: make(map[string]uint64)}
 }
 
 // mark records that an artifact's store copy is current at the given generation.
@@ -2122,7 +2190,41 @@ func (c *exportedCache) mark(prefix string, generation uint64) {
 func (c *exportedCache) clear(prefix string) {
 	c.mu.Lock()
 	delete(c.gens, prefix)
+	c.workspaceEpochs[prefix]++
 	c.mu.Unlock()
+}
+
+func (c *exportedCache) beginWorkspaceUse(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.workspaceUsers[prefix]++
+	c.workspaceEpochs[prefix]++
+	delete(c.gens, prefix)
+}
+
+func (c *exportedCache) endWorkspaceUse(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.workspaceUsers[prefix]--
+	c.workspaceEpochs[prefix]++
+	delete(c.gens, prefix)
+}
+
+func (c *exportedCache) workspaceEpoch(prefix string) (uint64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.workspaceEpochs[prefix], c.workspaceUsers[prefix] == 0
+}
+
+// markWorkspace compares and publishes under the same lock as invalidation.
+func (c *exportedCache) markWorkspace(prefix string, generation, epoch uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.workspaceEpochs[prefix] != epoch || c.workspaceUsers[prefix] != 0 {
+		return false
+	}
+	c.gens[prefix] = generation
+	return true
 }
 
 // present reports whether an artifact prefix has a current store copy.

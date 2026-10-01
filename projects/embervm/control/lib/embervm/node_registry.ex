@@ -1249,7 +1249,8 @@ defmodule Embervm.NodeRegistry do
   defp session_volumes_from_status(%NodeStatus{session_volumes: volumes}) when is_list(volumes) do
     for %SessionVolume{} = volume <- volumes do
       %{workload: volume.workload, lineage_id: volume.lineage_id,
-        size_bytes: volume.size_bytes, allocated_bytes: volume.allocated_bytes}
+        size_bytes: volume.size_bytes, allocated_bytes: volume.allocated_bytes,
+        exported: volume.exported == true}
     end
   end
 

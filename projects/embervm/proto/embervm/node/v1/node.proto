@@ -1611,6 +1611,11 @@ message SessionVolume {
   string lineage_id = 2;
   uint64 size_bytes = 3;
   uint64 allocated_bytes = 4;
+  // True only when the object store holds a copy current with this DETACHED
+  // local workspace. False while the lineage is attached or its durability is
+  // unknown (including after a daemon restart until a later export or checksum
+  // skip confirms it), and on a daemon that predates #6533.
+  bool exported = 5;
 }
 
 // ServingVm is one LIVE serving VM the node currently holds, reported so a
