@@ -1,0 +1,12 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: loom-pg-daily
+  namespace: loom
+spec:
+  # CNPG cron has six fields, including leading seconds: daily at 02:00 UTC.
+  schedule: "0 0 2 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: loom-pg
