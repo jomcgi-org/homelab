@@ -5586,6 +5586,18 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_repo_diff_source_test",
+    srcs = ["knowledge/repo_diff_source_test.py"],
+    data = ["knowledge/extraction.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_extraction_repo_diff_test",
     srcs = ["knowledge/extraction_repo_diff_test.py"],
     imports = ["."],
