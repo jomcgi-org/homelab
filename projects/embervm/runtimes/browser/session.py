@@ -362,7 +362,9 @@ class Supervisor:
         except OSError as error:
             snapshot = {}
             errors.append("descendants: " + str(error))
-        owned_groups = {pgrp for pgrp in (pgrp for pgrp, _ in snapshot.values()) if pgrp in snapshot}
+        owned_groups = {
+            pgrp for pgrp in (pgrp for pgrp, _ in snapshot.values()) if pgrp in snapshot
+        }
         # Signal all groups before waiting on any one process, including
         # detached descendants that left the launched process group.
         for process in session.processes:
@@ -443,9 +445,7 @@ class Supervisor:
                     break
                 time.sleep(0.01)
             for pid in sorted(remaining):
-                errors.append(
-                    "descendant still present after SIGKILL: pid " + str(pid)
-                )
+                errors.append("descendant still present after SIGKILL: pid " + str(pid))
         try:
             shutil.rmtree(session.root)
         except FileNotFoundError:

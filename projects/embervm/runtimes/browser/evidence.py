@@ -180,7 +180,10 @@ def _png_dimensions(data):
         (stored_crc,) = struct.unpack(
             ">I", data[offset + 8 + length : offset + 12 + length]
         )
-        if zlib.crc32(data[offset + 4 : offset + 8 + length]) & 0xFFFFFFFF != stored_crc:
+        if (
+            zlib.crc32(data[offset + 4 : offset + 8 + length]) & 0xFFFFFFFF
+            != stored_crc
+        ):
             return False, None
         if first:
             if chunk_type != b"IHDR" or length != 13:
