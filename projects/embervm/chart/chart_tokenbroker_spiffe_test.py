@@ -211,28 +211,21 @@ def test_codex_usage_refresh_seconds_default_off_and_hub_600() -> None:
     tick stays under the gate's 900 s bound (embervm ARCHITECTURE.md).
     """
     bare = _source_document(_render("refresh-default"), "tokenbroker-deployment.yaml")
-    assert (
-        '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "0" }' in bare
-    )
+    assert '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "0" }' in bare
 
     prod_values = Path(os.environ["PROD_VALUES"])
     home = _source_document(
         _render("refresh-home", value_files=[prod_values]),
         "tokenbroker-deployment.yaml",
     )
-    assert (
-        '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "0" }' in home
-    )
+    assert '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "0" }' in home
 
     gke_values = Path(os.environ["GKE_VALUES"])
     hub = _source_document(
         _render("embervm", value_files=[prod_values, gke_values]),
         "tokenbroker-deployment.yaml",
     )
-    assert (
-        '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "600" }'
-        in hub
-    )
+    assert '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "600" }' in hub
     assert 600 + 60 + 10 < 900
 
 
