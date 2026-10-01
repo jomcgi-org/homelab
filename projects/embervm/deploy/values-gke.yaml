@@ -94,6 +94,7 @@ noded:
 # codex-broker-login round to seed the refresh token.
 tokenBroker:
   enabled: true
+  codexUsageRefreshSeconds: 600
   # Chart/values skew guard: Kargo pins the live embervm chart (0.93.13 at the
   # time of writing), and that chart still ships the tokenbroker
   # CiliumNetworkPolicy template defaulting to enabled. The hub has no Cilium

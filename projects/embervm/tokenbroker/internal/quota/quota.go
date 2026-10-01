@@ -323,7 +323,12 @@ func decodeState(data []byte) (persistedState, error) {
 // GetGrant returns the latest view for one grant; unobserved grants come back
 // with Observed false and an empty provider.
 func (s *Store) GetGrant(grant string) View {
-	return s.getGrant(grant, time.Now().UTC())
+	return s.GetGrantAt(grant, time.Now().UTC())
+}
+
+// GetGrantAt derives age and expiration using the caller's clock.
+func (s *Store) GetGrantAt(grant string, now time.Time) View {
+	return s.getGrant(grant, now)
 }
 
 func (s *Store) getGrant(grant string, now time.Time) View {

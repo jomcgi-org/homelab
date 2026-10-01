@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "tokenbroker_lib",
     srcs = [
+        "codex_usage.go",
         "github.go",
         "github_canary.go",
         "main.go",
@@ -38,6 +39,7 @@ go_binary(
 go_test(
     name = "tokenbroker_test",
     srcs = [
+        "codex_usage_test.go",
         "github_canary_test.go",
         "github_test.go",
         "main_test.go",

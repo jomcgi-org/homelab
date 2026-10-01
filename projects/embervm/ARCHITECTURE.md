@@ -1476,6 +1476,15 @@ account for long stretches and each account burns down in quarter steps)
 for no cross-service plumbing, and the occasional cache miss on a flip is
 cheaper than that plumbing. See #5974.
 
+**Why.** The broker holds every grant's token, so it can refresh an unused
+pooled Codex grant without a guest session. Its optional refresher reads
+`GET /wham/usage` without inference, through the cached `GetAccessToken`
+path, and leaves the sidecar ranker unchanged. The hub refresh age is 600
+seconds, below the gate's 900-second freshness bound and the ranker's
+15-minute bound. Known exhausted grants wait for their reset, and
+window-less rejections wait 15 minutes: refreshing those observations
+early would keep the KG gate's fresh-exhaustion veto active. See #6637.
+
 **Agent MCP lane** (**Built** on the hub): the guest half of the agents tier
 described in [projects/mcp/ARCHITECTURE.md](../mcp/ARCHITECTURE.md#topology).
 The shim writes a strict MCP client config from a URL delivered by
