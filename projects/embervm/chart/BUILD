@@ -111,6 +111,7 @@ py_test(
         "//projects/embervm/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
+        "files/**/*",
         "templates/**/*",
         "crds/**/*",
     ]),
