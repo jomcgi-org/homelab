@@ -315,6 +315,9 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for boot image %q not provisioned on this node", base.imageDigest, bootImageRef)
 	}
+	if err := s.refuseIfRootfsPending(img.RootfsPath); err != nil {
+		return nil, err
+	}
 	harnessInit := img.HarnessInit
 	if harnessInit == "" {
 		harnessInit = s.cfg.HarnessInit

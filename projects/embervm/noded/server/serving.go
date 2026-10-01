@@ -95,6 +95,9 @@ func (s *Server) startServingFresh(ctx context.Context, req *nodev1.StartServing
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: runtime image %q for serving image %q not provisioned on this node", simg.runtimeImageRef, servingImageRef)
 	}
+	if err := s.refuseIfRootfsPending(img.RootfsPath); err != nil {
+		return nil, err
+	}
 	harnessInit := img.HarnessInit
 	if harnessInit == "" {
 		harnessInit = s.cfg.HarnessInit

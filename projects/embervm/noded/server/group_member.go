@@ -446,6 +446,9 @@ func (s *Server) resolveGroupMemberBoot(source string) (rootfsPath, harnessInit 
 	if !ok {
 		return "", "", status.Errorf(codes.FailedPrecondition, "noded: group member source %q is not a provisioned image on this node", source)
 	}
+	if err := s.refuseIfRootfsPending(img.RootfsPath); err != nil {
+		return "", "", err
+	}
 	harnessInit = img.HarnessInit
 	if harnessInit == "" {
 		harnessInit = s.cfg.HarnessInit

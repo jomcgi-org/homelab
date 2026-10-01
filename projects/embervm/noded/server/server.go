@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -693,6 +694,30 @@ func (s *Server) hasPrimedForWorkload(workload string) bool {
 
 // ---- BuildBase -------------------------------------------------------------
 
+// rootfsPending admits only a missing root with a fresh baker-owned marker.
+// Other errors (including unreadable or invalid ext4 files) retain their errors.
+func (s *Server) rootfsPending(path string, now time.Time) bool {
+	if s.cfg.RootfsPendingMaxAge <= 0 {
+		return false
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	marker, err := os.Stat(path + ".pending")
+	if err != nil || !marker.Mode().IsRegular() {
+		return false
+	}
+	age := now.Sub(marker.ModTime())
+	return age >= 0 && age <= s.cfg.RootfsPendingMaxAge
+}
+
+func (s *Server) refuseIfRootfsPending(path string) error {
+	if s.rootfsPending(path, time.Now()) {
+		return status.Errorf(codes.Aborted, "noded: rootfs %q not yet baked; retry later", path)
+	}
+	return nil
+}
+
 // BuildBase resolves the image to its node-side rootfs, cold-boots a guest,
 // health-gates it on the ready path, and snapshots it into a base bundle. It is
 // idempotent per (image_ref, workload_revision): a repeat call for an already
@@ -733,6 +758,11 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	}
 	rootfsID, err := ext4UUID(img.RootfsPath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
+				return nil, pendingErr
+			}
+		}
 		buildErr := fmt.Sprintf("read rootfs UUID for image %q (workload %q): %v", imageRef, workload, err)
 		failedKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, "")
 		s.bases.failBuild(failedKey, workload, img.RootfsPath, req.GetReadyPath(), buildErr)
@@ -777,6 +807,11 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	imageDigest := runtimeRef
 	rootfsID, err := ext4UUID(img.RootfsPath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if pendingErr := s.refuseIfRootfsPending(img.RootfsPath); pendingErr != nil {
+				return nil, pendingErr
+			}
+		}
 		buildErr := fmt.Sprintf("read rootfs UUID for runtime image %q (workload %q): %v", runtimeRef, workload, err)
 		failedKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, "")
 		s.bases.failBuild(failedKey, workload, img.RootfsPath, req.GetReadyPath(), buildErr)
