@@ -215,9 +215,17 @@ initContainers:
         value: /ghcr
       {{- end }}
     volumeMounts:
+      # Same scratch mount as the legacy per-workload builders below. Under
+      # sharedScratch the nvme volume is the shared hostRoot, so without the
+      # subPath this container would see that whole root at nvmeRoot and bake
+      # into another release's tree.
       - name: nvme
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        {{- if $sharedOn }}
+        subPath: {{ $shared.subPath }}
+        {{- else }}
         mountPropagation: HostToContainer
+        {{- end }}
       - name: rootfs-builder-script
         mountPath: /scripts
         readOnly: true

@@ -416,6 +416,51 @@ def test_rootfs_parallel_driver_is_default_off_and_preserves_builder_contract() 
         assert driver["resources"] == legacy_builders[0]["resources"]
 
 
+def test_rootfs_parallel_driver_keeps_the_shared_scratch_subpath() -> None:
+    """Under sharedScratch the driver must mount scratch exactly like the legacy builders.
+
+    The nvme volume is the shared hostRoot there, so a driver mount without the
+    subPath would expose the whole root at nvmeRoot and bake into another
+    release's tree (embervm-dev into production's scratch on the hub).
+    """
+    values = [
+        _chart_dir() / "values.yaml",
+        Path(os.environ["DEV_VALUES"]),
+        Path(os.environ["DEV_GKE_VALUES"]),
+    ]
+    legacy = _noded_pod_specs(_render("embervm-dev", values))
+    parallel = _noded_pod_specs(
+        _render("embervm-dev", values, ["rootfsBuilder.parallelEnabled=true"])
+    )
+    assert legacy and parallel
+    legacy_by_name = dict(legacy)
+    checked = 0
+    for name, pod_spec in parallel:
+        builders = [
+            container
+            for container in pod_spec.get("initContainers", [])
+            if container["name"] == "build-all-rootfs"
+        ]
+        if not builders:
+            continue
+        (driver,) = builders
+        legacy_builders = [
+            container
+            for container in legacy_by_name[name].get("initContainers", [])
+            if container["name"].startswith("build-")
+            and container["name"].endswith("-rootfs")
+        ]
+        assert legacy_builders, name
+        (nvme,) = [m for m in driver["volumeMounts"] if m["name"] == "nvme"]
+        assert nvme.get("subPath") == "dev", name
+        assert nvme["mountPath"] == "/var/lib/embervm/scratch/dev", name
+        assert driver["volumeMounts"] == legacy_builders[0]["volumeMounts"], name
+        for _workload, _image, path, _memory in _driver_tuples(driver):
+            assert path.startswith("/var/lib/embervm/scratch/dev/"), path
+        checked += 1
+    assert checked, "no parallel driver rendered for embervm-dev; test is inert"
+
+
 @pytest.mark.parametrize("value", ["0", "17", "not-a-number"])
 def test_rootfs_parallel_driver_rejects_invalid_concurrency(value: str) -> None:
     helm_bin = os.environ.get("HELM_BIN", "helm")
@@ -1571,6 +1616,13 @@ def test_dev_rootfs_paths_are_under_dev_scratch(renders):
     assert dev_paths, "no dev hostPaths found; this assertion is inert"
 
     rootfs_paths = set(_ROOTFS_PATH.findall(renders["dev"]))
+    # The opt-in parallel driver passes base paths as argv tuples, not env.
+    for _name, pod_spec in _noded_pod_specs(renders["dev"]):
+        for container in pod_spec.get("initContainers", []):
+            if container["name"] == "build-all-rootfs":
+                rootfs_paths |= {
+                    path for _workload, _image, path, _memory in _driver_tuples(container)
+                }
     assert rootfs_paths, (
         "no BASE_ROOTFS_PATH values in the dev render. Either the brick renders no "
         "base builders, which is fine, or this regex has drifted and the assertion "
