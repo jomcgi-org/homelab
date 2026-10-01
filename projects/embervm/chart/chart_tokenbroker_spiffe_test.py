@@ -202,6 +202,40 @@ def test_hub_values_render_listener_and_egress_client_together() -> None:
     assert "embervm-embervm-tokenbroker.embervm.svc.cluster.local:8080" not in rendered
 
 
+def test_codex_usage_refresh_seconds_default_off_and_hub_600() -> None:
+    """Pin the refresher default and the hub overlay (acceptance (b)).
+
+    The chart default keeps inference-free usage reads off; the hub
+    overlay (deploy/values.yaml plus deploy/values-gke.yaml, the hub
+    Application valueFiles) enables them at 600 s. 600 plus the 60 s
+    tick stays under the gate's 900 s bound (embervm ARCHITECTURE.md).
+    """
+    bare = _source_document(_render("refresh-default"), "tokenbroker-deployment.yaml")
+    assert (
+        '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "0" }' in bare
+    )
+
+    prod_values = Path(os.environ["PROD_VALUES"])
+    home = _source_document(
+        _render("refresh-home", value_files=[prod_values]),
+        "tokenbroker-deployment.yaml",
+    )
+    assert (
+        '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "0" }' in home
+    )
+
+    gke_values = Path(os.environ["GKE_VALUES"])
+    hub = _source_document(
+        _render("embervm", value_files=[prod_values, gke_values]),
+        "tokenbroker-deployment.yaml",
+    )
+    assert (
+        '- { name: TOKENBROKER_CODEX_USAGE_REFRESH_SECONDS, value: "600" }'
+        in hub
+    )
+    assert 600 + 60 + 10 < 900
+
+
 def test_egress_mtls_wires_daemonset_and_bricks_with_exact_broker_identity() -> None:
     rendered = _render(
         "client-on",
