@@ -88,11 +88,22 @@ def whatsapp_pod_spec() -> dict:
     return deployment["spec"]["template"]["spec"]
 
 
+_SPIFFE_HELPER = "tokenbroker-spiffe-helper"
+
+
+def _spiffe_enabled(app_pod_spec: dict) -> bool:
+    """Whether this render carries the token broker SVID sidecar (#5791)."""
+    return any(c["name"] == _SPIFFE_HELPER for c in app_pod_spec["containers"])
+
+
 def test_private_containers_have_read_only_roots(app_pod_spec: dict) -> None:
     containers = {
         container["name"]: container for container in app_pod_spec["containers"]
     }
-    assert set(containers) == set(_CONTAINER_TMP_VOLUMES)
+    expected = set(_CONTAINER_TMP_VOLUMES)
+    if _spiffe_enabled(app_pod_spec):
+        expected.add(_SPIFFE_HELPER)
+    assert set(containers) == expected
 
     for container in containers.values():
         security_context = container["securityContext"]
@@ -107,15 +118,56 @@ def test_each_container_has_only_its_own_writable_tmp(app_pod_spec: dict) -> Non
     containers = {
         container["name"]: container for container in app_pod_spec["containers"]
     }
+    spiffe = _spiffe_enabled(app_pod_spec)
+    svid_read_only = {
+        "name": "tokenbroker-svid",
+        "mountPath": "/run/tokenbroker-svid",
+        "readOnly": True,
+    }
     for container_name, volume_name in _CONTAINER_TMP_VOLUMES.items():
-        assert containers[container_name]["volumeMounts"] == [
-            {"name": volume_name, "mountPath": "/tmp"}
-        ]
+        expected = [{"name": volume_name, "mountPath": "/tmp"}]
+        if spiffe and container_name == "backend":
+            # The backend reads the SVID files; only the helper writes them.
+            expected.append(svid_read_only)
+        assert containers[container_name]["volumeMounts"] == expected
 
-    assert app_pod_spec["volumes"] == [
+    expected_volumes = [
         {"name": volume_name, "emptyDir": {}}
         for volume_name in _CONTAINER_TMP_VOLUMES.values()
     ]
+    if spiffe:
+        # The helper's only writable path is its own memory-backed SVID dir.
+        assert containers[_SPIFFE_HELPER]["volumeMounts"] == [
+            {
+                "name": "spiffe-workload-api",
+                "mountPath": "/spiffe-workload-api",
+                "readOnly": True,
+            },
+            {
+                "name": "tokenbroker-spiffe-helper-config",
+                "mountPath": "/etc/spiffe-helper",
+                "readOnly": True,
+            },
+            {"name": "tokenbroker-svid", "mountPath": "/run/tokenbroker-svid"},
+        ]
+        expected_volumes += [
+            {
+                "name": "spiffe-workload-api",
+                "csi": {"driver": "csi.spiffe.io", "readOnly": True},
+            },
+            {
+                "name": "tokenbroker-spiffe-helper-config",
+                "configMap": {
+                    "name": "monolith-tokenbroker-spiffe-helper",
+                    "defaultMode": 0o444,
+                },
+            },
+            {
+                "name": "tokenbroker-svid",
+                "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"},
+            },
+        ]
+    assert app_pod_spec["volumes"] == expected_volumes
 
 
 def test_tmp_volumes_are_writable_by_the_non_root_process(app_pod_spec: dict) -> None:
