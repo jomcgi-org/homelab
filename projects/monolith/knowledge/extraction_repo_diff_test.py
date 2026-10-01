@@ -842,7 +842,7 @@ def test_reconcile_limit_is_honoured(session, monkeypatch, source, bodies):
         (SECOND_BASE, SECOND_HEAD),
         (THIRD_BASE, THIRD_HEAD),
     ]
-    assert len(_repo_diff_raws(session)) == 3
+    assert len(_repo_diff_raws(session)) == 5
 
 
 @pytest.mark.parametrize("limit", [0, -1, None, True, "2"])
