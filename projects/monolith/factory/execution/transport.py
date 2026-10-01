@@ -66,6 +66,12 @@ class _DeliveryInvocation:
     cli_session_id: str | None = None
     artifact_path: str | None = None
 
+    observer_record: dict | None = None
+
+    def publish(self) -> None:
+        if self.observer_record is not None:
+            self.observer_record.update(self.record())
+
     def record(self) -> dict:
         return {
             "attempted": self.attempted,
@@ -1421,7 +1427,11 @@ class EmberVmShimTransport:
         # delivery started in a factory callback. Always restore the caller's
         # context on success, denial, transport failure, or cancellation.
         token = _delivery_admission_check.set(admission_check)
-        invocation = _DeliveryInvocation()
+        from factory.execution.store import rollout_handoff_enabled
+
+        invocation = _DeliveryInvocation(
+            observer_record=invocation_record if rollout_handoff_enabled() else None
+        )
         invocation_token = _delivery_invocation.set(invocation)
         try:
             with tracer.start_as_current_span("agent_sessions.deliver") as span:
@@ -1642,11 +1652,21 @@ class EmberVmShimTransport:
 
                 async def post() -> Turn:
                     async with httpx.AsyncClient(timeout=timeout) as client:
+                        from factory.execution.store import rollout_handoff_enabled
+
+                        if rollout_handoff_enabled():
+                            # Receipt preparation yields after the admission
+                            # check above. Fence a shutdown in that window too.
+                            await _check_delivery_admission()
                         # Mark before yielding to I/O. Even a connect/write/read
                         # failure after this point retains the conservative hold.
                         invocation = _delivery_invocation.get()
                         if invocation is not None:
                             invocation.attempted = True
+                            # Publish before yielding to the POST. SIGTERM can
+                            # hand this exact dispatch off while delivery is
+                            # still waiting, before observer cleanup (#6670).
+                            invocation.publish()
                         response = await client.post(
                             url, content=body.encode(), headers=headers
                         )

@@ -338,6 +338,7 @@ py_test(
         "values.yaml",
         "//projects/monolith:module_configs",
         "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",

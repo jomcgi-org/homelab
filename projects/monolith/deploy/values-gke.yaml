@@ -165,6 +165,8 @@ agents:
     # Preserve native results before their synchronous response is delivered.
     resultReceiptsEnabled: true
     responseLostRecoveryEnabled: true
+    # 2026-10-01: hand off active invokes before rollout observer teardown (#6670).
+    rolloutHandoffEnabled: true
     # Resume a held turn a brick drain interrupted on its exact dispatch,
     # through the drain relay, instead of settling it unknown (session 13635
     # on 2026-10-01). factoryDrainRelayContinuationEnabled is already on.

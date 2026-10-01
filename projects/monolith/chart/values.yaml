@@ -33,6 +33,9 @@ backend:
   # scheduled rollup jobs have their own configuration.
   primeObservabilitySnapshots: true
   replicas: 1
+  # Rollout handoff spends at most 15s in executor drain. Keep another 15s for
+  # HTTP and leader teardown, including the existing receipt cleanup (#6670).
+  terminationGracePeriodSeconds: 30
   # DCGM exporter scraped for the public stats ticker's GPU block. Empty here so
   # the chart stays inert; set per environment in deploy/values.yaml. The
   # observability-stats-rollup job carries its own copy under jobs.
@@ -153,6 +156,10 @@ agents:
     # Requires resultReceiptsEnabled: without a receipt there is nothing to
     # recover and the hold would only delay the same unknown outcome.
     responseLostRecoveryEnabled: false
+    # Fence new claims at SIGTERM and persist exact holds before cancelling
+    # response observers. Requires resultReceiptsEnabled and response loss
+    # recovery for adoption; other turns receive a bounded five-second grace.
+    rolloutHandoffEnabled: false
     # Resume, rather than settle, a held turn whose guest a brick drain
     # interrupted on exactly this dispatch (the guest parked with an
     # interrupted_turn naming it). The live node workflow turns the hold into

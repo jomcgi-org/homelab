@@ -5876,10 +5876,12 @@ py_test(
 py_test(
     name = "agent_sessions_response_lost_test",
     srcs = ["factory/execution/response_lost_test.py"],
+    data = ["app/main.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
         ":pkg_core",
+        ":pkg_factory",
         ":pkg_swarm",
         "@pip//httpx",
         "@pip//pytest",
@@ -9224,6 +9226,7 @@ py_library(
         "@pip//kubernetes_asyncio",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
+        "@pip//uvicorn",
     ],
 )
 
