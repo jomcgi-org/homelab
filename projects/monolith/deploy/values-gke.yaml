@@ -144,6 +144,10 @@ agents:
     # Preserve native results before their synchronous response is delivered.
     resultReceiptsEnabled: true
     responseLostRecoveryEnabled: true
+    # Resume a held turn a brick drain interrupted on its exact dispatch,
+    # through the drain relay, instead of settling it unknown (session 13635
+    # on 2026-10-01). factoryDrainRelayContinuationEnabled is already on.
+    responseLostDrainRelayEnabled: true
     resultReceiptAdoptionEnabled: true
     # Settle a non-factory permit on the guest's own error answer. At
     # 01:25-01:30 on 2026-10-01 six KG permits sat uncertain after their
