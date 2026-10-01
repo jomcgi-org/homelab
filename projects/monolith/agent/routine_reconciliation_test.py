@@ -1,6 +1,7 @@
 """File-backed integration tests for explicit routine cessation reconciliation."""
 
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 
@@ -1648,3 +1649,335 @@ def test_unbound_recovery_rolls_back_when_audit_fails(database, monkeypatch):
             )["next_run_at"]
             is None
         )
+
+
+class NoGuestTransport:
+    def __getattr__(self, name):
+        raise AssertionError(f"Unbound recovery contacted guest transport: {name}")
+
+
+@pytest.fixture
+def interrupted_dispatch(database, monkeypatch):
+    """Compose the real writers, cancelling before the binding callback runs."""
+    from factory.execution import mcp, permit_supervision as supervision
+    from factory.execution.models import ProbeObservation
+    from factory.execution.review_leases import ReservationReview
+    from factory.orchestration.factory_models import FactoryStart
+    from factory.orchestration.models import SwarmTask, SwarmNodeRun
+
+    engine = database.execution_options(
+        schema_translate_map={
+            "agent_sessions": None,
+            "claude_agent": None,
+            "swarm": None,
+        }
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                ProbeObservation,
+                ReservationReview,
+                FactoryStart,
+                SwarmTask,
+                SwarmNodeRun,
+            )
+        ],
+    )
+    attempt = {
+        "engine": engine,
+        "name": "kg:interrupted",
+        "prompt": "extract the original interrupted raw input",
+        "deliveries": [],
+        "clock": datetime(2026, 10, 1, tzinfo=timezone.utc),
+    }
+    for module in (mcp, store, routine_jobs, reconciliation, supervision):
+        monkeypatch.setattr(module, "get_engine", lambda: attempt["engine"])
+    monkeypatch.setenv("FACTORY_RESERVATION_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    monkeypatch.setattr(supervision, "_now", lambda: attempt["clock"])
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _: None)
+
+    async def cancel_before_binding(existing, cli, prompt, model, **kwargs):
+        assert existing is None
+        assert cli is None
+        assert callable(kwargs["on_create"])
+        attempt["deliveries"].append(prompt)
+        # In production deliver awaits this callback's commit before model POST.
+        # The rollout here cancels before even that callback, not after a POST.
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(mcp._transport, "deliver", cancel_before_binding)
+    with Session(engine) as db, db.begin():
+        db.execute(
+            text(
+                "INSERT INTO routine_jobs "
+                "(name,routine_kind,next_run_at,ttl_secs,payload,created_by) "
+                "VALUES (:name,'kg-drain','2000-01-01',2100,:payload,'test')"
+            ),
+            {
+                "name": attempt["name"],
+                "payload": json.dumps({"raw_id": "interrupted", "attempt": 2}),
+            },
+        )
+        db.execute(
+            text(
+                "INSERT INTO raw_inputs VALUES "
+                "(1,'interrupted','codex-session','original-content','{}')"
+            )
+        )
+        db.execute(
+            text(
+                "INSERT INTO workflow_status VALUES "
+                "('interrupted-cycle','drain_cycle','SUCCESS','original-version')"
+            )
+        )
+    with Session(engine) as db, db.begin():
+        admission.lock_pool(db)
+        job = routine_jobs.claim_job(
+            "original-drainer", 2100, kind="kg-drain", session=db
+        )
+        assert job is not None
+        local_id = "interrupted-cycle:kg-drain:" + attempt["name"]
+        assert admission.reserve_start(
+            db, local_id, tier="kg", model="luna", routine_job_name=attempt["name"]
+        )
+        agent = store.create_session(
+            db,
+            local_id,
+            "<guest>",
+            "main",
+            model="luna",
+            workflow_id="interrupted-cycle",
+            node_key="kg-drain",
+            admission_tier="kg",
+            commit=False,
+        )
+        attempt["sid"] = agent.id
+        attempt["pid"] = admission.reservation(db, local_id).id
+        attempt["guard"] = {
+            "expected_locked_by": "original-drainer",
+            "expected_locked_at": job["locked_at"],
+        }
+    with Session(engine) as db:
+        store.create_pending_message(db, attempt["sid"], attempt["prompt"], "luna")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mcp._execute_pending_message(attempt["sid"]))
+    assert routine_jobs.hold_job_for_unknown_outcome(
+        attempt["name"], attempt["sid"], "executor cancelled", **attempt["guard"]
+    )
+    with Session(engine) as db:
+        attempt["before"] = reconciliation.read_reconciliation_state(
+            db, attempt["name"], attempt["sid"]
+        )
+        turn = db.exec(select(AgentTurn)).one()
+        recovery = json.loads(turn.usage_json)["recovery"]
+        assert recovery["cause"] == "executor_cancelled"
+        assert recovery["dispatch_count"] == 1
+        assert recovery["last_dispatch_at"]
+        attempt["owner"] = recovery["claim_owner"]
+        assert db.get(AgentCapacityReservation, attempt["pid"]).owner == attempt["owner"]
+        assert db.get(AgentSession, attempt["sid"]).ember_session_id is None
+    assert routine_jobs.claim_job("premature", 2100, kind="kg-drain") is None
+    assert_interrupted_evidence(attempt, settled=False)
+    yield attempt
+    attempt["engine"].dispose()
+
+
+def assert_interrupted_evidence(attempt, *, settled, active_count=None):
+    """Every scenario preserves the exact lost turn and accounts for capacity."""
+    from factory.execution import mcp
+
+    with Session(attempt["engine"]) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, attempt["name"], attempt["sid"]
+        )
+        for field in ("turns_sha256", "payload_sha256"):
+            assert after[field] == attempt["before"][field]
+        turn = store.get_turn(db, attempt["sid"], 1)
+        assert turn.prompt == attempt["prompt"]
+        assert turn.cost_usd is None
+        assert turn.stop_reason == UNKNOWN_INVOCATION
+        assert store.get_pending_message(db, attempt["sid"], 1) is None
+        permit = db.get(AgentCapacityReservation, attempt["pid"])
+        assert permit.state == ("settled" if settled else "uncertain")
+        assert permit.outcome == ("no_guest_bound" if settled else "executor_cancelled")
+        assert (permit.settled_at is not None) == settled
+        assert len(db.exec(select(RoutineReconciliation)).all()) == int(settled)
+        active = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.state != "settled"
+            )
+        ).all()
+        expected_active = int(not settled) if active_count is None else active_count
+        assert len(active) == expected_active
+        assert admission.free_background_slots(db) == min(
+            admission.background_limit() - expected_active,
+            admission.total_limit() - expected_active,
+        )
+    asyncio.run(mcp._execute_pending_message(attempt["sid"]))
+    assert attempt["deliveries"] == [attempt["prompt"]]
+
+
+def sweep_interrupted(attempt):
+    from factory.execution import permit_supervision as supervision
+
+    attempt["clock"] += timedelta(seconds=15)
+    asyncio.run(supervision.sweep_once(NoGuestTransport()))
+
+
+def test_composed_interruption_rearms_once_after_commit(interrupted_dispatch, monkeypatch):
+    """Cases a, c and f: scheduler visibility, duplicate holds and no replay."""
+    from agent import api
+
+    attempt = interrupted_dispatch
+    reconcile = api.reconcile_held_job
+    committed = []
+
+    def check_commit_boundary(**kwargs):
+        result = reconcile(**kwargs)
+        # The writer has re-armed its own transaction, but another scheduler
+        # connection must still see the old hold until the outer commit.
+        assert kwargs["session"].exec(select(RoutineReconciliation)).one()
+        assert routine_jobs.claim_job("before-commit", 2100, kind="kg-drain") is None
+        committed.append(result)
+        return result
+
+    monkeypatch.setattr(api, "reconcile_held_job", check_commit_boundary)
+    sweep_interrupted(attempt)
+    assert len(committed) == 1
+    with Session(attempt["engine"]) as db:
+        settled_at = db.get(AgentCapacityReservation, attempt["pid"]).settled_at
+    assert not routine_jobs.hold_job_for_unknown_outcome(
+        attempt["name"], attempt["sid"], "late old hold", **attempt["guard"]
+    )
+    sweep_interrupted(attempt)
+    assert_interrupted_evidence(attempt, settled=True)
+    job = routine_jobs.claim_job("ordinary-scheduler", 2100, kind="kg-drain")
+    assert job is not None and job["name"] == attempt["name"]
+    assert routine_jobs.claim_job("duplicate-scheduler", 2100, kind="kg-drain") is None
+    sweep_interrupted(attempt)
+    with Session(attempt["engine"]) as db:
+        assert db.get(AgentCapacityReservation, attempt["pid"]).settled_at == settled_at
+    assert len(committed) == 1
+    assert_interrupted_evidence(attempt, settled=True)
+
+
+def test_composed_interruption_reconciliation_survives_restart(
+    interrupted_dispatch, monkeypatch
+):
+    """Cases b and f: fail after the real writes, reopen, then reconcile once."""
+    from agent import api
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import ProbeObservation
+
+    attempt = interrupted_dispatch
+    reconcile = api.reconcile_held_job
+    candidate = supervision._prepare(attempt["pid"])
+    assert candidate is not None
+
+    def interrupt_after_writes(**kwargs):
+        result = reconcile(**kwargs)
+        db = kwargs["session"]
+        assert db.exec(select(RoutineReconciliation)).one()
+        assert db.get(AgentCapacityReservation, attempt["pid"]).state == "settled"
+        assert result is not None
+        raise RuntimeError("process interrupted after reconciliation writes")
+
+    monkeypatch.setattr(api, "reconcile_held_job", interrupt_after_writes)
+    with pytest.raises(RuntimeError, match="process interrupted"):
+        supervision._record_no_guest(candidate)
+    attempt["engine"].dispose()
+    attempt["engine"] = create_engine(
+        attempt["engine"].url,
+        connect_args={"check_same_thread": False, "timeout": 10},
+        execution_options=attempt["engine"].get_execution_options(),
+    )
+    with Session(attempt["engine"]) as db:
+        assert db.get(ProbeObservation, attempt["pid"]).settled_at is None
+        state = reconciliation.read_reconciliation_state(db, attempt["name"], attempt["sid"])
+        assert state["next_run_at"] is None
+        assert state["state_sha256"] == attempt["before"]["state_sha256"]
+    assert routine_jobs.claim_job("restarted-too-early", 2100, kind="kg-drain") is None
+    assert_interrupted_evidence(attempt, settled=False)
+    monkeypatch.setattr(api, "reconcile_held_job", reconcile)
+    sweep_interrupted(attempt)
+    sweep_interrupted(attempt)
+    assert_interrupted_evidence(attempt, settled=True)
+    assert routine_jobs.claim_job("restarted-scheduler", 2100, kind="kg-drain") is not None
+    assert routine_jobs.claim_job("second-scheduler", 2100, kind="kg-drain") is None
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [("binding", "prior_binding_evidence"), ("owner", "missing_dispatch_identity"), ("pending", "pending_executor")],
+)
+def test_composed_interruption_refuses_stale_identity(interrupted_dispatch, change, reason):
+    """Cases d and f: exact proof is re-read after prepare, before settlement."""
+    from factory.execution import permit_supervision as supervision
+    from factory.execution.models import ProbeObservation
+
+    attempt = interrupted_dispatch
+    candidate = supervision._prepare(attempt["pid"])
+    assert candidate is not None
+    with Session(attempt["engine"]) as db, db.begin():
+        if change == "binding":
+            db.get(AgentSession, attempt["sid"]).prior_ember_lineage_id = "late-binding"
+        elif change == "owner":
+            db.get(AgentCapacityReservation, attempt["pid"]).owner = "other-executor"
+        else:
+            # A competing writer's queue is evidence, never execute it here.
+            db.add(PendingMessage(session_id=attempt["sid"], seq=2, message_text="late retry"))
+    assert supervision._record_no_guest(candidate) == reason
+    with Session(attempt["engine"]) as db:
+        observation = db.get(ProbeObservation, attempt["pid"])
+        assert observation.reason == reason
+        assert observation.settled_at is None
+        assert reconciliation.read_reconciliation_state(db, attempt["name"], attempt["sid"])["next_run_at"] is None
+    assert routine_jobs.claim_job("unsafe-scheduler", 2100, kind="kg-drain") is None
+    assert_interrupted_evidence(attempt, settled=False)
+
+
+def test_composed_interruption_old_notifications_preserve_new_attempt(interrupted_dispatch):
+    """Cases c, e and f: old proof cannot touch a newly admitted live attempt."""
+    from factory.execution import permit_supervision as supervision
+
+    attempt = interrupted_dispatch
+    old_candidate = supervision._prepare(attempt["pid"])
+    assert old_candidate is not None
+    sweep_interrupted(attempt)
+    with Session(attempt["engine"]) as db, db.begin():
+        admission.lock_pool(db)
+        job = routine_jobs.claim_job("new-drainer", 2100, kind="kg-drain", session=db)
+        assert job is not None
+        local_id = "new-cycle:kg-drain:" + attempt["name"]
+        assert admission.reserve_start(db, local_id, tier="kg", model="luna", routine_job_name=attempt["name"])
+        agent = store.create_session(
+            db, local_id, "<guest>", "main", model="luna", workflow_id="new-cycle",
+            node_key="kg-drain", admission_tier="kg", commit=False,
+        )
+        new_sid = agent.id
+        new_pid = admission.reservation(db, local_id).id
+    with Session(attempt["engine"]) as db:
+        store.create_pending_message(db, new_sid, "new attempt prompt", "luna")
+    assert store.claim_pending_message_for_session_sync(new_sid, "new-executor") == 1
+    with Session(attempt["engine"]) as db:
+        before_job = db.execute(text("SELECT * FROM routine_jobs")).mappings().one()
+        before_permit = db.get(AgentCapacityReservation, new_pid).model_dump()
+        before_agent = db.get(AgentSession, new_sid).model_dump()
+        before_pending = store.get_pending_message(db, new_sid, 1).model_dump()
+    assert not routine_jobs.hold_job_for_unknown_outcome(attempt["name"], attempt["sid"], "late old hold", **attempt["guard"])
+    assert store.release_pending_message_claim_sync(
+        attempt["sid"], 1, attempt["owner"], "executor_cancelled", dispatch_count=1
+    )
+    assert supervision._record_no_guest(old_candidate) == "no_guest_bound"
+    sweep_interrupted(attempt)
+    with Session(attempt["engine"]) as db:
+        assert dict(db.execute(text("SELECT * FROM routine_jobs")).mappings().one()) == dict(before_job)
+        assert db.get(AgentCapacityReservation, new_pid).model_dump() == before_permit
+        assert db.get(AgentSession, new_sid).model_dump() == before_agent
+        assert store.get_pending_message(db, new_sid, 1).model_dump() == before_pending
+        assert before_permit["state"] == "running"
+    assert routine_jobs.claim_job("duplicate-scheduler", 2100, kind="kg-drain") is None
+    assert_interrupted_evidence(attempt, settled=True, active_count=1)
