@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session
 
+from observability.factory_goals import FactoryGoalIssue
 from observability.merged_prs import MergedPR, is_agent_authored, parse_title
 
 _UPSERT_CHUNK_SIZE = 200
@@ -80,6 +81,45 @@ def upsert_and_prune(
     deleted = result.rowcount or 0
     session.commit()
     return (len(pulls), deleted)
+
+
+def upsert_goal_issues(
+    session: Session,
+    issues: list[dict],
+    numbers: set[int],
+    *,
+    snapshotted_at: datetime | None = None,
+) -> tuple[int, int]:
+    """Replace resolved issue snapshots and prune unlinked or unresolved rows."""
+    snapshot_time = snapshotted_at or _utc_now()
+    rows = [
+        {**issue, "snapshotted_at": snapshot_time}
+        for issue in issues
+        if issue["number"] in numbers
+    ]
+    table = FactoryGoalIssue.__table__
+    if rows:
+        insert_fn = (
+            sqlite_insert
+            if session.get_bind().dialect.name == "sqlite"
+            else postgresql_insert
+        )
+        statement = insert_fn(table).values(rows)
+        statement = statement.on_conflict_do_update(
+            index_elements=[table.c.number],
+            set_={
+                column.name: getattr(statement.excluded, column.name)
+                for column in table.columns
+                if column.name != "number"
+            },
+        )
+        session.exec(statement)
+    resolved = {row["number"] for row in rows}
+    result = session.exec(
+        delete(FactoryGoalIssue).where(FactoryGoalIssue.number.not_in(resolved))
+    )
+    session.commit()
+    return len(rows), result.rowcount or 0
 
 
 def write_snapshot(pulls: list[dict], cutoff: datetime) -> tuple[int, int]:

@@ -13,9 +13,9 @@ from observability.factory_goals import (
     goals_payload,
     list_active_goals,
     score_goals,
-    upsert_goal_issues,
     validate_goals,
 )
+from observability.merged_prs_writer import upsert_goal_issues
 
 _NOW = datetime(2026, 9, 23, 12, tzinfo=timezone.utc)
 

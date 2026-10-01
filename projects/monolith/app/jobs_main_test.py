@@ -117,7 +117,7 @@ def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
         mock.patch.object(jobs_main, "configure_logging"),
         mock.patch.object(jobs_main.logger, "info") as log,
         mock.patch("observability.factory_goals.list_active_goals", return_value=[]),
-        mock.patch("observability.factory_goals.upsert_goal_issues") as write_issues,
+        mock.patch("observability.merged_prs_writer.upsert_goal_issues") as write_issues,
         mock.patch("core.github.fetch_issue_states") as fetch_issues,
     ):
         result = runner.invoke(jobs_main.app, ["snapshot-merged-prs"])

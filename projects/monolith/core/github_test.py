@@ -37,7 +37,10 @@ def test_fetch_issue_states_merged_closing_refs_and_unresolved_alias(monkeypatch
         body = json.loads(request.content)
         assert body["variables"] == {"owner": "example", "name": "repo"}
         assert "issue_5927: issue(number: 5927)" in body["query"]
-        assert "includeClosedPrs: true" in body["query"]
+        assert (
+            "closedByPullRequestsReferences(first: 20, includeClosedPrs: true)"
+            in body["query"]
+        )
         assert "issue_0" not in body["query"]
         assert "issue_-1" not in body["query"]
         assert request.headers["Authorization"] == "Bearer test-token"

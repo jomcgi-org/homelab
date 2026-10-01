@@ -682,9 +682,9 @@ def snapshot_merged_prs() -> None:
 
     from core.db import get_engine
     from core.github import fetch_issue_states, fetch_merged_pull_requests
-    from observability.factory_goals import list_active_goals, upsert_goal_issues
+    from observability.factory_goals import list_active_goals
     from observability.merged_prs import MergedPR
-    from observability.merged_prs_writer import write_snapshot
+    from observability.merged_prs_writer import upsert_goal_issues, write_snapshot
 
     configure_logging()
     cutoff = datetime.now(timezone.utc) - timedelta(days=90)
