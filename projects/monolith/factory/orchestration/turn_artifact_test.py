@@ -145,7 +145,9 @@ class TestEvaluateContent:
     def test_none_is_missing(self):
         outcome = ta.evaluate_content(None, "plan.json", SCHEMA)
         assert outcome.status == ta.MISSING
-        assert outcome.errors == ["plan.json was not delivered this turn"]
+        assert outcome.errors == [
+            "plan.json was not written: no file at the declared path when the turn ended"
+        ]
 
     def test_decodes_bytes_as_utf8(self):
         outcome = ta.evaluate_content(b'{"nodes": []}', "plan.json", SCHEMA)

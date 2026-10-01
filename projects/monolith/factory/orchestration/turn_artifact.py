@@ -107,7 +107,12 @@ def evaluate_content(raw, path: str, schema: dict) -> ArtifactOutcome:
     whether the turn created or modified it.
     """
     if raw is None:
-        return ArtifactOutcome(MISSING, errors=[f"{path} was not delivered this turn"])
+        return ArtifactOutcome(
+            MISSING,
+            errors=[
+                f"{path} was not written: no file at the declared path when the turn ended"
+            ],
+        )
     return _evaluate_raw(raw, path, schema)
 
 
