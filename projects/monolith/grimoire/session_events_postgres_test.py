@@ -24,6 +24,21 @@ from grimoire.models import (
 from grimoire.session_events import append_event
 
 
+def _delete_campaign(connection, campaign_id):
+    # Legacy PCs and sessions have NO ACTION campaign FKs. Remove those
+    # dependents explicitly; the new log must not block the existing order.
+    connection.execute(
+        delete(CampaignMember).where(CampaignMember.campaign_id == campaign_id)
+    )
+    connection.execute(
+        delete(PlayerCharacter).where(PlayerCharacter.campaign_id == campaign_id)
+    )
+    connection.execute(
+        delete(GameSession).where(GameSession.campaign_id == campaign_id)
+    )
+    connection.execute(delete(Campaign).where(Campaign.id == campaign_id))
+
+
 @pytest.fixture
 def lane(pg):
     engine = create_engine(pg.url, poolclass=NullPool)
@@ -51,7 +66,7 @@ def lane(pg):
         yield info
     finally:
         with engine.begin() as connection:
-            connection.execute(delete(Campaign).where(Campaign.id == info.campaign_id))
+            _delete_campaign(connection, info.campaign_id)
             connection.execute(delete(AppUser).where(AppUser.id == info.user_id))
         engine.dispose()
 
@@ -258,7 +273,47 @@ def test_parent_delete_cascades_events(lane, parent):
         row_id = row.id
         session.commit()
     with lane.engine.begin() as connection:
-        parent_id = lane.campaign_id if parent is Campaign else lane.session_id
-        connection.execute(delete(parent).where(parent.id == parent_id))
+        if parent is Campaign:
+            _delete_campaign(connection, lane.campaign_id)
+        else:
+            connection.execute(
+                delete(GameSession).where(GameSession.id == lane.session_id)
+            )
     with Session(lane.engine) as session:
         assert session.get(SessionEvent, row_id) is None
+
+
+def test_migration_foreign_key_delete_actions(lane):
+    with lane.engine.connect() as connection:
+        actions = connection.execute(
+            text("""
+            SELECT a.attname, c.confrelid::regclass::text, c.confdeltype
+            FROM pg_constraint c
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+            WHERE c.conrelid = 'grimoire.session_event'::regclass AND c.contype = 'f'
+        """)
+        ).all()
+    assert {name: (target, action) for name, target, action in actions} == {
+        "campaign_id": ("grimoire.campaign", "c"),
+        "session_id": ("grimoire.game_session", "c"),
+        "author_member_id": ("grimoire.campaign_member", "n"),
+    }
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["narration", "action", "roll", "reveal", "handout", "turn", "system", "utterance"],
+)
+def test_migration_accepts_every_literal_kind(lane, kind):
+    with Session(lane.engine) as session:
+        row = append_event(
+            session,
+            game_session=session.get(GameSession, lane.session_id),
+            kind=kind,
+            audience=Audience("table"),
+            author_member_id=None,
+            body={},
+        )
+        session.commit()
+        assert row.kind == kind
+        assert row.seq == 1
