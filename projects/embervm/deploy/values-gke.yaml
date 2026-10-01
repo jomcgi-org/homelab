@@ -217,6 +217,16 @@ egress:
 scratchPrep:
   enabled: true
 
+# 70 GiB, up from the chart's 35. On 2026-10-01 the one ember-bricks node
+# (94 GiB boot disk, 44 GiB free on the host) ran its 34 GiB loop to 93% and
+# then out of space: three brick classes, embervm-dev's nested scratch
+# (~11 GiB), the warm bases and one workspace volume per live session all
+# share it, and session volumes provisioning failed with ENOSPC. The loop is
+# sparse, so the cap costs only what is written. scratch-prep never grows an
+# existing image: this applies when a node is created (Spot replacement or a
+# pool roll), not to the node already running.
+scratchSizeGi: 70
+
 # Single-Spot-node fleet: 2gi bricks scale horizontally (chart ceiling 4);
 # the big classes are capped off, including the chart default 16gi warm floor
 # (a home policy for the scratch-k8s composite). Revisit the session-class
