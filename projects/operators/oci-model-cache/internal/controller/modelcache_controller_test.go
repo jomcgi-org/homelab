@@ -275,28 +275,27 @@ func TestReconcile_EmptyPhase_TransientResolver(t *testing.T) {
 	assert.Greater(t, result.RequeueAfter, time.Duration(0))
 }
 
-// TestReconcile_InvalidPhase_FallsBackToUnknown_SSAError verifies that an
-// unrecognized phase triggers the Unknown → Pending reset path via SSA.
-// The fake client does not support SSA patches, so we verify the error is
-// about the SSA limitation rather than any logic bug.
-func TestReconcile_InvalidPhase_SSAError(t *testing.T) {
+// TestReconcile_InvalidPhase_ResetsToPending verifies that an unrecognized
+// phase triggers the Unknown → Pending reset path via SSA, and that the
+// fake client applies the resulting status patch.
+func TestReconcile_InvalidPhase_ResetsToPending(t *testing.T) {
 	mc := makeTestMC("llama", "some-invalid-phase")
 
 	r := newReconcilerWith(t, &fakeResolver{}, mc)
 	req := mcRequest(mc.Name)
 
 	_, err := r.Reconcile(context.Background(), req)
-	// The SSA patch is not supported in the fake client; we just verify the
-	// reconcile reaches the SSA step (i.e., logic correctly determines Unknown
-	// and calls Reset → updateStatus).
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "apply patches are not supported")
+	// Unknown → Reset → updateStatus applies the Pending status via SSA.
+	require.NoError(t, err)
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, r.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhasePending, got.Status.Phase)
 }
 
-// TestReconcile_Syncing_JobNotFound_SSAError verifies the path where a sync
+// TestReconcile_Syncing_JobNotFound_MarksFailed verifies the path where a sync
 // job is missing — the reconciler transitions to Failed via SSA patch.
-// The fake client does not support SSA so we just verify the error is SSA-related.
-func TestReconcile_Syncing_JobNotFound_SSAError(t *testing.T) {
+func TestReconcile_Syncing_JobNotFound_MarksFailed(t *testing.T) {
 	mc := makeTestMC("llama", sm.PhaseSyncing)
 	mc.Status.ResolvedRef = "ghcr.io/jomcgi/models/llama:main"
 	mc.Status.ResolvedRevision = "main"
@@ -307,6 +306,10 @@ func TestReconcile_Syncing_JobNotFound_SSAError(t *testing.T) {
 	req := mcRequest(mc.Name)
 
 	_, err := r.Reconcile(context.Background(), req)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "apply patches are not supported")
+	require.NoError(t, err)
+
+	var got v1alpha1.ModelCache
+	require.NoError(t, r.Get(context.Background(), req.NamespacedName, &got))
+	assert.Equal(t, sm.PhaseFailed, got.Status.Phase)
+	assert.Equal(t, "sync job disappeared: missing-job", got.Status.ErrorMessage)
 }
