@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from statistics import median
 
-from evidence import DEFAULT_VIEWPORTS, EvidenceRecord, EvidenceVerdict, preview_url, utc_time
+from evidence import (
+    DEFAULT_VIEWPORTS,
+    EvidenceRecord,
+    EvidenceVerdict,
+    preview_url,
+    utc_time,
+)
 
 ARMS = ("mcp", "cli")
 SCENARIOS = ("layout", "interaction", "diagnostics", "review")
@@ -36,11 +42,21 @@ SELECTION_RULE = (
     ("median_elapsed_monotonic_s", "lower"),
 )
 RELATIVE_TOLERANCE = Decimal("0.05")
-TOKEN_CLASSES = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
+TOKEN_CLASSES = (
+    "input_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "output_tokens",
+)
 COUNT_FIELDS = (
-    "seeded_defects_total", "missed_defects", "introduced_regressions",
-    "correction_rounds", "human_interventions_post_start",
-    "browser_tool_payload_bytes", "browser_payload_bytes", "tool_payload_bytes",
+    "seeded_defects_total",
+    "missed_defects",
+    "introduced_regressions",
+    "correction_rounds",
+    "human_interventions_post_start",
+    "browser_tool_payload_bytes",
+    "browser_payload_bytes",
+    "tool_payload_bytes",
 )
 
 
@@ -73,7 +89,10 @@ class TrialSpec:
     def __post_init__(self):
         for name, width in (("app_commit", 40), ("brief_sha256", 64)):
             value = getattr(self, name)
-            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{" + str(width) + r"}", value) is None:
+            if (
+                not isinstance(value, str)
+                or re.fullmatch(r"[0-9a-f]{" + str(width) + r"}", value) is None
+            ):
                 raise ValueError(name + " must be lowercase hex of width " + str(width))
         if not isinstance(self.source_url, str) or not preview_url(self.source_url):
             raise ValueError("source_url must pass evidence.preview_url")
@@ -111,15 +130,29 @@ def schedule(spec: TrialSpec) -> list[PlannedRun]:
     if not isinstance(spec, TrialSpec):
         raise ValueError("TrialSpec is required")
     spec.__post_init__()
-    fingerprint = hashlib.sha256(json.dumps(asdict(spec), sort_keys=True).encode()).hexdigest()
+    fingerprint = hashlib.sha256(
+        json.dumps(asdict(spec), sort_keys=True).encode()
+    ).hexdigest()
     rng, planned = random.Random(spec.seed), []
     for scenario in SCENARIOS:
         for repetition in range(spec.runs_per_arm):
             arms = list(ARMS)
             rng.shuffle(arms)
             for arm in arms:
-                key = hashlib.sha256(f"{fingerprint}:{scenario}:{repetition}:{arm}".encode()).hexdigest()
-                planned.append(PlannedRun(arm, scenario, repetition, "run-" + key, "session-" + key, "profile-" + key, spec))
+                key = hashlib.sha256(
+                    f"{fingerprint}:{scenario}:{repetition}:{arm}".encode()
+                ).hexdigest()
+                planned.append(
+                    PlannedRun(
+                        arm,
+                        scenario,
+                        repetition,
+                        "run-" + key,
+                        "session-" + key,
+                        "profile-" + key,
+                        spec,
+                    )
+                )
     return planned
 
 
@@ -146,7 +179,10 @@ class UsageRecord:
             raise ValueError("reasoning inclusion flag must be boolean")
         if self.cache_read_tokens + self.cache_write_tokens > self.input_tokens:
             raise ValueError("cache counts exceed inclusive input")
-        if self.reasoning_included_in_output and self.reasoning_tokens > self.output_tokens:
+        if (
+            self.reasoning_included_in_output
+            and self.reasoning_tokens > self.output_tokens
+        ):
             raise ValueError("included reasoning exceeds output")
 
 
@@ -178,10 +214,13 @@ def account_usage(records, price_table) -> UsageTotals:
         if not isinstance(prices, dict) or set(prices) != set(TOKEN_CLASSES):
             raise ValueError("missing or incomplete prices for model " + record.model)
         billable = {
-            "input_tokens": record.input_tokens - record.cache_read_tokens - record.cache_write_tokens,
+            "input_tokens": record.input_tokens
+            - record.cache_read_tokens
+            - record.cache_write_tokens,
             "cache_read_tokens": record.cache_read_tokens,
             "cache_write_tokens": record.cache_write_tokens,
-            "output_tokens": record.output_tokens + (0 if record.reasoning_included_in_output else record.reasoning_tokens),
+            "output_tokens": record.output_tokens
+            + (0 if record.reasoning_included_in_output else record.reasoning_tokens),
         }
         for name, count in billable.items():
             rate = prices[name]
@@ -252,7 +291,12 @@ class TrialResult:
 def _validate_run(run, spec, now):
     if not isinstance(run, RunRecord):
         raise ValueError("invalid run record")
-    if not isinstance(run.arm, str) or run.arm not in ARMS or not isinstance(run.scenario, str) or run.scenario not in SCENARIOS:
+    if (
+        not isinstance(run.arm, str)
+        or run.arm not in ARMS
+        or not isinstance(run.scenario, str)
+        or run.scenario not in SCENARIOS
+    ):
         raise ValueError("unknown arm or scenario")
     _count(run.repetition, "repetition")
     if run.repetition >= spec.runs_per_arm:
@@ -260,9 +304,18 @@ def _validate_run(run, spec, now):
     if not isinstance(run.spec, TrialSpec) or run.spec != spec:
         raise ValueError("run spec echo differs")
     run.spec.__post_init__()
-    for name in ("run_id", "session_id", "profile_key", "implementer_session_id", "reviewer_session_id"):
+    for name in (
+        "run_id",
+        "session_id",
+        "profile_key",
+        "implementer_session_id",
+        "reviewer_session_id",
+    ):
         _text(getattr(run, name), name)
-    if run.reviewer_blind is not True or run.reviewer_session_id in (run.implementer_session_id, run.session_id):
+    if run.reviewer_blind is not True or run.reviewer_session_id in (
+        run.implementer_session_id,
+        run.session_id,
+    ):
         raise ValueError("reviewer must be blind and independent")
     if type(run.accepted) is not bool:
         raise ValueError("accepted verdict must be boolean")
@@ -270,7 +323,10 @@ def _validate_run(run, spec, now):
         _count(getattr(run, name), name)
     if run.missed_defects > run.seeded_defects_total:
         raise ValueError("missed defects exceed seeded defects")
-    if run.browser_payload_bytes + run.tool_payload_bytes != run.browser_tool_payload_bytes:
+    if (
+        run.browser_payload_bytes + run.tool_payload_bytes
+        != run.browser_tool_payload_bytes
+    ):
         raise ValueError("browser/tool payload total differs")
     for name in ("elapsed_monotonic_s", "cold_start_s"):
         _duration(getattr(run, name), name)
@@ -278,11 +334,19 @@ def _validate_run(run, spec, now):
         raise ValueError("cold start exceeds elapsed duration")
     for name in ("functional_pass", "accessibility_pass", "visual_pass"):
         statuses = getattr(run, name)
-        if not isinstance(statuses, dict) or set(statuses) != set(DEFAULT_VIEWPORTS) or any(type(v) is not bool for v in statuses.values()):
+        if (
+            not isinstance(statuses, dict)
+            or set(statuses) != set(DEFAULT_VIEWPORTS)
+            or any(type(v) is not bool for v in statuses.values())
+        ):
             raise ValueError(name + " requires explicit booleans at both viewports")
         if run.accepted and not all(statuses.values()):
             raise ValueError("accepted run has failed " + name)
-    if not isinstance(run.evidence_verdict, EvidenceVerdict) or run.evidence_verdict.status != "complete" or run.evidence_verdict.reasons:
+    if (
+        not isinstance(run.evidence_verdict, EvidenceVerdict)
+        or run.evidence_verdict.status != "complete"
+        or run.evidence_verdict.reasons
+    ):
         raise ValueError("run evidence is incomplete")
     if not isinstance(run.evidence_records, tuple) or not run.evidence_records:
         raise ValueError("run evidence records are missing")
@@ -291,21 +355,32 @@ def _validate_run(run, spec, now):
         if not isinstance(artifact, EvidenceRecord):
             raise ValueError("invalid evidence record")
         artifact.__post_init__()
-        if (artifact.app_commit, artifact.source_url, artifact.run_id, artifact.session_id) != (spec.app_commit, spec.source_url, run.run_id, run.session_id):
+        if (
+            artifact.app_commit,
+            artifact.source_url,
+            artifact.run_id,
+            artifact.session_id,
+        ) != (spec.app_commit, spec.source_url, run.run_id, run.session_id):
             raise ValueError("evidence identity differs from run")
         task_ids.add(artifact.task_id)
         identity = (artifact.kind, artifact.viewport, artifact.sha256)
         if identity in artifact_ids:
             raise ValueError("duplicate evidence record")
         artifact_ids.add(identity)
-        if artifact.upload_status != "uploaded" or utc_time(artifact.expires_at) <= now or utc_time(artifact.capture_time) > now:
+        if (
+            artifact.upload_status != "uploaded"
+            or utc_time(artifact.expires_at) <= now
+            or utc_time(artifact.capture_time) > now
+        ):
             raise ValueError("evidence is expired, pending, failed or future-dated")
         if artifact.kind == "screenshot":
             screenshots.add(tuple(artifact.viewport))
     if len(task_ids) != 1:
         raise ValueError("evidence has mixed tasks")
     if not set(DEFAULT_VIEWPORTS) <= screenshots:
-        raise ValueError("screenshot evidence required at both viewports; accessibility is not visual")
+        raise ValueError(
+            "screenshot evidence required at both viewports; accessibility is not visual"
+        )
 
 
 def _metrics(runs, costs):
@@ -323,7 +398,10 @@ def _metrics(runs, costs):
 
 def _compare(metrics):
     for criterion, direction in SELECTION_RULE:
-        left, right = getattr(metrics["mcp"], criterion), getattr(metrics["cli"], criterion)
+        left, right = (
+            getattr(metrics["mcp"], criterion),
+            getattr(metrics["cli"], criterion),
+        )
         if left == right:
             continue
         if criterion in ("list_cost_usd", "median_elapsed_monotonic_s"):
@@ -342,7 +420,11 @@ def select(spec, runs, price_table=None, *, now=None) -> TrialResult:
         if not isinstance(runs, (tuple, list)) or not runs:
             raise ValueError("scheduled runs are missing")
         now = datetime.now(timezone.utc) if now is None else now
-        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        if (
+            not isinstance(now, datetime)
+            or now.tzinfo is None
+            or now.utcoffset() is None
+        ):
             raise ValueError("evidence check time must be timezone-aware")
         expected = {(run.scenario, run.repetition, run.arm): run for run in planned}
         slots, sessions, profiles, requests, costs = set(), set(), set(), set(), {}
@@ -360,13 +442,20 @@ def select(spec, runs, price_table=None, *, now=None) -> TrialResult:
             profiles.add(run.profile_key)
             # The browser may be controlled by its own implementer session, but
             # neither identity can recur across runs or be reused for review.
-            identities = {run.session_id, run.implementer_session_id, run.reviewer_session_id}
+            identities = {
+                run.session_id,
+                run.implementer_session_id,
+                run.reviewer_session_id,
+            }
             if identities & sessions:
                 raise ValueError("shared session across runs")
             sessions.update(identities)
             tasks.update(artifact.task_id for artifact in run.evidence_records)
             pair = (run.scenario, run.repetition)
-            if pair in seeded_counts and seeded_counts[pair] != run.seeded_defects_total:
+            if (
+                pair in seeded_counts
+                and seeded_counts[pair] != run.seeded_defects_total
+            ):
                 raise ValueError("seeded defect totals differ between paired arms")
             seeded_counts[pair] = run.seeded_defects_total
             totals = account_usage(run.usage, price_table)
@@ -388,19 +477,48 @@ def select(spec, runs, price_table=None, *, now=None) -> TrialResult:
         return TrialResult("incomplete", (str(error),))
     metrics, winners, reasons = {}, {}, []
     for scenario in SCENARIOS + ("overall",):
-        metrics[scenario] = {arm: _metrics([run for run in runs if run.arm == arm and (scenario == "overall" or run.scenario == scenario)], costs) for arm in ARMS}
+        metrics[scenario] = {
+            arm: _metrics(
+                [
+                    run
+                    for run in runs
+                    if run.arm == arm
+                    and (scenario == "overall" or run.scenario == scenario)
+                ],
+                costs,
+            )
+            for arm in ARMS
+        }
         winner, criterion = _compare(metrics[scenario])
         winners[scenario] = winner
         reasons.append(f"{scenario}: {winner or 'tie'} ({criterion})")
     overall = winners.pop("overall")
     decided = {winner for winner in winners.values() if winner is not None}
     if not decided and overall is None:
-        return TrialResult("no_selection", tuple(reasons), metrics=metrics, scenario_winners=winners)
+        return TrialResult(
+            "no_selection", tuple(reasons), metrics=metrics, scenario_winners=winners
+        )
     if len(decided) <= 1:
         selected = next(iter(decided)) if decided else overall
-        return TrialResult("selected", tuple(reasons), selected_arm=selected, overall_winner=overall, scenario_winners=winners, metrics=metrics)
+        return TrialResult(
+            "selected",
+            tuple(reasons),
+            selected_arm=selected,
+            overall_winner=overall,
+            scenario_winners=winners,
+            metrics=metrics,
+        )
     if overall is None and any(winner is None for winner in winners.values()):
         reasons.append("a tied scenario has no overall winner to route to")
-        return TrialResult("no_selection", tuple(reasons), scenario_winners=winners, metrics=metrics)
+        return TrialResult(
+            "no_selection", tuple(reasons), scenario_winners=winners, metrics=metrics
+        )
     routes = {scenario: winner or overall for scenario, winner in winners.items()}
-    return TrialResult("conditional_routing", tuple(reasons), scenario_routes=routes, scenario_winners=winners, overall_winner=overall, metrics=metrics)
+    return TrialResult(
+        "conditional_routing",
+        tuple(reasons),
+        scenario_routes=routes,
+        scenario_winners=winners,
+        overall_winner=overall,
+        metrics=metrics,
+    )
