@@ -3,14 +3,15 @@
 // `python3 -m bench report --json-out ...` in projects/model-bench when the billed
 // benchmark is re-run and re-committed, so there is no backend call or DB query.
 import leaderboard from "$lib/public/llm-leaderboard/leaderboard.json";
-import { cloudflareCacheHeaders } from "$lib/cache-headers.js";
+import {
+  cloudflareCacheHeaders,
+  PAGE_CACHE_CONTROL,
+} from "$lib/cache-headers.js";
 
-// Static snapshot: cache hard at the edge and refresh on the next deploy. A stale
-// copy is fine (and preferable) until the leaderboard JSON is re-committed.
-const CACHE_CONTROL =
-  "public, max-age=0, s-maxage=86400, stale-while-revalidate=604800, stale-if-error=604800";
-
+// Nothing purges Cloudflare on deploy, so a long edge TTL kept the previous
+// snapshot live for up to a day after a republish. Rendering is a static import,
+// so the shared 60s policy costs the origin nothing.
 export function load({ setHeaders }) {
-  setHeaders(cloudflareCacheHeaders(CACHE_CONTROL));
+  setHeaders(cloudflareCacheHeaders(PAGE_CACHE_CONTROL));
   return { leaderboard };
 }
