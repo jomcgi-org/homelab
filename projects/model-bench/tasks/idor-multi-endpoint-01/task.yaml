@@ -9,7 +9,7 @@
 id: idor-multi-endpoint-01
 version: v1
 class: code-fix
-tier: frontier
+tier: hard
 mode: agentic
 snapshot:
   preset: monolith-backend
@@ -236,3 +236,32 @@ verifier:
       - grimoire/zz_idor_hidden_test.py::test_legit_dm_deletes_party_note_and_author_deletes_own
     pass_threshold: 1.0
     timeout_s: 240
+calibration:
+  date: '2026-10-02'
+  source: external (cal-idor-multi-endpoint-01.json)
+  scores:
+    haiku:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+    sonnet:
+      runs:
+      - 0.8
+      mean: 0.8
+      min: 0.8
+      max: 0.8
+      errored: 0
+    opus:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+  verdict: reject
+  reasons:
+  - haiku mean 1.00 > 0.4
+  - means are not strictly increasing haiku < sonnet < opus

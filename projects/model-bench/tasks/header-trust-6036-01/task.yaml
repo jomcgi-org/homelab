@@ -8,7 +8,7 @@
 id: header-trust-6036-01
 version: v1
 class: code-fix
-tier: frontier
+tier: standard
 mode: agentic
 snapshot:
   preset: monolith-backend
@@ -401,3 +401,33 @@ verifier:
       - faas/zz_header_trust_hidden_test.py::test_faas_attribution[verified]
     pass_threshold: 1.0
     timeout_s: 240
+calibration:
+  date: '2026-10-02'
+  source: external (cal-header-trust-6036-01.json)
+  scores:
+    haiku:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+    sonnet:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+    opus:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+  verdict: reject
+  reasons:
+  - haiku mean 1.00 > 0.4
+  - sonnet mean 1.00 outside [0.35, 0.8]
+  - means are not strictly increasing haiku < sonnet < opus
