@@ -47,6 +47,7 @@ These cells are excluded from rates because they failed before grading due to a 
 | qwen/qwen3.8-flash-next | embervm-pi-tools-01 |
 | tencent/hy3:free | campsites-region-rollup-01 |
 | tencent/hy3:free | fc-warmpool-daemonset-01 |
+| xiaomi/mimo-v2.6-pro | research-adr-writeback-01 |
 
 ## Frontier ceiling (agentic)
 
@@ -80,6 +81,7 @@ No qualifying budget candidates yet.
 | deepseek/deepseek-v4.1-flash | config-plumbing | 0.50 | 0.0066 | can't | no |
 | qwen/qwen3-coder-next | config-plumbing | 0.50 | 0.0080 | can't | no |
 | qwen/qwen3.6-35b-a3b | config-plumbing | 0.50 | 0.0103 | can't | no |
+| xiaomi/mimo-v2.6-pro | config-plumbing | 0.50 | 0.0128 | can't | no |
 | deepseek/deepseek-v4-pro | config-plumbing | 0.50 | 0.0129 | can't | no |
 | mistralai/devstral-2512 | config-plumbing | 0.50 | 0.0218 | can't | no |
 | qwen/qwen3.7-plus | config-plumbing | 0.50 | 0.0225 | can't | no |
@@ -98,6 +100,7 @@ No qualifying budget candidates yet.
 | deepseek/deepseek-v4-flash | free-text | 1.00 | 0.0001 | one-shots | no |
 | openai/gpt-6-luna | free-text | 1.00 | 0.0001 | one-shots | no |
 | mistralai/devstral-2512 | free-text | 1.00 | 0.0002 | one-shots | no |
+| xiaomi/mimo-v2.6-pro | free-text | 1.00 | 0.0002 | one-shots | no |
 | meta/muse-spark-1.3-contributor | free-text | 1.00 | 0.0003 | one-shots | no |
 | z-ai/glm-5.3-flash | free-text | 1.00 | 0.0005 | one-shots | no |
 | deepseek/deepseek-v4.1-flash | free-text | 1.00 | 0.0005 | one-shots | no |
@@ -126,6 +129,7 @@ No qualifying budget candidates yet.
 | Model | final pass@1 | cost ($) | reason | date |
 | --- | --- | --- | --- | --- |
 | meta/muse-spark-1.3-contributor | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 1.00 | 0 |
+| xiaomi/mimo-v2.6-pro | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 0.94 | 1 |
 | deepseek/deepseek-v4.1-flash | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 1.00 | 1 |
 | z-ai/glm-5.3-flash | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 1.00 | 0 |
 | xiaomi/mimo-v2.6-flash | 5/8 | embervm-pi-tools-01, frontend-moving-legtags-01, inference-appledouble-01 | 0.94 | 0 |
