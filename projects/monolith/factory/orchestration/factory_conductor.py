@@ -19,6 +19,7 @@ import os
 import platform
 import re
 import time
+from typing import Literal, NotRequired, TypedDict
 from urllib.parse import quote
 
 import httpx
@@ -3217,15 +3218,16 @@ def _prepare_add(
         # capability floor; other work follows quota-aware pool order for the
         # class of node this is. Implementation has its own pool so delivery
         # can be routed without moving every other worker-role node with it.
-        choice = (
-            judgment_floor(policy)
-            if task_class in JUDGMENT_CLASSES
-            else snapshot.model_choices[
+        if task_class in JUDGMENT_CLASSES:
+            choice = judgment_floor(policy)
+        elif snapshot is not None:
+            choice = snapshot.model_choices[
                 "implement" if role == "implement" else "worker"
             ]
-            if snapshot is not None
-            else select_model("implement" if role == "implement" else "worker", policy)
-        )
+        else:
+            choice = select_model(
+                "implement" if role == "implement" else "worker", policy
+            )
         model = choice["model"]
         stated_reason = selection_reason(stated_reason, choice)
     if role == "review" and "model" in source and model not in reviewer_pool:
@@ -3388,6 +3390,17 @@ class DecisionProjection:
     spare_turns: int | None = None
     spare_usd: float | None = None
     refusal: dict | None = None
+
+
+class DecisionPreview(TypedDict):
+    """Core response; stale/invalid reads omit projection, not zero its figures."""
+
+    advisory: Literal[True]
+    revision: int
+    ok: bool
+    refusal: dict | None
+    projection: NotRequired[dict]
+    review_sizing_advisory: NotRequired[bool]
 
 
 def _decision_snapshot(
@@ -3655,7 +3668,7 @@ def project_decision(
 
 def preview_decision(
     task_id: str, decision: dict, *, expected_revision: int, policy: dict | None = None
-) -> dict:
+) -> DecisionPreview:
     """Read-only advisory core, not an access surface or an authorization grant.
 
     No GitHub reads, including branch-head discovery or review patch sizing.
@@ -3664,7 +3677,10 @@ def preview_decision(
     """
     from factory.orchestration.turn_artifact import schema_errors
 
-    snapshot = _decision_snapshot(task_id, policy, decision=decision)
+    errors = schema_errors(decision, DECISION_SCHEMA)
+    snapshot = _decision_snapshot(
+        task_id, policy, decision=None if errors else decision
+    )
     result = {"advisory": True, "revision": snapshot.revision}
     if type(expected_revision) is not int or expected_revision != snapshot.revision:
         return {
@@ -3675,7 +3691,6 @@ def preview_decision(
                 "detail": "expected graph revision is not current",
             },
         }
-    errors = schema_errors(decision, DECISION_SCHEMA)
     if errors or decision.get("action") not in ("plan", "add_node"):
         return {
             **result,
@@ -3715,8 +3730,8 @@ def _envelope_refusal(
     graph has on its own: an edit that adds the first review node, or the first
     wave that will need a fan-in, brings a reserve with it, and a spare figure
     that ignored it would send the planner back with an edit that is refused
-    again. It costs a second derivation, so it is computed only once the
-    envelope has actually been exceeded.
+    again. The shared projection includes this reserve-aware spare even when
+    the proposed edit fits, so preview can explain what a next edit could use.
 
     The spare is always read under the planner's reserve, even when the caller
     overrides the reserve for admission. An engine insertion is admitted on the
