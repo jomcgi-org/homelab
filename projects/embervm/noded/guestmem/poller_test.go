@@ -97,14 +97,16 @@ func TestDisabledNeverDials(t *testing.T) {
 func TestUnavailableAgentIsRetriedWithinActivation(t *testing.T) {
 	now := time.Unix(100, 0)
 	available, calls, kills := false, 0, uint64(99)
-	p := New(Options{Enabled: true, Interval: time.Second, Now: func() time.Time { return now },
+	p := New(Options{
+		Enabled: true, Interval: time.Second, Now: func() time.Time { return now },
 		Client: fetchFunc(func(_ context.Context, _, nonce string) (guestagent.MemoryStatus, error) {
 			calls++
 			if !available {
 				return guestagent.MemoryStatus{}, ErrAgentUnavailable
 			}
 			return goodSample(nonce, kills), nil
-		})})
+		}),
+	})
 	p.Track(Target{VM: "vm", Activation: "booting"})
 	p.Poll(context.Background())
 	p.Poll(context.Background())
@@ -132,10 +134,12 @@ func TestUnavailableAgentIsRetriedWithinActivation(t *testing.T) {
 func TestGuestOOMAggregateSaturatesAcrossGuests(t *testing.T) {
 	kills := map[string]uint64{"a": 0, "b": 0}
 	var events []Event
-	p := New(Options{Enabled: true, Event: func(e Event) { events = append(events, e) },
+	p := New(Options{
+		Enabled: true, Event: func(e Event) { events = append(events, e) },
 		Client: fetchFunc(func(_ context.Context, uds, nonce string) (guestagent.MemoryStatus, error) {
 			return goodSample(nonce, kills[uds]), nil
-		})})
+		}),
+	})
 	for _, vm := range []string{"a", "b"} {
 		p.Track(Target{VM: vm, Activation: "current", UDS: vm})
 	}
