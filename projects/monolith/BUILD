@@ -5554,6 +5554,21 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_audit_test",
+    srcs = ["knowledge/audit_test.py"],
+    data = ["chart/migrations/20261002150000_knowledge_notes_dead_letter_disputed.sql"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_knowledge",
+        ":pkg_shared",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_extraction_test",
     srcs = ["knowledge/extraction_test.py"],
     data = ["knowledge/testdata/codex_session_redacted.txt"],

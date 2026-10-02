@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
-import pytest
 from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from factory.execution import provider_quota
-import factory.orchestration.drainer as drainer
+from factory.orchestration import drainer
 
 # trace.get_tracer returns a ProxyTracer that resolves the provider lazily, at
 # the first span rather than at import, so installing this after importing the
@@ -68,7 +68,7 @@ def _clear_spans(monkeypatch):
     monkeypatch.setattr(
         drainer,
         "_quota_span_attributes",
-        lambda: {},
+        dict,
     )
     monkeypatch.setattr(drainer, "kg_provider_walled", lambda: (False, "available"))
     yield
@@ -445,6 +445,96 @@ def test_repo_diff_mode_dispatches_through_repo_apply(monkeypatch):
     assert applied == [("kg-repo-diff", payload, "finished")]
     assert starts[0][1] == "scout prompt"
     assert completions == [("kg-repo-diff", "ok", "no changes", False)]
+
+
+def test_audit_mode_has_no_raw_id_or_correction_turn(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    prompts = []
+    applied = []
+    monkeypatch.setattr("knowledge.api.audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_prompt",
+        lambda payload: prompts.append(payload) or "audit prompt",
+    )
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append((name, payload, output)) or {"summary": "audit completed"}
+        ),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_correction_prompt",
+        lambda *_: pytest.fail("audit entered correction turn"),
+    )
+    payload = {"mode": "audit", "stream": "scheduled"}
+    job = {
+        "name": "kg-audit",
+        "routine_kind": "kg-drain",
+        "interval_secs": 86400,
+        "payload": payload,
+    }
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+    assert prompts[0]["mode"] == "audit"
+    assert prompts[0]["_audit_job_name"] == "kg-audit"
+    assert prompts[0]["_audit_invocation_key"] == starts[0][0]
+    assert "_audit_invocation_key" not in payload
+    assert applied == [("kg-audit", prompts[0], "finished")]
+    assert completions == [("kg-audit", "ok", "audit completed", False)]
+
+
+def test_disabled_audit_does_not_start_even_if_its_job_was_already_claimed(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr("knowledge.api.audit_enabled", lambda: False)
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_prompt",
+        lambda *_: pytest.fail("disabled audit built prompt"),
+    )
+    job = {
+        "name": "kg-audit",
+        "routine_kind": "kg-drain",
+        "interval_secs": 86400,
+        "payload": {"mode": "audit", "stream": "scheduled"},
+    }
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+    assert starts == []
+    assert completions == [("kg-audit", "disabled", "KG audit disabled")]
+
+
+def test_audit_prompt_and_apply_dispatch_use_knowledge_api(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'audit-dispatch.db'}")
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    calls = []
+    payload = {
+        "mode": "audit",
+        "stream": "scheduled",
+        "_audit_job_name": "kg-audit",
+        "_audit_invocation_key": "invocation",
+    }
+    monkeypatch.setattr(
+        "knowledge.api.build_audit_prompt",
+        lambda session, name, body, key: (
+            calls.append((name, body, key)) or "pinned prompt"
+        ),
+    )
+    monkeypatch.setattr(
+        "knowledge.api.apply_audit",
+        lambda session, name, body, output: (
+            calls.append((name, body, output)) or {"summary": "done"}
+        ),
+    )
+    monkeypatch.setattr("agent.api.lock_claim", lambda *_: True)
+    assert drainer.build_kg_prompt.__wrapped__(payload) == "pinned prompt"
+    assert drainer.apply_kg_extraction.__wrapped__("kg-audit", payload, "verdicts") == {
+        "summary": "done"
+    }
+    assert calls == [
+        ("kg-audit", payload, "invocation"),
+        ("kg-audit", payload, "verdicts"),
+    ]
 
 
 def test_retry_uses_current_repo_diff_cursor(tmp_path, monkeypatch):
@@ -1392,7 +1482,7 @@ def test_cycle_span_omits_quota_when_helper_returns_empty(monkeypatch):
 
 
 def test_claim_step_span_lives_inside_the_step_body(monkeypatch, admission_database):
-    import agent.routine_jobs as routine_jobs
+    from agent import routine_jobs
 
     claims = []
 
@@ -1432,11 +1522,11 @@ def test_claim_step_span_lives_inside_the_step_body(monkeypatch, admission_datab
 def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
     monkeypatch, tmp_path, outcome
 ):
-    from sqlmodel import SQLModel, select
     from agent import routine_jobs
     from knowledge.extraction import ExtractionOutputInvalid, enqueue_extraction
     from knowledge.models import AtomRawProvenance, RawInput
     from knowledge.repo_diff_source import RepoDiffEvidence
+    from sqlmodel import SQLModel, select
 
     def collect(base_sha, head_sha):
         patch = "diff --git a/file.py b/file.py\n--- a/file.py\n+++ b/file.py\n+x = 1\n"
@@ -1608,7 +1698,7 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
 
 
 def test_finish_step_span_marks_error_status(monkeypatch):
-    import agent.routine_jobs as routine_jobs
+    from agent import routine_jobs
 
     monkeypatch.setattr(routine_jobs, "complete_job", lambda *_args, **_kwargs: True)
 
@@ -1743,6 +1833,7 @@ def test_delivery_error_turn_holds_job_without_retry_apply_or_cleanup(monkeypatc
 
 def test_cleanup_preserves_unknown_session_pending_and_guest(monkeypatch, tmp_path):
     from sqlmodel import SQLModel
+
     from factory.execution import store
     from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 
@@ -1819,8 +1910,10 @@ def test_late_drainer_completion_cannot_deregister_held_job(monkeypatch):
 
 @pytest.fixture
 def admission_database(tmp_path, monkeypatch):
-    from sqlmodel import SQLModel
     from agent import routine_jobs
+    from knowledge import burst
+    from sqlmodel import SQLModel
+
     from factory.execution import admission
     from factory.execution.models import (
         AgentCapacityPool,
@@ -1830,7 +1923,6 @@ def admission_database(tmp_path, monkeypatch):
         AgentTurn,
         PendingMessage,
     )
-    from knowledge import burst
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'drainer-admission.db'}",
@@ -1904,9 +1996,11 @@ def test_parallel_kg_claims_cannot_spend_last_daily_or_grant_job(
     burst_remaining,
 ):
     from concurrent.futures import ThreadPoolExecutor
-    from sqlmodel import select
-    from factory.execution.models import AgentCapacityReservation
+
     from knowledge import burst
+    from sqlmodel import select
+
+    from factory.execution.models import AgentCapacityReservation
 
     for name in ("a", "b"):
         _queued_job(admission_database, name)
@@ -1937,6 +2031,7 @@ def test_two_kg_claims_leave_project_capacity_and_rejected_lease_untouched(
     admission_database,
 ):
     from sqlmodel import select
+
     from factory.execution.models import AgentCapacityReservation
 
     for name in ("kg-a", "kg-b", "kg-c"):
@@ -1964,6 +2059,7 @@ def test_claim_checkpoint_loss_reuses_identity_and_expired_lease_cannot_redispat
     admission_database,
 ):
     from sqlmodel import select
+
     from factory.execution.models import AgentCapacityReservation
 
     _queued_job(admission_database, "only")
@@ -2161,6 +2257,7 @@ def test_cleanup_refunds_only_never_dispatched_pending(
     admission_database, monkeypatch, attempted
 ):
     from sqlmodel import select
+
     from factory.execution import admission, store
     from factory.execution.models import AgentCapacityReservation, PendingMessage
 
@@ -2190,6 +2287,8 @@ def test_cleanup_refunds_only_never_dispatched_pending(
 def test_cleanup_preserves_native_receipt_owner(
     admission_database, monkeypatch, handoff
 ):
+    from sqlmodel import select
+
     from factory.execution import admission, mcp, result_receipts, store
     from factory.execution.models import (
         AgentCapacityReservation,
@@ -2198,7 +2297,6 @@ def test_cleanup_preserves_native_receipt_owner(
         AgentTurn,
         PendingMessage,
     )
-    from sqlmodel import select
 
     for module in (mcp, result_receipts, store):
         monkeypatch.setattr(module, "get_engine", lambda: admission_database)
@@ -2308,9 +2406,10 @@ def test_cleanup_uses_locked_guest_binding(admission_database, monkeypatch):
 def test_cleanup_resumes_exact_claim_until_terminal_confirmation(
     admission_database, monkeypatch, outcome
 ):
+    from sqlmodel import select
+
     from factory.execution import mcp, store
     from factory.execution.models import AgentSession, AgentTurn
-    from sqlmodel import select
 
     monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
     with Session(admission_database) as db:
@@ -2521,6 +2620,7 @@ def test_settled_turn_does_not_release_expired_job_lease_before_finalization(
     monkeypatch,
 ):
     from agent import routine_jobs
+
     from factory.execution import admission, store
     from factory.execution.models import AgentTurn
 
@@ -2640,10 +2740,10 @@ def test_stale_drainer_owner_cannot_apply_or_finalize(admission_database, operat
 def test_extraction_rechecks_claim_after_preparation_rollback(
     tmp_path, monkeypatch, correction, public_mutation
 ):
-    from sqlmodel import SQLModel, select
     from agent import routine_jobs
     from knowledge import extraction
     from knowledge.models import AtomRawProvenance, RawInput
+    from sqlmodel import SQLModel, select
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'extraction-owner.db'}",
@@ -2874,9 +2974,9 @@ def test_cycle_retries_stranded_drainer_claims_and_leaves_factory_rows(
 
 
 def test_provider_walled_is_only_positive_evidence(monkeypatch):
-    import factory.orchestration.model_pool as model_pool
+    from factory.orchestration import model_pool
 
-    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    monkeypatch.setattr(model_pool, "quota_summary", dict)
     assert drainer.provider_walled() == (False, "unobserved")
     monkeypatch.setattr(
         model_pool,
@@ -2894,7 +2994,7 @@ def test_provider_walled_is_only_positive_evidence(monkeypatch):
 
 
 def test_provider_walled_applies_the_drainer_floor(monkeypatch):
-    import factory.orchestration.model_pool as model_pool
+    from factory.orchestration import model_pool
 
     monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"drainer": 25, "worker": 10}}')
     monkeypatch.setattr(
@@ -2912,7 +3012,7 @@ def test_provider_walled_applies_the_drainer_floor(monkeypatch):
 
 
 def test_provider_walled_ignores_other_roles_floors(monkeypatch):
-    import factory.orchestration.model_pool as model_pool
+    from factory.orchestration import model_pool
 
     monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"worker": 10}}')
     monkeypatch.setattr(
@@ -3227,8 +3327,10 @@ def test_broker_refresh_reopens_all_stale_kg_gate(
         assert model_pool.kg_quota_max_age_seconds() == 900
         assert _KG_PROVIDER_WALLED() == (
             True,
-            "grant codex-cluster stale_observation age 3062; "
-            "grant codex-b stale_observation age 172800",
+            (
+                "grant codex-cluster stale_observation age 3062; "
+                "grant codex-b stale_observation age 172800"
+            ),
         )
         with caplog.at_level("INFO", logger=drainer.__name__):
             assert _admitted_claim("wf-stale") is None
@@ -3260,7 +3362,7 @@ def test_broker_refresh_reopens_all_stale_kg_gate(
 
 
 def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
-    import factory.orchestration.model_pool as model_pool
+    from factory.orchestration import model_pool
 
     def explode():
         raise RuntimeError("broker down")
@@ -3488,9 +3590,11 @@ def test_recall_cache_maintenance_retains_live_receipts_and_bounds_deletion(
     monkeypatch, tmp_path
 ):
     from datetime import datetime, timedelta, timezone
-    from sqlmodel import SQLModel, select
+
     from knowledge import recall_cache
     from knowledge.models import RecallEmbedding
+    from sqlmodel import SQLModel, select
+
     from factory.orchestration.factory_models import (
         FactoryReceipt,
         WorkItem,
@@ -3633,6 +3737,7 @@ def test_cycle_heartbeat_reports_blocked_idle_reason(monkeypatch):
 
 def _lost_permit(engine, *, workflow_id, job, age_seconds=3600):
     from datetime import datetime, timedelta, timezone
+
     from factory.execution.models import AgentCapacityReservation
 
     local = f"{workflow_id}:kg-drain:{job}"
@@ -3719,6 +3824,7 @@ def test_lost_before_session_sweep_refuses_without_proof(
     admission_database, monkeypatch, case
 ):
     import time
+
     from factory.execution import store
 
     if case != "flag_off":
@@ -3841,6 +3947,7 @@ def test_a_sol_job_reserves_sol_and_defers_on_its_own_provider(
     admission_database, monkeypatch
 ):
     from sqlmodel import select
+
     from factory.execution.models import AgentCapacityReservation
 
     with Session(admission_database) as db:

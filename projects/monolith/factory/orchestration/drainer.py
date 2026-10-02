@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
 import json
 import logging
 import re
+from dataclasses import asdict
 
+import agent.api as agent_config
 from dbos import DBOS
+from knowledge.api import (
+    KG_JOB_KIND,
+    MAX_GARDENER_RETRIES,
+    ExtractionOutputInvalid,
+    find_reviewable_docfix_prs,
+    prune_completed_docfix_reviews,
+    schedule_docfix_review,
+)
 from opentelemetry.context import Context
 from opentelemetry.trace import Status, StatusCode
 
-import agent.api as agent_config
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
     DRAINER_NODE_KEY,
@@ -19,18 +27,8 @@ from factory.execution.constants import (
     UNKNOWN_INVOCATION,
     UNKNOWN_INVOCATION_MESSAGE,
 )
-from knowledge.api import (
-    ExtractionOutputInvalid,
-    KG_JOB_KIND,
-    MAX_GARDENER_RETRIES,
-)
-from knowledge.api import (
-    find_reviewable_docfix_prs,
-    prune_completed_docfix_reviews,
-    schedule_docfix_review,
-)
-from factory.orchestration.steps import send_agent_session_message, start_agent_session
 from factory.orchestration.retro import RETRO_DIGEST
+from factory.orchestration.steps import send_agent_session_message, start_agent_session
 from factory.orchestration.tracing import set_attributes, tracer
 
 logger = logging.getLogger(__name__)
@@ -75,7 +73,7 @@ def _quota_span_attributes() -> dict:
                 attributes[f"drain.quota.{provider}.window"] = window
             attributes[f"drain.quota.{provider}.exhausted"] = quota["exhausted"]
         return attributes
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("drain quota telemetry failed", exc_info=True)
         return {}
 
@@ -176,7 +174,7 @@ def provider_walled() -> tuple[bool, str]:
         ok, reason = availability(DRAIN_MODEL, quota_summary(), DRAINER_QUOTA_ROLE)
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
-    except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
+    except Exception:
         logger.debug("drain provider quota unreadable", exc_info=True)
         return False, "unreadable"
 
@@ -189,7 +187,7 @@ def model_walled(model: str) -> tuple[bool, str]:
         ok, reason = availability(model, quota_summary(), DRAINER_QUOTA_ROLE)
         return (not ok), reason
     # nosemgrep: no-broad-except-swallow
-    except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
+    except Exception:
         logger.debug("drain provider quota unreadable", exc_info=True)
         return False, "unreadable"
 
@@ -232,16 +230,17 @@ def claim_drainer_job(
 ) -> dict | None:
     """Claim a lease only after reserving its future session under the pool lock."""
     from agent.api import claim_job
+    from core.db import get_engine
+    from knowledge.api import kg_burst_state
+    from sqlalchemy import text
+    from sqlmodel import Session
+
     from factory.execution.admission import (
         adopt_existing,
         lock_pool,
         reserve_start_verdict,
         reserved_routine_jobs,
     )
-    from core.db import get_engine
-    from knowledge.api import kg_burst_state
-    from sqlalchemy import text
-    from sqlmodel import Session
 
     engine = get_engine()
     sqlite = engine.dialect.name == "sqlite"
@@ -407,8 +406,8 @@ _LAST_CLAIM_OUTCOME_LIMIT = 64
 
 def _kg_due_count(session) -> int | None:
     """Claimable KG jobs right now, for the stall trigger. Never raises."""
-    from sqlalchemy import text
     from shared.invocation_outcomes import UNKNOWN_INVOCATION as unknown
+    from sqlalchemy import text
 
     try:  # nosemgrep: no-broad-except-swallow - optional telemetry only
         sqlite = session.get_bind().dialect.name == "sqlite"
@@ -425,7 +424,7 @@ def _kg_due_count(session) -> int | None:
                 {"kind": KG_JOB_KIND, "unknown": unknown},
             ).scalar_one()
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("KG due-job count failed", exc_info=True)
         return None
 
@@ -488,9 +487,10 @@ def _claim_with_idle_wait(
 @DBOS.step()
 def cancel_drainer_reservation(local_session_id: str) -> bool:
     """Refund only a never-created session after local prompt validation fails."""
-    from factory.execution.admission import cancel_unbound
     from core.db import get_engine
     from sqlmodel import Session
+
+    from factory.execution.admission import cancel_unbound
 
     with Session(get_engine()) as session:
         cancelled = cancel_unbound(session, local_session_id)
@@ -533,6 +533,7 @@ def kg_effective_cap(base_cap: int) -> int:
 def _prune_recall_cache(session) -> int:
     from knowledge.api import prune_recall_embeddings
     from sqlmodel import select
+
     from factory.orchestration.factory_models import FactoryReceipt
     from factory.orchestration.models import SwarmTask
 
@@ -560,7 +561,7 @@ def sweep_kg_raws(limit: int = 50) -> int:
         swept = sweep_unqueued_raws(session, limit)
         try:
             _prune_recall_cache(session)
-        except Exception:  # noqa: BLE001 - cache maintenance must not stop extraction
+        except Exception:
             session.rollback()
             logger.warning("recall cache cleanup failed", exc_info=True)
         try:
@@ -568,7 +569,7 @@ def sweep_kg_raws(limit: int = 50) -> int:
             pr_numbers = find_reviewable_docfix_prs(session)
             if pr_numbers:
                 schedule_docfix_review(session, pr_numbers=pr_numbers, delay_seconds=0)
-        except Exception:  # noqa: BLE001 - review sweep must not stop extraction
+        except Exception:
             logger.warning("docfix-review sweep failed", exc_info=True)
         return swept
 
@@ -649,12 +650,24 @@ def increment_kg_job_attempt(name: str, *, expected_holder: str | None = None) -
 @DBOS.step()
 def build_kg_prompt(payload: dict) -> str:
     from core.db import get_engine
-    from knowledge.api import build_extraction_prompt, build_repo_diff_prompt
-    from knowledge.api import RawInput
+    from knowledge.api import (
+        RawInput,
+        build_audit_prompt,
+        build_extraction_prompt,
+        build_repo_diff_prompt,
+    )
     from sqlmodel import Session, select
 
     if payload.get("mode") == "repo-diff":
         return build_repo_diff_prompt(payload.get("last_sha"))
+    if payload.get("mode") == "audit":
+        with Session(get_engine()) as session:
+            return build_audit_prompt(
+                session,
+                payload["_audit_job_name"],
+                payload,
+                payload["_audit_invocation_key"],
+            )
     raw_id = _kg_raw_id(payload)
     with Session(get_engine()) as session:
         raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
@@ -674,7 +687,7 @@ def apply_kg_extraction(
 ) -> dict:
     from agent.api import lock_claim
     from core.db import get_engine
-    from knowledge.api import apply_extraction, apply_repo_diff
+    from knowledge.api import apply_audit, apply_extraction, apply_repo_diff
     from sqlmodel import Session
 
     def check_claim(session: Session) -> None:
@@ -685,6 +698,8 @@ def apply_kg_extraction(
         check_claim(session)
         if payload.get("mode") == "repo-diff":
             return apply_repo_diff(session, name, result_text)
+        if payload.get("mode") == "audit":
+            return apply_audit(session, name, payload, result_text)
         raw_id = _kg_raw_id(payload)
         return apply_extraction(
             session,
@@ -795,7 +810,7 @@ def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
         return
     try:
         notify_drainer_failure(name, error)
-    except Exception:  # noqa: BLE001 - notification is best effort
+    except Exception:
         logger.warning(
             "Luna drainer failure notification failed for job %s",
             name,
@@ -805,14 +820,15 @@ def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
 
 @DBOS.step()
 def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bool:
+    from core.db import get_engine
+    from sqlalchemy import delete
+    from sqlmodel import Session, select
+
     from factory.execution import admission, result_receipts, store
     from factory.execution.execution_api import destroy_and_confirm
     from factory.execution.mcp import _load_session_row
     from factory.execution.models import PendingMessage
     from factory.execution.transport import EmberSessionGone
-    from core.db import get_engine
-    from sqlalchemy import delete
-    from sqlmodel import Session, select
 
     with tracer.start_as_current_span("drain.destroy_session") as span:
         set_attributes(
@@ -828,7 +844,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                     row = store.get_session_by_local_id(session, local_session_id)
             else:
                 row = _load_session_row(session_id)
-        except Exception:  # noqa: BLE001 - cleanup failure must not stop the cycle
+        except Exception:
             logger.warning(
                 "Luna drainer failed to load session %s (%s) for cleanup",
                 session_id,
@@ -917,7 +933,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                     )
                 )
                 session.commit()
-        except Exception:  # noqa: BLE001 - failed hold checks must retain the guest
+        except Exception:
             logger.warning(
                 "Luna drainer failed to clear pending turn for session %s",
                 resolved_session_id,
@@ -960,7 +976,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                 )
             span.set_attribute("drain.destroyed", finished)
             return finished
-        except Exception:  # noqa: BLE001 - cleanup failure must not strand the queue
+        except Exception:
             logger.warning(
                 "Luna drainer failed to destroy session %s (ember %s)",
                 resolved_session_id,
@@ -974,7 +990,7 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
 def _workflow_id() -> str:
     try:
         workflow_id = DBOS.workflow_id
-    except Exception as exc:  # noqa: BLE001 - DBOS owns the context type
+    except Exception as exc:
         raise RuntimeError("DBOS workflow id is unavailable") from exc
     if not workflow_id:
         raise RuntimeError("DBOS workflow id is unavailable")
@@ -998,9 +1014,10 @@ def stranded_drainer_cleanups(limit: int = STRANDED_CLEANUP_LIMIT) -> list[dict]
     stale-cycle reaper lists PENDING workflows only and the factory
     reconciler owns factory rows. This is the retry owner.
     """
-    from factory.execution.models import AgentSession
     from core.db import get_engine
     from sqlmodel import Session, or_, select
+
+    from factory.execution.models import AgentSession
 
     patterns = [f"%:{key}:%" for key in (DRAINER_NODE_KEY, KG_NODE_KEY)]
     with Session(get_engine()) as session:
@@ -1104,11 +1121,12 @@ def settle_lost_drainer_reservations(
     from datetime import datetime, timedelta, timezone
 
     from core.db import get_engine
-    from factory.execution.admission import cancel_unbound, lock_pool
-    from factory.execution.models import AgentCapacityReservation, AgentSession
     from shared.invocation_outcomes import UNKNOWN_INVOCATION as unknown
     from sqlalchemy import text
     from sqlmodel import Session, select
+
+    from factory.execution.admission import cancel_unbound, lock_pool
+    from factory.execution.models import AgentCapacityReservation, AgentSession
 
     if not lost_before_session_sweep_enabled():
         return []
@@ -1300,6 +1318,10 @@ def _is_repo_diff(payload: object) -> bool:
     return isinstance(payload, dict) and payload.get("mode") == "repo-diff"
 
 
+def _is_audit(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("mode") == "audit"
+
+
 def _job_kinds(settings: dict) -> tuple[str, ...]:
     if "job_kinds" in settings:
         return tuple(settings["job_kinds"])
@@ -1405,9 +1427,10 @@ def _turn_has_unknown_outcome(turn: dict, session_id: int | None = None) -> bool
         # Test seam; production always reads the exact durable admission owner.
         if _turn_has_unknown_outcome_lookup is not None:
             return bool(_turn_has_unknown_outcome_lookup(session_id, seq))
-        from factory.execution import store
         from core.db import get_engine
         from sqlmodel import Session
+
+        from factory.execution import store
 
         with Session(get_engine()) as session:
             return store.has_unknown_outcome_for_turn(session, session_id, seq)
@@ -1472,12 +1495,12 @@ def drain_cycle() -> dict:
         workflow_id = _workflow_id()
         try:
             stranded = retry_stranded_drainer_cleanups()
-        except Exception:  # noqa: BLE001 - cleanup retry must not stop the cycle
+        except Exception:
             logger.warning("Luna drainer stranded cleanup retry failed", exc_info=True)
             stranded = {"stranded": -1, "retired": 0}
         try:
             lost = settle_lost_drainer_reservations(workflow_id)
-        except Exception:  # noqa: BLE001 - the sweep must not stop the cycle
+        except Exception:
             logger.warning(
                 "Luna drainer lost-before-session sweep failed", exc_info=True
             )
@@ -1570,7 +1593,21 @@ def drain_cycle() -> dict:
                         job_payload = job.get("payload")
                         if not isinstance(job_payload, dict):
                             raise MalformedPayload("missing kg payload")
-                        if not _is_repo_diff(job_payload):
+                        if _is_audit(job_payload):
+                            from knowledge.api import audit_enabled
+
+                            if not audit_enabled():
+                                finish_drainer_job(
+                                    name, "disabled", "KG audit disabled", **ownership
+                                )
+                                cancel_drainer_reservation(local_session_id)
+                                continue
+                            job_payload = {
+                                **job_payload,
+                                "_audit_job_name": name,
+                                "_audit_invocation_key": local_session_id,
+                            }
+                        elif not _is_repo_diff(job_payload):
                             raw_id = _kg_raw_id(job_payload)
                         prompt = build_kg_prompt(job_payload)
                         repo = settings["repo"]
@@ -1629,7 +1666,7 @@ def drain_cycle() -> dict:
                         applied = apply_kg_extraction(
                             name, job_payload, result_text, **ownership
                         )
-                        if _is_repo_diff(job_payload):
+                        if _is_repo_diff(job_payload) or _is_audit(job_payload):
                             summary = applied["summary"]
                         else:
                             rejected = list(applied.get("rejected") or [])
@@ -1698,7 +1735,7 @@ def drain_cycle() -> dict:
                         if completed and name.startswith("docfix:"):
                             try:
                                 schedule_docfix_review_for_completion(result_text)
-                            except Exception:  # noqa: BLE001 - review is best effort
+                            except Exception:
                                 logger.warning(
                                     "could not schedule review after docfix job %s",
                                     name,

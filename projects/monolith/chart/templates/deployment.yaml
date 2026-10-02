@@ -583,6 +583,34 @@ spec:
               value: {{ .Values.knowledge.conductorContinuity.enabled | quote }}
             - name: KG_REPO_DIFF_ENABLED
               value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
+            - name: KG_AUDIT_ENABLED
+              value: {{ .Values.knowledge.audit.enabled | quote }}
+            - name: KG_AUDIT_INTERVAL_SECONDS
+              value: {{ .Values.knowledge.audit.intervalSeconds | quote }}
+            - name: KG_AUDIT_SAMPLES_PER_DAY
+              value: {{ .Values.knowledge.audit.samplesPerDay | quote }}
+            - name: KG_AUDIT_COOLDOWN_DAYS
+              value: {{ .Values.knowledge.audit.cooldownDays | quote }}
+            - name: KG_AUDIT_EXPANSION_MAX_NOTES
+              value: {{ .Values.knowledge.audit.expansion.maxNotes | quote }}
+            - name: KG_AUDIT_EXPANSION_MAX_DEPTH
+              value: {{ .Values.knowledge.audit.expansion.maxDepth | quote }}
+            - name: KG_AUDIT_MAX_DISPUTES_PER_RUN
+              value: {{ .Values.knowledge.audit.maxDisputesPerRun | quote }}
+            - name: KG_AUDIT_MAX_RUN_COST_USD
+              value: {{ .Values.knowledge.audit.maxRunCostUsd | quote }}
+            - name: KG_AUDIT_CLARITY_REPAIRS_ENABLED
+              value: {{ .Values.knowledge.audit.clarityRepairs.enabled | quote }}
+            - name: KG_AUDIT_ISSUES_ENABLED
+              value: {{ .Values.knowledge.audit.issues.enabled | quote }}
+            - name: KG_AUDIT_ISSUES_THRESHOLD_DEFECTS
+              value: {{ .Values.knowledge.audit.issues.thresholdDefects | quote }}
+            - name: KG_AUDIT_ISSUES_THRESHOLD_RUNS
+              value: {{ .Values.knowledge.audit.issues.thresholdRuns | quote }}
+            - name: KG_AUDIT_ISSUES_WINDOW_DAYS
+              value: {{ .Values.knowledge.audit.issues.windowDays | quote }}
+            - name: KG_AUDIT_ISSUES_MAX_PER_WEEK
+              value: {{ .Values.knowledge.audit.issues.maxPerWeek | quote }}
             - name: KG_REPO_DIFF_RECONCILE_ENABLED
               value: {{ .Values.knowledge.feeds.repoDiff.reconcile.enabled | quote }}
             - name: KG_DOCFIX_REVIEW_ENABLED

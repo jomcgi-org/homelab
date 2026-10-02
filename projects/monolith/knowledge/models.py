@@ -1,7 +1,7 @@
 """SQLModel definitions for the knowledge schema."""
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal, NewType
 
 from pgvector.sqlalchemy import Vector
@@ -11,7 +11,9 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -67,6 +69,167 @@ _STRING_ARRAY = PG_ARRAY(String).with_variant(JSON(), "sqlite")
 # Postgres uses JSONB (matching the migration + GIN index); SQLite falls
 # back to JSON.
 _JSONB = JSONB().with_variant(JSON(), "sqlite")
+
+AuditCause = Literal[
+    "lens_overgeneralised",
+    "missing_supersession",
+    "stale_after_code_change",
+    "duplicate_not_merged",
+    "ranking_surfaced_stale",
+    "chunking_split_evidence",
+    "source_wrong",
+    "other",
+]
+AUDIT_CAUSES = (
+    "lens_overgeneralised",
+    "missing_supersession",
+    "stale_after_code_change",
+    "duplicate_not_merged",
+    "ranking_surfaced_stale",
+    "chunking_split_evidence",
+    "source_wrong",
+    "other",
+)
+
+
+class AuditRun(SQLModel, table=True):
+    __tablename__ = "audit_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "stream IN ('scheduled', 'expansion')", name="audit_runs_stream_chk"
+        ),
+        UniqueConstraint("job_name", "started_at", name="audit_runs_invocation_key"),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_name: str
+    stream: str = "scheduled"
+    root_run_id: int | None = Field(default=None, foreign_key="knowledge.audit_runs.id")
+    depth: int = 0
+    prompt_version: str
+    status: str = "prepared"
+    started_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    finished_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    sampled_uniform: int = 0
+    sampled_weighted: int = 0
+    sampled_expansion: int = 0
+    metrics: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(_JSONB, nullable=False)
+    )
+    cost_usd: float | None = None
+
+
+# The JSON invocation key distinguishes recurring runs without another payload
+# contract or an extra schema column. NULL is allowed on manually seeded rows.
+Index(
+    "audit_runs_replay_key",
+    AuditRun.__table__.c.job_name,
+    AuditRun.__table__.c.metrics["invocation_key"].as_string(),
+    unique=True,
+)
+
+
+class AuditFinding(SQLModel, table=True):
+    __tablename__ = "audit_findings"
+    __table_args__ = (
+        UniqueConstraint("run_id", "note_id", name="audit_findings_sample_key"),
+        Index("audit_findings_cooldown_idx", "note_id", "created_at"),
+        CheckConstraint(
+            "stream IN ('uniform', 'weighted', 'expansion')",
+            name="audit_findings_stream_chk",
+        ),
+        CheckConstraint(
+            "correctness IN ('holds', 'confirmed', 'narrowed', 'superseded', 'invalidated', 'unknown')",
+            name="audit_findings_correctness_chk",
+        ),
+        CheckConstraint(
+            "clarity IN ('clear', 'unclear', 'unknown')",
+            name="audit_findings_clarity_chk",
+        ),
+        CheckConstraint(
+            "clarity_score IS NULL OR (clarity_score >= 0 AND clarity_score <= 1)",
+            name="audit_findings_score_chk",
+        ),
+        CheckConstraint(
+            "placement IN ('ok', 'misplaced', 'unknown')",
+            name="audit_findings_placement_chk",
+        ),
+        CheckConstraint(
+            "cause IS NULL OR cause IN ("
+            + ", ".join(repr(cause) for cause in AUDIT_CAUSES)
+            + ")",
+            name="audit_findings_cause_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: int = Field(foreign_key="knowledge.audit_runs.id")
+    note_id: str
+    stream: str
+    depth: int = 0
+    parent_finding_id: int | None = Field(
+        default=None, foreign_key="knowledge.audit_findings.id"
+    )
+    correctness: str = "unknown"
+    clarity: str = "unknown"
+    clarity_score: float | None = None
+    placement: str = "unknown"
+    cause: str | None = None
+    rationale: str = ""
+    evidence: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    source_raw_id: str | None = None
+    source: str | None = None
+    extraction_version: str | None = None
+    dispute_id: int | None = Field(default=None, foreign_key="knowledge.disputes.id")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class AuditProcessIssue(SQLModel, table=True):
+    __tablename__ = "audit_process_issues"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('write_started', 'filed', 'unresolved')",
+            name="audit_process_issues_state_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    cause_key: str = Field(unique=True)
+    state: str = "write_started"
+    marker: str
+    issue_number: int | None = None
+    defect_count: int = 0
+    run_count: int = 0
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class NoteRetrieval(SQLModel, table=True):
+    __tablename__ = "note_retrievals"
+    __table_args__ = {"schema": "knowledge", "extend_existing": True}
+
+    note_id: str = Field(primary_key=True)
+    day: date = Field(sa_column=Column(Date, primary_key=True))
+    count: int = 0
 
 
 class RecallEmbedding(SQLModel, table=True):

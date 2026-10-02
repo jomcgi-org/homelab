@@ -171,6 +171,25 @@ cfIngress:
 
 knowledge:
   enabled: true
+  audit:
+    # Staged repository-only audit. Enabling requires operational validation.
+    enabled: false
+    intervalSeconds: 86400
+    samplesPerDay: 12
+    cooldownDays: 14
+    expansion:
+      maxNotes: 8
+      maxDepth: 2
+    maxDisputesPerRun: 5
+    maxRunCostUsd: 2.0
+    clarityRepairs:
+      enabled: false
+    issues:
+      enabled: false
+      thresholdDefects: 5
+      thresholdRuns: 3
+      windowDays: 28
+      maxPerWeek: 2
   # Publication lane that flips visibility for verified and unverified facts
   # meeting the policy every 15 minutes. Unsuspended 2026-09-08 after a dry run
   # reported 3,621 publishable facts with no redaction or dispute skips and a

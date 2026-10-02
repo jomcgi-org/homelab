@@ -1393,6 +1393,29 @@ knowledge:
     suspend: false
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
+  audit:
+    # Single kill switch. Uses ordinary kg-drain admission and daily caps.
+    enabled: false
+    intervalSeconds: 86400
+    # Even split between uniform and weighted streams.
+    samplesPerDay: 12
+    cooldownDays: 14
+    expansion:
+      # Total neighbours per scheduled root, across every depth.
+      maxNotes: 8
+      maxDepth: 2
+    maxDisputesPerRun: 5
+    maxRunCostUsd: 2.0
+    clarityRepairs:
+      # Scores need calibration before clarity alone can trigger repair.
+      enabled: false
+    issues:
+      # Process feedback is separate from graph repair.
+      enabled: false
+      thresholdDefects: 5
+      thresholdRuns: 3
+      windowDays: 28
+      maxPerWeek: 2
   # Recall top knowledge-graph facts into every Ember session's system prompt
   # (ADR agents/063 read side). kg-drain sessions are always excluded.
   recall:
