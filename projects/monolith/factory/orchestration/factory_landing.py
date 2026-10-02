@@ -266,6 +266,75 @@ def _error(task_id: str, stage: str, exc: Exception) -> None:
     )
 
 
+# Check states that read as a failed run, from either the commit status API or
+# the check-runs API. Anything not failed and not passed is still pending.
+_CI_FAILED = frozenset(
+    {"failure", "error", "cancelled", "timed_out", "action_required", "stale"}
+)
+_CI_PASSED = frozenset({"success", "neutral", "skipped"})
+
+
+def _ci_conclusion(states: list[str]) -> str:
+    """Fold check states into one: any failure fails, all passed passes."""
+    if not states:
+        return "none"
+    if any(state in _CI_FAILED for state in states):
+        return "failure"
+    if all(state in _CI_PASSED for state in states):
+        return "success"
+    return "pending"
+
+
+def _record_ci(repo: str, item: dict, pr: dict) -> None:
+    """Best effort: record what CI said about the head that merged.
+
+    Written as its own once-only ``merge_ci`` row after ``merged``, never
+    inside it, so a slow or failing read cannot delay or lose the merge
+    record. A read that fails still writes the row, with the conclusion
+    ``unknown`` and the exception type, because a merged delivery leaves the
+    landing batch once its issue closes and would never be asked again.
+    """
+    head = (pr.get("head") or {}).get("sha")
+    detail: dict = {
+        "pr_number": item["pr_number"],
+        "head_sha": head if isinstance(head, str) else None,
+        "ejections": item.get("ejected", 0),
+    }
+    try:
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise ValueError("merged pull request has no head sha")
+        status = github_get(repo, f"commits/{head}/status")
+        runs = github_get(repo, f"commits/{head}/check-runs?per_page=100")
+        checks = {
+            str(entry.get("context")): str(entry.get("state"))
+            for entry in status.get("statuses") or []
+            if isinstance(entry, dict)
+        }
+        for run in runs.get("check_runs") or []:
+            if isinstance(run, dict):
+                checks[str(run.get("name"))] = str(
+                    run.get("conclusion") or run.get("status")
+                )
+        detail["checks"] = checks
+        detail["conclusion"] = _ci_conclusion(list(checks.values()))
+    except Exception as exc:  # noqa: BLE001 - CI evidence never blocks landing
+        logger.warning(
+            "factory landing could not read CI for task %s",
+            item["task_id"],
+            exc_info=True,
+        )
+        detail["conclusion"] = "unknown"
+        detail["error"] = type(exc).__name__
+    try:
+        _record(item["task_id"], "merge_ci", **detail)
+    except Exception:  # noqa: BLE001 - nor does failing to write it
+        logger.warning(
+            "factory landing could not record CI for task %s",
+            item["task_id"],
+            exc_info=True,
+        )
+
+
 LANDING_ACTIONS = (
     "merge_armed",
     "merge_ejected",
@@ -583,13 +652,14 @@ def _arm(repo: str, item: dict) -> None:
         if pr.get("merged"):
             # Someone merged it by hand between approval and this tick. The
             # rest of the landing still owes the issue its close.
-            _record(
+            if _record(
                 item["task_id"],
                 "merged",
                 pr_number=number,
                 armed_by_factory=False,
                 merge_commit_sha=pr.get("merge_commit_sha"),
-            )
+            ):
+                _record_ci(repo, item, pr)
             item["merged"] = True
             item["merge_commit_sha"] = pr.get("merge_commit_sha")
             return
@@ -736,7 +806,7 @@ def _observe(repo: str, item: dict) -> None:
         _error(item["task_id"], "observe", exc)
         return
     if pr.get("merged"):
-        _record(
+        if _record(
             item["task_id"],
             "merged",
             pr_number=number,
@@ -745,7 +815,8 @@ def _observe(repo: str, item: dict) -> None:
             # Merge is not rollout proof. A separate rollout_verified audit
             # records publication, actual revisions and running workloads.
             rollout_verified=None,
-        )
+        ):
+            _record_ci(repo, item, pr)
         item["merged"] = True
         item["merge_commit_sha"] = pr.get("merge_commit_sha")
         return

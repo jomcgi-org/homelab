@@ -7268,6 +7268,11 @@ def tick() -> None:
     from factory.orchestration.factory_landing import landing_tick
 
     landing_tick(snapshot["policy"])
+    # Outcome tracking only: whether a factory merge was reverted inside its
+    # window. Throttled and self-guarded, so it cannot stall reconciliation.
+    from factory.orchestration.factory_reverts import revert_tick
+
+    revert_tick(snapshot["policy"])
     try:
         from factory.orchestration.factory_problem_issues import problem_issues_tick
 

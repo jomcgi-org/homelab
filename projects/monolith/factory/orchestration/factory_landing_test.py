@@ -1637,3 +1637,272 @@ def test_new_pending_delivery_does_not_age_out_or_lose_verified_settlement(
     assert len(audits(db, "issue_closed", "t-old-pending")) == 1
     landing.landing_tick(POLICY)
     assert len(audits(db, "finish_task", "t-old-pending")) == 1
+
+
+# --- Outcome evidence: CI at merge, reverts after it ------------------------
+
+
+def ci_github(monkeypatch, *, statuses=None, runs=None, fail=False):
+    """GitHub as ``github`` builds it, plus the two commit CI reads."""
+    pulls = {3: pull(3, merged=True)}
+    calls = github(
+        monkeypatch, pulls=pulls, issues={11: {"number": 11, "state": "closed"}}
+    )
+    plain = landing.github_get
+
+    def get(repo, suffix):
+        if suffix.startswith("commits/"):
+            calls["get"].append(suffix)
+            if fail:
+                raise httpx.ConnectError("down")
+            if suffix.endswith("/status"):
+                return {"statuses": statuses or []}
+            return {"check_runs": runs or []}
+        return plain(repo, suffix)
+
+    monkeypatch.setattr(landing, "github_get", get)
+    return calls
+
+
+def test_a_merge_records_the_ci_that_passed_on_its_head(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    ci_github(
+        monkeypatch,
+        statuses=[{"context": "pr-checks", "state": "success"}],
+        runs=[{"name": "lint", "conclusion": "skipped"}],
+    )
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_ci", "t-1") == [
+        {
+            "pr_number": 3,
+            "head_sha": HEAD,
+            "ejections": 0,
+            "checks": {"pr-checks": "success", "lint": "skipped"},
+            "conclusion": "success",
+        }
+    ]
+    # The merge record itself keeps its shape.
+    assert "ci" not in audits(db, "merged", "t-1")[0]
+
+
+def test_any_failed_check_fails_the_merge_ci(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    ci_github(
+        monkeypatch,
+        statuses=[{"context": "pr-checks", "state": "success"}],
+        runs=[{"name": "flaky", "conclusion": "failure"}],
+    )
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_ci", "t-1")[0]["conclusion"] == "failure"
+
+
+def test_an_unreadable_ci_never_blocks_the_merge_record(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    ci_github(monkeypatch, fail=True)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merged", "t-1")[0]["pr_number"] == 3
+    assert audits(db, "merge_ci", "t-1") == [
+        {
+            "pr_number": 3,
+            "head_sha": HEAD,
+            "ejections": 0,
+            "conclusion": "unknown",
+            "error": "ConnectError",
+        }
+    ]
+    assert audits(db, "issue_closed", "t-1")
+
+
+def test_ci_conclusion_folds_states():
+    assert landing._ci_conclusion([]) == "none"
+    assert landing._ci_conclusion(["success", "neutral"]) == "success"
+    assert landing._ci_conclusion(["success", "pending"]) == "pending"
+    assert landing._ci_conclusion(["pending", "timed_out"]) == "failure"
+
+
+def merged_audit(db, task_id, pr_number, *, merged_at, sha="c" * 40):
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor="factory:landing",
+                action="merged",
+                task_id=task_id,
+                created_at=merged_at,
+                detail_json=json.dumps(
+                    {
+                        "pr_number": pr_number,
+                        "merge_commit_sha": sha,
+                        "armed_by_factory": True,
+                    }
+                ),
+            )
+        )
+        session.commit()
+
+
+def history(monkeypatch, commits, *, pages=None):
+    """Main's history as GitHub pages it; ``pages`` caps what is returned."""
+    from factory.orchestration import factory_reverts as reverts
+
+    calls = []
+
+    def listing(_repo, suffix):
+        calls.append(suffix)
+        page = int(suffix.rsplit("page=", 1)[1])
+        if pages is not None and page > pages:
+            raise AssertionError("read past the page budget")
+        start = (page - 1) * reverts.PAGE_SIZE
+        return commits[start : start + reverts.PAGE_SIZE]
+
+    monkeypatch.setattr(landing, "github_list", listing)
+    return calls
+
+
+def commit(sha, message, date):
+    return {
+        "sha": sha,
+        "commit": {"message": message, "committer": {"date": date}},
+    }
+
+
+def test_a_revert_of_the_merge_commit_is_recorded_once(db, monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=2))
+    history(
+        monkeypatch,
+        [
+            commit(
+                "d" * 40,
+                'Revert "feat: thing"\n\nThis reverts commit ' + "c" * 40 + ".",
+                "2026-09-10T09:00:00Z",
+            ),
+            commit("e" * 40, "chore: unrelated", "2026-09-10T08:00:00Z"),
+        ],
+    )
+    reverts.sweep(POLICY)
+    reverts.sweep(POLICY)
+    assert audits(db, "reverted", "t-1") == [
+        {
+            "pr_number": 3,
+            "merge_commit_sha": "c" * 40,
+            "revert_sha": "d" * 40,
+            "revert_committed_at": "2026-09-10T09:00:00Z",
+            "detected_at": NOW.isoformat(),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        'Revert "feat: thing (#3)"',
+        "Revert thing\n\nReverts owner/repo#3",
+    ],
+)
+def test_a_revert_citing_the_pull_request_is_recognised(db, monkeypatch, message):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=1))
+    history(monkeypatch, [commit("d" * 40, message, "2026-09-11T00:00:00Z")])
+    reverts.sweep(POLICY)
+    assert audits(db, "reverted", "t-1")[0]["revert_sha"] == "d" * 40
+
+
+def test_an_unrelated_pull_request_number_is_not_a_revert(db, monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=1))
+    history(
+        monkeypatch,
+        [commit("d" * 40, "fix: follow up on #3", "2026-09-11T00:00:00Z")],
+    )
+    reverts.sweep(POLICY)
+    assert audits(db, "reverted", "t-1") == []
+    # Still inside the window: nothing is closed yet either.
+    assert audits(db, "revert_window_closed", "t-1") == []
+
+
+def test_a_clean_window_closes_once_the_read_is_complete(db, monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=8))
+    calls = history(monkeypatch, [commit("e" * 40, "chore: x", "2026-09-05T00:00:00Z")])
+    reverts.sweep(POLICY)
+    assert audits(db, "revert_window_closed", "t-1") == [
+        {
+            "pr_number": 3,
+            "merge_commit_sha": "c" * 40,
+            "window_days": 7,
+            "checked_at": NOW.isoformat(),
+        }
+    ]
+    # Judged: the next sweep has nothing to read.
+    reverts.sweep(POLICY)
+    assert len(calls) == 1
+
+
+def test_a_truncated_history_never_closes_a_window(db, monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=8))
+    full = [
+        commit(f"{n:040x}", "chore: x", "2026-09-05T00:00:00Z")
+        for n in range(reverts.PAGE_SIZE * reverts.MAX_PAGES)
+    ]
+    calls = history(monkeypatch, full, pages=reverts.MAX_PAGES)
+    reverts.sweep(POLICY)
+    assert len(calls) == reverts.MAX_PAGES
+    assert audits(db, "revert_window_closed", "t-1") == []
+
+
+def test_a_revert_after_the_window_does_not_count(db, monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=8, hours=12))
+    history(
+        monkeypatch,
+        [
+            commit(
+                "d" * 40,
+                "Revert x\n\nThis reverts commit " + "c" * 40,
+                "2026-09-11T11:00:00Z",
+            )
+        ],
+    )
+    reverts.sweep(POLICY)
+    assert audits(db, "reverted", "t-1") == []
+    assert len(audits(db, "revert_window_closed", "t-1")) == 1
+
+
+def test_merges_older_than_the_grace_are_never_judged(db, monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    delivered(db, "t-1", 11, 3)
+    merged_audit(db, "t-1", 3, merged_at=NOW - timedelta(days=30))
+    calls = history(monkeypatch, [])
+    reverts.sweep(POLICY)
+    assert calls == []
+    assert audits(db, "revert_window_closed", "t-1") == []
+
+
+def test_revert_tick_is_throttled_and_never_raises(monkeypatch):
+    from factory.orchestration import factory_reverts as reverts
+
+    ran = []
+
+    def boom(_policy):
+        ran.append(1)
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(reverts, "sweep", boom)
+    monkeypatch.setattr(reverts, "_last_sweep", None)
+    reverts.revert_tick(POLICY)
+    reverts.revert_tick(POLICY)
+    assert ran == [1]
