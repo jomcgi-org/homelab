@@ -4853,6 +4853,7 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defp report_archive_owner(ctx, session) do
+    {:ok, session} = SessionStore.get(ctx.store, session.session_id)
     NodeCapacity.put(ctx.cap_table, {"node-4", "archive-owner"}, %{
       node_id: "node-4", configured_id: "node-4", instance_id: "node-4/archive-owner",
       pod_uid: "archive-owner", workloads: %{}, session_vms: [], session_snapshots: [],
@@ -4881,7 +4882,8 @@ defmodule Embervm.SessionManagerTest do
     parent = self()
     {:ok, clock} = Agent.start_link(fn -> 0 end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(clock) end)
-    ctx = start_stack(monotonic_clock: fn -> Agent.get(clock, & &1) end,
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-dedup"),
+      monotonic_clock: fn -> Agent.get(clock, & &1) end,
       archive_volume_fun: fn _channel, _request ->
         send(parent, {:archive_worker, self()})
         receive do :finish_archive -> {:ok, %{skipped: false}} end
@@ -4914,7 +4916,9 @@ defmodule Embervm.SessionManagerTest do
 
   test "archive attached-skip records an error and retains the parked workspace" do
     parent = self()
-    ctx = start_stack(archive_volume_fun: fn channel, _request ->
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-attached"),
+      channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      archive_volume_fun: fn channel, _request ->
       send(parent, {:archive_dial, channel})
       {:ok, %{skipped: true}}
     end)
@@ -4926,7 +4930,7 @@ defmodule Embervm.SessionManagerTest do
       assert_receive {:archive_result, _, %{result: {:error, :archive_skipped}}}, 1_000
     end)
     assert log =~ "lineage still attached"
-    assert_receive {:archive_dial, :fake_channel}
+    assert_receive {:archive_dial, {:channel, "node-4/archive-owner"}}
     assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
     entry = :sys.get_state(ctx.mgr).archive_acks[{"node-4", parked.lineage_id}]
     assert entry.acked_at == nil
@@ -4935,7 +4939,8 @@ defmodule Embervm.SessionManagerTest do
 
   test "pre-drain archive respects a disabled persistence flag" do
     parent = self()
-    ctx = start_stack(archive_volume_fun: fn _channel, _request ->
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-disabled"),
+      archive_volume_fun: fn _channel, _request ->
       send(parent, :unexpected_archive)
       {:ok, %{}}
     end)
