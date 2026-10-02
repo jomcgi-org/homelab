@@ -446,6 +446,10 @@ def test_snapshot_patches_apply_once_and_fail_on_drift(tmp_path):
         _apply_snapshot_patches(
             tmp_path, [{"file": "m.py", "find": "b = 2", "replace": "x"}]
         )
+    _apply_snapshot_patches(
+        tmp_path, [{"file": "sql/new.sql", "content": "SELECT 1;\n"}]
+    )
+    assert (tmp_path / "sql" / "new.sql").read_text() == "SELECT 1;\n"
 
 
 def test_review_diff_covers_edited_and_new_files(tmp_path):

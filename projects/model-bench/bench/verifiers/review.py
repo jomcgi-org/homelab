@@ -52,12 +52,33 @@ def _findings(data) -> list[dict] | None:
     return [f for f in data if isinstance(f, dict)]
 
 
+def _ranges(target: dict) -> list[tuple[int, int]]:
+    """A bug or decoy's line ranges: ``[lo, hi]`` or a list of them, for a defect
+    that shows at more than one place (a loop cursor and the query it pages)."""
+    lines = target["lines"]
+    if lines and isinstance(lines[0], list):
+        return [(lo, hi) for lo, hi in lines]
+    lo, hi = lines
+    return [(lo, hi)]
+
+
+def _distance(line: int, target: dict) -> int:
+    return min(
+        0 if lo <= line <= hi else min(abs(line - lo), abs(line - hi))
+        for lo, hi in _ranges(target)
+    )
+
+
 @register("review-findings")
 def verify(workdir: Path, args: dict) -> VerifyResult:
     name: str = args.get("file", "review.json")
     bugs: list[dict] = args["bugs"]
+    # Decoys: code that looks wrong but is correct in context. Flagging one is a
+    # false positive with its own (usually higher) penalty.
+    decoys: list[dict] = args.get("decoys", [])
     tolerance: int = args.get("tolerance", 3)
     fp_penalty: float = args.get("fp_penalty", 0.25)
+    decoy_penalty: float = args.get("decoy_penalty", fp_penalty)
     threshold: float = args.get("pass_threshold", 1.0)
 
     path = workdir / name
@@ -72,36 +93,44 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
             False, f"{name} must be a JSON list of {{file, line, description}}", 0.0
         )
 
-    def window(bug: dict) -> tuple[int, int]:
-        lo, hi = bug["lines"]
-        return lo - tolerance, hi + tolerance
-
-    matched: dict[str, int] = {}  # bug id -> index of the finding that claimed it
+    targets = [("bug", b) for b in bugs] + [("decoy", d) for d in decoys]
+    matched: set[str] = set()
+    decoy_hits: list[str] = []
     false_positives = 0
-    for i, finding in enumerate(findings):
+    for finding in findings:
         line = _line(finding.get("line"))
         file = str(finding.get("file", ""))
-        hits = [
-            b
-            for b in bugs
+        near = [
+            (_distance(line, t), kind, t)
+            for kind, t in targets
             if line is not None
-            and _same_file(file, b["file"])
-            and window(b)[0] <= line <= window(b)[1]
+            and _same_file(file, t["file"])
+            and _distance(line, t) <= tolerance
         ]
-        fresh = [b for b in hits if b["id"] not in matched]
-        if fresh:
-            # Closest unclaimed bug wins when windows overlap.
-            best = min(fresh, key=lambda b: abs(sum(b["lines"]) / 2 - line))
-            matched[best["id"]] = i
-        elif not hits:
+        if not near:
             false_positives += 1
+            continue
+        # The nearest target owns the finding; an unclaimed bug beats a claimed
+        # one at equal distance, so two findings can split adjacent bugs.
+        near.sort(key=lambda n: (n[0], n[1] == "bug" and n[2]["id"] in matched))
+        _, kind, target = near[0]
+        if kind == "decoy":
+            decoy_hits.append(target["id"])
+        elif target["id"] not in matched:
+            matched.add(target["id"])
+        # A repeat finding on an already-matched bug neither scores nor costs.
 
-    score = max(0.0, (len(matched) - fp_penalty * false_positives) / len(bugs))
+    penalty = fp_penalty * false_positives + decoy_penalty * len(decoy_hits)
+    score = max(0.0, (len(matched) - penalty) / len(bugs))
     missed = [b["id"] for b in bugs if b["id"] not in matched]
     feedback = (
         f"matched {len(matched)}/{len(bugs)} planted bugs, "
         f"{false_positives} false positive(s)"
     )
+    if decoys:
+        feedback += f", {len(decoy_hits)} decoy hit(s)"
+        if decoy_hits:
+            feedback += f" ({', '.join(sorted(set(decoy_hits)))})"
     if missed:
         feedback += f"; missed: {', '.join(missed)}"
     return VerifyResult(score >= threshold, feedback, score)

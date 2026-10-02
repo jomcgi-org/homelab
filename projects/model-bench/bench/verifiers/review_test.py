@@ -88,3 +88,44 @@ def test_missing_or_malformed_review_scores_zero(tmp_path):
     assert r.score == 0.0 and "not valid JSON" in r.feedback
     (tmp_path / "review.json").write_text('"a string"')
     assert v(tmp_path, _args()).score == 0.0
+
+
+DECOY_ARGS = {
+    "bugs": [
+        {"id": "fk", "file": "pkg/purge.py", "lines": [10, 12]},
+        {"id": "offset", "file": "pkg/purge.py", "lines": [[30, 30], [60, 60]]},
+    ],
+    "decoys": [{"id": "cascade", "file": "pkg/purge.py", "lines": [5, 8]}],
+    "tolerance": 2,
+    "fp_penalty": 0.25,
+    "decoy_penalty": 0.5,
+}
+
+
+def _grade(tmp_path, findings, args=DECOY_ARGS):
+    (tmp_path / "review.json").write_text(json.dumps(findings))
+    return get_verifier("review-findings")(tmp_path, args)
+
+
+def test_decoy_hit_costs_decoy_penalty_and_is_reported(tmp_path):
+    r = _grade(
+        tmp_path,
+        [{"file": "pkg/purge.py", "line": 11}, {"file": "pkg/purge.py", "line": 6}],
+    )
+    assert r.score == pytest.approx((1 - 0.5) / 2)
+    assert "1 decoy hit(s) (cascade)" in r.feedback
+
+
+def test_nearest_target_owns_a_finding_between_decoy_and_bug(tmp_path):
+    # Line 9 is 1 from the bug and 1 from the decoy; the bug wins the tie, and
+    # line 8 sits inside the decoy.
+    r = _grade(tmp_path, [{"file": "pkg/purge.py", "line": 9}])
+    assert r.score == 0.5 and "0 decoy hit(s)" in r.feedback
+    r = _grade(tmp_path, [{"file": "pkg/purge.py", "line": 8}])
+    assert r.score == 0.0 and "(cascade)" in r.feedback
+
+
+def test_multi_range_bug_matches_at_either_site(tmp_path):
+    for line in (30, 61):
+        r = _grade(tmp_path, [{"file": "pkg/purge.py", "line": line}])
+        assert r.score == 0.5 and "missed: fk" in r.feedback

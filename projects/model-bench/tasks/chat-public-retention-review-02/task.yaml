@@ -1,0 +1,391 @@
+id: chat-public-retention-review-02
+version: v1
+class: code-fix
+# hard: seeded code review (#6693), the harder sibling of -01. The same real
+# change (b5aafe854, chat_public retention and takedown purge jobs) grown into a
+# batched, lock-serialised rewrite with ten planted bugs and four decoys. Most
+# plants need cross-referencing: FK ON DELETE semantics in the migrations, the
+# index the idle query can no longer use, lock and transaction scope against
+# the jobs CLI's dry-run, a race between the two jobs, and pagination that
+# skips rows. Decoys look wrong but are correct given the schema; flagging one
+# costs decoy_penalty.
+#
+# Plants (expected difficulty):
+#   fk-order-orphans-snapshots   hard   sessions deleted before snapshots; SET NULL FK
+#   offset-skips-rows            medium OFFSET paging over rows the loop just deleted
+#   idle-query-not-sargable      hard   last_seen_at + interval defeats sessions_last_seen
+#   snapshot-window-hours        medium make_interval(hours => days)
+#   session-lock-never-released  hard   pg_advisory_lock outlives the txn on a pooled conn
+#   lock-key-mismatch            hard   takedown locks a different key, so jobs race
+#   commit-breaks-dry-run        medium core commits; the CLI dry-run cannot roll back
+#   selector-in-payload          easy   raw selector echoed and logged by the CLI
+#   takedown-skips-expired       medium ip_hash takedown filters status = 'active'
+#   session-count-overwritten    easy   sessions = batch_sessions, not +=
+# Decoys: messages-cascade, timedelta-positional-days, not-exists-indexed,
+# empty-selector-to-none.
+tier: hard
+mode: agentic
+snapshot:
+  commit: b5aafe854a621f370398039b8c099a66fcc1f2b1
+  paths:
+    - projects/monolith/chat_public
+    - projects/monolith/app/jobs_main.py
+    - projects/monolith/chart/migrations/20260617030000_chat_public.sql
+    - projects/monolith/chart/migrations/20260620000000_chat_public_shared_snapshots.sql
+    - projects/monolith/chart/migrations/20261001150000_chat_public_purge_audit.sql
+  strip_components: 2
+  patches:
+    - file: chat_public/retention.py
+      content: |
+        """Public chat retention and takedown purge (ADR security/005).
+
+        Sync cores taking an explicit sqlmodel ``Session``. They flush and leave the
+        commit to the caller (the jobs CLI), so a dry run can roll back.
+
+        Retention runs nightly over every idle session, so it works in batches to keep
+        each statement small. Retention and takedown serialise on one advisory lock so
+        a takedown never interleaves with a retention batch.
+
+        Every purge writes one ``chat_public.purge_audit`` row: counts and a sha256
+        digest of the takedown selector only, never the raw id or ip_hash.
+        """
+
+        import hashlib
+        import logging
+        import os
+        from dataclasses import dataclass
+        from datetime import datetime, timedelta, timezone
+
+        from sqlmodel import Session, text
+
+        logger = logging.getLogger("monolith.chat_public.retention")
+
+        # Reversible defaults; override with the env vars below (read at call time).
+        SESSION_RETENTION_DAYS = 30
+        SNAPSHOT_RETENTION_DAYS = 365
+
+        SESSION_RETENTION_ENV = "CHAT_PUBLIC_SESSION_RETENTION_DAYS"
+        SNAPSHOT_RETENTION_ENV = "CHAT_PUBLIC_SNAPSHOT_RETENTION_DAYS"
+
+        # Idle sessions deleted per retention batch.
+        RETENTION_BATCH_SIZE = 500
+
+        # Advisory lock shared by retention and takedown.
+        _PURGE_LOCK = "chat_public.purge"
+
+
+        @dataclass(frozen=True)
+        class PurgeReport:
+            action: str
+            sessions_deleted: int = 0
+            messages_deleted: int = 0
+            snapshots_deleted: int = 0
+
+
+        def _window_days(env_name: str, default: int) -> int:
+            raw = os.environ.get(env_name)
+            if raw is None or raw.strip() == "":
+                return default
+            days = int(raw)
+            if days < 1:
+                raise ValueError(f"{env_name} must be >= 1, got {days}")
+            return days
+
+
+        def session_retention_days() -> int:
+            return _window_days(SESSION_RETENTION_ENV, SESSION_RETENTION_DAYS)
+
+
+        def snapshot_retention_days() -> int:
+            return _window_days(SNAPSHOT_RETENTION_ENV, SNAPSHOT_RETENTION_DAYS)
+
+
+        def _write_audit(
+            session: Session, report: PurgeReport, selector: str | None = None
+        ) -> None:
+            digest = hashlib.sha256(selector.encode()).hexdigest() if selector else None
+            session.execute(
+                text(
+                    "INSERT INTO chat_public.purge_audit "
+                    "(action, selector_sha256, sessions_deleted, messages_deleted, "
+                    "snapshots_deleted) "
+                    "VALUES (:action, :selector, :sessions, :messages, :snapshots)"
+                ),
+                {
+                    "action": report.action,
+                    "selector": digest,
+                    "sessions": report.sessions_deleted,
+                    "messages": report.messages_deleted,
+                    "snapshots": report.snapshots_deleted,
+                },
+            )
+            session.flush()
+
+
+        def _delete_sessions(session: Session, session_ids: list[str]) -> tuple[int, int, int]:
+            """Delete ``session_ids`` with their transcripts and shared snapshots.
+
+            Returns ``(sessions, messages, snapshots)`` deleted.
+            """
+            if not session_ids:
+                return 0, 0, 0
+            params = {"ids": session_ids}
+            # Messages go with their session (ON DELETE CASCADE); count them first so
+            # the audit row still reports them.
+            messages = session.execute(
+                text("SELECT count(*) FROM chat_public.messages WHERE session_id = ANY(:ids)"),
+                params,
+            ).scalar_one()
+            sessions = session.execute(
+                text("DELETE FROM chat_public.sessions WHERE id = ANY(:ids)"), params
+            ).rowcount
+            snapshots = session.execute(
+                text(
+                    "DELETE FROM chat_public.shared_snapshots "
+                    "WHERE source_session_id = ANY(:ids)"
+                ),
+                params,
+            ).rowcount
+            return sessions, messages, snapshots
+
+
+        def _idle_session_batch(session: Session, now: datetime, offset: int) -> list[str]:
+            """One page of idle sessions that no shared snapshot still points at."""
+            return list(
+                session.execute(
+                    text(
+                        "SELECT s.id FROM chat_public.sessions s "
+                        "WHERE s.last_seen_at + make_interval(days => :days) < :now "
+                        "AND NOT EXISTS (SELECT 1 FROM chat_public.shared_snapshots n "
+                        "WHERE n.source_session_id = s.id) "
+                        "ORDER BY s.last_seen_at, s.id "
+                        "LIMIT :limit OFFSET :offset"
+                    ),
+                    {
+                        "days": session_retention_days(),
+                        "now": now,
+                        "limit": RETENTION_BATCH_SIZE,
+                        "offset": offset,
+                    },
+                ).scalars()
+            )
+
+
+        def snapshot_cutoff(now: datetime) -> datetime:
+            """Oldest ``created_at`` a shared snapshot may have and still be served."""
+            return now - timedelta(snapshot_retention_days())
+
+
+        def purge_expired(session: Session, now: datetime | None = None) -> PurgeReport:
+            """Delete expired snapshots, then idle sessions with no remaining snapshot."""
+            now = now or datetime.now(timezone.utc)
+            session.execute(
+                text("SELECT pg_advisory_lock(hashtext(:key))"), {"key": _PURGE_LOCK}
+            )
+
+            expired_snapshots = session.execute(
+                text(
+                    "DELETE FROM chat_public.shared_snapshots "
+                    "WHERE created_at < :now - make_interval(hours => :days)"
+                ),
+                {"now": now, "days": snapshot_retention_days()},
+            ).rowcount
+            logger.info(
+                "chat-public retention: snapshots older than %s expired",
+                snapshot_cutoff(now).isoformat(),
+            )
+            # Keep the snapshot sweep even if a later session batch fails.
+            session.commit()
+
+            # A shared session is kept until its snapshot expires, so a takedown can
+            # still resolve it through source_session_id.
+            sessions = messages = 0
+            offset = 0
+            while True:
+                idle_ids = _idle_session_batch(session, now, offset)
+                if not idle_ids:
+                    break
+
+                batch_sessions, batch_messages, _ = _delete_sessions(session, idle_ids)
+                sessions = batch_sessions
+
+                messages += batch_messages
+                logger.debug("chat-public retention: batch of %d sessions", batch_sessions)
+
+                # Next page.
+                offset += RETENTION_BATCH_SIZE
+
+            report = PurgeReport(
+                action="retention",
+                sessions_deleted=sessions,
+                messages_deleted=messages,
+                snapshots_deleted=expired_snapshots,
+            )
+            _write_audit(session, report)
+            logger.info(
+                "chat-public retention: sessions=%d messages=%d snapshots=%d",
+                report.sessions_deleted,
+                report.messages_deleted,
+                report.snapshots_deleted,
+            )
+            return report
+
+
+        def takedown(
+            session: Session, *, session_id: str | None = None, ip_hash: str | None = None
+        ) -> PurgeReport:
+            """Delete one session, or every session with one stored ip_hash.
+
+            Takes the STORED ip_hash (the salt lives only in monolith-public), never a
+            raw IP. A selector that matches nothing still writes a zero-count audit row.
+            """
+            if bool(session_id) == bool(ip_hash):
+                raise ValueError("takedown needs exactly one of session_id or ip_hash")
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": "chat_public_purge"},
+            )
+
+            if session_id:
+                action, selector = "takedown_session", session_id
+                ids = [session_id]
+            else:
+                action, selector = "takedown_ip_hash", ip_hash
+                ids = list(
+                    session.execute(
+                        text(
+                            "SELECT id FROM chat_public.sessions "
+                            "WHERE ip_hash = :sel AND status = 'active'"
+                        ),
+                        {"sel": selector},
+                    ).scalars()
+                )
+
+            sessions, messages, snapshots = _delete_sessions(session, ids)
+            report = PurgeReport(
+                action=action,
+                sessions_deleted=sessions,
+                messages_deleted=messages,
+                snapshots_deleted=snapshots,
+            )
+            _write_audit(session, report, selector)
+            logger.info(
+                "chat-public takedown: action=%s sessions=%d messages=%d snapshots=%d",
+                action,
+                sessions,
+                messages,
+                snapshots,
+            )
+            return report
+    - file: chart/migrations/20261002090000_chat_public_snapshot_source_idx.sql
+      content: |
+        -- Retention's idle-session probe (NOT EXISTS on source_session_id) and the
+        -- takedown snapshot delete both look shared snapshots up by their source
+        -- session; without this index each probe is a sequential scan.
+        CREATE INDEX IF NOT EXISTS shared_snapshots_source_session
+            ON chat_public.shared_snapshots (source_session_id);
+    # selector-in-payload: the CLI echoes and logs the raw selector.
+    - file: app/jobs_main.py
+      find: |-
+        def _run_chat_public_purge(name: str, purge, dry_run: bool) -> None:
+            """Run one chat_public purge core in a transaction; dry-run rolls back."""
+      replace: |-
+        def _run_chat_public_purge(name: str, purge, dry_run: bool, **context) -> None:
+            """Run one chat_public purge core in a transaction; dry-run rolls back.
+
+            ``context`` is echoed with the report so on-call can tie a run to its ticket.
+            """
+    - file: app/jobs_main.py
+      find: '    payload = {**asdict(report), "dry_run": dry_run}'
+      replace: '    payload = {**asdict(report), "dry_run": dry_run, **context}'
+    - file: app/jobs_main.py
+      find: '    _run_chat_public_purge("chat-public-takedown", purge, dry_run)'
+      replace: |2-
+            _run_chat_public_purge(
+                "chat-public-takedown", purge, dry_run, selector=session_id or ip_hash
+            )
+  review_diff:
+    base: 79d1c1a91fecc59e4b6fab0d6897efac981268c4
+    file: REVIEW.diff
+    paths:
+      - projects/monolith/chat_public/retention.py
+      - projects/monolith/chat_public/models.py
+      - projects/monolith/app/jobs_main.py
+      - projects/monolith/chart/migrations/20261002090000_chat_public_snapshot_source_idx.sql
+agent:
+  max_turns: 40
+prompt: |
+  This checkout is part of a real FastAPI monolith backend. REVIEW.diff at the repo
+  root is a pending change, already applied to the tree, that adds retention and
+  takedown purge jobs for the public chat (chat_public): a nightly batched
+  retention purge and an on-demand takedown, run from the jobs CLI in
+  app/jobs_main.py. Review it the way a senior reviewer would: find the
+  correctness, concurrency, performance, data-safety and privacy defects the
+  change introduces. The SQL migrations under chart/migrations/ describe the
+  schema, including foreign keys and indexes.
+
+  Write your findings to review.json at the repo root as a JSON list:
+  [{"file": "<path relative to the repo root>", "line": <line number in the
+  post-change file>, "description": "<what is wrong and why it matters>"}].
+  One entry per defect, at the line where the defect is. Report real defects
+  only: a finding that is not a real defect costs points, and some code that looks
+  suspicious is correct given the schema. Style nits do not count. Do not modify
+  any other file.
+target_files:
+  - review.json
+verifier:
+  kind: review-findings
+  args:
+    file: review.json
+    tolerance: 2
+    fp_penalty: 0.25
+    decoy_penalty: 0.5
+    pass_threshold: 0.8
+    # Lines are in the post-change (fixture) files.
+    bugs:
+      - id: fk-order-orphans-snapshots
+        file: chat_public/retention.py
+        lines: [100, 109]
+      - id: offset-skips-rows
+        file: chat_public/retention.py
+        lines: [[123, 123], [176, 177]]
+      - id: idle-query-not-sargable
+        file: chat_public/retention.py
+        lines: [119, 119]
+      - id: snapshot-window-hours
+        file: chat_public/retention.py
+        lines: [150, 152]
+      - id: session-lock-never-released
+        file: chat_public/retention.py
+        lines: [143, 145]
+      - id: lock-key-mismatch
+        file: chat_public/retention.py
+        lines: [205, 207]
+      - id: commit-breaks-dry-run
+        file: chat_public/retention.py
+        lines: [158, 159]
+      - id: selector-in-payload
+        file: app/jobs_main.py
+        lines: [[424, 426], [460, 462]]
+      - id: takedown-skips-expired
+        file: chat_public/retention.py
+        lines: [219, 219]
+      - id: session-count-overwritten
+        file: chat_public/retention.py
+        lines: [171, 171]
+    # Correct in context: messages cascade, timedelta's first positional arg is
+    # days, the new migration indexes source_session_id, and "" -> None is how
+    # the CLI marks an unset selector.
+    decoys:
+      - id: messages-cascade
+        file: chat_public/retention.py
+        lines: [94, 99]
+      - id: timedelta-positional-days
+        file: chat_public/retention.py
+        lines: [137, 137]
+      - id: not-exists-indexed
+        file: chat_public/retention.py
+        lines: [120, 121]
+      - id: empty-selector-to-none
+        file: app/jobs_main.py
+        lines: [457, 457]
