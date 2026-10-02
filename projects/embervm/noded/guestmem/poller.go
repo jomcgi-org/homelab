@@ -31,6 +31,7 @@ type (
 		Delta uint64
 	}
 )
+
 type Fetcher interface {
 	Fetch(context.Context, string, string) (guestagent.MemoryStatus, error)
 }
