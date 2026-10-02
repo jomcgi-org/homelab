@@ -81,8 +81,11 @@ _SESSION_BEHAVIOUR_RULES = (
     "docstrings, READMEs, ADRs, commit messages, anything a reader gets by "
     "opening one file, and one-run delivery outcomes such as whether this session "
     "committed, pushed, or opened a pull request. Skip anything already stated by "
-    "a related note unless this raw contradicts it; then emit the contradiction with "
-    "`edges.contradicts`. Prefer what cost the session something: failures, "
+    "a related note unless this raw replaces or contradicts it. When the raw shows "
+    "that a related note's fact has been REPLACED by a newer behaviour or state, "
+    "set `edges.supersedes` to that note's id, using only ids from the Related "
+    "notes list. Keep `edges.contradicts` for a disagreement that does not "
+    "establish a replacement. Prefer what cost the session something: failures, "
     "corrections, workarounds, surprises, contradictions between docs and "
     "reality, and things confirmed by tool output rather than asserted by the "
     "agent. `verification_state` is `verified` only when tool output in the "
@@ -248,6 +251,8 @@ class _Assertion(BaseModel):
 
 
 class _DisputeResolution(BaseModel):
+    """States describe the dispute: confirmed upholds it; rejected means the fact holds."""
+
     model_config = ConfigDict(extra="ignore")
 
     state: Literal["confirmed", "narrowed", "superseded", "invalidated", "rejected"]
@@ -474,14 +479,26 @@ def _lens(raw: RawInput) -> str:
         return (
             "This is a claim by an agent. State what it claims, what evidence the "
             "report cites, and whether the checkout confirms it. Emit verified only "
-            "when the checkout confirms it; otherwise unverified with a confidence."
+            "when the checkout confirms it; otherwise unverified with a confidence. "
+            "When the raw shows that a related note's fact has been REPLACED by a "
+            "newer behaviour or state, set `edges.supersedes` to that note's id, "
+            "using only ids from the Related notes list. Keep `edges.contradicts` "
+            "for a disagreement that does not establish a replacement."
         )
     note_id = (raw.extra or {}).get("note_id", "<unknown>")
     return (
         f"An agent disputes note {note_id}. Seek disconfirming AND confirming "
         "evidence in the checkout. Return `dispute_resolution` with state in "
         "confirmed|narrowed|superseded|invalidated|rejected and a rationale, plus "
-        "any replacement assertion."
+        "any replacement assertion. States describe the dispute. "
+        "confirmed: the dispute is upheld, the note is wrong or doubtful but no "
+        "replacement is established. "
+        "narrowed: the dispute is upheld for part of the note, and a replacement "
+        "assertion limits the fact's scope. "
+        "superseded: the dispute establishes that a newer fact replaces the note, "
+        "and a replacement assertion records it. "
+        "invalidated: the dispute establishes that the note is false. "
+        "rejected: the dispute fails, and the fact holds as written."
     )
 
 
