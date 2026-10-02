@@ -26,8 +26,8 @@ An agentic task graded by the repo's own tests works like SWE-bench:
 
 For example, `hikes-walkhighlands-dom-01` and `hikes-walkhighlands-duration-01` are both
 agentic tasks against the hikes doability model (DOM scraping and duration-aware doability,
-respectively). The pack currently has 19 agentic and 3 single-shot tasks in total; `tasks/`
-is the source of truth for the full, current list.
+respectively). `tasks/` is the source of truth for the full, current list of agentic and
+single-shot tasks.
 
 ## Graded (mutation-testing) tasks
 
