@@ -304,6 +304,7 @@ func run(logger *slog.Logger) error {
 	// reads its own cgroup budget, not static config). Mem budget/headroom
 	// are cheap best-effort reads with no caching and need no loop.
 	srv.StartBudgetLoop(ctx)
+	srv.StartGuestMemoryFeedback(ctx)
 	// Create the serving bridge and install the ingress-only nftables posture before
 	// serving any StartServing. Idempotent across restarts (existing bridge tolerated).
 	if err := servingNet.EnsureNetwork(ctx); err != nil {

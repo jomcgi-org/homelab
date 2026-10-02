@@ -211,6 +211,10 @@ type Config struct {
 	// GuestOomScoreAdj is written to each firecracker child's oom_score_adj so a
 	// guest, never the daemon, is the kernel's first OOM victim. Default 1000.
 	GuestOomScoreAdj int
+	// Guest memory feedback is observation only and is off unless explicitly
+	// enabled. No report is used by admission, eviction or pressure banking.
+	GuestMemoryFeedbackEnabled  bool
+	GuestMemoryFeedbackInterval time.Duration
 
 	// BootReadyTimeout bounds the readiness poll after a COLD boot (BuildBase).
 	BootReadyTimeout time.Duration
@@ -510,31 +514,33 @@ func Load() (Config, error) {
 		MaxLiveVMs:           atoiDefault("EMBERVM_NODED_MAX_LIVE_VMS", 8),
 		DaemonReserveMib:     atoiDefault("EMBERVM_NODED_DAEMON_RESERVE_MIB", 512),
 		// Default 512 MiB memory reject floor; zero means use this fallback.
-		MemRejectFloorMib:       atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
-		AdmissionModel:          getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
-		VMOverheadMib:           atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),
-		SnapshotRoot:            os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
-		ScratchGenerationPath:   os.Getenv("EMBERVM_NODED_SCRATCH_GENERATION_PATH"),
-		WarmthHeartbeatInterval: 30 * time.Second,
-		WarmthStaleAfter:        600 * time.Second,
-		ReapUnclaimedWarmth:     os.Getenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH") == "1",
-		BinPath:                 getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
-		JailerEnabled:           boolDefault("EMBERVM_NODED_JAILER_ENABLED", true),
-		JailerBinPath:           getenvDefault("EMBERVM_NODED_JAILER_BIN", "/opt/fc/jailer"),
-		KernelImagePath:         getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
-		KernelBootArgs:          os.Getenv("EMBERVM_NODED_KERNEL_BOOT_ARGS"),
-		HarnessInit:             getenvDefault("EMBERVM_NODED_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
-		GuestOomScoreAdj:        atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
-		BootReadyTimeout:        60 * time.Second,
-		RestoreReadyTimeout:     2 * time.Second,
-		DrainTimeout:            110 * time.Second,
-		PreemptionNoticeEnabled: boolDefault("EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED", false),
-		PreemptionDrainTimeout:  20 * time.Second,
-		EgressSidecarAddr:       getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
-		EgressEnabled:           boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
-		EgressWorkloads:         csvDefault("EMBERVM_NODED_EGRESS_WORKLOADS"),
-		ArchiveFetchTimeout:     60 * time.Second,
-		ArchiveMaxBytes:         512 << 20,
+		MemRejectFloorMib:           atoiDefault("EMBERVM_NODED_MEM_REJECT_FLOOR_MIB", 512),
+		AdmissionModel:              getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
+		VMOverheadMib:               atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),
+		SnapshotRoot:                os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
+		ScratchGenerationPath:       os.Getenv("EMBERVM_NODED_SCRATCH_GENERATION_PATH"),
+		WarmthHeartbeatInterval:     30 * time.Second,
+		WarmthStaleAfter:            600 * time.Second,
+		ReapUnclaimedWarmth:         os.Getenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH") == "1",
+		BinPath:                     getenvDefault("EMBERVM_NODED_FIRECRACKER_BIN", "/opt/fc/firecracker"),
+		JailerEnabled:               boolDefault("EMBERVM_NODED_JAILER_ENABLED", true),
+		JailerBinPath:               getenvDefault("EMBERVM_NODED_JAILER_BIN", "/opt/fc/jailer"),
+		KernelImagePath:             getenvDefault("EMBERVM_NODED_KERNEL_IMAGE", "/opt/fc/vmlinux.container"),
+		KernelBootArgs:              os.Getenv("EMBERVM_NODED_KERNEL_BOOT_ARGS"),
+		HarnessInit:                 getenvDefault("EMBERVM_NODED_HARNESS_INIT", "/usr/local/bin/fc-shim-init"),
+		GuestOomScoreAdj:            atoiDefault("EMBERVM_NODED_GUEST_OOM_SCORE_ADJ", 1000),
+		GuestMemoryFeedbackEnabled:  boolDefault("EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_ENABLED", false),
+		GuestMemoryFeedbackInterval: 10 * time.Second,
+		BootReadyTimeout:            60 * time.Second,
+		RestoreReadyTimeout:         2 * time.Second,
+		DrainTimeout:                110 * time.Second,
+		PreemptionNoticeEnabled:     boolDefault("EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED", false),
+		PreemptionDrainTimeout:      20 * time.Second,
+		EgressSidecarAddr:           getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
+		EgressEnabled:               boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
+		EgressWorkloads:             csvDefault("EMBERVM_NODED_EGRESS_WORKLOADS"),
+		ArchiveFetchTimeout:         60 * time.Second,
+		ArchiveMaxBytes:             512 << 20,
 
 		PodIP: os.Getenv("EMBERVM_NODED_POD_IP"),
 		// Dial-home registration (R0 PR-2): the daemon advertises its identity to
@@ -574,6 +580,12 @@ func Load() (Config, error) {
 		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
 
 		RequireRestoreCapability: boolDefault("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", false),
+	}
+	if err := parseDuration("EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_INTERVAL", &c.GuestMemoryFeedbackInterval); err != nil {
+		return Config{}, err
+	}
+	if c.GuestMemoryFeedbackInterval < time.Second || c.GuestMemoryFeedbackInterval > 5*time.Minute {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_INTERVAL must be between 1s and 5m")
 	}
 	if c.SPIFFEEnabled {
 		c.SPIFFEClientIDs, err = parseSPIFFEClientIDs(os.Getenv("EMBERVM_NODED_SPIFFE_CLIENT_IDS"))

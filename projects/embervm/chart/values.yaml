@@ -1560,6 +1560,11 @@ noded:
     # guest path is a tmpfs, so one read-only rootfs file backs every microVM.
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
 
+  guestMemoryFeedback:
+    # Telemetry only, staged off until a rootfs rebake and live Linux drills.
+    enabled: false
+    interval: "10s"
+
   jailer:
     # Shipped but suspended: land dark, then arm with a values-only change after
     # live verification on one brick.

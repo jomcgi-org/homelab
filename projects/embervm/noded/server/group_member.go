@@ -210,6 +210,7 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 // readiness failure it reaps the VM and removes the tap, returning
 // FAILED_PRECONDITION (no half-alive member is ever published).
 func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle, workload, groupInstanceID, memberName string, memberIndex uint32, tap string, ip net.IP, healthPort, entryGuestPort uint32, wasRelight bool, snapshotRef string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartGroupMemberResponse, error) {
+	s.trackGuestMemory(h, workload, s.driver.VsockUDSPath(h.ThreadID))
 	if err := s.waitStatefulReady(ctx, ip, healthPort, readyBudget); err != nil {
 		// Loud on purpose: this reap is the daemon KILLING a member that missed its
 		// readiness budget. Silent, it reads as a mystery VM disappearance (the R6
@@ -318,6 +319,7 @@ func (s *Server) stopGroupMemberBank(ctx context.Context, req *nodev1.StopGroupM
 	// writes the snapshot; the daemon issues NO guest-agent command between the pause
 	// decision and the snapshot, so the bank never races an in-flight agent command.
 	pauseStart := time.Now()
+	s.forgetGuestMemory(e.handle)
 	ref, err := s.groupDriver.SnapshotGroupMember(ctx, e.handle, setID, memberName)
 	bankDuration := time.Since(pauseStart)
 	if err != nil {
