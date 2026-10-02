@@ -248,7 +248,7 @@ const TOOLS: ToolSpec[] = [
       scope: Type.Optional(
         Type.String({
           description:
-            'Narrow to one authorized scope, for example "repo:jomcgi-org/homelab"; unauthorized values return no results',
+            'Narrow to one authorized scope, for example "repo:jomcgi-org/homelab". Unauthorized values return no results',
         }),
       ),
     }),

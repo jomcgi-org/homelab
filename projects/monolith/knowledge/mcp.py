@@ -221,7 +221,7 @@ async def search_knowledge(
             observation facts (one per app per cd poll). Hidden by default so
             they cannot crowd ordinary knowledge out of the top results.
         scope: Optionally narrow to one scope the caller is already authorized
-            for, e.g. "repo:jomcgi-org/homelab". Exact membership only; a value
+            for, e.g. "repo:jomcgi-org/homelab". Exact membership only. A value
             outside the caller's authorized scopes returns no results.
     """
     principal = current_principal()
