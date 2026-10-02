@@ -1,0 +1,139 @@
+id: chat-public-retention-review-01
+version: v1
+class: code-fix
+# hard: seeded code review (#6693), graded by the share of planted bugs found minus
+# a false-positive penalty. The change is the real b5aafe854 (chat_public retention
+# and takedown purge jobs) with six bugs planted in by `snapshot.patches`, modelled
+# on this repo's fix(...) history. Two are obvious against the change's own
+# docstrings, two need the schema or the jobs CLI, two are one-word subtleties.
+tier: hard
+mode: agentic
+snapshot:
+  commit: b5aafe854a621f370398039b8c099a66fcc1f2b1
+  paths:
+    - projects/monolith/chat_public
+    - projects/monolith/app/jobs_main.py
+    - projects/monolith/chart/migrations/20260617030000_chat_public.sql
+    - projects/monolith/chart/migrations/20260620000000_chat_public_shared_snapshots.sql
+    - projects/monolith/chart/migrations/20261001150000_chat_public_purge_audit.sql
+  strip_components: 2
+  patches:
+    # snapshots-deleted-last: the SET NULL FK erases the link before the snapshot
+    # delete runs, so a takedown leaves the shared transcript public.
+    - file: chat_public/retention.py
+      find: |2
+            snapshots = session.execute(
+                text(
+                    "DELETE FROM chat_public.shared_snapshots "
+                    "WHERE source_session_id = ANY(:ids)"
+                ),
+                params,
+            ).rowcount
+            messages = session.execute(
+                text("DELETE FROM chat_public.messages WHERE session_id = ANY(:ids)"),
+                params,
+            ).rowcount
+            sessions = session.execute(
+                text("DELETE FROM chat_public.sessions WHERE id = ANY(:ids)"), params
+            ).rowcount
+      replace: |2
+            messages = session.execute(
+                text("DELETE FROM chat_public.messages WHERE session_id = ANY(:ids)"),
+                params,
+            ).rowcount
+            sessions = session.execute(
+                text("DELETE FROM chat_public.sessions WHERE id = ANY(:ids)"), params
+            ).rowcount
+            snapshots = session.execute(
+                text(
+                    "DELETE FROM chat_public.shared_snapshots "
+                    "WHERE source_session_id = ANY(:ids)"
+                ),
+                params,
+            ).rowcount
+    # snapshot-window: shared snapshots expire on the 30-day session window.
+    - file: chat_public/retention.py
+      find: 'snapshot_cutoff = now - timedelta(days=snapshot_retention_days())'
+      replace: 'snapshot_cutoff = now - timedelta(days=session_retention_days())'
+    # zero-day-window: 0 passes validation and purges every idle session.
+    - file: chat_public/retention.py
+      find: '    if days < 1:'
+      replace: '    if days < 0:'
+    # idle-by-created-at: active long-lived sessions are purged.
+    - file: chat_public/retention.py
+      find: '"WHERE s.last_seen_at < :cutoff "'
+      replace: '"WHERE s.created_at < :cutoff "'
+    # selector-logged: the raw session id / ip_hash lands in the logs.
+    - file: chat_public/retention.py
+      find: |2
+            logger.info(
+                "chat-public takedown: action=%s sessions=%d messages=%d snapshots=%d",
+                action,
+      replace: |2
+            logger.info(
+                "chat-public takedown: action=%s selector=%s sessions=%d messages=%d "
+                "snapshots=%d",
+                action,
+                selector,
+    # purge-failure-swallowed: a failing purge exits 0, so the cron never alerts.
+    - file: app/jobs_main.py
+      find: |2
+            with Session(get_engine()) as session:
+                report = purge(session)
+      replace: |2
+            with Session(get_engine()) as session:
+                try:
+                    report = purge(session)
+                except Exception:
+                    logger.exception("%s failed", name)
+                    return
+  review_diff:
+    base: 79d1c1a91fecc59e4b6fab0d6897efac981268c4
+    file: REVIEW.diff
+    paths:
+      - projects/monolith/chat_public/retention.py
+      - projects/monolith/chat_public/models.py
+      - projects/monolith/app/jobs_main.py
+agent:
+  max_turns: 30
+prompt: |
+  This checkout is part of a real FastAPI monolith backend. REVIEW.diff at the repo
+  root is a pending change, already applied to the tree, that adds retention and
+  takedown purge jobs for the public chat (chat_public). Review it the way a senior
+  reviewer would: find the correctness, data-safety and privacy defects the change
+  introduces. The SQL migrations under chart/migrations/ describe the schema.
+
+  Write your findings to review.json at the repo root as a JSON list:
+  [{"file": "<path relative to the repo root>", "line": <line number in the
+  post-change file>, "description": "<what is wrong and why it matters>"}].
+  One entry per defect. Report real defects only: each finding that is not a real
+  defect costs points, and style nits do not count. Do not modify any other file.
+target_files:
+  - review.json
+verifier:
+  kind: review-findings
+  args:
+    file: review.json
+    tolerance: 3
+    fp_penalty: 0.25
+    pass_threshold: 0.8
+    # Lines are in the post-change (fixture) files; widened by tolerance.
+    bugs:
+      - id: snapshots-deleted-last
+        file: chat_public/retention.py
+        lines: [83, 104]
+      - id: zero-day-window
+        file: chat_public/retention.py
+        lines: [48, 49]
+      - id: snapshot-window
+        file: chat_public/retention.py
+        lines: [112, 112]
+      - id: idle-by-created-at
+        file: chat_public/retention.py
+        lines: [124, 126]
+      - id: selector-logged
+        file: chat_public/retention.py
+        lines: [182, 187]
+      - id: purge-failure-swallowed
+        file: app/jobs_main.py
+        lines: [415, 420]

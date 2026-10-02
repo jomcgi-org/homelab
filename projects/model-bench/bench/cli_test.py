@@ -7,10 +7,12 @@ import pytest  # noqa: F401
 from bench.cache import HARNESS_VERSION
 from bench.cli import (
     _aggregate_agentic_group,
+    _apply_snapshot_patches,
     _parse_headers,
     _prune_stale,
     _report,
     _resolve_snapshot_preset,
+    _review_diff,
     _write_leaderboard_json,
     build_parser,
     load_tasks,
@@ -432,3 +434,42 @@ def test_snapshot_overlays_layer_a_second_commit(tmp_path):
     fixture = tasks / "t" / "fixture"
     assert (fixture / "chart.yaml").read_text() == "old\n"
     assert (fixture / "app.go").read_text() == "new\n"
+
+
+def test_snapshot_patches_apply_once_and_fail_on_drift(tmp_path):
+    (tmp_path / "m.py").write_text("a = 1\nb = 2\n")
+    _apply_snapshot_patches(
+        tmp_path, [{"file": "m.py", "find": "b = 2", "replace": "b = 3"}]
+    )
+    assert (tmp_path / "m.py").read_text() == "a = 1\nb = 3\n"
+    with pytest.raises(ValueError, match="occurs 0 times"):
+        _apply_snapshot_patches(
+            tmp_path, [{"file": "m.py", "find": "b = 2", "replace": "x"}]
+        )
+
+
+def test_review_diff_covers_edited_and_new_files(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    (repo / "proj" / "pkg").mkdir(parents=True)
+    (repo / "proj" / "pkg" / "old.py").write_text("x = 1\n")
+    git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    base = subprocess.run(
+        [*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    fixture = tmp_path / "fixture"
+    (fixture / "pkg").mkdir(parents=True)
+    (fixture / "pkg" / "old.py").write_text("x = 2\n")
+    (fixture / "pkg" / "new.py").write_text("y = 1\n")
+    diff = _review_diff(
+        repo, base, fixture, ["proj/pkg/old.py", "proj/pkg/new.py"], strip=1
+    )
+    assert "diff --git a/pkg/old.py b/pkg/old.py" in diff
+    assert "-x = 1\n+x = 2" in diff
+    assert "new file mode 100644\n--- /dev/null\n+++ b/pkg/new.py" in diff
+    assert "+y = 1" in diff

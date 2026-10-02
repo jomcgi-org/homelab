@@ -1245,6 +1245,20 @@ def _snapshot(args) -> None:
                     path.unlink()
             elif path.is_dir() and not any(path.iterdir()):
                 path.rmdir()
+        # Planted edits (e.g. seeded review bugs) live in task.yaml, never in git, so
+        # the fixture still regenerates deterministically from the pinned commit.
+        _apply_snapshot_patches(fixture, snap.get("patches", []))
+        review = snap.get("review_diff")
+        if review:
+            (fixture / review["file"]).write_text(
+                _review_diff(
+                    repo,
+                    review["base"],
+                    fixture,
+                    review["paths"],
+                    snap.get("strip_components") or 0,
+                )
+            )
         n = sum(1 for _ in fixture.rglob("*") if _.is_file())
         print(
             f"{mapping.get('id')}: snapshotted {n} file(s) from {commit[:12]} into {fixture}"
@@ -1288,6 +1302,57 @@ def _calibrate(args) -> None:
             ),
         )
         print(f"Recorded calibration in {task_file}")
+
+
+def _apply_snapshot_patches(fixture: Path, patches: list[dict]) -> None:
+    """Apply find/replace edits to snapshotted files. Each find must occur exactly
+    once, so a commit bump that drifts the file fails loudly."""
+    for patch in patches:
+        target = fixture / patch["file"]
+        source = target.read_text()
+        n = source.count(patch["find"])
+        if n != 1:
+            raise ValueError(
+                f"snapshot patch on {patch['file']}: find text occurs {n} times (want 1)"
+            )
+        target.write_text(source.replace(patch["find"], patch["replace"]))
+
+
+def _review_diff(
+    repo: Path, base: str, fixture: Path, paths: list[str], strip: int
+) -> str:
+    """Unified diff from each repo path at ``base`` to its (patched) fixture copy.
+
+    A path absent at ``base`` diffs as a new file. Fixture-relative names drop the
+    first ``strip`` components, matching the snapshot's tar --strip-components.
+    """
+    import difflib
+    import subprocess
+
+    out: list[str] = []
+    for path in paths:
+        rel = "/".join(Path(path).parts[strip:])
+        shown = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{base}:{path}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        old = shown.stdout if shown.returncode == 0 else None
+        new = (fixture / rel).read_text()
+        out.append(f"diff --git a/{rel} b/{rel}\n")
+        if old is None:
+            out.append("new file mode 100644\n")
+        out.extend(
+            difflib.unified_diff(
+                (old or "").splitlines(keepends=True),
+                new.splitlines(keepends=True),
+                fromfile="/dev/null" if old is None else f"a/{rel}",
+                tofile=f"b/{rel}",
+            )
+        )
+    return "".join(out)
 
 
 def _list(args) -> None:
