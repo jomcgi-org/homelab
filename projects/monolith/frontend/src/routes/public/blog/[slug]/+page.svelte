@@ -8,6 +8,23 @@
   let { data } = $props();
   let activeId = $state("");
 
+  // A post's recording is a client-only component spliced into one section:
+  // it mounts just before the `before` heading of the section that contains
+  // `within`, so the markdown around it stays server-rendered.
+  const replays = {
+    "125b-on-a-4090": {
+      within: '<h3 id="31-4090-demo"',
+      before: '<h3 id="32-improvements"',
+      load: () => import("$lib/public/posts/QwenReplay.svelte"),
+    },
+    "ember-conformance": {
+      within: '<h3 id="the-run"',
+      before: '<h3 id="a-verdict-has-three-values"',
+      load: () => import("$lib/public/posts/ConformanceReplay.svelte"),
+    },
+  };
+  const replay = replays[data.slug];
+
   // "5.1 Prefill was copying whole layers" -> ["5.1", "Prefill was ..."] so
   // the number sits in its own fixed column and the titles align.
   function split(text) {
@@ -224,22 +241,19 @@
 
         <!-- One panel per numbered section: a page flip between them. -->
         {#each data.sections as section}
-          {@const replayBoundary = section.indexOf('<h3 id="32-improvements"')}
+          {@const replayBoundary = replay ? section.indexOf(replay.before) : -1}
           {@const showReplay =
-            data.slug === "125b-on-a-4090" &&
-            section.includes('<h3 id="31-4090-demo"') &&
-            replayBoundary >= 0}
+            replay && section.includes(replay.within) && replayBoundary >= 0}
           <section class="edition post-body">
             {@html showReplay ? section.slice(0, replayBoundary) : section}
             {#if showReplay}
-              {#await import("$lib/public/posts/QwenReplay.svelte")}
-                <p>Loading the recorded conversation...</p>
-              {:then replay}
-                <replay.default />
+              {#await replay.load()}
+                <p>Loading the recording...</p>
+              {:then module}
+                <module.default />
               {:catch}
                 <p>
-                  The recorded conversation could not load. Refresh the page to
-                  try again.
+                  The recording could not load. Refresh the page to try again.
                 </p>
               {/await}
               {@html section.slice(replayBoundary)}
