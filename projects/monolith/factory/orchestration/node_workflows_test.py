@@ -1271,9 +1271,13 @@ def test_closing_instruction_is_bounded_before_any_effect(harness, instruction):
 def test_closing_instruction_rides_pin_into_guest_prompt(harness, instruction):
     nodes.execute_node.__wrapped__(pin(closing_instruction=instruction))
     admitted, _key, prompt = harness.starts[0]
-    assert admitted["closing_instruction"] == instruction
+    assert "closing_instruction" not in admitted
+    assert nodes._validate_pin(admitted) == admitted
     expected = "Implement this task." + ("\n\n" + instruction if instruction else "")
+    assert admitted["prompt"] == expected
     assert expected in prompt
+    if instruction:
+        assert prompt.count(instruction) == 1
 
 
 def test_legacy_pin_stays_without_closing_instruction(harness):

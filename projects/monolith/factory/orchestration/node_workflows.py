@@ -192,11 +192,6 @@ def _validate_pin(pin: dict) -> dict:
     return {
         **({"task_deadline_at": task_deadline} if task_deadline is not None else {}),
         **({"effort": effort} if effort is not None else {}),
-        **(
-            {"closing_instruction": closing_instruction}
-            if "closing_instruction" in pin
-            else {}
-        ),
         "task_id": task_id,
         "node_key": node_key,
         "attempt": attempt,
@@ -204,7 +199,8 @@ def _validate_pin(pin: dict) -> dict:
         "branch": branch,
         "hydration_branch": hydration_branch,
         "retry_context": retry_context,
-        "prompt": prompt,
+        "prompt": prompt
+        + ("\n\n" + closing_instruction if closing_instruction else ""),
         "model": model,
         "max_cost_usd": float(max_cost),
         "max_attempts": max_attempts,
@@ -225,10 +221,8 @@ def _node_prompt(
     schema: dict,
     retry_context: str = "",
     branch: str = "",
-    closing_instruction: str = "",
 ) -> str:
     schema_json = json.dumps(schema, sort_keys=True)
-    closing = f"\n\n{closing_instruction}" if closing_instruction else ""
     working = (
         f"\n\nYour working branch for this attempt is {branch}. Commit and push "
         "source changes to that exact branch and to no other."
@@ -244,10 +238,10 @@ def _node_prompt(
             + json.dumps({"prior_attempt_evidence": retry_context})
         )
     absolute_artifact = f"{CAPTURE_CHECKOUT}/{artifact_path}"
-    # The output contract is static per role, so it leads; the closing rule,
-    # branch, retry evidence and attempt path trail the node prompt. A fresh
-    # guest session then shares the longest possible prefix with every other
-    # attempt, which the provider prompt cache bills at the cache-read rate.
+    # The output contract is static per role, so it leads; the branch, retry
+    # evidence and attempt path trail the node prompt. A fresh guest session
+    # then shares the longest possible prefix with every other attempt, which
+    # is what the provider prompt cache bills at the cache-read rate.
     return (
         "Write the declared JSON artifact fresh at the exact absolute path "
         "given as the artifact path at the end of this prompt, as a single JSON "
@@ -257,7 +251,7 @@ def _node_prompt(
         "/workspace/src only. Tracked code edits belong in your dedicated linked "
         "worktree, but write this artifact at the exact capture path regardless "
         "of your current working directory.\n\n"
-        f"{prompt}{closing}{working}{prior}\n\n"
+        f"{prompt}{working}{prior}\n\n"
         f"Artifact path for this attempt: {absolute_artifact}"
     )
 
@@ -1115,7 +1109,6 @@ def execute_node(pin: dict) -> dict:
                 pin["artifact_schema"],
                 pin["retry_context"],
                 pin["branch"],
-                pin.get("closing_instruction", ""),
             ),
             deadline.isoformat(),
         )
