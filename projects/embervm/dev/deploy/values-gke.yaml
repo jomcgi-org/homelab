@@ -1,6 +1,4 @@
 # GKE hub overrides for embervm-dev, applied after dev/deploy/values.yaml.
-# Recover interrupted turns before adoption parks them. Rollback: set false.
-restartFlushInflightInvokes: true
 #
 # WHY THIS EXISTS. embervm-dev ran on the home cluster as the Kargo dev stage,
 # where the conformance runner (projects/embervm/conformance) gated every
@@ -24,6 +22,9 @@ restartFlushInflightInvokes: true
 # (values-store-validation-gke.yaml) presets target the same embervm-dev
 # release; activating either one means replacing this Application's value
 # files, not stacking a second release.
+
+# Recover interrupted turns before adoption parks them. Rollback: set false.
+restartFlushInflightInvokes: true
 
 # Namespace-scoped RBAC, as the recovery preset chose for this release. At the
 # chart default (cluster scope) the dev control plane, which by design runs
