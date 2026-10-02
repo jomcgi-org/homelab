@@ -56,9 +56,17 @@ class ClaudeResult:
     cost_usd: float = 0.0
 
 
+def cli_model(model_id: str, api_model: str | None = None) -> str:
+    """The `--model` value for a registry id: api_model when set, else the id minus
+    the provider prefix with dots as dashes (anthropic/claude-opus-5.5 ->
+    claude-opus-5-5)."""
+    return api_model or model_id.removeprefix("anthropic/").replace(".", "-")
+
+
 def _invoke(
     prompt: str,
     *,
+    model: str | None = None,
     cwd: Path | None = None,
     allowed_tools: list[str] | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -71,6 +79,10 @@ def _invoke(
     number is comparable to the OpenRouter latency the candidates record.
     """
     cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json"]
+    # Without --model the CLI runs its configured default, so every anchor row would
+    # silently be the same model.
+    if model:
+        cmd += ["--model", model]
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
     if cwd is not None:
@@ -152,7 +164,8 @@ async def complete(**kwargs) -> AnchorCompletion:
     (not metered here); cost is 0.
     """
     prompt = _flatten_messages(kwargs.get("messages") or [])
-    res = _invoke(prompt)
+    model = kwargs.get("model")
+    res = _invoke(prompt, model=cli_model(model) if model else None)
     return AnchorCompletion(
         text=res.text, prompt_tokens=0, completion_tokens=0, latency_ms=res.wall_ms
     )
@@ -168,6 +181,7 @@ def run_anchor_agent_cell(
     task_prompt: str,
     verify,
     verifier_args: dict,
+    cli_model_name: str | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
 ) -> ResultCell:
     """Run one agentic anchor cell: hand the whole task to `claude -p` in a workdir copy,
@@ -183,10 +197,12 @@ def run_anchor_agent_cell(
     shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
     turns = 0
     wall_ms = 0
+    score: float | None = None
     rental_cost = 0.0
     try:
         res = _invoke(
             task_prompt,
+            model=cli_model_name,
             cwd=workdir,
             allowed_tools=_ANCHOR_TOOLS,
             timeout_s=timeout_s,
@@ -198,7 +214,7 @@ def run_anchor_agent_cell(
             passed, feedback = False, "[claude CLI reported is_error] " + res.text[:500]
         else:
             r = verify(workdir, verifier_args)
-            passed, feedback = r.passed, r.feedback
+            passed, feedback, score = r.passed, r.feedback, r.score
     except Exception as exc:  # noqa: BLE001 - a subprocess/verify error becomes a fail cell
         passed, feedback = False, f"[anchor harness error] {type(exc).__name__}: {exc}"
     finally:
@@ -207,6 +223,7 @@ def run_anchor_agent_cell(
     attempt = Attempt(
         passed=passed,
         feedback=feedback if not passed else "",
+        score=score,
         latency_ms=wall_ms,
         prompt_tokens=0,
         completion_tokens=0,

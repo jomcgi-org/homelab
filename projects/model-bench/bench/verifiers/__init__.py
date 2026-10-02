@@ -9,6 +9,9 @@ from typing import Callable
 class VerifyResult:
     passed: bool
     feedback: str
+    # Graded verifiers (e.g. mutation) report a 0..1 score alongside the pass/fail
+    # gate so partial credit is recorded; binary verifiers leave it None.
+    score: float | None = None
 
 
 _REGISTRY: dict[str, Callable[[Path, dict], VerifyResult]] = {}
@@ -44,6 +47,7 @@ from . import (  # noqa: E402,F401
     helm,
     jsonmatch,
     lint,
+    mutation,
     pytest,
     rbac,
 )

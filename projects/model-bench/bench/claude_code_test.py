@@ -46,6 +46,28 @@ def test_invoke_parses_json_and_builds_edit_cmd(monkeypatch, tmp_path):
     assert "acceptEdits" in captured["cmd"]
     assert "Edit,Write" in captured["cmd"]
     assert captured["cwd"] == str(tmp_path)
+    assert "--model" not in captured["cmd"]  # no model -> the CLI default
+
+
+def test_invoke_pins_the_model(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc(returncode=0, stdout=json.dumps({"result": "ok"}))
+
+    monkeypatch.setattr(claude_code.subprocess, "run", fake_run)
+    claude_code._invoke("x", model="claude-opus-5-5")
+    i = captured["cmd"].index("--model")
+    assert captured["cmd"][i + 1] == "claude-opus-5-5"
+
+
+def test_cli_model_maps_registry_ids():
+    assert claude_code.cli_model("anthropic/claude-opus-4.8") == "claude-opus-4-8"
+    assert (
+        claude_code.cli_model("anthropic/claude-haiku-4.5", "claude-haiku-4-5-20251001")
+        == "claude-haiku-4-5-20251001"
+    )
 
 
 def test_invoke_no_cwd_is_readonly(monkeypatch):
@@ -136,6 +158,7 @@ def test_judge_caller_returns_text(monkeypatch):
 class _VerifyResult:
     passed: bool
     feedback: str
+    score: float | None = None
 
 
 def _make_fixture(tmp_path):
@@ -188,11 +211,12 @@ def test_anchor_cell_fails_when_verifier_fails(monkeypatch, tmp_path):
         content_hash="h",
         fixture_dir=fx,
         task_prompt="add a route",
-        verify=lambda workdir, args: _VerifyResult(False, "route missing"),
+        verify=lambda workdir, args: _VerifyResult(False, "route missing", 0.4),
         verifier_args={},
     )
     assert cell.outcome == "fail"
     assert "route missing" in cell.attempts[0].feedback
+    assert cell.attempts[0].score == 0.4
 
 
 def test_anchor_cell_fails_on_cli_error(monkeypatch, tmp_path):

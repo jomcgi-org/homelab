@@ -1,0 +1,150 @@
+id: whatsapp-timeparse-mutation-01
+version: v1
+class: code-fix
+# hard: graded by mutation score (#6692), not pass/fail. A happy-path suite kills the
+# obvious mutants; the boundary ones (exact-now roll-forward, "tonight" after 19:00,
+# "noon" inside "afternoon", a tz-shifted now) need a test writer who reads the code
+# for edges. Gate is pass_threshold; the score is the signal.
+#
+# Calibration 2026-10-02 (3 runs each, Claude Code anchors): Haiku 4.5 0/0/0 (each
+# suite asserted wrong behaviour and failed on the unmodified module), Sonnet 5.5
+# 1.0/1.0/1.0, Opus 5.5 1.0/0.96/1.0. Separates Haiku from the rest but not Sonnet
+# from Opus; the repo's own hand-written tests score 0.375.
+tier: hard
+mode: agentic
+snapshot:
+  commit: 6a3d40b914e46be9c07c2393f831665261efa006
+  paths:
+    - projects/monolith/chat/whatsapp_timeparse.py
+  strip_components: 2
+agent:
+  max_turns: 30
+  exec: true
+prompt: |
+  This is a module from a real FastAPI monolith backend:
+  chat/whatsapp_timeparse.py, a small natural-language datetime parser used by a
+  WhatsApp household assistant. It has no tests. Write a pytest test suite for it at
+  chat/whatsapp_timeparse_test.py (import it as `from chat.whatsapp_timeparse import
+  ...`; the repo root is on PYTHONPATH).
+
+  The suite is graded by running it against hidden variants of the module that each
+  contain one realistic bug. It must pass against the module as it is now, and it
+  scores by how many of the buggy variants it catches. Test observable behaviour
+  only: do not assert on the module's source text, and do not modify
+  chat/whatsapp_timeparse.py. Only chat/whatsapp_timeparse_test.py is graded.
+target_files:
+  - chat/whatsapp_timeparse_test.py
+verifier:
+  kind: mutation
+  args:
+    module: chat/whatsapp_timeparse.py
+    module_sha256: d14a928af8af30985b354cc15eb90b8b369b7146ee21850508e1ffd2a7c8627c
+    tests: [chat/whatsapp_timeparse_test.py]
+    pass_threshold: 0.85
+    mutants:
+      # Obvious: any test of the feature kills these.
+      - id: tomorrow-offset
+        find: 'target_date = today + timedelta(days=1)'
+        replace: 'target_date = today + timedelta(days=2)'
+      - id: weekday-direction
+        find: 'ahead = (wd - today.weekday()) % 7'
+        replace: 'ahead = (today.weekday() - wd) % 7'
+      - id: bare-time-no-roll
+        find: 'when = when + timedelta(days=1)'
+        replace: 'when = when + timedelta(days=0)'
+      - id: date-or-time-required
+        find: 'if not date_found and time_hm is None:'
+        replace: 'if not date_found or time_hm is None:'
+      - id: hhmm-ignores-ampm
+        find: 'hour = _apply_ampm(hour, ampm)'
+        replace: 'hour = hour'
+      - id: default-hour
+        find: '_DEFAULT_HOUR = 9'
+        replace: '_DEFAULT_HOUR = 8'
+      - id: had-time-on-date-only
+        find: 'had_time = False'
+        replace: 'had_time = True'
+      - id: evening-hour
+        find: '"evening": (19, 0),'
+        replace: '"evening": (18, 0),'
+      # Medium: need a deliberate case per branch or alias.
+      - id: pm-noon
+        find: 'if ampm == "pm" and hour < 12:'
+        replace: 'if ampm == "pm" and hour <= 12:'
+      - id: am-midnight
+        find: 'if ampm == "am" and hour == 12:'
+        replace: 'if ampm == "am" and hour == 11:'
+      - id: midnight-hour
+        find: '"midnight": (0, 0),'
+        replace: '"midnight": (12, 0),'
+      - id: tues-alias
+        find: '"tues": 1,'
+        replace: '"tues": 2,'
+      - id: next-week-offset
+        find: 'ahead = 7'
+        replace: 'ahead = 14'
+      - id: next-same-weekday
+        find: 'if re.search(r"\bnext\b", lowered) and ahead == 0:'
+        replace: 'if re.search(r"\bnext\b", lowered) and ahead == 1:'
+      - id: weekday-today-roll-offset
+        find: 'when = when + timedelta(days=7)'
+        replace: 'when = when + timedelta(days=6)'
+      - id: ham-requires-no-space
+        find: '_TIME_HAM = re.compile(r"\b(\d{1,2})\s*(am|pm)\b", re.IGNORECASE)'
+        replace: '_TIME_HAM = re.compile(r"\b(\d{1,2})(am|pm)\b", re.IGNORECASE)'
+      - id: named-time-substring
+        find: |-
+          for name, hm in _NAMED_TIMES.items():
+                  if re.search(rf"\b{name}\b", text):
+        replace: |-
+          for name, hm in _NAMED_TIMES.items():
+                  if re.search(rf"{name}", text):
+      # Hard: boundaries, timezones and negative cases.
+      - id: bare-time-boundary
+        find: 'if not date_found and when <= now_local:'
+        replace: 'if not date_found and when < now_local:'
+      - id: weekday-today-boundary
+        find: 'elif weekday_today and when <= now_local:'
+        replace: 'elif weekday_today and when < now_local:'
+      - id: tonight-not-a-date
+        find: 'elif re.search(r"\btoday\b", lowered) or re.search(r"\btonight\b", lowered):'
+        replace: 'elif re.search(r"\btoday\b", lowered):'
+      - id: now-not-localised
+        find: 'now_local = now.astimezone(tz)'
+        replace: 'now_local = now'
+      - id: weekday-substring
+        find: |-
+          for name, idx in _WEEKDAYS.items():
+                  if re.search(rf"\b{name}\b", text):
+        replace: |-
+          for name, idx in _WEEKDAYS.items():
+                  if re.search(rf"{name}", text):
+      - id: at-hour-range
+        find: |-
+          m = _TIME_AT.search(text)
+              if m:
+                  hour = int(m.group(1))
+                  if 0 <= hour <= 23:
+        replace: |-
+          m = _TIME_AT.search(text)
+              if m:
+                  hour = int(m.group(1))
+                  if 0 <= hour < 23:
+      - id: minute-range
+        find: '0 <= minute <= 59'
+        replace: '0 <= minute <= 60'
+    # Behaviour-preserving rewrites. Killing any of these means the suite asserts on
+    # source text, which zeroes the score.
+    equivalent:
+      - id: eq-condition-order
+        find: 'if ampm == "pm" and hour < 12:'
+        replace: 'if hour < 12 and ampm == "pm":'
+      - id: eq-comment
+        find: '# Default hour used when a date is given with no time at all (e.g. "on Friday").'
+        replace: '# Hour applied when only a date is given (e.g. "on Friday").'
+      - id: eq-default-hour-expr
+        find: '_DEFAULT_HOUR = 9'
+        replace: '_DEFAULT_HOUR = 3 * 3'
+      - id: eq-lower
+        find: 'lowered = text.lower()'
+        replace: 'lowered = str.lower(text)'

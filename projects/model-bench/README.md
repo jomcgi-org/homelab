@@ -26,8 +26,27 @@ An agentic task graded by the repo's own tests works like SWE-bench:
 
 For example, `hikes-walkhighlands-dom-01` and `hikes-walkhighlands-duration-01` are both
 agentic tasks against the hikes doability model (DOM scraping and duration-aware doability,
-respectively). The pack currently has 17 agentic and 3 single-shot tasks in total; `tasks/`
+respectively). The pack currently has 18 agentic and 3 single-shot tasks in total; `tasks/`
 is the source of truth for the full, current list.
+
+## Graded (mutation-testing) tasks
+
+Most verifiers are pass/fail. A graded verifier also records a 0..1 `score` on the
+attempt, so a partial answer shows up as partial rather than as a plain fail. The
+`mutation` verifier is the first:
+
+1. The model writes a pytest suite for a real module (e.g.
+   `whatsapp-timeparse-mutation-01` tests `chat/whatsapp_timeparse.py`).
+2. The suite must pass on the unmodified module, which is pinned by sha256 so the
+   model cannot edit it.
+3. Each hidden mutant in task.yaml (one find/replace modelled on a plausible bug) is
+   applied to a fresh copy, and the suite is re-run. The score is the fraction of
+   mutants the suite catches; `passed` is `score >= pass_threshold`.
+4. The `equivalent` mutants are behaviour-preserving rewrites. A suite that fails on
+   one is asserting on source text rather than behaviour, and scores 0.
+
+A mutant's `find` text must occur exactly once in the module, so bumping the fixture
+commit fails loudly instead of silently grading a no-op.
 
 ## Setup
 

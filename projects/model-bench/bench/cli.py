@@ -404,6 +404,7 @@ async def _run(args) -> None:
                 task_prompt=task.prompt,
                 verify=verify,
                 verifier_args=task.verifier.args,
+                cli_model_name=claude_code.cli_model(model.id, model.api_model),
             )
 
         async def chat(**kw):
@@ -908,14 +909,18 @@ def _write_leaderboard_json(
     for cell in cells:
         if cell.turns is None or cell.task_id not in agentic_ids:
             continue
-        d = per_task.setdefault(cell.task_id, {"passed": 0, "n": 0})
+        d = per_task.setdefault(cell.task_id, {"passed": 0, "n": 0, "scores": []})
         d["n"] += 1
         d["passed"] += int(cell.first_attempt_passed)
+        if cell.first_attempt_score is not None:
+            d["scores"].append(cell.first_attempt_score)
         # Last cell wins if a (model, task) somehow has duplicates on disk; within one
         # harness version there is exactly one cached cell per pair.
         per_model_tasks.setdefault(cell.model_id, {})[cell.task_id] = {
             "id": cell.task_id,
             "passed": cell.first_attempt_passed,
+            # Partial credit from a graded verifier (mutation score); None when binary.
+            "score": cell.first_attempt_score,
             "tokens": cell.total_tokens,
             "turns": cell.turns,
             "latency_ms": cell.total_latency_ms,
@@ -951,6 +956,9 @@ def _write_leaderboard_json(
             ),
             "passed": v["passed"],
             "n": v["n"],
+            "mean_score": (
+                round(sum(v["scores"]) / len(v["scores"]), 3) if v["scores"] else None
+            ),
         }
         for tid, v in sorted(per_task.items())
     ]

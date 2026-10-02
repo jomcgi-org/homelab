@@ -196,6 +196,7 @@ async def run_agent_cell(
     turns = 0
     saw_tool_call = False  # did the model ever drive the loop with a tool call?
     saw_bad_args = False  # did any tool call carry unparseable arguments?
+    score: float | None = None
     try:
         for turns in range(1, max_turns + 1):
             res = await chat(
@@ -238,7 +239,7 @@ async def run_agent_cell(
             if finished:
                 break
         r = verify(workdir, verifier_args)
-        passed, feedback = r.passed, r.feedback
+        passed, feedback, score = r.passed, r.feedback, r.score
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
         passed, feedback = False, f"[harness error] {type(exc).__name__}: {exc}"
     finally:
@@ -258,6 +259,7 @@ async def run_agent_cell(
     attempt = Attempt(
         passed=passed,
         feedback=feedback if not passed else "",
+        score=score,
         latency_ms=latency_ms,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,

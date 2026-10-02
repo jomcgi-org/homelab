@@ -106,6 +106,9 @@ class TaskSpec(BaseModel):
 class Attempt(BaseModel):
     passed: bool
     feedback: str
+    # 0..1 partial credit from a graded verifier; None for binary verifiers and for
+    # cells cached before scores existed.
+    score: float | None = None
     latency_ms: int
     prompt_tokens: int
     completion_tokens: int
@@ -136,6 +139,10 @@ class ResultCell(BaseModel):
     @property
     def first_attempt_passed(self) -> bool:
         return self.attempts[0].passed
+
+    @property
+    def first_attempt_score(self) -> float | None:
+        return self.attempts[0].score
 
     @property
     def is_harness_error(self) -> bool:
