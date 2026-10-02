@@ -55,6 +55,7 @@ py_test(
 py_test(
     name = "cli_test",
     srcs = ["cli_test.py"],
+    data = ["//projects/model-bench:tasks/decision-conflict-chart-version-01/task.yaml"],
     imports = [".."],
     deps = [
         ":bench",

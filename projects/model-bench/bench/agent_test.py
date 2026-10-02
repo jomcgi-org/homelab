@@ -1,10 +1,177 @@
 import asyncio
+import copy
+import json
 
 import pytest  # noqa: F401
 
-from bench.agent import _execute_tool, run_agent_cell
+from bench.agent import (
+    AGENT_SYSTEM,
+    REPOSITORY_POLICY_INSTRUCTION,
+    TOOLS,
+    _execute_tool,
+    run_agent_cell,
+)
 from bench.openrouter import ChatResult
 from bench.verifiers import VerifyResult
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ({"content": "terminal explanation"}, "terminal explanation"),
+        ({"content": None}, ""),
+        ({"content": " \n "}, ""),
+        ({}, ""),
+        (
+            {
+                "content": "fallback",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "done",
+                            "arguments": '{"summary":"completion summary"}',
+                        }
+                    }
+                ],
+            },
+            "completion summary",
+        ),
+        (
+            {
+                "content": "fallback",
+                "tool_calls": [
+                    {"function": {"name": "done", "arguments": '{"summary":"  "}'}}
+                ],
+            },
+            "fallback",
+        ),
+        (
+            {
+                "content": "fallback",
+                "tool_calls": [
+                    {"function": {"name": "done", "arguments": '{"summary":null}'}}
+                ],
+            },
+            "fallback",
+        ),
+        ({"tool_calls": [{"function": {"name": "done", "arguments": "{}"}}]}, ""),
+    ],
+)
+def test_agent_harness_captures_final_response(tmp_path, message, expected):
+    seen = {}
+
+    async def chat(**kwargs):
+        seen["tools"] = copy.deepcopy(kwargs["tools"])
+        seen["system"] = kwargs["messages"][0]["content"]
+        return ChatResult(
+            message=message, prompt_tokens=0, completion_tokens=0, latency_ms=0
+        )
+
+    def verify(workdir, args, *, final_response):
+        seen["response"] = final_response
+        return VerifyResult(bool(final_response), "empty completion")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="user prompt is not a final answer",
+            chat=chat,
+            verify=verify,
+            verifier_args={},
+            cost_fn=lambda p, c: 0,
+            repository_policy_precedence=True,
+        )
+    )
+    assert seen["response"] == expected
+    assert cell.outcome == ("pass@1" if expected else "fail")
+    assert seen["system"] == AGENT_SYSTEM + " " + REPOSITORY_POLICY_INSTRUCTION
+    assert (
+        seen["tools"][3]["function"]["parameters"]["properties"]["summary"]["type"]
+        == "string"
+    )
+    assert TOOLS[3]["function"]["parameters"]["properties"] == {}
+
+
+def test_agent_other_tasks_keep_system_schema_and_verifier_call(tmp_path):
+    baseline = copy.deepcopy(TOOLS)
+
+    async def chat(**kwargs):
+        assert kwargs["tools"] == baseline
+        assert kwargs["messages"][0] == {"role": "system", "content": AGENT_SYSTEM}
+        return ChatResult(
+            message={"content": "finished"},
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=0,
+        )
+
+    def verify(*args, **kwargs):
+        assert len(args) == 2 and kwargs == {}
+        assert args[1] == {"sentinel": True}
+        return VerifyResult(True, "")
+
+    asyncio.run(
+        run_agent_cell(
+            task_id="old",
+            task_version="1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="old prompt",
+            chat=chat,
+            verify=verify,
+            verifier_args={"sentinel": True},
+            cost_fn=lambda p, c: 0,
+        )
+    )
+    assert TOOLS == baseline
+
+
+def test_agent_tool_turn_text_is_not_a_completion(tmp_path):
+    async def chat(**kwargs):
+        return ChatResult(
+            message={
+                "content": "not terminal",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": "answer.txt"}),
+                        }
+                    }
+                ],
+            },
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=0,
+        )
+
+    (tmp_path / "answer.txt").write_text("model-written answer is not evidence")
+
+    def verify(w, a, *, final_response):
+        assert final_response == ""
+        return VerifyResult(False, "empty completion")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=chat,
+            verify=verify,
+            verifier_args={},
+            cost_fn=lambda p, c: 0,
+            max_turns=1,
+        )
+    )
+    assert cell.outcome == "fail"
 
 
 def test_execute_tool_read_write_list(tmp_path):

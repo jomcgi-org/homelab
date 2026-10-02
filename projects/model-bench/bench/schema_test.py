@@ -1,13 +1,26 @@
 import pytest  # noqa: F401
 
 from bench.schema import (
-    TaskSpec,
-    VerifierSpec,
+    AgentConfig,
+    Attempt,
     ModelSpec,
     ResultCell,
     TaskClass,
-    Attempt,
+    TaskSpec,
+    VerifierSpec,
 )
+
+
+def test_policy_flag_preserves_unrelated_cache_parameters():
+    ordinary = AgentConfig()
+    opted_in = AgentConfig(repository_policy_precedence=True)
+    legacy = "agentic:8192:turns=20:exec=False"
+
+    def params(config):
+        return f"agentic:8192:turns={config.max_turns}:exec={config.exec}{config.cache_suffix()}"
+
+    assert params(ordinary) == legacy
+    assert params(opted_in) == legacy + ":repository_policy_precedence=True"
 
 
 def test_taskspec_parses_minimal_yaml_shape():

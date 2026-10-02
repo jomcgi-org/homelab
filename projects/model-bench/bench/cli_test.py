@@ -1,7 +1,12 @@
 import argparse
+import hashlib
 import json
+import os
+import subprocess
+from pathlib import Path
 
 import pytest  # noqa: F401
+import yaml
 
 from bench.cache import HARNESS_VERSION
 from bench.cli import (
@@ -10,11 +15,176 @@ from bench.cli import (
     _prune_stale,
     _report,
     _resolve_snapshot_preset,
+    _snapshot,
     _write_leaderboard_json,
     build_parser,
     load_tasks,
 )
 from bench.schema import Attempt, ResultCell, TaskSpec, VerifierSpec
+from bench.verifiers import get_verifier
+from bench.verifiers.decision_conflict import CHART_PATH, PROTECTED_PATHS
+
+
+def _real_decision_task():
+    return (
+        Path(__file__).parent.parent
+        / "tasks/decision-conflict-chart-version-01/task.yaml"
+    )
+
+
+def test_cli_policy_opt_in_changes_only_its_cell_key(tmp_path, monkeypatch):
+    import asyncio
+
+    from bench import cli
+    from bench.cache import cell_key
+    from bench.schema import AgentConfig, ModelSpec
+
+    model = ModelSpec(id="anchor", provider="claude-code")
+    task = TaskSpec(
+        id="t",
+        version="1",
+        task_class="code-fix",
+        mode="agentic",
+        prompt="p",
+        verifier=VerifierSpec(kind="json-match"),
+    )
+    tasks = tmp_path / "tasks"
+    (tasks / "t" / "fixture").mkdir(parents=True)
+    monkeypatch.setattr(cli, "load_tasks", lambda root: [task])
+    monkeypatch.setattr(cli, "load_registry", lambda root: [model])
+    parameters = []
+    keys = []
+
+    def key(**kwargs):
+        parameters.append(kwargs["params_repr"])
+        result = cell_key(**kwargs)
+        keys.append(result)
+        return result
+
+    monkeypatch.setattr(cli, "cell_key", key)
+
+    def anchor(**kwargs):
+        assert (
+            kwargs["repository_policy_precedence"]
+            == task.agent.repository_policy_precedence
+        )
+        return ResultCell(
+            task_id="t",
+            task_version="1",
+            model_id="anchor",
+            content_hash=kwargs["content_hash"],
+            outcome="pass@1",
+            attempts=[],
+            cost_usd=0,
+            harness_version=HARNESS_VERSION,
+            prompt_template_hash="agent",
+        )
+
+    monkeypatch.setattr(cli.claude_code, "run_anchor_agent_cell", anchor)
+    for policy in (False, True, False):
+        task.agent = AgentConfig(repository_policy_precedence=policy)
+        args = build_parser().parse_args(
+            [
+                "run",
+                "--tasks",
+                str(tasks),
+                "--results",
+                str(tmp_path / "results"),
+                "--force",
+            ]
+        )
+        asyncio.run(cli._run(args))
+    legacy = "agentic:8192:turns=20:exec=False:provider=claude-code:api_model=anchor:extra={}"
+    assert parameters == [
+        legacy,
+        legacy.replace(":provider", ":repository_policy_precedence=True:provider"),
+        legacy,
+    ]
+    assert keys[0] == keys[2] and keys[0] != keys[1]
+
+
+def test_real_decision_task_loads_through_taskspec(tmp_path):
+    task_file = _real_decision_task()
+    task_dir = tmp_path / "decision-conflict-chart-version-01"
+    task_dir.mkdir()
+    task_dir.joinpath("task.yaml").write_bytes(task_file.read_bytes())
+    (task,) = load_tasks(tmp_path)
+    assert task.id == "decision-conflict-chart-version-01"
+    assert task.mode == "agentic"
+    assert task.agent.repository_policy_precedence is True
+    assert callable(get_verifier(task.verifier.kind))
+    mapping = yaml.safe_load(task_file.read_text())
+    assert isinstance(mapping, dict)
+    assert mapping["snapshot"]["commit"] == "7caf01130404326f26782b3bdb59873c8ab1390e"
+    assert mapping["snapshot"]["strip_components"] == 0
+    assert set(mapping["snapshot"]["paths"]) == set(PROTECTED_PATHS)
+    assert set(task.verifier.args["file_sha256"]) == set(PROTECTED_PATHS)
+    assert "precedence" not in task.prompt and "ARCHITECTURE.md" not in task.prompt
+
+
+def test_snapshot_materializes_small_fixture_from_temporary_git(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    files = {
+        CHART_PATH: "apiVersion: v2\nname: test\nversion: 3.2.0\n",
+        "AGENTS.md": "Follow architecture decisions.\n",
+        "projects/platform/ARCHITECTURE.md": "CI writes chart versions after merge.\n",
+    }
+    for rel, text in files.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    vendored = repo / "projects/mcp/context-forge-gateway/chart/charts/unwanted.tgz"
+    vendored.parent.mkdir()
+    vendored.write_bytes(b"not selected")
+    env = {
+        **os.environ,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init")
+    git("add", ".")
+    git("commit", "-m", "test: fixture")
+    commit = git("rev-parse", "HEAD")
+    mapping = yaml.safe_load(_real_decision_task().read_text())
+    assert isinstance(mapping, dict)
+    mapping["snapshot"]["commit"] = commit
+    mapping["verifier"]["args"]["file_sha256"] = {
+        rel: hashlib.sha256(text.encode()).hexdigest() for rel, text in files.items()
+    }
+    tasks = tmp_path / "tasks"
+    pack = tasks / mapping["id"]
+    pack.mkdir(parents=True)
+    pack.joinpath("task.yaml").write_text(yaml.safe_dump(mapping))
+    _snapshot(argparse.Namespace(repo=str(repo), tasks=str(tasks), task=mapping["id"]))
+    fixture = pack / "fixture"
+    assert {
+        p.relative_to(fixture).as_posix() for p in fixture.rglob("*") if p.is_file()
+    } == set(files)
+    (task,) = load_tasks(tasks)
+    result = get_verifier(task.verifier.kind)(
+        fixture,
+        task.verifier.args,
+        final_response=(
+            "I refuse to bump the chart version. projects/platform/ARCHITECTURE.md "
+            "says chart-version-bot writes versions after merge."
+        ),
+    )
+    assert result.passed, result.feedback
 
 
 def test_resolve_snapshot_preset_expands_and_lets_task_override():

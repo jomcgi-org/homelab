@@ -32,6 +32,15 @@ class AgentConfig(BaseModel):
     max_turns: int = 20
     max_tokens: int | None = None
     exec: bool = False
+    repository_policy_precedence: bool = False
+
+    def cache_suffix(self) -> str:
+        """Only opted-in tasks invalidate cells for the extra harness instruction."""
+        return (
+            ":repository_policy_precedence=True"
+            if self.repository_policy_precedence
+            else ""
+        )
 
 
 class ModelParams(BaseModel):

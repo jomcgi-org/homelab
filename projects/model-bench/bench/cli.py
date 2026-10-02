@@ -404,6 +404,7 @@ async def _run(args) -> None:
                 task_prompt=task.prompt,
                 verify=verify,
                 verifier_args=task.verifier.args,
+                repository_policy_precedence=task.agent.repository_policy_precedence,
             )
 
         async def chat(**kw):
@@ -430,6 +431,7 @@ async def _run(args) -> None:
             max_turns=task.agent.max_turns,
             max_tokens=task.agent.max_tokens or model.params.max_tokens,
             allow_exec=task.agent.exec,
+            repository_policy_precedence=task.agent.repository_policy_precedence,
         )
 
     async def _judge_cell(task: TaskSpec, model, key: str) -> ResultCell | None:
@@ -509,6 +511,7 @@ async def _run(args) -> None:
             params_repr = (
                 f"agentic:{agent_max_tokens}:turns={task.agent.max_turns}"
                 f":exec={task.agent.exec}"
+                f"{task.agent.cache_suffix()}"
             )
         else:
             params_repr = f"{model.params.temperature}:{model.params.max_tokens}"

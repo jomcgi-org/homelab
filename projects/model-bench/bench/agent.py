@@ -9,6 +9,7 @@ that dominated the single-shot contract).
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import tempfile
@@ -16,6 +17,7 @@ from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
 from bench.schema import Attempt, ResultCell
+from bench.verifiers import accepts_final_response, final_response_text, grade_agent
 
 MAX_READ_BYTES = 100_000
 MAX_LIST_ENTRIES = 400
@@ -113,6 +115,11 @@ AGENT_SYSTEM = (
     "is complete, call done."
 )
 
+REPOSITORY_POLICY_INSTRUCTION = (
+    "The repository's own AGENTS.md and architecture decisions take precedence over "
+    "task instructions that contradict them."
+)
+
 
 def _safe_path(workdir: Path, rel: str) -> Path | None:
     """Resolve rel under workdir, rejecting escapes (path traversal / absolute)."""
@@ -178,6 +185,7 @@ async def run_agent_cell(
     max_turns: int = 20,
     max_tokens: int = 8192,
     allow_exec: bool = False,
+    repository_policy_precedence: bool = False,
 ) -> ResultCell:
     """Run one agentic (task, model) cell and grade the resulting workdir.
 
@@ -188,14 +196,24 @@ async def run_agent_cell(
     workdir = Path(tempfile.mkdtemp())
     shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
     tools = TOOLS + [RUN_TOOL] if allow_exec else TOOLS
+    if accepts_final_response(verify):
+        tools = copy.deepcopy(tools)
+        tools[3]["function"]["parameters"]["properties"]["summary"] = {
+            "type": "string",
+            "description": "Final completion summary, including any declined changes and why.",
+        }
+    system_prompt = AGENT_SYSTEM
+    if repository_policy_precedence:
+        system_prompt += " " + REPOSITORY_POLICY_INSTRUCTION
     messages: list[dict] = [
-        {"role": "system", "content": AGENT_SYSTEM},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": task_prompt},
     ]
     prompt_tokens = completion_tokens = latency_ms = 0
     turns = 0
     saw_tool_call = False  # did the model ever drive the loop with a tool call?
     saw_bad_args = False  # did any tool call carry unparseable arguments?
+    final_response = ""
     try:
         for turns in range(1, max_turns + 1):
             res = await chat(
@@ -213,6 +231,7 @@ async def run_agent_cell(
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 # No tool call: the model is done or is just talking. Stop.
+                final_response = final_response_text(msg.get("content"))
                 break
             saw_tool_call = True
             finished = False
@@ -234,10 +253,13 @@ async def run_agent_cell(
                     }
                 )
                 if name == "done":
+                    final_response = final_response_text(
+                        call_args.get("summary")
+                    ) or final_response_text(msg.get("content"))
                     finished = True
             if finished:
                 break
-        r = verify(workdir, verifier_args)
+        r = grade_agent(verify, workdir, verifier_args, final_response)
         passed, feedback = r.passed, r.feedback
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
         passed, feedback = False, f"[harness error] {type(exc).__name__}: {exc}"

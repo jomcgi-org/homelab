@@ -28,6 +28,23 @@ def get_verifier(kind: str) -> Callable[[Path, dict], VerifyResult]:
     return _REGISTRY[kind]
 
 
+def accepts_final_response(verify) -> bool:
+    """A declared keyword-only parameter opts a verifier into completion grading."""
+    parameter = inspect.signature(verify).parameters.get("final_response")
+    return parameter is not None and parameter.kind == inspect.Parameter.KEYWORD_ONLY
+
+
+def final_response_text(value) -> str:
+    """Keep only harness-captured text; missing or invalid content is empty."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def grade_agent(verify, workdir: Path, args: dict, final_response) -> VerifyResult:
+    if accepts_final_response(verify):
+        return verify(workdir, args, final_response=final_response_text(final_response))
+    return verify(workdir, args)
+
+
 def verifier_source_hash(kind: str) -> str:
     """Short hash of the source module implementing `kind`, so editing verifier
     code invalidates its cached cells."""
@@ -41,6 +58,7 @@ def verifier_source_hash(kind: str) -> str:
 from . import (  # noqa: E402,F401
     command,
     compile,
+    decision_conflict,
     helm,
     jsonmatch,
     lint,

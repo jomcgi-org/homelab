@@ -13,6 +13,89 @@ from dataclasses import dataclass
 import pytest  # noqa: F401 - keeps gazelle's @pip//pytest dep on the py_test target
 
 from bench import claude_code
+from bench.agent import REPOSITORY_POLICY_INSTRUCTION
+from bench.verifiers import VerifyResult
+
+
+@pytest.mark.parametrize(
+    "text,expected", [("completion", "completion"), (None, ""), (" \n\t", ""), ("", "")]
+)
+def test_anchor_final_response_and_scoped_instruction(
+    monkeypatch, tmp_path, text, expected
+):
+    seen = {}
+
+    def invoke(prompt, **kwargs):
+        assert prompt == "unchanged user prompt"
+        assert kwargs["append_system_prompt"] == REPOSITORY_POLICY_INSTRUCTION
+        return claude_code.ClaudeResult(
+            text=text, num_turns=1, is_error=False, wall_ms=1
+        )
+
+    def verify(workdir, args, *, final_response):
+        seen["response"] = final_response
+        return VerifyResult(bool(final_response), "empty completion")
+
+    monkeypatch.setattr(claude_code, "_invoke", invoke)
+    cell = claude_code.run_anchor_agent_cell(
+        task_id="t",
+        task_version="1",
+        model_id="m",
+        content_hash="h",
+        fixture_dir=tmp_path,
+        task_prompt="unchanged user prompt",
+        verify=verify,
+        verifier_args={},
+        repository_policy_precedence=True,
+    )
+    assert seen["response"] == expected
+    assert cell.outcome == ("pass@1" if expected else "fail")
+
+
+def test_anchor_old_verifier_gets_only_original_arguments(monkeypatch, tmp_path):
+    def invoke(prompt, **kwargs):
+        assert "append_system_prompt" not in kwargs
+        return claude_code.ClaudeResult(
+            text="irrelevant", num_turns=1, is_error=False, wall_ms=1
+        )
+
+    def verify(*args, **kwargs):
+        assert len(args) == 2 and kwargs == {}
+        assert args[1] == {"old": True}
+        return VerifyResult(True, "")
+
+    monkeypatch.setattr(claude_code, "_invoke", invoke)
+    assert (
+        claude_code.run_anchor_agent_cell(
+            task_id="t",
+            task_version="1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            verify=verify,
+            verifier_args={"old": True},
+        ).outcome
+        == "pass@1"
+    )
+
+
+def test_invoke_policy_is_system_only(monkeypatch):
+    def run(cmd, **kwargs):
+        assert cmd[cmd.index("-p") + 1] == "user task"
+        assert (
+            cmd[cmd.index("--append-system-prompt") + 1]
+            == REPOSITORY_POLICY_INSTRUCTION
+        )
+        return _FakeProc(returncode=0, stdout=json.dumps({"result": None}))
+
+    monkeypatch.setattr(claude_code.subprocess, "run", run)
+    assert (
+        claude_code._invoke(
+            "user task", append_system_prompt=REPOSITORY_POLICY_INSTRUCTION
+        ).text
+        == ""
+    )
 
 
 @dataclass

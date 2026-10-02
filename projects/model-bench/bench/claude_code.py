@@ -26,8 +26,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from bench.agent import REPOSITORY_POLICY_INSTRUCTION
 from bench.cache import HARNESS_VERSION
 from bench.schema import Attempt, ResultCell
+from bench.verifiers import grade_agent
 
 # Override for tests / non-standard installs. Default resolves `claude` on PATH.
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
@@ -62,6 +64,7 @@ def _invoke(
     cwd: Path | None = None,
     allowed_tools: list[str] | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
+    append_system_prompt: str | None = None,
 ) -> ClaudeResult:
     """Run `claude -p` once and parse its JSON result.
 
@@ -71,6 +74,8 @@ def _invoke(
     number is comparable to the OpenRouter latency the candidates record.
     """
     cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json"]
+    if append_system_prompt:
+        cmd += ["--append-system-prompt", append_system_prompt]
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
     if cwd is not None:
@@ -94,7 +99,7 @@ def _invoke(
             f"claude CLI returned non-object JSON: {type(data).__name__}"
         )
     return ClaudeResult(
-        text=str(data.get("result", "")),
+        text=data["result"] if isinstance(data.get("result"), str) else "",
         num_turns=int(data.get("num_turns", 0)),
         is_error=bool(data.get("is_error", False)),
         wall_ms=wall_ms,
@@ -169,6 +174,7 @@ def run_anchor_agent_cell(
     verify,
     verifier_args: dict,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
+    repository_policy_precedence: bool = False,
 ) -> ResultCell:
     """Run one agentic anchor cell: hand the whole task to `claude -p` in a workdir copy,
     let it edit files with its own tools, then grade the workdir with the same verifier.
@@ -185,11 +191,15 @@ def run_anchor_agent_cell(
     wall_ms = 0
     rental_cost = 0.0
     try:
+        scoped_instruction = {}
+        if repository_policy_precedence:
+            scoped_instruction["append_system_prompt"] = REPOSITORY_POLICY_INSTRUCTION
         res = _invoke(
             task_prompt,
             cwd=workdir,
             allowed_tools=_ANCHOR_TOOLS,
             timeout_s=timeout_s,
+            **scoped_instruction,
         )
         turns = res.num_turns
         wall_ms = res.wall_ms
@@ -197,7 +207,7 @@ def run_anchor_agent_cell(
         if res.is_error:
             passed, feedback = False, "[claude CLI reported is_error] " + res.text[:500]
         else:
-            r = verify(workdir, verifier_args)
+            r = grade_agent(verify, workdir, verifier_args, res.text)
             passed, feedback = r.passed, r.feedback
     except Exception as exc:  # noqa: BLE001 - a subprocess/verify error becomes a fail cell
         passed, feedback = False, f"[anchor harness error] {type(exc).__name__}: {exc}"
