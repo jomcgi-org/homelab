@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-07",
+  "generated_at": "2026-10-02",
   "harness_version": "0.1.4",
   "tasks": [
     {
@@ -205,9 +205,9 @@
       "floor_failed": [],
       "hard_pass": 9,
       "hard_n": 9,
-      "mean_tokens": 168341,
-      "mean_turns": 12.31,
-      "mean_latency_ms": 528880,
+      "mean_tokens": 141817,
+      "mean_turns": 11.44,
+      "mean_latency_ms": 301300,
       "cost_usd": 0.0,
       "cost_per_solve_usd": 0.0,
       "tool_use_ok": 1.0,
@@ -215,137 +215,137 @@
         {
           "id": "campsites-region-rollup-01",
           "passed": true,
-          "tokens": 447898,
-          "turns": 22,
-          "latency_ms": 828160,
+          "tokens": 169405,
+          "turns": 21,
+          "latency_ms": 400886,
           "cost_usd": 0.0
         },
         {
           "id": "docs-public-markers-01",
           "passed": true,
-          "tokens": 211253,
-          "turns": 11,
-          "latency_ms": 986349,
+          "tokens": 708072,
+          "turns": 23,
+          "latency_ms": 986290,
           "cost_usd": 0.0
         },
         {
           "id": "embervm-capability-generation-01",
           "passed": true,
-          "tokens": 11578,
-          "turns": 4,
-          "latency_ms": 111834,
+          "tokens": 32792,
+          "turns": 8,
+          "latency_ms": 127672,
           "cost_usd": 0.0
         },
         {
           "id": "embervm-pi-tools-01",
           "passed": false,
-          "tokens": 244405,
-          "turns": 6,
-          "latency_ms": 479505,
+          "tokens": 275362,
+          "turns": 8,
+          "latency_ms": 375407,
           "cost_usd": 0.0
         },
         {
           "id": "fc-warmpool-daemonset-01",
           "passed": true,
-          "tokens": 235566,
-          "turns": 17,
-          "latency_ms": 388207,
+          "tokens": 149687,
+          "turns": 15,
+          "latency_ms": 161638,
           "cost_usd": 0.0
         },
         {
           "id": "flights-module-01",
           "passed": true,
-          "tokens": 296635,
-          "turns": 21,
-          "latency_ms": 589857,
+          "tokens": 89092,
+          "turns": 10,
+          "latency_ms": 230453,
           "cost_usd": 0.0
         },
         {
           "id": "frontend-moving-legtags-01",
           "passed": true,
-          "tokens": 105968,
-          "turns": 7,
-          "latency_ms": 863254,
+          "tokens": 128984,
+          "turns": 10,
+          "latency_ms": 438608,
           "cost_usd": 0.0
         },
         {
           "id": "go-vsock-frame-01",
           "passed": true,
-          "tokens": 152409,
-          "turns": 12,
-          "latency_ms": 641675,
+          "tokens": 91365,
+          "turns": 10,
+          "latency_ms": 307828,
           "cost_usd": 0.0
         },
         {
           "id": "hikes-walkhighlands-dom-01",
           "passed": true,
-          "tokens": 191909,
-          "turns": 15,
-          "latency_ms": 763304,
+          "tokens": 63119,
+          "turns": 8,
+          "latency_ms": 377142,
           "cost_usd": 0.0
         },
         {
           "id": "hikes-walkhighlands-duration-01",
           "passed": true,
-          "tokens": 117550,
-          "turns": 10,
-          "latency_ms": 740274,
+          "tokens": 89722,
+          "turns": 9,
+          "latency_ms": 392782,
           "cost_usd": 0.0
         },
         {
           "id": "inference-appledouble-01",
           "passed": true,
-          "tokens": 126260,
-          "turns": 11,
-          "latency_ms": 362685,
+          "tokens": 21105,
+          "turns": 5,
+          "latency_ms": 97255,
           "cost_usd": 0.0
         },
         {
           "id": "null-content-fix-01",
           "passed": true,
-          "tokens": 21559,
+          "tokens": 16867,
           "turns": 6,
-          "latency_ms": 146711,
+          "latency_ms": 105748,
           "cost_usd": 0.0
         },
         {
           "id": "research-adr-writeback-01",
           "passed": true,
-          "tokens": 261486,
-          "turns": 17,
-          "latency_ms": 374034,
+          "tokens": 125445,
+          "turns": 16,
+          "latency_ms": 175327,
           "cost_usd": 0.0
         },
         {
           "id": "slo-budget-breach-01",
           "passed": true,
-          "tokens": 43484,
-          "turns": 9,
-          "latency_ms": 170273,
+          "tokens": 8548,
+          "turns": 3,
+          "latency_ms": 71258,
           "cost_usd": 0.0
         },
         {
           "id": "stars-climatology-months-01",
           "passed": true,
-          "tokens": 210522,
-          "turns": 14,
-          "latency_ms": 728101,
+          "tokens": 198558,
+          "turns": 16,
+          "latency_ms": 329053,
           "cost_usd": 0.0
         },
         {
           "id": "worldcup-fixtures-guard-01",
           "passed": true,
-          "tokens": 35560,
+          "tokens": 37210,
           "turns": 7,
-          "latency_ms": 209289,
+          "latency_ms": 116410,
           "cost_usd": 0.0
         },
         {
           "id": "worldcup-swing-settled-01",
           "passed": true,
-          "tokens": 223829,
-          "turns": 14,
-          "latency_ms": 558081,
+          "tokens": 339101,
+          "turns": 16,
+          "latency_ms": 502463,
           "cost_usd": 0.0
         }
       ]
