@@ -244,9 +244,18 @@ def test_party_projection_omits_author_ids_and_dm_flag(http):
         assert response.status_code == 200
         row = response.json()
         assert row["is_mine"] is (viewer == "player_a")
+        assert row["can_edit"] is (viewer in ("player_a", "dm"))
         assert ("dm_readable" in row) is (viewer == "player_a")
         assert ("author_member_id" in row) is (viewer != "player_b")
         assert ("player_character_id" in row) is (viewer != "player_b")
+
+
+def test_character_note_edit_capability_is_author_only(http):
+    h, _ = http
+    for viewer in ("player_a", "dm"):
+        row = request(http, "GET", viewer, h.rows["note_shared"].id).json()
+        assert row["can_edit"] is (viewer == "player_a")
+        assert ("dm_readable" in row) is (viewer == "player_a")
 
 
 def test_entity_chips_resolve_for_each_viewer_and_event_ids_stay_opaque(http):
