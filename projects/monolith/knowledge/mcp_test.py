@@ -459,6 +459,7 @@ class TestSearchKnowledge:
         mock_embed.embed.assert_awaited_once_with("attention")
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=5,
             type_filter="paper",
             scope_filter="repo:jomcgi-org/homelab",
@@ -497,6 +498,7 @@ class TestSearchKnowledge:
         assert audit.call_args.args[2].personal_scope == "personal:agent@example.com"
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=20,
             type_filter=None,
             scope_filter=scope,
