@@ -7,12 +7,11 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_library(
     name = "verifiers",
-    # Bootstrap runfiles for CI, which tests before generating the srcs list.
-    data = ["decision_conflict.py"],
     srcs = [
         "__init__.py",
         "command.py",
         "compile.py",
+        "decision_conflict.py",
         "helm.py",
         "jsonmatch.py",
         "lint.py",
@@ -20,6 +19,8 @@ py_library(
         "rbac.py",
         "sandbox.py",
     ],
+    # Bootstrap runfiles for CI, which tests before generating the srcs list.
+    data = ["decision_conflict.py"],
     imports = ["../.."],
     visibility = ["//projects/model-bench:__subpackages__"],
     deps = ["@pip//pyyaml"],
