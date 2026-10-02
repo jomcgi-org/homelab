@@ -1927,6 +1927,52 @@ deliveries also require this proof before the factory closes their issue.
 The merge-time audit retains a null rollout field because proof comes later
 in the separate `rollout_verified` event.
 
+### Outcome evidence: CI at merge, reverts after it
+
+Two record-only audits make a factory merge measurable as an outcome (merged,
+CI green, not reverted within seven days; #6716). Neither gates landing.
+
+`merge_ci` is written once, right after `merged`, by
+`factory_landing._record_ci`. It reads the merged head's commit statuses and
+check runs and folds them into one conclusion: any failed state fails, all
+passed (`success`, `neutral`, `skipped`) passes, and anything else is
+`pending`. `ejections` is the task's `merge_ejected` count in the current
+landing epoch. A failed read still writes the row, as `unknown` with the
+exception type, because a merged delivery leaves the landing batch once its
+issue closes and is not asked again.
+
+```json
+{"pr_number": 6704, "head_sha": "<40 hex>", "ejections": 0,
+ "checks": {"pr-checks": "success"}, "conclusion": "success"}
+{"pr_number": 6704, "head_sha": "<40 hex>", "ejections": 0,
+ "conclusion": "unknown", "error": "ConnectError"}
+```
+
+`factory_reverts.revert_tick` runs after landing on every reconcile tick,
+throttled to one sweep per 15 minutes per process. It takes factory `merged`
+audits from the last nine days (a seven-day window plus two days of grace)
+that have no terminal row yet, reads the base branch history since the oldest
+of them (at most ten pages of 50 commits), and writes one terminal row per
+task:
+
+- `reverted`, when a commit inside the window says `This reverts commit
+  <merge_commit_sha>`, says `Reverts owner/repo#N`, or has a `Revert` subject
+  citing `#N`;
+- `revert_window_closed`, once seven days pass with none, and only when the
+  history read reached back to the oldest merge being judged.
+
+```json
+{"pr_number": 6704, "merge_commit_sha": "<40 hex>", "revert_sha": "<40 hex>",
+ "revert_committed_at": "2026-10-04T09:00:00Z", "detected_at": "<iso>"}
+{"pr_number": 6704, "merge_commit_sha": "<40 hex>", "window_days": 7,
+ "checked_at": "<iso>"}
+```
+
+Merges older than the grace, including every merge from before the sweep
+existed, are never judged and read as unknown. With rebase merges the merge
+commit is only a pull request's last rebased commit, so a partial revert of an
+earlier commit in the same pull request is not detected.
+
 ### A delivery pause is a decision request
 
 The delivery planner's fifth action is `pause`, and it now leaves the lane
