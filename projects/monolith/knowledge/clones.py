@@ -38,6 +38,17 @@ def _are_clones(left: dict, right: dict) -> bool:
 
 def clone_clusters(items: list[dict]) -> list[list[dict]]:
     """Connected components, with deterministic, verified-first survivors."""
+    pairs = (
+        (i, j)
+        for i, item in enumerate(items)
+        for j in range(i)
+        if item.get("scope") == items[j].get("scope") and _are_clones(item, items[j])
+    )
+    return _clusters_from_pairs(items, pairs)
+
+
+def _clusters_from_pairs(items: list[dict], pairs) -> list[list[dict]]:
+    """Keep component and survivor ordering shared with the offline gardener."""
     parents = list(range(len(items)))
 
     def root(i):
@@ -46,13 +57,8 @@ def clone_clusters(items: list[dict]) -> list[list[dict]]:
             i = parents[i]
         return i
 
-    for i, item in enumerate(items):
-        for j in range(i):
-            other = items[j]
-            if item.get("scope") != other.get("scope"):
-                continue
-            if _are_clones(item, other):
-                parents[root(i)] = root(j)
+    for i, j in pairs:
+        parents[root(i)] = root(j)
     groups: dict[int, list[dict]] = {}
     for i, item in enumerate(items):
         groups.setdefault(root(i), []).append(item)

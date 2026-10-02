@@ -433,6 +433,20 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # Weekly clone hygiene, Sunday 03:45 UTC, before daily retention at 04:15.
+    # Land suspended until the separate enablement values PR for #6719.
+    - name: knowledge-merge-clones
+      args: ["knowledge-merge-clones", "--apply", "--max-merges", "50"]
+      schedule: "45 3 * * 0"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: true # Separate flip PR (#6719) enables scheduled execution.
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # MANUAL-ONLY jobs: replaces disables the in-process job, suspend:true keeps
     # the CronWorkflow from ever auto-firing, but it stays submittable by hand
     # (argo submit --from cronworkflow/<name>, or kubectl create from its
@@ -444,18 +458,6 @@ jobs:
     #   argo submit --from cronworkflow/backfill-entities -n monolith-workflows
     # Both jobs receive DATABASE_URL from jobs.dbSecretName in the shared
     # CronWorkflow template. Run seed first so backfill resolves the manifest.
-    - name: knowledge-merge-clones
-      args: ["knowledge-merge-clones", "--apply"]
-      schedule: "0 0 1 1 *" # inert; suspended, manual-only
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 600
-      suspend: true
-      resources:
-        requests:
-          cpu: 250m
-          memory: 512Mi
-        limits:
-          memory: 512Mi
     - name: seed-entities
       args: ["seed-entities"]
       schedule: "0 0 1 1 *" # inert; suspended, manual-only

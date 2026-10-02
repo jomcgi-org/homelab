@@ -806,21 +806,57 @@ def test_post_internal_does_not_retry_400(monkeypatch):
 
 
 def test_knowledge_clone_job_defaults_to_dry_run():
+    def merge_with_counts(session, **kwargs):
+        kwargs["counts"].update(merged=2, skipped=1)
+        return []
+
     with (
         mock.patch("core.db.get_engine", return_value=object()),
         mock.patch("sqlmodel.Session"),
-        mock.patch("knowledge.gardener.merge_clones", return_value=[]) as merge,
+        mock.patch(
+            "knowledge.gardener.merge_clones", side_effect=merge_with_counts
+        ) as merge,
     ):
         result = runner.invoke(jobs_main.app, ["knowledge-merge-clones"])
         assert result.exit_code == 0, result.output
         assert json.loads(result.output)["dry_run"] is True
-        assert merge.call_args.kwargs == {"apply": False, "scope": None}
+        assert merge.call_args.kwargs == {
+            "apply": False,
+            "scope": None,
+            "max_merges": None,
+            "counts": {"merged": 2, "skipped": 1},
+        }
+        assert json.loads(result.output) == {
+            "dry_run": True,
+            "merges": [],
+            "merged": 2,
+            "skipped": 1,
+        }
         result = runner.invoke(
             jobs_main.app,
-            ["knowledge-merge-clones", "--apply", "--scope", "repo:acme/repo"],
+            [
+                "knowledge-merge-clones",
+                "--apply",
+                "--scope",
+                "repo:acme/repo",
+                "--max-merges",
+                "2",
+            ],
         )
         assert result.exit_code == 0, result.output
-        assert merge.call_args.kwargs == {"apply": True, "scope": "repo:acme/repo"}
+        assert merge.call_args.kwargs == {
+            "apply": True,
+            "scope": "repo:acme/repo",
+            "max_merges": 2,
+            "counts": {"merged": 2, "skipped": 1},
+        }
+        for invalid in ["0", "-1"]:
+            merge.reset_mock()
+            result = runner.invoke(
+                jobs_main.app, ["knowledge-merge-clones", "--max-merges", invalid]
+            )
+            assert result.exit_code == 2
+            merge.assert_not_called()
 
 
 def test_post_internal_gives_up_when_budget_leaves_no_room_to_retry(monkeypatch):

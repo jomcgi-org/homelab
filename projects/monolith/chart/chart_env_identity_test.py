@@ -1879,23 +1879,29 @@ def test_recovery_gke_session_dependencies_use_dev_identities(recovery_gke_rende
     assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
 
 
-def test_clone_merge_job_is_manual_only_and_receives_database(renders):
+def test_clone_merge_job_is_weekly_suspended_and_receives_database(renders):
     jobs = _cron_docs(renders["prod"])
     merge = jobs["knowledge-merge-clones"]
     seed = jobs["seed-entities"]
-    assert merge["spec"]["schedules"] == ["0 0 1 1 *"]
+    assert merge["spec"]["schedules"] == ["45 3 * * 0"]
     assert merge["spec"]["suspend"] is True
     assert merge["spec"]["concurrencyPolicy"] == "Forbid"
     workflow = merge["spec"]["workflowSpec"]
     assert workflow["activeDeadlineSeconds"] == 600
     container = workflow["templates"][0]["container"]
     seed_container = seed["spec"]["workflowSpec"]["templates"][0]["container"]
-    assert container["args"] == ["knowledge-merge-clones", "--apply"]
+    assert container["args"] == [
+        "knowledge-merge-clones",
+        "--apply",
+        "--max-merges",
+        "50",
+    ]
     assert container["resources"] == seed_container["resources"]
     assert (
         _env_by_name(container["env"])["DATABASE_URL"]
         == _env_by_name(seed_container["env"])["DATABASE_URL"]
     )
+    assert _env_by_name(container["env"])["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]["value"]
 
 
 def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):

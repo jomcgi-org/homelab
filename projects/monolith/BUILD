@@ -1057,6 +1057,8 @@ py_library(
         "@pip//httpx",
         "@pip//lxml_html_clean",
         "@pip//networkx",
+        "@pip//numpy",
+        "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -6380,6 +6382,9 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_knowledge",
+        "@pip//numpy",
+        "@pip//opentelemetry_api",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],
