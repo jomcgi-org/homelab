@@ -26,7 +26,7 @@ An agentic task graded by the repo's own tests works like SWE-bench:
 
 For example, `hikes-walkhighlands-dom-01` and `hikes-walkhighlands-duration-01` are both
 agentic tasks against the hikes doability model (DOM scraping and duration-aware doability,
-respectively). The pack currently has 19 agentic and 3 single-shot tasks in total; `tasks/`
+respectively). The pack currently has 20 agentic and 3 single-shot tasks in total; `tasks/`
 is the source of truth for the full, current list.
 
 ## Graded (mutation-testing) tasks
@@ -47,6 +47,18 @@ attempt, so a partial answer shows up as partial rather than as a plain fail. Th
 
 A mutant's `find` text must occur exactly once in the module, so bumping the fixture
 commit fails loudly instead of silently grading a no-op.
+
+## Performance (speedup) tasks
+
+The `speedup` verifier grades a performance change. task.yaml carries the original
+module (`baseline`) and a hidden harness script. The harness first checks that the
+candidate's output equals the original's, on edge cases and on the benchmark inputs,
+then times both in one process, interleaved, on fresh inputs per pair so caching
+across calls cannot help. Any output difference scores 0. Wall-time ratios are noisy,
+so the score is bucketed (`buckets: [[min_speedup, score], ...]`) with gaps wide
+enough that run-to-run noise does not flip a bucket. `stars-grid-speedup-01` asks
+for a faster point-in-polygon grid generator: micro-optimisation stays in the bottom
+bucket, a per-row scanline reaches 0.75, and an edge-bucket scanline reaches 1.0.
 
 ## Setup
 

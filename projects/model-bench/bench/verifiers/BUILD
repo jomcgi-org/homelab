@@ -18,6 +18,7 @@ py_library(
         "pytest.py",
         "rbac.py",
         "sandbox.py",
+        "speedup.py",
     ],
     imports = ["../.."],
     visibility = ["//projects/model-bench:__subpackages__"],
@@ -57,6 +58,16 @@ py_test(
 py_test(
     name = "sandbox_test",
     srcs = ["sandbox_test.py"],
+    imports = ["../.."],
+    deps = [
+        ":verifiers",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "speedup_test",
+    srcs = ["speedup_test.py"],
     imports = ["../.."],
     deps = [
         ":verifiers",

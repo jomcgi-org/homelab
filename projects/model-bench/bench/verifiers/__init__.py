@@ -50,4 +50,5 @@ from . import (  # noqa: E402,F401
     mutation,
     pytest,
     rbac,
+    speedup,
 )
