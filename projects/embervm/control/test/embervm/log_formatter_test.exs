@@ -46,6 +46,16 @@ defmodule Embervm.LogFormatterTest do
     assert decoded["dial_id"] == "node-4/pod-a"
   end
 
+  test "renders every diagnostic lifecycle metadata field" do
+    metadata = %{instance_id: "node-4/pod-a", node_id: "node-4", boot_id: "boot-2",
+      reason: "host_cgroup_oom", kind: "guest_oom", delta: 2, total: 18_446_744_073_709_551_615}
+    decoded = event("embervm diagnostic observed", metadata) |>
+      Embervm.LogFormatter.format(%{}) |> IO.iodata_to_binary() |> :json.decode()
+    for {key, value} <- metadata do
+      assert decoded[Atom.to_string(key)] == value
+    end
+  end
+
   test "does not emit an ID for a valid non-recording remote span" do
     previous = OpenTelemetry.Ctx.get_current()
     remote = :otel_tracer.from_remote_span(0x1234, 0x5678, 1)
