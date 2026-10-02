@@ -27,12 +27,31 @@ class Case:
     success: int = 200
     state: str | None = None
     denials: dict[str, int] = field(default_factory=dict)
+    denied_writers: tuple[str, ...] = ("dm", "player_a", "player_b", "no_character")
 
 
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
     ("GET", PREFIX): Case(),
+    ("PATCH", PREFIX + "/settings"): Case(body={"notes_dm_readable_default": True}),
+    ("GET", PREFIX + "/notes"): Case(),
+    ("POST", PREFIX + "/notes"): Case(
+        body={"kind": "character", "title": "New note"},
+        caller="player_a",
+        denied_writers=("dm", "no_character"),
+    ),
+    ("GET", PREFIX + "/notes/{note_id}"): Case(params={"note_id": "$note_party.id"}),
+    ("PATCH", PREFIX + "/notes/{note_id}"): Case(
+        params={"note_id": "$note_private.id"},
+        body={"title": "Edited note"},
+        caller="player_a",
+    ),
+    ("DELETE", PREFIX + "/notes/{note_id}"): Case(
+        params={"note_id": "$note_private.id"},
+        caller="player_a",
+        success=204,
+    ),
     ("POST", PREFIX + "/characters"): Case(
         body={"character_name": "New PC", "sheet": {}}
     ),
@@ -182,7 +201,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 34
+    assert len(enumerated) == 40
 
 
 def test_route_inventory(harness):
@@ -253,7 +272,7 @@ def test_campaign_route_matrix(harness, method, path):
             assert h.snapshot() == before, f"cross-campaign mutation: {method} {path}"
 
         if method != "GET":
-            denied_viewers = {"player_a", "player_b", "no_character", *case.denials}
+            denied_viewers = {*case.denied_writers, *case.denials}
             for viewer in sorted(denied_viewers):
                 if viewer == case.caller:
                     continue
@@ -324,6 +343,8 @@ def test_campaign_route_matrix(harness, method, path):
                         assert response.status_code == 404, response.text
                     elif path.endswith(("/members", "/grants", "/invitations")):
                         assert response.status_code == 403, response.text
+                    elif "note_id" in case.params and viewer == "no_character":
+                        assert response.status_code == 404, response.text
                     elif params is not None:
                         if viewer == "no_character":
                             assert response.status_code == 404, response.text
@@ -391,7 +412,7 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 174
+    assert len(tokens) == 198
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]

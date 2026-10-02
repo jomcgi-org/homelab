@@ -6414,6 +6414,44 @@ py_test(
     ],
 )
 
+py_test(
+    name = "grimoire_notes_test",
+    srcs = ["grimoire/notes_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_notes_audience_test",
+    srcs = ["grimoire/notes_audience_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_notes_audience_postgres_test",
+    srcs = ["grimoire/notes_audience_postgres_test.py"],
+    deps = [
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
 py_library(
     name = "grimoire_session_events_test_data",
     data = ["grimoire/wipe/truncate_derived_tables.sql"],

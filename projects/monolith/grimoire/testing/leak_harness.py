@@ -51,6 +51,7 @@ from grimoire.models import (
     GameSession,
     KnowledgeChunk,
     KnowledgeGrant,
+    Note,
     PlayerCharacter,
     Relationship,
     SessionEvent,
@@ -309,7 +310,7 @@ def build_fixture(session: Session) -> LeakHarness:
         ("other_campaign", "other", None, "dm"),
         ("other_player", "other", "other_character", "player"),
     ):
-        allowed = ("dm",) if campaign_key == "campaign" else ("other_campaign",)
+        allowed = ("dm", role) if campaign_key == "campaign" else ("other_campaign",)
         member_key = "member" if role == "player_b" else f"member_{role}"
         keep(
             member_key,
@@ -319,6 +320,52 @@ def build_fixture(session: Session) -> LeakHarness:
                 app_user_id=rows[f"user_{role}"].id,
                 role=member_role,
                 player_character_id=rows[character_key].id if character_key else None,
+            ),
+        )
+
+    for key, kind, readable, deleted, campaign_key, allowed in (
+        ("note_private", "character", False, False, "campaign", ("player_a",)),
+        ("note_shared", "character", True, False, "campaign", ("player_a", "dm")),
+        (
+            "note_party",
+            "party",
+            False,
+            False,
+            "campaign",
+            ("dm", "player_a", "player_b"),
+        ),
+        ("note_deleted_character", "character", True, True, "campaign", ()),
+        ("note_deleted_party", "party", False, True, "campaign", ()),
+        ("note_foreign", "party", False, False, "other", ("other_campaign",)),
+    ):
+        author = (
+            "member_player_a" if campaign_key == "campaign" else "member_other_campaign"
+        )
+        keep(
+            key,
+            Note(
+                id=mark(f"{key}.id", allowed, True),
+                campaign_id=rows[campaign_key].id,
+                author_member_id=rows[author].id,
+                player_character_id=rows["character_a"].id
+                if campaign_key == "campaign"
+                else None,
+                kind=kind,
+                dm_readable=readable,
+                title=mark(f"{key}.title", allowed),
+                markdown=mark(f"{key}.markdown", allowed),
+                links={
+                    "entity_ids": [],
+                    "event_ids": [mark(f"{key}.event_id", allowed, True)],
+                },
+                created_in_session=rows[f"{campaign_key}_session"].id,
+                created_at=datetime(
+                    2026, 10, 2, 1, len(h.canaries) % 60, tzinfo=timezone.utc
+                ),
+                updated_at=datetime(
+                    2026, 10, 2, 2, len(h.canaries) % 60, tzinfo=timezone.utc
+                ),
+                deleted_at=datetime.now(timezone.utc) if deleted else None,
             ),
         )
 

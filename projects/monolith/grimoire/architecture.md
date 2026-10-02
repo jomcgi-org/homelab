@@ -108,6 +108,40 @@ Part of #6610. The #6612 play-surface PR owns enabling
 `grimoire.play.enabled: true` in `projects/monolith/deploy/values.yaml` and
 verifying the live routes. No operational flag flip belongs to this change.
 
+## Notes
+
+`grimoire.note` stores character and party notes, with an opt-in `dm_readable`
+flag and soft deletion. `note_predicate` and `can_see_note` extend the audience
+contract with a separate policy: a character note belongs to its author, even
+after that member loses their character. The DM sees it only when `dm_readable`
+is true. Party notes are visible to the DM and members currently holding a
+character. Characterless members see no party notes. NULL authors match nobody;
+unknown kinds and deleted rows are invisible to everyone, including the DM.
+Every query also filters the campaign. Seeded SQLite and PostgreSQL agreement
+matrices pin the SQL and Python policies against an independent oracle.
+
+The notes API works independently of `GRIMOIRE_PLAY_ENABLED`. Membership and
+the current character determine the viewer. Players with a character may create
+either kind; DMs may create party notes only. Character notes may be edited or
+deleted only by their author; party notes by their author or the DM. Only a
+character note's author may change its DM sharing flag. A DM-only settings
+route updates `notes_dm_readable_default`, initially false, which applies only
+when creation omits the flag. Explicit false remains private. Invisible ids
+return the same 404 as random ids. Search escapes LIKE wildcards and applies
+visibility and substring matching in SQL before ordering and limiting rows.
+
+Entity links are checked against the author's grant overlay at write time and
+resolved again for each viewer at read time. Chips expose only id, name and
+type, dropping invisible entities entirely. Event ids are opaque UUID strings,
+stored without a foreign key or event lookup. Author and character ids go only
+to the author and DM; the sharing flag goes only to the author. There is no
+`public_reader` grant on notes. Feed pinning and session-screen mounting remain
+separate follow-up work under #6606.
+
+**Why.** Notes are player-owned records. DM access to generic play rows does not
+authorize access to a private character note. Read-time chip resolution retains
+each viewer's entity grants without sharing another player's identity.
+
 ## Ingestion
 
 Batch commands in `app/jobs_main.py` invoke the domain jobs:

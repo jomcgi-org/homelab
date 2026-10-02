@@ -31,12 +31,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, or_, select
 
 from grimoire import aliases, library
-from grimoire.audience import Audience, AudienceKind, audience_predicate
 from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
     get_grimoire_operator_email,
 )
+from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
@@ -53,18 +53,19 @@ from grimoire.models import (
     KnowledgeChunk,
     KnowledgeGrant,
     MemberRole,
+    Note,
     PlayerCharacter,
     Relationship,
     SessionEvent,
     SessionStatus,
 )
+from grimoire.search import search_campaign
 from grimoire.session_events import (
     InvalidEventAudienceError,
     SessionEndedError,
     append_event,
     require_play_enabled,
 )
-from grimoire.search import search_campaign
 from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
 from grimoire.visibility import (
     Viewer,
@@ -217,6 +218,7 @@ class CampaignView(BaseModel):
     name: str
     dm_name: str | None
     created_at: datetime
+    notes_dm_readable_default: bool = False
 
 
 def _get_campaign_or_404(session: Session, campaign_id: str) -> Campaign:
@@ -337,6 +339,341 @@ def get_campaign(
 ) -> Campaign:
     _get_member_or_404(session, campaign_id, email)
     return _get_campaign_or_404(session, campaign_id)
+
+
+# --- Player and party notes --------------------------------------------
+
+
+class NoteLinks(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entity_ids: list[str] = Field(default_factory=list)
+    event_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("entity_ids", "event_ids")
+    @classmethod
+    def bounded_unique(cls, values):
+        # Retain persisted spelling for SQLite fixtures; PostgreSQL UUIDs
+        # canonicalize on storage. Deduplicate UUID identity, including case.
+        unique = {}
+        for value in values:
+            unique.setdefault(str(UUID(value)), value)
+        values = list(unique.values())
+        if len(values) > 50:
+            raise ValueError("At most 50 links of each kind")
+        return values
+
+    def stored(self) -> dict:
+        return {
+            "entity_ids": [str(v) for v in self.entity_ids],
+            "event_ids": [str(v) for v in self.event_ids],
+        }
+
+
+class NoteCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["character", "party"]
+    title: str = Field(min_length=1, max_length=200)
+    markdown: str = Field(default="", max_length=20000)
+    dm_readable: bool | None = None
+    links: NoteLinks = Field(default_factory=NoteLinks)
+    pinned: bool = False
+    created_in_session: str | None = None
+
+    @field_validator("created_in_session")
+    @classmethod
+    def session_uuid(cls, value):
+        if value is not None:
+            UUID(value)
+        return value
+
+    @field_validator("dm_readable")
+    @classmethod
+    def readable_not_null(cls, value):
+        if value is None:
+            raise ValueError("dm_readable must be a boolean")
+        return value
+
+
+class NotePatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    markdown: str | None = Field(default=None, max_length=20000)
+    pinned: bool | None = None
+    dm_readable: bool | None = None
+    links: NoteLinks | None = None
+
+    @field_validator("title", "markdown", "pinned", "dm_readable", "links")
+    @classmethod
+    def fields_not_null(cls, value):
+        if value is None:
+            raise ValueError("Note fields cannot be null")
+        return value
+
+
+def _note_entities(
+    session: Session, campaign_id: str, viewer: Viewer, ids: list
+) -> list[dict]:
+    if not ids or viewer is None:
+        return []
+    entities = {}
+    for entity, grant in session.exec(
+        visible_entities_query(campaign_id, viewer).where(Entity.id.in_(ids))
+    ).all():
+        # Unknown grants fail closed. Chips are relationship-context identity,
+        # so name-only recognition is permitted without any typed details.
+        if grant is not None and grant.grant_scope not in (
+            "full",
+            "partial",
+            "name_only",
+        ):
+            continue
+        if not entity_belongs_to_campaign(session, campaign_id, entity):
+            continue
+        projected = project_entity(entity, None, grant, viewer, context="relationship")
+        if projected is not None:
+            entities[str(UUID(entity.id))] = {
+                "id": entity.id,
+                "name": projected["name"],
+                "type": projected["entity_type"],
+            }
+    return [
+        entities[str(UUID(entity_id))]
+        for entity_id in ids
+        if str(UUID(entity_id)) in entities
+    ]
+
+
+def _validate_note_links(
+    session: Session, campaign_id: str, viewer: Viewer, links: NoteLinks
+):
+    ids = [str(value) for value in links.entity_ids]
+    visible = _note_entities(session, campaign_id, viewer, ids)
+    if len(visible) != len(ids):
+        raise HTTPException(404, detail="entity not found")
+
+
+def _note_view(
+    session: Session, row: Note, viewer: Viewer, member: CampaignMember
+) -> dict:
+    mine = row.author_member_id is not None and row.author_member_id == member.id
+
+    # Normalize SQLite's naive TIMESTAMPTZ mirror to the PostgreSQL wire shape.
+    def iso(value):
+        return (
+            value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+        ).isoformat()
+
+    result = {
+        "id": row.id,
+        "title": row.title,
+        "markdown": row.markdown,
+        "kind": row.kind,
+        "pinned": row.pinned,
+        "created_in_session": row.created_in_session,
+        "created_at": iso(row.created_at),
+        "updated_at": iso(row.updated_at),
+        "is_mine": mine,
+        "links": {
+            "entities": _note_entities(
+                session, row.campaign_id, viewer, row.links["entity_ids"]
+            ),
+            # Opaque provenance only. Do not read a feed event from these ids.
+            "event_ids": row.links["event_ids"],
+        },
+    }
+    if mine:
+        result["dm_readable"] = row.dm_readable
+    if mine or viewer == "dm":
+        result["author_member_id"] = row.author_member_id
+        result["player_character_id"] = row.player_character_id
+    return result
+
+
+def _get_note_or_404(
+    session: Session,
+    campaign_id: str,
+    note_id: str,
+    viewer: Viewer,
+    member: CampaignMember,
+    *,
+    lock=False,
+) -> Note:
+    query = select(Note).where(
+        Note.campaign_id == campaign_id,
+        Note.id == note_id,
+        note_predicate(Note, viewer, member),
+    )
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = session.exec(query).one_or_none()
+    if row is None:
+        raise HTTPException(404, detail="note not found")
+    return row
+
+
+def _require_note_editor(row: Note, member: CampaignMember):
+    if row.author_member_id == member.id or (
+        row.kind == "party" and member.role == "dm"
+    ):
+        return
+    raise HTTPException(403, detail="note edit not permitted")
+
+
+@router.get("/campaigns/{campaign_id}/notes")
+def list_notes(
+    campaign_id: str,
+    kind: Literal["character", "party"] | None = None,
+    q: str = Query(default="", max_length=20000),
+    limit: int = Query(default=100, ge=1, le=500),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    query = select(Note).where(
+        Note.campaign_id == campaign_id, note_predicate(Note, viewer, member)
+    )
+    if kind is not None:
+        query = query.where(Note.kind == kind)
+    if q:
+        pattern = (
+            "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        )
+        query = query.where(
+            or_(
+                func.lower(Note.title).like(func.lower(pattern), escape="\\"),
+                func.lower(Note.markdown).like(func.lower(pattern), escape="\\"),
+            )
+        )
+    rows = session.exec(
+        query.order_by(Note.pinned.desc(), Note.updated_at.desc(), Note.id).limit(limit)
+    ).all()
+    return [_note_view(session, row, viewer, member) for row in rows]
+
+
+@router.post("/campaigns/{campaign_id}/notes")
+def create_note(
+    campaign_id: str,
+    body: NoteCreateRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    if viewer is None or (viewer == "dm" and body.kind != "party"):
+        raise HTTPException(403, detail="note creation not permitted")
+    campaign = _get_campaign_or_404(session, campaign_id)
+    if body.created_in_session is not None:
+        if (
+            session.exec(
+                select(GameSession.id).where(
+                    GameSession.id == str(body.created_in_session),
+                    GameSession.campaign_id == campaign_id,
+                )
+            ).first()
+            is None
+        ):
+            raise HTTPException(404, detail="session not found")
+    _validate_note_links(session, campaign_id, viewer, body.links)
+    now = datetime.now(timezone.utc)
+    row = Note(
+        campaign_id=campaign_id,
+        author_member_id=member.id,
+        player_character_id=member.player_character_id,
+        kind=body.kind,
+        title=body.title,
+        markdown=body.markdown,
+        pinned=body.pinned,
+        dm_readable=campaign.notes_dm_readable_default
+        if body.dm_readable is None
+        else body.dm_readable,
+        links=body.links.stored(),
+        created_in_session=str(body.created_in_session)
+        if body.created_in_session
+        else None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return _note_view(session, row, viewer, member)
+
+
+@router.get("/campaigns/{campaign_id}/notes/{note_id}")
+def get_note(
+    campaign_id: str,
+    note_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    row = _get_note_or_404(session, campaign_id, note_id, viewer, member)
+    return _note_view(session, row, viewer, member)
+
+
+@router.patch("/campaigns/{campaign_id}/notes/{note_id}")
+def patch_note(
+    campaign_id: str,
+    note_id: str,
+    body: NotePatchRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    row = _get_note_or_404(session, campaign_id, note_id, viewer, member, lock=True)
+    _require_note_editor(row, member)
+    changes = body.model_dump(exclude_unset=True, exclude={"links"})
+    if "dm_readable" in changes and (
+        row.kind != "character" or row.author_member_id != member.id
+    ):
+        raise HTTPException(403, detail="note sharing change not permitted")
+    if body.links is not None:
+        _validate_note_links(session, campaign_id, viewer, body.links)
+        row.links = body.links.stored()
+    for field, value in changes.items():
+        setattr(row, field, value)
+    row.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(row)
+    return _note_view(session, row, viewer, member)
+
+
+@router.delete("/campaigns/{campaign_id}/notes/{note_id}", status_code=204)
+def delete_note(
+    campaign_id: str,
+    note_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+):
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    row = _get_note_or_404(session, campaign_id, note_id, viewer, member, lock=True)
+    _require_note_editor(row, member)
+    row.deleted_at = row.updated_at = datetime.now(timezone.utc)
+    session.commit()
+
+
+class CampaignSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    notes_dm_readable_default: bool
+
+
+@router.patch("/campaigns/{campaign_id}/settings", response_model=CampaignView)
+def patch_campaign_settings(
+    campaign_id: str,
+    body: CampaignSettingsRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> Campaign:
+    _require_dm(session, campaign_id, email)
+    campaign = _get_campaign_or_404(session, campaign_id)
+    campaign.notes_dm_readable_default = body.notes_dm_readable_default
+    session.commit()
+    session.refresh(campaign)
+    return campaign
 
 
 # --- Player characters --------------------------------------------------
@@ -1983,6 +2320,7 @@ def get_lobby(
                 name=campaign.name,
                 dm_name=campaign.dm_name,
                 created_at=campaign.created_at,
+                notes_dm_readable_default=campaign.notes_dm_readable_default,
                 role=member.role,
                 is_owner=campaign.owner_app_user_id == user.id,
                 player_character_id=member.player_character_id,
