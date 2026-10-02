@@ -394,6 +394,7 @@ describe("Grimoire lobby", () => {
         invitations: [],
       });
       expect(html).toContain("Rowan");
+      expect(html).toContain(`href="/grimoire/campaigns/${campaignId}/notes"`);
       expect(html).toContain("No character");
       expect(
         html.match(/<summary[^>]*>Assign character<\/summary>/g),
