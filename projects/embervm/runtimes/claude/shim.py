@@ -2926,10 +2926,14 @@ class ClaudeProcess:
             )
         ):
             stream_usage = _claude_stream_usage(events)
-            record["usage"] = stream_usage if any(stream_usage.values()) else {
-                "status": "unknown",
-                "reason": "interrupt_tokens_not_reported",
-            }
+            record["usage"] = (
+                stream_usage
+                if any(stream_usage.values())
+                else {
+                    "status": "unknown",
+                    "reason": "interrupt_tokens_not_reported",
+                }
+            )
         # A result was already billed above. Recover a transcript only when
         # that result was missing or zeroed, never bill its cumulative twice.
         cost = record.get("total_cost_usd")
@@ -5264,8 +5268,11 @@ class MuseProcess:
                             )
                         except Exception:
                             usage = _muse_usage_projection(
-                                [], self.session_id, command_id,
-                                len(completed_model_attempts), interrupted=True,
+                                [],
+                                self.session_id,
+                                command_id,
+                                len(completed_model_attempts),
+                                interrupted=True,
                             )
                             usage["muse"]["reason"] = "collection_failed"
                     self._partial_turn = _partial_turn(self, locals())

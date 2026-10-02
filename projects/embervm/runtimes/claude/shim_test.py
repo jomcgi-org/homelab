@@ -10913,7 +10913,7 @@ def _cost_manager(tmp_path, monkeypatch, scenario, transcript=None):
 _OK_USAGE = {"input_tokens": 5, "output_tokens": 2}
 
 
-_INTERRUPTED_USAGE_CLI = r'''#!/usr/bin/env python3
+_INTERRUPTED_USAGE_CLI = r"""#!/usr/bin/env python3
 import json, os, signal, sys
 if '--version' in sys.argv:
     sys.exit(0)
@@ -10957,7 +10957,7 @@ if mode not in ('unknown', 'unknown_zero'):
 print(json.dumps({'type': 'usage_test_ready'}), flush=True)
 while True:
     signal.pause()
-'''
+"""
 
 
 def _claude_interrupted_usage(tmp_path, monkeypatch, mode, drain=False):
