@@ -1,10 +1,12 @@
 // Package guestagent is the EmberVM composite guest control agent: a tiny
 // server baked into composite (k3s) guest images that listens on a dedicated
-// vsock port and answers the frozen R5 group-guest-agent contract. Its only v1
+// vsock port and answers the frozen R5 group-guest-agent contract. The original
 // command is `sync_clock`, which the node issues immediately after a member's
 // snapshot resume (standing decision 7): the node sends the host epoch, the
 // agent sets CLOCK_REALTIME from it, and responds with the post-set clock so the
 // node can verify the delta is within one second before accepting the resume.
+// The additive memory_status command returns bounded diagnostic evidence and
+// echoes a host nonce. It preserves the framing and sync_clock wire response.
 //
 // The wire is the D-R2.6.1 framing convention (the same the R2 sandbox guest
 // uses): a 4-byte big-endian length prefix followed by a JSON body, both
@@ -45,7 +47,7 @@ const maxFrameBytes = 64 * 1024
 // rejected rather than serviced.
 var ErrFrameTooLarge = errors.New("guestagent: frame length exceeds maximum")
 
-// syncClockCmd is the only command verb the agent understands in v1.
+// syncClockCmd is the frozen clock command verb.
 const syncClockCmd = "sync_clock"
 
 // request is the inbound frame body. The node sends {"cmd":"sync_clock",
