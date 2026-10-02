@@ -124,6 +124,68 @@ def test_cause_dedupe_and_bounded_evidence(engine, monkeypatch):
         assert value in payload["body"]
 
 
+def test_issue_samples_exclude_private_holds_and_secrets(engine, monkeypatch):
+    _seed(engine)
+    token = "ghp_" + "A" * 20
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Note(
+                    note_id="source_wrong-4",
+                    path="held.md",
+                    title="Held Private Title",
+                    content_hash="hash-held",
+                    visibility="private",
+                    visibility_verified=True,
+                ),
+                Note(
+                    note_id="source_wrong-3",
+                    path="secret.md",
+                    title=f"Token {token} inside",
+                    content_hash="hash-secret",
+                ),
+                Note(
+                    note_id="source_wrong-2",
+                    path="public.md",
+                    title="Safe public title",
+                    content_hash="hash-public",
+                    visibility="public",
+                ),
+            ]
+        )
+        session.commit()
+    writes = _network(monkeypatch, engine)
+    assert feedback.file_process_issues(engine=engine, now=NOW) == 1
+    assert len(writes) == 1
+    body = writes[0]["body"]
+    assert "Safe public title" in body
+    assert "source_wrong-2" in body
+    assert "Held Private Title" not in body
+    assert "source_wrong-4" not in body
+    assert token not in body
+    assert "source_wrong-3" not in body
+    assert body.count("> Note id:") == 3
+
+
+def test_issue_samples_exclude_secret_rationale(engine, monkeypatch):
+    _seed(engine)
+    secret = "Bearer " + "b" * 16
+    with Session(engine) as session:
+        finding = session.exec(
+            select(AuditFinding).where(AuditFinding.note_id == "source_wrong-0")
+        ).one()
+        finding.rationale = f"{secret} restates the evidence"
+        session.add(finding)
+        session.commit()
+    writes = _network(monkeypatch, engine)
+    assert feedback.file_process_issues(engine=engine, now=NOW) == 1
+    assert len(writes) == 1
+    body = writes[0]["body"]
+    assert secret not in body
+    assert "source_wrong-0" not in body
+    assert body.count("> Note id:") == 4
+
+
 def test_weekly_cap_and_expiry(engine, monkeypatch):
     for cause in ("source_wrong", "other", "missing_supersession"):
         _seed(engine, cause=cause)
