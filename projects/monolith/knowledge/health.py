@@ -125,11 +125,13 @@ def _kg_health_core(session: Session, cap: int) -> dict:
     disputes = session.execute(
         text(
             """
-            SELECT count(*) AS open_disputes,
-                   EXTRACT(EPOCH FROM (now() - MIN(created_at)))
-                       AS oldest_open_dispute_seconds
+            SELECT count(*) FILTER (WHERE state = 'open') AS open_disputes,
+                   EXTRACT(EPOCH FROM (
+                       now() - MIN(created_at) FILTER (WHERE state = 'open')
+                   )) AS oldest_open_dispute_seconds,
+                   count(*) FILTER (WHERE state = 'resolution_failed')
+                       AS resolution_failed_disputes
               FROM knowledge.disputes
-             WHERE state = 'open'
             """
         ),
         {},
@@ -209,6 +211,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             "created_by": burst.created_by,
         },
         "open_disputes": int(disputes.open_disputes),
+        "resolution_failed_disputes": int(disputes.resolution_failed_disputes),
         "oldest_open_dispute_seconds": oldest_dispute,
         "repo_diff_last_sha": repo_diff.last_sha,
         "repo_diff_last_run_at": _iso(repo_diff.last_run_at),

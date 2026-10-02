@@ -52,6 +52,25 @@ def _cycle(checks, now):
     return asyncio.run(health_alerts.run_cycle(checks, now=now))
 
 
+def test_dispute_resolution_flip_and_recovery_notify_discord(sent):
+    from factory.ops_health import evaluate_kg_dispute_resolution
+
+    state = [evaluate_kg_dispute_resolution(0, [])]
+    checks = {"kg_dispute_resolution": _check(state)}
+    assert _cycle(checks, T0) == []
+    state[0] = evaluate_kg_dispute_resolution(1, ["contested-note"])
+    assert _cycle(checks, T0 + timedelta(minutes=1)) == [
+        "Health alert: kg_dispute_resolution is unhealthy. " + state[0]["detail"]
+    ]
+    assert _cycle(checks, T0 + timedelta(minutes=2)) == []
+    state[0] = evaluate_kg_dispute_resolution(0, [])
+    assert _cycle(checks, T0 + timedelta(minutes=3)) == [
+        "Health recovered: kg_dispute_resolution is healthy again. "
+        + state[0]["detail"]
+    ]
+    assert len(sent) == 2
+
+
 def test_flip_recover_and_dedupe(sent):
     state = [{"ok": True, "detail": "fine"}]
     checks = {"agent_turns": _check(state)}

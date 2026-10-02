@@ -41,11 +41,11 @@ class PublishReport:
 
 
 def _has_open_dispute() -> Any:
-    """Return the correlated predicate for this schema's open-dispute marker."""
+    """Return the correlated predicate for unresolved contested notes."""
     return exists(
         select(Dispute.id).where(
             Dispute.note_id == Note.note_id,
-            Dispute.state == "open",
+            Dispute.state.in_(("open", "resolution_failed")),
         )
     )
 

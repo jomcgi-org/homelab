@@ -48,7 +48,7 @@ from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, _graph_etag
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
 from knowledge.interventions import decision_reference, lock_intervention
-from knowledge.models import AtomRawProvenance, Intervention, RawInput
+from knowledge.models import AtomRawProvenance, Dispute, Intervention, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
     delete_note,
@@ -837,6 +837,16 @@ def replay_dead_letter(
         raise HTTPException(status_code=404, detail="raw is not dead-lettered")
 
     session.delete(prov)
+    if raw.source == "dispute":
+        disputes = session.exec(
+            select(Dispute).where(
+                Dispute.raw_id == raw.raw_id,
+                Dispute.state == "resolution_failed",
+            )
+        ).all()
+        for dispute in disputes:
+            dispute.state = "open"
+            dispute.resolved_at = None
     if raw.source in EXTRACTABLE_SOURCES:
         enqueue_extraction(session, raw.raw_id)
     else:

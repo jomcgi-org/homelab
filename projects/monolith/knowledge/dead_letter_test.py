@@ -1,13 +1,16 @@
 """Tests for the dead letter API endpoints."""
 
+import json
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine
 
-from knowledge.extraction import record_extraction_failure
+from knowledge.extraction import apply_extraction, record_extraction_failure
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.models import AtomRawProvenance, RawInput
+from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
 
 
 @pytest.fixture
@@ -37,8 +40,10 @@ def session():
 @pytest.fixture
 def client(session):
     import dataclasses
-    import knowledge.module
+
     from framework import PRIVATE_PROFILE, build_app
+
+    import knowledge.module
 
     # Compose only the knowledge domain instead of the whole monolith: the
     # same framework wiring the production app gets, without depending on
@@ -156,6 +161,91 @@ class TestListDeadLetters:
 
 
 class TestReplayDeadLetter:
+    def test_dispute_replay_reopens_then_extraction_resolves(self, client, session):
+        _create_routine_jobs(session)
+        raw = _make_raw(session, source="dispute")
+        raw.extra = {"note_id": "contested"}
+        note = Note(
+            note_id="contested",
+            path="contested.md",
+            title="Contested",
+            content_hash="contested-hash",
+            content="body",
+            verification_state="disputed",
+        )
+        dispute = Dispute(
+            note_id=note.note_id,
+            raw_id=raw.raw_id,
+            reason="wrong",
+            previous_verification_state="verified",
+        )
+        other = Dispute(
+            note_id="other",
+            raw_id="other-raw",
+            reason="wrong",
+            state="resolution_failed",
+            resolved_at=datetime.now(timezone.utc),
+        )
+        session.add_all([note, dispute, other])
+        session.commit()
+        record_extraction_failure(session, raw.raw_id, "invalid output", 3)
+        session.refresh(dispute)
+        assert dispute.state == "resolution_failed"
+
+        response = client.post(f"/api/knowledge/dead-letter/{raw.id}/replay")
+
+        assert response.status_code == 200
+        session.refresh(dispute)
+        assert dispute.state == "open"
+        assert dispute.resolved_at is None
+        assert dispute.resolution == "extraction failed after 3 attempts"
+        session.refresh(other)
+        assert other.state == "resolution_failed"
+        assert isinstance(other.resolved_at, datetime)
+        job = session.execute(text("SELECT * FROM routine_jobs")).one()
+        assert job.name == f"kg:{raw.raw_id}"
+
+        apply_extraction(
+            session,
+            raw.raw_id,
+            json.dumps(
+                {
+                    "assertions": [],
+                    "dispute_resolution": {
+                        "state": "rejected",
+                        "rationale": "fact stands",
+                    },
+                }
+            ),
+        )
+
+        session.refresh(dispute)
+        assert dispute.state == "rejected"
+        assert isinstance(dispute.resolved_at, datetime)
+        assert dispute.resolution == "fact stands"
+
+    def test_non_dispute_replay_does_not_reopen_disputes(self, client, session):
+        raw = _make_raw(session)
+        _make_dead_letter(session, raw)
+        dispute = Dispute(
+            note_id="contested",
+            raw_id=raw.raw_id,
+            reason="wrong",
+            state="resolution_failed",
+            resolved_at=datetime.now(timezone.utc),
+        )
+        session.add(dispute)
+        session.commit()
+
+        assert (
+            client.post(f"/api/knowledge/dead-letter/{raw.id}/replay").status_code
+            == 200
+        )
+
+        session.refresh(dispute)
+        assert dispute.state == "resolution_failed"
+        assert isinstance(dispute.resolved_at, datetime)
+
     def test_replay_deletes_provenance(self, client, session):
         raw = _make_raw(session)
         prov = _make_dead_letter(session, raw)

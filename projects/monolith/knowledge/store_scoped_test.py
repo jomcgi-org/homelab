@@ -130,7 +130,8 @@ async def test_reindex_without_scoped_keys_preserves_existing_values(session):
     assert note.observed_at.replace(tzinfo=timezone.utc) == observed_at
 
 
-def test_disputes_and_provenance_are_batched_by_note(session):
+@pytest.mark.parametrize("state", ["open", "resolution_failed"])
+def test_disputes_and_provenance_are_batched_by_note(session, state):
     note = Note(
         note_id="scoped",
         path="scoped.md",
@@ -169,7 +170,7 @@ def test_disputes_and_provenance_are_batched_by_note(session):
             gardener_version="sentinel-version",
         )
     )
-    session.add(Dispute(note_id="scoped", reason="contradictory evidence"))
+    session.add(Dispute(note_id="scoped", reason="contradictory evidence", state=state))
     session.add(Dispute(note_id="closed", reason="resolved", state="confirmed"))
     session.commit()
 
@@ -190,7 +191,8 @@ def test_disputes_and_provenance_are_batched_by_note(session):
     }
 
 
-def test_search_and_get_note_project_scoped_fields_with_real_session(session):
+@pytest.mark.parametrize("state", ["open", "resolution_failed"])
+def test_search_and_get_note_project_scoped_fields_with_real_session(session, state):
     note = Note(
         note_id="scoped",
         path="scoped.md",
@@ -230,7 +232,7 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
             gardener_version="v1",
         )
     )
-    session.add(Dispute(note_id="scoped", reason="contradictory evidence"))
+    session.add(Dispute(note_id="scoped", reason="contradictory evidence", state=state))
     session.commit()
     session.refresh(chunk)
 

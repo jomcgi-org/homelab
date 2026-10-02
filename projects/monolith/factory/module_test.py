@@ -47,6 +47,7 @@ def test_private_surface_preserves_existing_routes_and_health():
         "agent_turns",
         "codex_quota_fresh",
         "factory_stuck",
+        "kg_dispute_resolution",
     }
     assert set(module.MODULE.register_health) == {"factory_reservations"}
     assert set(module.MODULE.register_liveness) == {"factory"}
