@@ -191,7 +191,6 @@ def test_main_refuses_over_limit_specs_before_calling_the_api(
     assert main(["--spec-dir", str(tmp_path), "--plan-limit", "2"]) == 0
 
 
-
 def test_duplicate_spec_names_are_rejected(tmp_path: Path):
     for name in ("a.yaml", "b.yaml"):
         (tmp_path / name).write_text(json.dumps(RAW))
@@ -411,3 +410,25 @@ def test_fetch_live_skips_missing_datasets_and_fetches_unechoed_queries():
     assert diff_trigger(s, live[0][1], live[0][2]) == {}
     assert all(key == "key" for _, _, key in seen)
     assert ("GET", "/1/triggers/k8s-logs", "key") not in seen
+
+
+def test_main_counts_unmanaged_triggers_in_other_datasets(monkeypatch, capsys):
+    monkeypatch.setenv("HONEYCOMB_CONFIG_KEY", "test-key")
+    calls = []
+
+    def fake_call(self, method, path, body=None):
+        calls.append((method, path))
+        if path == "/1/datasets":
+            return [{"slug": "metrics"}, {"slug": "monolith-backend"}]
+        if path.startswith("/1/datasets/"):
+            return {"slug": path.rsplit("/", 1)[-1]}
+        if path == "/1/triggers/metrics":
+            return []
+        if path == "/1/triggers/monolith-backend":
+            return [{"id": "unmanaged", "name": "Other alert", "query": {}}]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(HoneycombClient, "_call", fake_call)
+    assert main(["--apply"]) == 1
+    assert "plan limit of 1" in capsys.readouterr().err
+    assert all(method == "GET" for method, _ in calls)

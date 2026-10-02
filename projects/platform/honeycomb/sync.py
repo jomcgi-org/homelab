@@ -440,6 +440,9 @@ class HoneycombClient:
             raise RuntimeError(f"{method} {path}: HTTP {err.code}: {detail}") from err
         return json.loads(payload) if payload else None
 
+    def datasets(self) -> list[str]:
+        return [dataset["slug"] for dataset in self._call("GET", "/1/datasets")]
+
     def dataset_exists(self, slug: str) -> bool:
         try:
             self._call("GET", f"/1/datasets/{slug}")
@@ -532,8 +535,10 @@ def main(argv: list[str] | None = None) -> int:
         print("HONEYCOMB_CONFIG_KEY is not set", file=sys.stderr)
         return 2
     client = HoneycombClient(key)
-    datasets = {s.dataset for s in specs} | set(args.dataset)
     try:
+        datasets = (
+            {s.dataset for s in specs} | set(args.dataset) | set(client.datasets())
+        )
         live, existing = fetch_live(client, datasets)
         actions = plan(specs, live, existing, limit)
     except (RuntimeError, SpecError) as err:
