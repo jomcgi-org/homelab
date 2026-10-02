@@ -196,7 +196,7 @@ class FactoryPlannerPreview(SQLModel, table=True):
     id: int | None = Field(
         default=None, primary_key=True, sa_type=_BIGINT, nullable=False
     )
-    planner_run_id: int = Field(foreign_key="swarm.swarm_node_run.id")
+    planner_run_id: int = Field(sa_type=_BIGINT, foreign_key="swarm.swarm_node_run.id")
     ordinal: int
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
