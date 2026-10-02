@@ -664,3 +664,80 @@ def test_aggregate_agentic_group_means_norms_over_passed_cells():
     stats = _aggregate_agentic_group([passed, passed2, unscored, failed], {})
     assert stats["mean_norms"] == 0.75
     assert _aggregate_agentic_group([failed], {})["mean_norms"] is None
+
+
+def test_write_leaderboard_json_embeds_index_block(tmp_path):
+    out = tmp_path / "leaderboard.json"
+    block = {"roles": {"planner": {"judgement": 1.0}}, "models": {}, "picks": {}}
+    _write_leaderboard_json(
+        out,
+        agentic={},
+        cells=[],
+        tasks=[],
+        anchor_ids=set(),
+        generated_at="d",
+        index=block,
+    )
+    assert json.loads(out.read_text())["index"] == block
+    _write_leaderboard_json(
+        out, agentic={}, cells=[], tasks=[], anchor_ids=set(), generated_at="d"
+    )
+    assert "index" not in json.loads(out.read_text())
+
+
+def test_index_block_uses_task_axes_and_skips_without_config(tmp_path):
+    from bench.cli import _index_block
+
+    task = TaskSpec(
+        id="conflict",
+        version="v1",
+        task_class="code-fix",
+        mode="agentic",
+        tier="hard",
+        prompt="p",
+        verifier=VerifierSpec(kind="checks"),
+        axes=["judgement"],
+    )
+    cell = _agentic_cell("conflict", "m", True, 1, 1, True)
+    args = argparse.Namespace(index=str(tmp_path / "missing.yaml"), judge_json=None)
+    assert (
+        _index_block(args, [task], {"m": [cell]}, {}, {"conflict": "hard"}, set())
+        is None
+    )
+    cfg = tmp_path / "index.yaml"
+    cfg.write_text("bootstrap: 10\nroles:\n  planner:\n    judgement: 1\n")
+    args.index = str(cfg)
+    block = _index_block(args, [task], {"m": [cell]}, {}, {"conflict": "hard"}, set())
+    assert block["models"]["m"]["axes"]["judgement"] == 1.0
+    assert block["picks"]["planner"]["best"] == "m"
+
+
+def test_index_block_reads_default_judge_ratings(tmp_path):
+    from bench.cli import _index_block
+
+    task = TaskSpec(
+        id="t",
+        version="v1",
+        task_class="code-fix",
+        mode="agentic",
+        tier="standard",
+        prompt="p",
+        verifier=VerifierSpec(kind="pytest"),
+    )
+    cells = {m: [_agentic_cell("t", m, True, 1, 1, True)] for m in ("a", "b")}
+    (tmp_path / "judge").mkdir()
+    (tmp_path / "judge" / "ratings.json").write_text(
+        json.dumps(
+            {
+                "a": {"judge_rating": 50.0, "judge_ci": [40.0, 60.0]},
+                "b": {"judge_rating": -50.0, "judge_ci": [-60.0, -40.0]},
+            }
+        )
+    )
+    cfg = tmp_path / "index.yaml"
+    cfg.write_text("bootstrap: 5\nroles:\n  r:\n    judge: 1\n")
+    args = argparse.Namespace(index=str(cfg), judge_json=None, results=str(tmp_path))
+    block = _index_block(args, [task], cells, {}, {"t": "standard"}, set())
+    assert block["judge"] is True
+    assert block["models"]["a"]["axes"]["judge"] == 1.0
+    assert block["picks"]["r"]["best"] == "a"

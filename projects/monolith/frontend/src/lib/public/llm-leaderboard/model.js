@@ -260,3 +260,34 @@ export function fmtDate(iso) {
     timeZone: "UTC",
   });
 }
+
+// jomcgi-agent-index (model-bench index.yaml): one 0..1 index per factory role,
+// with a bootstrap CI. `index` is the report JSON's `index` block; absent until
+// the bench report is regenerated with it.
+export function indexRoles(index) {
+  return Object.keys(index?.roles ?? {});
+}
+
+export function roleIndex(index, role, modelId) {
+  return index?.models?.[modelId]?.roles?.[role] ?? null;
+}
+
+// The selection's models that have an index for this role, best first, each
+// carrying `index_value` so the scatter and table can read it like a metric.
+export function indexRows(models, index, role) {
+  return models
+    .map((m) => {
+      const r = roleIndex(index, role, m.id);
+      return r && r.index != null
+        ? {
+            ...m,
+            index_value: r.index,
+            index_ci: r.ci,
+            index_coverage: r.coverage,
+            index_low_n: index.models[m.id].low_n ?? [],
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.index_value - a.index_value);
+}

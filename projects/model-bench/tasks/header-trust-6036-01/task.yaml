@@ -9,6 +9,7 @@ id: header-trust-6036-01
 version: v1
 class: code-fix
 tier: standard
+axes: [security]
 mode: agentic
 snapshot:
   preset: monolith-backend

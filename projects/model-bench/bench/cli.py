@@ -183,6 +183,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Date stamp to embed in the JSON (default: today)",
     )
+    p_report.add_argument(
+        "--index", default="index.yaml", help="jomcgi-agent-index axes and weights"
+    )
+    p_report.add_argument(
+        "--judge-json",
+        default=None,
+        help="Judge ratings for the index (default: <results>/judge/ratings.json)",
+    )
+
+    # index
+    p_index = sub.add_parser(
+        "index", help="Per-role jomcgi-agent-index from cached results"
+    )
+    p_index.add_argument("--results", default=_DEFAULT_RESULTS)
+    p_index.add_argument("--models", default="models.yaml")
+    p_index.add_argument("--tasks", default="tasks")
+    p_index.add_argument("--index", default="index.yaml")
+    p_index.add_argument("--judge-json", default=None)
+    p_index.add_argument("--role", default=None, help="Only this role")
+    p_index.add_argument("--json", action="store_true", help="Print the JSON block")
 
     # drop
     p_drop = sub.add_parser("drop", help="Retire a model in the registry")
@@ -858,14 +878,9 @@ def _judge(args) -> None:
     print(f"Ratings written to {out}; `bench report` picks them up.")
 
 
-def _report(args) -> None:
-    """Generate the leaderboard markdown from cached result JSON files."""
-    tasks = load_tasks(Path(args.tasks))
-    task_class_of = {t.id: t.task_class.value for t in tasks}
-
-    reg = load_registry(Path(args.models))
-    anchor_ids = {m.id for m in anchors(reg)}
-
+def _load_cells(args, reg) -> list[ResultCell]:
+    """Newest current-harness cell per (model, task) from the results cache, with
+    fixed-rate models repriced from their recorded tokens."""
     results_root = Path(args.results)
     cells, stale, superseded = _load_newest_cells(results_root)
     # Models with a fixed rate are repriced from their recorded tokens, so a rate
@@ -899,6 +914,118 @@ def _report(args) -> None:
             "re-run); newest-on-disk wins",
             superseded,
         )
+    return cells
+
+
+def _agentic_groups(tasks, reg, cells):
+    """Agentic cells per model (current tasks, non-retired models) and their
+    aggregates: (groups, aggregates, tier_of, scored_ids)."""
+    # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model,
+    # under the gate model. easy + standard tasks form the qualification FLOOR: pointed,
+    # basic-viability tasks that ~90%+ of candidates clear. A model qualifies if it misses
+    # at most FLOOR_MISS_TOLERANCE of them, so one flaky floor miss does not exclude an
+    # otherwise-strong model while a model that fails several basics is still gated out.
+    # hard tasks (real-tree navigation / net-new building) differentiate the qualified;
+    # perf/efficiency is the value axis among them.
+    # Only count cells for tasks that are still in the current task set. Cells for a
+    # task that was later removed or renamed linger in the durable results cache; the
+    # harness-version filter above does not catch them (same version, dropped task),
+    # so without this scope a stale task would silently inflate every model's n and
+    # skew the medians away from the published task set. This mirrors the per-task and
+    # per-model breakdowns below, which are already scoped to current tasks.
+    current_agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
+    tier_of = {t.id: t.tier for t in tasks}
+    # Retired models are excluded from the leaderboard even if their cells linger in the
+    # durable cache, so `bench drop` alone removes a model without needing a cell prune.
+    retired_ids = {m.id for m in reg if m.status == "retired"}
+    agentic_groups: dict[str, list[ResultCell]] = {}
+    for cell in cells:
+        if (
+            cell.turns is not None
+            and cell.task_id in current_agentic_ids
+            and cell.model_id not in retired_ids
+        ):
+            agentic_groups.setdefault(cell.model_id, []).append(cell)
+    scored_ids = frozenset(
+        cell.task_id
+        for group in agentic_groups.values()
+        for cell in group
+        if cell.first_attempt_score is not None
+    )
+    agentic: dict[str, dict] = {}
+    for model_id, group in agentic_groups.items():
+        agentic[model_id] = _aggregate_agentic_group(
+            group, tier_of, scored_ids=scored_ids
+        )
+    return agentic_groups, agentic, tier_of, scored_ids
+
+
+def _index_block(args, tasks, agentic_groups, agentic, tier_of, anchor_ids):
+    """The jomcgi-agent-index block (bench/index.py), or None without index.yaml.
+
+    Judge ratings come from --judge-json, else the pairwise judge's
+    <results>/judge/ratings.json when present."""
+    from bench import index as agent_index
+
+    cfg_path = Path(getattr(args, "index", None) or "index.yaml")
+    if not cfg_path.exists():
+        return None
+    judge_path = getattr(args, "judge_json", None)
+    if not judge_path and getattr(args, "results", None):
+        default = Path(args.results) / "judge" / "ratings.json"
+        judge_path = str(default) if default.exists() else None
+    return agent_index.build_index(
+        agentic_groups,
+        tier_of=tier_of,
+        axes_of={t.id: list(t.axes) for t in tasks},
+        config=agent_index.load_config(cfg_path),
+        stats=agentic,
+        judge_ratings=(
+            agent_index.load_judge_ratings(Path(judge_path)) if judge_path else None
+        ),
+        anchor_ids=anchor_ids,
+    )
+
+
+def _index(args) -> None:
+    """Print the per-role index table (or the JSON block with --json)."""
+    tasks = load_tasks(Path(args.tasks))
+    reg = load_registry(Path(args.models))
+    cells = _load_cells(args, reg)
+    agentic_groups, agentic, tier_of, _ = _agentic_groups(tasks, reg, cells)
+    anchor_ids = {m.id for m in anchors(reg)}
+    block = _index_block(args, tasks, agentic_groups, agentic, tier_of, anchor_ids)
+    if block is None:
+        raise SystemExit(f"no index config at {args.index}")
+    if args.role:
+        if args.role not in block["roles"]:
+            raise SystemExit(
+                f"unknown role {args.role!r}; known: {sorted(block['roles'])}"
+            )
+        block = {
+            **block,
+            "roles": {args.role: block["roles"][args.role]},
+            "picks": {args.role: block["picks"][args.role]},
+        }
+    if args.json:
+        print(json.dumps(block, indent=2))
+        return
+    from bench.index import render_index_markdown
+
+    names = {m.id: m.display_name for m in reg if m.display_name}
+    print(render_index_markdown(block, names))
+
+
+def _report(args) -> None:
+    """Generate the leaderboard markdown from cached result JSON files."""
+    tasks = load_tasks(Path(args.tasks))
+    task_class_of = {t.id: t.task_class.value for t in tasks}
+
+    reg = load_registry(Path(args.models))
+    anchor_ids = {m.id for m in anchors(reg)}
+
+    results_root = Path(args.results)
+    cells = _load_cells(args, reg)
 
     # Single-shot and agentic are separate contracts: only single-shot cells feed the
     # per-class Budget/Anchors/Pareto tables. Agentic cells (turns is not None) have
@@ -973,43 +1100,7 @@ def _report(args) -> None:
             }
         )
 
-    # Agentic leaderboard: aggregate tool-calling cells (turns is not None) per model,
-    # under the gate model. easy + standard tasks form the qualification FLOOR: pointed,
-    # basic-viability tasks that ~90%+ of candidates clear. A model qualifies if it misses
-    # at most FLOOR_MISS_TOLERANCE of them, so one flaky floor miss does not exclude an
-    # otherwise-strong model while a model that fails several basics is still gated out.
-    # hard tasks (real-tree navigation / net-new building) differentiate the qualified;
-    # perf/efficiency is the value axis among them.
-    # Only count cells for tasks that are still in the current task set. Cells for a
-    # task that was later removed or renamed linger in the durable results cache; the
-    # harness-version filter above does not catch them (same version, dropped task),
-    # so without this scope a stale task would silently inflate every model's n and
-    # skew the medians away from the published task set. This mirrors the per-task and
-    # per-model breakdowns below, which are already scoped to current tasks.
-    current_agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
-    tier_of = {t.id: t.tier for t in tasks}
-    # Retired models are excluded from the leaderboard even if their cells linger in the
-    # durable cache, so `bench drop` alone removes a model without needing a cell prune.
-    retired_ids = {m.id for m in reg if m.status == "retired"}
-    agentic_groups: dict[str, list[ResultCell]] = {}
-    for cell in cells:
-        if (
-            cell.turns is not None
-            and cell.task_id in current_agentic_ids
-            and cell.model_id not in retired_ids
-        ):
-            agentic_groups.setdefault(cell.model_id, []).append(cell)
-    scored_ids = frozenset(
-        cell.task_id
-        for group in agentic_groups.values()
-        for cell in group
-        if cell.first_attempt_score is not None
-    )
-    agentic: dict[str, dict] = {}
-    for model_id, group in agentic_groups.items():
-        agentic[model_id] = _aggregate_agentic_group(
-            group, tier_of, scored_ids=scored_ids
-        )
+    agentic_groups, agentic, tier_of, scored_ids = _agentic_groups(tasks, reg, cells)
 
     # Scored-task rows use the same graded semantics as the per-model mean_score:
     # current agentic tasks, non-retired models, harness-error cells excluded, and
@@ -1051,6 +1142,14 @@ def _report(args) -> None:
         agentic_anchor_ids=anchor_ids,
         scored_tasks=scored_tasks,
     )
+    index_block = _index_block(
+        args, tasks, agentic_groups, agentic, tier_of, anchor_ids
+    )
+    if index_block is not None:
+        from bench.index import render_index_markdown
+
+        names = {m.id: m.display_name for m in reg if m.display_name}
+        md = md.rstrip("\n") + "\n\n" + render_index_markdown(index_block, names) + "\n"
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md)
@@ -1066,6 +1165,7 @@ def _report(args) -> None:
             anchor_ids=anchor_ids,
             display_names={m.id: m.display_name for m in reg if m.display_name},
             self_hosted_ids={m.id for m in reg if m.self_hosted},
+            index=index_block,
             generated_at=getattr(args, "generated_at", None)
             or datetime.date.today().isoformat(),
         )
@@ -1170,6 +1270,7 @@ def _write_leaderboard_json(
     generated_at: str,
     display_names: dict | None = None,
     self_hosted_ids: set | None = None,
+    index: dict | None = None,
 ) -> None:
     """Write the structured agentic leaderboard consumed by the public page.
 
@@ -1250,6 +1351,8 @@ def _write_leaderboard_json(
         "tasks": tasks_json,
         "models": models_json,
     }
+    if index is not None:
+        payload["index"] = index
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -1569,6 +1672,8 @@ def main(argv=None) -> None:
         _prune_stale(args)
     elif args.command == "list":
         _list(args)
+    elif args.command == "index":
+        _index(args)
     elif args.command == "snapshot":
         _snapshot(args)
     elif args.command == "calibrate":

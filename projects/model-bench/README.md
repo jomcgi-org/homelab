@@ -140,6 +140,31 @@ python3 -m bench judge --task chunker-mutation-01 --pairs 20
 python3 -m bench report
 ```
 
+
+## jomcgi-agent-index (per-role ranking)
+
+`index.yaml` defines what "good" means here, per factory role. Each model gets
+a 0..1 score on each axis:
+
+- correctness: floor pass rate;
+- frontier: mean graded score on hard and frontier tasks;
+- judgement, security and review: tasks tagged with that name under `axes:` in
+  task.yaml;
+- norms: the mean norms score;
+- judge: the pairwise-judge rating from `bench judge`
+  (`<results>/judge/ratings.json`, or `--judge-json`), min-max normalised.
+
+Each role (planner, implementer, reviewer) weights the axes. An axis a model
+was never measured on drops out and the remaining weights renormalise. The CI
+is a bootstrap over the model's tasks, and axes measured on fewer than `min_n`
+tasks are flagged. Per role the index names the best model, plus the cheapest
+and the fastest model within `tolerance` of it. That pair is the routing
+question.
+
+`bench report` appends the index to the markdown and embeds it in the page
+JSON under `index`. `bench index [--role implementer] [--json]` prints it on
+its own. Re-weighting is a YAML edit; no cell needs re-running.
+
 ## Setup
 
 Two interpreters are involved:

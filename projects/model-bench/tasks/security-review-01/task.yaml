@@ -22,6 +22,7 @@ class: code-fix
 # Frontier candidate: monotone ladder (H 0.42 < S 0.89 < O 1.0) but n=1 and just
 # outside the default thresholds; promote after more calibration reps.
 tier: hard
+axes: [security, review]
 mode: agentic
 snapshot:
   commit: 130910e751664c15c955cc5db393597aee5a5be5
