@@ -280,14 +280,10 @@ defmodule Embervm.Session do
       clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     }
 
-    if state.adoption_flush do
-      {:ok, state, {:continue, :adoption_flush}}
-    else
-    if state.draining do
-      {:ok, state, {:continue, :drain}}
-    else
-      {:ok, arm_idle_timer(state)}
-    end
+    cond do
+      state.adoption_flush -> {:ok, state, {:continue, :adoption_flush}}
+      state.draining -> {:ok, state, {:continue, :drain}}
+      true -> {:ok, arm_idle_timer(state)}
     end
   end
 
@@ -623,7 +619,10 @@ defmodule Embervm.Session do
   defp settle_adoption_flush(state, outcome) do
     # A turn finishing between control-plane death and this flush has no
     # interrupted record. It still ends parked_response_lost, as before.
-    result = record_adoption_outcome(state, outcome)
+    result = case record_adoption_outcome(state, outcome) do
+      {:ok, _row} -> :recorded
+      {:error, _reason} = error -> error
+    end
     if state.adoption_flush_timer, do: Process.cancel_timer(state.adoption_flush_timer)
     dispatch_id = state.adoption_flush.dispatch_id
     Enum.each(state.interrupt_workers, fn {ref, {pid, tag, id}} ->
@@ -720,6 +719,7 @@ defmodule Embervm.Session do
 
   # Arm the idle-bank timer if banking is enabled and it is not already armed. A nil
   # or non-positive idle_bank_ms disables banking (the timer is never scheduled).
+  defp arm_idle_timer(%{adoption_flush: flush} = state) when not is_nil(flush), do: state
   defp arm_idle_timer(%{idle_bank_ms: ms} = state) when is_integer(ms) and ms > 0 do
     if state.idle_timer do
       state

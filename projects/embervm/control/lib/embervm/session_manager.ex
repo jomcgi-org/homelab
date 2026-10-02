@@ -5084,7 +5084,7 @@ defmodule Embervm.SessionManager do
       # supplies current residency, so it is safe to recreate the session process.
       Map.has_key?(claimed_primed, sid) ->
         {node_id, vm_id, dial_id} = Map.fetch!(claimed_primed, sid)
-        adopt_live(state, session, node_id, vm_id, dial_id)
+        adopt_live(state, session, node_id, vm_id, dial_id, false)
 
       # No live VM, but the node reports its SNAPSHOT: it is banked (or a bank/relight
       # that did not finish leaving only the snapshot). Heal ETS to banked.
@@ -5172,7 +5172,7 @@ defmodule Embervm.SessionManager do
   # Rebind a live session VM to a fresh process (idempotent). Forces ETS to running
   # from node truth (a banking/relighting/creating limbo whose node actually holds a
   # live VM), writes the residency fact + vm_id, and starts a process if none runs.
-  defp adopt_live(state, session, node_id, vm_id, dial_id) do
+  defp adopt_live(state, session, node_id, vm_id, dial_id, flush_inflight? \\ true) do
     SessionStore.adopt_state(state.session_store, session.session_id, :running)
     SessionStore.adopt_residency(state.session_store, session.session_id, node_id, vm_id)
 
@@ -5183,7 +5183,7 @@ defmodule Embervm.SessionManager do
         state
 
       [] ->
-        extra_opts = adoption_flush_opts(state, session)
+        extra_opts = if flush_inflight?, do: adoption_flush_opts(state, session), else: []
         {start_result, state} =
           start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id, extra_opts)
 
