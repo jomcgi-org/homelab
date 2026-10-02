@@ -121,14 +121,19 @@ def turn_wait_terminal(session: Session, session_id: int, after_seq: int) -> boo
     row = session.get(AgentSession, session_id)
     if row is None:
         return True
-    if (
-        session.exec(
-            select(PendingMessage.id).where(
-                PendingMessage.session_id == session_id, PendingMessage.seq > after_seq
-            )
-        ).first()
-        is not None
-    ):
+    pending = select(PendingMessage.id).where(
+        PendingMessage.session_id == session_id, PendingMessage.seq > after_seq
+    )
+    if row.status in {"failed", "cancelled"}:
+        # The dispatcher never claims for these sessions, so a row that was
+        # never attempted (reservation review cancels a reserved permit and
+        # keeps the row) can no longer produce a turn. Attempted rows may
+        # still be in flight.
+        pending = pending.where(
+            (PendingMessage.claimed_by_replica.is_not(None))
+            | (PendingMessage.dispatch_count > 0)
+        )
+    if session.exec(pending).first() is not None:
         return False
     if (
         session.exec(

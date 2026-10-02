@@ -246,3 +246,57 @@ def test_real_disabled_drain_cycle_preserves_checkpoint_baseline(
         step["function_name"] for step in DBOS.list_workflow_steps(replay.workflow_id)
     ] == baseline, "FACTORY.md: gate checkpoint sequence changes with DBOS.patch"
     assert calls == Counter(quota=1, settings=2)
+
+
+def test_pre_deploy_kg_wait_over_900_seconds_replays_with_pinned_timeout(
+    real_dbos, monkeypatch
+):
+    global _STEP_LIST
+    effects = Counter()
+    monkeypatch.setattr(workflows, "POLL_INTERVAL_SECONDS", 1)
+
+    @DBOS.step()
+    def wait_clock():
+        effects["clock"] += 1
+        return (
+            "2026-10-02T00:00:00+00:00"
+            if effects["clock"] == 1
+            else "2026-10-02T00:16:40+00:00"
+        )
+
+    @DBOS.step()
+    def wait_poll(session_id, after_seq):
+        effects["poll"] += 1
+        return (
+            {"seq": 1, "terminal_reason": "completed"} if effects["poll"] > 1 else None
+        )
+
+    @DBOS.step()
+    def wait_terminal(session_id, after_seq):
+        return False
+
+    monkeypatch.setattr(workflows, "observe_clock", wait_clock)
+    monkeypatch.setattr(workflows, "poll_turn", wait_poll)
+    monkeypatch.setattr(workflows, "session_turn_wait_terminal", wait_terminal)
+    # Settings pinned before kg_turn_timeout_seconds existed.
+    legacy_settings = {"turn_timeout_seconds": 43800}
+
+    @DBOS.workflow()
+    def kg_wait():
+        if _STEP_LIST == "old":
+            # Pre-change history: a 1000 second observed wait under 43800.
+            workflows.observe_clock()
+            workflows.poll_turn(101, 0)
+            workflows.observe_clock()
+            DBOS.sleep(1)
+            return workflows.poll_turn(101, 0)
+        timeout = drainer._turn_timeout(legacy_settings, drainer.KG_JOB_KIND)
+        return workflows._await_turn(101, 0, timeout)
+
+    old = DBOS.start_workflow(kg_wait)
+    assert _result(old)["terminal_reason"] == "completed"
+    _STEP_LIST = "new"
+    replay = DBOS.fork_workflow(old.workflow_id, start_step=6)
+    assert _result(replay)["terminal_reason"] == "completed"
+    assert replay.get_status().status == "SUCCESS"
+    assert effects["clock"] == 2 and effects["poll"] == 2

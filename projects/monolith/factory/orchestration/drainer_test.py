@@ -899,14 +899,14 @@ def test_kg_timeout_uses_pinned_override_or_legacy_fallback(monkeypatch, kg_time
         settings=settings,
         await_turn=lambda *args: waits.append(args),
     )
-    timeout = 900 if kg_timeout is None else kg_timeout
+    timeout = SETTINGS["turn_timeout_seconds"] if kg_timeout is None else kg_timeout
     assert waits == [(101, 0, timeout)]
     assert notifications == [("kg:raw-1", f"turn timed out after {timeout} seconds")]
     # The larger mixed-kind lease also covers start backoff, two KG turns,
     # applying output and confirmed cleanup, without a second job owner.
     assert (
         claims[0][0]
-        == max(settings["turn_timeout_seconds"], 2 * timeout)
+        == max(settings["turn_timeout_seconds"], 2 * (kg_timeout or 900))
         + drainer.CLAIM_TTL_MARGIN_SECONDS
     )
 
