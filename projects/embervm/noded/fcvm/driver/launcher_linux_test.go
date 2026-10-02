@@ -94,11 +94,17 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 		"stderr line": "stderr",
 		"stderr tail": "stderr",
 	}
-	if len(records) != len(want) {
-		t.Fatalf("Firecracker records = %d, want %d: %s", len(records), len(want), output.Bytes())
+	if len(records) != len(want)+1 {
+		t.Fatalf("records = %d, want %d including exit event: %s", len(records), len(want)+1, output.Bytes())
 	}
 	for _, record := range records {
 		message, _ := record["msg"].(string)
+		if message == "driver: vmm exited" {
+			if record["vm"] != "vm-test" || record["workload"] != "test" || record["reason"] != "host_requested" {
+				t.Errorf("unexpected exit event: %#v", record)
+			}
+			continue
+		}
 		assertTaggedRecord(t, record, message, "firecracker", "test", "vm")
 		if got := record["stream"]; got != want[message] {
 			t.Errorf("record stream = %#v, want %q: %#v", got, want[message], record)
@@ -152,8 +158,8 @@ func TestExecLauncherReadinessFailureFlushesFinalOutput(t *testing.T) {
 		t.Fatal("Launch should fail when the API socket never appears")
 	}
 	records := decodeLogRecords(t, output.Bytes())
-	if len(records) != 4 {
-		t.Fatalf("records = %d, want 4 after readiness cleanup: %s", len(records), output.Bytes())
+	if len(records) != 5 {
+		t.Fatalf("records = %d, want 5 including exit event after readiness cleanup: %s", len(records), output.Bytes())
 	}
 }
 
@@ -218,7 +224,9 @@ func TestExecLauncherHelperProcess(t *testing.T) {
 	_, _ = os.Stdout.Write([]byte("stdout line\nstdout tail"))
 	_, _ = os.Stderr.Write([]byte("stderr line\nstderr tail"))
 	if os.Getenv("EMBER_JAILER_NO_SOCKET") == "1" {
-		select {}
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 	args := os.Args
 	base := argumentValue(args, "--chroot-base-dir")
@@ -236,7 +244,9 @@ func TestExecLauncherHelperProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	select {}
+	for {
+		time.Sleep(time.Hour)
+	}
 }
 
 func argumentValue(args []string, name string) string {

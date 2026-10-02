@@ -32,6 +32,9 @@ type LaunchSpec struct {
 	MemMib     int
 	Resources  []JailResource
 	DirectExec bool
+	// SerialPath and OnExit are host-owned observation facts, never guest identity.
+	SerialPath string
+	OnExit     func(ExitReason)
 }
 
 // ExecLauncher launches real Firecracker processes. It is the production
@@ -78,24 +81,43 @@ var productionLaunchState = struct {
 }{usedUIDs: make(map[int]bool), cgroups: newCgroupManager()}
 
 type execProcess struct {
-	cmd       *exec.Cmd
-	vmID      string
-	cgroup    *vmCgroup
-	jail      *Jail
-	releaseID func()
-	stdout    *tagWriter
-	stderr    *tagWriter
-	waitOnce  sync.Once
-	waitErr   error
-	flushOnce sync.Once
-	cleanOnce sync.Once
+	cmd           *exec.Cmd
+	vmID          string
+	cgroup        exitCgroup
+	jail          *Jail
+	releaseID     func()
+	stdout        *tagWriter
+	stderr        *tagWriter
+	waitOnce      sync.Once
+	waitErr       error
+	flushOnce     sync.Once
+	cleanOnce     sync.Once
+	logger        *slog.Logger
+	workload      string
+	serialPath    string
+	onExit        func(ExitReason)
+	exitMu        sync.Mutex
+	exited        bool
+	hostRequested bool
+	// Narrow process seams let lifecycle tests avoid real VMMs and cgroups.
+	killProcess func() error
+	waitProcess func() error
 }
 
 func (p *execProcess) Kill() error {
-	if p.cmd.Process == nil {
+	if p.killProcess == nil && p.cmd.Process == nil {
 		return nil
 	}
-	killErr := p.cmd.Process.Kill()
+	p.exitMu.Lock()
+	kill := p.killProcess
+	if kill == nil {
+		kill = p.cmd.Process.Kill
+	}
+	killErr := kill()
+	if killErr == nil && !p.exited {
+		p.hostRequested = true
+	}
+	p.exitMu.Unlock()
 	// Always reap the child, even when Kill reports it already exited (a crashed
 	// or panicked VM): without a Wait the dead process lingers as a zombie. Wait
 	// is the sole reaper, so it is safe to call once here.
@@ -115,10 +137,21 @@ func (p *execProcess) Wait() error {
 
 func (p *execProcess) wait() error {
 	p.waitOnce.Do(func() {
-		p.waitErr = p.cmd.Wait()
+		wait := p.waitProcess
+		if wait == nil {
+			wait = p.cmd.Wait
+		}
+		p.waitErr = wait()
+		p.exitMu.Lock()
+		p.exited = true
+		p.exitMu.Unlock()
 		p.flushOnce.Do(func() {
-			p.stdout.Flush()
-			p.stderr.Flush()
+			if p.stdout != nil {
+				p.stdout.Flush()
+			}
+			if p.stderr != nil {
+				p.stderr.Flush()
+			}
 		})
 	})
 	return p.waitErr
@@ -126,16 +159,13 @@ func (p *execProcess) wait() error {
 
 func (p *execProcess) cleanup() {
 	p.cleanOnce.Do(func() {
+		p.observeExit()
 		if p.jail != nil {
 			if err := p.jail.Cleanup(); err != nil {
 				slog.Warn("driver: remove firecracker jail", "vm", p.vmID, "jail", p.jail.Dir, "err", err)
 			}
 		}
 		if p.cgroup != nil {
-			if killed, err := p.cgroup.OOMKilled(); err == nil && killed {
-				slog.Warn("driver: firecracker exited after cgroup OOM kill",
-					"vm", p.vmID, "cgroup", p.cgroup.Path())
-			}
 			if err := p.cgroup.Remove(); err != nil {
 				slog.Warn("driver: remove firecracker cgroup",
 					"vm", p.vmID, "cgroup", p.cgroup.Path(), "err", err)
@@ -264,9 +294,17 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 		return nil, fmt.Errorf("driver: start firecracker: %w", err)
 	}
 	proc := &execProcess{
-		cmd: cmd, vmID: spec.VMID, cgroup: cg, jail: jail, releaseID: releaseID,
+		cmd: cmd, vmID: spec.VMID, jail: jail, releaseID: releaseID,
 		stdout: stdout, stderr: stderr,
+		logger: l.Logger, workload: spec.Workload, serialPath: spec.SerialPath, onExit: spec.OnExit,
 	}
+	if cg != nil {
+		proc.cgroup = cg
+	}
+	// Observe unexpected death immediately, not only when Release eventually
+	// runs. Wait is cached and remains the sole reaper. This watcher changes no
+	// driver ownership, admission or Release error semantics.
+	go func() { _ = proc.Wait() }()
 
 	if l.OOMScoreAdj > 0 {
 		if err := setOOMScoreAdj(cmd.Process.Pid, l.OOMScoreAdj); err != nil {

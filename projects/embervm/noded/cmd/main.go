@@ -105,16 +105,18 @@ func run(logger *slog.Logger) error {
 	// The shared restore driver serves Prime/Assign/Destroy: it only ever restores
 	// from a base snapshot, so its rootfs/sizing are irrelevant (the snapshot has
 	// them baked). Its in-memory live map is the authority for LiveCount.
-	restoreDriver := newDriver(cfg, logger, driverExtras{})
+	exitCounters := &driver.VMMExitCounters{}
+	restoreDriver := newDriver(cfg, logger, driverExtras{exitCounters: exitCounters})
 
 	// Per-build drivers cold-boot one image's rootfs at its sizing, then snapshot;
 	// they are discarded after the base is written (the base lives on disk).
 	newBuild := func(spec server.BuildDriverSpec) server.BuildDriver {
 		return newDriver(cfg, logger, driverExtras{
-			rootfsPath:  spec.RootfsPath,
-			harnessInit: spec.HarnessInit,
-			vcpus:       spec.VCPUs,
-			memMib:      spec.MemMib,
+			rootfsPath:   spec.RootfsPath,
+			harnessInit:  spec.HarnessInit,
+			vcpus:        spec.VCPUs,
+			memMib:       spec.MemMib,
+			exitCounters: exitCounters,
 		})
 	}
 
@@ -449,10 +451,11 @@ func setupTracing(ctx context.Context, logger *slog.Logger) func() {
 // driverExtras carries the per-driver cold-boot fields (empty for the shared
 // restore driver, populated for a build driver).
 type driverExtras struct {
-	rootfsPath  string
-	harnessInit string
-	vcpus       int
-	memMib      int
+	rootfsPath   string
+	harnessInit  string
+	vcpus        int
+	memMib       int
+	exitCounters *driver.VMMExitCounters
 }
 
 // newDriver builds an fcvm driver bound to the node's substrate paths. Cold-boot
@@ -460,6 +463,7 @@ type driverExtras struct {
 // restore driver leaves them zero because restore ignores them.
 func newDriver(cfg config.Config, logger *slog.Logger, x driverExtras) *driver.Driver {
 	return driver.New(driver.Config{
+		ExitCounters:                x.exitCounters,
 		KernelImagePath:             cfg.KernelImagePath,
 		KernelBootArgs:              cfg.KernelBootArgs,
 		RootfsPath:                  x.rootfsPath,
