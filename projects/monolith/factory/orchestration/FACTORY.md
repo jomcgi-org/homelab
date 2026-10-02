@@ -1515,7 +1515,8 @@ uncertain in this shape settles on its task's next reconciler tick.
 #### Bound zero-turn settlement runbook
 
 `FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED` stages the post-guest proof from
-#6288 and defaults to false in both chart defaults and the GKE overlay. It is
+#6288 and defaults to false in both chart defaults and the GKE overlay. Its
+live validation is tracked on #6559. It is
 not a general uncertain-attempt sweeper. The owning DBOS workflow must already
 be terminal, and the exact factory run and start must still be active and
 unpriced. The session must still own one bound guest, zero `AgentTurn` rows, one
@@ -1566,8 +1567,77 @@ removes the current binding or record and cannot establish that no guest ever
 ran. Do not apply the SQL-shaped snippets from incident notes directly to
 production. They omit the run/start consistency, receipt, ownership and race
 fences above. If staged supervision cannot establish every prerequisite, leave
-all rows intact and use the issue's live-validation checklist rather than a
+all rows intact and use the live-validation checklist on #6559 rather than a
 blind database edit.
+
+##### Live validation evidence
+
+Each #6559 checklist item needs read-only evidence from a disposable factory
+node with the switch on for that node only. Record the task, node key, attempt,
+local session id and guest id first. Before and after each step, record the
+exact `AgentSession` (`status`, `ember_session_id`, `guest_cleanup_id`), its
+`AgentTurn` and `PendingMessage` rows, the `AgentCapacityReservation` permit
+(`state`, `outcome`), the node run and `FactoryStart` (`status`, `cost_usd`), and
+the task's supervision audits (`stop_events` in
+`factory_controls.task_snapshot`). Never destroy the guest before collecting the
+proof, never apply SQL to production, and roll back by setting
+`agents.sessions.boundZeroTurnSettlementEnabled` back to false in
+`projects/monolith/deploy/values-gke.yaml`. Tests below are in
+`factory_conductor_test.py` unless noted; they are the hermetic cover for the
+same case, not a substitute for the live record.
+
+1. Strictly longer than `turn_timeout_seconds`. Record the node's pinned
+   `turn_timeout_seconds`, every `bound_zero_turn_observation` (its `evidence`,
+   `first_observed_at`, `observed_at`) and the `bound_zero_turn_fence`
+   (`held_seconds`). The span from the first to the last `observed_at` before
+   the fence must exceed that node's `turn_timeout_seconds`. Test:
+   `test_bound_zero_turn_settlement_waits_strictly_past_timeout_and_is_atomic`.
+2. Slow invoke, newer `turn_seq` or invoke timestamp, replacement generation,
+   draining. Record the sampled `SessionView` fields (`session_id`, `state`,
+   `turn_seq`, `generation`, `invoke_started_at`, `last_invoke_at`,
+   `updated_at`, `node.health`, `node.draining`) on each tick, the
+   `bound_zero_turn_reset` reason, and confirm no fence, no new `AgentTurn`, one
+   dispatch and the permit still `running`. Tests:
+   `test_bound_zero_turn_slow_live_invoke_never_starts_proof`,
+   `test_bound_zero_turn_progress_or_identity_change_restarts_proof`,
+   `test_bound_zero_turn_claim_heartbeat_restarts_window_and_fence_stops_refresh`.
+3. Only sustained 404/410 matures. For a timeout, 403, 5xx, malformed payload
+   and wrong session id, record the `bound_zero_turn_reset` reason, that every
+   row above is unchanged, and that a later healthy tick opens a new
+   observation run. For absence, record at least three
+   `authoritative_absence` observations, no two more than ten minutes apart,
+   spanning more than `turn_timeout_seconds`. Tests:
+   `test_bound_zero_turn_transient_lookup_failures_retain_every_row`,
+   `test_bound_zero_turn_live_proof_restarts_after_transient_lookup_failure`,
+   `test_bound_zero_turn_lookup_failure_breaks_the_absence_window`,
+   `test_bound_zero_turn_absence_gap_restarts_sampling`, and the
+   `test_get_session_*` status mapping in `execution/transport_test.py`.
+4. Late synchronous delivery and late receipt callback. Record the
+   `AgentResultReceipt` and `AgentTurn` rows and the fence before and after each
+   late write. A result committed before the fence must settle normally; after
+   the fence, no turn is written and permit state is unchanged. Tests:
+   `test_committed_synchronous_result_wins_before_bound_zero_turn_fence`,
+   `test_committed_receipt_wins_before_bound_zero_turn_fence`,
+   `test_bound_zero_turn_fence_rejects_late_result_and_release`,
+   `test_bound_zero_turn_fence_rejects_late_receipt_callback`,
+   `test_bound_zero_turn_remote_progress_reopens_fenced_receipt`.
+5. Atomic settlement. Record one `stop_settled` audit, the run, start and
+   session `failed`, no `PendingMessage`, the permit `settled` with outcome
+   `delivery_error`, `cost_usd` null on both run and start, and the task's
+   attempts and budget unchanged apart from that attempt. Tests:
+   `test_bound_zero_turn_settlement_waits_strictly_past_timeout_and_is_atomic`,
+   `test_bound_zero_turn_settlement_revalidates_local_ownership`.
+6. Exact-guest release and no duplicates. Record the `bound_zero_turn_request`
+   count (at most two) and its `precondition`, the cleared
+   `ember_session_id` and `guest_cleanup_id` on only that session, and that
+   later ticks add no audit, request, notification or retry. Any
+   `intervention_required` audit (`bound_zero_turn_destroy_exhausted`,
+   `bound_zero_turn_fenced_lookup_unavailable`) appears once. Tests:
+   `test_bound_zero_turn_destroy_requests_are_durably_capped`,
+   `test_bound_zero_turn_fenced_lookup_outage_raises_one_liveness_alarm`,
+   `test_bound_zero_turn_completion_refusal_releases_fence`,
+   `test_bound_zero_turn_release_can_mature_and_settle_a_new_fence`,
+   `test_bound_zero_turn_ticks_after_settlement_add_no_side_effects`.
 
 The in-process operator repair is
 `factory.orchestration.factory_controls.settle_lost_attempt(task_id, node_key,
