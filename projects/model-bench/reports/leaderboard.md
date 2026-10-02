@@ -7,6 +7,7 @@ Cleared the easy+standard viability floor (at most one miss). Ranked by hard-tas
 | Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok | errored |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | openai/gpt-6-luna | 9/9 | 56747 | 7.1 | 94.7 | 0.0077 | 0.0082 | 1.00 | 0 |
+| anthropic/claude-sonnet-5.5 | 8/8 | 35136 | 3.2 | 28.6 | 0.1062 | 0.1133 | 1.00 | 1 |
 | qwen/qwen3.8-flash-next | 9/9 | 141817 | 11.4 | 301.3 | 0.0150 | 0.0150 | 1.00 | 1 |
 | qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 | 0 |
 | qwen/qwen3-coder-next | 7/7 | 217279 | 17.3 | 44.9 | 0.0279 | 0.0279 | 1.00 | 0 |
@@ -37,6 +38,7 @@ These cells are excluded from rates because they failed before grading due to a 
 
 | Model | task_id |
 | --- | --- |
+| anthropic/claude-sonnet-5.5 | research-adr-writeback-01 |
 | cohere/north-mini-code:free | campsites-region-rollup-01 |
 | cohere/north-mini-code:free | fc-warmpool-daemonset-01 |
 | cohere/north-mini-code:free | flights-module-01 |
@@ -88,6 +90,7 @@ No qualifying budget candidates yet.
 | z-ai/glm-4.7 | config-plumbing | 0.50 | 0.0225 | can't | no |
 | qwen/qwen3.6-27b | config-plumbing | 0.00 | 0.0295 | can't | no |
 | z-ai/glm-5.2 | config-plumbing | 0.50 | 0.0374 | can't | no |
+| anthropic/claude-sonnet-5.5 | config-plumbing | 0.50 | 0.1188 | can't | no |
 | tencent/hy3:free | free-text | 1.00 | 0.0000 | one-shots | no |
 | qwen/qwen3.8-flash-next | free-text | 1.00 | 0.0000 | one-shots | no |
 | qwen/qwen3.8-27b | free-text | 1.00 | 0.0000 | one-shots | no |
@@ -109,6 +112,7 @@ No qualifying budget candidates yet.
 | z-ai/glm-5.2 | free-text | 1.00 | 0.0019 | one-shots | no |
 | qwen/qwen3.7-plus | free-text | 1.00 | 0.0019 | one-shots | no |
 | qwen/qwen3.6-35b-a3b | free-text | 1.00 | 0.0020 | one-shots | no |
+| anthropic/claude-sonnet-5.5 | free-text | 1.00 | 0.0021 | one-shots | no |
 | qwen/qwen3.6-27b | free-text | 1.00 | 0.0050 | one-shots | no |
 
 ## Anchors
