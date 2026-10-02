@@ -307,6 +307,8 @@ def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
         "qualified": False,
         "hard_n": 0,
         "hard_pass": 0,
+        "frontier_n": 0,
+        "frontier_score": None,
         "mean_tokens": 0.0,
         "mean_turns": 0.0,
         "mean_latency_ms": 0.0,
@@ -373,3 +375,19 @@ def test_report_reprices_cells_for_models_with_a_fixed_rate(tmp_path):
     assert row["cost_usd"] == pytest.approx(0.2)
     assert row["tasks"][0]["cost_usd"] == pytest.approx(0.2)
     assert row["self_hosted"] is True
+
+
+def test_aggregate_agentic_group_scores_frontier_tasks():
+    graded = _agentic_cell("mut", "m", False, 3, 100, True)
+    graded.attempts[0].score = 0.5
+    cells = [
+        graded,
+        _agentic_cell("bin", "m", True, 3, 100, True),
+        _agentic_cell("hard-one", "m", True, 3, 100, True),
+    ]
+    tier_of = {"mut": "frontier", "bin": "frontier", "hard-one": "hard"}
+    stats = _aggregate_agentic_group(cells, tier_of)
+    # Graded score where present, 1/0 for a binary verifier; hard is unaffected.
+    assert stats["frontier_n"] == 2
+    assert stats["frontier_score"] == 0.75
+    assert stats["hard_n"] == 1 and stats["hard_pass"] == 1

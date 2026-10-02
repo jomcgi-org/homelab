@@ -93,14 +93,19 @@ class TaskSpec(BaseModel):
     task_class: TaskClass = Field(alias="class")
     # Difficulty tier. easy + standard form the qualification FLOOR (a model must pass
     # them to be a viable candidate); hard tasks differentiate the qualified. See
-    # TIER_WEIGHTS / the gate scoring in the report.
-    tier: Literal["easy", "standard", "hard"] = "standard"
+    # TIER_WEIGHTS / the gate scoring in the report. frontier sits above hard: a task
+    # admitted there by `bench calibrate` (Haiku fails, Sonnet partial, Opus passes)
+    # and scored by mean graded score rather than pass count.
+    tier: Literal["easy", "standard", "hard", "frontier"] = "standard"
     mode: Literal["single-shot", "agentic"] = "single-shot"
     prompt: str
     target_files: list[str] = Field(default_factory=list)
     verifier: VerifierSpec
     agent: AgentConfig = Field(default_factory=AgentConfig)
     source_commit: str | None = None
+    # Anchor-ladder result recorded by `bench calibrate --write`. Provenance only: it
+    # is not part of any cell key, so recording it never invalidates cached cells.
+    calibration: dict[str, Any] | None = None
 
 
 class Attempt(BaseModel):

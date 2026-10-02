@@ -120,13 +120,28 @@ python3 -m bench report                       # regenerate reports/leaderboard.m
 python3 -m bench list                         # models and their status/role
 python3 -m bench drop <id> --reason "..."     # retire a model in models.yaml
 python3 -m bench prune                        # delete result cells for retired models
+python3 -m bench calibrate --task chunker-mutation-01 --reps 3  # anchor ladder
+python3 -m bench calibrate --task <id> --from-json scores.json --write  # record scores
 ```
 
 The leaderboard uses a **gate model**. Each task carries a difficulty `tier`
 (`easy` / `standard` / `hard`): easy + standard form the qualification **floor**. A model
 may miss at most one floor task and stay viable (`FLOOR_MISS_TOLERANCE` in `bench/cli.py`,
 so a single flaky miss does not exclude it); missing more disqualifies it. The `hard` tasks
-differentiate the qualified. Among the qualified, ranking is hard-task pass, then cost.
+differentiate the qualified. Among the qualified, ranking is hard-task pass, then
+frontier score, then cost.
+
+`frontier` sits above `hard`. A task is admitted there by `bench calibrate`, which runs
+the Claude anchors (Haiku 4.5, Sonnet 5.5, Opus 5.5 via Claude Code, pinned with
+`--model`) several times each and checks the means against a ladder: Haiku <= 0.4,
+Sonnet in [0.35, 0.8], Opus >= 0.85, strictly increasing (`DEFAULT_LADDER` in
+`bench/calibrate.py`; a task may override any bound under `calibration.ladder`). Frontier
+tasks are graded on a scale, so the leaderboard shows a model's mean frontier score
+(graded `score`, or 1/0 for a binary verifier) rather than a pass count. `--write`
+records the result in the task's `calibration:` block. That block is provenance only
+and is not part of any cell key, so writing it never invalidates cached cells.
+`--from-json` records scores produced elsewhere (e.g. subagent runs graded by hand) in
+the form `{"haiku": [0.3, 0.5], "sonnet": [...], "opus": [...]}`.
 
 It reads on two lenses. The **self-host** lens (hard-task pass, median tokens/turns,
 tool-use reliability) is model-intrinsic and carries over to local hardware. The **cloud**

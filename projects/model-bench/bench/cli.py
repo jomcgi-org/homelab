@@ -216,6 +216,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--models", default="models.yaml")
 
     # snapshot
+    # calibrate
+    p_cal = sub.add_parser(
+        "calibrate",
+        help="Run the Haiku/Sonnet/Opus anchor ladder on a task (frontier admission)",
+    )
+    p_cal.add_argument("--task", required=True, help="Task id")
+    p_cal.add_argument("--tasks", default="tasks", help="Path to tasks directory")
+    p_cal.add_argument("--registry", default="models.yaml", help="Model registry")
+    p_cal.add_argument("--reps", type=int, default=3, help="Runs per anchor")
+    p_cal.add_argument(
+        "--models",
+        default="haiku,sonnet,opus",
+        help="Comma-separated anchors (haiku, sonnet, opus or registry ids)",
+    )
+    p_cal.add_argument("--jobs", type=int, default=3, help="Parallel anchor runs")
+    p_cal.add_argument(
+        "--from-json",
+        help='Record scores produced elsewhere ({"haiku": [..], ...}); no CLI runs',
+    )
+    p_cal.add_argument(
+        "--write", action="store_true", help="Record the result in task.yaml"
+    )
+
     p_snap = sub.add_parser(
         "snapshot",
         help="Materialize task fixtures from a pinned git commit (real repo state)",
@@ -593,6 +616,14 @@ async def _run(args) -> None:
         await client.aclose()
 
 
+def _cell_score(cell: ResultCell) -> float:
+    """First-attempt graded score, falling back to 1/0 for binary verifiers."""
+    score = cell.first_attempt_score
+    if score is not None:
+        return score
+    return 1.0 if cell.first_attempt_passed else 0.0
+
+
 def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -> dict:
     """Aggregate graded agentic cells while accounting for harness errors."""
     from statistics import mean
@@ -610,6 +641,8 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
             "qualified": False,
             "hard_n": 0,
             "hard_pass": 0,
+            "frontier_n": 0,
+            "frontier_score": None,
             "mean_tokens": 0.0,
             "mean_turns": 0.0,
             "mean_latency_ms": 0.0,
@@ -625,6 +658,7 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
     cost = sum(cell.cost_usd for cell in graded) / n
     floor = [cell for cell in graded if tier_of.get(cell.task_id) in FLOOR_TIERS]
     hard = [cell for cell in graded if tier_of.get(cell.task_id) == "hard"]
+    frontier = [cell for cell in graded if tier_of.get(cell.task_id) == "frontier"]
     floor_failed = sorted(
         cell.task_id for cell in floor if not cell.first_attempt_passed
     )
@@ -641,6 +675,12 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
         "qualified": bool(floor) and len(floor_failed) <= FLOOR_MISS_TOLERANCE,
         "hard_n": len(hard),
         "hard_pass": sum(1 for cell in hard if cell.first_attempt_passed),
+        # Frontier tasks are graded on a scale, so they report a mean score (pass/fail
+        # counts as 1/0 for a binary verifier) rather than a pass count.
+        "frontier_n": len(frontier),
+        "frontier_score": (
+            float(mean([_cell_score(cell) for cell in frontier])) if frontier else None
+        ),
         # Mean (not median) per task: the tasks vary ~5x in size, and a model can
         # blow up on one hard task (e.g. a greenfield build) while looking tidy on
         # the median. The mean keeps that tail visible, and it matches how `cost`
@@ -982,6 +1022,12 @@ def _write_leaderboard_json(
             "floor_failed": s["floor_failed"],
             "hard_pass": s["hard_pass"],
             "hard_n": s["hard_n"],
+            "frontier_n": s.get("frontier_n", 0),
+            "frontier_score": (
+                round(s["frontier_score"], 4)
+                if s.get("frontier_score") is not None
+                else None
+            ),
             "mean_tokens": int(s["mean_tokens"]),
             "mean_turns": round(s["mean_turns"], 2),
             "mean_latency_ms": int(s["mean_latency_ms"]),
@@ -1006,6 +1052,7 @@ def _write_leaderboard_json(
         key=lambda r: (
             not r["qualified"],
             -r["hard_pass"],
+            -(r["frontier_score"] or 0.0),
             r["cost_usd"],
             r["mean_latency_ms"],
         )
@@ -1191,6 +1238,45 @@ def _snapshot(args) -> None:
         )
 
 
+def _calibrate(args) -> None:
+    """Run (or record) the anchor ladder for one task and print the verdict."""
+    from bench import calibrate
+
+    task_file = Path(args.tasks) / args.task / "task.yaml"
+    if not task_file.exists():
+        raise SystemExit(f"no task.yaml at {task_file}")
+    task = TaskSpec.model_validate(_load_yaml_mapping(task_file))
+    ladder = (task.calibration or {}).get("ladder")
+    if args.from_json:
+        scores = calibrate.load_scores_json(Path(args.from_json))
+        source = f"external ({Path(args.from_json).name})"
+    else:
+        fixture_dir = Path(args.tasks) / args.task / "fixture"
+        if not fixture_dir.exists():
+            raise SystemExit(
+                f"no fixture at {fixture_dir}; run `python3 -m bench snapshot` first"
+            )
+        names = [n.strip() for n in args.models.split(",") if n.strip()]
+        anchor_specs = calibrate.resolve_anchors(
+            load_registry(Path(args.registry)), names
+        )
+        scores = calibrate.run_ladder(
+            task, fixture_dir, anchor_specs, reps=args.reps, jobs=args.jobs
+        )
+        source = f"claude-code anchors x{args.reps}"
+    summary = calibrate.summarize(scores)
+    admitted, reasons = calibrate.check_ladder(summary, ladder)
+    print(calibrate.render(summary, admitted, reasons))
+    if args.write:
+        calibrate.write_calibration(
+            task_file,
+            calibrate.calibration_record(
+                summary, admitted, reasons, source=source, ladder=ladder
+            ),
+        )
+        print(f"Recorded calibration in {task_file}")
+
+
 def _list(args) -> None:
     """Print each model: id, status, role."""
     reg = load_registry(Path(args.models))
@@ -1216,5 +1302,7 @@ def main(argv=None) -> None:
         _list(args)
     elif args.command == "snapshot":
         _snapshot(args)
+    elif args.command == "calibrate":
+        _calibrate(args)
     else:
         parser.print_help()

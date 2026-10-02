@@ -3,14 +3,40 @@ models:
   # (provider: claude-code), not OpenRouter: renting Claude per-token to produce a
   # "cloud cost" row is spend that would never actually happen, so anchors are a free
   # capability ceiling (pass + wall-time), not a ranked, cost-bearing competitor.
+  # The Haiku/Sonnet/Opus ladder is also what `bench calibrate` runs to admit a task
+  # to the frontier tier. api_model is the CLI `--model` value.
+  - id: anthropic/claude-haiku-4.5
+    display_name: claude-haiku-4.5
+    api_model: claude-haiku-4-5-20251001
+    role: anchor
+    provider: claude-code
+    status: active
+  # Anchor twin of the OpenRouter anthropic/claude-sonnet-5.5 row below: same model,
+  # run through Claude Code instead of the bench tool loop, so it needs its own id.
+  - id: anthropic/claude-sonnet-5.5-cc
+    display_name: claude-sonnet-5.5 (cc)
+    api_model: claude-sonnet-5-5
+    role: anchor
+    provider: claude-code
+    status: active
+  - id: anthropic/claude-opus-5.5
+    display_name: claude-opus-5.5
+    api_model: claude-opus-5-5
+    role: anchor
+    provider: claude-code
+    status: active
   - id: anthropic/claude-opus-4.8
     role: anchor
     provider: claude-code
-    status: active
+    status: retired
+    retired_reason: "ran the claude CLI default model, not opus-4.8: anchors were not pinned with --model before #6704"
+    retired_date: "2026-10-02"
   - id: anthropic/claude-sonnet-4.6
     role: anchor
     provider: claude-code
-    status: active
+    status: retired
+    retired_reason: "ran the claude CLI default model, not sonnet-4.6: anchors were not pinned with --model before #6704"
+    retired_date: "2026-10-02"
   - id: qwen/qwen3.6-27b
     status: active
   # In-cluster llama.cpp Qwen3.8-27B (Unsloth Q4_K_M on node-4). Reach it with
