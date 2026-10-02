@@ -455,6 +455,10 @@ def test_audit_mode_has_no_raw_id_or_correction_turn(monkeypatch, stream, cost):
     prompts = []
     applied = []
     monkeypatch.setattr("knowledge.api.audit_enabled", lambda: True)
+    feedback = []
+    monkeypatch.setattr(
+        drainer, "file_kg_audit_process_issues", lambda: feedback.append("file")
+    )
     deferred = []
     monkeypatch.setattr(
         drainer, "defer_kg_audit", lambda *args, **kwargs: deferred.append(args) or None
@@ -505,7 +509,16 @@ def test_audit_mode_has_no_raw_id_or_correction_turn(monkeypatch, stream, cost):
     ]
     assert bool(deferred) == (stream == "scheduled")
     assert bills == [("kg-audit", prompts[0], cost)]
+    assert feedback == (["file"] if stream == "scheduled" else [])
     assert completions == [("kg-audit", "ok", "audit completed", False)]
+
+
+def test_audit_feedback_failure_is_nonfatal(monkeypatch):
+    def fail():
+        raise RuntimeError("GitHub unavailable")
+
+    monkeypatch.setattr("knowledge.api.file_audit_process_issues", fail)
+    assert drainer.file_kg_audit_process_issues.__wrapped__() is None
 
 
 def test_audit_budget_deferral_finishes_interval_without_session(monkeypatch):

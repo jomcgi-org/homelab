@@ -190,6 +190,12 @@ def apply_audit(
     return _apply(session, job_name, payload, result_text)
 
 
+def file_audit_process_issues() -> int:
+    from knowledge.audit_feedback import file_process_issues
+
+    return file_process_issues()
+
+
 def apply_extraction(
     session: Session,
     raw_id: str,

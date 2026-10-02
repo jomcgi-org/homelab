@@ -743,6 +743,16 @@ def apply_kg_extraction(
 
 
 @DBOS.step()
+def file_kg_audit_process_issues() -> None:
+    from knowledge.api import file_audit_process_issues
+
+    try:
+        file_audit_process_issues()
+    except Exception:
+        logger.warning("KG audit process feedback failed", exc_info=True)
+
+
+@DBOS.step()
 def build_kg_correction_prompt(rejected: list[dict]) -> str:
     from knowledge.api import render_correction_prompt
 
@@ -1717,6 +1727,11 @@ def drain_cycle() -> dict:
                         applied = apply_kg_extraction(
                             name, job_payload, result_text, **ownership
                         )
+                        if (
+                            _is_audit(job_payload)
+                            and job_payload.get("stream") == "scheduled"
+                        ):
+                            file_kg_audit_process_issues()
                         if _is_repo_diff(job_payload) or _is_audit(job_payload):
                             summary = applied["summary"]
                         else:
