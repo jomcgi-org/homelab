@@ -739,9 +739,14 @@ A2 and A3 at the modeled observation points; A1 remains outside the results.
   missing-file errors through `RestoreArtifact` without registering a partial
   volume. Those errors establish fail-closed restore behavior, not preservation
   of the last durable copy. Export checks prevent an attached lineage from
-  exporting, but do not make restore and GC atomic. A shared restore/delete
-  fence needs a separate control-plane issue. The destructive gate stays
-  default-off; no live activation or storage redesign is part of this correction.
+  exporting, but do not make restore and GC atomic. Cross-node rejoin (#6663)
+  holds a non-terminal parked row before its restore, so the A3 expiry hold
+  covers it until the deadline, and a fingerprint mismatch or missing store
+  copy fails explicitly before prime. That narrows the rejoin path only; the
+  create-with-`restore_lineage` path is unchanged and no failure mode preserves
+  the last durable copy. A shared restore/delete fence is tracked in #6736. The
+  destructive gate stays default-off; no live activation or storage redesign is
+  part of this correction.
 
 ## Running TLC
 

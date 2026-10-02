@@ -88,9 +88,13 @@ defmodule Embervm.S3WarmthGc do
   absent metadata or a missing payload file, but SessionManager registers the
   non-terminal heir only after its restore worker completes. The GC cannot see
   that in-flight restore in SessionStore. Fail-closed restore errors do not
-  prove preservation of the last durable copy. A shared restore/delete fence
-  needs separate control-plane work before claiming this window safe; this
-  change leaves the destructive gate default-off.
+  prove preservation of the last durable copy. Cross-node rejoin (#6663) holds
+  a non-terminal parked row before its restore, so the parked-expiry hold
+  covers it until the deadline, and a fingerprint mismatch or missing store
+  copy fails explicitly before prime; the create-with-restore_lineage path is
+  unchanged. A shared restore/delete fence is tracked in #6736 and must be
+  decided before claiming this window safe; this change leaves the destructive
+  gate default-off.
 
   Coexistence with the WarmthReaper (#36) is disjoint by construction: this GC
   excludes anything node-reported, the reaper enumerates only what nodes report,
