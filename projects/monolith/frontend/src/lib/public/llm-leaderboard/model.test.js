@@ -4,6 +4,7 @@ import {
   matchPreset,
   money,
   orderedTasks,
+  paretoFrontier,
   parseSelection,
   presetIds,
   providerSlot,
@@ -154,5 +155,30 @@ describe("formatting", () => {
       "$0.045",
       "$1.00",
     ]);
+  });
+});
+
+describe("paretoFrontier", () => {
+  it("keeps only points nothing beats on both axes, left to right", () => {
+    const pts = [
+      { id: "cheap-weak", x: 1, y: 0.5 },
+      { id: "mid", x: 2, y: 0.8 },
+      { id: "dominated", x: 3, y: 0.7 },
+      { id: "best", x: 4, y: 1 },
+      { id: "tie-worse", x: 5, y: 1 },
+    ];
+    expect(paretoFrontier(pts).map((p) => p.id)).toEqual([
+      "cheap-weak",
+      "mid",
+      "best",
+    ]);
+  });
+
+  it("collapses to one point when one model wins outright", () => {
+    const pts = [
+      { id: "free-perfect", x: 0, y: 1 },
+      { id: "paid", x: 1, y: 1 },
+    ];
+    expect(paretoFrontier(pts).map((p) => p.id)).toEqual(["free-perfect"]);
   });
 });

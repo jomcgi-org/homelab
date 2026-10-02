@@ -1,14 +1,23 @@
 <script>
   // Capability against what it costs to get it: hard-task pass on Y, a chosen
   // efficiency metric on X, lower to the left, so the place to be is the top
-  // left (the Artificial Analysis "most attractive quadrant"). The band left of
-  // the cheapest Claude anchor is shaded: a model there matches or undercuts the
-  // ceiling on this metric, which is the question the benchmark exists to ask.
+  // left. Two overlays carry the argument, both after Artificial Analysis:
+  // the Pareto frontier (dotted), the models nothing else beats on both axes
+  // at once; and the attractive corner (green), at least Claude's pass rate
+  // for less than Claude's cost on this axis, which is the question the
+  // benchmark exists to ask.
   //
   // Cost and tokens span two orders of magnitude, so they plot on a log axis.
   // A self-hosted model costs $0, which a log axis cannot place, so $0 gets its
   // own lane left of an axis break rather than being dropped from the plot.
-  import { METRICS, plottable, providerSlot, shortName } from "./model.js";
+  import {
+    METRICS,
+    paretoFrontier,
+    plottable,
+    providerSlot,
+    providersIn,
+    shortName,
+  } from "./model.js";
 
   let { models = [], hot = null, onhover = () => {} } = $props();
 
@@ -18,7 +27,7 @@
 
   const W = 1040;
   const H = 440;
-  const M = { l: 44, r: 16, t: 26, b: 44 };
+  const M = { l: 62, r: 16, t: 26, b: 44 };
   const ZERO_LANE = 46; // px reserved left of the break for $0 points
   const ih = H - M.t - M.b;
 
@@ -102,10 +111,24 @@
     return [1, 2, 5, 10].map((k) => k * mag).find((s) => raw <= s) ?? mag * 10;
   }
 
+  // The attractive corner: left of the cheapest anchor, at or above the
+  // weakest anchor's pass rate.
   const bound = $derived.by(() => {
-    const a = pts.filter((p) => p.anchor && p.x > 0).map((p) => p.x);
-    return a.length ? Math.min(...a) : null;
+    const a = pts.filter((p) => p.anchor && p.x > 0);
+    if (!a.length) return null;
+    return {
+      x: Math.min(...a.map((p) => p.x)),
+      y: Math.min(...a.map((p) => p.y)),
+    };
   });
+
+  // Pareto frontier: no other point has at least the pass rate for at most
+  // the cost with one of them strictly better. Sorted left to right it steps
+  // up, so the dotted line reads as "what the next dollar buys".
+  const frontier = $derived(paretoFrontier(pts));
+  const onFrontier = $derived(new Set(frontier.map((p) => p.id)));
+
+  const legend = $derived(providersIn(pts));
 
   // Greedy label placement: right of the mark, then left, then above, then
   // below; the first spot that hits no placed label or mark wins. A label
@@ -202,6 +225,16 @@
       {/each}
     </div>
 
+    <p class="legend">
+      {#each legend as name}
+        <span
+          ><i class="sw" data-slot={providerSlot(`${name}/`)}></i>{name}</span
+        >
+      {/each}
+      <span><i class="line"></i>Pareto frontier</span>
+      <span><i class="corner"></i>Claude's pass rate, for less</span>
+    </p>
+
     <div class="plot">
       <svg
         viewBox="0 0 {W} {H}"
@@ -209,20 +242,16 @@
         aria-label={`Hard-task pass against ${cfg.unit}`}
         class:hovering={hot}
       >
-        {#if bound != null}
+        {#if bound}
+          <!-- Padded by 9px so a corner that collapses to the 100% line, as it
+               does while the anchors solve every hard task, still reads as a
+               band around that line rather than vanishing. -->
           <rect
             class="zone"
             x={M.l}
-            y={M.t}
-            width={Math.max(0, xs(bound) - M.l)}
-            height={ih}
-          />
-          <line
-            class="zone-edge"
-            x1={xs(bound)}
-            x2={xs(bound)}
-            y1={M.t}
-            y2={M.t + ih}
+            y={M.t - 9}
+            width={Math.max(0, xs(bound.x) - M.l)}
+            height={ys(bound.y) - M.t + 18}
           />
         {/if}
 
@@ -252,6 +281,17 @@
           />
         {/if}
         <line class="axis" x1={M.l} x2={W - M.r} y1={M.t + ih} y2={M.t + ih} />
+        <text
+          class="axis-title"
+          transform={`translate(14 ${M.t + ih / 2}) rotate(-90)`}
+          text-anchor="middle">hard-task pass</text
+        >
+        {#if frontier.length > 1}
+          <polyline
+            class="frontier"
+            points={frontier.map((p) => `${xs(p.x)},${ys(p.y)}`).join(" ")}
+          />
+        {/if}
         <text class="axis-title" x={x0 + iw / 2} y={H - 6} text-anchor="middle"
           >{cfg.unit}{cfg.log ? ", log scale" : ""}</text
         >
@@ -261,6 +301,7 @@
           <g
             data-model={p.id}
             class:hot={hot === p.id}
+            class:pareto={onFrontier.has(p.id)}
             role="presentation"
             onmouseenter={() => onhover(p.id)}
             onmouseleave={() => onhover(null)}
@@ -296,7 +337,7 @@
         {/each}
       </svg>
     </div>
-    <p class="caption">Squares: Claude. Shaded: beats Claude on this axis.</p>
+    <p class="caption">Squares: Claude. Ringed: on the frontier.</p>
   </div>
 </section>
 
@@ -340,12 +381,56 @@
     font-size: 11px;
   }
 
+  /* The attractive corner borrows Artificial Analysis's green, mixed from
+     --ok so it follows the scheme: a tint on the sheet, never a fill that
+     competes with the marks. */
   .zone {
-    fill: var(--band);
+    fill: color-mix(in srgb, var(--ok) 14%, var(--sheet));
   }
 
-  .zone-edge {
-    stroke: var(--stroke);
+  .frontier {
+    fill: none;
+    stroke: var(--ink);
+    stroke-dasharray: 1.5 4;
+    stroke-linecap: round;
+    stroke-width: 1.6;
+  }
+
+  .pareto .mk {
+    stroke: var(--ink);
+    stroke-width: 1.5;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35em 1.2em;
+    margin: 0.8em 0 0;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.68rem;
+  }
+
+  .legend .sw {
+    margin-right: 0.4em;
+  }
+
+  .legend .line {
+    display: inline-block;
+    width: 1.6em;
+    margin-right: 0.4em;
+    border-top: 2px dotted var(--ink);
+    vertical-align: 0.25em;
+  }
+
+  .legend .corner {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.7em;
+    margin-right: 0.4em;
+    background: color-mix(in srgb, var(--ok) 14%, var(--sheet));
+    border: 1px solid var(--stroke);
+    vertical-align: -0.02em;
   }
 
   .hit {
