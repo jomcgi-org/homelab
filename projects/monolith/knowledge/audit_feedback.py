@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from knowledge.audit import audit_enabled, audit_settings
 from knowledge.models import AuditFinding, AuditProcessIssue, AuditRun, Note
+from knowledge.redact import redact_text
 
 _LOGGER = logging.getLogger(__name__)
 _LOCK_KEY = 6721003
@@ -126,17 +127,57 @@ def aggregate_causes(session: Session, since: datetime) -> list[tuple[str, int, 
     )
 
 
+def _publishable_sample() -> object:
+    # Mirror the publication policy (knowledge/publish.py): human holds
+    # (visibility='private' with visibility_verified) are never published.
+    # Rows without a joined note have no visibility to protect and are kept.
+    return or_(
+        Note.id.is_(None),
+        Note.visibility.is_(None),
+        Note.visibility != "private",
+        Note.visibility_verified.is_not(True),
+    )
+
+
 def _body(
     session: Session, cause: str, defects: int, runs: int, since: datetime
 ) -> str:
-    samples = session.exec(
-        select(AuditFinding, AuditRun.prompt_version, Note.title)
+    candidates = session.exec(
+        select(
+            AuditFinding,
+            AuditRun.prompt_version,
+            Note.title,
+            Note.visibility,
+            Note.visibility_verified,
+        )
         .join(AuditRun, AuditFinding.run_id == AuditRun.id)
         .outerjoin(Note, AuditFinding.note_id == Note.note_id)
         .where(*_defects_since(since), AuditFinding.cause == cause)
+        .where(_publishable_sample())
         .order_by(AuditFinding.created_at.desc(), AuditFinding.id.desc())
-        .limit(5)
+        .limit(25)
     ).all()
+    samples = []
+    for row in candidates:
+        finding, prompt, title, visibility, visibility_verified = row
+        # Defense in depth: the SQL predicate above already excludes human
+        # holds, but never publish one even if the join predicate drifts.
+        if visibility == "private" and visibility_verified is True:
+            continue
+        # Never publish secret-shaped prose to the public repo: drop any
+        # sample whose title or rationale trips the shared redactor, the
+        # same gate the publication policy applies before auto-publishing.
+        title_hit = redact_text(title or "")[1] > 0
+        rationale_hit = redact_text(finding.rationale or "")[1] > 0
+        if title_hit or rationale_hit:
+            _LOGGER.warning(
+                "kg audit issue sample skipped note_id=%s reason=redaction_hit",
+                finding.note_id,
+            )
+            continue
+        samples.append((finding, prompt, title))
+        if len(samples) >= 5:
+            break
     lines = [
         f"<!-- kg-audit-cause: {cause} -->",
         "",
