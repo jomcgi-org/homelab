@@ -77,6 +77,7 @@ FX4_EXPECTED_PLAN = {
     "implementer_model": "luna",
     "reviewer_model": "opus",
     "turn_timeout_seconds": 1800,
+    "kg_turn_timeout_seconds": 900,
     "version": 1,
     "budget_usd": None,
 }

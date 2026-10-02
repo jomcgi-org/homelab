@@ -282,6 +282,18 @@ def observe_clock() -> str:
 
 
 @DBOS.step()
+def session_turn_wait_terminal(session_id: int, after_seq: int) -> bool:
+    """Checkpoint lifecycle evidence so turn waits replay the same decision."""
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from factory.execution import store
+
+    with Session(get_engine()) as session:
+        return store.turn_wait_terminal(session, session_id, after_seq)
+
+
+@DBOS.step()
 def poll_turn(session_id: int, after_seq: int) -> dict | None:
     """One non-blocking look for the next turn of a session.
 

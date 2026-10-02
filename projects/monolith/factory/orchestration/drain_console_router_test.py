@@ -22,6 +22,7 @@ def _settings() -> DrainerSettings:
         enabled=True,
         max_jobs_per_cycle=3,
         turn_timeout_seconds=1800,
+        kg_turn_timeout_seconds=900,
         stall_threshold_seconds=2700,
         job_kinds=("qwen-drain", "kg-drain"),
         kg_max_jobs_per_day=40,
@@ -91,6 +92,7 @@ def test_console_composes_jobs_and_lane(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
+    assert body["settings"]["kg_turn_timeout_seconds"] == 900
     assert body["lane"]["state"] == "running"
     assert body["lane"]["reap_after_seconds"] == 1800 + 3 * 60 + 600
     assert body["queue"]["error"] == 1

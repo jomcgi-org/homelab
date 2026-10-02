@@ -11,7 +11,7 @@ from dbos._error import DBOSUnexpectedStepError
 from dbos._utils import GlobalParams
 
 from factory.execution import provider_quota
-from factory.orchestration import drainer, node_workflows, runtime, steps  # noqa: F401 - register before snapshot
+from factory.orchestration import drainer, node_workflows, runtime, steps, workflows  # noqa: F401 - register before snapshot
 
 
 _STEP_LIST = "old"
@@ -136,6 +136,79 @@ def test_ungated_addition_reproduces_unexpected_step_error(real_dbos):
         _result(replay)
     assert replay.get_status().status == "ERROR"
     assert effects == Counter(first=1, removable=1, last=1)
+
+
+def test_shared_turn_wait_patch_replays_old_poll_clock_history(real_dbos, monkeypatch):
+    global _STEP_LIST
+    effects = Counter()
+
+    @DBOS.step()
+    def wait_clock():
+        effects["clock"] += 1
+        return (
+            "2026-10-02T00:00:00+00:00"
+            if effects["clock"] == 1
+            else "2026-10-02T00:00:05+00:00"
+        )
+
+    @DBOS.step()
+    def wait_poll(session_id, after_seq):
+        effects["poll"] += 1
+        return None
+
+    @DBOS.step()
+    def wait_terminal(session_id, after_seq):
+        effects["terminal"] += 1
+        return True
+
+    monkeypatch.setattr(workflows, "observe_clock", wait_clock)
+    monkeypatch.setattr(workflows, "poll_turn", wait_poll)
+    monkeypatch.setattr(workflows, "session_turn_wait_terminal", wait_terminal)
+
+    @DBOS.workflow()
+    def turn_wait():
+        if _STEP_LIST == "old":
+            # Exact pre-change checkpoint order, including its deadline read.
+            workflows.observe_clock()
+            workflows.poll_turn(101, 1)
+            workflows.observe_clock()
+            return None
+        return workflows._await_turn(101, 1, 5)
+
+    old = DBOS.start_workflow(turn_wait)
+    assert _result(old) is None
+    baseline = ["wait_clock", "wait_poll", "wait_clock"]
+    assert [
+        step["function_name"].rsplit(".", 1)[-1]
+        for step in DBOS.list_workflow_steps(old.workflow_id)
+    ] == baseline
+    _STEP_LIST = "added"
+    # Include the clock checkpoint after the insertion point. A fork before
+    # it correctly enables new behavior because that suffix was not recorded.
+    replay = DBOS.fork_workflow(old.workflow_id, start_step=4)
+    assert _result(replay) is None
+    assert replay.get_status().status == "SUCCESS"
+    assert effects["terminal"] == 0
+    assert [
+        step["function_name"].rsplit(".", 1)[-1]
+        for step in DBOS.list_workflow_steps(replay.workflow_id)
+    ] == baseline
+
+    fresh = DBOS.start_workflow(turn_wait)
+    assert _result(fresh) is None
+    assert effects["terminal"] == 1
+    fresh_steps = DBOS.list_workflow_steps(fresh.workflow_id)
+    assert [
+        step["function_name"].rsplit(".", 1)[-1]
+        for step in fresh_steps
+        if "patch" not in step["function_name"].rsplit(".", 1)[-1].lower()
+    ] == ["wait_clock", "wait_poll", "wait_terminal", "wait_poll"]
+    patched_replay = DBOS.fork_workflow(
+        fresh.workflow_id, start_step=fresh_steps[-1]["function_id"]
+    )
+    assert _result(patched_replay) is None
+    assert patched_replay.get_status().status == "SUCCESS"
+    assert effects["terminal"] == 1, "replay must reuse the terminal evidence"
 
 
 def test_real_disabled_drain_cycle_preserves_checkpoint_baseline(

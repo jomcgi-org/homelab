@@ -36,6 +36,7 @@ class DrainerSettings:
     notify_failures: bool = False
     docfix_auto_merge: bool = False
     docfix_review_enabled: bool = False
+    kg_turn_timeout_seconds: int = 900
 
 
 AgentSessionsChannelNotify = Literal["needs-input", "all", "none"]
@@ -81,6 +82,9 @@ def load_drainer_settings() -> DrainerSettings:
         max_jobs_per_cycle=int(os.environ.get("DRAINER_MAX_JOBS_PER_CYCLE", "3")),
         turn_timeout_seconds=int(
             os.environ.get("DRAINER_TURN_TIMEOUT_SECONDS", "43800")
+        ),
+        kg_turn_timeout_seconds=int(
+            os.environ.get("DRAINER_KG_TURN_TIMEOUT_SECONDS", "900")
         ),
         stall_threshold_seconds=int(
             os.environ.get("DRAINER_STALL_THRESHOLD_SECONDS", "2700")

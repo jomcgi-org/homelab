@@ -250,6 +250,8 @@ spec:
               value: {{ .maxJobsPerCycle | quote }}
             - name: DRAINER_TURN_TIMEOUT_SECONDS
               value: {{ .turnTimeoutSeconds | quote }}
+            - name: DRAINER_KG_TURN_TIMEOUT_SECONDS
+              value: {{ .kgTurnTimeoutSeconds | default 900 | quote }}
             - name: DRAINER_STALL_THRESHOLD_SECONDS
               value: {{ .stallThresholdSeconds | quote }}
             - name: DRAINER_JOB_KINDS

@@ -425,6 +425,52 @@ def test_correction_inherits_routine_fence_and_unknown_never_expires(database):
     assert not reserve(database, "duplicate-job", "kg", routine_job_name="kg:raw")
 
 
+def test_cleanup_owned_correction_is_rejected_before_persisting(database):
+    assert reserve(database, "correction-cleanup", "kg", routine_job_name="kg:raw")
+    sid = queued(database, "correction-cleanup", "kg")
+    assert store.claim_pending_message_for_session_sync(sid, "first") == 1
+    store.persist_turn_from_pending_sync(
+        sid, 1, "work", result(), "done", "completed", claim_owner="first"
+    )
+    with Session(database) as db:
+        row = db.get(AgentSession, sid)
+        row.ember_session_id = "cleanup-guest"
+        row.guest_cleanup_id = "reaper-claim"
+        row.guest_cleanup_guest_id = "cleanup-guest"
+        db.add(row)
+        db.commit()
+        assert admission.reservation(db, "correction-cleanup").state == "settled"
+        with pytest.raises(store.PendingClaimLost, match="cleanup owns"):
+            store.create_pending_message(
+                db, sid, "correction", "luna", require_live_session=True
+            )
+        db.rollback()
+        assert (
+            db.exec(
+                select(PendingMessage).where(PendingMessage.session_id == sid)
+            ).first()
+            is None
+        )
+        assert store.turn_wait_terminal(db, sid, 1)
+        # Reproduce the old send's silent failure: without the guard it
+        # accepted a pending row which the dispatcher cannot claim.
+        store.create_pending_message(db, sid, "old correction", "luna")
+    assert store.claim_pending_message_for_session_sync(sid, "second") is None
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "completed", "warn"])
+def test_terminal_or_unbound_correction_is_rejected(database, status):
+    with Session(database) as db:
+        row = store.create_session(db, "gone-correction", "guest", "main", "luna")
+        row.status = status
+        db.add(row)
+        db.commit()
+        with pytest.raises(store.PendingClaimLost):
+            store.create_pending_message(
+                db, row.id, "correction", "luna", require_live_session=True
+            )
+
+
 def test_transport_uncertainty_blocks_followup_and_confirmed_turn_does_not(database):
     sid = queued(database, "session")
     assert store.claim_pending_message_for_session_sync(sid, "worker") == 1

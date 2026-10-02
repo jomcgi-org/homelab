@@ -32,6 +32,7 @@ from factory.orchestration.steps import (
     poll_turn,
     read_branch_head,
     read_workflow_attributes,
+    session_turn_wait_terminal,
     start_agent_session,
     update_turn_shas,
 )
@@ -138,6 +139,20 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
             and turn.get("terminal_reason") not in INTERRUPTED_TERMINAL_REASONS
         ):
             return turn
+        # Adding a checkpoint inside this shared helper changes the history of
+        # drainer and factory workflows. Old histories must replay their
+        # original poll/clock/sleep sequence before using this new branch.
+        if turn is None and DBOS.patch("await-turn-terminal-session-v1"):
+            if session_turn_wait_terminal(session_id, after_seq):
+                final_turn = poll_turn(session_id, after_seq)
+                if (
+                    final_turn is not None
+                    and final_turn.get("terminal_reason")
+                    not in INTERRUPTED_TERMINAL_REASONS
+                ):
+                    return final_turn
+                if final_turn is None:
+                    return None
         if _timestamp(observe_clock()) >= deadline:
             return None
         if iteration + 1 < max_iterations:

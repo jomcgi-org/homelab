@@ -358,7 +358,11 @@ async def _release_receipt_fence(native_receipt: dict) -> bool:
 
 
 def _persist_pending_message(
-    session_id: int, message_text: str, model: str | None
+    session_id: int,
+    message_text: str,
+    model: str | None,
+    *,
+    require_live_session: bool = False,
 ) -> int:
     recall_update = {}
     with Session(get_engine()) as db_session:
@@ -376,7 +380,12 @@ def _persist_pending_message(
         )
     with Session(get_engine()) as db_session:
         row = store.create_pending_message(
-            db_session, session_id, message_text, model, **recall_update
+            db_session,
+            session_id,
+            message_text,
+            model,
+            require_live_session=require_live_session,
+            **recall_update,
         )
         assert row.seq is not None
         return row.seq

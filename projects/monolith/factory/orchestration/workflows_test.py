@@ -4,6 +4,12 @@ import factory.orchestration.workflows as workflows
 from factory.orchestration import config
 
 
+@pytest.fixture(autouse=True)
+def terminal_wait_seams(monkeypatch):
+    monkeypatch.setattr(workflows.DBOS, "patch", lambda _name: True)
+    monkeypatch.setattr(workflows, "session_turn_wait_terminal", lambda *_args: False)
+
+
 class Queue:
     def enqueue(self, function, *args):
         class Handle:
@@ -70,6 +76,8 @@ def run(
     class FakeDBOS:
         workflow_id = "wf-1"
         workflow_attributes = dict(attributes or {})
+
+        patch = staticmethod(lambda _name: True)
 
         @staticmethod
         def update_workflow_attributes(workflow_id, values):
@@ -1074,6 +1082,70 @@ def test_pinned_review_cycle_bound_survives_config_change(monkeypatch):
     result = workflow("task", "jomcgi/homelab", "main")
     assert result["status"] == "review_cycles_exhausted"
     assert len(calls) == 4
+
+
+@pytest.mark.parametrize("after_seq", [0, 1])
+def test_await_turn_terminal_session_returns_timeout_without_sleep(
+    monkeypatch, after_seq
+):
+    polls = []
+    sleeps = []
+    states = []
+    monkeypatch.setattr(workflows, "observe_clock", lambda: "2026-10-02T00:00:00+00:00")
+    monkeypatch.setattr(
+        workflows, "poll_turn", lambda *args: polls.append(args) or None
+    )
+    monkeypatch.setattr(
+        workflows,
+        "session_turn_wait_terminal",
+        lambda *args: states.append(args) or True,
+    )
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+
+    assert workflows._await_turn(101, after_seq, 43800) is None
+    assert polls == [(101, after_seq)] * 2
+    assert states == [(101, after_seq)]
+    assert sleeps == []
+
+
+def test_await_turn_returns_turn_that_lands_during_terminal_read(monkeypatch):
+    completed = {"seq": 2, "terminal_reason": "completed"}
+    turns = iter([None, completed])
+    monkeypatch.setattr(workflows, "observe_clock", lambda: "2026-10-02T00:00:00+00:00")
+    monkeypatch.setattr(workflows, "poll_turn", lambda *_args: next(turns))
+    monkeypatch.setattr(workflows, "session_turn_wait_terminal", lambda *_args: True)
+    monkeypatch.setattr(
+        workflows.DBOS, "sleep", lambda *_args: pytest.fail("unexpected sleep")
+    )
+    assert workflows._await_turn(101, 1, 900) == completed
+
+
+def test_await_turn_final_interrupted_look_still_waits_for_replacement(monkeypatch):
+    turns = iter(
+        [
+            None,
+            {"seq": 2, "terminal_reason": "interrupted"},
+            {"seq": 2, "terminal_reason": "completed"},
+        ]
+    )
+    sleeps = []
+    monkeypatch.setattr(workflows, "observe_clock", lambda: "2026-10-02T00:00:00+00:00")
+    monkeypatch.setattr(workflows, "poll_turn", lambda *_args: next(turns))
+    monkeypatch.setattr(workflows, "session_turn_wait_terminal", lambda *_args: True)
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+    assert workflows._await_turn(101, 1, 900)["terminal_reason"] == "completed"
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS]
+
+
+def test_await_turn_does_not_read_session_when_turn_found(monkeypatch):
+    monkeypatch.setattr(workflows, "observe_clock", lambda: "2026-10-02T00:00:00+00:00")
+    monkeypatch.setattr(workflows, "poll_turn", lambda *_args: {"seq": 1})
+    monkeypatch.setattr(
+        workflows,
+        "session_turn_wait_terminal",
+        lambda *_args: pytest.fail("extra read"),
+    )
+    assert workflows._await_turn(101, 0, 900) == {"seq": 1}
 
 
 def test_await_turn_keeps_waiting_after_interrupted(monkeypatch):
