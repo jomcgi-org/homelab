@@ -164,6 +164,14 @@ describe("notes load", () => {
       },
     });
     expect(body).toContain('name="dm_readable"');
+    const select = body.match(
+      /<select[^>]*name="dm_readable"[^>]*>([\s\S]*?)<\/select>/,
+    );
+    expect(select).not.toBeNull();
+    const values = [...select[1].matchAll(/<option[^>]*value="([^"]*)"/g)].map(
+      (m) => m[1],
+    );
+    expect(values).toEqual(["", "false", "true"]);
   });
 });
 
