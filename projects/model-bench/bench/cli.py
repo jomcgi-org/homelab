@@ -982,7 +982,7 @@ def _leaderboard_task_data(
     cells: list,
     tasks: list,
 ) -> tuple[list[dict], dict[str, dict[str, dict]]]:
-    """Build per-task data shared by the markdown and JSON leaderboard reports."""
+    """Build per-task data for the JSON leaderboard report."""
     agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
     task_meta = {t.id: t for t in tasks}
 

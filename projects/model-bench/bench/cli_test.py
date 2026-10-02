@@ -533,6 +533,28 @@ def test_report_discovers_scored_tasks_across_models(tmp_path):
     assert "| binary |" not in markdown
 
 
+def test_aggregate_agentic_group_scores_retried_cell_by_first_attempt():
+    cell = _agentic_cell("scored", "m", False, 1, 100, True, score=0.3)
+    cell.outcome = "pass@2"
+    cell.attempts.append(
+        Attempt(
+            passed=True,
+            score=1.0,
+            feedback="",
+            latency_ms=1,
+            prompt_tokens=100,
+            completion_tokens=0,
+        )
+    )
+    stats = _aggregate_agentic_group(
+        [cell], {"scored": "hard"}, scored_ids=frozenset({"scored"})
+    )
+    # The mean score and hard pass both follow the first attempt, not the retry.
+    assert stats["scored_n"] == 1
+    assert stats["mean_score"] == pytest.approx(0.3)
+    assert stats["hard_pass"] == 0
+
+
 def test_aggregate_agentic_group_scores_frontier_tasks():
     graded = _agentic_cell("mut", "m", False, 3, 100, True)
     graded.attempts[0].score = 0.5

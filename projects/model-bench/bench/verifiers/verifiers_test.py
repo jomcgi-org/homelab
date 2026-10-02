@@ -122,3 +122,16 @@ def test_pytest_sites_mode_threshold_gates_passed(tmp_path):
 def test_pytest_sites_mode_rejects_empty_sites(tmp_path):
     r = get_verifier("pytest")(tmp_path, _sites_args(sites={}))
     assert not r.passed and "sites is empty" in r.feedback
+
+
+def test_verify_result_accepts_none_and_unit_interval_scores():
+    for score in (None, 0, 0.0, 0.5, 1, 1.0):
+        assert VerifyResult(True, "", score).score == score
+
+
+def test_verify_result_rejects_out_of_range_and_non_finite_scores():
+    import pytest
+
+    for score in (-0.1, 1.01, float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            VerifyResult(False, "", score)

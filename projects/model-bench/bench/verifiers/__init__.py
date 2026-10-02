@@ -1,5 +1,6 @@
 import hashlib
 import inspect
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,14 @@ class VerifyResult:
     # Graded verifiers (e.g. mutation) report a 0..1 score alongside the pass/fail
     # gate so partial credit is recorded; binary verifiers leave it None.
     score: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.score is not None and not (
+            math.isfinite(self.score) and 0.0 <= self.score <= 1.0
+        ):
+            raise ValueError(
+                f"score must be None or finite in [0, 1], got {self.score!r}"
+            )
 
 
 _REGISTRY: dict[str, Callable[[Path, dict], VerifyResult]] = {}

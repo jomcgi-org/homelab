@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class TaskClass(str, Enum):
@@ -121,6 +122,13 @@ class Attempt(BaseModel):
     latency_ms: int
     prompt_tokens: int
     completion_tokens: int
+
+    @field_validator("score")
+    @classmethod
+    def _score_in_unit_interval(cls, v: float | None) -> float | None:
+        if v is not None and not (math.isfinite(v) and 0.0 <= v <= 1.0):
+            raise ValueError(f"score must be None or finite in [0, 1], got {v!r}")
+        return v
 
 
 class ResultCell(BaseModel):
