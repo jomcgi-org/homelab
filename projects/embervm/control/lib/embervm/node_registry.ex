@@ -767,7 +767,7 @@ defmodule Embervm.NodeRegistry do
     stateful_vms = stateful_vms_from_status(status)
     diagnostics = diagnostic_facts(status)
     baseline = if status.draining, do: nil, else: diagnostics
-    if not status.draining, do: log_diagnostic_increases(prev, diagnostics)
+    log_diagnostic_increases(prev, diagnostics)
 
     rt = %{
       prev

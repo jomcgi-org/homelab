@@ -26,6 +26,10 @@ const (
 
 var ErrUnsupported = errors.New("guest memory agent unsupported")
 
+// An absent listener can become available later in the same activation. Only
+// an explicit unknown-command response confirms unsupported agent capability.
+var ErrAgentUnavailable = fmt.Errorf("%w: listener unavailable", ErrUnsupported)
+
 type Dialer func(context.Context, string) (net.Conn, error)
 
 // Client uses a fresh connection and a hard budget for each request. The dialer
@@ -48,7 +52,7 @@ func (c Client) Fetch(ctx context.Context, uds, nonce string) (guestagent.Memory
 	conn, err := dial(ctx, uds)
 	if err != nil {
 		if errors.Is(err, syscall.ECONNREFUSED) {
-			return empty, ErrUnsupported
+			return empty, ErrAgentUnavailable
 		}
 		return empty, fmt.Errorf("dial memory agent: %w", err)
 	}
@@ -73,16 +77,16 @@ func (c Client) Fetch(ctx context.Context, uds, nonce string) (guestagent.Memory
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
 			return empty, err
 		}
-		return empty, fmt.Errorf("%w: CONNECT reply", ErrUnsupported)
+		return empty, fmt.Errorf("%w: CONNECT reply: %v", ErrAgentUnavailable, err)
 	}
 	fields := strings.Fields(string(line))
 	if len(fields) != 2 || fields[0] != "OK" {
-		return empty, fmt.Errorf("%w: CONNECT rejected", ErrUnsupported)
+		return empty, fmt.Errorf("%w: CONNECT rejected", ErrAgentUnavailable)
 	}
 	// Firecracker returns its assigned source port, not necessarily port 1024.
 	port, err := strconv.ParseUint(fields[1], 10, 32)
 	if err != nil || port == 0 {
-		return empty, fmt.Errorf("%w: invalid CONNECT port", ErrUnsupported)
+		return empty, fmt.Errorf("%w: invalid CONNECT port", ErrAgentUnavailable)
 	}
 	body, err := json.Marshal(struct {
 		Cmd   string `json:"cmd"`

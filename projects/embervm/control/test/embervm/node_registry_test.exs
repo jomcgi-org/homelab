@@ -173,7 +173,14 @@ defmodule Embervm.NodeRegistryTest do
     {reg, table} = start_registry(clock: clock, age_check_ms: 60_000, drain_listener: nil)
     status = diagnostic_status(%{"host_requested" => 1}, 1)
     :ok = NodeRegistry.inject_status(reg, "node-4", status)
-    :ok = NodeRegistry.inject_status(reg, "node-4", %{status | draining: true})
+    draining = %{diagnostic_status(%{"host_requested" => 3}, 3) | draining: true}
+    log = diagnostic_log(fn ->
+      :ok = NodeRegistry.inject_status(reg, "node-4", draining)
+      :ok = NodeRegistry.inject_status(reg, "node-4", draining)
+    end)
+    assert length(Regex.scan(~r/embervm vmm exit observed/, log)) == 1
+    assert length(Regex.scan(~r/embervm guest oom observed/, log)) == 1
+    assert log =~ "delta=2"
     assert NodeRegistry.capacity(table) == []
     assert :sys.get_state(reg).node_runtime["node-4"].diagnostic_baseline == nil
     assert diagnostic_log(fn ->

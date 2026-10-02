@@ -43,13 +43,14 @@ type Options struct {
 	Event    func(Event)
 }
 type observation struct {
-	target   Target
-	state    State
-	lastGood time.Time
-	lastOOM  *uint64
-	sample   *guestagent.MemoryStatus
-	cancel   context.CancelFunc
-	done     chan struct{}
+	target               Target
+	state                State
+	unsupportedConfirmed bool
+	lastGood             time.Time
+	lastOOM              *uint64
+	sample               *guestagent.MemoryStatus
+	cancel               context.CancelFunc
+	done                 chan struct{}
 }
 type Poller struct {
 	mu       sync.Mutex
@@ -113,7 +114,8 @@ func (p *Poller) Forget(vm, activation string) {
 	}
 }
 
-// Run is daemon-scoped. Unsupported agents are probed only once per activation.
+// Run is daemon-scoped. Confirmed unsupported commands are probed once per
+// activation; unavailable transports remain retryable as a guest boots.
 // Polling is serial and each connection has a one-second budget, bounding work.
 func (p *Poller) Run(ctx context.Context) {
 	if !p.opts.Enabled {
@@ -148,7 +150,7 @@ func (p *Poller) Poll(ctx context.Context) {
 			return
 		}
 		p.mu.Lock()
-		if p.entries[e.target.VM] != e || e.state == Unsupported || e.cancel != nil {
+		if p.entries[e.target.VM] != e || e.unsupportedConfirmed || e.cancel != nil {
 			p.mu.Unlock()
 			continue
 		}
@@ -181,7 +183,8 @@ func (p *Poller) Poll(ctx context.Context) {
 		e.done = nil
 		if err != nil {
 			e.sample = nil
-			if errors.Is(err, ErrUnsupported) {
+			if errors.Is(err, ErrUnsupported) && (!errors.Is(err, ErrAgentUnavailable) || e.lastGood.IsZero()) {
+				e.unsupportedConfirmed = !errors.Is(err, ErrAgentUnavailable)
 				p.transition(e, Unsupported)
 			} else if !e.lastGood.IsZero() && p.opts.Now().Sub(e.lastGood) >= 3*p.opts.Interval {
 				p.transition(e, Stale)
@@ -196,7 +199,13 @@ func (p *Poller) Poll(ctx context.Context) {
 		} else {
 			if sample.OOMKill != nil && e.lastOOM != nil && *sample.OOMKill > *e.lastOOM {
 				delta := *sample.OOMKill - *e.lastOOM
-				p.guestOOM += delta
+				// Guest counters are untrusted uint64 values. Saturate the daemon
+				// total rather than wrapping and impersonating a daemon restart.
+				if delta > ^uint64(0)-p.guestOOM {
+					p.guestOOM = ^uint64(0)
+				} else {
+					p.guestOOM += delta
+				}
 				p.emit(Event{Target: e.target, Kind: "guest_oom", Delta: delta})
 			}
 			// Retain the last supported counter across temporary unsupported reports.

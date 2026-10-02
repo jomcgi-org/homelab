@@ -94,6 +94,68 @@ func TestDisabledNeverDials(t *testing.T) {
 	}
 }
 
+func TestUnavailableAgentIsRetriedWithinActivation(t *testing.T) {
+	now := time.Unix(100, 0)
+	available, calls, kills := false, 0, uint64(99)
+	p := New(Options{Enabled: true, Interval: time.Second, Now: func() time.Time { return now },
+		Client: fetchFunc(func(_ context.Context, _, nonce string) (guestagent.MemoryStatus, error) {
+			calls++
+			if !available {
+				return guestagent.MemoryStatus{}, ErrAgentUnavailable
+			}
+			return goodSample(nonce, kills), nil
+		})})
+	p.Track(Target{VM: "vm", Activation: "booting"})
+	p.Poll(context.Background())
+	p.Poll(context.Background())
+	if a := p.Snapshot(); calls != 2 || a.Counts["unsupported"] != 1 || a.GuestOOM != 0 {
+		t.Fatalf("unavailable startup listener should be retried: calls=%d aggregates=%+v", calls, a)
+	}
+	available = true
+	p.Poll(context.Background())
+	if a := p.Snapshot(); calls != 3 || a.Counts["ok"] != 1 || a.GuestOOM != 0 {
+		t.Fatalf("ready agent must establish its first baseline: calls=%d aggregates=%+v", calls, a)
+	}
+	kills++
+	p.Poll(context.Background())
+	if p.Snapshot().GuestOOM != 1 {
+		t.Fatal("OOM after guest readiness was suppressed")
+	}
+	available = false
+	now = now.Add(3 * time.Second)
+	p.Poll(context.Background())
+	if a := p.Snapshot(); a.Counts["stale"] != 1 || a.GuestOOM != 1 {
+		t.Fatalf("an unavailable previously observed agent must go stale: %+v", a)
+	}
+}
+
+func TestGuestOOMAggregateSaturatesAcrossGuests(t *testing.T) {
+	kills := map[string]uint64{"a": 0, "b": 0}
+	var events []Event
+	p := New(Options{Enabled: true, Event: func(e Event) { events = append(events, e) },
+		Client: fetchFunc(func(_ context.Context, uds, nonce string) (guestagent.MemoryStatus, error) {
+			return goodSample(nonce, kills[uds]), nil
+		})})
+	for _, vm := range []string{"a", "b"} {
+		p.Track(Target{VM: vm, Activation: "current", UDS: vm})
+	}
+	p.Poll(context.Background())
+	kills["a"], kills["b"] = ^uint64(0), 1
+	p.Poll(context.Background())
+	if a := p.Snapshot(); a.GuestOOM != ^uint64(0) || len(events) != 2 {
+		t.Fatalf("cross-guest delta overflow wrapped the daemon total: aggregates=%+v events=%+v", a, events)
+	}
+	p.Poll(context.Background())
+	if len(events) != 2 {
+		t.Fatal("identical saturated observations repeated OOM events")
+	}
+	kills["b"]++
+	p.Poll(context.Background())
+	if p.Snapshot().GuestOOM != ^uint64(0) || len(events) != 3 || events[2].Delta != 1 {
+		t.Fatal("saturation must preserve positive per-activation events without wrapping")
+	}
+}
+
 func TestInvalidEvidenceNeverOKOrOOM(t *testing.T) {
 	for _, kind := range []string{"error", "malformed", "wrong nonce", "counter backwards"} {
 		t.Run(kind, func(t *testing.T) {
