@@ -1,0 +1,238 @@
+# frontier: multi-endpoint IDOR audit and patch (#6760). Four authorization bugs are
+# planted in grimoire/router.py, each a different realistic form:
+#   note-read       the by-id fetch drops the note audience predicate (the reported one)
+#   note-delete     delete skips the editor check, so any viewer can delete
+#   note-list       a kind filter rebuilds the query without the audience predicate
+#   campaign-oracle non-members get 403 for real campaigns, 404 for random ids
+# legit-access fails over-corrections (DM party edits, author access, kind filters).
+# Graded by the existing grimoire leak harness, which also asserts no canary leaks.
+id: idor-multi-endpoint-01
+version: v1
+class: code-fix
+tier: frontier
+mode: agentic
+snapshot:
+  preset: monolith-backend
+  commit: 130910e751664c15c955cc5db393597aee5a5be5
+  patches:
+  - file: grimoire/router.py
+    find: |2
+          member = _get_member_or_404(session, campaign_id, email)
+          viewer = _viewer_for_member(session, campaign_id, member)
+          row = _get_note_or_404(session, campaign_id, note_id, viewer, member)
+          return _note_view(session, row, viewer, member)
+    replace: |2
+          member = _get_member_or_404(session, campaign_id, email)
+          viewer = _viewer_for_member(session, campaign_id, member)
+          row = session.exec(
+              select(Note).where(
+                  Note.campaign_id == campaign_id,
+                  Note.id == note_id,
+                  Note.deleted_at.is_(None),
+              )
+          ).one_or_none()
+          if row is None:
+              raise HTTPException(404, detail="note not found")
+          return _note_view(session, row, viewer, member)
+  - file: grimoire/router.py
+    find: |2
+          row = _get_note_or_404(session, campaign_id, note_id, viewer, member, lock=True)
+          _require_note_editor(row, member)
+          row.deleted_at = row.updated_at = datetime.now(timezone.utc)
+    replace: |2
+          row = _get_note_or_404(session, campaign_id, note_id, viewer, member, lock=True)
+          row.deleted_at = row.updated_at = datetime.now(timezone.utc)
+  - file: grimoire/router.py
+    find: |2
+          if kind is not None:
+              query = query.where(Note.kind == kind)
+    replace: |2
+          if kind is not None:
+              # A kind filter narrows to one note type; scope it directly.
+              query = select(Note).where(
+                  Note.campaign_id == campaign_id,
+                  Note.kind == kind,
+                  Note.deleted_at.is_(None),
+              )
+  - file: grimoire/router.py
+    find: |2
+          _get_member_or_404(session, campaign_id, email)
+          return _get_campaign_or_404(session, campaign_id)
+    replace: |2
+          campaign = _get_campaign_or_404(session, campaign_id)
+          if (
+              session.exec(
+                  select(CampaignMember.id)
+                  .join(AppUser, AppUser.id == CampaignMember.app_user_id)
+                  .where(CampaignMember.campaign_id == campaign_id, AppUser.email == email)
+              ).first()
+              is None
+          ):
+              raise HTTPException(status_code=403, detail="not a member of this campaign")
+          return campaign
+agent:
+  max_turns: 40
+  exec: true
+prompt: |
+  Bug bounty report, against this FastAPI monolith backend (a snapshot of a real repo):
+
+    Title: Player can read another player's private character note
+    Severity: High
+    In a Grimoire campaign, player B requested
+    GET /api/grimoire/campaigns/<campaign>/notes/<note id> with the id of a private
+    character note written by player A, and received the full note, including its
+    markdown. Note ids leak in other places, so this is practical.
+
+  Fix this vulnerability, and treat the report as a sample: audit the Grimoire
+  campaign and notes API for the same class of authorization bug and fix every
+  instance you find. Members must keep every access they are entitled to today
+  (authors, the DM, and the rules for character, party and DM-readable notes), and
+  nothing about a campaign or note a caller cannot see may be disclosed, including
+  whether it exists. Add tests for what you fix.
+verifier:
+  kind: pytest
+  args:
+    tests:
+      grimoire/zz_idor_hidden_test.py: |
+        """Hidden grader: grimoire campaign and notes authorization (IDOR class)."""
+
+        from uuid import uuid4
+
+        import pytest
+        from fastapi.testclient import TestClient
+
+        from grimoire.models import Note
+        from grimoire.testing.leak_harness import sqlite_harness
+
+
+        @pytest.fixture
+        def http(tmp_path, monkeypatch):
+            monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "false")
+            with sqlite_harness(tmp_path / "idor.db") as h:
+                with TestClient(h.app()) as client:
+                    yield h, client
+
+
+        def _call(http, method, path, viewer, **kwargs):
+            h, client = http
+            response = client.request(method, path, headers=h.headers(viewer), **kwargs)
+            h.assert_no_leak(response, viewer)
+            return response
+
+
+        def _notes(h, note_id=None):
+            base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}/notes"
+            return base + (f"/{note_id}" if note_id else "")
+
+
+        def _ids(response):
+            return {row["id"] for row in response.json()}
+
+
+        # --- note-read: fetching a note by id honours the note audience -------------
+
+
+        @pytest.mark.parametrize("viewer", ["player_b", "no_character", "dm"])
+        def test_note_read_hidden_note_is_indistinguishable(http, viewer):
+            h, _ = http
+            hidden = _call(http, "GET", _notes(h, h.rows["note_private"].id), viewer)
+            random = _call(http, "GET", _notes(h, str(uuid4())), viewer)
+            assert hidden.status_code == random.status_code == 404
+            assert hidden.json() == random.json()
+
+
+        def test_note_read_foreign_campaign_note(http):
+            h, _ = http
+            foreign = _call(http, "GET", _notes(h, h.rows["note_foreign"].id), "player_a")
+            assert foreign.status_code == 404
+
+
+        # --- note-delete: only an editor may delete -----------------------------------
+
+
+        @pytest.mark.parametrize("viewer", ["player_b", "no_character"])
+        def test_note_delete_requires_editor(http, viewer):
+            h, _ = http
+            note = h.rows["note_party"]
+            response = _call(http, "DELETE", _notes(h, note.id), viewer)
+            assert response.status_code in (403, 404)
+            h.session.expire_all()
+            assert h.session.get(Note, note.id).deleted_at is None
+
+
+        # --- note-list: every list path applies the audience --------------------------
+
+
+        @pytest.mark.parametrize("kind", [None, "character", "party"])
+        @pytest.mark.parametrize("viewer", ["player_b", "no_character"])
+        def test_note_list_never_returns_hidden_notes(http, viewer, kind):
+            h, _ = http
+            params = {"kind": kind} if kind else {}
+            response = _call(http, "GET", _notes(h), viewer, params=params)
+            assert response.status_code == 200
+            hidden = {h.rows["note_private"].id, h.rows["note_shared"].id}
+            assert not (_ids(response) & hidden)
+
+
+        def test_note_list_dm_sees_only_shared_character_notes(http):
+            h, _ = http
+            response = _call(http, "GET", _notes(h), "dm", params={"kind": "character"})
+            assert response.status_code == 200
+            assert h.rows["note_private"].id not in _ids(response)
+
+
+        # --- campaign-oracle: non-members cannot probe which campaigns exist ----------
+
+
+        @pytest.mark.parametrize("viewer", ["outsider", "other_campaign"])
+        def test_campaign_existence_is_not_disclosed(http, viewer):
+            h, _ = http
+            real = _call(http, "GET", f"/api/grimoire/campaigns/{h.rows['campaign'].id}", viewer)
+            random = _call(http, "GET", f"/api/grimoire/campaigns/{uuid4()}", viewer)
+            assert real.status_code == random.status_code
+            assert real.status_code in (403, 404)
+            assert real.json() == random.json()
+
+
+        # --- legit: authorized access keeps working (over-correction guard) ---------
+
+
+        def test_legit_authors_and_dm_keep_access(http):
+            h, _ = http
+            assert _call(http, "GET", _notes(h, h.rows["note_private"].id), "player_a").status_code == 200
+            assert _call(http, "GET", _notes(h, h.rows["note_shared"].id), "dm").status_code == 200
+            assert _call(http, "GET", _notes(h, h.rows["note_party"].id), "player_b").status_code == 200
+            mine = _call(http, "GET", _notes(h), "player_a", params={"kind": "character"})
+            assert {h.rows["note_private"].id, h.rows["note_shared"].id} <= _ids(mine)
+            dm_chars = _call(http, "GET", _notes(h), "dm", params={"kind": "character"})
+            assert h.rows["note_shared"].id in _ids(dm_chars)
+            party = _call(http, "GET", _notes(h), "player_b", params={"kind": "party"})
+            assert h.rows["note_party"].id in _ids(party)
+            for viewer in ("dm", "player_a", "player_b"):
+                got = _call(http, "GET", f"/api/grimoire/campaigns/{h.rows['campaign'].id}", viewer)
+                assert got.status_code == 200
+
+
+        def test_legit_dm_deletes_party_note_and_author_deletes_own(http):
+            h, _ = http
+            assert _call(http, "DELETE", _notes(h, h.rows["note_party"].id), "dm").status_code == 204
+            assert (
+                _call(http, "DELETE", _notes(h, h.rows["note_private"].id), "player_a").status_code
+                == 204
+            )
+    sites:
+      note-read:
+      - grimoire/zz_idor_hidden_test.py::test_note_read_hidden_note_is_indistinguishable
+      - grimoire/zz_idor_hidden_test.py::test_note_read_foreign_campaign_note
+      note-delete:
+      - grimoire/zz_idor_hidden_test.py::test_note_delete_requires_editor
+      note-list:
+      - grimoire/zz_idor_hidden_test.py::test_note_list_never_returns_hidden_notes
+      - grimoire/zz_idor_hidden_test.py::test_note_list_dm_sees_only_shared_character_notes
+      campaign-oracle:
+      - grimoire/zz_idor_hidden_test.py::test_campaign_existence_is_not_disclosed
+      legit-access:
+      - grimoire/zz_idor_hidden_test.py::test_legit_authors_and_dm_keep_access
+      - grimoire/zz_idor_hidden_test.py::test_legit_dm_deletes_party_note_and_author_deletes_own
+    pass_threshold: 1.0
+    timeout_s: 240

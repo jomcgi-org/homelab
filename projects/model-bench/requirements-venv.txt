@@ -48,3 +48,7 @@ fastmcp==3.2.0
 genai-prices==0.1.6
 opentelemetry-api==1.40.0
 pgvector==0.4.2
+# Factory orchestration (DBOS runtime) and the faas Kubernetes client, for tasks
+# graded by the swarm router and faas router tests.
+dbos==2.29.0
+kubernetes-asyncio==35.0.1

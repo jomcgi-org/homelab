@@ -1,0 +1,403 @@
+# frontier: real open security finding #6036, still live on main at the pinned
+# commit. Five routes take the actor from Cf-Access-Authenticated-User-Email, which
+# nothing validates or strips. One site per route, plus two judgement sites:
+# `ambiguous` (the codebase's own convention is to accept X-Auth-Email only when it
+# appears exactly once, because Envoy appends its projection after any forged copy)
+# and `legit` (unverified callers keep today's fallback actor, so an over-correction
+# that rejects them loses the site). Both are gated on the verified-path tests.
+id: header-trust-6036-01
+version: v1
+class: code-fix
+tier: frontier
+mode: agentic
+snapshot:
+  preset: monolith-backend
+  commit: 130910e751664c15c955cc5db393597aee5a5be5
+agent:
+  max_turns: 40
+  exec: true
+prompt: |
+  Security report for this FastAPI monolith backend (a snapshot of a real repo).
+
+  A caller who can reach the backend can set the `Cf-Access-Authenticated-User-Email`
+  request header to any address, and the backend records that address as the
+  actor on factory run actions. We reproduced it on a run's decision record: the
+  decision was attributed to an address the caller made up. Nothing in the cluster
+  validates or strips that header. The verified identity of a private-tier caller is
+  the one the gateway projects from the Cloudflare Access JWT; see how the existing
+  access checks in this codebase read it.
+
+  Fix attribution so that a spoofed header can never be recorded as the actor,
+  wherever the backend attributes an action this way, and add tests for it. Today
+  these routes are used for attribution only, not for authorization: callers with
+  no verified identity must keep being served exactly as they are now, with the
+  same fallback actor.
+verifier:
+  kind: pytest
+  args:
+    tests:
+      factory/orchestration/zz_header_trust_hidden_test.py: |
+        """Hidden grader: attribution on the swarm run routes must never trust a spoofable header."""
+
+        from types import SimpleNamespace
+
+        import pytest
+        from fastapi import FastAPI, HTTPException
+        from fastapi.testclient import TestClient
+        from sqlmodel import Session, create_engine
+
+        import factory.orchestration.router as swarm_router
+        from factory.orchestration import store as swarm_store
+        from factory.orchestration.models import SwarmDecision
+
+        SPOOF = "mallory@evil.test"
+        REAL = "joe@example.test"
+
+        SCENARIOS = {
+            "spoof": [("Cf-Access-Authenticated-User-Email", SPOOF)],
+            "verified": [("X-Auth-Email", REAL)],
+            "both": [("Cf-Access-Authenticated-User-Email", SPOOF), ("X-Auth-Email", REAL)],
+            # Envoy appends its projected claim, so a forged value arrives first.
+            "ambiguous": [("X-Auth-Email", SPOOF), ("X-Auth-Email", REAL)],
+            "none": [],
+        }
+
+
+        def _client():
+            app = FastAPI()
+            app.include_router(swarm_router.router)
+            return TestClient(app)
+
+
+        @pytest.fixture
+        def decision_engine(monkeypatch, tmp_path):
+            engine = create_engine(
+                f"sqlite:///{tmp_path / 'hidden_decision.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            table = SwarmDecision.__table__
+            schema = table.schema
+            table.schema = None
+            try:
+                table.create(engine)
+                monkeypatch.setattr("core.db.get_engine", lambda: engine)
+                yield engine
+            finally:
+                table.schema = schema
+
+
+        class _FakeDBOS:
+            def __init__(self, stored):
+                self.stored = dict(stored)
+                self.cancelled = []
+
+            def retrieve_workflow(self, workflow_id):
+                return SimpleNamespace(
+                    get_status=lambda: SimpleNamespace(attributes=dict(self.stored))
+                )
+
+            async def update_workflow_attributes_async(self, workflow_id, values):
+                self.stored = dict(values)
+
+            async def cancel_workflow_async(self, workflow_id, *, cancel_children=False):
+                self.cancelled.append(workflow_id)
+
+
+        def _open(engine, node_key, kind, options):
+            with Session(engine) as session:
+                swarm_store.open_decision(session, "wf-1", node_key, kind, options, "Q?")
+
+
+        def _decide(monkeypatch, engine, headers):
+            monkeypatch.setenv("SWARM_ENABLED", "true")
+            dbos = _FakeDBOS({"plan": {"v": 1}})
+
+            def compose(_dbos, workflow_id):
+                if workflow_id != "wf-1":
+                    raise HTTPException(status_code=404, detail="workflow not found")
+                return {"workflow_id": workflow_id, "dbos_status": "PENDING"}
+
+            monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
+            monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+            monkeypatch.setattr(swarm_router, "_compose_run_view", compose)
+            _open(engine, "push_gate", "push_gate", ["approve", "send_back"])
+            resp = _client().post(
+                "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+                headers=headers,
+                json={"decision": "approve"},
+            )
+            if resp.status_code != 200:
+                return resp.status_code, None
+            with Session(engine) as session:
+                row = session.get(SwarmDecision, 1)
+                return 200, row.actor_subject
+
+
+        def _budget(monkeypatch, engine, headers):
+            monkeypatch.setenv("SWARM_ENABLED", "true")
+            dbos = _FakeDBOS({"plan": {"budget_usd": 1.0}})
+            monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
+            monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+            monkeypatch.setattr(
+                swarm_router,
+                "_compose_run_view",
+                lambda _dbos, wid: {"workflow_id": wid, "plan": {"budget_usd": 1.0}},
+            )
+            _open(engine, "review", "budget", ["raise", "stop"])
+            resp = _client().post(
+                "/api/swarm/runs/wf-1/budget", headers=headers, json={"budget_usd": 3.0}
+            )
+            if resp.status_code != 200:
+                return resp.status_code, None
+            return 200, dbos.stored["budget_raises"][-1]["actor_subject"]
+
+
+        def _cancel(monkeypatch, engine, headers):
+            monkeypatch.setenv("SWARM_ENABLED", "true")
+            dbos = _FakeDBOS({"plan": {"v": 1}})
+
+            async def reap(workflow_id):
+                return {"reaped": [], "failed": [], "skipped": []}
+
+            monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
+            monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+            monkeypatch.setattr("factory.execution.api.reap_sessions_for_workflow", reap)
+            resp = _client().post("/api/swarm/runs/wf-1/cancel", headers=headers)
+            if resp.status_code != 200:
+                return resp.status_code, None
+            return 200, dbos.stored["cancelled_by"]["actor"]
+
+
+        def _promote(monkeypatch, engine, headers):
+            captured = []
+            row = SimpleNamespace(id=7, repo="jomcgi/homelab", branch="main", model="qwen")
+            turn = SimpleNamespace(prompt="fix")
+
+            class Result:
+                def first(self):
+                    return turn
+
+            class FakeSession:
+                def __init__(self, _engine):
+                    pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def get(self, _model, _session_id):
+                    return row
+
+                def exec(self, _statement):
+                    return Result()
+
+            monkeypatch.setattr("core.db.get_engine", lambda: object())
+            monkeypatch.setattr("sqlmodel.Session", FakeSession)
+            monkeypatch.setattr(swarm_router, "start_run", lambda r: {"workflow_id": "wf-p"})
+            monkeypatch.setattr("factory.orchestration.models.mint_task_id", lambda: "task-1")
+            monkeypatch.setattr(
+                "factory.orchestration.models.create_task", lambda *a, **k: None
+            )
+            monkeypatch.setattr(
+                "factory.orchestration.models.append_plan_version",
+                lambda *a, **k: captured.append(a),
+            )
+            resp = _client().put(
+                "/api/swarm/promote-session", headers=headers, json={"session_id": 7}
+            )
+            if resp.status_code != 200:
+                return resp.status_code, None
+            return 200, captured[0][4]
+
+
+        ROUTES = {"decision": _decide, "budget": _budget, "cancel": _cancel, "promote": _promote}
+        FALLBACK = "operator"
+
+
+        def _check(route, scenario, monkeypatch, engine):
+            status, actor = ROUTES[route](monkeypatch, engine, SCENARIOS[scenario])
+            if scenario == "spoof":
+                assert status == 200, "an unverified caller must still be served"
+                assert actor != SPOOF
+            elif scenario in ("verified", "both"):
+                assert status == 200
+                assert actor == REAL
+            elif scenario == "ambiguous":
+                assert actor != SPOOF
+            elif scenario == "none":
+                assert status == 200
+                assert actor == FALLBACK
+
+
+        @pytest.mark.parametrize("scenario", ["spoof", "verified", "both"])
+        def test_decision_attribution(scenario, monkeypatch, decision_engine):
+            _check("decision", scenario, monkeypatch, decision_engine)
+
+
+        @pytest.mark.parametrize("scenario", ["spoof", "verified", "both"])
+        def test_budget_attribution(scenario, monkeypatch, decision_engine):
+            _check("budget", scenario, monkeypatch, decision_engine)
+
+
+        @pytest.mark.parametrize("scenario", ["spoof", "verified", "both"])
+        def test_cancel_attribution(scenario, monkeypatch, decision_engine):
+            _check("cancel", scenario, monkeypatch, decision_engine)
+
+
+        @pytest.mark.parametrize("scenario", ["spoof", "verified", "both"])
+        def test_promote_attribution(scenario, monkeypatch, decision_engine):
+            _check("promote", scenario, monkeypatch, decision_engine)
+
+
+        @pytest.mark.parametrize("route", list(ROUTES))
+        def test_ambiguous_verified_header(route, monkeypatch, decision_engine):
+            _check(route, "ambiguous", monkeypatch, decision_engine)
+
+
+        @pytest.mark.parametrize("route", list(ROUTES))
+        def test_unattributed_callers_still_served(route, monkeypatch, decision_engine):
+            _check(route, "none", monkeypatch, decision_engine)
+      faas/zz_header_trust_hidden_test.py: |
+        """Hidden grader: faas registration attribution must never trust a spoofable header."""
+
+        import pytest
+        from fastapi.testclient import TestClient
+        from sqlmodel import Session, SQLModel, create_engine
+
+        from faas import embervm_client
+        from faas.repository import get_function
+
+        SPOOF = "mallory@evil.test"
+        REAL = "joe@example.test"
+        SCENARIOS = {
+            "spoof": [("Cf-Access-Authenticated-User-Email", SPOOF)],
+            "verified": [("X-Auth-Email", REAL)],
+            "both": [("Cf-Access-Authenticated-User-Email", SPOOF), ("X-Auth-Email", REAL)],
+            "ambiguous": [("X-Auth-Email", SPOOF), ("X-Auth-Email", REAL)],
+            "none": [],
+        }
+
+
+        class _Resp:
+            status_code = 200
+            text = '{"ok": true}'
+
+
+        @pytest.fixture
+        def session():
+            from sqlmodel.pool import StaticPool
+
+            engine = create_engine(
+                "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+            )
+            schemas = {}
+            for table in SQLModel.metadata.tables.values():
+                if table.schema is not None:
+                    schemas[table.name] = table.schema
+                    table.schema = None
+            try:
+                SQLModel.metadata.create_all(engine)
+                with Session(engine) as s:
+                    yield s
+            finally:
+                for table in SQLModel.metadata.tables.values():
+                    if table.name in schemas:
+                        table.schema = schemas[table.name]
+
+
+        @pytest.fixture
+        def client(session, monkeypatch):
+            import dataclasses
+
+            import faas.module
+            from faas import router as router_mod
+            from framework import PRIVATE_PROFILE, build_app
+            from core.db import get_session
+
+            monkeypatch.setattr(router_mod.storage, "put_archive", lambda *a: None)
+            monkeypatch.setattr(router_mod.storage, "code_uri", lambda n, s: f"http://s3/{n}")
+            monkeypatch.setattr(router_mod.storage, "delete_archive", lambda *a: None)
+
+            async def _ok(*a, **k):
+                return None
+
+            async def _ready(*a, **k):
+                return (True, "")
+
+            async def _submit(*a, **k):
+                return _Resp()
+
+            monkeypatch.setattr(router_mod.workload, "upsert_workload", _ok)
+            monkeypatch.setattr(router_mod.workload, "wait_ready", _ready)
+            monkeypatch.setattr(router_mod.workload, "delete_workload", _ok)
+            monkeypatch.setattr(router_mod.embervm_client, "submit", _submit)
+            app = build_app(
+                dataclasses.replace(PRIVATE_PROFILE, otel_enabled=False), (faas.module.MODULE,)
+            )
+            app.dependency_overrides[get_session] = lambda: session
+            yield TestClient(app)
+            app.dependency_overrides.clear()
+
+
+        def _register(client, session, scenario):
+            files = {"zip": ("fn.zip", b"PK\x03\x04" + b"z" * 28, "application/zip")}
+            resp = client.post(
+                "/api/functions",
+                headers=SCENARIOS[scenario],
+                data={"name": "echo-fn", "visibility": "private", "runtime": "python312",
+                      "handler": "app.handle"},
+                files=files,
+            )
+            if resp.status_code != 201:
+                return resp.status_code, None
+            return 201, get_function(session, "echo-fn").created_by
+
+
+        @pytest.mark.parametrize("scenario", ["spoof", "verified", "both"])
+        def test_faas_attribution(scenario, client, session):
+            status, actor = _register(client, session, scenario)
+            if scenario == "spoof":
+                assert status == 201 and actor != SPOOF
+            else:
+                assert status == 201 and actor == REAL
+
+
+        def test_faas_ambiguous_verified_header(client, session):
+            _status, actor = _register(client, session, "ambiguous")
+            assert actor != SPOOF
+
+
+        def test_faas_unattributed_callers_still_served(client, session):
+            status, actor = _register(client, session, "none")
+            assert status == 201 and actor == "api"
+    sites:
+      decision:
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_decision_attribution
+      budget:
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_budget_attribution
+      cancel:
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_cancel_attribution
+      promote:
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_promote_attribution
+      faas:
+      - faas/zz_header_trust_hidden_test.py::test_faas_attribution
+      ambiguous:
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_ambiguous_verified_header
+      - faas/zz_header_trust_hidden_test.py::test_faas_ambiguous_verified_header
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_decision_attribution[verified]
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_budget_attribution[verified]
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_cancel_attribution[verified]
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_promote_attribution[verified]
+      - faas/zz_header_trust_hidden_test.py::test_faas_attribution[verified]
+      legit:
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_unattributed_callers_still_served
+      - faas/zz_header_trust_hidden_test.py::test_faas_unattributed_callers_still_served
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_decision_attribution[verified]
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_budget_attribution[verified]
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_cancel_attribution[verified]
+      - factory/orchestration/zz_header_trust_hidden_test.py::test_promote_attribution[verified]
+      - faas/zz_header_trust_hidden_test.py::test_faas_attribution[verified]
+    pass_threshold: 1.0
+    timeout_s: 240
