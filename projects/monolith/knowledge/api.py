@@ -29,6 +29,8 @@ from knowledge.recall_cache import prepare_recall
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlmodel import Session
 
 __all__ = [
@@ -59,6 +61,7 @@ __all__ = [
     "render_correction_prompt",
     "record_extraction_failure",
     "kg_health",
+    "recent_dispute_resolution_failures",
     "count_notes_review_queue",
     "count_gaps_review_queue",
     "list_tasks_daily",
@@ -205,6 +208,32 @@ async def kg_health() -> dict:
     from knowledge.health import kg_health as _kg_health
 
     return await _kg_health()
+
+
+def recent_dispute_resolution_failures(
+    session: "Session", since: "datetime", note_limit: int
+) -> tuple[int, list[str]]:
+    """Read the failed-resolution count and bounded note ids for ops alerting."""
+    from sqlalchemy import func
+    from sqlmodel import select
+
+    from knowledge.models import Dispute
+
+    predicates = (
+        Dispute.state == "resolution_failed",
+        Dispute.resolved_at >= since,
+    )
+    count = session.exec(
+        select(func.count()).select_from(Dispute).where(*predicates)
+    ).one()
+    note_ids = session.exec(
+        select(Dispute.note_id)
+        .where(*predicates)
+        .distinct()
+        .order_by(Dispute.note_id)
+        .limit(note_limit)
+    ).all()
+    return int(count), list(note_ids)
 
 
 def search_notes(session: "Session", query_embedding: list[float], **kwargs):

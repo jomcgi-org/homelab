@@ -569,26 +569,10 @@ def evaluate_kg_dispute_resolution(count: int, note_ids: list[str]) -> dict:
 
 
 def _kg_dispute_resolution_rows_sync(since: datetime) -> tuple[int, list[str]]:
-    from knowledge.models import Dispute
-    from sqlalchemy import func
-    from sqlmodel import select
+    from knowledge.api import recent_dispute_resolution_failures
 
     with _db_session() as session:
-        predicates = (
-            Dispute.state == "resolution_failed",
-            Dispute.resolved_at >= since,
-        )
-        count = session.exec(
-            select(func.count()).select_from(Dispute).where(*predicates)
-        ).one()
-        note_ids = session.exec(
-            select(Dispute.note_id)
-            .where(*predicates)
-            .distinct()
-            .order_by(Dispute.note_id)
-            .limit(KG_DISPUTE_NOTE_LIMIT)
-        ).all()
-        return int(count), list(note_ids)
+        return recent_dispute_resolution_failures(session, since, KG_DISPUTE_NOTE_LIMIT)
 
 
 async def _kg_dispute_resolution() -> dict:
