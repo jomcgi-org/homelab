@@ -1163,6 +1163,7 @@ defmodule Embervm.Application do
       # rowless reported VM has a write in flight (ADR embervm/014 decision 2), so it
       # needs both the gate and the writer reference.
       async_lifecycle_writes: async_lifecycle_writes_enabled(),
+      restart_flush_inflight_invokes: restart_flush_inflight_invokes_enabled(),
       async_writer: Embervm.AsyncWriter
     ] ++ wake_opts()
   end
@@ -1242,6 +1243,10 @@ defmodule Embervm.Application do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end
+  end
+
+  defp restart_flush_inflight_invokes_enabled do
+    System.get_env("EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES") == "true"
   end
 
   # Alarm threshold for an instance stuck in destroying (EMBERVM_DESTROYING_ALARM_MS);

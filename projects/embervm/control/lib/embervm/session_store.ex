@@ -164,6 +164,12 @@ defmodule Embervm.SessionStore do
     GenServer.call(store, {:record_invoke, session_id, usage, turn})
   end
 
+  @doc "Record exact adoption recovery only while the captured invoke is still unfinished."
+  def record_adoption_flush(store, session_id, invoke_started_at, dispatch_id, cli_session_id, transcript_path) do
+    GenServer.call(store, {:record_adoption_flush, session_id, invoke_started_at,
+      dispatch_id, cli_session_id, transcript_path})
+  end
+
   @doc """
   Durably stamps the start of an invoke before its worker is spawned. This is a
   synchronous write even when async lifecycle writes are enabled because the
@@ -506,6 +512,21 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:record_invoke, session_id, usage, turn}, _from, state) do
     do_record_invoke(state, session_id, usage, turn)
+  end
+
+  def handle_call({:record_adoption_flush, session_id, started_at, dispatch_id, cli, path}, _from, state) do
+    case fetch(state, session_id) do
+      {:ok, %{state: :running, invoke_started_at: ^started_at,
+              inflight_dispatch_id: ^dispatch_id, last_invoke_at: last}}
+      when is_integer(started_at) and is_binary(dispatch_id) and dispatch_id != "" and
+           is_binary(cli) and cli != "" and is_binary(path) and path != "" and
+           (is_nil(last) or last < started_at) ->
+        do_record_invoke(state, session_id, nil, %{"terminal_reason" => "interrupted_for_drain",
+          "dispatch_id" => dispatch_id, "session_id" => cli, "transcript_path" => path})
+
+      _ ->
+        {:reply, {:error, :adoption_fence_mismatch}, state}
+    end
   end
 
   def handle_call({:record_invoke_started, session_id, dispatch_id}, _from, state) do
