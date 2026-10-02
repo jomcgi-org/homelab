@@ -6456,8 +6456,9 @@ defmodule Embervm.SessionManager do
       # parked workspaces never reached the store (#6499). The lookup fails
       # OPEN, returning the bare node_id when no instance reports the lineage
       # (restore_then_prime/9 detects the same miss the same way). Dialing that
-      # would only fail :unknown_node, and another instance on the node cannot
-      # stand in because the lineage directory is per-instance on disk. So a
+      # would only fail :unknown_node, and another instance on the node is not
+      # the one that reports the lineage (the inventory is node-shared, but the
+      # exported and attached flags are per brick process). So a
       # miss keeps the volume without dialing and logs its own warning, which
       # tells "no instance reports this lineage" apart from an RPC failure.
       case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id) do

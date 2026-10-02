@@ -1098,7 +1098,14 @@ instance (never the node name or first-in-table owner) and its ledger is keyed
 fact. A lineage whose workload runs a live session VM on a co-located sibling
 is withheld from the request, because the victim cannot see that attachment
 and exporting a live-mounted image would overwrite the last consistent store
-copy. The request ignores the workload persistence flag, like workspace
+copy. A candidate whose unexported lineages are all withheld ranks behind any
+archivable candidate, so it cannot starve the class. The hold reads only
+healthy, non-draining `NodeCapacity` rows and only `session_vms`, so it does
+not see a sibling that is draining, unknown or starting, or a primed VM that
+holds a lineage during `restore_then_prime` (counted in `live_vms`, absent from
+`session_vms`). Those windows, and the staleness of facts against the async
+export, are residual and are checked live rather than closed in code, since
+attach state is deliberately not shared on disk. The request ignores the workload persistence flag, like workspace
 retirement, so a disarmed flag cannot strand a victim behind a silent success.
 A blocked victim stays alive;
 `timeoutMs: 180000` bounds the quiet wait to the `drain_node` default deadline,

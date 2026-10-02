@@ -689,6 +689,21 @@ defmodule Embervm.BrickControllerTest do
     assert ctx.annotated.() == []
   end
 
+  test "a candidate whose lineages are all withheld ranks behind an archivable one, on every tick" do
+    ctx = archive_gate_stack()
+    held = %{ctx.fact | session_volumes: [%{workload: "shell", lineage_id: "attached", exported: false}]}
+    busy = Map.merge(%{ctx.fact | size_class: "4gi", pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1},
+      %{session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]})
+    free = %{ctx.fact | pod_uid: "uid-c", node_id: "node-5", instance_id: "node-5/uid-c"}
+    Agent.update(ctx.facts, fn _ -> [held, busy, free] end)
+    archive_gate_tick(ctx)
+    assert_receive {:archive, "node-5/uid-c", [_, _]}
+    refute_receive {:archive, "node-4/uid-a", _}
+    BrickController.reconcile_now(ctx.pid)
+    assert_receive {:archive, "node-5/uid-c", [_, _]}
+    assert ctx.annotated.() == []
+  end
+
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do
     for replacement <- [[], [%{size_class: "2gi", pod_uid: "uid-a", live_vms: 1}]] do
       ctx = archive_gate_stack()

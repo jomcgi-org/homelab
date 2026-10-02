@@ -1396,14 +1396,15 @@ defmodule Embervm.BrickController do
         case eligible do
           [] -> nil
           pending ->
-            # Incomplete facts rank last: their partial list requests no archive,
-            # so choosing one would stall the class while an archivable complete
-            # brick sits idle. Then keep the prior candidate across
-            # fact-order/count changes, else archive the fewest workspaces; pod
-            # uid makes equal counts stable.
+            # Stalled facts rank last: an incomplete scan, or a complete one
+            # whose every unexported lineage is withheld by a live co-located
+            # sibling, requests no archive, so choosing one would stall the
+            # class while an archivable brick sits idle. Then keep the prior
+            # candidate across fact-order/count changes, else archive the
+            # fewest workspaces; pod uid makes equal counts stable.
             victim = Enum.min_by(pending, fn fact ->
               uid = Map.get(fact, :pod_uid)
-              {if(session_volumes_complete?(fact), do: 0, else: 1),
+              {if(archive_stalled?(fact, facts), do: 1, else: 0),
                 if(Map.has_key?(state.archive_pending, uid), do: 0, else: 1),
                 length(unexported_volumes(fact)), uid}
             end)
@@ -1412,13 +1413,14 @@ defmodule Embervm.BrickController do
     end
   end
 
-  # The channel key of the brick: the fact's instance_id, else the node name
-  # for a legacy fact that predates instance identity.
-  defp victim_instance_id(fact) do
-    case Map.get(fact, :instance_id) do
-      id when is_binary(id) and id != "" -> id
-      _ -> Map.get(fact, :node_id)
-    end
+  # The channel key of the brick, by the repo's one dial-key rule.
+  defp victim_instance_id(fact), do: Brick.dial_id(fact)
+
+  # A pending candidate that can request nothing: unknown inventory, or known
+  # unexported lineages that are all withheld (see archivable_volumes/2).
+  defp archive_stalled?(fact, facts) do
+    not session_volumes_complete?(fact) or
+      (unexported_volumes(fact) != [] and archivable_volumes(fact, facts) == [])
   end
 
   # The victim's unexported volumes minus any whose workload has a live session
