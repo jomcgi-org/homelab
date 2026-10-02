@@ -2542,6 +2542,40 @@ def _partial_turn(adapter, state):
     }
 
 
+def _claude_stream_usage(events):
+    """Sum reported assistant counters once per native message identity."""
+    messages = {}
+    keys = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    )
+    for event in events:
+        if event.get("type") != "assistant" or event.get("isReplay"):
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        message_id, usage = message.get("id"), message.get("usage")
+        if not isinstance(message_id, str) or not message_id:
+            continue
+        if not isinstance(usage, dict):
+            continue
+        counters = messages.setdefault(message_id, {})
+        for key in keys:
+            value = usage.get(key)
+            if type(value) is int and value >= 0:
+                # A tool-bearing message can arrive in multiple assistant
+                # events, with later events updating its output counter.
+                counters[key] = max(value, counters.get(key, 0))
+    return {
+        key: sum(counters.get(key, 0) for counters in messages.values())
+        for key in keys
+        if any(key in counters for counters in messages.values())
+    }
+
+
 class ClaudeProcess:
     """Own the CLI and serialize turns sent through its JSONL stream."""
 
@@ -2855,9 +2889,9 @@ class ClaudeProcess:
         (which bills each record's cost as that turn's own) would otherwise
         bill earlier spend again, as when a resumed CLI repeats an interrupted
         turn's cost. The baseline is the total through the last result
-        returned from turn(). A result turn() skips and a result it never
-        read (an interrupt that leaves only _partial_turn) leave it alone, so
-        that spend lands in the next returned record exactly once. A total
+        returned from turn(), including an interrupt recovered from saved
+        cost-state. A skipped result or interrupt without cumulative evidence
+        leaves it alone, so that spend lands in the next record once. A total
         below the baseline (a zeroed crash result) bills nothing and does not
         lower the baseline.
         """
@@ -2878,6 +2912,42 @@ class ClaudeProcess:
             "total": max(cumulative, baseline["total"]),
             "models": models,
         }
+
+    def _finish_interrupted_usage(self, record, events):
+        """Keep SIGINT evidence, using the same session ledger as results."""
+        usage = record.get("usage")
+        if not isinstance(usage, dict) or not any(
+            type(usage.get(key)) is int and usage[key] > 0
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            )
+        ):
+            stream_usage = _claude_stream_usage(events)
+            record["usage"] = stream_usage if any(stream_usage.values()) else {
+                "status": "unknown",
+                "reason": "interrupt_tokens_not_reported",
+            }
+        # A result was already billed above. Recover a transcript only when
+        # that result was missing or zeroed, never bill its cumulative twice.
+        cost = record.get("total_cost_usd")
+        if _is_cost_number(cost) and cost > 0:
+            return
+        session_id = record.get("session_id") or self.session_id
+        saved = _transcript_cost_state(
+            self._process_workspace or self.workspace, session_id
+        )
+        baseline = self._cost_baselines.get(session_id, {"total": 0})
+        if saved is not None and saved["total"] > baseline["total"]:
+            record["total_cost_usd"] = saved["total"]
+            record["modelUsage"] = saved["models"]
+            self._bill_from_baseline(record)
+        else:
+            # Missing evidence must not turn an interrupted call into free
+            # work. Keep the baseline so the next cumulative result bills it.
+            record["total_cost_usd"] = None
 
     @staticmethod
     def _pump_stdout(process, output_queue):
@@ -3235,7 +3305,22 @@ class ClaudeProcess:
                 raise
             finally:
                 if getattr(self, "_interrupt_requested", False):
-                    self._partial_turn = _partial_turn(self, locals())
+                    # SIGINT can emit a result before it flushes cost-state.
+                    # Wait for the same graceful exit the interrupt caller is
+                    # already awaiting, so a zeroed result can use that state.
+                    try:
+                        process.wait(timeout=INTERRUPT_TIMEOUT)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    partial = _partial_turn(self, locals())
+                    interrupted_record = locals().get("record", partial)
+                    self._finish_interrupted_usage(
+                        interrupted_record, locals().get("events", [])
+                    )
+                    partial.update(interrupted_record)
+                    partial["model"] = self.model or model
+                    partial["provider_model"] = self._provider_model()
+                    self._partial_turn = partial
                 if pusher and not getattr(self, "_drain_requested", False):
                     pusher.stop()
 
@@ -4267,8 +4352,10 @@ def _muse_live_tool_events(tasks_by_id):
     return events
 
 
-def _muse_usage_projection(events, session_id, command_id, expected_completions):
-    """Project one complete retained turn, with native counter provenance.
+def _muse_usage_projection(
+    events, session_id, command_id, expected_completions, interrupted=False
+):
+    """Project one retained turn, or an interrupted prefix, with provenance.
 
     MSP emits per-model usage and session cumulative counters separately. Sum
     only unique per-model observations; a missing observation is not zero usage.
@@ -4405,15 +4492,21 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
             by_cursor[cursor_key] = by_source[source_key] = signature
             if not duplicate:
                 selected.append((method, projected))
+        has_terminal = bool(selected and selected[-1][0] == "turn/completed")
+        observations_end = -1 if has_terminal else len(selected)
         if (
             not selected
             or selected[0][0] != "turn/started"
-            or selected[-1][0] != "turn/completed"
-            or any(method != "session/tokenUsage" for method, _ in selected[1:-1])
+            or (not has_terminal and not interrupted)
+            or any(
+                method != "session/tokenUsage"
+                for method, _ in selected[1:observations_end]
+            )
         ):
             return result
-        meta["terminal"] = selected[-1][1]
-        observations = [params for _, params in selected[1:-1]]
+        if has_terminal:
+            meta["terminal"] = selected[-1][1]
+        observations = [params for _, params in selected[1:observations_end]]
         meta["observations"] = observations
         meta["reported_usage_completions"] = len(observations)
         if not observations:
@@ -4440,9 +4533,12 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
                 elif cumulative[key] - previous[key] != count:
                     raise ValueError("missing or conflicting cumulative usage")
             previous = cumulative
-        if type(expected_completions) is not int or expected_completions != len(
-            observations
-        ):
+        complete = (
+            has_terminal
+            and type(expected_completions) is int
+            and expected_completions == len(observations)
+        )
+        if not complete and not interrupted:
             meta.update(status="incomplete", reason="completion_count_mismatch")
             return result
         totals = {
@@ -4450,7 +4546,7 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
             for key in raw_fields + cache_fields
             if all(key in observation["usage"] for observation in observations)
         }
-        terminal_usage = meta["terminal"].get("usage", {})
+        terminal_usage = meta.get("terminal", {}).get("usage", {})
         if any(totals.get(key) != value for key, value in terminal_usage.items()):
             raise ValueError("terminal aggregate mismatch")
         # Generic keys only: shared/pricing.py treats cache_read_input_tokens /
@@ -4480,7 +4576,10 @@ def _muse_usage_projection(events, session_id, command_id, expected_completions)
         else:
             meta["model_identity_status"] = "not_reported"
         meta["reported_model_ids"] = list(dict.fromkeys(reported_models))
-        meta.update(status="complete", reason="reported_usage")
+        meta.update(
+            status="complete" if complete else "incomplete",
+            reason="reported_usage" if complete else "interrupted_prefix",
+        )
     except (ValueError, TypeError, KeyError, AttributeError):
         meta.update(status="unavailable", reason="invalid_evidence")
     return result
@@ -4828,10 +4927,10 @@ class MuseProcess:
             return TransientTurnError(error_msg)
         return RuntimeError(error_msg)
 
-    def _collect_usage(self, command_id, expected_completions):
+    def _collect_usage(self, command_id, expected_completions, interrupted=False):
         self._retained_tool_events = None
         unavailable = _muse_usage_projection(
-            [], self.session_id, command_id, expected_completions
+            [], self.session_id, command_id, expected_completions, interrupted
         )
         if not isinstance(command_id, str) or not command_id:
             return unavailable
@@ -4898,7 +4997,11 @@ class MuseProcess:
                         events, self.session_id, command_id
                     )
                     return _muse_usage_projection(
-                        events, self.session_id, command_id, expected_completions
+                        events,
+                        self.session_id,
+                        command_id,
+                        expected_completions,
+                        interrupted,
                     )
                 cursor = page["nextCursor"]
                 if cursor is None:
@@ -4910,7 +5013,11 @@ class MuseProcess:
                 events, self.session_id, command_id
             )
             return _muse_usage_projection(
-                events, self.session_id, command_id, expected_completions
+                events,
+                self.session_id,
+                command_id,
+                expected_completions,
+                interrupted,
             )
         except Exception:
             unavailable["muse"]["reason"] = "collection_failed"
@@ -4982,6 +5089,7 @@ class MuseProcess:
             accumulated_text = ""
             result_text = ""
             completed_model_attempts = set()
+            command_id = None
             terminal_reason = "completed"
             tasks_by_id = {}
             live_activity_events = []
@@ -5007,6 +5115,12 @@ class MuseProcess:
                         raise self._empty_stream_error(process)
                     event_type = event.get("payload_type")
                     payload = event.get("payload", {})
+                    if (
+                        command_id is None
+                        and isinstance(payload.get("command_id"), str)
+                        and payload["command_id"]
+                    ):
+                        command_id = payload["command_id"]
                     if event_type == "run.output.delta":
                         text = payload.get("text", "")
                         if isinstance(text, str):
@@ -5037,10 +5151,16 @@ class MuseProcess:
                         self._close_process(kill=False)
                         usage_collect_start = _turn_timing_now()
                         self._retained_tool_events = None
+                        collect_args = (
+                            {"interrupted": True}
+                            if getattr(self, "_interrupt_requested", False)
+                            else {}
+                        )
                         try:
                             usage = self._collect_usage(
                                 payload.get("command_id"),
                                 len(completed_model_attempts),
+                                **collect_args,
                             )
                         except Exception:
                             usage = _muse_usage_projection(
@@ -5048,6 +5168,7 @@ class MuseProcess:
                                 self.session_id,
                                 payload.get("command_id"),
                                 len(completed_model_attempts),
+                                **collect_args,
                             )
                             usage["muse"]["reason"] = "collection_failed"
                         if self._retained_tool_events:
@@ -5132,14 +5253,27 @@ class MuseProcess:
                                     live_activity_events
                                 )[-300:]
             finally:
+                self._close_process(kill=False)
                 if getattr(self, "_interrupt_requested", False):
+                    if "usage" not in locals():
+                        try:
+                            usage = self._collect_usage(
+                                command_id,
+                                len(completed_model_attempts),
+                                interrupted=True,
+                            )
+                        except Exception:
+                            usage = _muse_usage_projection(
+                                [], self.session_id, command_id,
+                                len(completed_model_attempts), interrupted=True,
+                            )
+                            usage["muse"]["reason"] = "collection_failed"
                     self._partial_turn = _partial_turn(self, locals())
                 if pusher and not getattr(self, "_drain_requested", False):
                     try:
                         pusher.stop()
                     except Exception:
                         pass
-                self._close_process(kill=False)
 
     def interrupt(self, timeout=INTERRUPT_TIMEOUT):
         with self.process_lock:

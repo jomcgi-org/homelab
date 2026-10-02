@@ -10816,6 +10816,229 @@ def _cost_manager(tmp_path, monkeypatch, scenario, transcript=None):
 _OK_USAGE = {"input_tokens": 5, "output_tokens": 2}
 
 
+_INTERRUPTED_USAGE_CLI = r'''#!/usr/bin/env python3
+import json, os, signal, sys
+if '--version' in sys.argv:
+    sys.exit(0)
+transcript = %(transcript)r
+mode = %(mode)r
+running = 0
+if '--resume' in sys.argv and os.path.isfile(transcript):
+    for raw in open(transcript):
+        event = json.loads(raw)
+        if event.get('type') == 'cost-state':
+            running = event['totalCostUSD']
+print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': 's',
+                  'apiKeySource': 'none', 'mcp_servers': []}), flush=True)
+sys.stdin.readline()
+if '--resume' in sys.argv:
+    print(json.dumps({'type': 'result', 'session_id': 's', 'result': 'OK',
+                      'total_cost_usd': running + 0.001,
+                      'usage': {'input_tokens': 5, 'output_tokens': 2}}), flush=True)
+    for line in sys.stdin:
+        pass
+    sys.exit(0)
+def stop(signum, frame):
+    if mode in ('result', 'zero_result', 'unknown_zero'):
+        print(json.dumps({'type': 'result', 'session_id': 's', 'result': '',
+                          'total_cost_usd': 0.027 if mode == 'result' else 0,
+                          'usage': {}}), flush=True)
+    if mode in ('result', 'transcript', 'zero_result'):
+        with open(transcript, 'a') as stream:
+            stream.write(json.dumps({'type': 'cost-state', 'sessionId': 's',
+                                     'totalCostUSD': 0.027,
+                                     'modelUsage': {'model': {'inputTokens': 10,
+                                                            'costUSD': 0.027}}}) + '\n')
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+if mode not in ('unknown', 'unknown_zero'):
+    for message_id, tokens in [('one', 5), ('one', 5), ('two', 5)]:
+        print(json.dumps({'type': 'assistant', 'session_id': 's',
+                          'message': {'id': message_id, 'content': [],
+                                      'usage': {'input_tokens': tokens,
+                                                'output_tokens': 2}}}), flush=True)
+print(json.dumps({'type': 'usage_test_ready'}), flush=True)
+while True:
+    signal.pause()
+'''
+
+
+def _claude_interrupted_usage(tmp_path, monkeypatch, mode, drain=False):
+    adapter, _ = _cost_manager(tmp_path, monkeypatch, [])
+    transcript = shim._transcript_path(adapter.workspace, "s")
+    executable = tmp_path / "cost-cli"
+    executable.write_text(
+        _INTERRUPTED_USAGE_CLI % {"transcript": transcript, "mode": mode}
+    )
+    ready = threading.Event()
+    parse = adapter._parse_line
+
+    def observe(raw):
+        event = parse(raw)
+        if event and event.get("type") == "usage_test_ready":
+            ready.set()
+        return event
+
+    monkeypatch.setattr(adapter, "_parse_line", observe)
+    records, errors = [], []
+
+    def turn():
+        try:
+            records.append(adapter.turn("work", model="opus"))
+        except RuntimeError as exc:
+            errors.append(exc)
+            records.append(adapter._partial_turn)
+
+    worker = threading.Thread(target=turn, daemon=True)
+    worker.start()
+    try:
+        assert ready.wait(5), "fake CLI did not emit the interrupt prefix"
+        adapter._interrupt_requested = True
+        adapter._drain_requested = drain
+        adapter.interrupt(timeout=2)
+        worker.join(5)
+        assert not worker.is_alive(), "interrupted usage did not settle"
+        assert records, errors
+    finally:
+        adapter._close_process(kill=True)
+    adapter._interrupt_requested = False
+    adapter._drain_requested = False
+    return adapter, records[0]
+
+
+@pytest.mark.parametrize("mode", ["result", "transcript", "zero_result", "tokens"])
+def test_claude_interrupt_preserves_reported_usage(tmp_path, monkeypatch, mode):
+    adapter, record = _claude_interrupted_usage(tmp_path, monkeypatch, mode)
+    assert record["usage"]["input_tokens"] == 10
+    assert record["usage"]["output_tokens"] == 4
+    if mode == "tokens":
+        assert record.get("total_cost_usd") is None
+    else:
+        assert record["total_cost_usd"] == pytest.approx(0.027)
+        assert adapter._cost_baselines["s"]["total"] == pytest.approx(0.027)
+
+
+@pytest.mark.parametrize("mode", ["unknown", "unknown_zero"])
+def test_claude_interrupt_without_evidence_is_unknown(tmp_path, monkeypatch, mode):
+    _, record = _claude_interrupted_usage(tmp_path, monkeypatch, mode)
+    assert record.get("total_cost_usd") is None
+    assert record["usage"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("drain", [False, True])
+def test_claude_interrupt_and_continuation_bill_once(tmp_path, monkeypatch, drain):
+    adapter, first = _claude_interrupted_usage(
+        tmp_path, monkeypatch, "transcript", drain=drain
+    )
+    try:
+        second = adapter.turn("continue", model="opus")
+        assert first["total_cost_usd"] == pytest.approx(0.027)
+        assert second["total_cost_usd"] == pytest.approx(0.001)
+        assert first["total_cost_usd"] + second["total_cost_usd"] == pytest.approx(
+            second["cumulative_total_cost_usd"]
+        )
+    finally:
+        adapter._close_process(kill=True)
+
+
+@pytest.mark.parametrize("has_evidence", [True, False, "collector_failure"])
+def test_muse_interrupt_collects_exact_command_usage(
+    tmp_path, monkeypatch, has_evidence
+):
+    adapter = _muse_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(shim, "_reap_orphans", lambda: None)
+    native = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    command_id = native[0]["params"]["commandId"]
+    session_id = native[0]["params"]["sessionId"]
+    events = iter(
+        [
+            {
+                "payload_type": "task.lifecycle.output",
+                "payload": {
+                    "command_id": command_id,
+                    "task_id": "model-task",
+                    "event": {
+                        "details": {
+                            "phase": "stream_succeeded",
+                            "facets": [
+                                {
+                                    "kind": "external_attempt",
+                                    "operation": "model.response",
+                                    "attempt": 1,
+                                }
+                            ],
+                        }
+                    },
+                },
+            },
+            None,
+        ]
+    )
+
+    def read(_timeout):
+        event = next(events)
+        if event is None:
+            adapter._interrupt_requested = True
+        return event
+
+    monkeypatch.setattr(adapter, "_read_event", read)
+    calls = []
+
+    def collect(actual_command, completions, **kwargs):
+        assert adapter.process is None
+        calls.append((actual_command, completions))
+        if has_evidence == "collector_failure":
+            raise RuntimeError("read-only collector failed")
+        return shim._muse_usage_projection(
+            native[:-1] if has_evidence else [],
+            session_id,
+            actual_command,
+            completions,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(adapter, "_collect_usage", collect)
+    with pytest.raises(RuntimeError, match="muse exited before"):
+        adapter.turn("work", session_id=session_id, model="spark")
+    record = adapter._partial_turn
+    assert calls == [(command_id, 1)]
+    assert record.get("total_cost_usd") is None
+    if has_evidence is True:
+        assert record["usage"]["input_tokens"] == 23415
+        assert record["usage"]["output_tokens"] == 24
+        assert record["usage"]["muse"]["status"] == "incomplete"
+    else:
+        assert record["usage"]["muse"]["status"] == "unavailable"
+        assert "input_tokens" not in record["usage"]
+
+
+def test_muse_interrupt_terminal_still_projects_retained_prefix(tmp_path, monkeypatch):
+    adapter = _muse_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(shim, "_reap_orphans", lambda: None)
+    native = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    session_id = native[0]["params"]["sessionId"]
+    command_id = native[0]["params"]["commandId"]
+
+    def read(_timeout):
+        adapter._interrupt_requested = True
+        return {
+            "payload_type": "run.terminal.completed",
+            "payload": {"command_id": command_id, "reason": "user_interrupt"},
+        }
+
+    def collect(actual_command, completions, **kwargs):
+        return shim._muse_usage_projection(
+            native[:-1], session_id, actual_command, completions, **kwargs
+        )
+
+    monkeypatch.setattr(adapter, "_read_event", read)
+    monkeypatch.setattr(adapter, "_collect_usage", collect)
+    record = adapter.turn("work", session_id=session_id, model="spark")
+    assert record["terminal_reason"] == "user_interrupt"
+    assert record["usage"]["input_tokens"] == 23415
+    assert record["usage"]["muse"]["status"] == "incomplete"
+
+
 def test_claude_turn_skips_stale_background_task_result(tmp_path, monkeypatch):
     """Interrupted background completion must not become the next result (#6600).
 
