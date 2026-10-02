@@ -638,7 +638,8 @@ defmodule Embervm.Session do
     if state.draining, do: maybe_drain_bank(state), else: maybe_start_next(state)
   end
 
-  defp record_adoption_outcome(state, {:ok, %{dispatch_id: id, cli_session_id: cli, transcript_path: path}})
+  defp record_adoption_outcome(state, {:ok, %{dispatch_id: id, cli_session_id: cli, transcript_path: path,
+      timeout: false, terminal_reason: "interrupted_for_drain"}})
        when is_binary(cli) and cli != "" and is_binary(path) and path != "" do
     if id == state.adoption_flush.dispatch_id and state.clock.() < state.adoption_flush_deadline do
       Embervm.SessionStore.record_adoption_flush(state.session_store, state.session_id,

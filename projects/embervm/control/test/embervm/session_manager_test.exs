@@ -7282,6 +7282,7 @@ defmodule Embervm.SessionManagerTest do
     end
     :sys.replace_state(ctx.mgr, fn state -> put_in(state.relighting[parked.session_id], [:waiting]) end)
     assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    put_session_workload(ctx, started.workload, persistence_workload_opts())
     :sys.replace_state(ctx.mgr, fn state -> %{state | relighting: %{}} end)
     :sys.replace_state(ctx.mgr, fn state -> put_in(state.pressure_waits[parked.session_id], %{first_denied_at: 1}) end)
     assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
@@ -7494,12 +7495,13 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
-  for mode <- [:flag_off, :legacy, :completed, :wrong_dispatch, :empty_path, :empty_cli, :fence, :append_error, :unavailable] do
+  for mode <- [:flag_off, :legacy, :completed, :wrong_dispatch, :empty_path, :empty_cli, :timeout, :hang, :fence, :append_error, :unavailable, :no_channel] do
     test "adoption flush fails closed for #{mode}" do
       mode = unquote(mode)
       parent = self()
       ctx = start_stack(restart_flush_inflight_invokes: mode != :flag_off, drain_flush_ms: 180,
         store_op_log_mod: if(mode == :append_error, do: UnavailableInvokeCompletionOpLog, else: SQLite),
+        session_channel_fun: if(mode == :no_channel, do: fn _ -> {:error, :unavailable} end, else: fn _ -> {:ok, :ch} end),
         prime_fun: fake_prime_fun("vm-fail-closed"),
         interrupt_fun: fn _, req ->
           send(parent, {:fail_closed_flush, self(), req})
@@ -7512,6 +7514,7 @@ defmodule Embervm.SessionManagerTest do
               :wrong_dispatch -> %{response | dispatch_id: "wrong"}
               :empty_path -> %{response | transcript_path: ""}
               :empty_cli -> %{response | cli_session_id: ""}
+              :timeout -> %{response | timeout: true}
               _ -> response
             end
             {:ok, response}
@@ -7534,9 +7537,11 @@ defmodule Embervm.SessionManagerTest do
         assert Embervm.Session.quiescent?(pid)
         refute_receive {:fail_closed_flush, _, _}, 30
       else
+        if mode != :no_channel do
         assert_receive {:fail_closed_flush, worker, _}, 1_000
         if mode == :fence, do: SessionStore.record_invoke_started(ctx.store, created.session_id, "new-dispatch")
-        if mode != :unavailable, do: send(worker, :release)
+        if mode not in [:unavailable, :hang], do: send(worker, :release)
+        end
         assert eventually(fn -> :sys.get_state(pid).adoption_flush == nil end)
         if mode == :unavailable do
           assert_receive {:fail_closed_flush, _, _}, 1_000
