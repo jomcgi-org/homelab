@@ -45,6 +45,7 @@ FORBIDDEN_MODULES = [
     "agent_sessions",
     "factory",
     "cluster",
+    "home",
     "goosecracker",
     "moving",
     "sandbox",
@@ -238,12 +239,15 @@ def test_only_narrow_kubernetes_tools_join_the_agent_catalogue():
         "kubernetes_read",
         "kubernetes_pod_logs",
         "verify_deployment",
+        "cluster_snapshot",
     )
     loaded = _loaded_modules()
     assert "agent_kubernetes.client" in loaded
+    assert "agent_kubernetes.cluster_snapshot" in loaded
     assert not any(
         module == "cluster" or module.startswith("cluster.") for module in loaded
     )
+    assert not any(module == "home" or module.startswith("home.") for module in loaded)
 
 
 @pytest.fixture(name="agents_db")
@@ -295,6 +299,40 @@ def _agents_principal() -> Principal:
         kind=PrincipalKind.WORKLOAD,
         authority=Authority.DELEGATED,
     )
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.WORKLOAD, PrincipalKind.HUMAN])
+def test_cluster_snapshot_accepts_authenticated_factory_and_human_principals(kind):
+    import app.agents_main as agents_main
+
+    principal = Principal(
+        subject="factory-guest" if kind is PrincipalKind.WORKLOAD else "human",
+        actor=(),
+        scope=(),
+        groups=(),
+        email=None,
+        kind=kind,
+        authority=Authority.DELEGATED
+        if kind is PrincipalKind.WORKLOAD
+        else Authority.STANDING,
+    )
+    results = []
+
+    async def downstream(_scope, _receive, _send):
+        results.append(await agents_main.cluster_snapshot("monolith"))
+
+    gate = agents_main._AuthenticatedPrincipalGate(downstream)
+    with (
+        patch.object(agents_main, "current_principal", return_value=principal),
+        patch.object(
+            sys.modules["agent_kubernetes.cluster_snapshot"],
+            "_read_cluster_snapshot",
+            return_value={"ok": True},
+        ) as read,
+    ):
+        asyncio.run(gate({"type": "http"}, None, None))
+    assert results == [{"ok": True}]
+    read.assert_called_once_with("monolith")
 
 
 def test_reporting_tools_run_from_agents_import_closure(agents_db) -> None:

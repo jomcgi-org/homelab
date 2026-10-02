@@ -64,8 +64,11 @@ serving four knowledge tools (`search_knowledge`, `report_knowledge`,
 `dispute_fact`, `report_distress`), three default-off board tools
 (`post_message`, `read_board`, `ack_message`), two bounded Kubernetes
 observation tools (`kubernetes_read`, `kubernetes_pod_logs`), and
-`verify_deployment` on its own Service and port,
-with a database role scoped to the knowledge tables. It is
+`verify_deployment`, plus the database-only `cluster_snapshot` tool, on its own
+Service and port, with a database role scoped to the knowledge tables and SELECT
+on `agent_view.cluster_snapshot`. The snapshot refreshes every 2 minutes;
+stale or incomplete data means unknown, not healthy. It adds no Kubernetes
+permissions or egress. It is
 fail-closed: an anonymous principal is answered 401 before the MCP app runs.
 Identity comes from the authentik `mcp-agents` provider by
 `client_credentials`. The EmberVM token broker mints the bearer (grant

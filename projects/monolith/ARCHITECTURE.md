@@ -238,7 +238,8 @@ definer's-rights views (deliberately not `security_invoker`) that expose only
 public knowledge rows. The public write role has DML only on the bounded public
 chat schemas and specific demo latch tables. The agents tier connects as
 `agents_writer`, whose grant set is read across `knowledge` plus insert on four
-tables and nothing at all on the private application schemas. Each of these
+tables, plus SELECT on `agent_view.cluster_snapshot`, and nothing at all on
+the private application schemas. Each of these
 roles takes its password from an out-of-band basic-auth Secret because the
 1Password operator cannot emit the Secret type CNPG requires.
 (see: /projects/monolith/chart/migrations/20260617000000_public_reader_role.sql)
@@ -1280,8 +1281,18 @@ The agents tier is the second surface, intended for guests.
 `monolith-agents` runs in its own namespace and serves four knowledge tools (`search_knowledge`,
 `report_knowledge`, `dispute_fact`, `report_distress`), three staged board tools
 (`post_message`, `read_board`, `ack_message`), two Kubernetes observation
-tools (`kubernetes_read`, `kubernetes_pod_logs`), and `verify_deployment` over
-stateless MCP.
+tools (`kubernetes_read`, `kubernetes_pod_logs`), `verify_deployment`, and the
+database-only `cluster_snapshot` tool over stateless MCP.
+
+`cluster_snapshot` reads the bounded `agent_view.cluster_snapshot` summary,
+refreshed every 2 minutes by the private monolith job. It exposes Application
+sync, health, deployed and desired revisions, plus unhealthy workload rows,
+without manifests or logs. Any authenticated principal can read it; snapshots
+older than 600 seconds or marked incomplete mean unknown, never healthy.
+**Why.** Guests need cluster state for refine verdicts. On 2026-10-01 Joe chose
+a job-written snapshot over agents-tier RBAC or a proxy (#6061), keeping cluster
+credentials out of this read path and accepting data up to a few minutes old.
+The tool adds no Kubernetes permissions or egress to the agents tier.
 
 **`verify_deployment` is served on both surfaces with one rule set.** The
 private surface and the agents tier each read the ArgoCD Application through

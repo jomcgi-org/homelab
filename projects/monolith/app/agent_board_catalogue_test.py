@@ -45,6 +45,15 @@ def test_board_wire_schemas_are_pinned_in_pi_bridge():
         )
 
 
+def test_cluster_snapshot_wire_schema_is_pinned_in_pi_bridge():
+    source = _runfile("projects/embervm/runtimes/pi/agent-mcp.ts").read_text()
+    block = _pi_tool_blocks(source)["cluster_snapshot"]
+    assert set(re.findall(r"^\s{6}([a-z_]+): ", block, re.MULTILINE)) == {"application"}
+    assert "application: Type.Optional(" in block
+    assert "minLength: 1" in block
+    assert "maxLength: 253" in block
+
+
 def test_claude_and_codex_use_dynamic_agents_server_catalogue_and_prompt_names_tools():
     source = _runfile("projects/embervm/runtimes/claude/shim.py").read_text()
     assert '"mcpServers": {"agents":' in source

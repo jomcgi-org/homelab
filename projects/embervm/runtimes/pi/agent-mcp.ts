@@ -412,6 +412,21 @@ const TOOLS: ToolSpec[] = [
       ),
     }),
   },
+  {
+    mcpName: "cluster_snapshot",
+    label: "Cluster Snapshot",
+    description:
+      "Read a cluster summary refreshed every 2 minutes; stale or incomplete snapshots mean unknown, never healthy.",
+    parameters: Type.Object({
+      application: Type.Optional(
+        Type.String({
+          description: "ArgoCD Application name to keep in the applications list",
+          minLength: 1,
+          maxLength: 253,
+        }),
+      ),
+    }),
+  },
 ];
 
 function piToolName(mcpName: string): string {
