@@ -3314,10 +3314,14 @@ defmodule Embervm.SessionManager do
   end
 
   defp clear_session_tracking(state, session_id) do
-    state = case SessionStore.get(state.session_store, session_id) do
-      {:ok, session} ->
-        if SessionState.terminal?(session.state), do: forget_workspace_evidence(state, session_id), else: state
-      :error -> forget_workspace_evidence(state, session_id)
+    state = if state.cross_node_rejoin do
+      case SessionStore.get(state.session_store, session_id) do
+        {:ok, session} ->
+          if SessionState.terminal?(session.state), do: forget_workspace_evidence(state, session_id), else: state
+        :error -> forget_workspace_evidence(state, session_id)
+      end
+    else
+      state
     end
     %{
       state
@@ -3518,7 +3522,7 @@ defmodule Embervm.SessionManager do
              session.principal,
              Map.get(session, :generation, 0) || 0,
              expected,
-             brick.node_id
+             if(expected != "", do: brick.node_id, else: nil)
            ),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
