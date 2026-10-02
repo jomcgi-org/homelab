@@ -1,85 +1,101 @@
 <script>
   import recording from "./conformance-replay.json";
 
-  // One step per trace record, not per millisecond: the trace is bursty (a
-  // prime, a dispatch and a heartbeat land within 40 ms, then five seconds
-  // of nothing) and a time scrub would spend most of its travel on
-  // heartbeats. The clock shown is the record's own offset from suite start.
+  // A time scrub over the suite window. The trace is bursty (a prime, a
+  // dispatch and a heartbeat land within 40 ms, then five seconds of
+  // heartbeats), so the picture is the timeline itself: every record is a
+  // tick, VM lifetimes are bars that grow under the playhead, and the nine
+  // invariants fill in as the checker's coverage arrives. Play runs at 8x,
+  // so the 57 s window takes about 7 s.
   const events = recording.events;
-  const lastIndex = events.length - 1;
-  let index = $state(0);
+  const duration = recording.durationMs;
+  const RATE = 8;
+  let position = $state(0);
   let playing = $state(false);
   let selected = $state(null);
-  let event = $derived(events[index]);
-  let complete = $derived(index >= lastIndex);
-  let verdicts = $derived(event.verdicts);
-  let seen = $derived(events.slice(0, index + 1));
+  let current = $derived(events.findLast((e) => e.at <= position) ?? null);
+  let verdicts = $derived((current ?? events[0]).verdicts);
+  let complete = $derived(position >= duration);
+  const pct = (ms) => (100 * ms) / duration + "%";
+  const seconds = (ms) => (ms / 1000).toFixed(1) + " s";
 
-  // The brick's VMs as the trace has described them so far. A prime adds a
-  // VM, a dispatch marks it running, a success leaves it finished, and the
-  // destroy pair walks it out. The runner also destroys VMs the window never
-  // saw primed (they were primed before the window opened), so a destroy of
-  // an unknown VM adds it in its terminal state.
-  let vms = $derived.by(() => {
+  // VM lifetimes as segments. A prime opens a bar; a dispatch, a success
+  // and the destroy pair each close the open segment and start the next
+  // state. The runner also destroys VMs primed before the window opened,
+  // so a destroy of an unknown VM opens its bar at that point.
+  // What each VM was doing, from the runner's scenario log for this run.
+  const roles = recording.roles ?? {};
+  const lanes = (() => {
     const byId = new Map();
-    for (const e of seen) {
+    const open = (vm, at, state) => {
+      vm.segments.push({ from: at, to: null, state });
+    };
+    const close = (vm, at) => {
+      const last = vm.segments.at(-1);
+      if (last && last.to == null) last.to = at;
+    };
+    const next = {
+      prime: "primed",
+      dispatch_miss: "running",
+      succeed: "finished",
+      begin_destroy: "destroying",
+      confirm_destroy: "destroyed",
+    };
+    for (const e of events) {
       const id = e.vars.vm;
-      if (!id) continue;
-      const vm = byId.get(id) ?? { id, lane: e.vars.lane, state: "primed" };
-      if (e.action === "prime")
-        Object.assign(vm, { lane: e.vars.lane, state: "primed" });
-      else if (e.action === "dispatch_miss") vm.state = "running";
-      else if (e.action === "succeed") vm.state = "finished";
-      else if (e.action === "begin_destroy")
-        Object.assign(vm, { lane: "session", state: "destroying" });
-      else if (e.action === "confirm_destroy")
-        Object.assign(vm, { lane: "session", state: "destroyed" });
-      byId.set(id, vm);
+      if (!id || !next[e.action]) continue;
+      let vm = byId.get(id);
+      if (!vm) {
+        vm = {
+          id,
+          lane: e.vars.lane ?? "session",
+          role: roles[id] ?? "",
+          segments: [],
+        };
+        byId.set(id, vm);
+      }
+      if (e.action === "prime") vm.lane = e.vars.lane;
+      close(vm, e.at);
+      open(vm, e.at, next[e.action]);
     }
     return [...byId.values()];
-  });
+  })();
 
-  const seconds = (ms) => (ms / 1000).toFixed(1) + " s";
   function describe(e) {
     const v = e.vars;
     switch (e.action) {
       case "prime":
-        return `${v.vm} primed for the ${v.lane} lane (${v.workload})`;
+        return `a ${v.lane} VM is booted and waiting`;
       case "dispatch_miss":
-        return `task ${v.task} dispatched to ${v.vm}, provenance ${v.provenance}`;
+        return "a task is dispatched to it";
       case "succeed":
-        return `task ${v.task} succeeded on ${v.vm}`;
+        return "the task finishes";
       case "begin_destroy":
-        return `destroy of ${v.vm} recorded as intended (session ${v.session})`;
+        return "the control plane records that it intends to destroy a VM";
       case "confirm_destroy":
-        return `node confirmed ${v.confirmed_by} of ${v.vm}`;
+        return "the node confirms the VM is gone";
       case "checkpoint":
-        return `checkpoint: node reports ${v.live_vms} live, ${v.known} known to the control plane`;
+        return `checkpoint: the node reports ${v.live_vms} live VM${v.live_vms === 1 ? "" : "s"}, the control plane knows ${v.known}`;
       case "recv_status":
-        return v.primed.length
-          ? `node ${v.health}, primed ${v.primed.join(", ")}`
-          : `node ${v.health}`;
+        return "node heartbeat";
       default:
         return e.action;
     }
   }
   function toggle() {
-    if (complete) index = 0;
+    if (complete) position = 0;
     playing = !playing;
   }
   $effect(() => {
     if (!playing) return;
+    let previous = performance.now();
     const timer = setInterval(() => {
-      index = Math.min(lastIndex, index + 1);
-      if (index >= lastIndex) playing = false;
-    }, 320);
+      const now = performance.now();
+      position = Math.min(duration, position + (now - previous) * RATE);
+      previous = now;
+      if (position >= duration) playing = false;
+    }, 40);
     return () => clearInterval(timer);
-  });
-  let log;
-  $effect(() => {
-    // Keep the newest record in view while scrubbing or playing.
-    void index;
-    if (log) log.scrollTop = log.scrollHeight;
   });
 </script>
 
@@ -96,153 +112,125 @@
       onblur={(event) => delete event.currentTarget.dataset.pointer}
       >{playing ? "Pause" : complete ? "Replay" : "Play"}</button
     >
-    <label class="timeline"
-      ><span class="sr-only">Trace record</span><input
-        type="range"
-        min="0"
-        max={lastIndex}
-        step="1"
-        bind:value={index}
-        oninput={() => (playing = false)}
-        aria-valuetext={`record ${index + 1} of ${events.length}, ${seconds(event.at)}`}
-      /></label
+    <span class="time">{seconds(position)}</span>
+    <span class="phase" role="status"
+      ><i class:complete></i>{complete ? "Run complete" : "Tracing"}</span
     >
-    <span class="time">{seconds(event.at)}</span>
   </div>
 
   <div class="instrument">
-    <header class="instrument-heading">
-      <span
-        >Chart {recording.chartVersion}, run {recording.runId.slice(0, 8)}</span
+    <div class="strip" aria-label="Trace timeline">
+      <div class="ticks" aria-hidden="true">
+        {#each events as e (e.seq)}
+          <i class={e.action} style:left={pct(e.at)}></i>
+        {/each}
+        <b class="playhead" style:left={pct(position)}></b>
+      </div>
+      <label class="timeline"
+        ><span class="sr-only">Recorded time</span><input
+          type="range"
+          min="0"
+          max={duration}
+          step="10"
+          bind:value={position}
+          oninput={() => (playing = false)}
+          aria-valuetext={seconds(position)}
+        /></label
       >
-      <span
-        class="phase"
-        data-phase={complete ? "Complete" : "Tracing"}
-        role="status"
-        ><i></i>{complete
-          ? "Suite complete"
-          : `Record ${index + 1} of ${events.length}`}</span
-      >
-    </header>
-
-    <div class="panes">
-      <section class="trace" aria-label="Trace records">
-        <header>
-          <strong>Trace</strong><span>control plane, oldest first</span>
-        </header>
-        <ol bind:this={log}>
-          {#each seen as e (e.seq)}
-            <li
-              class={e.action}
-              aria-current={e === event ? "step" : undefined}
-            >
-              <span class="at">{seconds(e.at)}</span>
-              <span class="action">{e.action}</span>
-              <span class="what">{describe(e)}</span>
-            </li>
-          {/each}
-        </ol>
-        <header class="brick">
-          <strong>VMs on the brick</strong><span
-            >as the trace describes them</span
-          >
-        </header>
-        <ul class="vms" aria-label="VMs the trace has mentioned">
-          {#each vms as vm (vm.id)}
-            <li data-state={vm.state}>
-              <span class="id">{vm.id}</span>
-              <span class="state">{vm.state}</span>
-              <span class="lane">{vm.lane}</span>
-            </li>
-          {:else}
-            <li class="empty">No VM mentioned yet.</li>
-          {/each}
-        </ul>
-      </section>
-
-      <section class="invariants" aria-label="Invariant verdicts">
-        <header>
-          <strong>Invariants</strong><span
-            >checker verdict after this record</span
-          >
-        </header>
-        <ul>
-          {#each recording.invariants as inv (inv.key)}
-            {@const [verdict, coverage] = verdicts[inv.key]}
-            <li>
-              <button
-                type="button"
-                data-verdict={verdict}
-                aria-pressed={selected === inv.key}
-                onclick={() =>
-                  (selected = selected === inv.key ? null : inv.key)}
-              >
-                <span class="name">{inv.name}</span>
-                <span class="verdict"><i></i>{verdict}</span>
-                <span class="coverage">{coverage} checked</span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-        {#if selected}
-          {@const inv = recording.invariants.find((i) => i.key === selected)}
-          <p class="caption">
-            {inv.meaning}
-            {#if complete}
-              The checker said: "{recording.final[selected][2]}".
-            {/if}
-          </p>
+      <p class="now">
+        {#if current}
+          <span class="at">{seconds(current.at)}</span>
+          <span class="what">{describe(current)}</span>
         {:else}
-          <p class="caption">
-            Vacuous means the window gave the invariant nothing to check. It is
-            reported, never counted as a pass.
-          </p>
+          <span class="what">Nothing recorded yet.</span>
         {/if}
-      </section>
+      </p>
     </div>
 
+    <div class="lanes" aria-label="VMs on the brick over the window">
+      {#each lanes as vm (vm.id)}
+        <div class="lane">
+          <span class="label"><span class="id">{vm.role || vm.id}</span></span>
+          <span class="bar">
+            {#each vm.segments as seg}
+              {#if seg.from <= position}
+                <i
+                  data-state={seg.state}
+                  style:left={pct(seg.from)}
+                  style:width={pct(
+                    Math.min(position, seg.to ?? duration) - seg.from,
+                  )}
+                ></i>
+              {/if}
+            {/each}
+          </span>
+        </div>
+      {/each}
+      <ul class="legend" aria-label="Bar states">
+        {#each ["primed", "running", "finished", "destroying", "destroyed"] as state}
+          <li data-state={state}><i></i>{state}</li>
+        {/each}
+      </ul>
+    </div>
+
+    <div class="invariants" aria-label="Invariant verdicts">
+      {#each recording.invariants as inv (inv.key)}
+        {@const [verdict, coverage] = verdicts[inv.key]}
+        <button
+          type="button"
+          data-verdict={verdict}
+          aria-pressed={selected === inv.key}
+          onclick={() => (selected = selected === inv.key ? null : inv.key)}
+        >
+          <span class="name">{inv.name}</span>
+          <span class="verdict">{verdict}</span>
+          <span class="coverage">{coverage}</span>
+        </button>
+      {/each}
+    </div>
+    {#if selected}
+      {@const inv = recording.invariants.find((i) => i.key === selected)}
+      <p class="caption note">
+        {inv.meaning}
+        {#if complete}
+          The checker said: "{recording.final[selected][2]}".
+        {/if}
+      </p>
+    {/if}
+
     {#if complete}
-      <footer class="suite" aria-label="Suite verdict">
-        <ol>
-          {#each recording.scenarios as s (s.id)}
-            <li data-verdict={s.verdict}>
-              <span class="id">{s.id}</span>
-              <span class="title">{s.title}</span>
-              <span class="ms">{(s.ms / 1000).toFixed(1)} s</span>
-            </li>
-          {/each}
-        </ol>
-        <p>
-          Suite verdict for chart {recording.chartVersion}:
-          <strong data-verdict={recording.suiteVerdict}
-            >{recording.suiteVerdict}</strong
-          >. Kargo reads this.
-        </p>
-      </footer>
+      <p class="suite" role="status">
+        All five scenarios passed in {(
+          recording.scenarios.reduce((t, s) => t + s.ms, 0) / 1000
+        ).toFixed(0)} s. Verdict
+        <strong data-verdict={recording.suiteVerdict}
+          >{recording.suiteVerdict}</strong
+        >: Kargo promotes the chart.
+      </p>
     {/if}
   </div>
-  <p class="caption conditions">{recording.conditions}</p>
 </section>
 
 <style>
   .replay {
+    --primed: var(--ink-3);
+    --running: var(--accent-ink);
+    --finished: var(--ok);
+    --destroying: var(--replay-warm);
+    --destroyed: var(--ink-3);
     min-width: 0;
     color: var(--ink);
     font-family: var(--font-ui);
   }
-  .replay .caption {
+  .caption {
     color: var(--ink-2);
     font-size: 0.75rem;
     line-height: 1.5;
   }
-  .conditions {
-    margin: 0.8rem 0 0;
-  }
   .controls {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
     align-items: center;
+    gap: 0.75rem;
     margin: 0.9rem 0;
     font-size: 0.75rem;
   }
@@ -263,46 +251,21 @@
     cursor: pointer;
   }
   button:focus-visible,
-  input:focus-visible,
-  ol:focus-visible {
+  input:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
   }
-  .timeline {
-    flex: 1;
-    min-width: 6rem;
-    display: flex;
-    align-items: center;
-  }
-  .timeline input {
-    width: 100%;
-    min-width: 0;
-    accent-color: var(--accent-ink);
-  }
   .time {
-    min-width: 4rem;
-    text-align: right;
+    min-width: 3.5rem;
     font-family: var(--font-code);
-  }
-  .instrument {
-    margin-inline: -1rem;
-    border-block: 1px solid var(--stroke);
-  }
-  .instrument-heading {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 0.8rem 1rem;
-    border-bottom: 1px solid var(--stroke);
-    font-size: 0.9rem;
   }
   .phase {
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    margin-left: auto;
     font: 0.7rem var(--font-code);
+    color: var(--ink-2);
   }
   .phase i {
     width: 0.45rem;
@@ -310,209 +273,202 @@
     border-radius: 50%;
     background: var(--accent);
   }
-  .phase[data-phase="Complete"] i {
+  .phase i.complete {
     background: var(--ok);
   }
-  .panes {
-    display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  .instrument {
+    margin-inline: -1rem;
+    border-block: 1px solid var(--stroke);
   }
-  .panes > section + section {
-    border-left: 1px solid var(--line);
-  }
-  .panes header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 0.7rem 1rem;
-    font-size: 0.8rem;
+  .strip {
+    padding: 0.8rem 1rem 0.6rem;
     border-bottom: 1px solid var(--line);
   }
-  .panes header > span {
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
-  }
-  .trace ol {
-    list-style: none;
-    margin: 0;
-    padding: 0.4rem 0;
-    height: 13rem;
-    overflow-y: auto;
-    font: 0.7rem var(--font-code);
-    scroll-behavior: auto;
-  }
-  .trace ol li {
-    display: grid;
-    grid-template-columns: 3.4rem 7.5rem minmax(0, 1fr);
-    gap: 0.5rem;
-    padding: 0.15rem 1rem;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-  }
-  .trace ol li.recv_status {
-    color: var(--ink-3);
-  }
-  .trace ol li.checkpoint {
-    color: var(--ink-2);
-  }
-  .trace ol li[aria-current="step"] {
+  .ticks {
+    position: relative;
+    height: 1.6rem;
     background: var(--band);
-    color: var(--ink);
+    overflow: hidden;
   }
-  .trace .action {
-    font-weight: 600;
+  .ticks i {
+    position: absolute;
+    bottom: 0;
+    width: 1px;
+    height: 100%;
+    background: var(--ink);
   }
-  .trace header.brick {
-    border-top: 1px solid var(--line);
+  .ticks i.recv_status {
+    height: 35%;
+    background: var(--ink-3);
   }
-  .vms {
-    list-style: none;
+  .ticks i.checkpoint {
+    height: 60%;
+    background: var(--ink-2);
+  }
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--accent-ink);
+  }
+  .timeline {
+    display: block;
+    margin-top: 0.15rem;
+  }
+  .timeline input {
+    display: block;
+    width: 100%;
     margin: 0;
-    padding: 0.6rem 1rem 0.8rem;
+    accent-color: var(--accent-ink);
+  }
+  .now {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    min-height: 3.2rem;
+    gap: 0.5rem;
+    min-height: 1.4rem;
+    margin: 0.5rem 0 0;
+    font: 0.7rem var(--font-code);
+    overflow-wrap: anywhere;
   }
-  .vms li {
-    display: grid;
-    gap: 0.1rem;
-    padding: 0.35rem 0.5rem;
-    border: 1px solid var(--stroke);
-    font: 0.65rem var(--font-code);
-    box-shadow: inset 0 3px var(--vm-color, var(--ink-3));
-  }
-  .vms li[data-state="primed"] {
-    --vm-color: var(--ink-3);
-  }
-  .vms li[data-state="running"] {
-    --vm-color: var(--accent-ink);
-  }
-  .vms li[data-state="finished"] {
-    --vm-color: var(--ok);
-  }
-  .vms li[data-state="destroying"] {
-    --vm-color: var(--replay-warm);
-  }
-  .vms li[data-state="destroyed"] {
-    --vm-color: var(--ink-3);
-    opacity: 0.55;
-  }
-  .vms .state {
-    font-weight: 600;
-  }
-  .vms .lane,
-  .vms .empty {
+  .now .at {
+    min-width: 3rem;
     color: var(--ink-2);
   }
-  .vms li.empty {
-    flex: 1 0 100%;
-    border: 0;
-    box-shadow: none;
-    padding-left: 0;
+  .now .what {
+    color: var(--ink-2);
   }
-  .invariants ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
+  .lanes {
+    padding: 0.6rem 1rem 0.5rem;
+    border-bottom: 1px solid var(--line);
   }
-  .invariants li + li {
-    border-top: 1px solid var(--line);
-  }
-  .invariants li button {
+  .lane {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 5.2rem 5rem;
-    gap: 0.5rem;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
     align-items: center;
-    width: 100%;
-    text-align: left;
-    padding: 0.45rem 1rem;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    font-size: 0.75rem;
+    gap: 0.5rem;
+    height: 1.35rem;
   }
-  .invariants li button[aria-pressed="true"] {
+  .lane .label {
+    font: 0.65rem var(--font-code);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lane .bar {
+    position: relative;
+    display: block;
+    height: 0.8rem;
     background: var(--band);
   }
-  .invariants .coverage {
-    color: var(--ink-2);
-    font: 0.65rem var(--font-code);
-    text-align: right;
+  .lane .bar i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--ink-3);
   }
-  .verdict {
+  .legend li[data-state="primed"] i,
+  .lane .bar i[data-state="primed"] {
+    background: var(--primed);
+  }
+  .legend li[data-state="running"] i,
+  .lane .bar i[data-state="running"] {
+    background: var(--running);
+  }
+  .legend li[data-state="finished"] i,
+  .lane .bar i[data-state="finished"] {
+    background: var(--finished);
+    opacity: 0.6;
+  }
+  .legend li[data-state="destroying"] i,
+  .lane .bar i[data-state="destroying"] {
+    background: var(--destroying);
+  }
+  .legend li[data-state="destroyed"] i,
+  .lane .bar i[data-state="destroyed"] {
+    background: var(--destroyed);
+    opacity: 0.4;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    font: 0.65rem var(--font-code);
+    color: var(--ink-2);
+  }
+  .legend li {
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    font: 0.7rem var(--font-code);
   }
-  .verdict i {
-    width: 0.5rem;
+  .legend i {
+    width: 0.8rem;
     height: 0.5rem;
-    border: 1px solid var(--ink-3);
-    background: transparent;
   }
-  [data-verdict="pass"] .verdict i,
-  .suite li[data-verdict="pass"] .id {
-    background: var(--ok);
-    border-color: var(--ok);
+  .invariants {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border-bottom: 1px solid var(--line);
   }
-  [data-verdict="fail"] .verdict i,
-  .suite li[data-verdict="fail"] .id {
-    background: var(--replay-hot);
-    border-color: var(--replay-hot);
+  .invariants button {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "name coverage" "verdict coverage";
+    gap: 0.15rem 0.5rem;
+    align-items: center;
+    min-width: 0;
+    padding: 0.6rem 0.8rem;
+    border: 0;
+    border-radius: 0;
+    text-align: left;
+    background: var(--sheet);
+    font-size: 0.75rem;
+    transition: background-color 240ms ease;
   }
-  [data-verdict="vacuous"] .verdict {
+  .invariants .name {
+    grid-area: name;
+    overflow-wrap: anywhere;
+  }
+  .invariants .verdict {
+    grid-area: verdict;
+    font: 0.65rem var(--font-code);
     color: var(--ink-2);
   }
-  [data-verdict="vacuous"] .verdict i {
-    border-style: dashed;
+  .invariants .coverage {
+    grid-area: coverage;
+    font: 1.3rem var(--font-code);
+    color: var(--ink-3);
   }
-  .invariants .caption {
+  .invariants button[data-verdict="pass"] {
+    background: color-mix(in srgb, var(--ok) 18%, var(--sheet));
+  }
+  .invariants button[data-verdict="pass"] .coverage {
+    color: var(--ink);
+  }
+  .invariants button[data-verdict="fail"] {
+    background: color-mix(in srgb, var(--replay-hot) 18%, var(--sheet));
+  }
+  .invariants button[data-verdict="vacuous"] .verdict {
+    color: var(--ink-3);
+  }
+  .invariants button[aria-pressed="true"] {
+    box-shadow: inset 0 0 0 2px var(--accent-ink);
+  }
+  .note {
+    margin: 0;
+    padding: 0.7rem 1rem;
+  }
+  .suite {
     margin: 0;
     padding: 0.7rem 1rem;
     border-top: 1px solid var(--line);
-  }
-  .suite {
-    border-top: 1px solid var(--stroke);
-    padding: 0.8rem 1rem;
     font-size: 0.8rem;
-  }
-  .suite ol {
-    list-style: none;
-    margin: 0 0 0.6rem;
-    padding: 0;
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    border: 1px solid var(--line);
-  }
-  .suite li {
-    display: grid;
-    gap: 0.2rem;
-    padding: 0.5rem;
-    min-width: 0;
-    font-size: 0.65rem;
-  }
-  .suite li + li {
-    border-left: 1px solid var(--line);
-  }
-  .suite .id {
-    justify-self: start;
-    padding: 0 0.3rem;
-    color: var(--sheet);
-    font: 0.65rem var(--font-code);
-  }
-  .suite .title {
-    color: var(--ink-2);
-    line-height: 1.3;
-  }
-  .suite .ms {
-    font-family: var(--font-code);
-  }
-  .suite p {
-    margin: 0;
   }
   .suite strong[data-verdict="pass"] {
     color: var(--ok);
@@ -528,30 +484,11 @@
     clip-path: inset(50%);
   }
   @media (max-width: 640px) {
-    .panes {
-      grid-template-columns: minmax(0, 1fr);
+    .lane {
+      grid-template-columns: 6rem minmax(0, 1fr);
     }
-    .panes > section + section {
-      border-left: 0;
-      border-top: 1px solid var(--stroke);
-    }
-    .trace ol li {
-      grid-template-columns: 3rem minmax(0, 1fr);
-    }
-    .trace .what {
-      grid-column: 2;
-    }
-    .suite ol {
+    .invariants {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .suite li:nth-child(n + 3) {
-      border-top: 1px solid var(--line);
-    }
-    .suite li:nth-child(3) {
-      border-left: 0;
-    }
-    .time {
-      min-width: 3rem;
     }
   }
 </style>

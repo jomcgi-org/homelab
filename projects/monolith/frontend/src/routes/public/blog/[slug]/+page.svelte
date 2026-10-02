@@ -18,8 +18,8 @@
       load: () => import("$lib/public/posts/QwenReplay.svelte"),
     },
     "ember-conformance": {
-      within: '<h3 id="51-replay"',
-      before: '<h3 id="52-three-verdicts"',
+      within: '<h3 id="21-replay"',
+      before: '<h3 id="22-the-nine-rules"',
       load: () => import("$lib/public/posts/ConformanceReplay.svelte"),
     },
   };
