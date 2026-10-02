@@ -1,5 +1,6 @@
 """Tests for scoped assertions, disputes, and provenance in the store."""
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from knowledge.store import (
     KnowledgeStore,
     _rank_search_chunks,
     _resolve_edge_targets,
+    exact_query_tokens,
     open_dispute_note_ids,
     provenance_for_notes,
 )
@@ -249,6 +251,7 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session):
         exclude_invalidated=False,
         include_legacy=False,
         include_deployment_observations=False,
+        query_text=None,
     )
     detail = KnowledgeStore(session).get_note_by_id("scoped")
     assert detail is not None
@@ -444,7 +447,9 @@ _OBSERVATION_PREDICATE = (
 def _compiled_rank_sql(**kwargs):
     session = MagicMock()
     session.execute.return_value.all.return_value = []
-    _rank_search_chunks(session, [0.0] * 1024, 2, None, **kwargs)
+    _rank_search_chunks(
+        session, [0.0] * 1024, 2, kwargs.pop("type_filter", None), **kwargs
+    )
     return session.execute.call_args.args[0].compile(dialect=postgresql.dialect())
 
 
@@ -476,3 +481,104 @@ def test_deployment_observation_opt_in_omits_the_source_predicate(compile_sql):
 
     assert "knowledge.notes.source" not in str(compiled)
     assert "deployment-observation" not in compiled.params.values()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("", ()),
+        ("a semantic question", ()),
+        ("#12 and #123", ("#12", "#123")),
+        ("#12/#123", ("#12", "#123")),
+        ("(`#12`), [projects/a_b/store.py].", ("#12", "projects/a_b/store.py")),
+        (
+            "'./bazel/ocaml/README.md'; bazel/ocaml/README.md!",
+            ("bazel/ocaml/README.md",),
+        ),
+        ("pull/6043 issues/5250", ("pull/6043", "issues/5250")),
+        ("https://github.com/o/r/pull/6043#12 file:projects/a.py mailto:a/b", ()),
+        ("x=https://github.com/o/r/pull/6043 (https://a/b.md) <file:a/b.md>", ()),
+        (
+            "see a/b.py:12 a/b.md:1-3 (a/b.md:12) a/b.md: and a/c.md:",
+            ("a/b.py", "a/b.md", "a/c.md"),
+        ),
+        (
+            "What does projects/monolith/knowledge/store.py:300 do?",
+            ("projects/monolith/knowledge/store.py",),
+        ),
+        ("a/b%20.md a/%/b.md", ()),
+        ("foo#12 #12abc ##12", ()),
+        ("`a/b.md` a/b.md.bak a/b.mdx", ("a/b.md", "a/b.md.bak", "a/b.mdx")),
+    ],
+)
+def test_exact_query_tokens(query, expected):
+    assert exact_query_tokens(query) == expected
+
+
+def test_exact_query_token_bounds():
+    assert exact_query_tokens(" ".join(f"#{i}" for i in range(20))) == tuple(
+        f"#{i}" for i in range(8)
+    )
+    assert exact_query_tokens("a/" + "x" * 255 + " #12") == ("#12",)
+    assert exact_query_tokens("#" + "1" * 256 + " a/b") == ("a/b",)
+    assert exact_query_tokens("a/" + "x" * 254) == ("a/" + "x" * 254,)
+    assert exact_query_tokens("a/" + "x" * 2054 + " #12") == ("#12",)
+
+
+def test_exact_query_tokens_skip_overlong_words_quickly():
+    start = time.perf_counter()
+    assert exact_query_tokens("a" * 200_000) == ()
+    assert exact_query_tokens("a." * 100_000 + " #12") == ("#12",)
+    assert time.perf_counter() - start < 0.5
+
+
+@pytest.mark.parametrize("query", ["#12", "projects/a/store.py", "#12 a/b.py"])
+def test_exact_provenance_subqueries_are_uncorrelated(query):
+    """A correlated EXISTS rescans provenance for every note/chunk row."""
+    sql = str(_compiled_rank_sql(query_text=query))
+
+    assert "EXISTS" not in sql
+    assert "atom_raw_provenance.derived_note_id = knowledge.notes.note_id" not in sql
+    assert "atom_raw_provenance.atom_fk = knowledge.notes.id" not in sql
+    assert "knowledge.note_entities.note_id = knowledge.notes.note_id" not in sql
+
+
+@pytest.mark.parametrize(
+    "query", [None, "", "ordinary semantic query", "https://o/r/#12"]
+)
+def test_no_exact_tokens_preserve_compiled_rank_sql(query):
+    before = _compiled_rank_sql()
+    after = _compiled_rank_sql(query_text=query)
+    assert str(after) == str(before)
+    assert after.params == before.params
+
+
+def test_exact_rank_preserves_authorization_before_limit_and_binds_tokens():
+    compiled = _compiled_rank_sql(
+        query_text="#12 projects/a_b/store.py",
+        scope_filters=("repo:owner/repo",),
+        exclude_invalidated=True,
+        type_filter="fact",
+    )
+    sql = str(compiled)
+    where = sql[sql.index("WHERE") : sql.index("GROUP BY")]
+    for predicate in (
+        "knowledge.notes.deleted_at IS NULL",
+        "knowledge.notes.scope IN",
+        "knowledge.notes.type =",
+        "knowledge.notes.verification_state IS NULL",
+        "knowledge.notes.verification_state !=",
+        _OBSERVATION_PREDICATE,
+        "knowledge.notes.valid_until IS NULL",
+    ):
+        assert predicate in where
+    assert "chunks ON knowledge.chunks.note_fk = knowledge.notes.id" in sql
+    assert " OR bool_or(" in sql[sql.index("HAVING") : sql.index("ORDER BY")]
+    order = sql[sql.index("ORDER BY") : sql.index("LIMIT")]
+    assert order.index("bool_or") < order.index("CASE") < order.index("score DESC")
+    assert order.rstrip().endswith("knowledge.notes.id")
+    assert "#12" not in sql and "projects/a_b/store.py" not in sql
+    assert "12" in compiled.params.values()
+    assert any(
+        "projects/a_b/store\\.py" in str(value) for value in compiled.params.values()
+    )

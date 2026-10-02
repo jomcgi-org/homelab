@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import false, func, not_, or_
+from sqlalchemy import and_, case, false, func, not_, or_
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
@@ -199,6 +200,93 @@ def _not_deployment_observation():
     )
 
 
+_MAX_EXACT_TOKENS = 8
+_MAX_EXACT_TOKEN_LENGTH = 256
+_QUERY_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.%#-])#[0-9]+(?![A-Za-z0-9_%.-])"
+    r"|(?<![A-Za-z0-9_./%:-])[A-Za-z0-9._-]+"
+    r"(?:/[A-Za-z0-9._-]+)+(?![A-Za-z0-9_./%-])"
+)
+# The lookbehind keeps ``name.ext:`` inside a path (``a/b.py:12``) from reading
+# as a scheme, while ``https:``, ``file:`` and ``x=https:`` still do.
+_URL_SCHEME_RE = re.compile(r"(?<![A-Za-z0-9+./_-])[A-Za-z][A-Za-z0-9+.-]*:")
+# Scheme detection is quadratic in word length, so longer words are skipped
+# before any regex runs. No accepted token can come from a word this long.
+_MAX_EXACT_WORD_LENGTH = _MAX_EXACT_TOKENS * (_MAX_EXACT_TOKEN_LENGTH + 1)
+
+
+def exact_query_tokens(query: str) -> tuple[str, ...]:
+    """Extract bounded, case-sensitive issue refs and relative repository paths.
+
+    Bare ``pull/123`` and ``issues/123`` count as paths, not issue refs.
+    Scheme-bearing words (including GitHub URLs and their fragments) never count.
+    Percent-bearing paths are rejected rather than extracting a partial path.
+    """
+    tokens: dict[str, None] = {}
+    for word in query.split():
+        if len(word) > _MAX_EXACT_WORD_LENGTH:
+            continue
+        word = word.strip("`\"'()[]{}<>,;:!?").rstrip(".")
+        if _URL_SCHEME_RE.search(word):
+            continue
+        for match in _QUERY_TOKEN_RE.finditer(word):
+            token = match.group().rstrip(".")
+            if token.startswith("./"):
+                token = token[2:]
+            if not token or len(token) > _MAX_EXACT_TOKEN_LENGTH:
+                continue
+            tokens.setdefault(token, None)
+            if len(tokens) == _MAX_EXACT_TOKENS:
+                return tuple(tokens)
+    return tuple(tokens)
+
+
+def _exact_note_match(tokens: tuple[str, ...]):
+    """Match text and provenance without expanding the candidate join.
+
+    Provenance uses uncorrelated ``IN`` subqueries so Postgres hashes them once
+    per statement; a correlated ``EXISTS`` rescans the provenance table for
+    every note and chunk row.
+    """
+    matches = []
+    for token in tokens:
+        boundary = r"A-Za-z0-9_#" if token.startswith("#") else r"A-Za-z0-9._/%-"
+        # re.escape covers every ARE metacharacter in the accepted vocabulary.
+        pattern = rf"(^|[^{boundary}]){re.escape(token)}([^{boundary}]|$)"
+        text_matches = [
+            column.op("~")(pattern)
+            for column in (Note.title, Note.path, Note.content, Chunk.chunk_text)
+        ]
+        if token.startswith("#"):
+            provenance = Note.note_id.in_(
+                select(NoteEntity.note_id)
+                .join(Entity, Entity.id == NoteEntity.entity_id)
+                .where(Entity.kind == "issue", Entity.slug == token[1:])
+            )
+        else:
+            path_match = RawInput.original_path.op("~")(pattern)
+            provenance = or_(
+                Note.note_id.in_(
+                    select(AtomRawProvenance.derived_note_id)
+                    .join(RawInput, RawInput.id == AtomRawProvenance.raw_fk)
+                    .where(
+                        AtomRawProvenance.derived_note_id.is_not(None),
+                        path_match,
+                    )
+                ),
+                Note.id.in_(
+                    select(AtomRawProvenance.atom_fk)
+                    .join(RawInput, RawInput.id == AtomRawProvenance.raw_fk)
+                    .where(
+                        AtomRawProvenance.derived_note_id.is_(None),
+                        path_match,
+                    )
+                ),
+            )
+        matches.append(or_(*text_matches, provenance))
+    return func.bool_or(func.coalesce(or_(*matches), false()))
+
+
 def _rank_search_chunks(
     session: Session,
     query_embedding: list[float],
@@ -209,6 +297,7 @@ def _rank_search_chunks(
     exclude_invalidated: bool = False,
     include_legacy: bool = False,
     include_deployment_observations: bool = False,
+    query_text: str | None = None,
 ) -> list[tuple[int, int, float]]:
     """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
     distance = Chunk.embedding.cosine_distance(query_embedding)
@@ -224,9 +313,39 @@ def _rank_search_chunks(
         .join(Chunk, Chunk.note_fk == Note.id)
         .where(Note.deleted_at.is_(None))
         .group_by(Note.id)
-        .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
-        .order_by(best_score.desc())
     )
+    tokens = exact_query_tokens(query_text) if query_text is not None else ()
+    if tokens:
+        exact = _exact_note_match(tokens)
+        current = and_(
+            or_(Note.valid_until.is_(None), Note.valid_until > func.now()),
+            or_(
+                Note.verification_state.is_(None),
+                Note.verification_state != "invalidated",
+            ),
+        )
+        # CASE keeps validity/recency out of the non-exact semantic tier.
+        notes_stmt = notes_stmt.having(
+            or_(best_score >= MIN_SEARCH_SCORE, exact)
+        ).order_by(
+            exact.desc(),
+            case((and_(exact, current), 1), else_=0).desc(),
+            case(
+                (
+                    and_(exact, current),
+                    func.coalesce(Note.valid_from, Note.observed_at),
+                ),
+                else_=None,
+            )
+            .desc()
+            .nulls_last(),
+            best_score.desc(),
+            Note.id,
+        )
+    else:
+        notes_stmt = notes_stmt.having(func.max(adjusted) >= MIN_SEARCH_SCORE).order_by(
+            best_score.desc()
+        )
     if type_filter is not None:
         notes_stmt = notes_stmt.where(Note.type == type_filter)
     scope_predicate = _scope_predicate(scope_filters, include_unscoped=include_unscoped)
@@ -585,6 +704,7 @@ class KnowledgeStore:
         include_embeddings: bool = False,
         include_legacy: bool = False,
         include_deployment_observations: bool = False,
+        query_text: str | None = None,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -617,6 +737,7 @@ class KnowledgeStore:
             exclude_invalidated=exclude_invalidated,
             include_legacy=include_legacy,
             include_deployment_observations=include_deployment_observations,
+            query_text=query_text,
         )
         if not ranked:
             return []

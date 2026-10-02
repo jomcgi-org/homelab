@@ -426,6 +426,7 @@ def test_context_search_forwards_all_ranking_filters(
             (session, [0.0] * 1024, 20, None),
             {
                 "scope_filters": (scope_filter,) if scope_filter is not None else None,
+                "query_text": None,
                 "include_unscoped": False,
                 "exclude_invalidated": exclude_invalidated,
                 "include_legacy": include_legacy,
