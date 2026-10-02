@@ -18,6 +18,7 @@ py_library(
         "mutation.py",
         "pytest.py",
         "rbac.py",
+        "review.py",
         "sandbox.py",
         "speedup.py",
     ],
@@ -69,6 +70,16 @@ py_test(
 py_test(
     name = "sandbox_test",
     srcs = ["sandbox_test.py"],
+    imports = ["../.."],
+    deps = [
+        ":verifiers",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "review_test",
+    srcs = ["review_test.py"],
     imports = ["../.."],
     deps = [
         ":verifiers",

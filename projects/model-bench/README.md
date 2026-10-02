@@ -78,6 +78,18 @@ fixed, so a model that repairs only the reported symptom lands at a partial scor
 site from the API pod and states the rest as a property of every span-exporting
 process, and there are three sites to find.
 
+
+## Seeded code-review tasks
+
+A `review-findings` task (e.g. `chat-public-retention-review-01`) snapshots a real
+feature commit, plants bugs into it with `snapshot.patches` (find/replace edits kept
+in task.yaml, so the fixture still regenerates from git), and writes the change as
+`REVIEW.diff` via `snapshot.review_diff` (base commit to the patched tree). The model
+writes `review.json` as `[{file, line, description}]`. A finding matches a planted
+bug on the same file within the bug's line range plus `tolerance`. The score is
+`(matched - fp_penalty * false_positives) / bugs`, floored at 0, so spraying findings
+scores nothing.
+
 ## Setup
 
 Two interpreters are involved:
