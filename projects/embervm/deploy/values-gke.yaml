@@ -1,5 +1,8 @@
 # GKE hub overrides. This file is applied after deploy/values.yaml.
 
+# Recover interrupted turns before adoption parks them. Rollback: set false.
+restartFlushInflightInvokes: true
+
 claudeRuntimeWorkload:
   # cap must sit at or above the monolith's agentSessions.admission.total (24):
   # every family but pi lands here, and a permit the guest cap refuses fails

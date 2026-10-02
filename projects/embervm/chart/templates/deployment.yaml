@@ -141,6 +141,8 @@ spec:
             # above so both ADR-014 ordering gates flip via values only.
             - name: EMBERVM_ASYNC_LIFECYCLE_WRITES
               value: {{ if .Values.asyncLifecycleWrites }}"true"{{ else }}"false"{{ end }}
+            - name: EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES
+              value: {{ if .Values.restartFlushInflightInvokes }}"true"{{ else }}"false"{{ end }}
             # Drain only the sessions on the draining brick instance, not every
             # session on its node (co-located bricks share a node).
             - name: EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS

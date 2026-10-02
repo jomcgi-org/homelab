@@ -1,4 +1,6 @@
 # GKE hub overrides for embervm-dev, applied after dev/deploy/values.yaml.
+# Recover interrupted turns before adoption parks them. Rollback: set false.
+restartFlushInflightInvokes: true
 #
 # WHY THIS EXISTS. embervm-dev ran on the home cluster as the Kargo dev stage,
 # where the conformance runner (projects/embervm/conformance) gated every
