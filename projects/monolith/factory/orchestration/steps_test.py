@@ -91,7 +91,13 @@ def test_terminal_session_wait_returns_none_in_two_polls(
 
 @pytest.mark.parametrize(
     "status,claimed",
-    [("running", False), ("running", True), ("completed", False), ("failed", False)],
+    [
+        ("running", False),
+        ("running", True),
+        ("completed", False),
+        ("failed", True),
+        ("cancelled", True),
+    ],
 )
 def test_terminal_read_preserves_pending_turns(turn_wait_database, status, claimed):
     from sqlmodel import Session
@@ -115,6 +121,37 @@ def test_terminal_read_preserves_pending_turns(turn_wait_database, status, claim
         )
         db.commit()
     assert steps.session_turn_wait_terminal.__wrapped__(sid, 1) is False
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_terminal_read_ignores_unattempted_pending_after_reservation_review(
+    turn_wait_database, status
+):
+    from sqlmodel import Session
+    from factory.execution.models import AgentCapacityReservation, AgentSession
+    from factory.execution.models import PendingMessage
+
+    with Session(turn_wait_database) as db:
+        row = AgentSession(
+            local_session_id="reviewed", workspace="guest", branch="main", status=status
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        sid = row.id
+        db.add(PendingMessage(session_id=sid, seq=1, message_text="work"))
+        db.add(
+            AgentCapacityReservation(
+                session_id=sid,
+                local_session_id="reviewed",
+                pending_seq=1,
+                tier="project",
+                state="settled",
+                outcome="cancelled_before_dispatch",
+            )
+        )
+        db.commit()
+    assert steps.session_turn_wait_terminal.__wrapped__(sid, 0) is True
 
 
 def test_running_pending_session_waits_until_deadline(turn_wait_database, monkeypatch):

@@ -1433,6 +1433,18 @@ def chain_next_cycle() -> None:
     enqueue_drainer_workers(DBOS, work_ids, queue=drainer_queue())
 
 
+def _turn_timeout(settings: dict, job_kind: str) -> int:
+    """Recovered cycles can replay settings pinned before the KG key existed.
+
+    Their KG waits were recorded against the shared timeout, so a shorter
+    deadline would hit mid-history and diverge from the recorded steps. Never
+    reread live config in the workflow.
+    """
+    if job_kind == KG_JOB_KIND:
+        return settings.get("kg_turn_timeout_seconds", settings["turn_timeout_seconds"])
+    return settings["turn_timeout_seconds"]
+
+
 @DBOS.workflow()
 def drain_cycle() -> dict:
     # context=Context() forces a root trace so cycles running for tens of
@@ -1605,13 +1617,7 @@ def drain_cycle() -> dict:
                         admission_tier="kg" if job_kind == KG_JOB_KIND else "project",
                     )
                     set_attributes(job_span, {"drain.session_id": session_id})
-                    # Recovered cycles can replay settings pinned before this
-                    # key existed. Never reread live config in the workflow.
-                    turn_timeout = (
-                        settings.get("kg_turn_timeout_seconds", 900)
-                        if job_kind == KG_JOB_KIND
-                        else settings["turn_timeout_seconds"]
-                    )
+                    turn_timeout = _turn_timeout(settings, job_kind)
                     turn = _await_turn(session_id, 0, turn_timeout)
                     if turn is None:
                         raise TimeoutError(
