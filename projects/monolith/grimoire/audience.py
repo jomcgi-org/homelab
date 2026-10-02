@@ -9,7 +9,7 @@ and PC-id columns and a nullable author-member column.
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from sqlalchemy import JSON, Boolean, String, and_, literal, or_, true
+from sqlalchemy import JSON, Boolean, String, and_, false, literal, or_, true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.compiler import compiles
@@ -82,6 +82,35 @@ def _validate_viewer(viewer: Viewer, member: Member | None) -> Member:
     if viewer != expected or (viewer == "dm" and member.role != "dm"):
         raise ValueError("Viewer does not match the campaign member")
     return member
+
+
+def note_predicate(table, viewer: Viewer, member: Member | None):
+    """Notes have an opt-in DM audience. Compose this with campaign scoping."""
+    member = _validate_viewer(viewer, member)
+    columns = table.c if hasattr(table, "c") else table
+    authored = columns.author_member_id == member.id
+    character = and_(
+        columns.kind == "character",
+        columns.dm_readable.is_(True) if viewer == "dm" else authored,
+    )
+    party = columns.kind == "party" if viewer is not None else false()
+    return and_(columns.deleted_at.is_(None), or_(character, party))
+
+
+def can_see_note(viewer: Viewer, member: Member | None, row) -> bool:
+    """Python twin of note_predicate, including NULL authors and unknown kinds."""
+    member = _validate_viewer(viewer, member)
+    if row.deleted_at is not None:
+        return False
+    if row.kind == "character":
+        return (
+            bool(row.dm_readable)
+            if viewer == "dm"
+            else row.author_member_id == member.id
+        )
+    if row.kind == "party":
+        return viewer is not None
+    return False
 
 
 class _HasPC(FunctionElement):

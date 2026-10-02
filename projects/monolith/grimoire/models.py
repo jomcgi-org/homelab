@@ -24,6 +24,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -688,6 +689,10 @@ class Campaign(SQLModel, table=True):
     )
     name: str
     dm_name: str | None = None
+    notes_dm_readable_default: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
     owner_app_user_id: str | None = Field(
         default=None,
         sa_column=_uuid_column(fk="grimoire.app_user.id"),
@@ -881,6 +886,115 @@ class GameSession(SQLModel, table=True):
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (retracted_at is NULL until retraction)
+class Note(SQLModel, table=True):
+    __tablename__ = "note"
+    __table_args__ = (
+        CheckConstraint("kind IN ('character', 'party')", name="note_kind_chk"),
+        CheckConstraint(
+            "COALESCE(jsonb_typeof(links) = 'object' AND "
+            "jsonb_typeof(links->'entity_ids') = 'array' AND "
+            "jsonb_typeof(links->'event_ids') = 'array', false)",
+            name="note_links_chk",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "COALESCE(json_type(links) = 'object' AND "
+            "json_type(links, '$.entity_ids') = 'array' AND "
+            "json_type(links, '$.event_ids') = 'array', false)",
+            name="note_links_chk",
+        ).ddl_if(dialect="sqlite"),
+        Index(
+            "note_campaign_live_idx",
+            "campaign_id",
+            "pinned",
+            "updated_at",
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False,
+            fk="grimoire.campaign.id",
+            ondelete="CASCADE",
+        )
+    )
+    author_member_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(
+            fk="grimoire.campaign_member.id",
+            ondelete="SET NULL",
+        ),
+    )
+    player_character_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(
+            fk="grimoire.player_character.id",
+            ondelete="SET NULL",
+        ),
+    )
+    kind: Literal["character", "party"] = Field(
+        sa_column=Column(String, nullable=False)
+    )
+    dm_readable: bool = Field(
+        default=False,
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            server_default=text("false"),
+        ),
+    )
+    title: str = Field(sa_column=Column(String, nullable=False))
+    markdown: str = Field(
+        default="",
+        sa_column=Column(
+            String,
+            nullable=False,
+            server_default=text("''"),
+        ),
+    )
+    links: dict = Field(
+        default_factory=lambda: {"entity_ids": [], "event_ids": []},
+        sa_column=Column(_JSONB, nullable=False),
+    )
+    pinned: bool = Field(
+        default=False,
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            server_default=text("false"),
+        ),
+    )
+    created_in_session: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(
+            fk="grimoire.game_session.id",
+            ondelete="SET NULL",
+        ),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
 class SessionEvent(SQLModel, table=True):
     """Audience-scoped log row, written only through session_events.append_event."""
 
