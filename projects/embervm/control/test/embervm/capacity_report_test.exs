@@ -191,4 +191,43 @@ defmodule Embervm.CapacityReportTest do
     Application.put_env(:embervm, :desired_capacity, 99)
     assert CapacityReport.build(opts) == baseline
   end
+
+  test "diagnostic gauges omit unsupported and overflowing values with bounded instance labels" do
+    opts = seed_tables()
+    table = Keyword.fetch!(opts, :capacity_table)
+    {:ok, facts} = NodeCapacity.fetch(table, {"node-4", "pod-old"})
+    NodeCapacity.put(table, {"node-4", "pod-old"}, Map.merge(facts, %{
+      vmm_exit_counts: %{"host_requested" => 0, "host_cgroup_oom" => 9_223_372_036_854_775_807,
+        "unclassified" => 18_446_744_073_709_551_615, "guest-label" => 1},
+      guest_memory_state_counts: %{"pending" => 1, "ok" => 2, "stale" => 3, "unsupported" => 4, "error" => 5, "vm-id" => 1},
+      guest_oom_count: 18_446_744_073_709_551_615
+    }))
+    report = CapacityReport.build(opts)
+    assert report.semantics.diagnostics =~ "Diagnostic only"
+    supported = Enum.find(report.instances, &(&1.pod_uid == "pod-old"))
+    assert supported.guest_oom_count == 18_446_744_073_709_551_615
+    assert map_size(supported.guest_memory_state_counts) == 5
+    unsupported = Enum.find(report.instances, &(&1.pod_uid == "pod-new"))
+    assert unsupported.vmm_exit_counts == nil
+    assert unsupported.guest_oom_count == nil
+    gauges = CapacityReport.gauge_observations(report)
+    exits = Enum.find(gauges, &(&1.name == :"embervm.capacity.instance.vmm_exit_count"))
+    assert Enum.sort(Enum.map(exits.observations, &elem(&1, 0))) == [0, 9_223_372_036_854_775_807]
+    assert Enum.all?(exits.observations, fn {_, labels} ->
+      Map.keys(labels) |> Enum.sort() == ["ember.instance.id", "ember.node.id", "ember.pod.uid", "ember.size_class", "reason"]
+    end)
+    states = Enum.find(gauges, &(&1.name == :"embervm.capacity.instance.guest_memory_state_count"))
+    assert length(states.observations) == 5
+    assert Enum.all?(states.observations, fn {_, labels} ->
+      Map.keys(labels) |> Enum.sort() == ["ember.instance.id", "ember.node.id", "ember.pod.uid", "ember.size_class", "state"]
+    end)
+    oom = Enum.find(gauges, &(&1.name == :"embervm.capacity.instance.guest_oom_count"))
+    assert oom.observations == []
+    NodeCapacity.put(table, {"node-4", "pod-old"}, Map.put(supported, :guest_oom_count, 7))
+    assert [{7, _}] = CapacityReport.build(opts) |> CapacityReport.gauge_observations() |>
+      Enum.find(&(&1.name == :"embervm.capacity.instance.guest_oom_count")) |> Map.fetch!(:observations)
+    NodeCapacity.drop(table, {"node-4", "pod-old"})
+    assert Enum.all?(CapacityReport.build(opts) |> CapacityReport.gauge_observations() |>
+      Enum.filter(&(&1.name in [exits.name, states.name, oom.name])), &(&1.observations == []))
+  end
 end

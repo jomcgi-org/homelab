@@ -38,6 +38,9 @@ defmodule Embervm.CapacityReport do
     %{name: :"embervm.capacity.instance.vm_slots_live", unit: :vm, description: "Live VM slots in use"},
     %{name: :"embervm.capacity.instance.vm_slots_max", unit: :vm, description: "Maximum live VM slots"},
     %{name: :"embervm.capacity.instance.vm_slots_free", unit: :vm, description: "Free live VM slots"},
+    %{name: :"embervm.capacity.instance.vmm_exit_count", unit: :exit, description: "Diagnostic VMM exits since daemon start by reason"},
+    %{name: :"embervm.capacity.instance.guest_memory_state_count", unit: :vm, description: "Observed guest memory freshness by state"},
+    %{name: :"embervm.capacity.instance.guest_oom_count", unit: :event, description: "Diagnostic guest OOM deltas since daemon start"},
     %{name: :"embervm.capacity.workload.primed_occupancy", unit: :vm, description: "Parked pristine VMs"},
     %{name: :"embervm.capacity.workload.free_slots", unit: :vm, description: "Free VM slots on instances reporting the workload"},
     %{name: :"embervm.capacity.demand", unit: :task, description: "Capacity demand by tier"}
@@ -70,7 +73,9 @@ defmodule Embervm.CapacityReport do
         memory_detail:
           "MiB from noded's own cgroup v2: budget is memory.max minus daemon reserve; headroom treats file cache except shmem as reclaimable. It is not kubectl top working set.",
         aggregation:
-          "Summed headroom and free slots are descriptive signals, not a placement guarantee, reservation, scaling decision, or target."
+          "Summed headroom and free slots are descriptive signals, not a placement guarantee, reservation, scaling decision, or target.",
+        diagnostics:
+          "Exit and guest OOM counters are cumulative since daemon start and reset with a new daemon instance. Guest memory states are current counts. Diagnostic only, not an admission or banking input; an unavailable guest state is neither healthy nor OOM. Unsupported fields emit no observation. Values above signed 64-bit range remain in JSON and logs but are omitted from OTel."
       },
       instances: instances,
       workloads: workloads,
@@ -202,6 +207,7 @@ defmodule Embervm.CapacityReport do
         end)
         |> Enum.sort_by(& &1.workload)
     }
+    |> Map.merge(Embervm.NodeRegistry.diagnostic_facts(facts))
   end
 
   defp instance_id(facts, node_id, pod_uid) do
@@ -321,7 +327,7 @@ defmodule Embervm.CapacityReport do
   end
 
   defp instance_gauges(instances) do
-    for {name, field} <- [
+    capacity = for {name, field} <- [
           {:"embervm.capacity.instance.memory_budget", :mem_budget_mib},
           {:"embervm.capacity.instance.memory_headroom", :mem_headroom_mib},
           {:"embervm.capacity.instance.cpu_budget", :cpu_budget_millicores},
@@ -338,7 +344,23 @@ defmodule Embervm.CapacityReport do
           end)
       }
     end
+
+    diagnostics = for {name, field, label} <- [
+      {:"embervm.capacity.instance.vmm_exit_count", :vmm_exit_counts, "reason"},
+      {:"embervm.capacity.instance.guest_memory_state_count", :guest_memory_state_counts, "state"}
+    ] do
+      %{name: name, observations: for instance <- instances,
+        {key, value} <- Map.get(instance, field) || %{}, otel_count?(value),
+        do: {value, Map.put(instance_labels(instance), label, key)}}
+    end
+
+    oom = %{name: :"embervm.capacity.instance.guest_oom_count",
+      observations: for instance <- instances, otel_count?(instance.guest_oom_count),
+        do: {instance.guest_oom_count, instance_labels(instance)}}
+    capacity ++ diagnostics ++ [oom]
   end
+
+  defp otel_count?(value), do: is_integer(value) and value >= 0 and value <= 9_223_372_036_854_775_807
 
   defp workload_gauges(workloads) do
     capacity =
