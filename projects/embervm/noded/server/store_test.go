@@ -175,6 +175,16 @@ func (f *fakeStore) Export(ctx context.Context, prefix, localDir string, files [
 	if existing, ok := f.arts[prefix]; !overwrite && ok && sameStringMap(existing.files, got) {
 		return 0, true, nil
 	}
+	if existing, ok := f.arts[prefix]; ok && len(options) > 0 && options[0].LineageFence && options[0].BaseFingerprint != "" {
+		meta := make(map[string]store.FileMeta, len(existing.files))
+		for name, content := range existing.files {
+			sum := sha256.Sum256([]byte(content))
+			meta[name] = store.FileMeta{Size: int64(len(content)), Sha256: hex.EncodeToString(sum[:])}
+		}
+		if store.FilesFingerprint(meta) != options[0].BaseFingerprint {
+			return 0, false, store.ErrStaleGeneration
+		}
+	}
 	if existing, ok := f.arts[prefix]; ok && len(options) > 0 && options[0].EnforceDeviceShape {
 		if !devices.Known || !existing.deviceKnown || !slices.Equal(devices.IDs, existing.deviceIDs) {
 			return 0, false, store.ErrIncompatibleDeviceShape
@@ -670,6 +680,20 @@ func waitForExport(t *testing.T, fs *fakeStore, prefix string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("export of %q did not land within the deadline", prefix)
+}
+
+// waitForWorkspaceBase polls until an export has recorded the lineage's store
+// base beside the workspace.
+func waitForWorkspaceBase(t *testing.T, s *Server, workload, lineage string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.volumes.ReadStoreBase(workload, lineage) != "" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("store base for %s/%s was not recorded within the deadline", workload, lineage)
 }
 
 // TestReconcileStatefulReadsWorkloadSidecar proves a boot-scan reconciliation
@@ -2673,6 +2697,9 @@ func TestArchiveVolume(t *testing.T) {
 		s.startExportQueue(context.Background())
 		s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-1"})
 		waitForExport(t, fs, "session-workspace/sbx/lineage-1")
+		// The export worker records the workspace's store base after the store
+		// write; wait for it so it cannot race the temp dir cleanup.
+		waitForWorkspaceBase(t, s, "sbx", "lineage-1")
 		// A repeat archive re-enqueues rather than short-circuiting on presence:
 		// the workspace key is stable but its content mutates, so only Export's
 		// checksum compare may decide nothing needs uploading. Skipped stays
@@ -3600,5 +3627,146 @@ func TestDrainExportDeadlineLogsRemainingArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "session/amd/sandbox/pending") {
 		t.Fatalf("missing abandoned artifact log: %s", logs.String())
+	}
+}
+
+// TestWorkspaceLineageFenceKeepsNewerStoreContent covers a cross-node move that
+// leaves the lineage's old copy on node A. After the lineage moves to B and B
+// exports newer content, A's stale copy must never overwrite it, through the
+// drain path, the export job and a retirement, and the guarded restore of the
+// newer content must keep working.
+func TestWorkspaceLineageFenceKeepsNewerStoreContent(t *testing.T) {
+	ctx := context.Background()
+	fs := newFakeStore()
+	a := newStoreTestServer(t, fs)
+	b := newStoreTestServer(t, fs)
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "moved"}
+	prefix := artifactPrefix(ref, a.cfg.CpuVendor)
+
+	// S is parked on A with content X and exported.
+	writeBundleFiles(t, a.artifactLocalDir(ref), map[string]string{"workspace.img": "content X"})
+	resp, err := a.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref})
+	if err != nil || resp.GetContentFingerprint() == "" {
+		t.Fatalf("export X response=%v, err=%v", resp, err)
+	}
+	fingerprintX := resp.GetContentFingerprint()
+
+	// S moves to B: guarded restore of X, then new work Y, exported.
+	if _, err := b.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: fingerprintX}); err != nil {
+		t.Fatalf("restore X on B: %v", err)
+	}
+	writeBundleFiles(t, b.artifactLocalDir(ref), map[string]string{"workspace.img": "content Y"})
+	resp, err = b.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref})
+	if err != nil || resp.GetSkipped() || resp.GetContentFingerprint() == "" {
+		t.Fatalf("export Y response=%v, err=%v", resp, err)
+	}
+	fingerprintY := resp.GetContentFingerprint()
+	assertStoreHolds := func(step, want string) {
+		t.Helper()
+		fs.mu.Lock()
+		got := fs.arts[prefix].files["workspace.img"]
+		fs.mu.Unlock()
+		if got != want {
+			t.Fatalf("%s: store holds %q, want %q", step, got, want)
+		}
+	}
+	assertStoreHolds("after B export", "content Y")
+
+	// A's stale copy via the synchronous RPC: refused, reported skipped.
+	resp, err = a.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref})
+	if err != nil || !resp.GetSkipped() || resp.GetContentFingerprint() != "" {
+		t.Fatalf("stale sync export response=%v, err=%v", resp, err)
+	}
+	assertStoreHolds("after stale sync export", "content Y")
+
+	// A's drain: the export of the stale copy is refused and the drain does not
+	// wait on it.
+	exportCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	a.startExportQueue(exportCtx)
+	before := fs.calls(prefix)
+	a.drainSessionExports(newDrainExports())
+	deadline := time.Now().Add(2 * time.Second)
+	for fs.calls(prefix) == before && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if fs.calls(prefix) == before {
+		t.Fatal("drain never attempted the stale export")
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for !a.unexportable.contains(prefix) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !a.unexportable.contains(prefix) {
+		t.Fatal("refused stale copy was not marked unexportable")
+	}
+	if pending := a.drainSessionExports(newDrainExports()); pending != 0 {
+		t.Fatalf("drain still waits on the refused stale copy: pending=%d", pending)
+	}
+	assertStoreHolds("after drain", "content Y")
+
+	// The export job directly, and RetireVolume: refused, copy and intent kept.
+	a.unexportable.clear(prefix)
+	a.runExportJob(ctx, exportJob{ref: ref, key: prefix})
+	assertStoreHolds("after export job", "content Y")
+	if _, err := a.RetireVolume(ctx, &nodev1.RetireVolumeRequest{Workload: "sbx", LineageId: "moved"}); err != nil {
+		t.Fatal(err)
+	}
+	a.unexportable.clear(prefix)
+	a.runExportJob(ctx, exportJob{ref: ref, key: prefix})
+	assertStoreHolds("after retirement export", "content Y")
+	if got, err := os.ReadFile(filepath.Join(a.artifactLocalDir(ref), "workspace.img")); err != nil || string(got) != "content X" {
+		t.Fatalf("refused retirement must keep the local copy: got=%q, err=%v", got, err)
+	}
+
+	// Guarded and unguarded restores elsewhere still see Y.
+	for _, expected := range []string{fingerprintY, ""} {
+		c := newStoreTestServer(t, fs)
+		if _, err := c.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: expected}); err != nil {
+			t.Fatalf("restore (expected=%q): %v", expected, err)
+		}
+		if got, err := os.ReadFile(filepath.Join(c.artifactLocalDir(ref), "workspace.img")); err != nil || string(got) != "content Y" {
+			t.Fatalf("restore (expected=%q) bytes=%q, err=%v", expected, got, err)
+		}
+	}
+}
+
+// TestWorkspaceLineageFenceAllowsDescendantAndLegacyCopies keeps the fence from
+// blocking legitimate exports: a copy that descends from the store content, and
+// a pre-marker copy with no recorded ancestry.
+func TestWorkspaceLineageFenceAllowsDescendantAndLegacyCopies(t *testing.T) {
+	ctx := context.Background()
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "owned"}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	dir := s.artifactLocalDir(ref)
+
+	for i, content := range []string{"v1", "v2", "v3"} {
+		writeBundleFiles(t, dir, map[string]string{"workspace.img": content})
+		if resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref}); err != nil || resp.GetSkipped() {
+			t.Fatalf("export %d response=%v, err=%v", i, resp, err)
+		}
+	}
+	if got := s.volumes.ReadStoreBase("sbx", "owned"); got == "" {
+		t.Fatal("successful export did not record the store base")
+	}
+	// The marker is not part of the artifact.
+	files, err := enumerateArtifactFiles(dir)
+	if err != nil || len(files) != 1 || files[0] != "workspace.img" {
+		t.Fatalf("enumerated files=%v, err=%v, want only workspace.img", files, err)
+	}
+
+	// A legacy copy (no marker) is not fenced.
+	s.volumes.ClearStoreBase("sbx", "owned")
+	writeBundleFiles(t, dir, map[string]string{"workspace.img": "v4"})
+	if resp, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref}); err != nil || resp.GetSkipped() {
+		t.Fatalf("legacy export response=%v, err=%v", resp, err)
+	}
+	fs.mu.Lock()
+	got := fs.arts[prefix].files["workspace.img"]
+	fs.mu.Unlock()
+	if got != "v4" {
+		t.Fatalf("store holds %q, want v4", got)
 	}
 }

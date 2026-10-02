@@ -5441,9 +5441,23 @@ defmodule Embervm.SessionManager do
         # can outlive the session_id that first claimed it. No behavior change
         # this slice: the newest holder IS the only session IS the id.
         case SessionStore.get_latest_by_lineage(inner.session_store, volume.lineage_id) do
-          {:ok, %{workload: workload, state: session_state}}
+          {:ok, %{workload: workload, state: session_state} = session}
               when workload == volume.workload and session_state not in [:expired, :evicted, :destroyed, :failed] ->
-            %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
+            inner = %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
+
+            # A cross-node move leaves the lineage's old copy on the node it
+            # left. The live row now points elsewhere, so that copy is stale:
+            # delete it without export, because exporting it would overwrite the
+            # newer content the store holds (noded fences this too, but the
+            # copy must not linger to serve an unguarded restore). A relighting
+            # row is excluded: its rejoin target legitimately holds the copy
+            # while volume_node_id still names the source.
+            if stale_live_copy?(inner, session, f.configured_id) and fact_current and
+                 wall_now - session.updated_at >= inner.orphan_grace_ms do
+              _ = delete_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id})
+            end
+
+            inner
 
           {:ok, %{state: session_state, updated_at: row_updated} = session}
               when session_state in [:expired, :evicted, :destroyed, :failed] ->
@@ -5468,6 +5482,10 @@ defmodule Embervm.SessionManager do
         end
       end)
     end)
+  end
+
+  defp stale_live_copy?(state, %{state: session_state, volume_node_id: owner}, node_id) do
+    state.cross_node_rejoin and session_state != :relighting and is_binary(owner) and owner != node_id
   end
 
   # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------

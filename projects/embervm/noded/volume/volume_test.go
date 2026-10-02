@@ -641,3 +641,28 @@ func TestConsumeClampsPastInRangeLedgerFromAutoHeal(t *testing.T) {
 		t.Fatalf("clamped consume returned %v, want [13] after in-range ledger advance to 12", got)
 	}
 }
+
+func TestStoreBaseRoundTrip(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.CreateSession("sbx", "lin", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.ReadStoreBase("sbx", "lin"); got != "" {
+		t.Fatalf("fresh lineage base = %q, want empty", got)
+	}
+	for _, fp := range []string{"aaa", "aaa", "bbb"} {
+		if err := m.WriteStoreBase("sbx", "lin", fp); err != nil {
+			t.Fatal(err)
+		}
+		if got := m.ReadStoreBase("sbx", "lin"); got != fp {
+			t.Fatalf("base = %q, want %q", got, fp)
+		}
+	}
+	m.ClearStoreBase("sbx", "lin")
+	if got := m.ReadStoreBase("sbx", "lin"); got != "" {
+		t.Fatalf("cleared base = %q, want empty", got)
+	}
+	if err := m.WriteStoreBase("sbx", "absent", "ccc"); err == nil {
+		t.Fatal("WriteStoreBase must not create a missing lineage dir")
+	}
+}

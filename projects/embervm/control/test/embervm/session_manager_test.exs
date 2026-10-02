@@ -900,7 +900,7 @@ defmodule Embervm.SessionManagerTest do
     refute_receive {:preferred_restore, {:channel, "node-unreachable/pod-target"}}, 100
   end
 
-  test "cross-node stale copies of live rows remain, terminal stale copies delete without export" do
+  test "cross-node stale copies of live and terminal rows delete without export" do
     parent = self()
     {ctx, created, parked} = cross_node_stack(orphan_grace_ms: 0, store_clock: fn -> 5_000_000 end,
       delete_session_volume_fun: fn ch, req -> send(parent, {:stale_deleted, ch, req.lineage_id}); {:ok, %{}} end,
@@ -908,11 +908,18 @@ defmodule Embervm.SessionManagerTest do
     await_workspace_evidence(ctx, created.session_id)
     cross_node_target(ctx, parked)
     assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+    # The lineage moved to node-b. The copy left on node-4 is stale: exporting
+    # it would overwrite the newer content, so it is deleted, never retired, and
+    # the copy on the row's current volume node is untouched.
     put_brick(ctx, parked.workload, "pod-owner", node_id: "node-4",
       session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}])
+    put_brick(ctx, parked.workload, "pod-target", node_id: "node-b", store_reachable: true,
+      session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}])
     assert :ok = SessionManager.reconcile(ctx.mgr)
-    refute_receive {:stale_deleted, _, _}, 100
-    refute_receive {:stale_retired, {:channel, "node-4/pod-owner"}, _}, 100
+    assert_receive {:stale_deleted, {:channel, "node-4/pod-owner"}, live_lineage_id}, 1_000
+    assert live_lineage_id == parked.lineage_id
+    refute_receive {:stale_deleted, {:channel, "node-b/pod-target"}, _}, 100
+    refute_receive {:stale_retired, _, _}, 100
     assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
     wait_for_state(ctx, created.session_id, :destroyed)
     assert :ok = SessionManager.reconcile(ctx.mgr)

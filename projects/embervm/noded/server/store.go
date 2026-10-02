@@ -439,7 +439,7 @@ func enumerateArtifactFiles(localDir string) ([]string, error) {
 			return nil
 		}
 		name := d.Name()
-		if strings.HasSuffix(name, ".tmp") || name == "meta.json" || name == volume.RetirementIntentFile {
+		if strings.HasSuffix(name, ".tmp") || name == "meta.json" || name == volume.RetirementIntentFile || name == volume.StoreBaseFile {
 			return nil
 		}
 		rel, rerr := filepath.Rel(localDir, path)
@@ -770,6 +770,11 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 						"artifact", prefix, "local_device_shape", localDevices.String())
 				}
 			}
+			if fingerprint != "" {
+				// Verified equal to the caller's expectation, so the local copy
+				// descends from that store content.
+				s.recordWorkspaceBase(ref, fingerprint)
+			}
 			s.reregisterRestored(ref)
 			if len(envelope) > 0 {
 				s.rewrapEnvelopeAfterAccess(ref, prefix)
@@ -839,6 +844,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	}
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: restore artifact %q download failed: %v", prefix, err)
+	}
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		s.recordWorkspaceBase(ref, fingerprint)
 	}
 	s.reregisterRestored(ref)
 	s.exported.mark(prefix, generation)
@@ -938,12 +946,47 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 			opts.Overwrite = true
 		}
 	}
+	// A workspace key has a single writer at a time but moves between nodes, and
+	// its generation is always 0, so the generation fence cannot order copies.
+	// Fence it on content lineage instead: refuse to overwrite store content the
+	// local copy does not descend from (a stale copy left on a node the lineage
+	// moved off), and record the new ancestry after every successful export.
+	workspace := ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE && s.volumes != nil
+	var workspaceFingerprint string
+	if workspace {
+		opts.LineageFence = true
+		opts.BaseFingerprint = s.volumes.ReadStoreBase(ref.GetWorkload(), ref.GetRef())
+		if opts.ContentFingerprint == nil {
+			opts.ContentFingerprint = &workspaceFingerprint
+		}
+	}
 	var options []store.ExportOptions
 	if opts.Kind != "" || opts.Overwrite || opts.EnforceDeviceShape || opts.ContentFingerprint != nil {
 		options = append(options, opts)
 	}
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
+	if workspace && err == nil {
+		s.recordWorkspaceBase(ref, *opts.ContentFingerprint)
+	}
 	return moved, skipped, err
+}
+
+// recordWorkspaceBase persists the store fingerprint a workspace copy now
+// descends from (after a fingerprint-verified restore or a successful or
+// checksum-equal export). When the marker cannot be written it is removed
+// instead: a stale marker would wrongly fence the next legitimate export,
+// while no marker fails open.
+func (s *Server) recordWorkspaceBase(ref *nodev1.ArtifactRef, fingerprint string) {
+	if s.volumes == nil || fingerprint == "" {
+		return
+	}
+	// New ancestry is new evidence: a prior stale-copy refusal no longer applies.
+	s.noteArtifactCreated(ref)
+	if err := s.volumes.WriteStoreBase(ref.GetWorkload(), ref.GetRef(), fingerprint); err != nil {
+		s.logger.Warn("noded: record workspace store base failed; clearing it",
+			"workload", ref.GetWorkload(), "lineage_id", ref.GetRef(), "err", err)
+		s.volumes.ClearStoreBase(ref.GetWorkload(), ref.GetRef())
+	}
 }
 
 // baseStoreCopyIsStale compares the rootfs identity captured in a local base
@@ -1643,13 +1686,20 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	}
 	_, skipped, err := s.exportWithKeys(ctx, job.ref, job.key, localDir, files, generation)
 	// Not a transport failure and NOT retryable: retrying cannot make our older
-	// copy newer. Only BASE rides this queue today (generation 0, so the fence
-	// cannot fire), but handling it here keeps the log honest if another kind is
-	// ever enqueued, rather than claiming "will retry on reconcile" forever.
+	// copy newer. For a SESSION_WORKSPACE this is the content-lineage fence: the
+	// store holds content this copy does not descend from. The copy is kept (it
+	// is never exported and never deleted by retirement), not retried blindly.
 	if errors.Is(err, store.ErrStaleGeneration) {
 		s.logger.Warn("noded: async export REFUSED, store holds a newer generation (divergent copies)",
 			"artifact", job.key, "kind", job.ref.GetKind().String(),
 			"localGeneration", generation, "err", err)
+		if job.ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+			// Never exportable until the lineage returns to this node (a
+			// restore or a Prime clears it) or the TTL lapses. Without this a
+			// drain would wait out its whole export budget on a copy that can
+			// never become durable.
+			s.unexportable.mark(job.key, job.ref.GetKind().String(), http.StatusConflict, "stale workspace copy: store holds newer content")
+		}
 		return
 	}
 	if errors.Is(err, store.ErrIncompatibleDeviceShape) {
