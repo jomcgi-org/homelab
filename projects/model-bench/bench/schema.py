@@ -111,6 +111,9 @@ class TaskSpec(BaseModel):
     # Size (added + removed lines) of the real fix, so the norms score can flag a
     # bloated diff. Optional: tasks without it skip the size signal.
     gold_diff_lines: int | None = None
+    # jomcgi-agent-index axes this task measures beyond its tier (index.yaml).
+    # Provenance like calibration: not part of any cell key.
+    axes: list[Literal["judgement", "security", "review"]] = Field(default_factory=list)
 
 
 class Attempt(BaseModel):

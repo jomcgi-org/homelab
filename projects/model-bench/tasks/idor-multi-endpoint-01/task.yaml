@@ -10,6 +10,7 @@ id: idor-multi-endpoint-01
 version: v1
 class: code-fix
 tier: hard
+axes: [security]
 mode: agentic
 snapshot:
   preset: monolith-backend

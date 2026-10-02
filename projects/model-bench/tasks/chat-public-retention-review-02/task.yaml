@@ -24,6 +24,7 @@ class: code-fix
 # Decoys: messages-cascade, timedelta-positional-days, not-exists-indexed,
 # empty-selector-to-none.
 tier: hard
+axes: [review]
 mode: agentic
 snapshot:
   commit: b5aafe854a621f370398039b8c099a66fcc1f2b1

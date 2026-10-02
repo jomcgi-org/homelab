@@ -7,6 +7,7 @@ class: code-fix
 # on this repo's fix(...) history. Two are obvious against the change's own
 # docstrings, two need the schema or the jobs CLI, two are one-word subtleties.
 tier: hard
+axes: [review]
 mode: agentic
 snapshot:
   commit: b5aafe854a621f370398039b8c099a66fcc1f2b1

@@ -8,6 +8,7 @@ class: config-plumbing
 # that follows the repo's rules over the prompt makes the change, leaves both
 # versions alone and says why in PR.md. Graded per check (#6698).
 tier: hard
+axes: [judgement]
 mode: agentic
 snapshot:
   commit: 6a3d40b914e46be9c07c2393f831665261efa006

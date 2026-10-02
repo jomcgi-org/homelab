@@ -11,6 +11,8 @@
     METRICS,
     fmtDate,
     hardRate,
+    indexRoles,
+    indexRows,
     kfmt,
     money,
     orderedTasks,
@@ -96,6 +98,26 @@
       sortDir = 1;
     }
   }
+
+  // jomcgi-agent-index: one ranking per factory role (model-bench index.yaml).
+  // The section only renders once the report JSON carries an `index` block.
+  const index = $derived(lb.index ?? null);
+  const roles = $derived(indexRoles(index));
+  let role = $state(null);
+  const activeRole = $derived(role ?? roles[0]);
+  const indexed = $derived(indexRows(shown, index, activeRole));
+  const picks = $derived(index?.picks?.[activeRole] ?? {});
+  const nameOf = (id) => {
+    const m = models.find((x) => x.id === id);
+    return m ? shortName(m) : (id ?? "n/a");
+  };
+  const INDEX_Y = {
+    get: (m) => m.index_value,
+    title: "Agent index",
+    axis: "agent index",
+    point: "index",
+    corner: "Claude's index, for less",
+  };
 
   const leader = $derived(ranked[0]);
   const cheapestPerfect = $derived(
@@ -202,6 +224,79 @@
         <p class="sec-label">/ Capability vs efficiency</p>
         <Scatter models={shown} {hot} onhover={(id) => (hot = id)} />
       </section>
+
+      {#if roles.length}
+        <section>
+          <p class="sec-label">
+            / Agent index
+            <span class="aside">per factory role, weights in index.yaml</span>
+          </p>
+          <div class="seg" role="group" aria-label="Factory role">
+            {#each roles as r}
+              <button
+                type="button"
+                aria-pressed={activeRole === r}
+                onclick={() => (role = r)}>{r}</button
+              >
+            {/each}
+          </div>
+          {#if indexed.length}
+            <Scatter
+              models={indexed}
+              {hot}
+              onhover={(id) => (hot = id)}
+              y={INDEX_Y}
+            />
+            <div class="panel table-wrap">
+              <table class="ranked">
+                <thead>
+                  <tr>
+                    <th class="l">model</th>
+                    <th>index</th>
+                    <th>95% CI</th>
+                    <th>coverage</th>
+                    <th>$ / task</th>
+                    <th>wall / task</th>
+                    <th class="l">low n</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each indexed as m (m.id)}
+                    <tr data-model={m.id} class:hot={hot === m.id}>
+                      <td class="l">
+                        <span class="nm"
+                          ><i class="sw" data-slot={providerSlot(m.id)}
+                          ></i>{shortName(m)}</span
+                        >
+                      </td>
+                      <td class="num">{m.index_value.toFixed(3)}</td>
+                      <td class="num"
+                        >{m.index_ci
+                          ? `${m.index_ci[0].toFixed(2)} to ${m.index_ci[1].toFixed(2)}`
+                          : "n/a"}</td
+                      >
+                      <td class="num"
+                        >{Math.round((m.index_coverage ?? 0) * 100)}%</td
+                      >
+                      <td class="num">{money(m.cost_usd)}</td>
+                      <td class="num">{secs((m.mean_latency_ms ?? 0) / 1000)}</td>
+                      <td class="l">{m.index_low_n.join(", ")}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+            <p class="caption">
+              Best: {nameOf(picks.best)}. Cheapest near best: {nameOf(
+                picks.cheapest,
+              )}. Fastest near best: {nameOf(picks.fastest)}. Low n: axis
+              measured on fewer than {index.min_n} tasks.
+            </p>
+          {:else}
+            <p class="panel empty">No selected model has a {activeRole} index.</p>
+          {/if}
+        </section>
+      {/if}
 
       <section>
         <p class="sec-label">/ Every task</p>

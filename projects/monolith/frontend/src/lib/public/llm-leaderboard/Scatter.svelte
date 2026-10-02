@@ -19,7 +19,17 @@
     shortName,
   } from "./model.js";
 
-  let { models = [], hot = null, onhover = () => {} } = $props();
+  // The Y reading defaults to hard-task pass; the agent-index view passes its
+  // own (a per-role index, 0..1) through `y`.
+  const HARD_Y = {
+    get: METRICS.hard.get,
+    title: "Hard-task pass",
+    axis: "hard-task pass",
+    point: "of hard tasks",
+    corner: "Claude's pass rate, for less",
+  };
+
+  let { models = [], hot = null, onhover = () => {}, y = HARD_Y } = $props();
 
   const TABS = ["cost", "wall", "tokens", "turns"];
   let metric = $state("cost");
@@ -32,14 +42,16 @@
   const ih = H - M.t - M.b;
 
   const pts = $derived(
-    plottable(models, metric).map((m) => ({
-      id: m.id,
-      name: shortName(m),
-      slot: providerSlot(m.id),
-      anchor: m.role === "anchor",
-      x: cfg.get(m) ?? 0,
-      y: METRICS.hard.get(m),
-    })),
+    plottable(models, metric)
+      .filter((m) => y.get(m) != null)
+      .map((m) => ({
+        id: m.id,
+        name: shortName(m),
+        slot: providerSlot(m.id),
+        anchor: m.role === "anchor",
+        x: cfg.get(m) ?? 0,
+        y: y.get(m),
+      })),
   );
   const hasZero = $derived(cfg.log && pts.some((p) => !(p.x > 0)));
   const x0 = $derived(M.l + (hasZero ? ZERO_LANE : 0));
@@ -211,7 +223,7 @@
 
 <section class="panel scatter">
   <header class="panel-head">
-    <span class="t">Hard-task pass vs {cfg.label.toLowerCase()}</span>
+    <span class="t">{y.title} vs {cfg.label.toLowerCase()}</span>
     <span class="b">top left is best</span>
   </header>
   <div class="panel-body">
@@ -232,14 +244,14 @@
         >
       {/each}
       <span><i class="line"></i>Pareto frontier</span>
-      <span><i class="corner"></i>Claude's pass rate, for less</span>
+      <span><i class="corner"></i>{y.corner}</span>
     </p>
 
     <div class="plot">
       <svg
         viewBox="0 0 {W} {H}"
         role="img"
-        aria-label={`Hard-task pass against ${cfg.unit}`}
+        aria-label={`${y.title} against ${cfg.unit}`}
         class:hovering={hot}
       >
         {#if bound}
@@ -284,7 +296,7 @@
         <text
           class="axis-title"
           transform={`translate(14 ${M.t + ih / 2}) rotate(-90)`}
-          text-anchor="middle">hard-task pass</text
+          text-anchor="middle">{y.axis}</text
         >
         {#if frontier.length > 1}
           <polyline
@@ -307,7 +319,7 @@
             onmouseleave={() => onhover(null)}
           >
             <title
-              >{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% of hard tasks</title
+              >{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% {y.point}</title
             >
             <circle class="hit" cx={xs(p.x)} cy={ys(p.y)} r="12" />
             {#if p.anchor}

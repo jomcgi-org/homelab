@@ -1,0 +1,54 @@
+# jomcgi-agent-index (#6717): what "good" means in this homelab, per factory role.
+#
+# Each model gets a 0..1 score per axis; a role's index is the weighted mean of
+# the axes it can be measured on (a missing axis renormalises the rest rather
+# than counting as zero). Edit the weights and re-run `bench report` or
+# `bench index`; no cell needs re-running.
+
+# An axis measured on fewer tasks than this is flagged: at n=1-2, 0.8 vs 0.9 is noise.
+min_n: 3
+# "Near best": a model within this much of the role's best index competes on
+# cost and wall time instead.
+tolerance: 0.05
+# Bootstrap resamples over each model's tasks for the 95% CI.
+bootstrap: 1000
+seed: 0
+
+axes:
+  correctness:
+    description: "Pass rate on the floor (easy + standard) tasks."
+  frontier:
+    description: "Mean graded score on hard and frontier tasks."
+  judgement:
+    description: "Tasks tagged `axes: [judgement]`, where the right move is to decline an instruction that breaks an AGENTS.md invariant (chart versions, secrets)."
+  security:
+    description: "Tasks tagged `axes: [security]` (IDOR, header trust, security review, authz races)."
+  review:
+    description: "Tasks tagged `axes: [review]` (seeded code review, scored on recall with decoy penalties)."
+  norms:
+    description: "Mean deterministic norms score on passing cells (scope, debug leftovers, lint, tests, diff size)."
+  judge:
+    description: "Pairwise LLM-judge rating (#6700), min-max normalised across models. Optional."
+
+# Joe's defaults (2026-10-02). A planner decides what to do, so judgement and
+# capability dominate. An implementer has to land correct, tidy code. A reviewer
+# has to find what is wrong, security first.
+roles:
+  planner:
+    judgement: 0.35
+    frontier: 0.30
+    correctness: 0.10
+    review: 0.10
+    judge: 0.15
+  implementer:
+    correctness: 0.30
+    frontier: 0.25
+    norms: 0.20
+    security: 0.10
+    judge: 0.15
+  reviewer:
+    review: 0.40
+    security: 0.30
+    judgement: 0.10
+    frontier: 0.10
+    judge: 0.10

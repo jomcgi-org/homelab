@@ -15,6 +15,7 @@ py_library(
         "calibrate.py",
         "claude_code.py",
         "cli.py",
+        "index.py",
         "judge.py",
         "norms.py",
         "openrouter.py",
@@ -32,6 +33,16 @@ py_library(
         "@pip//httpx",
         "@pip//pydantic",
         "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "index_test",
+    srcs = ["index_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "@pip//pytest",
     ],
 )
 

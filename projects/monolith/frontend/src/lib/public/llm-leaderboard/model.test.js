@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   cellState,
+  indexRoles,
+  indexRows,
   matchPreset,
   money,
   orderedTasks,
@@ -9,6 +11,7 @@ import {
   presetIds,
   providerSlot,
   rank,
+  roleIndex,
   serializeSelection,
   sortByMetric,
 } from "./model.js";
@@ -180,5 +183,37 @@ describe("paretoFrontier", () => {
       { id: "paid", x: 1, y: 1 },
     ];
     expect(paretoFrontier(pts).map((p) => p.id)).toEqual(["free-perfect"]);
+  });
+});
+
+describe("jomcgi-agent-index", () => {
+  const index = {
+    roles: { planner: { judgement: 1 }, reviewer: { review: 1 } },
+    models: {
+      "anthropic/claude-opus": {
+        roles: { planner: { index: 0.9, ci: [0.8, 1], coverage: 1 } },
+        low_n: ["judgement"],
+      },
+      "qwen/local": {
+        roles: { planner: { index: 0.95, ci: [0.9, 1], coverage: 0.5 } },
+        low_n: [],
+      },
+    },
+  };
+
+  it("lists roles from the block", () => {
+    expect(indexRoles(index)).toEqual(["planner", "reviewer"]);
+    expect(indexRoles(undefined)).toEqual([]);
+  });
+
+  it("ranks the models that have an index, best first", () => {
+    const rows = indexRows(MODELS, index, "planner");
+    expect(rows.map((m) => m.id)).toEqual([
+      "qwen/local",
+      "anthropic/claude-opus",
+    ]);
+    expect(rows[1].index_low_n).toEqual(["judgement"]);
+    expect(indexRows(MODELS, index, "reviewer")).toEqual([]);
+    expect(roleIndex(index, "planner", "nope")).toBeNull();
   });
 });
