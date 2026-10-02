@@ -94,6 +94,29 @@ defmodule Embervm.NodeRegistryTest do
 
   # -- capacity projection ---------------------------------------------------
 
+  test "diagnostics preserve unsupported fields and bound daemon keys" do
+    {reg, table} = start_registry([])
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status())
+    assert [older] = NodeRegistry.capacity(table)
+    assert older.vmm_exit_counts == nil
+    assert older.guest_memory_state_counts == nil
+    assert older.guest_oom_count == nil
+
+    status = %{node_status() | vmm_exit_counts: %{"host_requested" => 0, "vm-evil" => 55},
+      guest_memory_state_counts: %{"unsupported" => 1, "guest-label" => 42}, guest_oom_count: 18_446_744_073_709_551_615}
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.vmm_exit_counts == %{"host_requested" => 0}
+    assert facts.guest_memory_state_counts == %{"unsupported" => 1}
+    assert facts.guest_oom_count == 18_446_744_073_709_551_615
+    assert facts.mem_headroom_mib == older.mem_headroom_mib
+    assert facts.workloads == older.workloads
+
+    disabled = %{status | guest_memory_state_counts: %{}, guest_oom_count: 99}
+    assert NodeRegistry.diagnostic_facts(disabled).guest_oom_count == nil
+    assert NodeRegistry.diagnostic_facts(%{status | guest_memory_state_counts: %{"unknown" => 9}}).guest_memory_state_counts == nil
+  end
+
   test "a healthy NodeStatus publishes dispatchable capacity facts" do
     {clock, _advance} = new_clock()
     {reg, table} = start_registry(clock: clock)

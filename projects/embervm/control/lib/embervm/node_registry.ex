@@ -89,6 +89,32 @@ defmodule Embervm.NodeRegistry do
 
   alias Embervm.NodeCapacity
 
+  @vmm_exit_reasons ~w(host_requested host_cgroup_oom guest_kernel_panic unclassified)
+  @guest_memory_states ~w(pending ok stale unsupported error)
+  @uint64_max 18_446_744_073_709_551_615
+
+  # Empty proto3 maps cannot distinguish an older daemon from disabled feedback.
+  # Unknown keys and invalid values never acquire a metric label or a baseline.
+  @doc false
+  def diagnostic_facts(status) do
+    states = diagnostic_counts(Map.get(status, :guest_memory_state_counts), @guest_memory_states)
+
+    %{
+      vmm_exit_counts: diagnostic_counts(Map.get(status, :vmm_exit_counts), @vmm_exit_reasons),
+      guest_memory_state_counts: states,
+      guest_oom_count: if(is_nil(states), do: nil, else: diagnostic_count(Map.get(status, :guest_oom_count)))
+    }
+  end
+
+  defp diagnostic_counts(raw, keys) when is_map(raw) do
+    counts = for key <- keys, value = diagnostic_count(Map.get(raw, key)), not is_nil(value), into: %{}, do: {key, value}
+    if map_size(counts) == 0, do: nil, else: counts
+  end
+
+  defp diagnostic_counts(_, _), do: nil
+  defp diagnostic_count(value) when is_integer(value) and value >= 0 and value <= @uint64_max, do: value
+  defp diagnostic_count(_), do: nil
+
   alias Embervm.Node.V1.{
     GroupBundleSet,
     GroupMemberPlanEntry,
@@ -739,6 +765,9 @@ defmodule Embervm.NodeRegistry do
     now = state.clock.()
     prev = state.node_runtime[instance_id]
     stateful_vms = stateful_vms_from_status(status)
+    diagnostics = diagnostic_facts(status)
+    baseline = if status.draining, do: nil, else: diagnostics
+    if not status.draining, do: log_diagnostic_increases(prev, diagnostics)
 
     rt = %{
       prev
@@ -749,6 +778,7 @@ defmodule Embervm.NodeRegistry do
         stateful_vms: stateful_vms,
         serving_vm_ids: resident_vm_ids(status.serving_vms)
     }
+    rt = %{rt | diagnostic_baseline: baseline}
     state = put_in(state.node_runtime[instance_id], rt)
     Embervm.SpecTrace.emit(:adoption, :recv_status, %{
       "gen" => rt.gen,
@@ -782,6 +812,34 @@ defmodule Embervm.NodeRegistry do
     end
 
     state
+  end
+
+  # A decrease in either cumulative family identifies a daemon reset. Rebaseline
+  # the entire status, including counters that happened to increase meanwhile.
+  defp log_diagnostic_increases(%{diagnostic_baseline: nil}, _current), do: :ok
+
+  defp log_diagnostic_increases(rt, current) do
+    previous = rt.diagnostic_baseline
+    old_exits = previous.vmm_exit_counts || %{}
+    exits = current.vmm_exit_counts || %{}
+    reset = Enum.any?(exits, fn {key, value} -> is_integer(old_exits[key]) and value < old_exits[key] end) or
+      (is_integer(previous.guest_oom_count) and is_integer(current.guest_oom_count) and current.guest_oom_count < previous.guest_oom_count)
+
+    unless reset do
+      for {reason, total} <- exits, old = old_exits[reason], is_integer(old), total > old do
+        Logger.info("embervm vmm exit observed", instance_id: rt.instance_id, node_id: rt.configured_id,
+          boot_id: rt.boot_id, reason: reason, delta: total - old, total: total)
+      end
+
+      old = previous.guest_oom_count
+      total = current.guest_oom_count
+      if is_integer(old) and is_integer(total) and total > old do
+        Logger.info("embervm guest oom observed", instance_id: rt.instance_id, node_id: rt.configured_id,
+          boot_id: rt.boot_id, kind: "guest_oom", delta: total - old, total: total)
+      end
+    end
+
+    :ok
   end
 
   defp primed_vm_ids(%NodeStatus{workloads: workloads}) do
@@ -1030,6 +1088,7 @@ defmodule Embervm.NodeRegistry do
       # local base inventory to reconcile", exactly the pre-PR-3 behavior.
       local_bases: local_bases_from_status(s)
     }
+    |> Map.merge(diagnostic_facts(s))
   end
 
   defp local_bases_from_status(%NodeStatus{local_bases: bases}) when is_list(bases) do
@@ -1359,6 +1418,7 @@ defmodule Embervm.NodeRegistry do
     end
 
     state = put_in(state, [:node_runtime, node_id, :health], new_health)
+    state = put_in(state, [:node_runtime, node_id, :diagnostic_baseline], nil)
     state = retract_capacity(state, node_id)
 
     if new_health == :down and old_health != :down do
@@ -1564,7 +1624,13 @@ defmodule Embervm.NodeRegistry do
 
     case state.node_runtime[node_id] do
       %{streamer: {^pid, _ref}} = rt ->
-        put_in(state.node_runtime[node_id], %{rt | streamer: nil, channel: nil})
+        # Preserve existing host capacity liveness semantics, but withdraw
+        # diagnostic series immediately when their observation stream ends.
+        case NodeCapacity.fetch(state.table, instance_key(rt)) do
+          {:ok, facts} -> NodeCapacity.put(state.table, instance_key(rt), Map.merge(facts, diagnostic_facts(%{})))
+          :error -> :ok
+        end
+        put_in(state.node_runtime[node_id], %{rt | streamer: nil, channel: nil, diagnostic_baseline: nil})
 
       _ ->
         state
@@ -1831,6 +1897,7 @@ defmodule Embervm.NodeRegistry do
       # baseline before then is started_at, so a daemon that never answers still
       # ages starting -> unknown -> down.
       last_status_at: nil,
+      diagnostic_baseline: nil,
       started_at: now,
       # Monotonic ms of the last dial-home registration, nil for a statically-seeded
       # instance (which never registers and so is never expired). One half of the
