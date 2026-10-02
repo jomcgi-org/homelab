@@ -62,6 +62,58 @@ defmodule Embervm.SessionStoreTest do
 
   # -- create ----------------------------------------------------------------
 
+  for requested_id <- [nil, "header-dispatch:exact/identity"] do
+    test "invoke start durably records #{inspect(requested_id)} before completion", %{path: path} do
+      {op_log, store} = start_pair(path, clock: fn -> 1_000 end)
+      {:ok, created} = create(store)
+      assert {:ok, %{inflight_dispatch_id: nil}} = SessionStore.get(store, created.session_id)
+
+      {:ok, started} = SessionStore.record_invoke_started(store, created.session_id, unquote(requested_id))
+      expected = unquote(requested_id) || "#{created.session_id}:#{started.invoke_started_at}"
+      assert started.inflight_dispatch_id == expected
+      assert started.last_invoke_at == nil
+      assert {:ok, [%{inflight_dispatch_id: ^expected}]} = SQLite.load_sessions(op_log)
+      {:ok, ops} = SQLite.read_from(op_log, 0)
+      start_op = Enum.find(ops, &(&1.kind == :session_invoke_started))
+      assert start_op.payload["dispatch_id"] == expected
+
+      GenServer.stop(store)
+      GenServer.stop(op_log)
+      {reopened_log, reopened_store} = start_pair(path, clock: fn -> 1_000 end)
+      assert {:ok, %{inflight_dispatch_id: ^expected, last_invoke_at: nil}} =
+               SessionStore.get(reopened_store, created.session_id)
+      {:ok, completed} = SessionStore.record_invoke(reopened_store, created.session_id, nil)
+      assert completed.inflight_dispatch_id == expected
+      assert {:ok, [%{inflight_dispatch_id: ^expected}]} = SQLite.load_sessions(reopened_log)
+
+      # A repeated clock tick still gives the next default dispatch a new identity.
+      {:ok, next} = SessionStore.record_invoke_started(reopened_store, created.session_id)
+      assert next.invoke_started_at == started.invoke_started_at + 1
+      assert next.inflight_dispatch_id == "#{created.session_id}:#{next.invoke_started_at}"
+      refute next.inflight_dispatch_id == expected
+    end
+  end
+
+  defmodule RejectInvokeStartOpLog do
+    def append(_op_log, %{kind: :session_invoke_started}), do: {:error, :injected_write_failure}
+    def append(op_log, op), do: SQLite.append(op_log, op)
+    def load_sessions(op_log), do: SQLite.load_sessions(op_log)
+  end
+
+  test "invoke start errors leave dispatch identity and turn state untouched", %{path: path} do
+    {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+    {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log, op_log_mod: RejectInvokeStartOpLog)
+    {:ok, created} = create(store)
+    {:ok, before} = SessionStore.get(store, created.session_id)
+    assert {:error, :injected_write_failure} =
+             SessionStore.record_invoke_started(store, created.session_id, "never-dispatched")
+    assert {:ok, ^before} = SessionStore.get(store, created.session_id)
+    assert {:ok, [%{inflight_dispatch_id: nil, invoke_started_at: nil, turn_seq: 0}]} = SQLite.load_sessions(op_log)
+    assert {:error, {:not_found, "unknown"}} = SessionStore.record_invoke_started(store, "unknown", "never-dispatched")
+    {:ok, _} = SessionStore.transition(store, created.session_id, :destroy, :session_destroyed, %{}, %{})
+    assert {:error, :not_running} = SessionStore.record_invoke_started(store, created.session_id, "never-dispatched")
+  end
+
   test "create mints an id + token, returns the token once, stores only its hash", %{path: path} do
     {op_log, store} = start_pair(path)
 

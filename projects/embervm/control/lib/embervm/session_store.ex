@@ -169,13 +169,23 @@ defmodule Embervm.SessionStore do
   synchronous write even when async lifecycle writes are enabled because the
   stamp authorizes recovery code to destroy a guest and must survive a control
   plane restart.
+
+  The optional caller dispatch identity is stored verbatim. When absent, the
+  store derives it from the newly allocated start timestamp, so the guest and
+  recovery readers use the same durable identity.
   """
   @spec record_invoke_started(GenServer.server(), String.t()) ::
           {:ok, map()} | {:error, term()}
   def record_invoke_started(store \\ __MODULE__, session_id) do
+    record_invoke_started(store, session_id, nil)
+  end
+
+  @spec record_invoke_started(GenServer.server(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def record_invoke_started(store, session_id, dispatch_id) do
     GenServer.call(
       store,
-      {:record_invoke_started, session_id},
+      {:record_invoke_started, session_id, dispatch_id},
       @record_invoke_started_timeout_ms
     )
   end
@@ -425,6 +435,7 @@ defmodule Embervm.SessionStore do
       created_at: row.created_at,
       # Oracle-only evidence. Never use this in idle or eviction fallbacks.
       invoke_started_at: row.invoke_started_at,
+      inflight_dispatch_id: Map.get(row, :inflight_dispatch_id),
       last_invoke_at: row.last_invoke_at,
       expires_at: row.expires_at,
       updated_at: row.updated_at,
@@ -497,8 +508,8 @@ defmodule Embervm.SessionStore do
     do_record_invoke(state, session_id, usage, turn)
   end
 
-  def handle_call({:record_invoke_started, session_id}, _from, state) do
-    do_record_invoke_started(state, session_id)
+  def handle_call({:record_invoke_started, session_id, dispatch_id}, _from, state) do
+    do_record_invoke_started(state, session_id, dispatch_id)
   end
 
   def handle_call({:get, session_id}, _from, state) do
@@ -738,6 +749,7 @@ defmodule Embervm.SessionStore do
       created_at: ts,
       # Oracle-only evidence. Never use this in idle or eviction fallbacks.
       invoke_started_at: nil,
+      inflight_dispatch_id: nil,
       last_invoke_at: nil,
       expires_at: Map.get(attrs, :expires_at),
       updated_at: ts,
@@ -929,12 +941,13 @@ defmodule Embervm.SessionStore do
   # worker. An ETS-only stamp could disappear on a control plane restart while
   # the monolith claim keeps heartbeating, causing the recovery oracle to destroy
   # a healthy live guest. The timestamp is monotonic and is never cleared.
-  defp do_record_invoke_started(state, session_id) do
+  defp do_record_invoke_started(state, session_id, requested_dispatch_id) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
         # The timestamp also fences an exact conditional stop. Even two invokes
         # accepted within one clock tick must have distinct durable identities.
         ts = max(state.clock.(), (session.invoke_started_at || -1) + 1)
+        dispatch_id = requested_dispatch_id || "#{session_id}:#{ts}"
 
         op = %Op{
           kind: :session_invoke_started,
@@ -943,12 +956,12 @@ defmodule Embervm.SessionStore do
           workload: session.workload,
           session_id: session_id,
           ts: ts,
-          payload: %{turn_seq: session.turn_seq + 1}
+          payload: %{turn_seq: session.turn_seq + 1, dispatch_id: dispatch_id}
         }
 
         case state.op_log_mod.append(state.op_log, op) do
           {:ok, _seq} ->
-            updated = %{session | invoke_started_at: ts, turn_seq: session.turn_seq + 1, interrupted_turn: nil, updated_at: ts}
+            updated = %{session | invoke_started_at: ts, inflight_dispatch_id: dispatch_id, turn_seq: session.turn_seq + 1, interrupted_turn: nil, updated_at: ts}
             :ets.insert(state.sessions, {session_id, updated})
             # Return the consumed marker to prepare_turn, while clearing it durably
             # at dispatch so a denied turn cannot replay it on unrelated input.

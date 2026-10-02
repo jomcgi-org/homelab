@@ -1094,4 +1094,32 @@ defmodule Embervm.OpLog.SQLiteTest do
     GenServer.stop(restarted)
   end
 
+  test "dispatch migration upgrades a populated legacy database twice without inventing an id", %{path: path} do
+    server = start_server(path)
+    created = %Op{kind: :session_created, session_id: "s-legacy", tenant: "t1",
+      principal: "p1", workload: "sandbox", ts: 1,
+      payload: %{state: "running", node_id: "node", token_sha256: "token"}}
+    assert {:ok, _} = SQLite.append(server, created)
+    assert {:ok, _} = SQLite.append(server, %Op{created | kind: :session_invoke_started,
+      ts: 2, payload: %{turn_seq: 1}})
+    GenServer.stop(server)
+    {:ok, conn} = Sqlite3.open(path)
+    :ok = Sqlite3.execute(conn, "ALTER TABLE sessions DROP COLUMN inflight_dispatch_id")
+    :ok = Sqlite3.close(conn)
+
+    for _ <- 1..2 do
+      reopened = start_server(path)
+      assert {:ok, [%{session_id: "s-legacy", invoke_started_at: 2, turn_seq: 1,
+        inflight_dispatch_id: nil}]} = SQLite.load_sessions(reopened)
+      GenServer.stop(reopened)
+    end
+    reopened = start_server(path)
+    assert {:ok, _} = SQLite.append(reopened, %Op{created | kind: :session_invoke_started,
+      ts: 3, payload: %{turn_seq: 2, dispatch_id: "dispatch-after-upgrade"}})
+    GenServer.stop(reopened)
+    final = start_server(path)
+    assert {:ok, [%{inflight_dispatch_id: "dispatch-after-upgrade"}]} = SQLite.load_sessions(final)
+    GenServer.stop(final)
+  end
+
 end

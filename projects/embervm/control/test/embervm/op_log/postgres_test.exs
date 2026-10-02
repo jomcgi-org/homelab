@@ -17,6 +17,20 @@ defmodule Embervm.OpLog.PostgresTest do
 
   @dsn "postgres://embervm:secret@monolith-pg-rw.monolith.svc.cluster.local:5432/embervm_oplog"
 
+  for dispatch_id <- [nil, "exact-dispatch"] do
+    test "session reader includes nullable dispatch identity #{inspect(dispatch_id)}" do
+      row = ["s-read", "t1", "p1", "wl", "running", "node-4", "vm-1", nil,
+        "base", "digest", 0, nil, nil, "hash", 100, 101, nil, nil, 101, nil,
+        "s-read", nil, nil, nil, 1, nil, unquote(dispatch_id)]
+      {:ok, server} = Postgres.start_link(name: nil, connection: self(),
+        query_fun: fn _, sql, [] ->
+          assert sql =~ "interrupted_turn_json, inflight_dispatch_id"
+          {:ok, %Postgrex.Result{rows: [row]}}
+        end)
+      assert {:ok, [%{inflight_dispatch_id: unquote(dispatch_id), invoke_started_at: 101}]} = Postgres.load_sessions(server)
+    end
+  end
+
   test "implements every Embervm.OpLog callback" do
     behaviours = Postgres.__info__(:attributes) |> Keyword.get_values(:behaviour) |> List.flatten()
     assert Embervm.OpLog in behaviours

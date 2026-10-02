@@ -260,6 +260,7 @@ defmodule Embervm.OpLog.Postgres do
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS invoke_started_at BIGINT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS turn_seq BIGINT NOT NULL DEFAULT 0",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS interrupted_turn_json TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS inflight_dispatch_id TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_intent_json TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_completion_json TEXT",
     "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL",
@@ -1147,8 +1148,8 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :session_invoke_started} = op, _seq) do
     exec(
       conn,
-      "UPDATE sessions SET turn_seq=GREATEST(turn_seq, $1), interrupted_turn_json=NULL, invoke_started_at=GREATEST(COALESCE(invoke_started_at, $2), $2), updated_at=$3 WHERE session_id=$4",
-      [Map.get(op.payload, :turn_seq, 0), op.ts, op.ts, op.session_id]
+      "UPDATE sessions SET turn_seq=GREATEST(turn_seq, $1), interrupted_turn_json=NULL, inflight_dispatch_id=CASE WHEN invoke_started_at IS NULL OR invoke_started_at <= $2 THEN $3 ELSE inflight_dispatch_id END, invoke_started_at=GREATEST(COALESCE(invoke_started_at, $2), $2), updated_at=$4 WHERE session_id=$5",
+      [Map.get(op.payload, :turn_seq, 0), op.ts, Map.get(op.payload, :dispatch_id), op.ts, op.session_id]
     )
   end
 
@@ -2166,7 +2167,7 @@ defmodule Embervm.OpLog.Postgres do
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
-           turn_seq, interrupted_turn_json
+           turn_seq, interrupted_turn_json, inflight_dispatch_id
     FROM sessions
     """
 
@@ -2202,7 +2203,8 @@ defmodule Embervm.OpLog.Postgres do
           stop_intent_json,
           stop_completion_json,
           turn_seq,
-          interrupted_turn_json
+          interrupted_turn_json,
+          inflight_dispatch_id
         ]) do
     %{
       session_id: session_id,
@@ -2230,7 +2232,8 @@ defmodule Embervm.OpLog.Postgres do
       stop_intent: Embervm.SessionStopProof.decode(stop_intent_json),
       stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
       turn_seq: turn_seq,
-      interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json)
+      interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json),
+      inflight_dispatch_id: inflight_dispatch_id
     }
   end
 

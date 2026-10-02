@@ -206,6 +206,10 @@ defmodule Embervm.RouterTest do
     def interrupt(_srv, "s-live", "dispatch-ok"),
       do: {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}}
 
+    def interrupt(_srv, "s-live", "dispatch-recovery"),
+      do: {:ok, %{terminal_reason: "interrupted_for_drain", killed: false, timeout: false,
+        dispatch_id: "dispatch-recovery", cli_session_id: "private-cli-id", transcript_path: "/private/transcript"}}
+
     def interrupt(_srv, "s-live", "dispatch-stale"), do: {:error, :stale_dispatch}
     def interrupt(_srv, "s-live", "dispatch-timeout"), do: {:error, :deadline_exceeded}
     def interrupt(_srv, "s-live", "dispatch-unavailable"), do: {:error, {:rpc, 14}}
@@ -313,7 +317,7 @@ defmodule Embervm.RouterTest do
     def verify_token(_srv, _id, _token), do: {:error, :not_found}
 
     def get(_srv, "s-live"),
-      do: {:ok, %{session_id: "s-live", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, invoke_started_at: 123, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
+      do: {:ok, %{session_id: "s-live", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, invoke_started_at: 123, inflight_dispatch_id: "persisted-dispatch", last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
 
     def get(_srv, "s-term"),
       do: {:ok, %{session_id: "s-term", workload: "wl-ok", principal: "p", state: :destroyed, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: "destroyed"}}
@@ -1837,6 +1841,16 @@ defmodule Embervm.RouterTest do
            }
   end
 
+  test "interrupt HTTP reply does not expose internal recovery evidence" do
+    with_session_fakes()
+    response = req(:post, "/v1/sessions/s-live/interrupt", auth("sess-token-live"), ~s({"dispatch_id":"dispatch-recovery"}))
+    assert response.status == 202
+    assert json(response.body) == %{"session_id" => "s-live", "dispatch_id" => "dispatch-recovery",
+      "outcome" => "requested", "relay" => %{"terminal_reason" => "interrupted_for_drain", "killed" => false, "timeout" => false}}
+    refute response.body =~ "private-cli-id"
+    refute response.body =~ "/private/transcript"
+  end
+
   test "interrupt rejects malformed and stale requests and retains transport uncertainty" do
     with_session_fakes()
     token = auth("sess-token-live")
@@ -2172,6 +2186,7 @@ defmodule Embervm.RouterTest do
     assert a.status == 200
     assert json(a.body)["session_id"] == "s-live"
     assert json(a.body)["invoke_started_at"] == 123
+    assert json(a.body)["inflight_dispatch_id"] == "persisted-dispatch"
     assert json(a.body)["node"] == %{"node_id" => nil, "health" => nil, "draining" => false}
 
     # Management token (TokenReview via FakeAuth "good").
@@ -2189,6 +2204,7 @@ defmodule Embervm.RouterTest do
     with_session_fakes()
 
     resp = req(:get, "/v1/sessions/s-brick-failed", auth("sess-token-brick-failed"))
+    assert Map.fetch!(json(resp.body), "inflight_dispatch_id") == nil
     assert resp.status == 200
     assert json(resp.body)["terminal_reason"] == "brick_gone"
     assert json(resp.body)["node"]["node_id"] == "node-4"
