@@ -148,7 +148,7 @@ defmodule Embervm.OpLogPayloadsTest do
       session_id: created.session_id, ts: 2_001, payload: %{reason: :destroyed}})
     {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined, tenant: "t",
       session_id: created.session_id, ts: 2_002, payload: %{volume_node_id: "node-3", node_id: "node-3", vm_id: "late"}})
-    assert {:ok, [%{state: :destroyed, volume_node_id: "node-2"}]} = SQLite.load_sessions(op_log)
+    assert {:ok, [%{state: "destroyed", volume_node_id: "node-2"}]} = SQLite.load_sessions(op_log)
   end
 
   # The POSITIVE half of the #4766 split. The rejoin test above proves a rejoin
