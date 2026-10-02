@@ -88,6 +88,16 @@ def test_suite_failing_on_original_scores_zero(tmp_path):
     assert r.score == 0.0 and "unmodified module" in r.feedback
 
 
+def test_wrong_tests_are_dropped_and_scale_the_score(tmp_path):
+    wrong = (
+        LOWER_ONLY_TEST + "\n\ndef test_wrong():\n    assert clamp(11, 0, 10) == 11\n"
+    )
+    r = get_verifier("mutation")(_workdir(tmp_path, wrong), _args())
+    # The lower-bound test still kills its mutant; 1 of 2 tests was wrong.
+    assert r.score == 0.25
+    assert "1 of 2 tests failed" in r.feedback
+
+
 def test_missing_test_file_scores_zero(tmp_path):
     wd = _workdir(tmp_path, LOWER_ONLY_TEST)
     r = get_verifier("mutation")(wd, _args(tests=["pkg/other_test.py"]))

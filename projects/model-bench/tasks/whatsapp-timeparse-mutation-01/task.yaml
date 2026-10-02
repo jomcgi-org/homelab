@@ -9,7 +9,8 @@ class: code-fix
 # Calibration 2026-10-02 (3 runs each, Claude Code anchors): Haiku 4.5 0/0/0 (each
 # suite asserted wrong behaviour and failed on the unmodified module), Sonnet 5.5
 # 1.0/1.0/1.0, Opus 5.5 1.0/0.96/1.0. Separates Haiku from the rest but not Sonnet
-# from Opus; the repo's own hand-written tests score 0.375.
+# from Opus; the repo's own hand-written tests score 0.375. Haiku's zeros predate
+# partial credit (wrong tests are now dropped and scale the score instead).
 tier: hard
 mode: agentic
 snapshot:
