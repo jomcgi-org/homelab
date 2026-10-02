@@ -2078,7 +2078,11 @@ def test_stop_control_exposes_and_relays_only_the_observed_exact_turn(
     expected = {
         "outcome": "requested",
         **identity,
-        "relay": {"terminal_reason": "user_interrupt", "killed": False, "timeout": False},
+        "relay": {
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
+        },
     }
     assert response.json() == expected
     replay = client.post(
@@ -2216,27 +2220,56 @@ def test_stop_control_rejects_observed_turn_after_successor_starts(
     ],
 )
 def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
-    client, session, monkeypatch, terminal_reason, proof, dispatch_matches, successor, status
+    client,
+    session,
+    monkeypatch,
+    terminal_reason,
+    proof,
+    dispatch_matches,
+    successor,
+    status,
 ):
     row, identity = _claimed_stop_session(session, "stop-settled")
     session.delete(store.get_pending_message(session, row.id, 1))
-    turn = AgentTurn(session_id=row.id, seq=1, prompt="first", result_text="finished",
-                     terminal_reason=terminal_reason)
+    turn = AgentTurn(
+        session_id=row.id,
+        seq=1,
+        prompt="first",
+        result_text="finished",
+        terminal_reason=terminal_reason,
+    )
     now = datetime.now(timezone.utc)
     records = [turn]
     if proof:
-        records.append(AgentResultReceipt(
-            id="e" * 32, token_sha256="f" * 64, session_id=row.id,
-            local_session_id=row.local_session_id, seq=1, dispatch_count=1,
-            claim_owner="replica-1", guest_id="ember-stop-1", request_sha256="a" * 64,
-            created_at=now, accept_until=now + timedelta(hours=1),
-            retain_until=now + timedelta(days=1),
-        ))
+        records.append(
+            AgentResultReceipt(
+                id="e" * 32,
+                token_sha256="f" * 64,
+                session_id=row.id,
+                local_session_id=row.local_session_id,
+                seq=1,
+                dispatch_count=1,
+                claim_owner="replica-1",
+                guest_id="ember-stop-1",
+                request_sha256="a" * 64,
+                created_at=now,
+                accept_until=now + timedelta(hours=1),
+                retain_until=now + timedelta(days=1),
+            )
+        )
     if successor in ("active", "queued"):
-        records.append(PendingMessage(session_id=row.id, seq=2, message_text="next",
-                                      dispatch_count=1 if successor == "active" else 0))
+        records.append(
+            PendingMessage(
+                session_id=row.id,
+                seq=2,
+                message_text="next",
+                dispatch_count=1 if successor == "active" else 0,
+            )
+        )
     elif successor == "settled":
-        records.append(AgentTurn(session_id=row.id, seq=2, prompt="next", result_text="done"))
+        records.append(
+            AgentTurn(session_id=row.id, seq=2, prompt="next", result_text="done")
+        )
     session.add_all(records)
     # Receipt identity uses the original guest, not the current binding.
     row.ember_session_id = "ember-successor-binding"
@@ -2248,30 +2281,72 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
         raise AssertionError("settled Stop must not reach the transport")
 
     monkeypatch.setenv("AGENT_SESSION_STOP_CONTROL_ENABLED", "true")
-    monkeypatch.setattr("factory.execution.router._transport.interrupt_session", must_not_forward)
+    monkeypatch.setattr(
+        "factory.execution.router._transport.interrupt_session", must_not_forward
+    )
     if not dispatch_matches:
         identity["dispatch_id"] = "0" * 64
-    response = client.post(f"/api/agents/sessions/{row.id}/stop",
-                           headers={"X-Auth-Email": "owner@example.com"}, json=identity)
+    response = client.post(
+        f"/api/agents/sessions/{row.id}/stop",
+        headers={"X-Auth-Email": "owner@example.com"},
+        json=identity,
+    )
     assert response.status_code == status
     if status == 202:
-        assert response.json() == {"outcome": "requested", **identity,
-                                   "relay": {"terminal_reason": "user_interrupt"}}
-        replay = client.post(f"/api/agents/sessions/{row.id}/stop",
-                             headers={"X-Auth-Email": "owner@example.com"}, json=identity)
+        assert response.json() == {
+            "outcome": "requested",
+            **identity,
+            "relay": {"terminal_reason": "user_interrupt"},
+        }
+        replay = client.post(
+            f"/api/agents/sessions/{row.id}/stop",
+            headers={"X-Auth-Email": "owner@example.com"},
+            json=identity,
+        )
         assert replay.status_code == 202
         assert replay.json() == response.json()
-        for headers, expected_status in [({}, 403), ({"X-Auth-Email": "other@example.com"}, 403)]:
-            assert client.post(f"/api/agents/sessions/{row.id}/stop", headers=headers,
-                               json=identity).status_code == expected_status
+        for headers, expected_status in [
+            ({}, 403),
+            ({"X-Auth-Email": "other@example.com"}, 403),
+        ]:
+            assert (
+                client.post(
+                    f"/api/agents/sessions/{row.id}/stop",
+                    headers=headers,
+                    json=identity,
+                ).status_code
+                == expected_status
+            )
         monkeypatch.delenv("AGENT_SESSION_STOP_CONTROL_ENABLED")
-        assert client.post(f"/api/agents/sessions/{row.id}/stop",
-                           headers={"X-Auth-Email": "owner@example.com"}, json=identity).status_code == 404
+        assert (
+            client.post(
+                f"/api/agents/sessions/{row.id}/stop",
+                headers={"X-Auth-Email": "owner@example.com"},
+                json=identity,
+            ).status_code
+            == 404
+        )
     assert calls == []
-    assert len(session.exec(select(AgentTurn).where(AgentTurn.session_id == row.id,
-                                                  AgentTurn.seq == 1)).all()) == 1
-    assert len(session.exec(select(AgentCapacityReservation).where(
-        AgentCapacityReservation.session_id == row.id)).all()) == 1
+    assert (
+        len(
+            session.exec(
+                select(AgentTurn).where(
+                    AgentTurn.session_id == row.id, AgentTurn.seq == 1
+                )
+            ).all()
+        )
+        == 1
+    )
+    assert (
+        len(
+            session.exec(
+                select(AgentCapacityReservation).where(
+                    AgentCapacityReservation.session_id == row.id
+                )
+            ).all()
+        )
+        == 1
+    )
 
 
 def test_stop_control_completion_race_preserves_completed_turn(

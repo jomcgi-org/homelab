@@ -7434,11 +7434,19 @@ def test_process_manager_interrupt_replays_after_completion_on_every_runtime(
         def interrupt(self, **kwargs):
             self.calls += 1
             finish.set()
-            return {"terminal_reason": "user_interrupt", "killed": False, "timeout": False}
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
 
     for name in ("claude", "codex", "pi", "muse"):
         setattr(manager, name, Adapter())
-    for name in ("ensure_workspace_volume", "apply_egress_ca_trust", "_sync_session_volume"):
+    for name in (
+        "ensure_workspace_volume",
+        "apply_egress_ca_trust",
+        "_sync_session_volume",
+    ):
         monkeypatch.setattr(shim, name, lambda: None)
     monkeypatch.setattr(shim, "_capture_turn_base", lambda *_: None)
     monkeypatch.setattr(shim, "_capture_turn_diff", lambda *_: None)
@@ -7457,9 +7465,11 @@ def test_process_manager_interrupt_replays_after_completion_on_every_runtime(
         return responses[0]
 
     results = []
-    turn = threading.Thread(target=lambda: results.append(manager.turn(
-        "first", model=model, dispatch_id="dispatch-1", turn_seq=1
-    )))
+    turn = threading.Thread(
+        target=lambda: results.append(
+            manager.turn("first", model=model, dispatch_id="dispatch-1", turn_seq=1)
+        )
+    )
     turn.start()
     assert entered.wait(1)
     first = stop("dispatch-1")
@@ -7468,14 +7478,19 @@ def test_process_manager_interrupt_replays_after_completion_on_every_runtime(
     assert results[0]["terminal_reason"] == "user_interrupt"
     assert manager._active_dispatch_id is None
     assert stop("dispatch-1") == first
-    assert first == (200, {"terminal_reason": "user_interrupt", "killed": False, "timeout": False})
+    assert first == (
+        200,
+        {"terminal_reason": "user_interrupt", "killed": False, "timeout": False},
+    )
     assert getattr(manager, family).calls == 1
 
     entered.clear()
     finish.clear()
-    successor = threading.Thread(target=lambda: manager.turn(
-        "second", model=model, dispatch_id="dispatch-2", turn_seq=2
-    ))
+    successor = threading.Thread(
+        target=lambda: manager.turn(
+            "second", model=model, dispatch_id="dispatch-2", turn_seq=2
+        )
+    )
     successor.start()
     assert entered.wait(1)
     assert stop("dispatch-1")[0] == 409
