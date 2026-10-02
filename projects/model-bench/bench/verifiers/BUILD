@@ -7,6 +7,8 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_library(
     name = "verifiers",
+    # Bootstrap runfiles for CI, which tests before generating the srcs list.
+    data = ["decision_conflict.py"],
     srcs = [
         "__init__.py",
         "command.py",

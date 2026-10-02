@@ -17,6 +17,11 @@
 # turn fixtures into build targets or semgrep-scan deliberately flawed fixture code.
 # gazelle:exclude tasks
 
+exports_files(
+    ["tasks/decision-conflict-chart-version-01/task.yaml"],
+    visibility = ["//projects/model-bench/bench:__pkg__"],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
