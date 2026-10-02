@@ -706,6 +706,176 @@ class CompletedNodes:
         }
 
 
+@pytest.mark.parametrize("fallback", ["shrink", "funding", "pause"])
+def test_planner_previews_resolve_envelope_in_one_simulated_turn(
+    db, policy, monkeypatch, fallback
+):
+    """Simulated planner transport, real preview, accounting and submission owners."""
+    from factory.orchestration.turn_artifact import schema_errors
+
+    monkeypatch.setenv("FACTORY_PLANNER_PREVIEW_ENABLED", "true")
+    monkeypatch.setenv(
+        "FACTORY_CONDUCTOR_FUNDING_ENABLED",
+        "true" if fallback == "funding" else "false",
+    )
+    policy["task_budget_usd"] = 15.0
+    task_id = admit(policy)
+    delivery_api(monkeypatch, task_id)
+    if fallback == "pause":
+        escalation_api(monkeypatch)
+
+    class PreviewingPlanner(CompletedNodes):
+        def start_workflow(self, function, pin):
+            if pin["node_key"] != "conductor_1":
+                return super().start_workflow(function, pin)
+            self.started_pins.append(copy.deepcopy(pin))
+            assert "at most two previews per planner turn" in pin["prompt"]
+            with Session(db) as session:
+                run = session.exec(
+                    select(SwarmNodeRun).where(
+                        SwarmNodeRun.task_id == task_id,
+                        SwarmNodeRun.node_key == "conductor_1",
+                    )
+                ).one()
+                run_id = run.id
+            _adapter, _binding, _principal, call = bind_test_planner(
+                db, monkeypatch, task_id, run_id
+            )
+            revision = graph.current_version(task_id)
+
+            def over_plan(count):
+                edits = [
+                    preview_proposal(key=f"step_{i}", attempts=2) for i in range(count)
+                ]
+                for i, edit in enumerate(edits):
+                    edit["deps"] = [] if i == 0 else [f"implement_step_{i - 1}"]
+                return {
+                    "action": "plan",
+                    "reason": "proposed work",
+                    "edits": edits,
+                    "expected_version": revision,
+                }
+
+            first = call(over_plan(8), revision)
+            assert first["refusal"]["code"] == "envelope_exceeded"
+            assert (
+                first["projection"]["envelope"]["turns"]["needed"]
+                > first["projection"]["envelope"]["turns"]["allowed"]
+            )
+            assert (
+                first["projection"]["envelope"]["usd"]["needed"]
+                > first["projection"]["envelope"]["usd"]["allowed"]
+            )
+            second_decision = (
+                {**preview_proposal(), "expected_version": revision}
+                if fallback == "shrink"
+                else over_plan(7)
+            )
+            second = call(second_decision, revision)
+            assert second["ok"] is (fallback == "shrink")
+            third = call(second_decision, revision)
+            assert third["refusal"]["code"] == "preview_limit_reached"
+            self.previews = [first, second, third]
+            if fallback == "shrink":
+                value = second_decision
+            else:
+                assert second["refusal"]["code"] == "envelope_exceeded"
+                measured = {
+                    key: second["projection"][key]
+                    for key in ("envelope", "spare_turns", "spare_usd")
+                }
+                reason = "Measured shortfall: " + json.dumps(measured, sort_keys=True)
+                value = {
+                    "action": "request_funding" if fallback == "funding" else "pause",
+                    "reason": reason,
+                }
+                if fallback == "pause":
+                    value.update(
+                        question="How should the remaining envelope shortfall be resolved?",
+                        options=[
+                            {
+                                "key": "smaller",
+                                "label": "Narrow the remaining repository scope",
+                                "effect": "agent-ready",
+                                "detail": {"scope": "Deliver a smaller fix"},
+                            },
+                            {
+                                "key": "stop",
+                                "label": "Stop this objective",
+                                "effect": "close",
+                                "detail": {
+                                    "reason": "not_planned",
+                                    "comment": "Envelope shortfall remains",
+                                },
+                            },
+                        ],
+                    )
+            assert not schema_errors(value, conductor.DECISION_SCHEMA)
+            self.decision = value
+            self.results[pin["workflow_id"]] = {
+                "status": "succeeded",
+                "session_id": 901,
+                "attempt": pin["attempt"],
+                "cost_usd": 0.25,
+                "head_sha": HEAD,
+                "artifact": {"status": "ok", "value": value, "errors": []},
+                "value": value,
+                "reason": None,
+                "cleanup": {"status": "completed"},
+            }
+
+    def resolved():
+        if fallback == "shrink":
+            return any(
+                n["node_key"] == "implement_fix" for n in graph.load_graph(task_id)
+            )
+        with Session(db) as session:
+            if fallback == "funding":
+                return (
+                    session.exec(
+                        select(FactoryAudit).where(
+                            FactoryAudit.task_id == task_id,
+                            FactoryAudit.action == "funding_review_requested",
+                        )
+                    ).first()
+                    is not None
+                )
+            return (
+                session.exec(
+                    select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+                )
+                .one()
+                .state
+                == "escalated"
+            )
+
+    planner = PreviewingPlanner()
+    reconcile_until(task_id, policy, planner, resolved)
+    assert len([p for p in planner.started_pins if p["node_key"] == "conductor_1"]) == 1
+    assert len(preview_ledger(db)) == 2
+    if fallback != "shrink":
+        reason = planner.decision["reason"]
+        for word in ("needed", "allowed", "turns", "usd", "spare_turns", "spare_usd"):
+            assert word in reason
+        assert not any(
+            n["node_key"].startswith("implement_") for n in graph.load_graph(task_id)
+        )
+    with Session(db) as session:
+        rejected = [
+            json.loads(row.detail_json)
+            for row in session.exec(
+                select(FactoryAudit).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "conductor_rejected",
+                )
+            ).all()
+        ]
+    assert all(row["decision_action"] not in ("plan", "add_node") for row in rejected)
+    assert all(row["refusal_code"] != "envelope_exceeded" for row in rejected)
+    if fallback == "shrink":
+        assert not rejected
+
+
 def delivery_api(monkeypatch, task_id, *, branches=None):
     """GitHub reads for the task branch, its PR and its checks.
 
