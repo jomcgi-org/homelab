@@ -19,6 +19,41 @@ It creates no tables or views and performs no writes. There is no scheduled
 collection. Operational acceptance remains on #6716 until the report's query
 cost and sampled records have been checked on the standby.
 
+## Historical merges can have zero positives
+
+Merges before the #6723 audit instrumentation have no `merge_ci` or completed
+revert-window verdicts. They remain historical unjudged merges in `unknown`.
+History can therefore contain real merges and zero positives. This is not
+evidence of zero successful deliveries. Check the Coverage section's
+`historical_unjudged_merges` column; per-positive ratios are `NULL` when there
+are no positives. Missing historical evidence never establishes a positive.
+
+Full-cohort completion on the existing standby is not yet verified. Operational
+acceptance is tracked on #6774, alongside #6716's broader validation checklist.
+The report remains staged and manually invoked. No dump/restore or snapshot
+execution route has been tested for this acceptance.
+
+## Profile one section
+
+On an authorized read-only PostgreSQL connection, copy one complete `WITH ...
+SELECT ...;` section from `outcomes_report.sql`. Keep its existing `params` and
+prefix `WITH` with `EXPLAIN (ANALYZE, BUFFERS)`. For example, save that section
+as a local `section.sql`, then run an explicit three-day cohort:
+
+```sh
+psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -v cohort_start='2026-09-07T00:00:00Z' \
+  -v cohort_end='2026-09-10T00:00:00Z' \
+  -v as_of='2026-10-02T00:00:00Z' \
+  -c 'SET default_transaction_read_only = on' -f section.sql
+```
+
+`ANALYZE` executes the read-only SELECT. Record actual and estimated cohort
+rows, scan loops, buffer work, timings and remaining hotspots for each section.
+Compare the existing and corrected reports with the same bounds. Keep the
+connection's planner settings, replay limits and timeouts unchanged. Fixture
+plans do not establish production performance or full-cohort completion.
+
 ## Cohort and evidence bounds
 
 There are exactly three report parameters: `cohort_start`, `cohort_end`, and
