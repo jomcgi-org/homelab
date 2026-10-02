@@ -181,6 +181,26 @@ class FactoryStart(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class FactoryPlannerPreview(SQLModel, table=True):
+    """Durable evaluation slots, independent of graph and refusal bookkeeping."""
+
+    __tablename__ = "factory_planner_preview"
+    __table_args__ = (
+        UniqueConstraint(
+            "planner_run_id", "ordinal", name="factory_planner_preview_run_ordinal"
+        ),
+        CheckConstraint("ordinal IN (1, 2)", name="factory_planner_preview_ordinal"),
+        {"schema": "swarm", "extend_existing": True},
+    )
+
+    id: int | None = Field(
+        default=None, primary_key=True, sa_type=_BIGINT, nullable=False
+    )
+    planner_run_id: int = Field(foreign_key="swarm.swarm_node_run.id")
+    ordinal: int
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class FactoryAudit(SQLModel, table=True):
     """Append only audit trail for factory control and intake actions."""
 
