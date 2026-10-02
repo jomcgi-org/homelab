@@ -248,6 +248,8 @@ def test_current_then_recency_then_semantic_score(ranked_session):
         semantic.id,
     ]
     assert [row[0] for row in _rank(session, exclude_invalidated=True)] == [
+        # A future valid_until is still current, so it is retained.
+        newer.id,
         older.id,
         undated.id,
         semantic.id,
