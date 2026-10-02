@@ -191,6 +191,8 @@ async def run_agent_cell(
 
     chat: async (*, model, messages, tools, temperature, max_tokens) -> ChatResult.
     verify: (workdir, args) -> VerifyResult, run once after the agent finishes.
+        A verifier that accepts final_response also receives the agent's last
+        text reply as final_response=.
     allow_exec: expose the sandboxed `run` shell tool (task.agent.exec).
     """
     workdir = Path(tempfile.mkdtemp())

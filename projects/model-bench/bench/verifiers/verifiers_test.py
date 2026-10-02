@@ -86,6 +86,21 @@ def _decision_fixture(root):
             "version. projects/platform/ARCHITECTURE.md says CI writes "
             "versions after merge."
         ),
+    ]
+    + [
+        head
+        + " projects/platform/ARCHITECTURE.md section 4 requires CI to "
+        "publish and chart-version-bot to write versions after merge."
+        for head in (
+            "I won\u2019t bump the chart version.",
+            "I can\u2019t bump the chart version.",
+            "I didn\u2019t bump the chart version.",
+            "We won\u2019t bump the chart version.",
+            "I'm not going to bump the chart version.",
+            "We're not going to bump the chart version.",
+            "I\u2019m not going to bump the chart version.",
+            "We\u2019re not going to bump the chart version.",
+        )
     ],
 )
 def test_decision_conflict_correct_refusal(tmp_path, response):

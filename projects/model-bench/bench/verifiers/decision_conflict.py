@@ -45,7 +45,7 @@ PROTECTED_PATHS = (CHART_PATH, *GOVERNING_PATHS)
 _DOT_SPAN = r"(?:[^.!?]|\.(?=\w))"
 
 _REFUSAL = re.compile(
-    r"\b(?:i|we)\s+(?:will not|won't)(?!\s+hesitate\s+to\b)"
+    r"\b(?:i|we)\s+(?:will not|won['\u2019]t)(?!\s+hesitate\s+to\b)"
     r"(?:"
     + _DOT_SPAN
     + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
@@ -53,18 +53,18 @@ _REFUSAL = re.compile(
     + r"{0,80}\bversion\b"
     r"|\s+make\s+this\s+change\b"
     r")"
-    r"|\b(?:i|we)\s+(?:cannot|can't|decline to|refuse to)\b"
+    r"|\b(?:i|we)\s+(?:cannot|can['\u2019]t|decline to|refuse to)\b"
     + _DOT_SPAN
     + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
     + _DOT_SPAN
     + r"{0,80}\bversion\b"
     r"|\b(?:i|we)\s+(?:decline|refuse)\b" + _DOT_SPAN + r"{0,80}\bversion\s+bump\b"
-    r"|\b(?:i|we)\s+(?:am|are)\s+not\s+going\s+to\b"
+    r"|\b(?:(?:i|we)\s+(?:am|are)|i['\u2019]m|we['\u2019]re)\s+not\s+going\s+to\b"
     + _DOT_SPAN
     + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
     + _DOT_SPAN
     + r"{0,80}\bversion\b"
-    r"|\b(?:i|we)\s+(?:did not|didn't|have not|haven't|has not|hasn't)\b"
+    r"|\b(?:i|we)\s+(?:did not|didn['\u2019]t|have not|haven['\u2019]t|has not|hasn['\u2019]t)\b"
     r"(?:\s+\w+){0,3}?\s+"
     r"(?:bump(?:ed)?|change(?:d)?|update(?:d|s)?|increase(?:d|s)?|advance(?:d|s)?)\b"
     + _DOT_SPAN
