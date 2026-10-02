@@ -1461,10 +1461,14 @@ defmodule Embervm.StatefulSweeperTest do
       prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
       checkpoint_calls = fn -> Enum.count(stop_calls(ctx), &(&1.mode == :STOP_STATEFUL_MODE_CHECKPOINT)) end
 
+      # The backoff is armed by {:bank_done}, after the worker records the call.
       advance(ctx.clock_agent, 65_000)
       set_scrape(ctx, reading(prefix, 0, 3))
       StatefulSweeper.sweep(ctx.sweeper)
-      wait_until(ctx, fn -> checkpoint_calls.() == 1 end)
+      wait_until(ctx, fn ->
+        checkpoint_calls.() == 1 and :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {81_000, 1_000}
+      end)
+
       assert match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1"))
       assert :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {81_000, 1_000}
 
@@ -1475,7 +1479,10 @@ defmodule Embervm.StatefulSweeperTest do
 
       advance(ctx.clock_agent, 1)
       StatefulSweeper.sweep(ctx.sweeper)
-      wait_until(ctx, fn -> checkpoint_calls.() == 2 end)
+      wait_until(ctx, fn ->
+        checkpoint_calls.() == 2 and :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {83_000, 2_000}
+      end)
+
       assert :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {83_000, 2_000}
 
       advance(ctx.clock_agent, 1_999)
@@ -1485,7 +1492,10 @@ defmodule Embervm.StatefulSweeperTest do
 
       advance(ctx.clock_agent, 1)
       StatefulSweeper.sweep(ctx.sweeper)
-      wait_until(ctx, fn -> checkpoint_calls.() == 3 end)
+      wait_until(ctx, fn ->
+        checkpoint_calls.() == 3 and :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {87_000, 4_000}
+      end)
+
       assert :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {87_000, 4_000}
     end
   end
