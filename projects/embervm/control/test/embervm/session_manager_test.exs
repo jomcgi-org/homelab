@@ -7405,6 +7405,38 @@ defmodule Embervm.SessionManagerTest do
     refute_receive :unexpected_primed_flush, 30
   end
 
+  test "an already-draining adopted Session bounds its RPC by the remaining deadline" do
+    parent = self()
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-adoption-drain-deadline")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-adoption-drain-deadline", "p1")
+    {:ok, started} = SessionStore.record_invoke_started(ctx.store, created.session_id, "draining-dispatch")
+    [{old, _}] = Registry.lookup(ctx.registry, created.session_id)
+    :ok = DynamicSupervisor.terminate_child(ctx.sup, old)
+    deadline = System.system_time(:millisecond) + 2_000
+    {:ok, pid} = Embervm.Session.start_link(session_id: started.session_id, workload: started.workload,
+      node_id: started.node_id, vm_id: started.vm_id, queue_cap: 4, session_store: ctx.store,
+      draining: true, drain_deadline: deadline, drain_flush_ms: 240_000, idle_bank_ms: 1,
+      adoption_flush: %{dispatch_id: started.inflight_dispatch_id, invoke_started_at: started.invoke_started_at},
+      channel_fun: fn _ -> {:ok, :ch} end,
+      interrupt_fun: fn _, req ->
+        send(parent, {:draining_adoption, self(), req})
+        receive do :release -> {:ok, adoption_response(req)} end
+      end,
+      bank_fun: fn _, _ -> send(parent, :draining_adoption_bank); {:error, :refused} end)
+    assert_receive {:draining_adoption, worker, req}, 1_000
+    assert req.timeout_ms > 0 and req.timeout_ms <= 2_000
+    assert :sys.get_state(pid).idle_timer == nil
+    refute Embervm.Session.quiescent?(pid)
+    send(pid, :drain_bank)
+    _ = :sys.get_state(pid)
+    refute_receive :draining_adoption_bank, 30
+    send(worker, :release)
+    assert_receive :draining_adoption_bank, 1_000
+    assert {:ok, %{interrupted_turn: %{"dispatch_id" => "draining-dispatch"}}} = SessionStore.get(ctx.store, started.session_id)
+    GenServer.stop(pid)
+  end
+
   test "restart adoption flush parks exact evidence and relight resumes the interrupted turn" do
     parent = self()
     ctx = start_stack(restart_flush_inflight_invokes: true, drain_flush_ms: 240_000,
