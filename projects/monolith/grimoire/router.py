@@ -473,6 +473,7 @@ def _note_view(
         "created_at": iso(row.created_at),
         "updated_at": iso(row.updated_at),
         "is_mine": mine,
+        "can_edit": mine or (row.kind == "party" and member.role == "dm"),
         "links": {
             "entities": _note_entities(
                 session, row.campaign_id, viewer, row.links["entity_ids"]

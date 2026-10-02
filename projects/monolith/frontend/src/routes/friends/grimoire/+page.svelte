@@ -89,6 +89,7 @@
           <p>Your character: {campaign.character_name}</p>
         {/if}
         <a href="/grimoire/sheets">Open character sheets</a>
+        <a href={`/grimoire/campaigns/${campaign.id}/notes`}>Open notes</a>
         {#if campaign.role === "dm"}
           <details>
             <summary
