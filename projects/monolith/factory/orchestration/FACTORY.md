@@ -2174,6 +2174,33 @@ On 2026-10-01:
 - Session 13635 lost its observer at 01:59. A brick idle drain then parked
   its guest with exactly this marker.
 
+### Passing PRs get a verification handoff
+
+An exhausted implementation can open `implement_handoff_1` and
+`review_handoff_1` in one engine-owned graph edit when all six conditions hold:
+
+1. The deviation is `node_failed` on an `implement_` node. Escalations and
+   investigation, correction, integration and review failures stay with the planner.
+2. The task's version ledger contains no applied `factory_handoff` round.
+3. Exactly one open PR names the task's delivery branch, repository and base,
+   matches any granted PR number, and has no definite merge conflict. Drafts qualify.
+4. `pr-checks` and every non-advisory context succeed at that PR's exact head.
+5. Every live direct dependent is an unrun, unarmed review leaf.
+6. Both the implementation and reviewer pool heads exist and are policy-allowed.
+
+The edit retires the failed node and those review leaves together. History and
+charges remain. The implementation verifies the existing diff without source
+commits, repairs only a missing closing line in the PR body, and readies a
+qualifying draft. The reviewer supplies independent exact-head evidence. A
+changes-requested verdict uses the ordinary correction loop. A handoff consumes
+no review round; its separate ledger bound is one per task, even after discard.
+Unexpected GitHub data, read errors, or graph and envelope refusals leave the
+existing planner path available in the same tick. Opening and skip reasons are audited.
+
+**Why.** Joe chose option 3 on #6296 on 2026-10-01 to remove the person from
+this loop without assuming an infrastructure-dead attempt never reached a
+model. `attempts_spent` and `NO_MODEL_POST_PHASES` stay unchanged.
+
 ### Supervised cessation
 
 Cessation evidence may be produced by supervised termination, not only waited
