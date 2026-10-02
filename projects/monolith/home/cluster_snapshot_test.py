@@ -22,6 +22,10 @@ def _fake_session_returning(row):
     return session
 
 
+def _empty_resources():
+    return {kind: [] for kind in cluster_snapshot._HEALTH_KINDS}
+
+
 # ---------------------------------------------------------------------------
 # read_cluster_snapshot
 # ---------------------------------------------------------------------------
@@ -94,37 +98,262 @@ def test_read_returns_none_when_stale():
 @pytest.mark.asyncio
 async def test_refresh_persists_health_and_empty_alerts_on_success():
     write = MagicMock()
+    agent_write = MagicMock()
+    resources = _empty_resources()
+    resources["pods"] = [{"metadata": {"name": str(i)}} for i in range(10)]
     with (
         patch.object(
             cluster_snapshot,
-            "scan_health_live",
-            AsyncMock(return_value={"healthy": True, "scanned": 10, "unhealthy": {}}),
+            "scan_cluster_resources_live",
+            AsyncMock(return_value=(resources, {})),
         ),
         patch.object(cluster_snapshot, "_write_cluster_snapshot", write),
+        patch.object(cluster_snapshot, "_write_agent_cluster_snapshot", agent_write),
     ):
         await cluster_snapshot.refresh_cluster_snapshot()
 
     health, alerts = write.call_args.args
     assert health["scanned"] == 10
     assert alerts == {}
+    assert agent_write.call_args.args[0]["complete"] is True
+    assert agent_write.call_args.args[0]["scanned"]["pods"] == 10
 
 
 @pytest.mark.asyncio
 async def test_refresh_stores_error_marker_for_failing_health():
     write = MagicMock()
+    agent_write = MagicMock()
     with (
         patch.object(
             cluster_snapshot,
-            "scan_health_live",
+            "scan_cluster_resources_live",
             AsyncMock(side_effect=RuntimeError("k8s down")),
         ),
         patch.object(cluster_snapshot, "_write_cluster_snapshot", write),
+        patch.object(cluster_snapshot, "_write_agent_cluster_snapshot", agent_write),
     ):
         await cluster_snapshot.refresh_cluster_snapshot()
 
     health, alerts = write.call_args.args
     assert health == {"error": "k8s down"}
     assert alerts == {}
+    assert agent_write.call_args.args[0] == {
+        "schema_version": 1,
+        "complete": False,
+        "errors": {"scan": "RuntimeError: k8s down"},
+        "scanned": {},
+        "applications": [],
+        "unhealthy": {},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing_writer", ["dashboard", "agent"])
+async def test_refresh_attempts_both_writes_independently(failing_writer):
+    dashboard_write = MagicMock(
+        side_effect=RuntimeError("dashboard failed")
+        if failing_writer == "dashboard"
+        else None
+    )
+    agent_write = MagicMock(
+        side_effect=RuntimeError("agent failed") if failing_writer == "agent" else None
+    )
+    scan = AsyncMock(return_value=(_empty_resources(), {}))
+    with (
+        patch.object(cluster_snapshot, "scan_cluster_resources_live", scan),
+        patch.object(cluster_snapshot, "_write_cluster_snapshot", dashboard_write),
+        patch.object(cluster_snapshot, "_write_agent_cluster_snapshot", agent_write),
+    ):
+        await cluster_snapshot.refresh_cluster_snapshot()
+    scan.assert_awaited_once()
+    dashboard_write.assert_called_once()
+    agent_write.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_scan_records_failure_and_keeps_dashboard_fail_soft():
+    client = MagicMock()
+
+    async def list_resources(kind):
+        if kind == "pods":
+            raise RuntimeError("unavailable " + "x" * 300)
+        return []
+
+    client.list_resources = AsyncMock(side_effect=list_resources)
+    client.close = AsyncMock()
+    with patch("cluster.api.KubernetesClient", return_value=client):
+        resources, errors = await cluster_snapshot.scan_cluster_resources_live()
+    assert client.list_resources.await_count == 5
+    assert [call.args[0] for call in client.list_resources.call_args_list] == list(
+        cluster_snapshot._HEALTH_KINDS
+    )
+    client.close.assert_awaited_once()
+    assert resources["pods"] == []
+    assert errors["pods"].startswith("RuntimeError: unavailable")
+    assert len(errors["pods"]) == 200
+    with patch.object(
+        cluster_snapshot,
+        "scan_cluster_resources_live",
+        AsyncMock(return_value=(resources, errors)),
+    ):
+        assert await cluster_snapshot.scan_health_live() == {
+            "healthy": True,
+            "scanned": 0,
+            "unhealthy": {},
+        }
+    payload = cluster_snapshot.build_agent_cluster_summary(resources, errors)
+    assert payload["complete"] is False
+    assert payload["errors"] == errors
+    assert "pods" not in payload["scanned"]
+    assert "pods" not in payload["unhealthy"]
+
+
+def test_agent_summary_complete_for_clean_scan():
+    assert cluster_snapshot.build_agent_cluster_summary(_empty_resources(), {}) == {
+        "schema_version": 1,
+        "complete": True,
+        "errors": {},
+        "scanned": {kind: 0 for kind in cluster_snapshot._HEALTH_KINDS},
+        "applications": [],
+        "unhealthy": {},
+    }
+
+
+def test_agent_summary_does_not_claim_missing_kinds_were_scanned():
+    assert cluster_snapshot.build_agent_cluster_summary({}, {})["complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("spec", "sync", "revision", "target"),
+    [
+        (
+            {"sources": [{"targetRevision": "desired"}]},
+            {"revisions": ["live"]},
+            "live",
+            "desired",
+        ),
+        (
+            {"source": {"targetRevision": "desired"}},
+            {"revision": "live"},
+            "live",
+            "desired",
+        ),
+        (
+            {
+                "source": {"targetRevision": "single"},
+                "sources": [{"targetRevision": "multi"}],
+            },
+            {"revision": "single-live", "revisions": ["multi-live"]},
+            "single-live",
+            "single",
+        ),
+        ({"source": {"targetRevision": "desired"}}, {}, None, "desired"),
+        ({}, {}, None, None),
+    ],
+)
+def test_agent_summary_includes_healthy_applications(spec, sync, revision, target):
+    resources = _empty_resources()
+    resources["applications"] = [
+        {
+            "metadata": {"name": "app", "namespace": "argocd"},
+            "spec": spec,
+            "status": {
+                "sync": {"status": "Synced", **sync},
+                "health": {"status": "Healthy"},
+            },
+        }
+    ]
+    payload = cluster_snapshot.build_agent_cluster_summary(resources, {})
+    assert payload["applications"] == [
+        {
+            "name": "app",
+            "namespace": "argocd",
+            "sync": "Synced",
+            "health": "Healthy",
+            "revision": revision,
+            "target_revision": target,
+        }
+    ]
+    assert payload["unhealthy"] == {}
+
+
+def test_agent_summary_caps_sorted_applications_and_unhealthy_rows():
+    resources = _empty_resources()
+    resources["applications"] = [
+        {
+            "metadata": {"name": f"app-{i:04d}"},
+            "status": {"health": {"status": "Degraded"}},
+        }
+        for i in reversed(range(503))
+    ]
+    resources["pods"] = [
+        {"metadata": {"name": f"pod-{i}"}, "status": {"phase": "Failed"}}
+        for i in range(102)
+    ]
+    payload = cluster_snapshot.build_agent_cluster_summary(resources, {})
+    assert len(payload["applications"]) == 500
+    assert payload["applications"][0]["name"] == "app-0000"
+    assert payload["applications"][-1]["name"] == "app-0499"
+    assert payload["applications_truncated"] == 3
+    assert len(payload["unhealthy"]["applications"]) == 100
+    assert len(payload["unhealthy"]["pods"]) == 100
+    assert payload["unhealthy_truncated"] == {"applications": 403, "pods": 2}
+    assert payload["scanned"]["applications"] == 503
+    assert payload["scanned"]["pods"] == 102
+
+
+def test_agent_summary_does_not_leak_manifests():
+    resources = _empty_resources()
+    metadata = {
+        "name": "workload",
+        "namespace": "monolith",
+        "annotations": {"secret": "annotation-secret"},
+        "labels": {"secret": "label-secret"},
+    }
+    env = [{"name": "SECRET", "value": "env-secret"}]
+    resources["pods"] = [
+        {
+            "metadata": metadata,
+            "spec": {"containers": [{"env": env}]},
+            "status": {"phase": "Failed"},
+        }
+    ]
+    resources["deployments"] = [
+        {
+            "metadata": metadata,
+            "spec": {
+                "replicas": 1,
+                "template": {"spec": {"containers": [{"env": env}]}},
+            },
+            "status": {"readyReplicas": 0},
+        }
+    ]
+    resources["secrets"] = [{"data": {"private": "secret-value"}}]
+    payload = cluster_snapshot.build_agent_cluster_summary(resources, {})
+    assert payload["unhealthy"]["pods"]
+    assert payload["unhealthy"]["deployments"]
+    serialized = json.dumps(payload)
+    for forbidden in ("env", "annotations", "labels", "spec", "secret-value", "secret"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_refresh_excludes_failed_kind_from_agent_summary_only():
+    resources = _empty_resources()
+    dashboard_write, agent_write = MagicMock(), MagicMock()
+    with (
+        patch.object(
+            cluster_snapshot,
+            "scan_cluster_resources_live",
+            AsyncMock(return_value=(resources, {"pods": "RuntimeError: unavailable"})),
+        ),
+        patch.object(cluster_snapshot, "_write_cluster_snapshot", dashboard_write),
+        patch.object(cluster_snapshot, "_write_agent_cluster_snapshot", agent_write),
+    ):
+        await cluster_snapshot.refresh_cluster_snapshot()
+    assert dashboard_write.call_args.args[0]["healthy"] is True
+    assert agent_write.call_args.args[0]["complete"] is False
+    assert "pods" not in agent_write.call_args.args[0]["scanned"]
 
 
 # ---------------------------------------------------------------------------

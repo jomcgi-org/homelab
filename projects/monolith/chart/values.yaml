@@ -655,6 +655,7 @@ jobs:
     # statefulsets, daemonsets, pods, ArgoCD apps via the in-cluster K8s API) and
     # upserts one home.cluster_snapshot row so the private dashboard reads a
     # single row instead of doing a live ~235-resource scan on every request.
+    # The same scan also writes agent_view.cluster_snapshot for agent readers.
     # Cluster reads run under the dedicated least-privilege monolith-stats SA
     # (same as observability-stats-rollup).
     #
