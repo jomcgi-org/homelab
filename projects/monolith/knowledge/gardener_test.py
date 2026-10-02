@@ -354,10 +354,17 @@ def test_clone_merge_cap_defers_untouched_clusters_and_makes_progress(
     session = capped_clone_session
 
     def snapshot(model):
-        return [
-            row.model_dump()
-            for row in session.exec(select(model).order_by(model.id)).all()
-        ]
+        rows = []
+        for row in session.exec(select(model).order_by(model.id)).all():
+            if isinstance(row, Chunk):
+                # pgvector 0.4 returns ndarray; compare every embedding value
+                # without relying on an array's ambiguous equality operator.
+                values = row.model_dump(exclude={"embedding"})
+                values["embedding"] = [float(value) for value in row.embedding]
+            else:
+                values = row.model_dump()
+            rows.append(values)
+        return rows
 
     before = {
         model: snapshot(model) for model in (Note, Chunk, AtomRawProvenance, NoteLink)
