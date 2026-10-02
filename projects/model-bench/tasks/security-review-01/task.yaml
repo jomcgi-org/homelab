@@ -19,7 +19,9 @@
 id: security-review-01
 version: v1
 class: code-fix
-tier: frontier
+# Frontier candidate: monotone ladder (H 0.42 < S 0.89 < O 1.0) but n=1 and just
+# outside the default thresholds; promote after more calibration reps.
+tier: hard
 mode: agentic
 snapshot:
   commit: 130910e751664c15c955cc5db393597aee5a5be5
@@ -1008,3 +1010,32 @@ verifier:
         - 196
       - - 225
         - 225
+calibration:
+  date: '2026-10-02'
+  source: external (cal-security-review-01.json)
+  scores:
+    haiku:
+      runs:
+      - 0.4167
+      mean: 0.4167
+      min: 0.4167
+      max: 0.4167
+      errored: 0
+    sonnet:
+      runs:
+      - 0.8889
+      mean: 0.8889
+      min: 0.8889
+      max: 0.8889
+      errored: 0
+    opus:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+  verdict: reject
+  reasons:
+  - haiku mean 0.42 > 0.4
+  - sonnet mean 0.89 outside [0.35, 0.8]

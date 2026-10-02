@@ -16,7 +16,7 @@
 id: authz-race-01
 version: v1
 class: code-fix
-tier: frontier
+tier: hard
 mode: agentic
 snapshot:
   preset: monolith-backend
@@ -246,3 +246,33 @@ verifier:
       - chat_public/fork_takedown_race_test.py::test_fork_of_a_live_snapshot_still_works
       - chat_public/fork_takedown_race_test.py::test_unknown_snapshot_is_rejected_before_verification
     pass_threshold: 1.0
+calibration:
+  date: '2026-10-02'
+  source: external (cal-authz-race-01.json)
+  scores:
+    haiku:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+    sonnet:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+    opus:
+      runs:
+      - 1.0
+      mean: 1.0
+      min: 1.0
+      max: 1.0
+      errored: 0
+  verdict: reject
+  reasons:
+  - haiku mean 1.00 > 0.4
+  - sonnet mean 1.00 outside [0.35, 0.8]
+  - means are not strictly increasing haiku < sonnet < opus
