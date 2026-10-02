@@ -153,6 +153,9 @@ swarm:
 
 agents:
   sessions:
+    # Exact-turn Stop (#6564). Flipped 2026-10-01 for the live checks; set back
+    # to false if any of the seven checks on #4321 fails.
+    stopControlEnabled: true
     # Release failed probe holds after exact guest eviction is confirmed.
     probeSupervisionEnabled: true
     # Settle uncertain permits from control-plane cessation evidence for the
