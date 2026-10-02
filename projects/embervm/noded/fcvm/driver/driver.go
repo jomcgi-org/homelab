@@ -65,6 +65,9 @@ func snapshotOperationTimeout(memMib int) time.Duration {
 
 // Config holds the node-4 substrate paths and microVM sizing.
 type Config struct {
+	// ExitCounters aggregates all restore and temporary build drivers owned by
+	// one daemon. Nil gives a standalone driver its own lifetime counters.
+	ExitCounters *VMMExitCounters
 	// KernelImagePath is the guest kernel (kata vmlinux.container on node-4).
 	KernelImagePath string
 	// KernelBootArgs are appended to the kernel command line on cold boot.
@@ -227,6 +230,8 @@ type Driver struct {
 	// stagingDirStats is injectable so tests can reproduce a path disappearing
 	// after Walk has discovered it but before the callback observes it.
 	stagingDirStats func(string) (time.Duration, int64, error)
+	// exitCounts is bounded to the four exit reasons, with no instance labels.
+	exitCounters *VMMExitCounters
 }
 
 // statefulCheckpoint is one paused-awaiting-resolve stateful VM (ADR embervm/008):
@@ -428,6 +433,10 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) API) *
 		live:            make(map[string]*instance),
 		checkpoints:     make(map[string]*statefulCheckpoint),
 		stagingDirStats: baseStagingDirStats,
+		exitCounters:    cfg.ExitCounters,
+	}
+	if d.exitCounters == nil {
+		d.exitCounters = &VMMExitCounters{}
 	}
 	if d.diffBanking {
 		info, err := os.Stat(cfg.SnapshotEditorPath)
@@ -1156,6 +1165,7 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	proc, err := d.launcher.Launch(ctx, LaunchSpec{
 		VMID: vmID, SocketPath: sock, Workload: workload, Phase: guestPhaseVM,
 		MemMib: memMib, Resources: resources, DirectExec: directExec,
+		SerialPath: serialPath, OnExit: d.recordVMMExit,
 	})
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
@@ -1414,6 +1424,7 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	proc, err := d.launcher.Launch(ctx, LaunchSpec{
 		VMID: vmID, SocketPath: sock, Workload: cb.workload, Phase: guestPhaseInit,
 		MemMib: cb.memMib, Resources: launchResources,
+		SerialPath: serialPath, OnExit: d.recordVMMExit,
 	})
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker: %w", err)

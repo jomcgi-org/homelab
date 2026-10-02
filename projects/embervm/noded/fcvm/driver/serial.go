@@ -29,6 +29,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -254,7 +255,7 @@ func issueSerial(ctx context.Context, client fcAPI, path string) error {
 // nothing to say in diagnostics).
 func serialTail(path string, maxBytes int64) ([]byte, bool) {
 	fi, err := os.Stat(path)
-	if err != nil || fi.IsDir() {
+	if err != nil || !fi.Mode().IsRegular() {
 		return nil, false
 	}
 	f, err := os.Open(path)
@@ -277,7 +278,10 @@ func serialTail(path string, maxBytes int64) ([]byte, bool) {
 			data = append(data, buf[:min(n, int(maxBytes-int64(len(data))))]...)
 		}
 		if err != nil {
-			break // EOF or a transient read error: return what we got
+			if err != io.EOF {
+				return nil, false // An unreadable tail is not panic evidence.
+			}
+			break
 		}
 	}
 	return data, true
