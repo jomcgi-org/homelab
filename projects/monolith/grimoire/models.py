@@ -885,7 +885,7 @@ class GameSession(SQLModel, table=True):
     # create_all fixtures; enforce it in application code on the write path.
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (retracted_at is NULL until retraction)
+# nosemgrep: sqlmodel-datetime-without-factory (deleted_at is NULL until soft delete)
 class Note(SQLModel, table=True):
     __tablename__ = "note"
     __table_args__ = (
@@ -995,6 +995,7 @@ class Note(SQLModel, table=True):
     )
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (retracted_at is NULL until retraction)
 class SessionEvent(SQLModel, table=True):
     """Audience-scoped log row, written only through session_events.append_event."""
 
