@@ -21,6 +21,7 @@ _GATES = (
     "EMBERVM_PLACEMENT_RETRY",
     "EMBERVM_ASYNC_LIFECYCLE_WRITES",
     "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS",
+    "EMBERVM_CROSS_NODE_REJOIN",
 )
 
 
@@ -60,6 +61,7 @@ def test_gates_default_off() -> None:
         "EMBERVM_PLACEMENT_RETRY": "false",
         "EMBERVM_ASYNC_LIFECYCLE_WRITES": "false",
         "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS": "false",
+        "EMBERVM_CROSS_NODE_REJOIN": "false",
     }
 
 
@@ -69,6 +71,7 @@ def test_gates_default_off() -> None:
         ("dispatcher.placementRetry", "EMBERVM_PLACEMENT_RETRY"),
         ("asyncLifecycleWrites", "EMBERVM_ASYNC_LIFECYCLE_WRITES"),
         ("drainInstanceScopedSessions", "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS"),
+        ("crossNodeRejoin", "EMBERVM_CROSS_NODE_REJOIN"),
     ],
 )
 def test_gate_flips_via_its_chart_key(key: str, env_name: str) -> None:

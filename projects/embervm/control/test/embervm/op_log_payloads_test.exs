@@ -126,8 +126,8 @@ defmodule Embervm.OpLogPayloadsTest do
         created.session_id,
         :rejoin_ready,
         :session_rejoined,
-        %{volume_node_id: "node-2"},
-        %{node_id: "node-2", vm_id: "vm-2"}
+        %{volume_node_id: "node-2", node_id: "node-2", vm_id: "vm-2"},
+        %{node_id: "node-2", vm_id: "vm-2", volume_node_id: "node-2"}
       )
 
     op = read_kind(op_log, :session_rejoined)
@@ -135,6 +135,20 @@ defmodule Embervm.OpLogPayloadsTest do
     refute Map.has_key?(op.payload, "generation")
     refute Map.has_key?(op.payload, "snapshot_ref")
     refute read_kind(op_log, :session_relit)
+    assert {:ok, [%{volume_node_id: "node-2", node_id: "node-2", vm_id: "vm-2"}]} = SQLite.load_sessions(op_log)
+    {:ok, rebuilt} = SessionStore.start_link(op_log: op_log, name: nil)
+    assert {:ok, %{volume_node_id: "node-2"}} = SessionStore.get(rebuilt, created.session_id)
+
+    # A legacy replay lacking the owner keeps it, and a late success cannot
+    # resurrect a terminal row or overwrite its volume owner.
+    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined,
+      session_id: created.session_id, ts: 2_000, payload: %{node_id: "node-2", vm_id: "vm-2"}})
+    assert {:ok, [%{volume_node_id: "node-2"}]} = SQLite.load_sessions(op_log)
+    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_destroyed,
+      session_id: created.session_id, ts: 2_001, payload: %{reason: :destroyed}})
+    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined,
+      session_id: created.session_id, ts: 2_002, payload: %{volume_node_id: "node-3", node_id: "node-3", vm_id: "late"}})
+    assert {:ok, [%{state: :destroyed, volume_node_id: "node-2"}]} = SQLite.load_sessions(op_log)
   end
 
   # The POSITIVE half of the #4766 split. The rejoin test above proves a rejoin

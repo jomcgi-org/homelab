@@ -100,7 +100,10 @@ defmodule Embervm.LogFormatter do
     :hidden,
     # Session workspace volume lifecycle (drain archive, retirement).
     :lineage_id,
-    :dial_id
+    :dial_id,
+    :volume_node_id,
+    :old_volume_node_id,
+    :attach_epoch
   ]
 
   @doc """

@@ -82,6 +82,7 @@ defmodule Embervm.SessionManager do
     DeleteVolumeRequest,
     EvictArtifactRequest,
     EvictSnapshotRequest,
+    ExportArtifactRequest,
     PrimeRequest,
     PrimeResponse,
     RetireVolumeRequest,
@@ -517,6 +518,10 @@ defmodule Embervm.SessionManager do
       # production dials the real NodeService stub.
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
       archive_volume_fun: Keyword.get(opts, :archive_volume_fun, &default_archive_volume/2),
+      export_artifact_fun: Keyword.get(opts, :export_artifact_fun, &default_export_artifact/2),
+      cross_node_rejoin: Keyword.get(opts, :cross_node_rejoin, false),
+      attach_epochs: %{},
+      workspace_evidence: %{},
       retire_volume_fun: Keyword.get(opts, :retire_volume_fun, &default_retire_volume/2),
       # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
       # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside every local
@@ -1189,6 +1194,43 @@ defmodule Embervm.SessionManager do
     {:noreply, finish_rejoin(state, session_id, outcome)}
   end
 
+  def handle_info({:rejoin_done, session_id, outcome, prime_issued}, state) do
+    denied = case outcome do
+      {:error, reason} -> pressure_denied?(reason)
+      _ -> false
+    end
+    state = if prime_issued and not denied, do: invalidate_workspace_evidence(state, session_id), else: state
+    {:noreply, finish_rejoin(state, session_id, outcome)}
+  end
+
+  def handle_info({:workspace_exported, session_id, captured, result}, state) do
+    fingerprint = case result do
+      {:ok, response} -> Map.get(response, :content_fingerprint, "")
+      _ -> ""
+    end
+
+    valid = with {:ok, session} <- SessionStore.get(state.session_store, session_id) do
+      not SessionState.terminal?(session.state) and session.state != :running and
+        session.volume_node_id == captured.volume_node_id and session.lineage_id == captured.lineage_id and
+        Map.get(state.attach_epochs, session_id, 0) == captured.epoch and
+        is_binary(fingerprint) and fingerprint != ""
+    else
+      _ -> false
+    end
+
+    if state.cross_node_rejoin and valid do
+      evidence = Map.put(captured, :fingerprint, fingerprint)
+      Logger.info("embervm workspace evidence recorded", session_id: session_id,
+        volume_node_id: captured.volume_node_id, lineage_id: captured.lineage_id, attach_epoch: captured.epoch)
+      {:noreply, %{state | workspace_evidence: Map.put(state.workspace_evidence, session_id, evidence)}}
+    else
+      Logger.info("embervm workspace export result dropped", session_id: session_id,
+        volume_node_id: captured.volume_node_id, lineage_id: captured.lineage_id, attach_epoch: captured.epoch,
+        reason: inspect(result))
+      {:noreply, state}
+    end
+  end
+
   def handle_info({:rejoin_assign_failed, session_id, reason}, state) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running} = session} ->
@@ -1202,7 +1244,7 @@ defmodule Embervm.SessionManager do
             %{node_id: nil, vm_id: nil})
         end
         Logger.warning("embervm session rejoin delivery failed", session_id: session_id, reason: inspect(reason))
-        {:noreply, state}
+        {:noreply, invalidate_workspace_evidence(state, session_id)}
       _ -> {:noreply, state}
     end
   end
@@ -2461,7 +2503,10 @@ defmodule Embervm.SessionManager do
       |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
       |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
 
-    spawn(fn -> Enum.each(parked, fn session -> _ = archive_session_volume(state, session) end) end)
+    Enum.each(parked, fn session ->
+      fallback = if is_binary(pod_uid) and pod_uid != "", do: node_id <> "/" <> pod_uid, else: nil
+      capture_workspace_export(state, session, fallback)
+    end)
 
     {count, state}
   end
@@ -2659,7 +2704,8 @@ defmodule Embervm.SessionManager do
       |> Enum.filter(&(Map.get(&1, :configured_id) == node_id and fact_dial_id(&1) != down_dial_id))
 
     Enum.any?(surviving_facts, &dormant_artifact_reported?(state, &1, session)) or
-      exported_bundle_relight_target?(state, session, surviving_facts)
+      exported_bundle_relight_target?(state, session, surviving_facts) or
+      exported_workspace_relight_target?(state, session, node_id)
   end
 
   defp dormant_artifact_reported?(_state, fact, %{state: :banked} = session) do
@@ -2823,6 +2869,7 @@ defmodule Embervm.SessionManager do
 
         state =
           if match?({:ok, _}, reply) do
+            state = if outcome == :parked, do: invalidate_workspace_evidence(state, session_id), else: state
             clear_brick_gone_tracking(state, session_id)
           else
             state
@@ -2884,11 +2931,12 @@ defmodule Embervm.SessionManager do
       {:ok, %{state: :running, node_id: node_id, vm_id: vm_id} = session}
       when is_binary(node_id) and is_binary(vm_id) ->
         if persistence_enabled_workload?(session_workload_entry(state, session.workload)) do
+          pre_park_dial = session_dial(state, session_id, node_id, vm_id)
           {reply, state} = park_session(state, session_id)
           case reply do
             {:ok, parked} ->
               if MapSet.member?(state.draining_sessions, session_id) do
-                spawn(fn -> _ = archive_session_volume(state, parked) end)
+                capture_workspace_export(state, parked, pre_park_dial)
               end
 
               {:ok, clear_draining_session(state, session_id)}
@@ -2971,6 +3019,7 @@ defmodule Embervm.SessionManager do
         )
         case intent do
           {:ok, _} ->
+            state = invalidate_workspace_evidence(state, session_id)
             # The parking intent is durable before teardown. noded's auto-destroy
             # timer covers a primed VM only after PrimeAssign, not this park window.
             case stop_session_process(state, session_id, session) do
@@ -3265,6 +3314,11 @@ defmodule Embervm.SessionManager do
   end
 
   defp clear_session_tracking(state, session_id) do
+    state = case SessionStore.get(state.session_store, session_id) do
+      {:ok, session} ->
+        if SessionState.terminal?(session.state), do: forget_workspace_evidence(state, session_id), else: state
+      :error -> forget_workspace_evidence(state, session_id)
+    end
     %{
       state
       | bank_failures: Map.delete(state.bank_failures, session_id),
@@ -3398,9 +3452,15 @@ defmodule Embervm.SessionManager do
         # #4306 slice 1: the volume identity the prime/restore chain needs is
         # lineage_id, not session_id (no behavior change this slice, the two are
         # always equal until adoption ships).
-        lineage_id = session.lineage_id
-
         spawn(fn ->
+          # This worker-local marker is set at the RPC seam, after dial and
+          # request validation, so pre-prime failures retain export evidence.
+          Process.put(:workspace_prime_issued, false)
+          prime_fun = state.prime_fun
+          worker_state = %{state | prime_fun: fn channel, request ->
+            Process.put(:workspace_prime_issued, true)
+            prime_fun.(channel, request)
+          end}
           outcome =
             Tracer.with_span "embervm.session.rejoin",
                              %{attributes: %{
@@ -3409,18 +3469,18 @@ defmodule Embervm.SessionManager do
                                "ember.principal" => session.principal,
                                "ember.volume_node_id" => volume_node_id
                              }} do
-              with {:ok, vm_id, dial_id} <-
-                     perform_rejoin_prime(state, volume_node_id, session) do
+              with {:ok, node_id, vm_id, dial_id} <-
+                     perform_rejoin_prime(worker_state, volume_node_id, session) do
                 # noded's auto-destroy timer covers PrimeAssign after delivery starts.
                 # The CP destroys a successfully primed VM when delivery never starts.
-                {:ok, volume_node_id, vm_id, 0, dial_id}
+                {:ok, node_id, vm_id, 0, dial_id}
               else
                 {:error, reason} -> {:error, reason}
                 other -> {:error, other}
               end
             end
 
-          send(owner, {:rejoin_done, session_id, outcome})
+          send(owner, {:rejoin_done, session_id, outcome, Process.get(:workspace_prime_issued, false)})
         end)
 
         state
@@ -3443,6 +3503,7 @@ defmodule Embervm.SessionManager do
          # Otherwise registration-order dial resolution can select an undersized
          # brick and fail prime with pressure:mem forever (#4379).
          dial_id <- Brick.dial_id(brick),
+         expected <- if(brick.node_id != volume_node_id, do: workspace_evidence(state, session).fingerprint, else: ""),
          {:ok, _restored} <-
            restore_session_workspace(
              state,
@@ -3450,11 +3511,13 @@ defmodule Embervm.SessionManager do
              workload,
              lineage_id,
              session.principal,
-             Map.get(session, :generation, 0) || 0
+             Map.get(session, :generation, 0) || 0,
+             expected,
+             brick.node_id
            ),
          snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
          {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
-      {:ok, vm_id, dial_id}
+      {:ok, brick.node_id, vm_id, dial_id}
     else
       {:error, reason} -> {:error, reason}
       other -> {:error, other}
@@ -3481,10 +3544,21 @@ defmodule Embervm.SessionManager do
 
     case Scheduler.place_with_demand(req) do
       {:error, :capacity} = error ->
-        if has_brick_on_volume_node?(state.capacity_table, volume_node_id) do
-          error
-        else
-          {:error, {:volume_node_gone, volume_node_id}}
+        cond do
+          workspace_evidence(state, session) != nil and
+              not Enum.any?(Brick.bricks(state.capacity_table), fn brick ->
+                brick.node_id == volume_node_id and Scheduler.base_ready?(brick, session.workload)
+              end) ->
+            # Keep the scheduler's need/base/key filters, then prefer a target
+            # without a local (potentially stale) copy of this lineage.
+            candidates = Scheduler.place(%{req | node_id: nil, bricks: workspace_targets(state, session, volume_node_id)})
+            case Enum.sort_by(candidates, &reports_workspace?(state, &1, session)) do
+              [] -> {:error, :capacity}
+              placed -> {:ok, placed}
+            end
+
+          has_brick_on_volume_node?(state.capacity_table, volume_node_id) -> error
+          true -> {:error, {:volume_node_gone, volume_node_id}}
         end
 
       other ->
@@ -3496,6 +3570,99 @@ defmodule Embervm.SessionManager do
     capacity_table
     |> Brick.bricks()
     |> Enum.any?(&(&1.node_id == node_id))
+  end
+
+  # Evidence belongs to one unattached content epoch and one exact owner/lineage.
+  # Deliberately never written to the op log: a CP restart fails closed.
+  defp workspace_evidence(%{cross_node_rejoin: true} = state, session) do
+    case Map.get(state.workspace_evidence, session.session_id) do
+      %{fingerprint: fingerprint, volume_node_id: node_id, lineage_id: lineage_id, epoch: epoch} = evidence
+          when is_binary(fingerprint) and fingerprint != "" ->
+        if epoch == Map.get(state.attach_epochs, session.session_id, 0) and
+            node_id == session.volume_node_id and lineage_id == session.lineage_id,
+          do: evidence, else: nil
+      _ -> nil
+    end
+  end
+
+  defp workspace_evidence(_state, _session), do: nil
+
+  defp invalidate_workspace_evidence(%{cross_node_rejoin: true} = state, session_id) do
+    %{state | attach_epochs: Map.update(state.attach_epochs, session_id, 1, &(&1 + 1)),
+      workspace_evidence: Map.delete(state.workspace_evidence, session_id)}
+  end
+
+  defp invalidate_workspace_evidence(state, _session_id), do: state
+
+  defp forget_workspace_evidence(state, session_id) do
+    %{state | attach_epochs: Map.delete(state.attach_epochs, session_id),
+      workspace_evidence: Map.delete(state.workspace_evidence, session_id)}
+  end
+
+  defp workspace_targets(state, session, excluded_node_id) do
+    facts = Map.new(NodeCapacity.all(state.capacity_table), &{Brick.dial_id(&1), &1})
+    state.capacity_table
+    |> Brick.bricks()
+    |> Enum.filter(fn brick ->
+      brick.node_id != excluded_node_id and Scheduler.base_ready?(brick, session.workload) and
+        Map.get(Map.get(facts, Brick.dial_id(brick), %{}), :store_reachable) == true
+    end)
+  end
+
+  defp reports_workspace?(state, brick, session) do
+    fact = Enum.find(NodeCapacity.all(state.capacity_table), &(Brick.dial_id(&1) == Brick.dial_id(brick))) || %{}
+    Enum.any?(Map.get(fact, :session_volumes, []) || [], fn volume ->
+      Map.get(volume, :lineage_id) == session.lineage_id and Map.get(volume, :workload) == session.workload
+    end)
+  end
+
+  defp exported_workspace_relight_target?(state, %{state: :parked} = session, departing_node_id) do
+    workspace_evidence(state, session) != nil and workspace_targets(state, session, departing_node_id) != []
+  end
+
+  defp exported_workspace_relight_target?(_state, _session, _node_id), do: false
+
+  defp capture_workspace_export(%{cross_node_rejoin: false} = state, session, _fallback) do
+    spawn(fn -> archive_session_volume(state, session) end)
+    :ok
+  end
+
+  defp capture_workspace_export(state, session, fallback) do
+    owner = self()
+    captured = %{epoch: Map.get(state.attach_epochs, session.session_id, 0),
+      volume_node_id: session.volume_node_id, lineage_id: session.lineage_id}
+    resolved = WakeInstance.dial_for_session_volume(state.capacity_table, session.volume_node_id, session.lineage_id)
+    dial_id = if resolved != session.volume_node_id, do: resolved, else: fallback
+    spawn(fn ->
+      result = if is_binary(dial_id) and dial_id != session.volume_node_id and String.contains?(dial_id, "/") do
+        req = %ExportArtifactRequest{artifact: %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE,
+          workload: session.workload, ref: session.lineage_id}, trace: %Trace{workload: session.workload}}
+        export_workspace(state, dial_id, req, 3)
+      else
+        {:error, :no_owning_instance}
+      end
+      send(owner, {:workspace_exported, session.session_id, captured, result})
+    end)
+    :ok
+  end
+
+  defp export_workspace(state, dial_id, req, attempts) do
+    result = try do
+      with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+        state.export_artifact_fun.(channel, req)
+      end
+    rescue
+      error -> {:error, error}
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+    case result do
+      {:ok, _} -> result
+      _ when attempts > 1 ->
+        Process.sleep(100)
+        export_workspace(state, dial_id, req, attempts - 1)
+      _ -> result
+    end
   end
 
   # Always ask noded about the workspace. A genuine store miss is the documented
@@ -3510,22 +3677,33 @@ defmodule Embervm.SessionManager do
          workload,
          lineage_id,
          principal,
-         generation
+         generation,
+         expected_fingerprint \\ "",
+         owner_node_id \\ nil
        ) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_SESSION_WORKSPACE, workload: workload, ref: lineage_id}
 
     ctx = %{
       principal: principal,
       lineage: lineage_id,
-      generation: generation
+      generation: generation,
+      expected_fingerprint: expected_fingerprint
     }
 
-    case safe_restore_artifact(state, node_id, node_id, ref, ctx) do
+    case safe_restore_artifact(state, owner_node_id || node_id, node_id, ref, ctx) do
+      {:ok, resp} when expected_fingerprint != "" ->
+        if Map.get(resp, :content_fingerprint, "") == expected_fingerprint do
+          record_restore(state, workload, :ARTIFACT_KIND_SESSION_WORKSPACE, lineage_id, resp)
+          {:ok, true}
+        else
+          {:error, {:session_workspace_restore_failed, :fingerprint_mismatch}}
+        end
+
       {:ok, resp} ->
         record_restore(state, workload, :ARTIFACT_KIND_SESSION_WORKSPACE, lineage_id, resp)
         {:ok, true}
 
-      {:error, %GRPC.RPCError{status: 5}} ->
+      {:error, %GRPC.RPCError{status: 5}} when expected_fingerprint == "" ->
         {:ok, false}
 
       {:error, reason} ->
@@ -3543,15 +3721,19 @@ defmodule Embervm.SessionManager do
     state = clear_pressure_wait(state, session_id)
 
     {start_result, state} =
-      start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id,
+      start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id, volume_node_id: node_id}, node_id, vm_id,
         dial_id, [rejoin_failure_fun: failure_fun])
 
     case start_result do
       {:ok, pid} ->
         case SessionStore.transition(state.session_store, session_id, :rejoin_ready, :session_rejoined,
-               %{volume_node_id: session.volume_node_id, node_id: node_id, vm_id: vm_id},
-               %{node_id: node_id, vm_id: vm_id}) do
-          {:ok, _} -> drain_relight_into_process(state, session_id, pid)
+               %{volume_node_id: node_id, node_id: node_id, vm_id: vm_id},
+               %{node_id: node_id, vm_id: vm_id, volume_node_id: node_id}) do
+          {:ok, _} ->
+            Logger.info("embervm session workspace rejoined", session_id: session_id,
+              old_volume_node_id: session.volume_node_id, volume_node_id: node_id)
+            state = invalidate_workspace_evidence(state, session_id)
+            drain_relight_into_process(state, session_id, pid)
           {:error, reason} ->
             _ = destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
             drain_relight_waiters(state, session_id, {:error, reason})
@@ -3817,7 +3999,8 @@ defmodule Embervm.SessionManager do
   end
 
   defp safe_restore_artifact(state, node_id, dial_id, %ArtifactRef{} = ref, ctx) do
-    req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload}}
+    req = %RestoreArtifactRequest{artifact: ref, trace: %Trace{workload: ref.workload},
+      expected_fingerprint: Map.get(ctx, :expected_fingerprint, "")}
     # Stamp the vendor from the NODE (a node-scoped fact shared across its instances),
     # but DIAL the specific owning/target instance (dial_id): the restore must land on
     # the same co-located instance the relight then dials (PR-B0b), mirroring
@@ -5253,11 +5436,16 @@ defmodule Embervm.SessionManager do
               when workload == volume.workload and session_state not in [:expired, :evicted, :destroyed, :failed] ->
             %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
 
-          {:ok, %{state: session_state, updated_at: row_updated}}
+          {:ok, %{state: session_state, updated_at: row_updated} = session}
               when session_state in [:expired, :evicted, :destroyed, :failed] ->
             inner = %{inner | orphan_volume_first_seen: Map.delete(inner.orphan_volume_first_seen, key)}
             if fact_current and wall_now - row_updated >= inner.orphan_grace_ms do
-              _ = retire_session_volume(inner, %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id})
+              copy = %{volume_node_id: f.configured_id, workload: volume.workload, lineage_id: volume.lineage_id}
+              if inner.cross_node_rejoin and is_binary(session.volume_node_id) and session.volume_node_id != f.configured_id do
+                _ = delete_session_volume(inner, copy)
+              else
+                _ = retire_session_volume(inner, copy)
+              end
             end
             inner
 
@@ -5739,7 +5927,7 @@ defmodule Embervm.SessionManager do
     _ = SessionStore.transition(state.session_store, session.session_id, :park_complete, :session_parked,
       %{reason: "idled", volume_node_id: session.volume_node_id},
       %{node_id: nil, vm_id: nil, volume_node_id: session.volume_node_id})
-    state
+    invalidate_workspace_evidence(state, session.session_id)
   end
 
   defp finish_parking_session(state, _session, false), do: state
@@ -6188,6 +6376,10 @@ defmodule Embervm.SessionManager do
 
   defp default_archive_volume(channel, %ArchiveVolumeRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.archive_volume(channel, req, timeout: 15_000)
+  end
+
+  defp default_export_artifact(channel, %ExportArtifactRequest{} = req) do
+    Embervm.Node.V1.NodeService.Stub.export_artifact(channel, req, timeout: 120_000)
   end
 
   defp default_retire_volume(channel, %RetireVolumeRequest{} = req) do

@@ -593,6 +593,40 @@ rewrite an existing base. For legacy store markers, the downloaded bundle file
 is the available compatibility evidence; absent metadata remains explicitly
 unknown and is never guessed from the brick's current configuration.
 
+### Parked workspaces can rejoin across nodes
+
+`crossNodeRejoin` defaults to false in the chart and is enabled in the GKE
+overlay (#6663). With it off, workspace rejoin stays pinned to `volume_node_id`
+and drains use the existing asynchronous archive path. With it on, drain workers
+synchronously export the unattached workspace through the owning instance dial,
+falling back to the draining pod's dial or the pre-park session dial when draining
+has removed its capacity fact. Export retries are bounded to three attempts.
+
+SessionManager keeps the export fingerprint with the session's volume node,
+lineage and attachment epoch in memory. Parking and a rejoin success advance
+the epoch and clear evidence. A worker that issued prime also clears evidence
+unless prime returned a recognised pressure denial. Pre-prime failures retain
+evidence for a pressure-wait retry; terminal transitions remove both maps.
+A CP restart drops all evidence and restores the node pin.
+
+When pinned placement returns capacity and the volume node has no base-ready
+brick for that workload, valid evidence permits another fitting brick that
+reports store reachability. Targets without a local lineage copy are preferred.
+Restore and prime use that same instance dial. Restore must echo the expected
+fingerprint; NotFound, a mismatch or an old daemon's empty echo fails before
+prime. The durable `session_rejoined` projection moves `volume_node_id` to the
+landed node. Departure preserves a proved parked session only while another
+base-ready, store-reachable target exists. Terminal stale copies on other nodes
+are deleted without exporting over the current store copy.
+
+**Why.** A draining brick disappears from capacity before its channel expires,
+and an asynchronous ArchiveVolume ACK cannot prove the store has current content.
+In-memory evidence limits that proof to one unattached content epoch. The restore
+fingerprint guard checks it on the receiving daemon before a VM can attach the
+workspace. Follow-ups are persisted evidence, noded-reported export state and
+deleting stale copies of live sessions. Those live copies consume disk until the
+lineage becomes terminal.
+
 ### Sessions: the durability ladder
 
 | Tier | Window | Artifact | Pinning |

@@ -265,6 +265,7 @@ defmodule Embervm.SessionManagerTest do
         evict_artifact_fun: Keyword.get(opts, :evict_artifact_fun, fn _ch, _req -> {:ok, %{}} end),
         restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, fn _ch, _req -> {:error, %GRPC.RPCError{status: 5}} end),
         archive_volume_fun: Keyword.get(opts, :archive_volume_fun, fn _ch, _req -> {:ok, %{skipped: false}} end),
+        export_artifact_fun: Keyword.get(opts, :export_artifact_fun, fn _ch, _req -> {:ok, %{content_fingerprint: "current-workspace"}} end),
         retire_volume_fun: Keyword.get(opts, :retire_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         delete_session_volume_fun: Keyword.get(opts, :delete_session_volume_fun, fn _ch, _req -> {:ok, %{}} end),
         expected_instances_fun: Keyword.get(opts, :expected_instances_fun,
@@ -286,6 +287,7 @@ defmodule Embervm.SessionManagerTest do
           :release_session_vm_fun,
           :node_confirmed_destroy,
           :drain_instance_scoped,
+          :cross_node_rejoin,
           :destroying_alarm_ms,
           :orphan_grace_ms,
           :departure_retry_interval_ms,
@@ -605,11 +607,275 @@ defmodule Embervm.SessionManagerTest do
         }
       },
       session_volumes: Keyword.get(opts, :session_volumes, []),
+      store_reachable: Keyword.get(opts, :store_reachable, false),
       live_vms: 0,
       max_live_vms: 8,
       draining: false,
       updated_at: 5_000_000
     })
+  end
+
+  # #6663: real lifecycle/store harness with instance-only dials. Capture an
+  # already parked drain after capacity has forgotten its draining owner.
+  defp cross_node_stack(opts \\ []) do
+    opts = Keyword.merge([
+      cross_node_rejoin: true,
+      channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      prime_fun: fake_prime_fun("vm-cross-node"),
+      restore_artifact_fun: fn _ch, req ->
+        {:ok, %{content_fingerprint: req.expected_fingerprint}}
+      end,
+      pressure_retry_interval_ms: 10,
+      pressure_wait_bound_ms: 500
+    ], opts)
+    ctx = start_stack(opts)
+    created = create_persistence_session(ctx, instance_id: "node-4/pod-owner")
+    parked = park_session(ctx, created)
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-owner", 21_000) == 0
+    {ctx, created, parked}
+  end
+
+  defp await_workspace_evidence(ctx, session_id) do
+    assert eventually(fn -> Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, session_id) end)
+    :sys.get_state(ctx.mgr).workspace_evidence[session_id]
+  end
+
+  defp cross_node_target(ctx, parked, opts \\ []) do
+    put_brick(ctx, parked.workload, "pod-target", Keyword.merge([
+      node_id: "node-b", store_reachable: true
+    ], opts))
+  end
+
+  for departure <- [:draining, :departed] do
+    test "cross-node drain #{departure} restores, persists ownership and replays the interrupted turn" do
+      parent = self()
+      {:ok, active} = Agent.start_link(fn -> nil end)
+      ctx = start_stack(
+        cross_node_rejoin: true,
+        clock: fn -> 1_000 end,
+        channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+        prime_fun: fn ch, _req ->
+          send(parent, {:cross_prime, ch})
+          {:ok, %PrimeResponse{vm_id: "vm-#{inspect(ch)}"}}
+        end,
+        export_artifact_fun: fn ch, req ->
+          send(parent, {:cross_export, ch, req})
+          {:ok, %{content_fingerprint: "workspace-a"}}
+        end,
+        restore_artifact_fun: fn ch, req ->
+          send(parent, {:cross_restore, ch, req.expected_fingerprint})
+          {:ok, %{content_fingerprint: req.expected_fingerprint}}
+        end,
+        assign_fun: fn _ch, req ->
+          payload = :json.decode(req.request.body)
+          if payload["turn_seq"] == 1 do
+            worker = self()
+            Agent.update(active, fn _ -> worker end)
+            send(parent, :cross_turn_running)
+            receive do :flush -> :ok end
+            {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200,
+              body: ~s({"terminal_reason":"interrupted_for_drain","session_id":"cli-cross","transcript_path":"/session/turn.json"})}}}
+          else
+            send(parent, {:cross_replay, payload})
+            default_assign(nil, req)
+          end
+        end,
+        interrupt_fun: fn _ch, _req ->
+          send(Agent.get(active, & &1), :flush)
+          {:ok, %SessionInterruptResponse{terminal_reason: "interrupted_for_drain"}}
+        end,
+        brick_status_fun: fn _ -> %{health: :down, registered: false, tombstoned: true, draining: false} end
+      )
+      created = create_persistence_session(ctx, instance_id: "node-4/pod-owner")
+      assert_receive {:cross_prime, {:channel, "node-4/pod-owner"}}, 1_000
+      assert_receive {:cross_restore, _, ""}, 1_000
+      invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: ~s({"message":"work"})}) end)
+      assert_receive :cross_turn_running, 1_000
+      # Draining registry facts disappear before the manager's drain callback.
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+      assert SessionManager.drain_instance(ctx.mgr, "node-4", "pod-owner", 21_000) == 1
+      assert {:ok, _} = Task.await(invoke, 1_000)
+      parked = wait_for_state(ctx, created.session_id, :parked)
+      assert parked.interrupted_turn["cli_session_id"] == "cli-cross"
+      evidence = await_workspace_evidence(ctx, created.session_id)
+      assert evidence.fingerprint == "workspace-a"
+      assert_receive {:cross_export, {:channel, "node-4/pod-owner"}, request}, 1_000
+      assert request.artifact.ref == parked.lineage_id
+      cross_node_target(ctx, parked)
+      # Another class remains on A. It must not disguise the absent class.
+      put_brick(ctx, "another-class", "pod-other", node_id: "node-4")
+      if unquote(departure) == :departed do
+        assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-owner"}) == 0
+        assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, created.session_id)
+      end
+      assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: ~s({"message":"continue"})})
+      assert_receive {:cross_restore, {:channel, "node-b/pod-target"}, "workspace-a"}, 1_000
+      assert_receive {:cross_prime, {:channel, "node-b/pod-target"}}, 1_000
+      assert_receive {:cross_replay, payload}, 1_000
+      assert payload["session_id"] == "cli-cross"
+      assert payload["message"] =~ "Continue the interrupted turn"
+      assert payload["message"] =~ "/session/turn.json"
+      assert {:ok, %{volume_node_id: "node-b"}} = SessionStore.get(ctx.store, created.session_id)
+      {:ok, rebuilt} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+      assert {:ok, %{volume_node_id: "node-b", node_id: "node-b"}} = SessionStore.get(rebuilt, created.session_id)
+      refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+    end
+  end
+
+  for export_result <- [{:error, :unavailable}, {:ok, %{content_fingerprint: ""}}] do
+    test "cross-node missing proof #{inspect(export_result)} keeps the old pinned outcome" do
+      parent = self()
+      {ctx, created, parked} = cross_node_stack(export_artifact_fun: fn _, _ -> unquote(Macro.escape(export_result)) end,
+        restore_artifact_fun: fn ch, _ -> send(parent, {:unproved_restore, ch}); {:ok, %{}} end)
+      cross_node_target(ctx, parked)
+      assert {:error, {:relight_failed, {:volume_node_gone, "node-4"}}} =
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+      refute_receive {:unproved_restore, {:channel, "node-b/pod-target"}}, 100
+      refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+    end
+  end
+
+  test "cross-node flag off uses ArchiveVolume and ignores export evidence" do
+    parent = self()
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-off"),
+      archive_volume_fun: fn _, _ -> send(parent, :legacy_archive); {:ok, %{}} end,
+      export_artifact_fun: fn _, _ -> send(parent, :unexpected_export); {:ok, %{content_fingerprint: "proof"}} end)
+    created = create_persistence_session(ctx, instance_id: "node-4/pod-owner")
+    parked = park_session(ctx, created)
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-owner"}, %{node_id: "node-4", configured_id: "node-4",
+      instance_id: "node-4/pod-owner", session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}]})
+    SessionManager.drain_node(ctx.mgr, "node-4")
+    assert_receive :legacy_archive, 1_000
+    refute_receive :unexpected_export, 100
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    NodeCapacity.drop(ctx.cap_table, {"node-4", "pod-owner"})
+    cross_node_target(ctx, parked)
+    assert {:error, {:relight_failed, {:volume_node_gone, "node-4"}}} =
+      SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+    assert :sys.get_state(ctx.mgr).attach_epochs == %{}
+  end
+
+  for reply <- [{:error, %GRPC.RPCError{status: 5}}, {:ok, %{content_fingerprint: "wrong"}}, {:ok, %{}}] do
+    test "cross-node restore #{inspect(reply)} refuses to prime and retains proof" do
+      parent = self()
+      {ctx, created, parked} = cross_node_stack(
+        restore_artifact_fun: fn _, req ->
+          if req.expected_fingerprint == "", do: {:ok, %{}}, else: unquote(Macro.escape(reply))
+        end,
+        prime_fun: fn ch, _ -> send(parent, {:guard_prime, ch}); {:ok, %PrimeResponse{vm_id: "vm-guard"}} end)
+      assert_receive {:guard_prime, {:channel, "node-4/pod-owner"}}, 1_000
+      await_workspace_evidence(ctx, created.session_id)
+      cross_node_target(ctx, parked)
+      assert {:error, {:relight_failed, {:session_workspace_restore_failed, _}}} =
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+      refute_receive {:guard_prime, {:channel, "node-b/pod-target"}}, 100
+      assert Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+    end
+  end
+
+  test "cross-node pre-prime capacity failure retains proof and retries onto a reachable target" do
+    {ctx, created, parked} = cross_node_stack()
+    evidence = await_workspace_evidence(ctx, created.session_id)
+    put_brick(ctx, "another-class", "pod-other", node_id: "node-4")
+    cross_node_target(ctx, parked, store_reachable: false)
+    caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"}) end)
+    assert eventually(fn -> Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id) end)
+    assert :sys.get_state(ctx.mgr).workspace_evidence[created.session_id] == evidence
+    cross_node_target(ctx, parked)
+    assert {:ok, _} = Task.await(caller, 1_000)
+    assert {:ok, %{volume_node_id: "node-b"}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "cross-node pressure denial from prime retains proof but a post-prime failure drops it" do
+    {:ok, result} = Agent.start_link(fn -> {:error, %GRPC.RPCError{status: 8}} end)
+    {ctx, created, parked} = cross_node_stack(prime_fun: fn ch, _ ->
+      if ch == {:channel, "node-4/pod-owner"}, do: {:ok, %PrimeResponse{vm_id: "vm-create"}}, else: Agent.get(result, & &1)
+    end)
+    evidence = await_workspace_evidence(ctx, created.session_id)
+    cross_node_target(ctx, parked)
+    caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"}) end)
+    assert eventually(fn -> Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id) end)
+    assert :sys.get_state(ctx.mgr).workspace_evidence[created.session_id] == evidence
+    Agent.update(result, fn _ -> {:error, :connection_lost} end)
+    assert {:error, {:relight_failed, {:prime_failed, _}}} = Task.await(caller, 1_000)
+    refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+  end
+
+  test "cross-node still-base-ready volume node at capacity stays pinned" do
+    parent = self()
+    {ctx, created, parked} = cross_node_stack(restore_artifact_fun: fn ch, req ->
+      send(parent, {:capacity_restore, ch}); {:ok, %{content_fingerprint: req.expected_fingerprint}}
+    end)
+    assert_receive {:capacity_restore, {:channel, "node-4/pod-owner"}}, 1_000
+    await_workspace_evidence(ctx, created.session_id)
+    put_brick(ctx, parked.workload, "pod-full", node_id: "node-4", mem_headroom: 0)
+    cross_node_target(ctx, parked)
+    caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"}) end)
+    assert {:error, {:relight_failed, {:pressure_wait_expired, :capacity}}} = Task.await(caller, 2_000)
+    refute_receive {:capacity_restore, {:channel, "node-b/pod-target"}}, 100
+    assert Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+  end
+
+  test "cross-node no_bricks remains a nonterminal pressure wait" do
+    {ctx, created, _parked} = cross_node_stack()
+    await_workspace_evidence(ctx, created.session_id)
+    caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"}) end)
+    assert {:error, {:relight_failed, {:pressure_wait_expired, :no_bricks}}} = Task.await(caller, 2_000)
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, created.session_id)
+    assert Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+  end
+
+  test "cross-node stale export epochs and changed owners are ignored; repark invalidates proof" do
+    {ctx, created, parked} = cross_node_stack()
+    old = await_workspace_evidence(ctx, created.session_id)
+    cross_node_target(ctx, parked)
+    assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+    parked_b = park_session(ctx, created)
+    refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+    # Old owner and epoch, then correct owner but old epoch, then correct epoch
+    # but old owner. Neither dimension can bless a late result.
+    current_epoch = :sys.get_state(ctx.mgr).attach_epochs[created.session_id]
+    for captured <- [old, %{old | volume_node_id: parked_b.volume_node_id}, %{old | epoch: current_epoch}] do
+      send(ctx.mgr, {:workspace_exported, created.session_id, captured, {:ok, %{content_fingerprint: "late"}}})
+      refute Map.has_key?(:sys.get_state(ctx.mgr).workspace_evidence, created.session_id)
+    end
+    # A valid result in this parked epoch is accepted; the next park/rejoin
+    # clears it, and terminal cleanup removes the epoch too.
+    captured = %{old | volume_node_id: parked_b.volume_node_id, epoch: current_epoch}
+    send(ctx.mgr, {:workspace_exported, created.session_id, captured, {:ok, %{content_fingerprint: "fresh"}}})
+    await_workspace_evidence(ctx, created.session_id)
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert eventually(fn -> not Map.has_key?(:sys.get_state(ctx.mgr).attach_epochs, created.session_id) end)
+  end
+
+  test "cross-node departure still evicts a parked session without proof" do
+    {ctx, created, parked} = cross_node_stack(export_artifact_fun: fn _, _ -> {:ok, %{content_fingerprint: ""}} end,
+      brick_status_fun: fn _ -> %{health: :down, registered: false, tombstoned: true, draining: false} end)
+    cross_node_target(ctx, parked)
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-owner"}) == 1
+    assert {:ok, %{state: :evicted, terminal_reason: "node_gone"}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "cross-node stale copies of live rows remain, terminal stale copies delete without export" do
+    parent = self()
+    {ctx, created, parked} = cross_node_stack(orphan_grace_ms: 0,
+      delete_session_volume_fun: fn ch, req -> send(parent, {:stale_deleted, ch, req.lineage_id}); {:ok, %{}} end,
+      retire_volume_fun: fn ch, req -> send(parent, {:stale_retired, ch, req.lineage_id}); {:ok, %{}} end)
+    await_workspace_evidence(ctx, created.session_id)
+    cross_node_target(ctx, parked)
+    assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+    put_brick(ctx, parked.workload, "pod-owner", node_id: "node-4",
+      session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}])
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:stale_deleted, _, _}, 100
+    refute_receive {:stale_retired, {:channel, "node-4/pod-owner"}, _}, 100
+    assert {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
+    wait_for_state(ctx, created.session_id, :destroyed)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:stale_deleted, {:channel, "node-4/pod-owner"}, lineage_id}, 1_000
+    assert lineage_id == parked.lineage_id
+    refute_receive {:stale_retired, {:channel, "node-4/pod-owner"}, _}, 100
   end
 
   # -- create ----------------------------------------------------------------
