@@ -123,6 +123,9 @@ defmodule Embervm.NodeRegistryTest do
 
   defp diagnostic_log(fun) do
     ExUnit.CaptureLog.capture_log([format: "$message $metadata\n", metadata: [:reason, :kind, :delta, :total]], fun)
+    |> String.split("\n")
+    |> Enum.filter(&(String.contains?(&1, "embervm vmm exit observed") or String.contains?(&1, "embervm guest oom observed")))
+    |> Enum.join("\n")
   end
 
   test "diagnostic deltas baseline first reports, unsupported transitions, repeats and daemon resets" do
@@ -167,7 +170,7 @@ defmodule Embervm.NodeRegistryTest do
 
   test "diagnostic series and baselines clear on drain and age-out" do
     {clock, advance} = new_clock()
-    {reg, table} = start_registry(clock: clock, age_check_ms: 60_000)
+    {reg, table} = start_registry(clock: clock, age_check_ms: 60_000, drain_listener: nil)
     status = diagnostic_status(%{"host_requested" => 1}, 1)
     :ok = NodeRegistry.inject_status(reg, "node-4", status)
     :ok = NodeRegistry.inject_status(reg, "node-4", %{status | draining: true})
