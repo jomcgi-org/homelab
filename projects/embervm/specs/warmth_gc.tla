@@ -94,7 +94,7 @@
 (*     cover. Acceptance is declined: SessionManager registers the heir     *)
 (*     after its restore worker, so GC cannot see the in-flight restore.    *)
 (*     Missing payloads fail restore explicitly; they do not prove that     *)
-(*     the last durable copy survives. A shared fence is separate work.     *)
+(*     the last durable copy survives. A shared fence: tracked in #6736.    *)
 (*  A2 FleetRevalidationGuard asserts the fleet-freshness precondition      *)
 (*     still holds at plan and delete time. Discharged by fleet_snapshot/2  *)
 (*     checking the sweep-start approved identities at both observations;   *)
