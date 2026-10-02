@@ -148,3 +148,33 @@ func TestRestoreRejectsInFlightOldReport(t *testing.T) {
 		t.Fatalf("old report contaminated restore: %+v", a)
 	}
 }
+
+func TestForgetWaitsForCancelledRequest(t *testing.T) {
+	started, cancelled, finish := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	p := New(Options{Enabled: true, Client: fetchFunc(func(ctx context.Context, _, n string) (guestagent.MemoryStatus, error) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		<-finish
+		return goodSample(n, 999), nil
+	})})
+	p.Track(Target{VM: "vm", Activation: "a"})
+	pollDone := make(chan struct{})
+	go func() { p.Poll(context.Background()); close(pollDone) }()
+	<-started
+	forgot := make(chan struct{})
+	go func() { p.Forget("vm", "a"); close(forgot) }()
+	<-cancelled
+	select {
+	case <-forgot:
+		t.Fatal("bank barrier returned before request finished")
+	default:
+	}
+	close(finish)
+	<-forgot
+	<-pollDone
+	a := p.Snapshot()
+	if a.GuestOOM != 0 || a.Counts["ok"] != 0 {
+		t.Fatalf("late report retained: %+v", a)
+	}
+}
