@@ -1563,5 +1563,13 @@
         "inventory_reconciled": ["pass", 1]
       }
     }
-  ]
+  ],
+  "roles": {
+    "vm-7b1e3c": "S1 clone a",
+    "vm-e1f5e9": "S1 clone b",
+    "vm-161994": "S2 session",
+    "vm-5f95e4": "S2 session, relit",
+    "vm-46f27c": "S3 second session",
+    "vm-08870f": "S5 guest task"
+  }
 }
