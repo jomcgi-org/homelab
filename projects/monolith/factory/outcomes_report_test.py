@@ -748,7 +748,9 @@ def test_unpriced_turns_and_reservations_are_separate_cost_bounds(session, rows)
     # Unknown usage on a terminal start keeps its reservation in the bound.
     rows.start(task, key="missing_cost", cost=None)
     # A proven-free basis commits nothing and is not a missing cost.
-    rows.start(task, key="free_denial", status="failed", cost=None, basis="capacity_denied")
+    rows.start(
+        task, key="free_denial", status="failed", cost=None, basis="capacity_denied"
+    )
     report = _report(session)
     row = _state(report, "positives")
     assert (
