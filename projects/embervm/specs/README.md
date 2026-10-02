@@ -646,11 +646,11 @@ property hold.
 
 | Question | Authority in the implementation |
 | --- | --- |
-| Is the lineage referenced? | `cp_snapshot/1` `referenced_lineages`, from `session_actively_live?/1` (not terminal, not `:banked`, not `:parked`) |
-| Does a brick still hold it? | `cp_snapshot/1` `reported_lineages`, from NodeCapacity `session_volumes` |
-| Is a parked session still entitled to it? | `parked_lineage_expiries` + `parked_session_not_expired?/4` |
+| Is the lineage referenced? | `cp_snapshot/2` `referenced_lineages`, from `session_actively_live?/1` (not terminal, not `:banked`, not `:parked`), and `recheck_live/2` |
+| Does a brick still hold it? | `reported_holds/1` `reported_lineages`, from the union of sweep-start and plan-time fleet facts; fresh fleet facts at `recheck_live/2` |
+| Is a parked session still entitled to it? | `parked_expiry_holds/1` + `parked_session_not_expired?/4`, shared by `classify/6` and the recheck |
 | Is the prefix old enough? | `@default_ttls`: 7 days for `:session_workspace`, 8 hours for `:stateful` |
-| Is the inventory trustworthy? | `check_uptime/1`, `check_fleet_fresh/1`, `list_or_abort/2`, `check_empty_cp_state/7` |
+| Is the inventory trustworthy? | `check_uptime/1`, `fleet_snapshot/1,2` (approved identities held through planning and each recheck), `list_or_abort/2`, `check_empty_cp_state/7` |
 | May this specific delete proceed? | `recheck_live/2`, immediately before `delete_prefix/2` |
 
 The per-action source map is in the `warmth_gc.tla` header. Assumptions A1-A8
@@ -711,35 +711,37 @@ and trimming the newest snapshot of a still-live workload.
 
 ### Implementation conformance gaps found by the mapping
 
-A clean abstract model is not proof that the code conforms. This PR changes no
-runtime code; each gap below needs its own bounded issue.
+The mapping found three gaps tracked by #6325. The runtime correction discharges
+A2 and A3 at the modeled observation points; A1 remains outside the results.
 
-- **Fleet freshness is checked once, not held (A2).** `run_sweep/1` evaluates
-  `check_fleet_fresh/1` before `list_or_abort/2`, then reads NodeCapacity again
-  in `cp_snapshot/1` and once more in `recheck_live/2`, never re-validating the
-  precondition. A brick that stops being dispatchable in that window has its row
-  dropped from NodeCapacity, so a workspace volume it still holds reads as
-  unreported and the prefix looks orphaned. `warmth_gc_stale_fleet.cfg` is that
-  trace: `Terminate`, export, age, `SweepBegin` while fresh, `FleetFlips`,
-  `SweepPlan`, `SweepDeleteWsMeta` with `localVol` still true. The positive cfg
-  assumes the precondition holds through plan and delete; the code does not
-  discharge that assumption.
-- **`recheck_live/2` does not re-apply the parked-expiry hold (A3).**
-  `classify/6` consults `parked_session_not_expired?/4`, but the per-prefix
-  recheck re-reads only `referenced_lineages` and `reported_lineages`, and a
-  `:parked` row is not `session_actively_live?/1`. A lineage that is terminal at
-  plan time can be restored, parked with a fresh deadline, and drained to S3
-  before the delete fires. This gap was found by reading the source, not by a
-  counterexample: the positive cfg applies `ExpiryGuard` at both plan and
-  recheck time, so no registered configuration isolates it.
-- **The recheck and the delete are not atomic (A1).** `apply_deletes/3` calls
-  `recheck_live/2` and then `delete_prefix/2` as two sequential steps in the GC
-  process. The model treats them as one step, so the sub-second window between
-  them is outside every result above.
-
-None of these is a counterexample against a check the code claims to implement;
-they are the distance between the modelled contract and the current code, and
-each is a separately bounded correction.
+- **Approved fleet held at plan and delete time (A2 discharged).**
+  `fleet_snapshot/1` records {instance_id, configured_id, pod_uid} identities.
+  `run_sweep/1` calls `fleet_snapshot/2` after listing and `cp_snapshot/2`,
+  before `build_plan/3`. Every approved identity must still be expected with
+  fresh, readable capacity in a modeled vendor pool. `union_reported_holds/2`
+  honors inventory from either observation. `recheck_live/2` repeats that
+  approved-subset check for every prefix kind. `apply_deletes/3` halts all
+  remaining deletes on a fleet error and returns prefixes already deleted.
+  `warmth_gc_stale_fleet.cfg` remains the historical counterexample to the
+  unguarded model, with its results table unchanged.
+- **Parked expiry held at both observations (A3 discharged).**
+  `parked_expiry_holds/1` and `parked_session_not_expired?/4` supply the same
+  predicate to `classify/6` and the per-prefix recheck. A parked session's
+  snapshot_ref or workspace lineage is held until its integer expires_at is
+  past the fresh recheck wall clock. A nil expiry remains unheld.
+- **A1 decision: unresolved, safety acceptance declined.**
+  `recheck_live/2` and `delete_prefix/2` remain sequential. SessionManager's
+  `validate_restore_lineage/4` admits a terminal holder, but its create worker
+  calls `restore_then_prime` before `finish_create` calls `register_and_start`
+  and `SessionStore.create`. The GC cannot see that in-flight heir. The proposed
+  pre-restore non-terminal-row argument is false in the current implementation.
+  noded `ArtifactInfo` refuses absent metadata, and `Store.Restore` returns
+  missing-file errors through `RestoreArtifact` without registering a partial
+  volume. Those errors establish fail-closed restore behavior, not preservation
+  of the last durable copy. Export checks prevent an attached lineage from
+  exporting, but do not make restore and GC atomic. A shared restore/delete
+  fence needs a separate control-plane issue. The destructive gate stays
+  default-off; no live activation or storage redesign is part of this correction.
 
 ## Running TLC
 

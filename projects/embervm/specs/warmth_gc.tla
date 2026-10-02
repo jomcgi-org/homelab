@@ -28,15 +28,15 @@
 (*                         workload_live?/3 arm of classify/6.              *)
 (*                                                                         *)
 (*   Liveness authority (who may say "this is still referenced")            *)
-(*     Referenced          cp_snapshot/1 referenced_lineages, built from    *)
+(*     Referenced          cp_snapshot/2 referenced_lineages, built from    *)
 (*                         session_actively_live?/1, i.e. NOT terminal and  *)
 (*                         NOT :banked / :parked.                           *)
-(*     NodeReported        cp_snapshot/1 reported_lineages, built from      *)
+(*     NodeReported        cp_snapshot/2 reported_lineages, built from      *)
 (*                         NodeCapacity session_volumes facts.              *)
 (*     ParkedHeld          parked_lineage_expiries + parked_session_not_    *)
 (*                         expired?/4: a :parked row holds its lineage      *)
 (*                         until the CP expiry deadline passes.             *)
-(*     fleetFresh          check_fleet_fresh/1 + NodeCapacity dropping a    *)
+(*     fleetFresh          fleet_snapshot/1,2 + NodeCapacity dropping a    *)
 (*                         non-dispatchable node's row.                     *)
 (*     cpRebuilt           check_uptime/1 (@min_uptime_ms) and              *)
 (*                         check_empty_cp_state/7.                          *)
@@ -72,7 +72,7 @@
 (*                                                                         *)
 (*   Sweep structure                                                        *)
 (*     SweepBegin/Abort    run_sweep/1's `with` chain: check_uptime,        *)
-(*                         check_fleet_fresh, list_or_abort (a partial      *)
+(*                         fleet_snapshot, list_or_abort (a partial        *)
 (*                         listing aborts the WHOLE sweep),                 *)
 (*                         check_empty_cp_state, persist_manifest.          *)
 (*     SweepPlan           build_plan/3 + apply_caps/2.                     *)
@@ -91,12 +91,17 @@
 (*  A1 recheck_live/2 and the meta.json delete of the SAME prefix are one   *)
 (*     atomic step. The implementation runs them sequentially in the GC     *)
 (*     process, so a sub-second window exists that this model does not      *)
-(*     cover.                                                               *)
+(*     cover. Acceptance is declined: SessionManager registers the heir     *)
+(*     after its restore worker, so GC cannot see the in-flight restore.    *)
+(*     Missing payloads fail restore explicitly; they do not prove that     *)
+(*     the last durable copy survives. A shared fence is separate work.     *)
 (*  A2 FleetRevalidationGuard asserts the fleet-freshness precondition      *)
-(*     still holds at plan and delete time. run_sweep/1 checks it ONCE, so  *)
-(*     this is an assumption the code does not currently discharge.         *)
+(*     still holds at plan and delete time. Discharged by fleet_snapshot/2  *)
+(*     checking the sweep-start approved identities at both observations;   *)
+(*     apply_deletes/3 halts on failure. Plan inventories are unioned.       *)
 (*  A3 ExpiryGuard applies the parked-expiry hold at BOTH plan and recheck  *)
-(*     time. classify/6 applies it; recheck_live/2 does NOT.                *)
+(*     time. Discharged by parked_session_not_expired?/4 shared between     *)
+(*     classify/6 and the recheck, with a fresh wall clock at delete time.   *)
 (*  A4 The disposable stateful tier folds node-reported bundles into        *)
 (*     stDesired: both are pure reference holds with identical effect in    *)
 (*     classify/6, and the tier is present only to contrast retention       *)
@@ -200,7 +205,7 @@ Consistent   == fleetFresh /\ CpNotEmpty
 HasWsData    == durable = "complete" \/ localVol
 
 \* A2: the fleet-freshness precondition still holds at plan and delete time.
-\* run_sweep/1 evaluates check_fleet_fresh/1 ONCE, before listing.
+\* run_sweep/1 and recheck_live/2 revalidate approved fleet_snapshot identities.
 FleetOK      == ~FleetRevalidationGuard \/ fleetFresh
 
 \* Plan-time eligibility, one arm per cond clause in classify/6.
@@ -392,7 +397,7 @@ AgeStateful ==
 (* The sweep.                                                              *)
 (***************************************************************************)
 
-\* check_uptime + check_fleet_fresh, then the S3 LISTing. The candidate set is
+\* check_uptime + fleet_snapshot, then the S3 LISTing. The candidate set is
 \* FIXED here: a prefix created after this step is not in this sweep's listing,
 \* which is why listedWs / listedSt are recorded rather than re-derived.
 SweepBegin ==
