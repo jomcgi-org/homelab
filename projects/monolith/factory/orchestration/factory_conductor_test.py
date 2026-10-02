@@ -17351,6 +17351,52 @@ def test_investigation_default_is_decided_before_next_planner(feedback_db, monke
     )
 
 
+@pytest.mark.parametrize("missing", [True, False], ids=["missing", "string-false"])
+def test_invalid_investigation_gate_continues_to_planner(
+    feedback_db, monkeypatch, caplog, missing
+):
+    from factory.orchestration import factory_gates as gates
+
+    task, policy = feedback_task()
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "threshold=5",
+        "reason": "A reversible alert default",
+    }
+    if not missing:
+        gate["effects"] = {
+            **dict.fromkeys(gates.GATE_EFFECTS, False),
+            "spends_money": "false",
+        }
+    complete_feedback_node(
+        task,
+        policy,
+        "investigate_threshold",
+        {
+            "status": "escalate",
+            "summary": "Needs a default",
+            "reason": "Threshold unspecified",
+            "pr_number": None,
+            "head_sha": None,
+            "gate": gate,
+        },
+        status="escalated",
+    )
+    conductor.reconcile_task(task["id"], policy, SimpleNamespace())
+    assert conductor._task(task["id"])["conductor_gates"] == []
+    assert not conductor._decision_processed(
+        task["id"], "investigate-gate:investigate_threshold:1"
+    )
+    assert "invalid investigate gate" in caplog.text
+    planners = [
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"].startswith("conductor_")
+    ]
+    assert planners
+
+
 @pytest.fixture
 def drained_retry_not_invoked(not_invoked_factory):
     import hashlib

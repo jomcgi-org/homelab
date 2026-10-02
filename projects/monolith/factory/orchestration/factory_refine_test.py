@@ -1765,8 +1765,9 @@ def test_refine_node_pricing(db, monkeypatch, model):
 
 
 @pytest.mark.parametrize("outcome", ["agent-ready", "needs-human"])
+@pytest.mark.parametrize("receipt_570", [False, True])
 def test_reversible_refine_default_posts_comment_and_continues(
-    db, monkeypatch, outcome
+    db, monkeypatch, outcome, receipt_570
 ):
     """#6208 replaces the old retention-depth question with a conductor default."""
     task, policy = make_task()
@@ -1788,8 +1789,12 @@ def test_reversible_refine_default_posts_comment_and_continues(
             "touches_external_account": False,
             "uses_credentials": False,
         },
-        "value": "N=3, dry-run only",
-        "reason": "Keeps fallback generations without enabling production deletion",
+        "value": "3 concurrent admissions" if receipt_570 else "N=3, dry-run only",
+        "reason": (
+            "Bounds admission cost; choosing it neither spends money, deletes production data, nor touches an external account."
+            if receipt_570
+            else "Keeps fallback generations without enabling production deletion"
+        ),
     }
     artifact = (
         human_artifact(comment["html_url"], "deliver")
@@ -1802,8 +1807,7 @@ def test_reversible_refine_default_posts_comment_and_continues(
         controls.task_snapshot(task["id"])["evidence"]["state"] == "refine_agent_ready"
     )
     assert any(
-        "Decided by the conductor: N=3, dry-run only, because"
-        in payload.get("body", "")
+        f"Decided by the conductor: {gate['value']}, because" in payload.get("body", "")
         for _, payload, _ in writes
     )
     with Session(db) as session:
@@ -1890,6 +1894,39 @@ def test_refine_backstop_rejects_spend_shaped_reversible_gate(
         "irreversible gate requires needs-human"
         in controls.task_snapshot(task["id"])["evidence"]["reason"]
     )
+
+
+@pytest.mark.parametrize("missing", [True, False], ids=["missing", "string-false"])
+def test_refine_invalid_effects_records_mismatch(db, monkeypatch, missing):
+    from factory.orchestration import factory_gates as gates
+
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "3 concurrent admissions",
+        "reason": "Reversible default",
+    }
+    if not missing:
+        gate["effects"] = {
+            **dict.fromkeys(gates.GATE_EFFECTS, False),
+            "spends_money": "false",
+        }
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "agent-ready",
+            "comment_url": comment["html_url"],
+            "gate": gate,
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "failed"
+    assert "invalid gate" in snapshot["evidence"]["reason"]
 
 
 def test_reversible_refine_retries_after_label_write_and_deferred_settlement(
