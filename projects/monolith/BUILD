@@ -4963,6 +4963,7 @@ py_test(
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",

@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -559,6 +565,131 @@ def test_receipt_authorization_requires_id_and_generation_together(
                 generation=generation,
             )
         )
+
+
+@pytest.fixture
+def knowledge_spans():
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    yield provider.get_tracer("test"), exporter
+    provider.shutdown()
+
+
+@pytest.mark.parametrize("through_pool", [False, True])
+def test_knowledge_timeout_logs_warning_and_span_fields(
+    monkeypatch, caplog, knowledge_spans, through_pool
+):
+    timeout = 0.01
+    monkeypatch.setattr(
+        conductor_context, "KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS", timeout
+    )
+    monkeypatch.setattr(conductor_context, "_now", lambda: "retrieval-time")
+
+    async def embed(_query):
+        await asyncio.sleep(timeout * 10)
+
+    monkeypatch.setattr(
+        "shared.embedding.EmbeddingClient", lambda: SimpleNamespace(embed=embed)
+    )
+    tracer, exporter = knowledge_spans
+    with caplog.at_level(logging.WARNING, logger=conductor_context.__name__):
+        with tracer.start_as_current_span("planner-knowledge"):
+            if through_pool:
+                monkeypatch.setattr(
+                    conductor_context,
+                    "_planner_factory_context",
+                    lambda _task_id: {
+                        "ok": True,
+                        "authorization": {"receipt_id": 9, "generation": 3},
+                        "acceptance": {"title": "q"},
+                    },
+                )
+                context = conductor_context.planner_context_with_deadline(
+                    "task-9", "q", timeout=2
+                )
+                assert context["ok"] is True
+                result = context["knowledge"]
+            else:
+                result = asyncio.run(
+                    conductor_context.retrieve_knowledge(
+                        "q", "session:factory-receipt:9", 3, receipt_id=9, generation=3
+                    )
+                )
+
+    assert result == {
+        "status": "unavailable",
+        "scope": "session:factory-receipt:9",
+        "scopes": ["session:factory-receipt:9"],
+        "observed_at": "retrieval-time",
+        "retrieved_at": "retrieval-time",
+        "notes": [],
+        "omitted": {
+            "unauthorized_candidates": 0,
+            "result_limit": 0,
+            "prompt_budget": 0,
+        },
+    }
+    records = [
+        record for record in caplog.records if record.name == conductor_context.__name__
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    assert record.knowledge_exception_class == "TimeoutError"
+    assert isinstance(record.knowledge_elapsed_seconds, float)
+    assert record.knowledge_elapsed_seconds >= timeout
+    assert record.receipt_id == 9
+    assert "exception_class=TimeoutError" in record.getMessage()
+    assert f"elapsed_seconds={record.knowledge_elapsed_seconds}" in record.getMessage()
+    assert "receipt_id=9" in record.getMessage()
+    assert record.exc_info is None
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert dict(spans[0].attributes) == {
+        "factory.knowledge.exception_class": record.knowledge_exception_class,
+        "factory.knowledge.elapsed_seconds": record.knowledge_elapsed_seconds,
+        "factory.receipt_id": record.receipt_id,
+    }
+
+
+def test_operator_knowledge_failure_logs_class_without_receipt_span_attribute(
+    monkeypatch, caplog, knowledge_spans
+):
+    async def embed(_query):
+        raise RuntimeError("embedding unavailable")
+
+    monkeypatch.setattr(
+        "shared.embedding.EmbeddingClient", lambda: SimpleNamespace(embed=embed)
+    )
+    tracer, exporter = knowledge_spans
+    with caplog.at_level(logging.WARNING, logger=conductor_context.__name__):
+        with tracer.start_as_current_span("operator-knowledge"):
+            result = asyncio.run(conductor_context.retrieve_knowledge("q", "repo:r", 3))
+
+    assert result["status"] == "unavailable"
+    assert result["notes"] == []
+    records = [
+        record for record in caplog.records if record.name == conductor_context.__name__
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    assert record.knowledge_exception_class == "RuntimeError"
+    assert isinstance(record.knowledge_elapsed_seconds, float)
+    assert record.knowledge_elapsed_seconds >= 0
+    assert record.receipt_id is None
+    assert "exception_class=RuntimeError" in record.getMessage()
+    assert f"elapsed_seconds={record.knowledge_elapsed_seconds}" in record.getMessage()
+    assert "receipt_id=None" in record.getMessage()
+    assert record.exc_info is None
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert dict(spans[0].attributes) == {
+        "factory.knowledge.exception_class": record.knowledge_exception_class,
+        "factory.knowledge.elapsed_seconds": record.knowledge_elapsed_seconds,
+    }
 
 
 def test_operator_exchange_writer_retains_private_scope_and_receipt_provenance(
