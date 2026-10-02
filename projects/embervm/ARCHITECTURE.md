@@ -616,16 +616,29 @@ Restore and prime use that same instance dial. Restore must echo the expected
 fingerprint; NotFound, a mismatch or an old daemon's empty echo fails before
 prime. The durable `session_rejoined` projection moves `volume_node_id` to the
 landed node. Departure preserves a proved parked session only while another
-base-ready, store-reachable target exists. Terminal stale copies on other nodes
-are deleted without exporting over the current store copy.
+base-ready, store-reachable target exists. Stale copies on other nodes, of live
+rows after a move and of terminal rows, are deleted without exporting over the
+current store copy. A relighting row is skipped, since its rejoin target holds
+the copy while `volume_node_id` still names the source.
+
+noded also fences workspace exports on content lineage. Beside each lineage it
+records the store fingerprint the local copy descends from (written on a
+fingerprint-verified restore and on every successful or checksum-equal export).
+`Store.Export` refuses a workspace whose store content differs from both the
+local content and that recorded base with `ErrStaleGeneration`: the sync RPC
+answers skipped and the async path logs, keeps the copy and marks it
+unexportable so a drain does not wait on it. A copy with no recorded base
+predates the marker and fails open.
 
 **Why.** A draining brick disappears from capacity before its channel expires,
 and an asynchronous ArchiveVolume ACK cannot prove the store has current content.
 In-memory evidence limits that proof to one unattached content epoch. The restore
 fingerprint guard checks it on the receiving daemon before a VM can attach the
-workspace. Follow-ups are persisted evidence, noded-reported export state and
-deleting stale copies of live sessions. Those live copies consume disk until the
-lineage becomes terminal.
+workspace. A workspace key always exports at generation 0, so the generation
+fence cannot order copies and a node that a lineage moved off would otherwise
+upload its old copy over newer content on its next drain. The lineage fence
+closes that, and the sweep removes the stale copy. Follow-ups are persisted
+evidence and noded-reported export state.
 
 ### Sessions: the durability ladder
 

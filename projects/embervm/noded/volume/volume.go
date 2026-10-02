@@ -19,6 +19,7 @@ package volume
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,10 @@ const (
 	// so the artifact exporter can EXCLUDE it: the marker must never ride the S3
 	// artifact, or a restore would resurrect it and retire a live workspace.
 	RetirementIntentFile = ".retirement-intent"
+
+	// StoreBaseFile records, beside a session workspace, the store content
+	// fingerprint the local copy descends from. Artifact enumeration skips it.
+	StoreBaseFile = ".store-base"
 )
 
 // BlessingLease is the durable, exclusive generation range a brick may use
@@ -596,6 +601,50 @@ func (m *Manager) ClearRetirementIntent(workload, lineageID string) error {
 		return nil
 	}
 	return err
+}
+
+// ReadStoreBase returns the store fingerprint a lineage's local copy descends
+// from, or "" when none is recorded.
+func (m *Manager) ReadStoreBase(workload, lineageID string) string {
+	data, err := os.ReadFile(filepath.Join(m.SessionLineageDir(workload, lineageID), StoreBaseFile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// WriteStoreBase atomically records the store fingerprint the local copy now
+// descends from. It never creates the lineage dir: the workspace must exist.
+func (m *Manager) WriteStoreBase(workload, lineageID, fingerprint string) error {
+	if workload == "" || lineageID == "" || fingerprint == "" {
+		return fmt.Errorf("volume: workload, lineage and fingerprint required")
+	}
+	if m.ReadStoreBase(workload, lineageID) == fingerprint {
+		return nil
+	}
+	dir := m.SessionLineageDir(workload, lineageID)
+	tmp, err := os.CreateTemp(dir, "store-base-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_, werr := tmp.WriteString(fingerprint + "\n")
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, filepath.Join(dir, StoreBaseFile)); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return nil
+}
+
+// ClearStoreBase removes a lineage's recorded ancestry (fail-open for the next
+// export). Used when a fresh marker could not be written.
+func (m *Manager) ClearStoreBase(workload, lineageID string) {
+	_ = os.Remove(filepath.Join(m.SessionLineageDir(workload, lineageID), StoreBaseFile))
 }
 
 // CreateSession provisions a sparse per-lineage workspace image idempotently.

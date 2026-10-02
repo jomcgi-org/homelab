@@ -1676,3 +1676,41 @@ func TestCompressedExportStreamsUnknownLengthObjects(t *testing.T) {
 		t.Fatalf("meta.json PUT TransferEncoding = %v, want none (exact length declared)", marker.transferEncoding)
 	}
 }
+
+// TestExportLineageFenceRefusesContentOffTheCopysLineage: a SESSION_WORKSPACE
+// always exports at generation 0, so the generation fence never fires. The
+// lineage fence refuses store content the local copy does not descend from,
+// allows a copy that does, and fails open without a recorded base.
+func TestExportLineageFenceRefusesContentOffTheCopysLineage(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	prefix := "session-workspace/amd/sbx/lineage"
+
+	var fingerprintX, fingerprintY string
+	x, xNames := writeLocalArtifact(t, map[string]string{"workspace.img": "X"})
+	if _, _, err := s.Export(ctx, prefix, x, xNames, 0, 1, "", "", ExportOptions{LineageFence: true, ContentFingerprint: &fingerprintX}); err != nil {
+		t.Fatalf("seed X: %v", err)
+	}
+	y, yNames := writeLocalArtifact(t, map[string]string{"workspace.img": "Y"})
+	if _, _, err := s.Export(ctx, prefix, y, yNames, 0, 2, "", "", ExportOptions{LineageFence: true, BaseFingerprint: fingerprintX, ContentFingerprint: &fingerprintY}); err != nil {
+		t.Fatalf("descendant export: %v", err)
+	}
+
+	// A copy still descending from X must not overwrite Y.
+	if _, _, err := s.Export(ctx, prefix, x, xNames, 0, 3, "", "", ExportOptions{LineageFence: true, BaseFingerprint: fingerprintX}); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("stale lineage export err=%v, want ErrStaleGeneration", err)
+	}
+	var restored string
+	dir := t.TempDir()
+	if _, _, err := s.Restore(ctx, prefix, dir, nil, RestoreOptions{ExpectedFingerprint: fingerprintY, ContentFingerprint: &restored}); err != nil || restored != fingerprintY {
+		t.Fatalf("restore of Y: fingerprint=%q, err=%v", restored, err)
+	}
+
+	// The same content is still an idempotent skip, and no recorded base fails open.
+	if _, skipped, err := s.Export(ctx, prefix, y, yNames, 0, 4, "", "", ExportOptions{LineageFence: true, BaseFingerprint: fingerprintX}); err != nil || !skipped {
+		t.Fatalf("identical content skipped=%v, err=%v", skipped, err)
+	}
+	if _, _, err := s.Export(ctx, prefix, x, xNames, 0, 5, "", "", ExportOptions{LineageFence: true}); err != nil {
+		t.Fatalf("no-base export must fail open: %v", err)
+	}
+}

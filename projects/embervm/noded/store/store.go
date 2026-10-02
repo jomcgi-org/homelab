@@ -174,6 +174,16 @@ type ExportOptions struct {
 	// ContentFingerprint receives the locally computed plaintext fingerprint
 	// only on successful export, including a checksum-equal skipped upload.
 	ContentFingerprint *string
+	// LineageFence turns on the content-lineage fence for a single-writer key
+	// whose generation is always 0 (SESSION_WORKSPACE). BaseFingerprint is the
+	// store fingerprint the local copy descends from. When the store already
+	// holds different content that is neither the local content nor that base,
+	// another node exported newer content after this copy was taken, and
+	// Export refuses with ErrStaleGeneration. An empty BaseFingerprint means
+	// the local copy has no recorded ancestry (it predates the marker), and the
+	// fence fails open so such a copy can still export.
+	LineageFence    bool
+	BaseFingerprint string
 }
 
 // RestoreOptions optionally fences a restore to a previously exported payload.
@@ -616,6 +626,16 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 				return 0, false, fmt.Errorf(
 					"%w: local generation %d, store generation %d",
 					ErrStaleGeneration, generation, remoteMeta.Generation)
+			}
+			// Generation cannot order a SESSION_WORKSPACE (always 0), so fence it
+			// on content lineage: the store content must be what this copy
+			// descends from. Anything else is a newer export from another node.
+			if opts.LineageFence && opts.BaseFingerprint != "" {
+				if storeFingerprint := FilesFingerprint(remoteMeta.Files); storeFingerprint != opts.BaseFingerprint {
+					return 0, false, fmt.Errorf(
+						"%w: local copy descends from %s, store holds %s",
+						ErrStaleGeneration, opts.BaseFingerprint, storeFingerprint)
+				}
 			}
 		}
 	}
