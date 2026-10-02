@@ -88,8 +88,7 @@ def _decision_fixture(root):
         ),
     ]
     + [
-        head
-        + " projects/platform/ARCHITECTURE.md section 4 requires CI to "
+        head + " projects/platform/ARCHITECTURE.md section 4 requires CI to "
         "publish and chart-version-bot to write versions after merge."
         for head in (
             "I won\u2019t bump the chart version.",
