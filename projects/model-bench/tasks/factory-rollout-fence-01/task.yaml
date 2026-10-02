@@ -1,8 +1,9 @@
 id: factory-rollout-fence-01
-version: v1
+version: v2
 class: code-fix
-# hard: symptom-only debugging (#6695). The prompt carries a trace and a
-# control-plane access log from a rolling deploy, no file or function pointers.
+# hard: symptom-only debugging (#6695). The prompt carries the rollout contract,
+# the pod's shutdown log (with unrelated noise and a red-herring transport
+# timeout) and the control-plane access log, no file, function or span names.
 # The model has to find the turn executor in a ~500-file backend, see that the
 # SIGTERM fence is checked before the off-thread admission reads but not after
 # them, and close that window without breaking the 19 neighbouring
@@ -21,49 +22,45 @@ agent:
   max_turns: 40
 prompt: |
   This is a snapshot of a real FastAPI monolith backend. It runs agent "turns"
-  for a factory: a turn is claimed from the database, admitted, then POSTed to
-  the EmberVM control plane, which runs it on a guest VM.
+  for a factory: each turn is eventually sent to the EmberVM control plane,
+  which runs it on a guest VM.
 
   The monolith supports rolling deploys with in-flight handoff
   (AGENT_ROLLOUT_HANDOFF_ENABLED=true, AGENT_EXECUTOR_NOT_INVOKED_RECORD_ENABLED=true).
   The intended contract: once a pod receives SIGTERM it must not start any new
-  guest invocation. A turn that had not yet been POSTed when SIGTERM arrived is
-  recorded as "not_invoked" so the replacement pod can safely re-dispatch it.
+  guest invocation. A turn that had not yet been sent to the guest when SIGTERM
+  arrived is recorded as "not_invoked" so the replacement pod can safely
+  re-dispatch it.
 
   During a rollout today, one factory node stalled. Its turn was invoked by the
   terminating pod after SIGTERM, so it was not recorded as not_invoked, the new
   pod would not re-dispatch it, and the node sat on an uncertain hold until an
-  operator cleared it. It is intermittent: most turns in flight during a
-  rollout are handed off correctly.
+  operator cleared it. It is intermittent: we have seen it twice in about forty
+  rollouts, and the other turns in flight on the same pod were recorded
+  not_invoked as intended.
 
-  Trace for the stalled turn's executor task on the old pod (pod
-  monolith-6c9f8d7b5-q2xkp, session 48213, seq 7; times are UTC):
+  Old pod (monolith-6c9f8d7b5-q2xkp) log around shutdown, times UTC:
 
-    14:02:11.212  span  claim pending_messages (session_id=48213, seq=7)        11ms
-    14:02:11.231  span  SELECT agent_sessions / capacity_reservations ...        9ms
-    14:02:11.384  span  SELECT factory controls (can_start)                     14ms
-    14:02:11.399  span  SELECT capacity_reservations, pending_messages,
-                        agent_sessions, agent_turns (live admission recheck)    61ms
-    14:02:11.403  event SIGTERM received (kubelet: Stopping container monolith)
-    14:02:11.463  span  POST http://embervm-cp.embervm.svc:8080/v1/sessions/ev-9f31c2/invoke
-                        status=200                                            41.2s
+    14:02:09.877 INFO    factory.execution.mcp: Reclaimed 2 stale claims from crashed replicas
+    14:02:10.954 WARNING factory.execution.transport: embervm session listing timed out: ReadTimeout('')
+    14:02:11.403 INFO    uvicorn.error: Shutting down
+    14:02:11.419 INFO    uvicorn.error: Waiting for background tasks to complete. (CTRL+C to force quit)
+    14:02:12.006 WARNING chat.bot: discord gateway closed (code 1000), not reconnecting during shutdown
+    14:02:41.402 WARNING factory.execution.mcp: 1 agent turn executor(s) did not record an outcome before shutdown
+    14:02:41.588 INFO    uvicorn.error: Finished server process [1]
+
+  The kubelet sent SIGTERM at 14:02:11.40.
 
   EmberVM control-plane access log, same window:
 
+    14:02:10.951 WARN  list sessions slow: 1.92s (store compaction)
     14:02:11.465 INFO  invoke accepted session=ev-9f31c2 caller=10.44.3.17 (monolith-6c9f8d7b5-q2xkp)
     14:02:41.870 WARN  invoke client disconnected session=ev-9f31c2 (guest continues)
 
-  Old pod log at shutdown:
-
-    14:02:41.402 WARNING factory.execution.mcp: 1 agent turn executor(s) did not record an outcome before shutdown
-
-  Other turns on the same pod whose admission reads had finished before
-  14:02:11.403 were not POSTed and were recorded not_invoked as intended.
-
-  Find and fix the root cause so a SIGTERM that lands at any point before the
-  physical invoke POST stops that POST. Keep the change minimal: do not change
-  behaviour when rollout handoff is disabled, and do not change the drain,
-  hold or sweep logic.
+  Find and fix the root cause so that a SIGTERM arriving at any point before a
+  turn is actually sent to the guest stops it from being sent. Keep the change
+  minimal: do not change behaviour when rollout handoff is disabled, and do
+  not change the drain, hold or sweep logic.
 target_files: []
 verifier:
   kind: pytest
