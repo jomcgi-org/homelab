@@ -897,7 +897,7 @@ transaction. Conditional cleanup has a durable two-request cap, and a fenced
 lookup outage raises one intervention audit after two minutes. If fresh remote
 progress disproves a fence, releasing it reopens the exact uncommitted result
 receipt under its row lock. The dedicated chart switch defaults off, including
-in the GKE overlay, until the live race and cleanup checklist on #6288 is
+in the GKE overlay, until the live race and cleanup checklist on #6559 is
 complete.
 (see: /projects/monolith/factory/execution/reconciliation.py)
 (see: /projects/monolith/factory/orchestration/factory_supervision.py)
