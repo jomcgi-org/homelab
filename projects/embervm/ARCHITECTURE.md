@@ -386,6 +386,10 @@ approved exact-turn interrupt relay and stop control remains bounded work under
 [#4321](https://github.com/jomcgi-org/homelab/issues/4321); it does not create a
 snapshot or rollback capability.
 
+**Why.** Duplicate Stop for the same dispatch replays the successful 202 outcome
+after turn completion on every runtime, until a successor starts. A double click
+must not become a stale-dispatch failure just because one runtime exits faster.
+
 Facts that make this safe:
 
 - **Bank only starts at zero active connections**; a long-lived connection

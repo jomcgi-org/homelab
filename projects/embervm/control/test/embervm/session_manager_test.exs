@@ -5542,6 +5542,11 @@ defmodule Embervm.SessionManagerTest do
     refute_receive {:interrupt_relayed, "dispatch-1"}, 50
     send(worker, {:finish, "interrupted"})
     assert {:ok, %{body: "interrupted"}} = Task.await(first, 1_000)
+    assert {:ok, %{terminal_reason: "user_interrupt", killed: false, timeout: false}} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-old")
+    refute_receive {:interrupt_relayed, _}, 50
 
     second =
       Task.async(fn ->
@@ -5553,7 +5558,50 @@ defmodule Embervm.SessionManagerTest do
              SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
     send(successor, {:finish, "completed"})
     assert {:ok, %{body: "completed"}} = Task.await(second, 1_000)
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  for successor_first <- [false, true] do
+    test "interrupt replay handles invoke finishing before relay, successor first: #{successor_first}" do
+      parent = self()
+      ctx = start_stack(assign_fun: fn _, req ->
+        send(parent, {:late_assign, self(), req.dispatch_id})
+        receive do :finish -> :ok end
+        {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200, body: "done"}}}
+      end, interrupt_fun: fn _, req ->
+        send(parent, {:late_relay, self(), req.dispatch_id})
+        receive do :finish -> :ok end
+        {:ok, %SessionInterruptResponse{terminal_reason: "user_interrupt"}}
+      end)
+      put_session_workload(ctx, "wl-late-interrupt")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-late-interrupt", "p1")
+      invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id,
+        %{body: "first", dispatch_id: "dispatch-1"}) end)
+      assert_receive {:late_assign, worker, "dispatch-1"}, 1_000
+      stop = Task.async(fn -> SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1") end)
+      assert_receive {:late_relay, relay, "dispatch-1"}, 1_000
+      send(worker, :finish)
+      assert {:ok, _} = Task.await(invoke, 1_000)
+
+      if unquote(successor_first) do
+        successor = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id,
+          %{body: "second", dispatch_id: "dispatch-2"}) end)
+        assert_receive {:late_assign, next_worker, "dispatch-2"}, 1_000
+        send(next_worker, :finish)
+        assert {:ok, _} = Task.await(successor, 1_000)
+      end
+
+      send(relay, :finish)
+      assert {:ok, outcome} = Task.await(stop, 1_000)
+      if unquote(successor_first) do
+        assert {:error, :stale_dispatch} = SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
+      else
+        assert {:ok, ^outcome} = SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-1")
+      end
+      refute_receive {:late_relay, _, _}, 50
+    end
   end
 
   test "interrupt timeout does not settle or destroy the active invoke" do
@@ -5590,6 +5638,8 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
     send(worker, :finish)
     assert {:ok, %{body: "completed"}} = Task.await(invoke, 1_000)
+    assert {:error, :stale_dispatch} =
+             SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-timeout")
   end
 
   test "interrupt maps a downstream dispatch recheck to stale" do

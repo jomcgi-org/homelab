@@ -1829,6 +1829,9 @@ defmodule Embervm.RouterTest do
       req(:post, "/v1/sessions/s-live/interrupt", auth("sess-token-live"), body)
 
     assert response.status == 202
+    replay = req(:post, "/v1/sessions/s-live/interrupt", auth("sess-token-live"), body)
+    assert replay.status == 202
+    assert replay.body == response.body
     assert json(response.body) == %{
              "session_id" => "s-live",
              "dispatch_id" => "dispatch-ok",

@@ -30,7 +30,7 @@ from factory.execution.constants import (
     SYNTHETIC_SESSION_PREFIX,
     exact_dispatch_id,
 )
-from factory.execution.models import AgentSession, AgentTurn, PendingMessage
+from factory.execution.models import AgentResultReceipt, AgentSession, AgentTurn, PendingMessage
 from factory.execution.mcp import (
     _append_rationale_trailer,
     _activate_session_after_enqueue,
@@ -1501,14 +1501,13 @@ def _require_session_owner(request: Request, row: AgentSession) -> None:
         raise HTTPException(status_code=403, detail="session owner does not match")
 
 
-@router.post("/sessions/{session_id}/stop")
-async def stop_session(
+def _stop_dispatch(
     session_id: int,
     stop_request: StopRequest,
     request: Request,
     session: Session = Depends(get_session),
-) -> Response:
-    """Relay Stop for the exact dispatch the authenticated owner observed."""
+) -> tuple[str | None, str | None, bool]:
+    """Resolve owner and dispatch evidence in FastAPI's sync dependency worker."""
     if not session_stop_control_enabled():
         raise HTTPException(status_code=404, detail="session Stop is disabled")
 
@@ -1518,6 +1517,47 @@ async def stop_session(
     _require_session_owner(request, row)
 
     pending = store.get_pending_message(session, session_id, stop_request.turn_seq)
+    if pending is None:
+        turn = store.get_turn(session, session_id, stop_request.turn_seq)
+        successor_pending = session.exec(
+            select(PendingMessage.id).where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.seq > stop_request.turn_seq,
+                PendingMessage.dispatch_count > 0,
+            ).limit(1)
+        ).first()
+        successor_turn = session.exec(
+            select(AgentTurn.id).where(
+                AgentTurn.session_id == session_id,
+                AgentTurn.seq > stop_request.turn_seq,
+            ).limit(1)
+        ).first()
+        if (
+            turn is not None
+            and turn.terminal_reason == "user_interrupt"
+            and successor_pending is None
+            and successor_turn is None
+        ):
+            receipts = session.exec(
+                select(AgentResultReceipt).where(
+                    AgentResultReceipt.session_id == session_id,
+                    AgentResultReceipt.seq == stop_request.turn_seq,
+                )
+            ).all()
+            if any(
+                hmac.compare_digest(
+                    stop_request.dispatch_id,
+                    exact_dispatch_id(
+                        session_id,
+                        receipt.guest_id,
+                        receipt.seq,
+                        receipt.claim_owner,
+                        receipt.dispatch_count,
+                    ),
+                )
+                for receipt in receipts
+            ):
+                return None, None, True
     if (
         pending is None
         or not pending.claimed_by_replica
@@ -1537,10 +1577,31 @@ async def stop_session(
     if not hmac.compare_digest(stop_request.dispatch_id, expected_dispatch_id):
         raise HTTPException(status_code=409, detail="turn dispatch identity is stale")
 
+    return row.ember_session_id, row.ember_session_token, False
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_session(
+    session_id: int,
+    stop_request: StopRequest,
+    dispatch: tuple[str | None, str | None, bool] = Depends(_stop_dispatch),
+) -> Response:
+    """Relay Stop for the exact dispatch the authenticated owner observed."""
+    guest_id, token, replay = dispatch
+    if replay:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "outcome": "requested",
+                "turn_seq": stop_request.turn_seq,
+                "dispatch_id": stop_request.dispatch_id,
+                "relay": {"terminal_reason": "user_interrupt"},
+            },
+        )
     try:
         result = await _transport.interrupt_session(
-            row.ember_session_id,
-            row.ember_session_token,
+            guest_id,
+            token,
             stop_request.dispatch_id,
         )
     except EmberInterruptFailure as exc:
