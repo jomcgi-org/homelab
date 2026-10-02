@@ -7,6 +7,7 @@ Cleared the easy+standard viability floor (at most one miss). Ranked by hard-tas
 | Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok | errored |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | openai/gpt-6-luna | 9/9 | 56747 | 7.1 | 94.7 | 0.0077 | 0.0082 | 1.00 | 0 |
+| openai/gpt-6.1-sol | 8/9 | 25365 | 4.7 | 60.9 | 0.0752 | 0.0852 | 1.00 | 0 |
 | anthropic/claude-sonnet-5.5 | 8/8 | 35136 | 3.2 | 28.6 | 0.1062 | 0.1133 | 1.00 | 1 |
 | qwen/qwen3.8-flash-next | 9/9 | 141817 | 11.4 | 301.3 | 0.0150 | 0.0150 | 1.00 | 1 |
 | qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 | 0 |
@@ -90,6 +91,7 @@ No qualifying budget candidates yet.
 | z-ai/glm-4.7 | config-plumbing | 0.50 | 0.0225 | can't | no |
 | qwen/qwen3.6-27b | config-plumbing | 0.00 | 0.0295 | can't | no |
 | z-ai/glm-5.2 | config-plumbing | 0.50 | 0.0374 | can't | no |
+| openai/gpt-6.1-sol | config-plumbing | 0.50 | 0.1080 | can't | no |
 | anthropic/claude-sonnet-5.5 | config-plumbing | 0.50 | 0.1188 | can't | no |
 | tencent/hy3:free | free-text | 1.00 | 0.0000 | one-shots | no |
 | qwen/qwen3.8-flash-next | free-text | 1.00 | 0.0000 | one-shots | no |
@@ -107,6 +109,7 @@ No qualifying budget candidates yet.
 | meta/muse-spark-1.3-contributor | free-text | 1.00 | 0.0003 | one-shots | no |
 | z-ai/glm-5.3-flash | free-text | 1.00 | 0.0005 | one-shots | no |
 | deepseek/deepseek-v4.1-flash | free-text | 1.00 | 0.0005 | one-shots | no |
+| openai/gpt-6.1-sol | free-text | 1.00 | 0.0006 | one-shots | no |
 | deepseek/deepseek-v4-pro | free-text | 1.00 | 0.0007 | one-shots | no |
 | z-ai/glm-4.7 | free-text | 1.00 | 0.0019 | one-shots | no |
 | z-ai/glm-5.2 | free-text | 1.00 | 0.0019 | one-shots | no |

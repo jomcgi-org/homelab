@@ -10,8 +10,8 @@
       "tier": "hard",
       "blurb": "You are working in a snapshot of a real FastAPI monolith backend",
       "source_commit": null,
-      "passed": 20,
-      "n": 25
+      "passed": 21,
+      "n": 26
     },
     {
       "id": "docs-public-markers-01",
@@ -21,8 +21,8 @@
       "tier": "hard",
       "blurb": "This is the documentation pipeline package (knowledge/tools) from a real repo.",
       "source_commit": "1897c3d209ce7593fe8da96086105ba90bf86144",
-      "passed": 3,
-      "n": 8
+      "passed": 4,
+      "n": 9
     },
     {
       "id": "embervm-capability-generation-01",
@@ -32,8 +32,8 @@
       "tier": "standard",
       "blurb": "capability.go implements noded's restore-capability bearer token: a versioned,",
       "source_commit": "f50b711b9b4d592457b3c09bf046395ec477896f",
-      "passed": 8,
-      "n": 8
+      "passed": 9,
+      "n": 9
     },
     {
       "id": "embervm-pi-tools-01",
@@ -44,7 +44,7 @@
       "blurb": "shim.py is the HTTP-over-vsock shim that hosts an agentic coding agent inside a",
       "source_commit": "46a0966f35cab26c4c4ee262cd4051341ac64bd9",
       "passed": 0,
-      "n": 8
+      "n": 9
     },
     {
       "id": "fc-warmpool-daemonset-01",
@@ -54,8 +54,8 @@
       "tier": "hard",
       "blurb": "This is a real snapshot of the firecracker invoke daemon (\"fc-invoke\") from this",
       "source_commit": null,
-      "passed": 21,
-      "n": 26
+      "passed": 22,
+      "n": 27
     },
     {
       "id": "flights-module-01",
@@ -65,8 +65,8 @@
       "tier": "standard",
       "blurb": "You are working in a snapshot of a real FastAPI monolith backend",
       "source_commit": null,
-      "passed": 25,
-      "n": 26
+      "passed": 26,
+      "n": 27
     },
     {
       "id": "frontend-moving-legtags-01",
@@ -76,8 +76,8 @@
       "tier": "standard",
       "blurb": "moving.js is the dependency-free timeline layout module behind the friends/moving",
       "source_commit": "069d25d1a96b5fea85928a570f9ae102b0ede874",
-      "passed": 3,
-      "n": 8
+      "passed": 4,
+      "n": 9
     },
     {
       "id": "go-vsock-frame-01",
@@ -87,8 +87,8 @@
       "tier": "hard",
       "blurb": "proto.go is the real vsockproto package from the firecracker substrate: the wire",
       "source_commit": "019b3ffb829700df0a0cf950e502d3d828147985",
-      "passed": 17,
-      "n": 26
+      "passed": 18,
+      "n": 27
     },
     {
       "id": "hikes-walkhighlands-dom-01",
@@ -99,7 +99,7 @@
       "blurb": "hikes/walkhighlands.py scrapes walk pages from WalkHighlands",
       "source_commit": "d7837d59819adc0fdad068993604d8e3a342edf8",
       "passed": 21,
-      "n": 26
+      "n": 27
     },
     {
       "id": "hikes-walkhighlands-duration-01",
@@ -109,8 +109,8 @@
       "tier": "hard",
       "blurb": "hikes/walkhighlands.py scrapes walk metadata from WalkHighlands",
       "source_commit": "00d549e9e6f31847dc1e103f2eef7408529c578c",
-      "passed": 19,
-      "n": 26
+      "passed": 20,
+      "n": 27
     },
     {
       "id": "inference-appledouble-01",
@@ -120,8 +120,8 @@
       "tier": "easy",
       "blurb": "This is the Helm chart that runs the NInfer LLM server",
       "source_commit": "2f58fba4e828279ca585d541443347dfb6fca218",
-      "passed": 7,
-      "n": 8
+      "passed": 8,
+      "n": 9
     },
     {
       "id": "null-content-fix-01",
@@ -131,8 +131,8 @@
       "tier": "standard",
       "blurb": "This is the source tree of a model-benchmarking harness",
       "source_commit": "bc6f81dfb",
-      "passed": 24,
-      "n": 25
+      "passed": 25,
+      "n": 26
     },
     {
       "id": "research-adr-writeback-01",
@@ -142,8 +142,8 @@
       "tier": "hard",
       "blurb": "Research question about this repository",
       "source_commit": null,
-      "passed": 6,
-      "n": 8
+      "passed": 7,
+      "n": 9
     },
     {
       "id": "slo-budget-breach-01",
@@ -153,8 +153,8 @@
       "tier": "easy",
       "blurb": "This is a snapshot of a real FastAPI monolith backend",
       "source_commit": null,
-      "passed": 25,
-      "n": 26
+      "passed": 26,
+      "n": 27
     },
     {
       "id": "stars-climatology-months-01",
@@ -164,8 +164,8 @@
       "tier": "hard",
       "blurb": "stars/router.py serves the dark-sky planner",
       "source_commit": "52e97ed330ebc4d11a06402c48371da19bc27f17",
-      "passed": 17,
-      "n": 26
+      "passed": 18,
+      "n": 27
     },
     {
       "id": "worldcup-fixtures-guard-01",
@@ -175,8 +175,8 @@
       "tier": "standard",
       "blurb": "worldcup/client.py fetches and parses World Cup fixtures from an upstream feed.",
       "source_commit": "10cb9aea1d0aec3245387667927fe6af744a8316",
-      "passed": 25,
-      "n": 26
+      "passed": 26,
+      "n": 27
     },
     {
       "id": "worldcup-swing-settled-01",
@@ -186,8 +186,8 @@
       "tier": "hard",
       "blurb": "worldcup/sim.py runs a Monte-Carlo simulation of the World Cup group stage and, for",
       "source_commit": "10e5c849c95f3fd2de02f0c0cf39b10e89f1d64d",
-      "passed": 24,
-      "n": 26
+      "passed": 25,
+      "n": 27
     }
   ],
   "models": [
@@ -508,6 +508,166 @@
           "turns": 16,
           "latency_ms": 502463,
           "cost_usd": 0.03556
+        }
+      ]
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "name": "gpt-6.1-sol",
+      "role": "candidate",
+      "self_hosted": false,
+      "n": 17,
+      "errored": 0,
+      "errored_tasks": [],
+      "pass_rate": 0.8824,
+      "qualified": true,
+      "floor_pass": 7,
+      "floor_n": 8,
+      "floor_failed": ["embervm-pi-tools-01"],
+      "hard_pass": 8,
+      "hard_n": 9,
+      "mean_tokens": 25364,
+      "mean_turns": 4.71,
+      "mean_latency_ms": 60908,
+      "cost_usd": 0.075194,
+      "cost_per_solve_usd": 0.08522,
+      "tool_use_ok": 1.0,
+      "tasks": [
+        {
+          "id": "campsites-region-rollup-01",
+          "passed": true,
+          "tokens": 23679,
+          "turns": 5,
+          "latency_ms": 51164,
+          "cost_usd": 0.070646
+        },
+        {
+          "id": "docs-public-markers-01",
+          "passed": true,
+          "tokens": 56186,
+          "turns": 8,
+          "latency_ms": 117749,
+          "cost_usd": 0.163028
+        },
+        {
+          "id": "embervm-capability-generation-01",
+          "passed": true,
+          "tokens": 7223,
+          "turns": 4,
+          "latency_ms": 28050,
+          "cost_usd": 0.025846
+        },
+        {
+          "id": "embervm-pi-tools-01",
+          "passed": false,
+          "tokens": 66494,
+          "turns": 4,
+          "latency_ms": 20098,
+          "cost_usd": 0.136668
+        },
+        {
+          "id": "fc-warmpool-daemonset-01",
+          "passed": true,
+          "tokens": 46170,
+          "turns": 7,
+          "latency_ms": 26915,
+          "cost_usd": 0.101604
+        },
+        {
+          "id": "flights-module-01",
+          "passed": true,
+          "tokens": 28776,
+          "turns": 5,
+          "latency_ms": 67757,
+          "cost_usd": 0.09068
+        },
+        {
+          "id": "frontend-moving-legtags-01",
+          "passed": true,
+          "tokens": 23207,
+          "turns": 4,
+          "latency_ms": 93510,
+          "cost_usd": 0.09135
+        },
+        {
+          "id": "go-vsock-frame-01",
+          "passed": true,
+          "tokens": 32299,
+          "turns": 7,
+          "latency_ms": 78706,
+          "cost_usd": 0.097854
+        },
+        {
+          "id": "hikes-walkhighlands-dom-01",
+          "passed": false,
+          "tokens": 18482,
+          "turns": 4,
+          "latency_ms": 60575,
+          "cost_usd": 0.06558
+        },
+        {
+          "id": "hikes-walkhighlands-duration-01",
+          "passed": true,
+          "tokens": 28572,
+          "turns": 4,
+          "latency_ms": 135797,
+          "cost_usd": 0.113848
+        },
+        {
+          "id": "inference-appledouble-01",
+          "passed": true,
+          "tokens": 5654,
+          "turns": 4,
+          "latency_ms": 52342,
+          "cost_usd": 0.019652
+        },
+        {
+          "id": "null-content-fix-01",
+          "passed": true,
+          "tokens": 5385,
+          "turns": 3,
+          "latency_ms": 52412,
+          "cost_usd": 0.019866
+        },
+        {
+          "id": "research-adr-writeback-01",
+          "passed": true,
+          "tokens": 29774,
+          "turns": 7,
+          "latency_ms": 17186,
+          "cost_usd": 0.063308
+        },
+        {
+          "id": "slo-budget-breach-01",
+          "passed": true,
+          "tokens": 5597,
+          "turns": 3,
+          "latency_ms": 48374,
+          "cost_usd": 0.02105
+        },
+        {
+          "id": "stars-climatology-months-01",
+          "passed": true,
+          "tokens": 25593,
+          "turns": 5,
+          "latency_ms": 75206,
+          "cost_usd": 0.087034
+        },
+        {
+          "id": "worldcup-fixtures-guard-01",
+          "passed": true,
+          "tokens": 11726,
+          "turns": 3,
+          "latency_ms": 45471,
+          "cost_usd": 0.045796
+        },
+        {
+          "id": "worldcup-swing-settled-01",
+          "passed": true,
+          "tokens": 16387,
+          "turns": 3,
+          "latency_ms": 64124,
+          "cost_usd": 0.064494
         }
       ]
     },
