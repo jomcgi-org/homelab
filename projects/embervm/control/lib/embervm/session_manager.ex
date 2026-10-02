@@ -98,6 +98,12 @@ defmodule Embervm.SessionManager do
   # control plane must not even ISSUE a second one and stack the I/O).
   @default_bank_concurrency 1
 
+  # An :ok result acknowledges enqueueing only. Durable export truth remains in
+  # NodeCapacity. Back off successful enqueue requests while that truth catches up.
+  @archive_request_backoff_ms 60_000
+  @archive_result_ttl_ms 600_000
+  @max_archive_results 1_024
+
   # Global concurrent-create cap: claim/prime workers perform expensive guest
   # operations, so a burst must not launch an unbounded number at once.
   @default_create_concurrency 16
@@ -412,6 +418,12 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, :sweep, :infinity)
   end
 
+  @doc "Request workspace archives asynchronously through the owning-instance path."
+  @spec request_archive(GenServer.server(), String.t(), [map()]) :: :ok
+  def request_archive(server \\ __MODULE__, node_id, volumes) do
+    GenServer.cast(server, {:request_archive, node_id, volumes})
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -517,6 +529,10 @@ defmodule Embervm.SessionManager do
       # production dials the real NodeService stub.
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
       archive_volume_fun: Keyword.get(opts, :archive_volume_fun, &default_archive_volume/2),
+      # {node_id, lineage_id} => requested_at, last_result, acked_at and in_flight.
+      # These enqueue acknowledgements never authorize brick removal.
+      archive_acks: %{},
+      archive_workers: %{},
       retire_volume_fun: Keyword.get(opts, :retire_volume_fun, &default_retire_volume/2),
       # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
       # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside every local
@@ -1106,6 +1122,11 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
+  def handle_cast({:request_archive, node_id, volumes}, state) do
+    sessions = Enum.map(volumes, &Map.put(&1, :volume_node_id, node_id))
+    {:noreply, request_archives(state, sessions)}
+  end
+
   def handle_cast({:node_down, node_id, metadata}, state) do
     {_count, state} = sweep_brick_gone_node(state, node_id, metadata)
     {:noreply, state}
@@ -1125,6 +1146,10 @@ defmodule Embervm.SessionManager do
   # live vm_id), start the session process, and drain the parked callers into it.
   # On failure, fail the session (snapshot_lost -> 410) and 410 the parked callers.
   @impl true
+  def handle_info({:archive_result, node_id, lineage_id, result, at_ms}, state) do
+    {:noreply, record_archive_result(state, {node_id, lineage_id}, result, at_ms)}
+  end
+
   def handle_info({:relight_done, session_id, outcome}, state) do
     {:noreply, finish_relight(state, session_id, outcome)}
   end
@@ -1249,6 +1274,13 @@ defmodule Embervm.SessionManager do
       nil ->
         {:noreply, state}
     end
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, reason},
+        %{archive_workers: workers} = state) when is_map_key(workers, monitor) do
+    key = Map.fetch!(workers, monitor)
+    {:noreply, record_archive_result(state, key, {:error, {:worker_crashed, reason}},
+      state.monotonic_clock.())}
   end
 
   def handle_info({:DOWN, monitor, :process, _pid, _reason},
@@ -2461,9 +2493,7 @@ defmodule Embervm.SessionManager do
       |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
       |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
 
-    spawn(fn -> Enum.each(parked, fn session -> _ = archive_session_volume(state, session) end) end)
-
-    {count, state}
+    {count, request_archives(state, parked)}
   end
 
   defp drain_targets_session?(%{drain_instance_scoped: true} = state, session, node_id, pod_uid)
@@ -2887,9 +2917,9 @@ defmodule Embervm.SessionManager do
           {reply, state} = park_session(state, session_id)
           case reply do
             {:ok, parked} ->
-              if MapSet.member?(state.draining_sessions, session_id) do
-                spawn(fn -> _ = archive_session_volume(state, parked) end)
-              end
+              state =
+                if MapSet.member?(state.draining_sessions, session_id),
+                  do: request_archives(state, [parked]), else: state
 
               {:ok, clear_draining_session(state, session_id)}
 
@@ -5276,6 +5306,7 @@ defmodule Embervm.SessionManager do
   # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------
 
   defp do_sweep(state) do
+    state = prune_archive_results(state)
     now = state.clock.()
 
     state
@@ -6293,6 +6324,78 @@ defmodule Embervm.SessionManager do
   end
 
   defp delete_session_volume(_state, _session), do: :ok
+
+  defp request_archives(state, sessions) do
+    state = prune_archive_results(state)
+    now = state.monotonic_clock.()
+
+    Enum.reduce(sessions, state, fn session, acc ->
+      node_id = Map.get(session, :volume_node_id)
+      lineage_id = Map.get(session, :lineage_id)
+      key = {node_id, lineage_id}
+      previous = Map.get(acc.archive_acks, key)
+
+      recent? = previous != nil and (previous.in_flight or
+        (previous.last_result == :ok and now - previous.acked_at < @archive_request_backoff_ms))
+
+      if is_binary(node_id) and is_binary(lineage_id) and not recent? and
+           (map_size(acc.archive_acks) < @max_archive_results or previous != nil) do
+        manager = self()
+        {_pid, monitor} = spawn_monitor(fn ->
+          result =
+            try do
+              archive_session_volume(acc, session)
+            rescue
+              error -> {:error, error}
+            catch
+              kind, reason -> {:error, {kind, reason}}
+            end
+
+          send(manager, {:archive_result, node_id, lineage_id, result, acc.monotonic_clock.()})
+        end)
+
+        entry = %{requested_at: now, last_result: nil, acked_at: nil, in_flight: true}
+        %{acc | archive_acks: Map.put(acc.archive_acks, key, entry),
+          archive_workers: Map.put(acc.archive_workers, monitor, key)}
+      else
+        acc
+      end
+    end)
+  end
+
+  defp record_archive_result(state, {node_id, lineage_id} = key, result, at_ms) do
+    case Map.get(state.archive_acks, key) do
+      %{in_flight: true} = entry ->
+        workers = Enum.reduce(state.archive_workers, state.archive_workers, fn {monitor, worker_key}, acc ->
+          if worker_key == key do
+            Process.demonitor(monitor, [:flush])
+            Map.delete(acc, monitor)
+          else
+            acc
+          end
+        end)
+
+        entry = %{entry | last_result: result, acked_at: if(result == :ok, do: at_ms),
+          in_flight: false}
+
+        :telemetry.execute([:embervm, :session, :archive_result],
+          %{count: 1, elapsed_ms: max(0, at_ms - entry.requested_at)},
+          %{node_id: node_id, lineage_id: lineage_id, result: result})
+
+        prune_archive_results(%{state | archive_acks: Map.put(state.archive_acks, key, entry),
+          archive_workers: workers})
+
+      _ -> state
+    end
+  end
+
+  defp prune_archive_results(state) do
+    horizon = state.monotonic_clock.() - @archive_result_ttl_ms
+    kept = Map.reject(state.archive_acks, fn {_key, entry} ->
+      not entry.in_flight and entry.requested_at < horizon
+    end)
+    %{state | archive_acks: kept}
+  end
 
   defp archive_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do

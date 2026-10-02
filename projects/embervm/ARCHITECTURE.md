@@ -1084,6 +1084,18 @@ configuration, not proof of a rollout or live behavior. Post-rollout
 operational acceptance remains outstanding on #6059. The current brick mix is
 deployment state and lives in the fleet section.
 
+**Why.** Workspace archives acknowledge durable export through each node's
+`session_volumes[].exported` fact. `ArchiveVolume` returns after enqueueing the
+transfer, so its RPC acknowledgement cannot authorize scale-down. The optional
+`bricks.autoscale.archiveAckGate` rail fails closed on a missing or false flag
+and requests archives before choosing a victim. A blocked victim stays alive;
+`timeoutMs: 180000` bounds the quiet wait to the `drain_node` default deadline,
+then logs an error once and emits timeout telemetry each tick. It never forces
+removal. The timeout is a reversible alarm threshold. Restarted controllers
+re-derive eligibility from node facts, independently of their request ledger.
+The gate lands default-off for staging. Enabling it in deploy values and live
+acceptance remain on #6533.
+
 Catalog-derived class floors apply only to the scalable, unpinned class
 Deployment. Same-class `nodeFloors` are additive topology guarantees and are
 not credited against that derived count: the controller never scales their
@@ -1870,6 +1882,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Brick scale-down requires durable workspace archive acknowledgement | section 7 | #6533 | repository gate default-off; enabling and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
 | EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | guide merged (PR #6070); clean-host KVM validation outstanding |

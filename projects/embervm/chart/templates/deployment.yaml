@@ -447,6 +447,11 @@ spec:
               value: {{ printf "%s-brick-" (include "embervm.noded.fullname" .) | quote }}
             - name: EMBERVM_BRICK_AUTOSCALE_MODE
               value: {{ $auto.mode | default "off" | quote }}
+            {{- $archiveAck := $auto.archiveAckGate | default dict }}
+            - name: EMBERVM_BRICK_ARCHIVE_ACK_GATE
+              value: {{ $archiveAck.enabled | default false | quote }}
+            - name: EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS
+              value: {{ $archiveAck.timeoutMs | default 180000 | int64 | quote }}
             - name: EMBERVM_BRICK_CEILING_IDLE_MS
               value: {{ $auto.ceilingIdleMs | default 3600000 | int64 | quote }}
             {{- end }}

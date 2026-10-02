@@ -1828,6 +1828,11 @@ bricks:
   # Rollout is a values change (observe -> up -> full), never a code revert.
   autoscale:
     mode: observe
+    # Staged workspace durability rail (#6533). Enable in deploy values only
+    # after live acceptance; timeout alarms and keeps the victim, never forces it.
+    archiveAckGate:
+      enabled: false
+      timeoutMs: 180000
     # Recorded policy (2026-07-20): keep one 16Gi brick warm so the scratch-k8s
     # composite (a ~10 GiB single-brick group) wakes without a scale-up round
     # trip; every other class may drain to zero. An unlisted class reads min 0.
