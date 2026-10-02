@@ -10394,7 +10394,8 @@ def test_disconnected_http_turn_remains_interruptible(tmp_path, monkeypatch):
     connection = HTTPConnection("127.0.0.1", server.server_port)
     try:
         connection.request(
-            "POST", shim.TURN_PATH,
+            "POST",
+            shim.TURN_PATH,
             body=json.dumps({"message": "work", "dispatch_id": "disconnected"}),
         )
         assert started.wait(1)
@@ -10403,22 +10404,30 @@ def test_disconnected_http_turn_remains_interruptible(tmp_path, monkeypatch):
         assert manager._active_dispatch_id == "disconnected"
         assert not stopped.is_set()
         status, outcome = _request(
-            server, "POST", shim.INTERRUPT_PATH,
-            json.dumps({
-                "dispatch_id": "disconnected",
-                "reason": "interrupted_for_drain",
-                "timeout_ms": 3000,
-            }).encode(),
+            server,
+            "POST",
+            shim.INTERRUPT_PATH,
+            json.dumps(
+                {
+                    "dispatch_id": "disconnected",
+                    "reason": "interrupted_for_drain",
+                    "timeout_ms": 3000,
+                }
+            ).encode(),
             timeout=2,
         )
         assert status == 200
         assert outcome["terminal_reason"] == "interrupted_for_drain"
         persisted = json.loads(open(outcome["transcript_path"]).read())
         assert outcome["dispatch_id"] == persisted["dispatch_id"] == "disconnected"
-        assert outcome["cli_session_id"] == persisted["session_id"] == "disconnected-cli"
+        assert (
+            outcome["cli_session_id"] == persisted["session_id"] == "disconnected-cli"
+        )
         assert outcome["transcript_path"] == persisted["transcript_path"]
         assert _request(
-            server, "POST", shim.INTERRUPT_PATH,
+            server,
+            "POST",
+            shim.INTERRUPT_PATH,
             json.dumps({"dispatch_id": "disconnected"}).encode(),
         ) == (200, outcome)
         assert stopped.is_set()
@@ -10529,17 +10538,26 @@ def test_interrupt_flushes_partial_transcript_before_turn_safe_point(
     assert manager._active_dispatch_id is None
     if reason == "interrupted_for_drain":
         persisted = json.loads(open(interrupt_outcome["transcript_path"]).read())
-        assert interrupt_outcome["dispatch_id"] == persisted["dispatch_id"] == "dispatch-7"
+        assert (
+            interrupt_outcome["dispatch_id"] == persisted["dispatch_id"] == "dispatch-7"
+        )
         assert interrupt_outcome["cli_session_id"] == persisted["session_id"]
         assert interrupt_outcome["transcript_path"] == persisted["transcript_path"]
     else:
         assert interrupt_outcome == {
-            "terminal_reason": "user_interrupt", "killed": False, "timeout": False,
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
         }
-    assert manager.interrupt("dispatch-7", reason=reason, timeout_ms=5000) == interrupt_outcome
+    assert (
+        manager.interrupt("dispatch-7", reason=reason, timeout_ms=5000)
+        == interrupt_outcome
+    )
 
 
-@pytest.mark.parametrize("record_state", ["late", "wrong-dispatch", "missing-cli", "missing-path"])
+@pytest.mark.parametrize(
+    "record_state", ["late", "wrong-dispatch", "missing-cli", "missing-path"]
+)
 def test_drain_interrupt_record_deadline_and_duplicate(monkeypatch, record_state):
     manager = _new_process_manager()
     manager._dispatch_lock = threading.Lock()
@@ -10549,7 +10567,9 @@ def test_drain_interrupt_record_deadline_and_duplicate(monkeypatch, record_state
     ready, persisted = threading.Event(), {}
     manager._active_interrupt_record = (ready, persisted)
     if record_state != "late":
-        persisted.update(dispatch_id="slow-record", session_id="cli", transcript_path="/saved.json")
+        persisted.update(
+            dispatch_id="slow-record", session_id="cli", transcript_path="/saved.json"
+        )
         if record_state == "wrong-dispatch":
             persisted["dispatch_id"] = "successor"
         elif record_state == "missing-cli":
@@ -10568,12 +10588,18 @@ def test_drain_interrupt_record_deadline_and_duplicate(monkeypatch, record_state
             return {"killed": False, "timeout": False}
 
     manager._active_dispatch_adapter = Adapter()
-    outcome = manager.interrupt("slow-record", reason="interrupted_for_drain", timeout_ms=3000)
+    outcome = manager.interrupt(
+        "slow-record", reason="interrupted_for_drain", timeout_ms=3000
+    )
     assert outcome == {
-        "terminal_reason": "interrupted_for_drain", "killed": False, "timeout": False,
+        "terminal_reason": "interrupted_for_drain",
+        "killed": False,
+        "timeout": False,
     }
     # Late persistence must not change the already returned interrupt result.
-    persisted.update(dispatch_id="slow-record", session_id="cli", transcript_path="/saved.json")
+    persisted.update(
+        dispatch_id="slow-record", session_id="cli", transcript_path="/saved.json"
+    )
     ready.set()
     assert manager.interrupt("slow-record", reason="interrupted_for_drain") == outcome
 

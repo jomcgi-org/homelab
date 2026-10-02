@@ -6779,7 +6779,8 @@ class ProcessManager:
                     result = dict(
                         second,
                         killed=bool(result.get("killed")) or bool(second.get("killed")),
-                        timeout=bool(result.get("timeout")) or bool(second.get("timeout")),
+                        timeout=bool(result.get("timeout"))
+                        or bool(second.get("timeout")),
                     )
                 remaining = max(0.0, deadline - time.monotonic())
                 if not done.wait(remaining):
