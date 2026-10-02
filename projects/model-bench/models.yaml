@@ -22,6 +22,7 @@ models:
   - id: qwen/qwen3.8-27b
     display_name: qwen3.8-27b
     status: experimental
+    self_hosted: true
     api_model: qwen3.6-27b
     extra_body:
       chat_template_kwargs:
@@ -35,6 +36,7 @@ models:
   - id: qwen/qwen3.8-flash-next
     display_name: qwen3.8-flash-next-local
     status: experimental
+    self_hosted: true
     api_model: qwen3.6-27b
     extra_body:
       chat_template_kwargs:

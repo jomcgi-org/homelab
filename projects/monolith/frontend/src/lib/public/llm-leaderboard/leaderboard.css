@@ -1,0 +1,397 @@
+/* LLM leaderboard in the technical-drawing language (see .impeccable.md, the
+ * private-tier document section, and lib/public/factory/factory.css, whose
+ * masthead, stat strip and /-labels this page shares). Layers over the .td
+ * tokens in technical-drawing.css and adds one thing: the provider palette.
+ *
+ * The page used to be the brutalist public tier (2px ink, yellow winner row,
+ * pill badges). It moved here because it is a measured record, not a pitch:
+ * the factory and the blog already present measured records this way. */
+
+.lb-page {
+  /* Provider identity, the only categorical colour on the page. Eight fixed
+   * slots in model.js PROVIDERS order; a provider keeps its slot whatever is
+   * selected. Validated with the dataviz skill's validate_palette.js against
+   * each sheet: day passes every check, though aqua, yellow and pink sit under
+   * 3:1 on white, which is why every mark is direct-labelled in ink and the
+   * table repeats each value. Night passes outright. Text never wears these. */
+  --prov-1: #2a78d6; /* qwen */
+  --prov-2: #eb6834; /* anthropic */
+  --prov-3: #1baf7a; /* google */
+  --prov-4: #eda100; /* deepseek */
+  --prov-5: #e87ba4; /* z-ai */
+  --prov-6: #008300; /* mistralai */
+  --prov-7: #4a3aa7; /* tencent */
+  --prov-8: #e34948; /* cohere */
+  --prov-other: var(--ink-3);
+  --hatch: repeating-linear-gradient(
+    135deg,
+    var(--ink-3) 0 1px,
+    transparent 1px 4px
+  );
+
+  box-sizing: border-box;
+  min-height: 100dvh;
+  padding: 1.5rem clamp(1rem, 5vw, 4.5em) 4rem;
+  background: var(--sheet);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .lb-page {
+    --prov-1: #3987e5;
+    --prov-2: #d95926;
+    --prov-3: #199e70;
+    --prov-4: #c98500;
+    --prov-5: #d55181;
+    --prov-6: #008300;
+    --prov-7: #9085e9;
+    --prov-8: #e66767;
+  }
+}
+
+:root[data-theme="dark"] .lb-page {
+  --prov-1: #3987e5;
+  --prov-2: #d95926;
+  --prov-3: #199e70;
+  --prov-4: #c98500;
+  --prov-5: #d55181;
+  --prov-6: #008300;
+  --prov-7: #9085e9;
+  --prov-8: #e66767;
+}
+
+.lb-page *,
+.lb-page *::before,
+.lb-page *::after {
+  box-sizing: border-box;
+}
+
+.lb-page a {
+  color: inherit;
+}
+
+.lb-page button,
+.lb-page input {
+  color: inherit;
+  font: inherit;
+}
+
+.lb-page :focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 2px;
+}
+
+.lb-page .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.lb-page .num {
+  font-variant-numeric: tabular-nums;
+}
+
+.lb-page .frame {
+  display: flex;
+  flex-direction: column;
+  gap: 1.6rem;
+  max-width: 72em;
+  margin: 0 auto;
+}
+
+/* Provider swatch: one square, the same shape as the factory's marks. */
+.lb-page .sw {
+  display: inline-block;
+  flex: none;
+  width: 0.7em;
+  height: 0.7em;
+  border: 1px solid var(--ink);
+  vertical-align: -0.02em;
+  background: var(--c, var(--prov-other));
+}
+
+.lb-page [data-slot="1"] {
+  --c: var(--prov-1);
+}
+.lb-page [data-slot="2"] {
+  --c: var(--prov-2);
+}
+.lb-page [data-slot="3"] {
+  --c: var(--prov-3);
+}
+.lb-page [data-slot="4"] {
+  --c: var(--prov-4);
+}
+.lb-page [data-slot="5"] {
+  --c: var(--prov-5);
+}
+.lb-page [data-slot="6"] {
+  --c: var(--prov-6);
+}
+.lb-page [data-slot="7"] {
+  --c: var(--prov-7);
+}
+.lb-page [data-slot="8"] {
+  --c: var(--prov-8);
+}
+
+/* ── Masthead: trail on the left, scheme toggle on the right ─────────── */
+
+.lb-page .masthead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.lb-page .trail {
+  display: flex;
+  border: 1px solid var(--stroke);
+}
+
+.lb-page .crumb {
+  padding: 5px 8px;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.lb-page .crumb + .crumb {
+  border-left: 1px solid var(--stroke);
+}
+
+.lb-page .crumb.current {
+  color: var(--ink);
+}
+
+.lb-page a.crumb:hover {
+  color: var(--accent-ink);
+}
+
+.lb-page .masthead .scheme {
+  margin-left: auto;
+  width: 2.1em;
+  height: auto;
+  border: 1px solid var(--ink);
+}
+
+/* ── Lead: one headline, one paragraph ───────────────────────────────── */
+
+.lb-page .lead h1 {
+  margin: 0 0 0.35em;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.lb-page .lead p {
+  max-width: 48em;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.92rem;
+}
+
+/* ── Stat strip, as on the factory overview ──────────────────────────── */
+
+.lb-page .stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--ink);
+}
+
+.lb-page .stats > div {
+  min-width: 0;
+  padding: 0.55rem 0.8rem 0.6rem;
+  border-right: 1px solid var(--stroke);
+}
+
+.lb-page .stats > div:last-child {
+  border-right: 0;
+}
+
+.lb-page .stats .k {
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lb-page .stats .v {
+  margin-top: 0.3em;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.lb-page .stats .v small {
+  margin-left: 0.25em;
+  color: var(--ink-2);
+  font-size: 0.55em;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.lb-page .stats .m {
+  margin-top: 0.3em;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Section labels ──────────────────────────────────────────────────── */
+
+.lb-page .sec-label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em 1em;
+  align-items: baseline;
+  margin: 0 0 0.8em;
+  padding-bottom: 0.5em;
+  border-bottom: 1px solid var(--stroke);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lb-page .sec-label .aside {
+  margin-left: auto;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.lb-page .caption {
+  margin: 0.6em 0 0;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+/* ── Segmented control (presets, scatter metric) ─────────────────────── */
+
+.lb-page .seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
+.lb-page .seg button {
+  padding: 0.35em 0.75em;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.lb-page .seg button + button {
+  border-left: 1px solid var(--stroke);
+}
+
+.lb-page .seg button:hover {
+  color: var(--accent-ink);
+}
+
+/* Selection marker: in a horizontal strip the accent bar is a bottom rule. */
+.lb-page .seg button[aria-pressed="true"] {
+  background: var(--band);
+  box-shadow: inset 0 -2px 0 var(--accent-ink);
+  color: var(--ink);
+}
+
+/* ── Panels: a 1px ink outline, internal partitions in --stroke ──────── */
+
+.lb-page .panel {
+  border: 1px solid var(--ink);
+}
+
+.lb-page .panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em 1em;
+  align-items: baseline;
+  padding: 0.45em 0.8em;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--band);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
+.lb-page .panel-head .t {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.lb-page .panel-head .u {
+  color: var(--ink-2);
+}
+
+.lb-page .panel-head .b {
+  margin-left: auto;
+  color: var(--ink-2);
+}
+
+.lb-page .panel-body {
+  padding: 0.8em;
+}
+
+.lb-page .grid2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.2rem;
+}
+
+/* Hover/focus highlight shared by every chart: hovering a model anywhere
+ * lifts its marks and dims the rest. Opacity only. */
+.lb-page [data-model] {
+  transition: opacity 120ms linear;
+}
+
+.lb-page .hovering [data-model]:not(.hot) {
+  opacity: 0.35;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lb-page [data-model] {
+    transition: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .lb-page .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lb-page .stats > div {
+    border-bottom: 1px solid var(--stroke);
+  }
+
+  .lb-page .grid2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

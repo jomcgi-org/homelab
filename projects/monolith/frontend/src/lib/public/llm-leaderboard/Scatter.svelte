@@ -1,519 +1,326 @@
 <script>
-  // Quality-vs-efficiency scatter for the LLM leaderboard, in the style of the
-  // DeepSWE / Artificial-Analysis leaderboards: pass-rate on the Y-axis, an
-  // efficiency metric on a REVERSED X-axis (so "most efficient" is top-right), and
-  // tabs to swap the X metric. Cost and wall-time are the cloud lens (what you pay to
-  // rent the model); output tokens and agent steps are the self-host lens (how long
-  // your own GPU is busy, since $ and cloud latency do not transfer to local hardware).
-  // A task selector switches between the per-task mean and a single task (where the
-  // Y-axis collapses to pass/fail for that one task).
-  let { models = [], tasks = [] } = $props();
+  // Capability against what it costs to get it: hard-task pass on Y, a chosen
+  // efficiency metric on X, lower to the left, so the place to be is the top
+  // left (the Artificial Analysis "most attractive quadrant"). The band left of
+  // the cheapest Claude anchor is shaded: a model there matches or undercuts the
+  // ceiling on this metric, which is the question the benchmark exists to ask.
+  //
+  // Cost and tokens span two orders of magnitude, so they plot on a log axis.
+  // A self-hosted model costs $0, which a log axis cannot place, so $0 gets its
+  // own lane left of an axis break rather than being dropped from the plot.
+  import { METRICS, plottable, providerSlot, shortName } from "./model.js";
 
-  let metric = $state("cost"); // cost | wall | tokens | turns
-  let taskSel = $state("all"); // 'all' | task id
+  let { models = [], hot = null, onhover = () => {} } = $props();
 
-  const shortName = (id) =>
-    id.includes("/") ? id.split("/").slice(1).join("/") : id;
-  const provider = (id) => (id.includes("/") ? id.split("/")[0] : id);
-  const cellOf = (m, tid) => (m.tasks ?? []).find((t) => t.id === tid);
-
-  const money = (v) => `$${v < 0.01 ? v.toFixed(4) : v.toFixed(3)}`;
-  const secs = (v) => `${v.toFixed(v < 10 ? 1 : 0)}s`;
-  const kfmt = (v) =>
-    v >= 1000
-      ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k`
-      : `${Math.round(v)}`;
-  const round = (v) => `${v.toFixed(v < 10 ? 1 : 0)}`;
-
-  // Each tab: the X metric. `get` reads the model-level mean; `cell` reads one task's
-  // raw value; `log` picks a log axis for the wide-range metrics.
-  const METRICS = {
-    cost: {
-      label: "Cost",
-      axis: "avg cost per task",
-      lens: "cloud",
-      beat: "cheaper than Claude",
-      log: true,
-      get: (m) => m.cost_usd,
-      cell: (c) => c.cost_usd,
-      fmt: money,
-    },
-    wall: {
-      label: "Wall-time",
-      axis: "avg wall-time per task",
-      lens: "cloud",
-      beat: "faster than Claude",
-      log: false,
-      get: (m) => (m.mean_latency_ms ?? 0) / 1000,
-      cell: (c) => c.latency_ms / 1000,
-      fmt: secs,
-    },
-    tokens: {
-      label: "Output tokens",
-      axis: "avg tokens per task",
-      lens: "self-host",
-      beat: "leaner than Claude",
-      log: true,
-      get: (m) => m.mean_tokens,
-      cell: (c) => c.tokens,
-      fmt: kfmt,
-    },
-    turns: {
-      label: "Agent steps",
-      axis: "avg steps per task",
-      lens: "self-host",
-      beat: "fewer steps than Claude",
-      log: false,
-      get: (m) => m.mean_turns,
-      cell: (c) => c.turns,
-      fmt: round,
-    },
-  };
-  const MK = ["cost", "wall", "tokens", "turns"];
+  const TABS = ["cost", "wall", "tokens", "turns"];
+  let metric = $state("cost");
   const cfg = $derived(METRICS[metric]);
-  const isAll = $derived(taskSel === "all");
 
-  // Provider palette (chart-local: the design system doesn't carry 6 distinct hues).
-  const PROV = {
-    anthropic: "#ff7169",
-    qwen: "#29a187",
-    google: "#3b82c4",
-    deepseek: "#7c5cff",
-    "z-ai": "#e0851e",
-    mistralai: "#d94f9a",
-  };
-  const provColor = (id) => PROV[provider(id)] ?? "#6b6658";
-
-  const points = $derived.by(() => {
-    const pts = [];
-    for (const m of models) {
-      let x, y;
-      if (isAll) {
-        // Y is HARD-task pass, the discriminator the board ranks by and the axis on
-        // which "matching frontier capability" means reaching the Claude anchors' level.
-        // Overall pass_rate blurs the good models together (the floor tasks saturate) and
-        // even sinks the best-value pick below pricier peers over one floor miss.
-        y = m.hard_n ? m.hard_pass / m.hard_n : 0;
-        x = cfg.get(m);
-      } else {
-        const c = cellOf(m, taskSel);
-        if (!c) continue;
-        y = c.passed ? 1 : 0;
-        x = cfg.cell(c);
-      }
-      if (!(x > 0)) continue; // metric must be positive (log axis + a real run)
-      pts.push({
-        id: m.id,
-        name: m.name ?? shortName(m.id),
-        anchor: m.role === "anchor",
-        x,
-        y,
-      });
-    }
-    return pts;
-  });
-
-  // Budget-zone boundary: the most efficient Claude anchor on the current metric.
-  // Everything more efficient than it (to the right, since X is reversed) is a
-  // candidate to replace Claude, which is the whole point of the benchmark.
-  const anchorBound = $derived.by(() => {
-    const a = points.filter((p) => p.anchor).map((p) => p.x);
-    return a.length ? Math.min(...a) : null;
-  });
-  const providersShown = $derived([
-    ...new Set(points.map((p) => provider(p.id))),
-  ]);
-
-  // ---- geometry ----
-  const W = 760;
-  const H = 460;
-  const M = { l: 46, r: 150, t: 24, b: 48 };
-  const iw = W - M.l - M.r;
+  const W = 1040;
+  const H = 440;
+  const M = { l: 44, r: 16, t: 26, b: 44 };
+  const ZERO_LANE = 46; // px reserved left of the break for $0 points
   const ih = H - M.t - M.b;
 
-  const xdomain = $derived.by(() => {
-    const xs = points.map((p) => p.x);
+  const pts = $derived(
+    plottable(models, metric).map((m) => ({
+      id: m.id,
+      name: shortName(m),
+      slot: providerSlot(m.id),
+      anchor: m.role === "anchor",
+      x: cfg.get(m) ?? 0,
+      y: METRICS.hard.get(m),
+    })),
+  );
+  const hasZero = $derived(cfg.log && pts.some((p) => !(p.x > 0)));
+  const x0 = $derived(M.l + (hasZero ? ZERO_LANE : 0));
+  const iw = $derived(W - M.r - x0);
+
+  const domain = $derived.by(() => {
+    const xs = pts.map((p) => p.x).filter((v) => v > 0);
+    if (!xs.length) return [0, 1];
     let lo = Math.min(...xs);
     let hi = Math.max(...xs);
-    if (!(hi > lo)) {
-      lo *= 0.9;
-      hi *= 1.1;
-    }
-    if (cfg.log) return [lo * 0.85, hi * 1.15];
-    return [0, hi * 1.08]; // linear metrics anchor the efficient end at 0 (right)
-  });
-
-  // X is REVERSED: the max (least efficient) sits on the left, min on the right.
-  const xScale = (v) => {
-    const [lo, hi] = xdomain;
     if (cfg.log) {
-      const vv = Math.max(v, lo);
-      return (
-        M.l +
-        (iw * (Math.log(hi) - Math.log(vv))) / (Math.log(hi) - Math.log(lo))
-      );
+      if (hi === lo) [lo, hi] = [lo / 2, hi * 2];
+      return [lo / 1.4, hi * 1.4];
     }
-    return M.l + (iw * (hi - v)) / (hi - lo);
-  };
-  // Y = pass rate, 0..1, not inverted (100% at top).
-  const yScale = (v) => M.t + ih * (1 - v);
-
-  // Pareto frontier: max pass, min metric. Non-dominated set, drawn as the top-right
-  // envelope (screen-left = expensive, screen-right = cheap).
-  const frontier = $derived.by(() => {
-    const nd = points.filter(
-      (p) =>
-        !points.some(
-          (q) =>
-            q !== p && q.y >= p.y && q.x <= p.x && (q.y > p.y || q.x < p.x),
-        ),
-    );
-    return nd.sort((a, b) => b.x - a.x); // expensive -> cheap == screen left -> right
-  });
-  const frontierIds = $derived(new Set(frontier.map((p) => p.id)));
-
-  // ---- labels: place to the side away from the plot edge, then de-collide vertically
-  // within each side so the saturated 100% band does not stack labels on top of each other.
-  const laidOut = $derived.by(() => {
-    const rightThreshold = M.l + iw * 0.68;
-    const rows = points.map((p) => {
-      const cx = xScale(p.x);
-      const cy = yScale(p.y);
-      const leftSide = cx > rightThreshold; // near right edge -> label to the left
-      // Only label the spread-out, decision-relevant points: the frontier, the Claude
-      // anchors, and any model below a perfect pass rate. The dense band of 100%-pass
-      // models would collide into mush if all labelled; the ranked table below (and the
-      // hover title) identifies them instead.
-      const show = frontierIds.has(p.id) || p.anchor || p.y < 0.999;
-      return { ...p, cx, cy, leftSide, ly: cy, show };
-    });
-    for (const side of [true, false]) {
-      const grp = rows
-        .filter((r) => r.show && r.leftSide === side)
-        .sort((a, b) => a.ly - b.ly);
-      for (let i = 1; i < grp.length; i++) {
-        if (grp[i].ly - grp[i - 1].ly < 13) grp[i].ly = grp[i - 1].ly + 13;
-      }
-    }
-    return rows;
+    return [0, hi * 1.08 || 1];
   });
 
-  const yticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
-  const xticks = $derived.by(() => {
-    const [lo, hi] = xdomain;
+  function xs(v) {
+    const [lo, hi] = domain;
+    if (cfg.log) {
+      if (!(v > 0)) return M.l + ZERO_LANE / 2;
+      return x0 + (iw * Math.log(v / lo)) / Math.log(hi / lo);
+    }
+    return x0 + (iw * (v - lo)) / (hi - lo);
+  }
+  // Y zooms to the data in 10% steps: the selection usually sits between 80
+  // and 100%, and a 0..100% axis spends most of the plot on empty space.
+  const yLo = $derived(
+    Math.max(0, Math.floor((Math.min(1, ...pts.map((p) => p.y)) - 0.02) * 20) / 20),
+  );
+  const yTicks = $derived.by(() => {
+    const step = 1 - yLo > 0.5 ? 0.25 : 1 - yLo > 0.25 ? 0.1 : 0.05;
     const out = [];
-    for (let i = 0; i < 5; i++) {
-      out.push(
-        cfg.log
-          ? Math.exp(Math.log(lo) + ((Math.log(hi) - Math.log(lo)) * i) / 4)
-          : lo + ((hi - lo) * i) / 4,
+    for (let v = 1; v >= yLo - 1e-9; v -= step) out.push(Math.round(v * 100) / 100);
+    return out;
+  });
+  const ys = (v) => M.t + ih * ((1 - v) / (1 - yLo || 1));
+
+  const ticks = $derived.by(() => {
+    const [lo, hi] = domain;
+    if (cfg.log) {
+      const out = [];
+      for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+        for (const k of [1, 2, 5]) {
+          const v = k * 10 ** e;
+          if (v >= lo && v <= hi) out.push(v);
+        }
+      // Too many ticks: keep the powers of ten only.
+      const decade = (v) => Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9;
+      return out.length > 7 ? out.filter(decade) : out;
+    }
+    const step = niceStep(hi / 5);
+    const out = [];
+    for (let v = 0; v <= hi; v += step) out.push(v);
+    return out;
+  });
+
+  function niceStep(raw) {
+    const mag = 10 ** Math.floor(Math.log10(raw || 1));
+    return [1, 2, 5, 10].map((k) => k * mag).find((s) => raw <= s) ?? mag * 10;
+  }
+
+  const bound = $derived.by(() => {
+    const a = pts.filter((p) => p.anchor && p.x > 0).map((p) => p.x);
+    return a.length ? Math.min(...a) : null;
+  });
+
+  // Greedy label placement: right of the mark, then left, then above, then
+  // below; the first spot that hits no placed label or mark wins. A label
+  // that finds no room is dropped to the hover title and the table, rather
+  // than printed on top of another one.
+  const placed = $derived.by(() => {
+    const boxes = pts.map((p) => {
+      const cx = xs(p.x);
+      const cy = ys(p.y);
+      return { x1: cx - 6, x2: cx + 6, y1: cy - 6, y2: cy + 6 };
+    });
+    const hit = (b) =>
+      boxes.some(
+        (o) => b.x1 < o.x2 && b.x2 > o.x1 && b.y1 < o.y2 && b.y2 > o.y1,
       );
+    const order = [...pts.keys()].sort((a, b) => pts[a].x - pts[b].x);
+    const out = new Array(pts.length).fill(null);
+    for (const i of order) {
+      const p = pts[i];
+      const cx = xs(p.x);
+      const cy = ys(p.y);
+      const w = p.name.length * 6.1 + 4;
+      const h = 12;
+      const tries = [
+        { x: cx + 9, y: cy + 3.5, anchor: "start", b: [cx + 8, cx + 8 + w, cy - 6, cy + 6] },
+        { x: cx - 9, y: cy + 3.5, anchor: "end", b: [cx - 8 - w, cx - 8, cy - 6, cy + 6] },
+        { x: cx, y: cy - 10, anchor: "middle", b: [cx - w / 2, cx + w / 2, cy - 20, cy - 8] },
+        { x: cx, y: cy + 19, anchor: "middle", b: [cx - w / 2, cx + w / 2, cy + 8, cy + 8 + h] },
+        { x: cx - 4, y: cy - 10, anchor: "start", b: [cx - 4, cx - 4 + w, cy - 20, cy - 8] },
+        { x: cx - 4, y: cy + 19, anchor: "start", b: [cx - 4, cx - 4 + w, cy + 8, cy + 8 + h] },
+      ];
+      for (const t of tries) {
+        const box = { x1: t.b[0], x2: t.b[1], y1: t.b[2], y2: t.b[3] };
+        if (box.x1 < M.l - 30 || box.x2 > W || box.y1 < 0 || box.y2 > H - M.b + 14)
+          continue;
+        if (hit(box)) continue;
+        boxes.push(box);
+        out[i] = t;
+        break;
+      }
     }
     return out;
   });
 </script>
 
-<div class="scatter">
-  <div class="controls">
-    <div class="tabs" role="group" aria-label="Metric">
-      {#each MK as k}
-        <button class:on={metric === k} onclick={() => (metric = k)}
-          >{METRICS[k].label}</button
+<section class="panel scatter">
+  <header class="panel-head">
+    <span class="t">Hard-task pass vs {cfg.label.toLowerCase()}</span>
+    <span class="b">top left is best</span>
+  </header>
+  <div class="panel-body">
+    <div class="seg" role="group" aria-label="X axis metric">
+      {#each TABS as key}
+        <button
+          type="button"
+          aria-pressed={metric === key}
+          onclick={() => (metric = key)}>{METRICS[key].label}</button
         >
       {/each}
     </div>
-    <label class="task">
-      <span>Task</span>
-      <select bind:value={taskSel}>
-        <option value="all">All tasks (mean)</option>
-        {#each tasks as t}
-          <option value={t.id}>{t.id}</option>
-        {/each}
-      </select>
-    </label>
-    <span class="lens-tag">{cfg.lens} lens</span>
-  </div>
 
-  {#if !points.length}
-    <p class="empty">No data to plot for this view.</p>
-  {:else}
+    <div class="plot">
     <svg
       viewBox="0 0 {W} {H}"
       role="img"
-      aria-label="Hard-task pass versus {cfg.axis}"
+      aria-label={`Hard-task pass against ${cfg.unit}`}
+      class:hovering={hot}
     >
-      <text class="ylab" x={M.l} y={M.t - 8}
-        >{isAll ? "hard-task pass" : "pass"}</text
-      >
-      <text class="eff" x={M.l + iw} y={M.t - 8} text-anchor="end"
-        >most efficient ↗</text
-      >
-
-      {#each yticks as tv}
-        <line
-          class="grid"
-          x1={M.l}
-          y1={yScale(tv)}
-          x2={M.l + iw}
-          y2={yScale(tv)}
-        />
-        <text class="tick" x={M.l - 8} y={yScale(tv) + 3} text-anchor="end"
-          >{Math.round(tv * 100)}%</text
-        >
-      {/each}
-      {#each xticks as tv}
-        <text class="tick" x={xScale(tv)} y={M.t + ih + 16} text-anchor="middle"
-          >{cfg.fmt(tv)}</text
-        >
-      {/each}
-      <text class="axis-title" x={M.l + iw / 2} y={H - 8} text-anchor="middle"
-        >{cfg.axis}{cfg.log ? " (log)" : ""}</text
-      >
-
-      <!-- budget zone: right of the most efficient Claude anchor -->
-      {#if anchorBound != null && xScale(anchorBound) < M.l + iw - 4}
+      {#if bound != null}
         <rect
           class="zone"
-          x={xScale(anchorBound)}
+          x={M.l}
           y={M.t}
-          width={M.l + iw - xScale(anchorBound)}
+          width={Math.max(0, xs(bound) - M.l)}
           height={ih}
         />
-        <line
-          class="zone-edge"
-          x1={xScale(anchorBound)}
-          y1={M.t}
-          x2={xScale(anchorBound)}
-          y2={M.t + ih}
-        />
-        <text class="zone-lab" x={xScale(anchorBound) + 6} y={M.t + ih - 8}
-          >{cfg.beat}</text
+        <line class="zone-edge" x1={xs(bound)} x2={xs(bound)} y1={M.t} y2={M.t + ih} />
+        <text class="zone-lab" x={xs(bound) - 6} y={M.t + ih - 8} text-anchor="end"
+          >{cfg.better === "lower" ? "under the Claude ceiling" : ""}</text
         >
       {/if}
 
-      {#if frontier.length > 1}
-        <polyline
-          class="frontier"
-          points={frontier
-            .map((p) => `${xScale(p.x)},${yScale(p.y)}`)
-            .join(" ")}
+      {#each yTicks as t}
+        <line class="grid" x1={M.l} x2={W - M.r} y1={ys(t)} y2={ys(t)} />
+        <text class="tick" x={M.l - 6} y={ys(t) + 3.5} text-anchor="end"
+          >{Math.round(t * 100)}%</text
+        >
+      {/each}
+
+      {#each ticks as t}
+        <text class="tick" x={xs(t)} y={M.t + ih + 15} text-anchor="middle"
+          >{(cfg.tick ?? cfg.fmt)(t)}</text
+        >
+      {/each}
+      {#if hasZero}
+        <text class="tick" x={M.l + ZERO_LANE / 2} y={M.t + ih + 15} text-anchor="middle"
+          >$0</text
+        >
+        <!-- Axis break between the $0 lane and the log scale. -->
+        <path
+          class="brk"
+          d={`M${x0 - 7} ${M.t + ih + 4} l4 -8 M${x0 - 3} ${M.t + ih + 4} l4 -8`}
         />
       {/if}
+      <line class="axis" x1={M.l} x2={W - M.r} y1={M.t + ih} y2={M.t + ih} />
+      <text class="axis-title" x={x0 + iw / 2} y={H - 6} text-anchor="middle"
+        >{cfg.unit}{cfg.log ? ", log scale" : ""}</text
+      >
 
-      {#each laidOut as p (p.id)}
-        <g class="pt" class:on-frontier={frontierIds.has(p.id)}>
-          <title>{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% pass</title>
-          {#if p.show}
-            <line
-              class="lead"
-              x1={p.cx}
-              y1={p.cy}
-              x2={p.leftSide ? p.cx - 10 : p.cx + 10}
-              y2={p.ly}
+      {#each pts as p, i (p.id)}
+        {@const lab = placed[i]}
+        <g
+          data-model={p.id}
+          class:hot={hot === p.id}
+          role="presentation"
+          onmouseenter={() => onhover(p.id)}
+          onmouseleave={() => onhover(null)}
+        >
+          <title>{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% of hard tasks</title>
+          <circle class="hit" cx={xs(p.x)} cy={ys(p.y)} r="12" />
+          {#if p.anchor}
+            <rect
+              class="mk"
+              data-slot={p.slot}
+              x={xs(p.x) - 5.5}
+              y={ys(p.y) - 5.5}
+              width="11"
+              height="11"
             />
+          {:else}
+            <circle class="mk" data-slot={p.slot} cx={xs(p.x)} cy={ys(p.y)} r="5.5" />
           {/if}
-          <circle
-            class="mark"
-            cx={p.cx}
-            cy={p.cy}
-            r={p.anchor ? 6.5 : 5.5}
-            style="fill:{provColor(p.id)}"
-            class:anchor={p.anchor}
-          />
-          {#if p.show}
-            <text
-              class="lbl"
-              x={p.leftSide ? p.cx - 13 : p.cx + 13}
-              y={p.ly + 3}
-              text-anchor={p.leftSide ? "end" : "start"}
-              style="fill:{provColor(p.id)}"
-              >{p.name}{p.anchor ? " (anchor)" : ""}</text
+          {#if lab}
+            <text class="lbl" x={lab.x} y={lab.y} text-anchor={lab.anchor}
+              >{p.name}</text
             >
           {/if}
         </g>
       {/each}
     </svg>
-
-    <div class="cap">
-      {cfg.label} · {isAll ? "hard-task pass, mean over all tasks" : taskSel} · match
-      the frontier (top), beat its {cfg.label.toLowerCase()} ceiling (right)
     </div>
-    <div class="key">
-      {#each providersShown as pv}
-        <span class="k"
-          ><i class="sw" style="background:{PROV[pv] ?? '#6b6658'}"
-          ></i>{pv}</span
-        >
-      {/each}
-      <span class="k frontier-k"><i class="sw-line"></i>frontier</span>
-    </div>
-  {/if}
-</div>
+    <p class="caption">
+      Square marks are the Claude anchors, run through Claude Code at the
+      representative API price. Shaded: cheaper or faster than the best anchor
+      on this metric. Self-hosted rows cost $0 and their wall-time is one local
+      RTX 4090, not a rented endpoint.
+    </p>
+  </div>
+</section>
 
 <style>
-  .scatter {
-    padding: 12px 14px 14px;
-  }
-  .controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 16px;
-    align-items: center;
-    margin-bottom: 10px;
-  }
-  .tabs {
-    display: inline-flex;
-    border: 2px solid var(--ink);
-  }
-  .tabs button {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 700;
-    padding: 5px 11px;
-    background: var(--paper);
-    color: var(--ink);
-    border: none;
-    cursor: pointer;
-  }
-  .tabs button + button {
-    border-left: 2px solid var(--ink);
-  }
-  .tabs button.on {
-    background: var(--accent);
-  }
-  .task {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--ink-3);
-  }
-  .task select {
-    font-family: var(--mono);
-    font-size: 12px;
-    padding: 4px 8px;
-    border: 2px solid var(--ink);
-    background: var(--paper);
-    color: var(--ink);
-  }
-  .lens-tag {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+  /* Below ~640px the labels would shrink past reading size, so the plot
+     keeps a floor width and scrolls inside its panel instead. */
+  .plot {
+    overflow-x: auto;
   }
 
   svg {
-    width: 100%;
-    height: auto;
     display: block;
+    width: 100%;
+    min-width: 640px;
+    height: auto;
+    margin-top: 0.8em;
+    overflow: visible;
+    font-family: var(--font-code);
   }
+
   .grid {
-    stroke: var(--rule);
-    stroke-width: 1;
+    stroke: var(--line);
   }
-  .tick {
-    font-family: var(--mono);
-    font-size: 10px;
-    fill: var(--ink-3);
+
+  .axis {
+    stroke: var(--ink);
   }
-  .ylab,
-  .eff {
-    font-family: var(--mono);
-    font-size: 11px;
-    fill: var(--ink-3);
-  }
-  .eff {
-    font-style: italic;
-  }
-  .axis-title {
-    font-family: var(--mono);
-    font-size: 11px;
-    fill: var(--ink-2);
-  }
-  .zone {
-    fill: var(--teal);
-    opacity: 0.07;
-  }
-  .zone-edge {
-    stroke: var(--teal);
-    stroke-width: 1.5;
-    stroke-dasharray: 3 3;
-  }
-  .zone-lab {
-    font-family: var(--mono);
-    font-size: 10px;
-    fill: var(--teal);
-    font-weight: 700;
-  }
-  .frontier {
+
+  .brk {
     fill: none;
-    stroke: var(--ink-3);
-    stroke-width: 1.5;
-    stroke-dasharray: 4 3;
-  }
-  .mark {
-    stroke: var(--paper);
-    stroke-width: 1.5;
-  }
-  .mark.anchor {
     stroke: var(--ink);
+  }
+
+  .tick {
+    fill: var(--ink-2);
+    font-size: 10.5px;
+  }
+
+  .axis-title {
+    fill: var(--ink-2);
+    font-size: 11px;
+  }
+
+  .zone {
+    fill: var(--band);
+  }
+
+  .zone-edge {
+    stroke: var(--stroke);
+  }
+
+  .zone-lab {
+    fill: var(--ink-2);
+    font-size: 10.5px;
+  }
+
+  .hit {
+    fill: transparent;
+  }
+
+  /* A 2px sheet ring keeps overlapping marks apart without an ink border. */
+  .mk {
+    fill: var(--c, var(--prov-other));
+    stroke: var(--sheet);
     stroke-width: 2;
   }
-  .pt.on-frontier .mark {
+
+  rect.mk {
     stroke: var(--ink);
-    stroke-width: 2;
-  }
-  .lead {
-    stroke: var(--rule-2);
     stroke-width: 1;
   }
+
   .lbl {
-    font-family: var(--mono);
+    fill: var(--ink);
     font-size: 10.5px;
-    font-weight: 700;
     paint-order: stroke;
-    stroke: var(--paper);
-    stroke-width: 3;
-  }
-  .cap {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-    margin-top: 8px;
-  }
-  .key {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    margin-top: 8px;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--ink-3);
-  }
-  .k {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .sw {
-    width: 11px;
-    height: 11px;
-    border: 1px solid var(--ink);
-    display: inline-block;
-  }
-  .sw-line {
-    width: 16px;
-    height: 0;
-    border-top: 1.5px dashed var(--ink-3);
-    display: inline-block;
-  }
-  .empty {
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--ink-3);
-    padding: 24px 0;
+    stroke: var(--sheet);
+    stroke-width: 3px;
   }
 </style>

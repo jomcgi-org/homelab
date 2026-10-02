@@ -62,6 +62,10 @@ class ModelSpec(BaseModel):
     # Extra JSON keys merged into every /chat/completions payload (for example
     # chat_template_kwargs). Required fields always win over keys here.
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    # Served from our own hardware rather than rented. The public page offers a
+    # self-hosted preset from this flag; cost alone cannot tell a local model from
+    # a free OpenRouter tier.
+    self_hosted: bool = False
 
 
 class TaskSpec(BaseModel):

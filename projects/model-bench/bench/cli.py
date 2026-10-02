@@ -843,6 +843,7 @@ def _report(args) -> None:
             tasks=tasks,
             anchor_ids=anchor_ids,
             display_names={m.id: m.display_name for m in reg if m.display_name},
+            self_hosted_ids={m.id for m in reg if m.self_hosted},
             generated_at=getattr(args, "generated_at", None)
             or datetime.date.today().isoformat(),
         )
@@ -863,6 +864,7 @@ def _write_leaderboard_json(
     anchor_ids: set,
     generated_at: str,
     display_names: dict | None = None,
+    self_hosted_ids: set | None = None,
 ) -> None:
     """Write the structured agentic leaderboard consumed by the public page.
 
@@ -931,11 +933,13 @@ def _write_leaderboard_json(
     ]
 
     names = display_names or {}
+    local = self_hosted_ids or set()
     models_json = [
         {
             "id": mid,
             "name": names.get(mid) or _short_name(mid),
             "role": "anchor" if mid in anchor_ids else "candidate",
+            "self_hosted": mid in local,
             "n": s["n"],
             "errored": s["errored"],
             "errored_tasks": s["errored_tasks"],
