@@ -37,7 +37,10 @@
   // The snapshot is static per deploy, so reading `data` once here is right.
   // svelte-ignore state_referenced_locally
   let selected = $state(
-    parseSelection(data.leaderboard?.models ?? [], page.url.searchParams.get("m")),
+    parseSelection(
+      data.leaderboard?.models ?? [],
+      page.url.searchParams.get("m"),
+    ),
   );
   let hot = $state(null);
   const shown = $derived(ranked.filter((m) => selected.has(m.id)));
@@ -141,16 +144,24 @@
     <div class="stats">
       <div>
         <div class="k">Leader</div>
-        <div class="v">{leader ? `${leader.hard_pass}/${leader.hard_n}` : "n/a"}<small>hard</small></div>
+        <div class="v">
+          {leader ? `${leader.hard_pass}/${leader.hard_n}` : "n/a"}<small
+            >hard</small
+          >
+        </div>
         <div class="m">{leader ? shortName(leader) : ""}</div>
       </div>
       <div>
         <div class="k">Cheapest full marks</div>
         <div class="v">
-          {cheapestPerfect ? money(cheapestPerfect.cost_per_solve_usd) : "n/a"}<small>/ solve</small>
+          {cheapestPerfect
+            ? money(cheapestPerfect.cost_per_solve_usd)
+            : "n/a"}<small>/ solve</small>
         </div>
         <div class="m">
-          {cheapestPerfect ? `${shortName(cheapestPerfect)} · ${cheapestPerfect.hard_pass}/${cheapestPerfect.hard_n} hard` : ""}
+          {cheapestPerfect
+            ? `${shortName(cheapestPerfect)} · ${cheapestPerfect.hard_pass}/${cheapestPerfect.hard_n} hard`
+            : ""}
         </div>
       </div>
       <div>
@@ -176,13 +187,18 @@
       <p class="sec-label">/ Headline metrics</p>
       <div class="grid2">
         {#each ["hard", "cost", "wall", "tokens"] as metric}
-          <BarChart models={shown} {metric} {hot} onhover={(id) => (hot = id)} />
+          <BarChart
+            models={shown}
+            {metric}
+            {hot}
+            onhover={(id) => (hot = id)}
+          />
         {/each}
       </div>
       <p class="caption">
-        Means per task, so one task blowing up stays visible. Cost is list
-        price through OpenRouter; Claude rows use the representative API price
-        though they ran through Claude Code. Self-hosted rows cost $0 and their
+        Means per task, so one task blowing up stays visible. Cost is list price
+        through OpenRouter; Claude rows use the representative API price though
+        they ran through Claude Code. Self-hosted rows cost $0 and their
         wall-time is a single RTX 4090, so compare them on pass and tokens.
       </p>
     </section>
@@ -207,9 +223,23 @@
           <thead>
             <tr>
               {#each COLS as [key, label], i}
-                <th class:l={i < 2} aria-sort={sortKey === key ? (sortDir > 0 ? "ascending" : "descending") : undefined}>
-                  <button type="button" class:on={sortKey === key} onclick={() => sortBy(key)}
-                    >{label}{sortKey === key ? (sortDir > 0 ? " ↓" : " ↑") : ""}</button
+                <th
+                  class:l={i < 2}
+                  aria-sort={sortKey === key
+                    ? sortDir > 0
+                      ? "ascending"
+                      : "descending"
+                    : undefined}
+                >
+                  <button
+                    type="button"
+                    class:on={sortKey === key}
+                    onclick={() => sortBy(key)}
+                    >{label}{sortKey === key
+                      ? sortDir > 0
+                        ? " ↓"
+                        : " ↑"
+                      : ""}</button
                   >
                 </th>
               {/each}
@@ -225,16 +255,29 @@
               >
                 <td class="l num rk">{ranked.indexOf(m) + 1}</td>
                 <td class="l">
-                  <span class="nm"><i class="sw" data-slot={providerSlot(m.id)}></i>{shortName(m)}</span>
-                  <span class="slug">{m.id}{#if m.role === "anchor"} · ceiling{:else if m.self_hosted} · self-hosted{/if}</span>
+                  <span class="nm"
+                    ><i class="sw" data-slot={providerSlot(m.id)}
+                    ></i>{shortName(m)}</span
+                  >
+                  <span class="slug"
+                    >{m.id}{#if m.role === "anchor"}
+                      · ceiling{:else if m.self_hosted}
+                      · self-hosted{/if}</span
+                  >
                 </td>
                 <td class="num">{m.hard_pass}/{m.hard_n}</td>
                 <td class="num">{m.floor_pass}/{m.floor_n}</td>
                 <td class="num">{money(m.cost_usd)}</td>
                 <td class="num">{money(m.cost_per_solve_usd)}</td>
                 <td class="num">{secs((m.mean_latency_ms ?? 0) / 1000)}</td>
-                <td class="num">{m.role === "anchor" ? "n/a" : kfmt(m.mean_tokens)}</td>
-                <td class="num">{m.role === "anchor" ? "n/a" : METRICS.turns.fmt(m.mean_turns)}</td>
+                <td class="num"
+                  >{m.role === "anchor" ? "n/a" : kfmt(m.mean_tokens)}</td
+                >
+                <td class="num"
+                  >{m.role === "anchor"
+                    ? "n/a"
+                    : METRICS.turns.fmt(m.mean_turns)}</td
+                >
                 <td class="num">{Math.round((m.tool_use_ok ?? 0) * 100)}%</td>
               </tr>
             {/each}
@@ -242,17 +285,19 @@
         </table>
       </div>
       <p class="caption">
-        Hard and floor count graded tasks; cells that errored before grading
-        (a provider fault or a prompt past the context window) are left out
-        rather than scored as failures. Claude's steps and tokens come from
-        its own harness and are not comparable to the candidate rows.
+        Hard and floor count graded tasks; cells that errored before grading (a
+        provider fault or a prompt past the context window) are left out rather
+        than scored as failures. Claude's steps and tokens come from its own
+        harness and are not comparable to the candidate rows.
       </p>
     </section>
 
     <section>
       <p class="sec-label">
         / Tasks
-        <span class="aside">passed / ran, across all {models.length} models</span>
+        <span class="aside"
+          >passed / ran, across all {models.length} models</span
+        >
       </p>
       <ol class="panel tasks">
         {#each keyed as t (t.id)}
@@ -262,7 +307,9 @@
               <span class="id">{t.id}</span>
               <span class="blurb">{t.blurb}</span>
             </span>
-            <span class="meta">{t.tier} · {t.real_test ? "repo test" : "behavioural"}</span>
+            <span class="meta"
+              >{t.tier} · {t.real_test ? "repo test" : "behavioural"}</span
+            >
             <span class="score num">{t.passed}/{t.n}</span>
           </li>
         {/each}
@@ -271,10 +318,10 @@
 
     <footer class="caption method">
       Method: SWE-bench style. Each task snapshots the parent of a real fix
-      commit, the model edits it through list, read and write tools, and the
-      fix commit's gold test runs against the result. A "repo test" task is
-      graded by the monolith's own pytest suite, a "behavioural" one by a
-      hand-written check. Source:
+      commit, the model edits it through list, read and write tools, and the fix
+      commit's gold test runs against the result. A "repo test" task is graded
+      by the monolith's own pytest suite, a "behavioural" one by a hand-written
+      check. Source:
       <a href="https://github.com/jomcgi/homelab/tree/main/projects/model-bench"
         >projects/model-bench</a
       >.

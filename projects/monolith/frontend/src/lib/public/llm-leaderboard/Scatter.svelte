@@ -59,12 +59,16 @@
   // Y zooms to the data in 10% steps: the selection usually sits between 80
   // and 100%, and a 0..100% axis spends most of the plot on empty space.
   const yLo = $derived(
-    Math.max(0, Math.floor((Math.min(1, ...pts.map((p) => p.y)) - 0.02) * 20) / 20),
+    Math.max(
+      0,
+      Math.floor((Math.min(1, ...pts.map((p) => p.y)) - 0.02) * 20) / 20,
+    ),
   );
   const yTicks = $derived.by(() => {
     const step = 1 - yLo > 0.5 ? 0.25 : 1 - yLo > 0.25 ? 0.1 : 0.05;
     const out = [];
-    for (let v = 1; v >= yLo - 1e-9; v -= step) out.push(Math.round(v * 100) / 100);
+    for (let v = 1; v >= yLo - 1e-9; v -= step)
+      out.push(Math.round(v * 100) / 100);
     return out;
   });
   const ys = (v) => M.t + ih * ((1 - v) / (1 - yLo || 1));
@@ -73,13 +77,18 @@
     const [lo, hi] = domain;
     if (cfg.log) {
       const out = [];
-      for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+      for (
+        let e = Math.floor(Math.log10(lo));
+        e <= Math.ceil(Math.log10(hi));
+        e++
+      )
         for (const k of [1, 2, 5]) {
           const v = k * 10 ** e;
           if (v >= lo && v <= hi) out.push(v);
         }
       // Too many ticks: keep the powers of ten only.
-      const decade = (v) => Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9;
+      const decade = (v) =>
+        Math.abs(Math.log10(v) - Math.round(Math.log10(v))) < 1e-9;
       return out.length > 7 ? out.filter(decade) : out;
     }
     const step = niceStep(hi / 5);
@@ -121,16 +130,51 @@
       const w = p.name.length * 6.1 + 4;
       const h = 12;
       const tries = [
-        { x: cx + 9, y: cy + 3.5, anchor: "start", b: [cx + 8, cx + 8 + w, cy - 6, cy + 6] },
-        { x: cx - 9, y: cy + 3.5, anchor: "end", b: [cx - 8 - w, cx - 8, cy - 6, cy + 6] },
-        { x: cx, y: cy - 10, anchor: "middle", b: [cx - w / 2, cx + w / 2, cy - 20, cy - 8] },
-        { x: cx, y: cy + 19, anchor: "middle", b: [cx - w / 2, cx + w / 2, cy + 8, cy + 8 + h] },
-        { x: cx - 4, y: cy - 10, anchor: "start", b: [cx - 4, cx - 4 + w, cy - 20, cy - 8] },
-        { x: cx - 4, y: cy + 19, anchor: "start", b: [cx - 4, cx - 4 + w, cy + 8, cy + 8 + h] },
+        {
+          x: cx + 9,
+          y: cy + 3.5,
+          anchor: "start",
+          b: [cx + 8, cx + 8 + w, cy - 6, cy + 6],
+        },
+        {
+          x: cx - 9,
+          y: cy + 3.5,
+          anchor: "end",
+          b: [cx - 8 - w, cx - 8, cy - 6, cy + 6],
+        },
+        {
+          x: cx,
+          y: cy - 10,
+          anchor: "middle",
+          b: [cx - w / 2, cx + w / 2, cy - 20, cy - 8],
+        },
+        {
+          x: cx,
+          y: cy + 19,
+          anchor: "middle",
+          b: [cx - w / 2, cx + w / 2, cy + 8, cy + 8 + h],
+        },
+        {
+          x: cx - 4,
+          y: cy - 10,
+          anchor: "start",
+          b: [cx - 4, cx - 4 + w, cy - 20, cy - 8],
+        },
+        {
+          x: cx - 4,
+          y: cy + 19,
+          anchor: "start",
+          b: [cx - 4, cx - 4 + w, cy + 8, cy + 8 + h],
+        },
       ];
       for (const t of tries) {
         const box = { x1: t.b[0], x2: t.b[1], y1: t.b[2], y2: t.b[3] };
-        if (box.x1 < M.l - 30 || box.x2 > W || box.y1 < 0 || box.y2 > H - M.b + 14)
+        if (
+          box.x1 < M.l - 30 ||
+          box.x2 > W ||
+          box.y1 < 0 ||
+          box.y2 > H - M.b + 14
+        )
           continue;
         if (hit(box)) continue;
         boxes.push(box);
@@ -159,84 +203,105 @@
     </div>
 
     <div class="plot">
-    <svg
-      viewBox="0 0 {W} {H}"
-      role="img"
-      aria-label={`Hard-task pass against ${cfg.unit}`}
-      class:hovering={hot}
-    >
-      {#if bound != null}
-        <rect
-          class="zone"
-          x={M.l}
-          y={M.t}
-          width={Math.max(0, xs(bound) - M.l)}
-          height={ih}
-        />
-        <line class="zone-edge" x1={xs(bound)} x2={xs(bound)} y1={M.t} y2={M.t + ih} />
-        <text class="zone-lab" x={xs(bound) - 6} y={M.t + ih - 8} text-anchor="end"
-          >{cfg.better === "lower" ? "under the Claude ceiling" : ""}</text
-        >
-      {/if}
-
-      {#each yTicks as t}
-        <line class="grid" x1={M.l} x2={W - M.r} y1={ys(t)} y2={ys(t)} />
-        <text class="tick" x={M.l - 6} y={ys(t) + 3.5} text-anchor="end"
-          >{Math.round(t * 100)}%</text
-        >
-      {/each}
-
-      {#each ticks as t}
-        <text class="tick" x={xs(t)} y={M.t + ih + 15} text-anchor="middle"
-          >{(cfg.tick ?? cfg.fmt)(t)}</text
-        >
-      {/each}
-      {#if hasZero}
-        <text class="tick" x={M.l + ZERO_LANE / 2} y={M.t + ih + 15} text-anchor="middle"
-          >$0</text
-        >
-        <!-- Axis break between the $0 lane and the log scale. -->
-        <path
-          class="brk"
-          d={`M${x0 - 7} ${M.t + ih + 4} l4 -8 M${x0 - 3} ${M.t + ih + 4} l4 -8`}
-        />
-      {/if}
-      <line class="axis" x1={M.l} x2={W - M.r} y1={M.t + ih} y2={M.t + ih} />
-      <text class="axis-title" x={x0 + iw / 2} y={H - 6} text-anchor="middle"
-        >{cfg.unit}{cfg.log ? ", log scale" : ""}</text
+      <svg
+        viewBox="0 0 {W} {H}"
+        role="img"
+        aria-label={`Hard-task pass against ${cfg.unit}`}
+        class:hovering={hot}
       >
+        {#if bound != null}
+          <rect
+            class="zone"
+            x={M.l}
+            y={M.t}
+            width={Math.max(0, xs(bound) - M.l)}
+            height={ih}
+          />
+          <line
+            class="zone-edge"
+            x1={xs(bound)}
+            x2={xs(bound)}
+            y1={M.t}
+            y2={M.t + ih}
+          />
+          <text
+            class="zone-lab"
+            x={xs(bound) - 6}
+            y={M.t + ih - 8}
+            text-anchor="end"
+            >{cfg.better === "lower" ? "under the Claude ceiling" : ""}</text
+          >
+        {/if}
 
-      {#each pts as p, i (p.id)}
-        {@const lab = placed[i]}
-        <g
-          data-model={p.id}
-          class:hot={hot === p.id}
-          role="presentation"
-          onmouseenter={() => onhover(p.id)}
-          onmouseleave={() => onhover(null)}
+        {#each yTicks as t}
+          <line class="grid" x1={M.l} x2={W - M.r} y1={ys(t)} y2={ys(t)} />
+          <text class="tick" x={M.l - 6} y={ys(t) + 3.5} text-anchor="end"
+            >{Math.round(t * 100)}%</text
+          >
+        {/each}
+
+        {#each ticks as t}
+          <text class="tick" x={xs(t)} y={M.t + ih + 15} text-anchor="middle"
+            >{(cfg.tick ?? cfg.fmt)(t)}</text
+          >
+        {/each}
+        {#if hasZero}
+          <text
+            class="tick"
+            x={M.l + ZERO_LANE / 2}
+            y={M.t + ih + 15}
+            text-anchor="middle">$0</text
+          >
+          <!-- Axis break between the $0 lane and the log scale. -->
+          <path
+            class="brk"
+            d={`M${x0 - 7} ${M.t + ih + 4} l4 -8 M${x0 - 3} ${M.t + ih + 4} l4 -8`}
+          />
+        {/if}
+        <line class="axis" x1={M.l} x2={W - M.r} y1={M.t + ih} y2={M.t + ih} />
+        <text class="axis-title" x={x0 + iw / 2} y={H - 6} text-anchor="middle"
+          >{cfg.unit}{cfg.log ? ", log scale" : ""}</text
         >
-          <title>{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% of hard tasks</title>
-          <circle class="hit" cx={xs(p.x)} cy={ys(p.y)} r="12" />
-          {#if p.anchor}
-            <rect
-              class="mk"
-              data-slot={p.slot}
-              x={xs(p.x) - 5.5}
-              y={ys(p.y) - 5.5}
-              width="11"
-              height="11"
-            />
-          {:else}
-            <circle class="mk" data-slot={p.slot} cx={xs(p.x)} cy={ys(p.y)} r="5.5" />
-          {/if}
-          {#if lab}
-            <text class="lbl" x={lab.x} y={lab.y} text-anchor={lab.anchor}
-              >{p.name}</text
+
+        {#each pts as p, i (p.id)}
+          {@const lab = placed[i]}
+          <g
+            data-model={p.id}
+            class:hot={hot === p.id}
+            role="presentation"
+            onmouseenter={() => onhover(p.id)}
+            onmouseleave={() => onhover(null)}
+          >
+            <title
+              >{p.name}: {cfg.fmt(p.x)}, {Math.round(p.y * 100)}% of hard tasks</title
             >
-          {/if}
-        </g>
-      {/each}
-    </svg>
+            <circle class="hit" cx={xs(p.x)} cy={ys(p.y)} r="12" />
+            {#if p.anchor}
+              <rect
+                class="mk"
+                data-slot={p.slot}
+                x={xs(p.x) - 5.5}
+                y={ys(p.y) - 5.5}
+                width="11"
+                height="11"
+              />
+            {:else}
+              <circle
+                class="mk"
+                data-slot={p.slot}
+                cx={xs(p.x)}
+                cy={ys(p.y)}
+                r="5.5"
+              />
+            {/if}
+            {#if lab}
+              <text class="lbl" x={lab.x} y={lab.y} text-anchor={lab.anchor}
+                >{p.name}</text
+              >
+            {/if}
+          </g>
+        {/each}
+      </svg>
     </div>
     <p class="caption">
       Square marks are the Claude anchors, run through Claude Code at the

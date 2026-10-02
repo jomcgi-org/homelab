@@ -66,7 +66,8 @@
       {#each groups as [name, list]}
         <fieldset>
           <legend
-            ><i class="sw" data-slot={providerSlot(list[0].id)}></i>{name}</legend
+            ><i class="sw" data-slot={providerSlot(list[0].id)}
+            ></i>{name}</legend
           >
           {#each list as m (m.id)}
             <label>
@@ -76,9 +77,8 @@
                 onchange={() => toggle(m.id)}
               />
               <span>{shortName(m)}</span>
-              {#if m.role === "anchor"}<em>ceiling</em>{:else if m.self_hosted}<em
-                  >local</em
-                >{/if}
+              {#if m.role === "anchor"}<em>ceiling</em
+                >{:else if m.self_hosted}<em>local</em>{/if}
             </label>
           {/each}
         </fieldset>

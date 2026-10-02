@@ -11,10 +11,18 @@
   const cols = $derived(orderedTasks(tasks));
   const tiers = $derived(
     ["easy", "standard", "hard"]
-      .map((tier) => ({ tier, span: cols.filter((t) => t.tier === tier).length }))
+      .map((tier) => ({
+        tier,
+        span: cols.filter((t) => t.tier === tier).length,
+      }))
       .filter((g) => g.span),
   );
-  const LABEL = { pass: "passed", fail: "failed", errored: "errored", none: "not run" };
+  const LABEL = {
+    pass: "passed",
+    fail: "failed",
+    errored: "errored",
+    none: "not run",
+  };
 </script>
 
 <section class="panel matrix">
@@ -35,8 +43,10 @@
         <tr>
           <th class="m">model</th>
           {#each cols as t (t.id)}
-            <th class="c num" class:tier-start={t.no > 1 && cols[t.no - 2].tier !== t.tier} title={t.id}
-              ><a href={`#task-${t.no}`}>{t.no}</a></th
+            <th
+              class="c num"
+              class:tier-start={t.no > 1 && cols[t.no - 2].tier !== t.tier}
+              title={t.id}><a href={`#task-${t.no}`}>{t.no}</a></th
             >
           {/each}
           <th class="s">solved</th>
@@ -52,13 +62,16 @@
             onmouseleave={() => onhover(null)}
           >
             <th class="m" scope="row"
-              ><i class="sw" data-slot={providerSlot(m.id)}></i>{shortName(m)}</th
+              ><i class="sw" data-slot={providerSlot(m.id)}></i>{shortName(
+                m,
+              )}</th
             >
             {#each cols as t, i (t.id)}
               <td
                 class:tier-start={i > 0 && cols[i - 1].tier !== t.tier}
                 title={`${shortName(m)} · ${t.id}: ${LABEL[states[i]]}`}
-                ><i class="cell {states[i]}" aria-label={LABEL[states[i]]}></i></td
+                ><i class="cell {states[i]}" aria-label={LABEL[states[i]]}
+                ></i></td
               >
             {/each}
             <td class="s num"
@@ -75,7 +88,9 @@
     <span><i class="cell pass"></i>passed</span>
     <span><i class="cell fail"></i>failed</span>
     <span><i class="cell errored"></i>errored before grading, not counted</span>
-    <span><i class="cell none"></i>not run (task added after the model's run)</span>
+    <span
+      ><i class="cell none"></i>not run (task added after the model's run)</span
+    >
   </p>
 </section>
 
