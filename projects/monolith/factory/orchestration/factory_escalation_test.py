@@ -1660,7 +1660,10 @@ def test_receipt_570_disclaimer_resolves(db, github, notices):
     assert not notices
 
 
-@pytest.mark.parametrize("effects", [None, {"spends_money": "false"}])
+@pytest.mark.parametrize(
+    "effects",
+    [None, {"spends_money": "false"}, {"deletes_data": 0}, {"unexpected": False}],
+)
 def test_invalid_effects_are_rejected_and_never_resolve(db, effects):
     from factory.orchestration import factory_gates as gates
 
@@ -1679,6 +1682,76 @@ def test_invalid_effects_are_rejected_and_never_resolve(db, effects):
     with pytest.raises(ValueError, match="invalid gate"):
         gates.resolve(task_of(task_id), {"gate": gate}, "invalid-effects")
     assert task_of(task_id)["conductor_gates"] == []
+
+
+@pytest.mark.parametrize("missing", [True, False], ids=["missing", "string-false"])
+def test_planner_invalid_effects_reject_decision_without_crashing(
+    db, github, notices, missing
+):
+    gate = dict(gate_cards()[0]["gate"])
+    if missing:
+        gate.pop("effects")
+    else:
+        gate["effects"] = {**gate["effects"], "spends_money": "false"}
+    task_id, policy = admitted(ISSUE)
+    run = planner_run(task_id, pause(pause_options(), gate=gate))
+    conductor.apply_decision(task_of(task_id), policy, run, [run])
+    assert receipt_of(db, task_id).state == "admitted"
+    assert task_of(task_id)["conductor_gates"] == []
+    [rejection] = audits(db, "conductor_rejected")
+    assert rejection["refusal_code"] == "validation_failed"
+    assert "invalid gate" in rejection["reason"]
+    assert "Decided by the conductor:" not in github.bodies()
+    assert not notices
+
+
+@pytest.mark.parametrize("effects", [None, [], False, {}, {"spends_money": False}])
+def test_shared_restriction_fails_closed_without_validation(effects):
+    from factory.orchestration import factory_gates as gates
+
+    assert gates.restricted({"classification": "reversible", "effects": effects})
+
+
+@pytest.mark.parametrize(
+    "kind", ["live_validation", "delivery_target", "repository_delivered"]
+)
+def test_restricted_optional_value_escalates_every_kind(db, github, notices, kind):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": kind,
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "value": "create bucket",
+        "reason": "A reversible default",
+        "scope": "Repository-only, default-off",
+        "live_checks": ["Verify live flows"],
+        "delivered_prs": [6070],
+    }
+    conductor._escalate_task(
+        task_of(task_id), pause(pause_options(), gate=gate), "optional-value", []
+    )
+    assert receipt_of(db, task_id).state == "escalated"
+    assert "## Decision needed" in github.bodies()
+    assert "Decided by the conductor:" not in github.bodies()
+
+
+def test_effects_contract_is_in_every_artifact_schema_and_prompt():
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration import factory_refine as refine
+
+    for schema in (
+        conductor.RESULT_SCHEMA,
+        conductor.DECISION_SCHEMA,
+        refine.REFINE_SCHEMA,
+    ):
+        assert schema["properties"]["gate"] is gates.GATE_SCHEMA
+    assert "effects" in gates.GATE_SCHEMA["required"]
+    for effect in gates.GATE_EFFECTS:
+        assert effect in gates.GATE_PROMPT
+    assert "Any true effect sends the gate to a person" in gates.GATE_PROMPT
+    assert "`reason` is free prose and may explain safety" in gates.GATE_PROMPT
 
 
 def test_adoption_at_first_step_pins_existing_branch(db, github, monkeypatch):
@@ -1979,9 +2052,11 @@ def test_settled_intervention_does_not_send_stale_summary(db, github, notices):
 def test_human_readmission_preserves_conductor_scope_and_adoption(db, github, notices):
     """An unrelated authority question cannot restore Closes on live acceptance."""
     task_id, _policy = admitted(ISSUE)
-    gate = next(
-        c["gate"] for c in gate_cards() if c["gate"]["kind"] == "live_validation"
+    gate = dict(
+        next(c["gate"] for c in gate_cards() if c["gate"]["kind"] == "live_validation")
     )
+    # Stored direction predates effects and must remain readable without validation.
+    gate.pop("effects")
     with Session(db) as session:
         row = session.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
