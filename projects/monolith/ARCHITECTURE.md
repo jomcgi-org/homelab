@@ -1459,6 +1459,22 @@ do not wait for this record or for delegation.
 (see: /projects/monolith/factory/execution/result_receipts.py)
 (tracks: #4940, #4941, #4943, #4944, #4945, #4946)
 
+**Accepted risk: one operators tier spans the production levers.** Every
+principal in the authentik `operators` group reaches every monolith MCP tool,
+including `k8s_sync_argocd_app` (with `prune`) and `kargo_promote` (with
+`rollback`). Kargo authorizes the Promotion against the monolith
+ServiceAccount, not the caller, so an agent holding a forwarded operators token
+could roll production back or prune an Application. Joe accepted this on
+2026-10-01 (#6475): the operators group holds only Joe and his agents, every
+lever is reversible through GitOps (re-sync, promote forward, or lower a pin),
+and a second tier would add an authentik group and token path for one operator.
+Attribution is the compensating control: #6476 stamps the calling principal
+into the Promotion and the ArgoCD operation. Revisit if the operators group
+gains a member who is not Joe or one of his agents.
+(see: /projects/monolith/core/mcp_policy.py)
+(see: /projects/monolith/cluster/mcp.py)
+(tracks: #6475, #6476)
+
 **Why.** A federating gateway originally replaced one authentication workaround
 and local proxy per backend, giving remote agents one catalogue and one place for
 tool-level entitlement (ADR agents/003). Per-domain MCP servers were rejected
@@ -1650,7 +1666,7 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
-| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789, #5804; #5786 closed 2026-09-14) | not started |
+| One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789; #5786 closed 2026-09-14) | not started |
 | The conductor decides reversible defaults, stages repository-only delivery when live checks are unavailable, and adopts unowned existing PRs; one human-needed notification per task | section 11, reversible gates | #6208 | implemented, awaiting validation |
 | Factory PR lifecycle follows settlement, adopts linked delivery targets at receipt creation, and incrementally retires stale duplicate or closed-issue factory PRs | section 11, factory PR lifecycle | #6255 | implemented in repository; operational rollout and first live `factory_pr_retired` audit not yet observed |
 | A sessionless reserved factory start is recovered only after its pinned turn timeout by an ownership-fenced no-dispatch proof, then ordinary bounded reconciliation may retry it | section 4, factory settlement | #6285 | repository implementation staged default-off by Conductor rescope; separately authorized enablement, live wedge settlement, next-tick re-plan and concurrent-binding refusal remain to be observed |
@@ -1658,13 +1674,12 @@ this table when the work ships or the issue closes without it.
 | Conductor decisions, questions, rationale, and scoped KG context persist across fresh conversations and reach the task Planner | The factory conductor | #5787 | implemented in repository behind `knowledge.conductorContinuity.enabled=false`; live provenance, isolation and outage checks remain |
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
 | Conductor mutations are server-gated by tier, ledgered, and stoppable, with health gates before autonomous action | The factory conductor | #5789 | delivered staged by PR #6387 (58c6f2e4): durable operation owners with actor attribution, stable `request_key` identities and `expected_version` stale refusal in `factory/orchestration/mcp.py`, conservative stop reporting; `swarm.factoryEnabled=false` and `FACTORY_STOP_SUPERVISION_ENABLED=false` remain the defaults, no tier framework or separate ledger was added, and the four live checks on the issue remain open |
-| Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor | #5804 | gated: no oversubscription observed as of 2026-09-18; the lane starvation seen twice (2026-09-13, 2026-09-16) was uncertain-attempt settlement, owned by #6091 and 49b617ef9, not admission. Opens when #5851's baseline or an incident shows concurrent lanes oversubscribing capacity |
 | Execution profiles (implement, investigate, debug, research) become policy dimensions beside difficulty and risk | The factory conductor | #5784 | not started; conductor and planner on Astra since generation 11 |
 | Autonomous intake selects bounded issue work and refines or escalates issues that are not delivery-ready | section 4 | #6002 | in progress: policy, intake selection, and the refine path are implemented behind disabled defaults |
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
 | The knowledge graph gains project context, runtime evidence and known-work linkage in bounded slices behind a measured retrieval baseline | section 6 | #5829 (children #6128, #5849, #5571, #5573, #5913, #5926) | not started: baseline #6128 first |
-| Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5527 | in progress: slice live 2026-09-03, children open |
-| A Discord-backed session transcript pipeline with ACL-filtered surfacing and reviewed replays | section 6 | #3961 | proposal, gated on #3959, a selected table workflow and a new ASR-capacity decision; #5461 closed as not planned |
+| Evidence-lane follow-ons: deployment observations (#5571), default retrieval scopes with personal opt-in (#5573), distress inbox (#5574), #5569, #5587 | section 6 (agents/063) | #5571, #5573, #5574 (parent #5527 closed 2026-10-01) | in progress: slice live 2026-09-03, children open |
+| A Discord voice adapter is the primary transcript capture for Grimoire's online table, through the #6618 ingest and the #6620 Google Speech-to-Text seam | section 6 | #3961 | agent-ready 2026-10-01, blocked by #6618 and #6620; Joe's table plays online over Discord voice |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | section 5 (security/005) | #3899 | implemented in repository; the first scheduled run and a live takedown are not yet observed |
@@ -1685,6 +1700,23 @@ person. Independent review and required Linux CI remain delivery gates.
 One task-level Discord summary replaces attempt and supervision-cycle noise;
 the audit retains every observation. This delegates the three reversible gates
 under #6208 without granting deployment or credential authority.
+
+### Control loops that gate work
+
+A factory control loop that can demote, pause or reroute work ships only with a
+human-reviewed bound recorded here first: what it measures, the threshold, how
+it recovers, and the longest it may hold a class or lane restricted before it
+escalates to a person instead.
+
+**Why.** On 2026-09-19 a factory-authored class-tier gate demoted `bug-fix` to
+the advisory tier on first-pass approval rate, 32 seconds after its window
+filled. First-pass approval is the input to the review loop, not its outcome
+(7 of 8 first-pass rejections in that window merged), infrastructure `blocked`
+rows sat in the denominator, and recovery sampled a different model pool from
+the one being gated. Nothing was delivered for about nine hours and about $112
+of Opus went on recovery samples that could not converge. No ARCHITECTURE
+section described the loop, so no reviewer saw its bound. Quality routing
+stays retired; review rounds already bound quality (#6283, closed 2026-10-01).
 
 ### The factory conductor
 
