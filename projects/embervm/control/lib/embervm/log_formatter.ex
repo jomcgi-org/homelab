@@ -21,6 +21,8 @@ defmodule Embervm.LogFormatter do
     :trace_id,
     :task_id,
     :session_id,
+    :adoption_dispatch_id,
+    :adoption_flush_result,
     :workload,
     :principal,
     :ref,
