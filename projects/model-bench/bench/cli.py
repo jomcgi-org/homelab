@@ -630,7 +630,12 @@ def _cell_score(cell: ResultCell) -> float:
     return 1.0 if cell.first_attempt_passed else 0.0
 
 
-def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -> dict:
+def _aggregate_agentic_group(
+    group: list[ResultCell],
+    tier_of: dict[str, str],
+    *,
+    scored_ids: frozenset[str] = frozenset(),
+) -> dict:
     """Aggregate graded agentic cells while accounting for harness errors."""
     from statistics import mean
 
@@ -649,6 +654,8 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
             "hard_pass": 0,
             "frontier_n": 0,
             "frontier_score": None,
+            "scored_n": 0,
+            "mean_score": None,
             "mean_tokens": 0.0,
             "mean_turns": 0.0,
             "mean_latency_ms": 0.0,
@@ -666,6 +673,7 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
     floor = [cell for cell in graded if tier_of.get(cell.task_id) in FLOOR_TIERS]
     hard = [cell for cell in graded if tier_of.get(cell.task_id) == "hard"]
     frontier = [cell for cell in graded if tier_of.get(cell.task_id) == "frontier"]
+    scored = [cell for cell in graded if cell.task_id in scored_ids]
     floor_failed = sorted(
         cell.task_id for cell in floor if not cell.first_attempt_passed
     )
@@ -692,6 +700,10 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
         "frontier_n": len(frontier),
         "frontier_score": (
             float(mean([_cell_score(cell) for cell in frontier])) if frontier else None
+        ),
+        "scored_n": len(scored),
+        "mean_score": (
+            float(mean([_cell_score(cell) for cell in scored])) if scored else None
         ),
         # Mean (not median) per task: the tasks vary ~5x in size, and a model can
         # blow up on one hard task (e.g. a greenfield build) while looking tidy on
@@ -893,9 +905,19 @@ def _report(args) -> None:
             and cell.model_id not in retired_ids
         ):
             agentic_groups.setdefault(cell.model_id, []).append(cell)
+    scored_ids = frozenset(
+        cell.task_id
+        for group in agentic_groups.values()
+        for cell in group
+        if cell.first_attempt_score is not None
+    )
     agentic: dict[str, dict] = {}
     for model_id, group in agentic_groups.items():
-        agentic[model_id] = _aggregate_agentic_group(group, tier_of)
+        agentic[model_id] = _aggregate_agentic_group(
+            group, tier_of, scored_ids=scored_ids
+        )
+
+    tasks_json, _ = _leaderboard_task_data(cells=cells, tasks=tasks)
 
     md = render_leaderboard(
         per_class=per_class,
@@ -907,6 +929,7 @@ def _report(args) -> None:
         # but the markdown splits them into a ceiling section instead of the cost-ranked
         # candidate tables, where their free (cost=0) rows would otherwise dominate.
         agentic_anchor_ids=anchor_ids,
+        scored_tasks=[row for row in tasks_json if row["id"] in scored_ids],
     )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -934,23 +957,12 @@ def _short_name(model_id: str) -> str:
     return model_id.split("/", 1)[1] if "/" in model_id else model_id
 
 
-def _write_leaderboard_json(
-    path: Path,
+def _leaderboard_task_data(
     *,
-    agentic: dict,
     cells: list,
     tasks: list,
-    anchor_ids: set,
-    generated_at: str,
-    display_names: dict | None = None,
-    self_hosted_ids: set | None = None,
-) -> None:
-    """Write the structured agentic leaderboard consumed by the public page.
-
-    Self-contained snapshot: models ranked by pass-rate then cost, plus per-task
-    pass counts and light provenance, so the SvelteKit page renders from a single
-    committed file with no backend.
-    """
+) -> tuple[list[dict], dict[str, dict[str, dict]]]:
+    """Build per-task data shared by the markdown and JSON leaderboard reports."""
     agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
     task_meta = {t.id: t for t in tasks}
 
@@ -1025,6 +1037,27 @@ def _write_leaderboard_json(
         }
         for tid, v in sorted(per_task.items())
     ]
+    return tasks_json, per_model_tasks
+
+
+def _write_leaderboard_json(
+    path: Path,
+    *,
+    agentic: dict,
+    cells: list,
+    tasks: list,
+    anchor_ids: set,
+    generated_at: str,
+    display_names: dict | None = None,
+    self_hosted_ids: set | None = None,
+) -> None:
+    """Write the structured agentic leaderboard consumed by the public page.
+
+    Self-contained snapshot: models ranked by pass-rate then cost, plus per-task
+    pass counts and light provenance, so the SvelteKit page renders from a single
+    committed file with no backend.
+    """
+    tasks_json, per_model_tasks = _leaderboard_task_data(cells=cells, tasks=tasks)
 
     names = display_names or {}
     local = self_hosted_ids or set()
@@ -1045,6 +1078,10 @@ def _write_leaderboard_json(
             "floor_failed": s["floor_failed"],
             "hard_pass": s["hard_pass"],
             "hard_n": s["hard_n"],
+            "scored_n": s.get("scored_n", 0),
+            "mean_score": (
+                round(s["mean_score"], 4) if s.get("mean_score") is not None else None
+            ),
             "frontier_n": s.get("frontier_n", 0),
             "frontier_score": (
                 round(s["frontier_score"], 4)

@@ -9,6 +9,7 @@ def render_leaderboard(
     retired: list,
     agentic: dict | None = None,
     agentic_anchor_ids: set | None = None,
+    scored_tasks: list[dict] | None = None,
 ) -> str:
     """Render a markdown leaderboard report.
 
@@ -18,7 +19,8 @@ def render_leaderboard(
         frontier: task_class -> list of non-dominated model ids.
         retired: list of dicts with keys id, reason, date, pass1, cost.
         agentic: model_id -> dict with keys n, errored, errored_tasks, pass_rate,
-                 mean_tokens, mean_turns, cost, tool_ok_rate, mean_norms. The agentic tool-calling
+                 mean_tokens, mean_turns, cost, tool_ok_rate, mean_norms, scored_n,
+                 mean_score. The agentic tool-calling
                  leaderboard: the primary contract of this benchmark.
                  Optional/back-compatible.
         agentic_anchor_ids: set of model_ids in `agentic` that are anchors. They are
@@ -26,11 +28,13 @@ def render_leaderboard(
                  CEILING section (the capability + cost/wall ceiling to match and beat),
                  since they run via Claude Code (own harness) and are a reference, not a
                  ranked competitor.
+        scored_tasks: optional per-task rows shared with the JSON report, with keys
+                 id, tier, passed, n, mean_score, restricted to scored agentic tasks.
 
     Returns:
-        Markdown string with sections: Agentic, Frontier ceiling, Budget tier, Anchors,
-        Pareto frontier, Retired. Section headers are fixed and always emitted even when
-        inputs are empty.
+        Markdown string with sections: Agentic, Excluded harness errors, Frontier
+        ceiling, Scored tasks, Budget tier, All results, Anchors, Pareto frontier,
+        Retired. Section headers are fixed and always emitted even when inputs are empty.
     """
     lines: list[str] = []
     lines.append("# model-bench leaderboard")
@@ -52,6 +56,10 @@ def render_leaderboard(
     def _frontier(r) -> str:
         score = r.get("frontier_score")
         return f"{score:.2f}" if score is not None else "n/a"
+
+    def _score(r) -> str:
+        score = r.get("mean_score")
+        return f"{score:.2f} ({r.get('scored_n', 0)})" if score is not None else "n/a"
 
     def _cps(r) -> str:
         cps = r.get("cost_per_solve")
@@ -80,13 +88,14 @@ def render_leaderboard(
             )
         )
         lines.append(
-            "| Model | hard | frontier | mean tokens | mean turns | wall-time (s) "
+            "| Model | hard | score | frontier | mean tokens | mean turns | wall-time (s) "
             "| cost ($) | $/solve | tool-use ok | norms | errored |"
         )
-        lines.append("| --- " * 11 + "|")
+        lines.append("| --- " * 12 + "|")
         for r in qualified:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
+                f"| {_score(r)} "
                 f"| {_frontier(r)} "
                 f"| {r.get('mean_tokens', 0):.0f} | {r.get('mean_turns', 0):.1f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
@@ -164,12 +173,13 @@ def render_leaderboard(
             key=lambda r: (-r.get("hard_pass", 0), r.get("mean_latency_ms", 0.0))
         )
         lines.append(
-            "| Model | hard | frontier | pass rate | wall-time (s) | rental ($) | tasks |"
+            "| Model | hard | score | frontier | pass rate | wall-time (s) | rental ($) | tasks |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- " * 8 + "|")
         for r in ceiling_rows:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
+                f"| {_score(r)} "
                 f"| {_frontier(r)} "
                 f"| {r.get('pass_rate', 0.0):.2f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
@@ -177,6 +187,22 @@ def render_leaderboard(
             )
     else:
         lines.append("No anchor ceiling results yet.")
+    lines.append("")
+
+    lines.append("## Scored tasks")
+    lines.append("")
+    if scored_tasks:
+        lines.append("| Task | tier | passed/n | mean score |")
+        lines.append("| --- | --- | --- | --- |")
+        for task in scored_tasks:
+            score = task.get("mean_score")
+            mean_score = f"{score:.2f}" if score is not None else "n/a"
+            lines.append(
+                f"| {task['id']} | {task['tier']} "
+                f"| {task['passed']}/{task['n']} | {mean_score} |"
+            )
+    else:
+        lines.append("No scored tasks yet.")
     lines.append("")
 
     # Budget tier: qualifying candidates sorted by cost ascending
