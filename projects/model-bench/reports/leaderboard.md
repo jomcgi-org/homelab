@@ -76,6 +76,7 @@ No qualifying budget candidates yet.
 | xiaomi/mimo-v2.6-flash | config-plumbing | 0.50 | 0.0041 | can't | no |
 | google/gemma-4-31b-it | config-plumbing | 0.50 | 0.0047 | can't | no |
 | openai/gpt-6-luna | config-plumbing | 0.50 | 0.0054 | can't | no |
+| z-ai/glm-5.3-flash | config-plumbing | 0.50 | 0.0057 | can't | no |
 | deepseek/deepseek-v4.1-flash | config-plumbing | 0.50 | 0.0066 | can't | no |
 | qwen/qwen3-coder-next | config-plumbing | 0.50 | 0.0080 | can't | no |
 | qwen/qwen3.6-35b-a3b | config-plumbing | 0.50 | 0.0103 | can't | no |
@@ -98,6 +99,7 @@ No qualifying budget candidates yet.
 | openai/gpt-6-luna | free-text | 1.00 | 0.0001 | one-shots | no |
 | mistralai/devstral-2512 | free-text | 1.00 | 0.0002 | one-shots | no |
 | meta/muse-spark-1.3-contributor | free-text | 1.00 | 0.0003 | one-shots | no |
+| z-ai/glm-5.3-flash | free-text | 1.00 | 0.0005 | one-shots | no |
 | deepseek/deepseek-v4.1-flash | free-text | 1.00 | 0.0005 | one-shots | no |
 | deepseek/deepseek-v4-pro | free-text | 1.00 | 0.0007 | one-shots | no |
 | z-ai/glm-4.7 | free-text | 1.00 | 0.0019 | one-shots | no |
@@ -125,5 +127,6 @@ No qualifying budget candidates yet.
 | --- | --- | --- | --- | --- |
 | meta/muse-spark-1.3-contributor | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 1.00 | 0 |
 | deepseek/deepseek-v4.1-flash | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 1.00 | 1 |
+| z-ai/glm-5.3-flash | 6/8 | embervm-pi-tools-01, frontend-moving-legtags-01 | 1.00 | 0 |
 | xiaomi/mimo-v2.6-flash | 5/8 | embervm-pi-tools-01, frontend-moving-legtags-01, inference-appledouble-01 | 0.94 | 0 |
 | qwen/qwen-2.5-coder-32b-instruct | 0.00 | 0.0000 | 0/15 agentic: OpenRouter provider 4xxes on tool-calling requests, cannot participate | 2026-07-01 |
