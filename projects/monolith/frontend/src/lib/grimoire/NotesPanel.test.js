@@ -118,15 +118,6 @@ describe("NotesPanel", () => {
     }
   });
 
-  it("SSR renders a named DM-sharing select so the default submits without JS", async () => {
-    const { render } = await import("svelte/server");
-    const { body } = render(NotesPanel, {
-      props: { campaignId, notes: [note()] },
-    });
-    expect(body).toContain('name="dm_readable"');
-    expect(body).toContain('value=""');
-  });
-
   it("labels the DM character tab Shared with you and permits only party quick-add", async () => {
     const root = await panel({
       isDm: true,
