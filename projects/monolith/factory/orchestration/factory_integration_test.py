@@ -7,6 +7,7 @@ checks prove server admission/reconciliation, not guest execution or live CI.
 from __future__ import annotations
 
 import copy
+import json
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -32,6 +33,7 @@ from factory.orchestration.factory_models import (
     FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryPlannerPreview,
     WorkItem,
     WorkItemEdge,
     WorkItemEvent,
@@ -40,6 +42,7 @@ from factory.orchestration.factory_models import (
 )
 from factory.orchestration.models import (
     SwarmConductorCall,
+    SwarmDecision,
     SwarmNodeRun,
     SwarmPlanNode,
     SwarmPlanVersion,
@@ -78,6 +81,7 @@ def db(tmp_path, monkeypatch):
         SwarmPlanNode,
         SwarmNodeRun,
         SwarmConductorCall,
+        SwarmDecision,
         FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
@@ -87,6 +91,7 @@ def db(tmp_path, monkeypatch):
         FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
+        FactoryPlannerPreview,
     )
     SQLModel.metadata.create_all(engine, tables=[m.__table__ for m in tables])
     with Session(engine) as session:
@@ -147,6 +152,360 @@ def admit(policy):
     result = admit_next("scheduler")
     assert result["ok"] and result["task_id"].startswith("t-")
     return result["task_id"]
+
+
+def preview_proposal(*, key="fix", attempts=1):
+    return {
+        "action": "add_node",
+        "reason": "bounded work",
+        "node_key": key,
+        "role": "implement",
+        "model": "luna",
+        "prompt": "Deliver the bounded fix",
+        "deps": [],
+        "max_attempts": attempts,
+    }
+
+
+def bind_test_planner(db, monkeypatch, task_id, run_id):
+    from auth.api import Authority, Principal, PrincipalKind
+    from auth.dependencies import set_current_principal, reset_current_principal
+    from factory.orchestration import planner_preview as adapter
+
+    principal = Principal(
+        subject="test-planner",
+        actor=("test-server",),
+        scope=(),
+        groups=(),
+        email=None,
+        kind=PrincipalKind.WORKLOAD,
+        authority=Authority.DELEGATED,
+        issuer="test-verified-issuer",
+    )
+    binding = adapter.PlannerBinding(task_id, run_id)
+    monkeypatch.setenv("FACTORY_PLANNER_PREVIEW_ENABLED", "true")
+    monkeypatch.setattr(adapter, "get_engine", lambda: db)
+    monkeypatch.setattr(
+        adapter,
+        "verified_planner_binding",
+        lambda p: binding if p == principal else None,
+    )
+
+    def call(decision, revision, *, caller=principal):
+        token = set_current_principal(caller)
+        try:
+            return adapter.preview_planner_decision(
+                decision, expected_revision=revision
+            )
+        finally:
+            reset_current_principal(token)
+
+    return adapter, binding, principal, call
+
+
+@pytest.fixture
+def bound_preview(db, policy, monkeypatch):
+    task_id = admit(policy)
+    task = conductor._task(task_id)
+    assert conductor._add(
+        task, policy, "conductor_1", "planner", [], "opus", "test:planner", "test"
+    ).ok
+    assert graph.admit_dispatch(task_id, "conductor_1").ok
+    with Session(db) as session:
+        run = session.exec(
+            select(SwarmNodeRun).where(SwarmNodeRun.task_id == task_id)
+        ).one()
+        run_id = run.id
+    from factory.orchestration.planner_preview import verified_planner_binding
+
+    production_verifier = verified_planner_binding
+    adapter, binding, principal, call = bind_test_planner(
+        db, monkeypatch, task_id, run_id
+    )
+    return SimpleNamespace(
+        adapter=adapter,
+        binding=binding,
+        principal=principal,
+        call=call,
+        task=task,
+        policy=policy,
+        revision=graph.current_version(task_id),
+        production_verifier=production_verifier,
+    )
+
+
+def preview_ledger(db):
+    with Session(db) as session:
+        return [
+            (r.planner_run_id, r.ordinal)
+            for r in session.exec(select(FactoryPlannerPreview)).all()
+        ]
+
+
+def preview_database_snapshot(db):
+    # Snapshot every fixture table, including decisions, funding overlays and
+    # allowance/refusal audits, rather than only checking graph revision.
+    with db.connect() as connection:
+        tables = (
+            connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            name: connection.exec_driver_sql(
+                f'SELECT * FROM "{name}" ORDER BY rowid'
+            ).all()
+            for name in tables
+            if name != "factory_planner_preview"
+        }
+
+
+def test_planner_preview_adapter_is_advisory_and_only_writes_slots(
+    db, bound_preview, monkeypatch
+):
+    s = bound_preview
+    before = preview_database_snapshot(db)
+    first = s.call(preview_proposal(), s.revision)
+    assert first["ok"] and first["advisory"]
+    second = s.call(preview_proposal(), s.revision + 1)
+    assert second["refusal"]["code"] == "stale_revision"
+    assert "projection" not in second
+    monkeypatch.setattr(
+        conductor,
+        "preview_decision",
+        lambda *_a, **_k: pytest.fail("third call must not evaluate"),
+    )
+    assert (
+        s.call(preview_proposal(), s.revision)["refusal"]["code"]
+        == "preview_limit_reached"
+    )
+    assert preview_ledger(db) == [
+        (s.binding.planner_run_id, 1),
+        (s.binding.planner_run_id, 2),
+    ]
+    assert preview_database_snapshot(db) == before
+
+
+@pytest.mark.parametrize(
+    "caller_kind",
+    ["anonymous", "operator", "workload", "unbound", "no_issuer", "no_subject"],
+)
+def test_planner_preview_adapter_refuses_unverified_callers(
+    db, bound_preview, caller_kind
+):
+    from dataclasses import replace
+    from auth.api import Authority, PrincipalKind, anonymous_principal
+
+    s = bound_preview
+    callers = {
+        "anonymous": anonymous_principal(),
+        "operator": replace(
+            s.principal,
+            kind=PrincipalKind.HUMAN,
+            authority=Authority.STANDING,
+            groups=("operators",),
+        ),
+        "workload": replace(s.principal, authority=Authority.STANDING),
+        "unbound": replace(s.principal, subject="another-planner"),
+        "no_issuer": replace(s.principal, issuer=""),
+        "no_subject": replace(s.principal, subject=""),
+    }
+    before = preview_database_snapshot(db)
+    assert (
+        s.call(preview_proposal(), s.revision, caller=callers[caller_kind])["refusal"][
+            "code"
+        ]
+        == "planner_binding_unavailable"
+    )
+    assert preview_database_snapshot(db) == before and not preview_ledger(db)
+
+
+def test_planner_preview_production_verifier_has_no_binding(
+    db, bound_preview, monkeypatch
+):
+    s = bound_preview
+    monkeypatch.setattr(s.adapter, "verified_planner_binding", s.production_verifier)
+    assert s.production_verifier(s.principal) is None
+    assert (
+        s.call(preview_proposal(), s.revision)["refusal"]["code"]
+        == "planner_binding_unavailable"
+    )
+    assert not preview_ledger(db)
+
+
+def test_planner_preview_disabled_precedes_identity_schema_and_database(
+    db, bound_preview, monkeypatch
+):
+    s = bound_preview
+    monkeypatch.delenv("FACTORY_PLANNER_PREVIEW_ENABLED", raising=False)
+    monkeypatch.setattr(
+        s.adapter,
+        "current_principal",
+        lambda: pytest.fail("disabled must not read identity"),
+    )
+    monkeypatch.setattr(
+        s.adapter, "get_engine", lambda: pytest.fail("disabled must not read DB")
+    )
+    assert s.call(None, True)["refusal"]["code"] == "preview_disabled"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "wrong_task",
+        "missing_run",
+        "terminal",
+        "uncertain",
+        "not_planner",
+        "finished_at",
+        "paused",
+        "cancelled",
+        "finished",
+        "task_finished",
+        "missing_receipt",
+    ],
+)
+def test_planner_preview_binding_must_match_active_admitted_task(
+    db, bound_preview, monkeypatch, change
+):
+    from dataclasses import replace
+    from datetime import datetime, timezone
+
+    s = bound_preview
+    binding = s.binding
+    if change == "wrong_task":
+        binding = replace(binding, task_id="other-task")
+    elif change == "missing_run":
+        binding = replace(binding, planner_run_id=binding.planner_run_id + 1)
+    else:
+        with Session(db) as session:
+            run = session.get(SwarmNodeRun, binding.planner_run_id)
+            receipt = session.exec(
+                select(FactoryReceipt).where(FactoryReceipt.task_id == binding.task_id)
+            ).one()
+            if change == "terminal":
+                run.status = "succeeded"
+            elif change == "uncertain":
+                run.status = "uncertain"
+            elif change == "not_planner":
+                run.node_key = "conductor_funding_1"
+            elif change == "finished_at":
+                run.finished_at = datetime.now(timezone.utc)
+            elif change == "paused":
+                receipt.task_paused = True
+            elif change == "cancelled":
+                receipt.cancellation_requested = True
+            elif change == "finished":
+                receipt.state = "succeeded"
+            elif change == "task_finished":
+                session.get(SwarmTask, binding.task_id).settled_at = datetime.now(
+                    timezone.utc
+                )
+            elif change == "missing_receipt":
+                receipt.task_id = None
+            session.commit()
+    monkeypatch.setattr(s.adapter, "verified_planner_binding", lambda _p: binding)
+    assert (
+        s.call(preview_proposal(), s.revision)["refusal"]["code"]
+        == "planner_binding_inactive"
+    )
+    assert not preview_ledger(db)
+
+
+def test_planner_preview_ambiguous_binding_refuses(db, bound_preview, monkeypatch):
+    s = bound_preview
+    monkeypatch.setattr(
+        s.adapter, "verified_planner_binding", lambda _p: [s.binding, s.binding]
+    )
+    assert (
+        s.call(preview_proposal(), s.revision)["refusal"]["code"]
+        == "planner_binding_inactive"
+    )
+    assert not preview_ledger(db)
+
+
+@pytest.mark.parametrize("revision", [True, 1.0, "1", None])
+def test_planner_preview_requires_exact_integer_revision(db, bound_preview, revision):
+    assert (
+        bound_preview.call(preview_proposal(), revision)["refusal"]["code"]
+        == "validation_failed"
+    )
+    assert not preview_ledger(db)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        None,
+        {},
+        {"action": "finish", "reason": "done", "pr_number": 1},
+        {**preview_proposal(), "task_id": "caller-grant"},
+        {**preview_proposal(), "prompt": "x" * 16001},
+        {**preview_proposal(), "node_key": "Bad-Key"},
+        {
+            "action": "plan",
+            "reason": "large",
+            "edits": [preview_proposal()] * (conductor.MAX_PLAN_EDITS + 1),
+        },
+    ],
+)
+def test_planner_preview_reuses_real_decision_schema(db, bound_preview, decision):
+    assert (
+        bound_preview.call(decision, bound_preview.revision)["refusal"]["code"]
+        == "validation_failed"
+    )
+    assert not preview_ledger(db)
+
+
+def test_planner_preview_slots_are_atomic_across_concurrent_calls(db, bound_preview):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    s = bound_preview
+    barrier = Barrier(4)
+
+    def call():
+        barrier.wait(timeout=10)
+        return s.call(preview_proposal(), s.revision)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: call(), range(4)))
+    assert sum(r["ok"] for r in results) == 2
+    assert (
+        sum(
+            (r.get("refusal") or {}).get("code") == "preview_limit_reached"
+            for r in results
+        )
+        == 2
+    )
+    assert sorted(preview_ledger(db)) == [
+        (s.binding.planner_run_id, 1),
+        (s.binding.planner_run_id, 2),
+    ]
+
+
+def test_planner_preview_does_not_authorize_submission_after_state_changes(
+    db, bound_preview
+):
+    s = bound_preview
+    proposal = {**preview_proposal(), "expected_version": s.revision}
+    assert s.call(proposal, s.revision)["ok"]
+    # Real submission recomputes policy accounting even after a fitting preview.
+    conductor._apply_decision(
+        s.task,
+        {**s.policy, "task_budget_usd": 1.0},
+        proposal,
+        "test:stale-preview",
+        graph.node_runs(s.task["id"]),
+    )
+    with Session(db) as session:
+        audits = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "conductor_rejected")
+        ).all()
+        assert json.loads(audits[-1].detail_json)["refusal_code"] == "envelope_exceeded"
+    assert graph.current_version(s.task["id"]) == s.revision
 
 
 def test_autonomous_intake_receipt_flows_through_admission(db, policy, monkeypatch):

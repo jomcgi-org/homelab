@@ -510,6 +510,11 @@ def planner_knowledge_enabled() -> bool:
     return os.environ.get("CONDUCTOR_CONTINUITY_ENABLED", "false").lower() == "true"
 
 
+def planner_preview_enabled() -> bool:
+    """Stage in-turn accounting without enabling a planner identity grant."""
+    return os.environ.get("FACTORY_PLANNER_PREVIEW_ENABLED", "false").lower() == "true"
+
+
 def _outcome(run: dict) -> dict:
     return json.loads(run.get("outcome_json") or "{}")
 
@@ -1870,6 +1875,18 @@ def planner_prompt(
             else ""
         )
         + budget_rule
+        + (
+            "Before writing a proposed graph decision, preview it through the "
+            "server's task-bound planner adapter with the exact expected_revision. "
+            "Use at most two previews per planner turn. A preview is advisory and "
+            "submission repeats all current-state checks; stale evidence grants "
+            "no authority. If the second preview still does not fit, emit a "
+            "feasible smaller decision, or request_funding where funding is "
+            "available, or pause. Cite the measured shortfall: needed versus "
+            "allowed turns and USD, plus spare_turns and spare_usd. "
+            if planner_preview_enabled()
+            else ""
+        )
         + judgment_rule
         # The per-repo charter fragment. Empty for homelab, so its prompt
         # stays byte-identical to today.

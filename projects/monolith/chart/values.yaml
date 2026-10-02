@@ -1764,6 +1764,8 @@ swarm:
   # Re-read open escalation cards from GitHub in bounded batches. Off until
   # the reconciliation path is reviewed and deliberately enabled.
   factoryEscalationRevalidationEnabled: false
+  # Advisory planner adapter only; no production binding verifier exists yet.
+  factoryPlannerPreviewEnabled: false
   # Decide a card on a receipt that is still admitted, uncertain or landing
   # whatever the current policy generation: active work keeps its pinned
   # policy, so its card (a watchdog pause, most often) is not stale.
