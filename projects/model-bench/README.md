@@ -78,10 +78,6 @@ fixed, so a model that repairs only the reported symptom lands at a partial scor
 site from the API pod and states the rest as a property of every span-exporting
 process, and there are three sites to find.
 
-A snapshot can also carry `overlays:` (each a `commit` plus `paths`), extracted on top
-of the base commit with the same strip. Use it when a task combines real code from
-more than one point in history, e.g. a later process that reintroduced the same bug.
-
 ## Setup
 
 Two interpreters are involved:
