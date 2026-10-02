@@ -667,8 +667,8 @@ defmodule Embervm.BrickControllerTest do
 
   test "a lineage whose workload runs a live VM on a co-located sibling is held, not archived" do
     ctx = archive_gate_stack()
-    sibling = %{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1,
-      session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]}
+    sibling = Map.merge(%{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1},
+      %{session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]})
     Agent.update(ctx.facts, fn facts -> [sibling | facts] end)
     log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
     assert log =~ "reason=archive_pending"
@@ -681,8 +681,8 @@ defmodule Embervm.BrickControllerTest do
     ctx = archive_gate_stack()
     victim = %{ctx.fact | session_volumes: [%{workload: "shell", lineage_id: "attached"},
       %{workload: "other", lineage_id: "parked", exported: false}]}
-    sibling = %{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1,
-      session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]}
+    sibling = Map.merge(%{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1},
+      %{session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]})
     Agent.update(ctx.facts, fn _ -> [sibling, victim] end)
     archive_gate_tick(ctx)
     assert_receive {:archive, "node-4/uid-a", [%{lineage_id: "parked"}]}
