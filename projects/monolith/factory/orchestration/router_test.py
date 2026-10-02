@@ -768,13 +768,42 @@ def test_follower_replica_returns_503(monkeypatch):
     assert "not launched" in response.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Cf-Access-Authenticated-User-Email": "forged@example.com"},
+        # Envoy appends its projected claim, so two values mean one is forged.
+        [
+            ("X-Auth-Email", "forged@example.com"),
+            ("X-Auth-Email", "alice@example.com"),
+        ],
+    ],
+)
+def test_decide_run_never_attributes_an_unverified_header(
+    decision_api, decision_engine, headers
+):
+    test_client, _ = decision_api
+    _open_decision(decision_engine)
+
+    response = test_client.post(
+        "/api/swarm/runs/wf-1/nodes/push_gate/decision",
+        headers=headers,
+        json={"decision": "approve"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["actor_subject"] == "operator"
+    with Session(decision_engine) as session:
+        assert session.get(SwarmDecision, 1).actor_authority == "anonymous"
+
+
 def test_decide_run_records_header_actor(decision_api, decision_engine):
     test_client, dbos = decision_api
     _open_decision(decision_engine)
 
     response = test_client.post(
         "/api/swarm/runs/wf-1/nodes/push_gate/decision",
-        headers={"Cf-Access-Authenticated-User-Email": "alice@example.com"},
+        headers={"X-Auth-Email": "alice@example.com"},
         json={"decision": "approve", "note": "Ship it."},
     )
 
@@ -823,7 +852,7 @@ def test_decide_run_repeat_is_idempotent_and_preserves_anonymous_actor(
     )
     second = test_client.post(
         "/api/swarm/runs/wf-1/nodes/push_gate/decision",
-        headers={"Cf-Access-Authenticated-User-Email": "later@example.com"},
+        headers={"X-Auth-Email": "later@example.com"},
         json={"decision": "send_back", "note": "A repeated click."},
     )
 
@@ -960,11 +989,18 @@ def test_raise_budget_must_exceed_current_effective(monkeypatch, decision_engine
     ("headers", "expected_actor", "expected_authority"),
     [
         (
-            {"Cf-Access-Authenticated-User-Email": "alice@example.com"},
+            {"X-Auth-Email": "alice@example.com"},
             "alice@example.com",
             "cloudflare-access",
         ),
         ({}, "operator", "anonymous"),
+        # Nothing validates or strips the Cloudflare header, so it is not an
+        # identity (#6036): a caller that sets it is still anonymous.
+        (
+            {"Cf-Access-Authenticated-User-Email": "forged@example.com"},
+            "operator",
+            "anonymous",
+        ),
     ],
 )
 def test_raise_budget_appends_history_and_resolves_budget_decision(
@@ -1074,7 +1110,7 @@ def test_cancel_reaps_after_dbos_cancel(monkeypatch):
     monkeypatch.setattr("factory.execution.api.reap_sessions_for_workflow", reap)
     response = client().post(
         "/api/swarm/runs/wf-1/cancel",
-        headers={"Cf-Access-Authenticated-User-Email": "alice@example.com"},
+        headers={"X-Auth-Email": "alice@example.com"},
     )
 
     assert response.status_code == 200

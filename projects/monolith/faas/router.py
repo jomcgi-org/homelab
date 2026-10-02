@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlmodel import Session
 
 from core.db import get_session
+from core.identity import verified_email
 from faas import embervm_client, storage, workload
 from faas.repository import (
     delete_function,
@@ -75,7 +76,7 @@ async def register_function(
     session: Session = Depends(get_session),
 ) -> dict:
     """Register a function: validate, upload, build, smoke-gate, then make visible."""
-    created_by = request.headers.get("Cf-Access-Authenticated-User-Email") or "api"
+    created_by = verified_email(request) or "api"
 
     # --- Validation chain (no side effects persisted before this passes) ---
     if not _NAME_RE.match(name) or len(name) > _NAME_MAX:

@@ -18,7 +18,8 @@ describe("run decision proxy", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Cf-Access-Authenticated-User-Email": "human@example.com",
+          "X-Auth-Email": "human@example.com",
+          "Cf-Access-Authenticated-User-Email": "forged@example.com",
         },
         body: JSON.stringify({ decision: "approve", note: "ship it" }),
       },
@@ -39,10 +40,13 @@ describe("run decision proxy", () => {
         method: "POST",
         body: JSON.stringify({ decision: "approve", note: "ship it" }),
         headers: expect.objectContaining({
-          "Cf-Access-Authenticated-User-Email": "human@example.com",
+          "X-Auth-Email": "human@example.com",
         }),
       }),
     );
+    // The spoofable Cloudflare header is never forwarded (#6036).
+    const [, init] = global.fetch.mock.calls[0];
+    expect(init.headers["Cf-Access-Authenticated-User-Email"]).toBeUndefined();
   });
 
   test("passes through an invalid-option response", async () => {

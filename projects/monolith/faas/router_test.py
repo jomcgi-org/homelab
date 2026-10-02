@@ -154,7 +154,9 @@ def _post(client, **overrides):
     if "requirements" in overrides:
         data["requirements"] = overrides["requirements"]
     files = {"zip": ("fn.zip", overrides.get("zip", _zip_bytes()), "application/zip")}
-    return client.post("/api/functions", data=data, files=files)
+    return client.post(
+        "/api/functions", data=data, files=files, headers=overrides.get("headers")
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -179,6 +181,28 @@ def test_happy_path_registers_and_makes_visible(client, session, fakes):
     fn = get_function(session, "echo-fn")
     assert fn is not None
     assert fn.last_smoke_at is not None
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({"X-Auth-Email": "joe@example.test"}, "joe@example.test"),
+        ({}, "api"),
+        # Nothing validates or strips the Cloudflare header (#6036), and two
+        # projected values mean one was forged: neither is an identity.
+        ({"Cf-Access-Authenticated-User-Email": "forged@example.test"}, "api"),
+        (
+            [
+                ("X-Auth-Email", "forged@example.test"),
+                ("X-Auth-Email", "joe@example.test"),
+            ],
+            "api",
+        ),
+    ],
+)
+def test_created_by_is_the_verified_identity(client, session, fakes, headers, expected):
+    assert _post(client, headers=headers).status_code == 201
+    assert get_function(session, "echo-fn").created_by == expected
 
 
 def test_name_conflict_is_last_write_wins_not_409(client, session, fakes):

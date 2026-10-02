@@ -2623,6 +2623,17 @@ py_test(
 )
 
 py_test(
+    name = "identity_test",
+    srcs = ["core/identity_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_core",
+        "@pip//pytest",
+        "@pip//starlette",
+    ],
+)
+
+py_test(
     name = "github_test",
     srcs = ["core/github_test.py"],
     imports = ["."],
