@@ -1376,11 +1376,15 @@ defmodule Embervm.BrickController do
         case eligible do
           [] -> nil
           pending ->
-            # Keep the prior candidate across fact-order/count changes. Otherwise
-            # archive the fewest workspaces; pod uid makes equal counts stable.
+            # Incomplete facts rank last: their partial list requests no archive,
+            # so choosing one would stall the class while an archivable complete
+            # brick sits idle. Then keep the prior candidate across
+            # fact-order/count changes, else archive the fewest workspaces; pod
+            # uid makes equal counts stable.
             victim = Enum.min_by(pending, fn fact ->
               uid = Map.get(fact, :pod_uid)
-              {if(Map.has_key?(state.archive_pending, uid), do: 0, else: 1),
+              {if(session_volumes_complete?(fact), do: 0, else: 1),
+                if(Map.has_key?(state.archive_pending, uid), do: 0, else: 1),
                 length(unexported_volumes(fact)), uid}
             end)
             {:pending, victim}

@@ -531,6 +531,18 @@ defmodule Embervm.BrickControllerTest do
     refute_receive {:archive, _, _}
   end
 
+  test "an incomplete fact ranks after a complete brick so the archivable sibling is archived" do
+    ctx = archive_gate_stack()
+    incomplete = %{ctx.fact | pod_uid: "uid-0", node_id: "node-0", session_volumes: [],
+      session_volumes_complete: false}
+    Agent.update(ctx.facts, fn [complete] -> [incomplete, complete] end)
+    archive_gate_tick(ctx)
+    assert_receive {:archive, "node-4", volumes}
+    assert Enum.map(volumes, & &1.lineage_id) == ["unknown", "pending"]
+    refute_receive {:archive, "node-0", _}
+    assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-a"]
+  end
+
   test "a fact without the scan completeness flag reads as incomplete and requests no archive" do
     ctx = archive_gate_stack()
     Agent.update(ctx.facts, fn facts ->

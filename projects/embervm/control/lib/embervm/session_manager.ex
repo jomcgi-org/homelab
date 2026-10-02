@@ -1140,16 +1140,16 @@ defmodule Embervm.SessionManager do
     {:reply, :ok, do_sweep(state)}
   end
 
-  # The async result of an in-flight relight worker (spawned by park_and_relight):
-  # {:ok, node_id, vm_id, relight_ms} on a live restore, or {:error, reason}. On
-  # success, crash-consistently append session_relit (AFTER the daemon returned a
-  # live vm_id), start the session process, and drain the parked callers into it.
-  # On failure, fail the session (snapshot_lost -> 410) and 410 the parked callers.
   @impl true
   def handle_info({:archive_result, node_id, lineage_id, result, at_ms}, state) do
     {:noreply, record_archive_result(state, {node_id, lineage_id}, result, at_ms)}
   end
 
+  # The async result of an in-flight relight worker (spawned by park_and_relight):
+  # {:ok, node_id, vm_id, relight_ms} on a live restore, or {:error, reason}. On
+  # success, crash-consistently append session_relit (AFTER the daemon returned a
+  # live vm_id), start the session process, and drain the parked callers into it.
+  # On failure, fail the session (snapshot_lost -> 410) and 410 the parked callers.
   def handle_info({:relight_done, session_id, outcome}, state) do
     {:noreply, finish_relight(state, session_id, outcome)}
   end

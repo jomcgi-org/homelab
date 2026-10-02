@@ -757,8 +757,10 @@ func (m *Manager) Scan() ([]Inventory, error) {
 // The returned complete flag is true only after a clean scan with no skipped
 // entries. A workload whose ReadDir fails, or a lineage whose Stat or
 // allocated-bytes read fails (or whose image is not a regular file), is
-// skipped and marks the scan incomplete: callers must treat an incomplete
-// inventory as unknown, never as empty, or a failed scan reads as safe.
+// skipped and marks the scan incomplete. A lineage dir with no image at all
+// (ENOENT) is a known absence and is skipped without affecting completeness.
+// Callers must treat an incomplete inventory as unknown, never as empty, or a
+// failed scan reads as safe.
 // A missing session root is empty and complete; a root ReadDir failure
 // returns complete=false with the error.
 func (m *Manager) ScanSessions() ([]SessionInventory, bool, error) {
@@ -787,6 +789,11 @@ func (m *Manager) ScanSessions() ([]SessionInventory, bool, error) {
 			}
 			path := m.SessionVolumePath(w.Name(), l.Name())
 			fi, err := os.Stat(path)
+			if os.IsNotExist(err) {
+				// A lineage dir with no image (a failed restore or create leaves
+				// one behind) is a known absence, not unknown inventory.
+				continue
+			}
 			if err != nil || !fi.Mode().IsRegular() {
 				complete = false
 				continue

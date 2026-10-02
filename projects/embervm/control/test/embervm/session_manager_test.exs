@@ -4837,12 +4837,6 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:retire_attempted, ^lineage_id}, 1_000
   end
 
-  # #6499: archive_session_volume dialed the session's bare volume_node_id.
-  # The real fleet's channel_fun only accepts an INSTANCE dial
-  # ("<node>/<uuid>"), so every drain logged "archive failed; keeping volume"
-  # with :unknown_node and parked workspaces never reached the store. The
-  # permissive fake_channel_fun hides that, so this stub refuses anything that
-  # is not an instance id, like the fleet does.
   defp watch_archive_results(ctx) do
     handler = {__MODULE__, make_ref()}
     :ok = :telemetry.attach(handler, [:embervm, :session, :archive_result],
@@ -4954,6 +4948,12 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
   end
 
+  # #6499: archive_session_volume dialed the session's bare volume_node_id.
+  # The real fleet's channel_fun only accepts an INSTANCE dial
+  # ("<node>/<uuid>"), so every drain logged "archive failed; keeping volume"
+  # with :unknown_node and parked workspaces never reached the store. The
+  # permissive fake_channel_fun hides that, so this stub refuses anything that
+  # is not an instance id, like the fleet does.
   test "drain archives a parked lineage through its owning instance, never the bare node" do
     parent = self()
     {:ok, dialed} = Agent.start_link(fn -> %{strict: false, dials: []} end)

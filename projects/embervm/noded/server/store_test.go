@@ -3369,10 +3369,18 @@ func TestSessionVolumesStatusReportsIncompleteScan(t *testing.T) {
 	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
 		t.Fatalf("clean scan status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
 	}
-	// A lineage dir without a workspace image fails its Stat, so the scan must
-	// skip it and report incomplete: the partial inventory is unknown, never
-	// empty, and the control plane must hold the brick.
-	if err := os.MkdirAll(s.volumes.SessionLineageDir(workload, "lineage-hidden"), 0o700); err != nil {
+	// An image-less lineage dir (a failed restore or create leaves one) is a
+	// known absence and must not poison completeness.
+	if err := os.MkdirAll(s.volumes.SessionLineageDir(workload, "lineage-empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
+		t.Fatalf("image-less lineage status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
+	}
+	// A workspace image that is a directory cannot be inventoried, so the scan
+	// must skip it and report incomplete: the partial inventory is unknown,
+	// never empty, and the control plane must hold the brick.
+	if err := os.MkdirAll(s.volumes.SessionVolumePath(workload, "lineage-hidden"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	volumes, complete := s.sessionVolumesStatus()
@@ -3385,7 +3393,7 @@ func TestSessionVolumesStatusReportsIncompleteScan(t *testing.T) {
 	if got := s.nodeStatus().GetSessionVolumesComplete(); got {
 		t.Fatalf("NodeStatus session_volumes_complete = true, want false on a partial scan")
 	}
-	if err := os.Remove(s.volumes.SessionLineageDir(workload, "lineage-hidden")); err != nil {
+	if err := os.RemoveAll(s.volumes.SessionLineageDir(workload, "lineage-hidden")); err != nil {
 		t.Fatal(err)
 	}
 	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
@@ -3788,6 +3796,38 @@ func TestDrainBoundsWorkspaceScanErrors(t *testing.T) {
 	}
 	if pending := s.drainSessionExports(exports); pending != 0 {
 		t.Fatalf("scan restarted after exhaustion: %d", pending)
+	}
+}
+
+func TestDrainHoldsOnPartialWorkspaceScanButQueuesReadWorkspaces(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload = "sbx"
+	if err := s.volumes.CreateSession(workload, "lineage-good", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	// An image-less lineage dir is a known absence: the scan stays complete.
+	if err := os.MkdirAll(s.volumes.SessionLineageDir(workload, "lineage-empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exports := newDrainExports()
+	s.drainSessionExports(exports)
+	if exports.pending["workspace inventory unavailable"] {
+		t.Fatal("image-less lineage must not mark the inventory unavailable")
+	}
+	// An unreadable image makes the scan partial: the drain stays held and,
+	// unlike a hard scan error, never exhausts.
+	if err := os.MkdirAll(s.volumes.SessionVolumePath(workload, "lineage-bad"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exports = newDrainExports()
+	for i := 0; i < drainExportScanErrorLimit+2; i++ {
+		exports.nextScanRetry = time.Time{}
+		if pending := s.drainSessionExports(exports); pending < 1 {
+			t.Fatalf("tick %d: partial scan released the drain: pending = %d", i, pending)
+		}
+	}
+	if !exports.pending["workspace inventory unavailable"] {
+		t.Fatal("partial scan must mark inventory unavailable")
 	}
 }
 
