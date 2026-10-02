@@ -77,8 +77,7 @@ class TestFormatSandboxResult:
                 "error": "collecting output files: permission denied",
             }
         ) == (
-            "42\n\n[exit code 0]\n"
-            "[error: collecting output files: permission denied]"
+            "42\n\n[exit code 0]\n[error: collecting output files: permission denied]"
         )
 
 
@@ -575,7 +574,9 @@ class TestRunCodeTool:
         captured: list[str] = []
         deps = _make_deps()
         agent = create_agent(base_url="http://fake:8080")
-        with patch("chat.agent.run_code_in_sandbox", new=AsyncMock(return_value=result)):
+        with patch(
+            "chat.agent.run_code_in_sandbox", new=AsyncMock(return_value=result)
+        ):
             await agent.run(
                 "p",
                 model=_capturing_model("run_code", {"code": "source"}, captured),
