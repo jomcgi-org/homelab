@@ -151,10 +151,24 @@ describe("notes load", () => {
     expect(body).not.toContain("No personal notes");
     expect(body).toContain('action="?kind=party&amp;q=&amp;/create"');
   });
+
+  it("SSR renders a named DM-sharing select on the character tab", () => {
+    const { body } = render(Page, {
+      props: {
+        data: {
+          campaign: membership,
+          notes: [],
+          kind: "character",
+          q: "",
+        },
+      },
+    });
+    expect(body).toContain('name="dm_readable"');
+  });
 });
 
 describe("notes actions", () => {
-  it.each([undefined, "false", "true"])(
+  it.each([undefined, "", "false", "true"])(
     "creates a character note with dm_readable=%s",
     async (choice) => {
       const fetch = vi.fn().mockResolvedValue(response({}));
@@ -176,12 +190,20 @@ describe("notes actions", () => {
           "x-grimoire-token": "signed-token",
         },
       });
-      expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
-        kind: "character",
-        title: "Map",
-        markdown: "**North**",
-        ...(choice === undefined ? {} : { dm_readable: choice === "true" }),
-      });
+      expect(JSON.parse(fetch.mock.calls[0][1].body).dm_readable).toEqual(
+        choice === "true" ? true : choice === "false" ? false : undefined,
+      );
+      if (choice === undefined || choice === "")
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).not.toHaveProperty(
+          "dm_readable",
+        );
+      else
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+          kind: "character",
+          title: "Map",
+          markdown: "**North**",
+          dm_readable: choice === "true",
+        });
     },
   );
 
@@ -303,7 +325,7 @@ describe("notes actions", () => {
     );
   }
 
-  it.each(["unknown", "", "default"])(
+  it.each(["unknown", "default"])(
     "rejects invalid DM-sharing values (%s)",
     async (choice) => {
       const fetch = vi.fn();
