@@ -64,7 +64,8 @@ func TestVMMExitClassification(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			var calls, waits, releases int
-			p := &execProcess{vmID: "host-vm", workload: "host-workload", serialPath: path,
+			p := &execProcess{
+				vmID: "host-vm", workload: "host-workload", serialPath: path,
 				logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
 				killProcess: func() error { return tc.killErr },
 				waitProcess: func() error { waits++; return nil },
@@ -107,7 +108,8 @@ func TestVMMExitWatcherReportsBeforeRelease(t *testing.T) {
 	done := make(chan struct{})
 	observed := make(chan ExitReason, 1)
 	var waits atomic.Int32
-	p := &execProcess{waitProcess: func() error { waits.Add(1); <-done; return errors.New("unexpected wait error") },
+	p := &execProcess{
+		waitProcess: func() error { waits.Add(1); <-done; return errors.New("unexpected wait error") },
 		killProcess: func() error { return os.ErrProcessDone },
 		logger:      slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 		onExit:      func(reason ExitReason) { observed <- reason },

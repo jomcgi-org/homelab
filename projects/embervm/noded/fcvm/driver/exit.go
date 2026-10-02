@@ -96,8 +96,10 @@ func (p *execProcess) observeExit() {
 			}
 		}
 	}
-	attrs := []any{"vm", p.vmID, "workload", p.workload, "reason", string(reason),
-		"cgroup_evidence", cgroupState, "serial_evidence", serialState}
+	attrs := []any{
+		"vm", p.vmID, "workload", p.workload, "reason", string(reason),
+		"cgroup_evidence", cgroupState, "serial_evidence", serialState,
+	}
 	if p.cmd != nil && p.cmd.ProcessState != nil {
 		if code := p.cmd.ProcessState.ExitCode(); code >= 0 {
 			attrs = append(attrs, "exit_code", code)
