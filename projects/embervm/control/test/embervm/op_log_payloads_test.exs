@@ -141,12 +141,12 @@ defmodule Embervm.OpLogPayloadsTest do
 
     # A legacy replay lacking the owner keeps it, and a late success cannot
     # resurrect a terminal row or overwrite its volume owner.
-    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined,
+    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined, tenant: "t",
       session_id: created.session_id, ts: 2_000, payload: %{node_id: "node-2", vm_id: "vm-2"}})
     assert {:ok, [%{volume_node_id: "node-2"}]} = SQLite.load_sessions(op_log)
-    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_destroyed,
+    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_destroyed, tenant: "t",
       session_id: created.session_id, ts: 2_001, payload: %{reason: :destroyed}})
-    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined,
+    {:ok, _} = SQLite.append(op_log, %Embervm.OpLog.Op{kind: :session_rejoined, tenant: "t",
       session_id: created.session_id, ts: 2_002, payload: %{volume_node_id: "node-3", node_id: "node-3", vm_id: "late"}})
     assert {:ok, [%{state: :destroyed, volume_node_id: "node-2"}]} = SQLite.load_sessions(op_log)
   end
