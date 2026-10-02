@@ -71,6 +71,7 @@ No qualifying budget candidates yet.
 | qwen/qwen3-coder-30b-a3b-instruct | config-plumbing | 0.50 | 0.0020 | can't | no |
 | deepseek/deepseek-v4-flash | config-plumbing | 0.50 | 0.0027 | can't | no |
 | google/gemma-4-26b-a4b-it | config-plumbing | 0.50 | 0.0035 | can't | no |
+| xiaomi/mimo-v2.6-flash | config-plumbing | 0.50 | 0.0041 | can't | no |
 | google/gemma-4-31b-it | config-plumbing | 0.50 | 0.0047 | can't | no |
 | openai/gpt-6-luna | config-plumbing | 0.50 | 0.0054 | can't | no |
 | qwen/qwen3-coder-next | config-plumbing | 0.50 | 0.0080 | can't | no |
@@ -88,6 +89,7 @@ No qualifying budget candidates yet.
 | qwen/qwen3-coder-30b-a3b-instruct | free-text | 1.00 | 0.0000 | one-shots | no |
 | google/gemma-4-26b-a4b-it | free-text | 1.00 | 0.0000 | one-shots | no |
 | google/gemma-4-31b-it | free-text | 1.00 | 0.0000 | one-shots | no |
+| xiaomi/mimo-v2.6-flash | free-text | 1.00 | 0.0001 | one-shots | no |
 | qwen/qwen3-coder-next | free-text | 1.00 | 0.0001 | one-shots | no |
 | deepseek/deepseek-v4-flash | free-text | 1.00 | 0.0001 | one-shots | no |
 | openai/gpt-6-luna | free-text | 1.00 | 0.0001 | one-shots | no |
@@ -116,4 +118,5 @@ No qualifying budget candidates yet.
 
 | Model | final pass@1 | cost ($) | reason | date |
 | --- | --- | --- | --- | --- |
+| xiaomi/mimo-v2.6-flash | 5/8 | embervm-pi-tools-01, frontend-moving-legtags-01, inference-appledouble-01 | 0.94 | 0 |
 | qwen/qwen-2.5-coder-32b-instruct | 0.00 | 0.0000 | 0/15 agentic: OpenRouter provider 4xxes on tool-calling requests, cannot participate | 2026-07-01 |
