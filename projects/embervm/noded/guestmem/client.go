@@ -19,8 +19,10 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
-const maxFrameBytes = 64 * 1024
-const requestTimeout = time.Second
+const (
+	maxFrameBytes  = 64 * 1024
+	requestTimeout = time.Second
+)
 
 var ErrUnsupported = errors.New("guest memory agent unsupported")
 

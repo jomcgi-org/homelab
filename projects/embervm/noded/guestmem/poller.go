@@ -23,12 +23,14 @@ const (
 
 // Target is host-minted attribution. VM is the stable bundle ID; Activation is
 // the handle's per-claim ID, which changes on every restore of that bundle.
-type Target struct{ VM, Workload, Activation, UDS string }
-type Event struct {
-	Target
-	Kind  string
-	Delta uint64
-}
+type (
+	Target struct{ VM, Workload, Activation, UDS string }
+	Event  struct {
+		Target
+		Kind  string
+		Delta uint64
+	}
+)
 type Fetcher interface {
 	Fetch(context.Context, string, string) (guestagent.MemoryStatus, error)
 }
@@ -213,6 +215,7 @@ func (p *Poller) emit(e Event) {
 		p.opts.Event(e)
 	}
 }
+
 func (p *Poller) transition(e *observation, state State) {
 	if e.state == state {
 		return
@@ -222,6 +225,7 @@ func (p *Poller) transition(e *observation, state State) {
 		p.emit(Event{Target: e.target, Kind: string(state)})
 	}
 }
+
 func (p *Poller) refresh(e *observation) {
 	if e.state != Unsupported && !e.lastGood.IsZero() && p.opts.Now().Sub(e.lastGood) >= 3*p.opts.Interval {
 		e.sample = nil
