@@ -4360,14 +4360,6 @@ def _insert_handoff_round(
         )
         if not result.ok:
             return skip(f"graph_refused:{result.refusal_code}")
-        _record_allowance(task["id"], policy, cause)
-        _audit_once(
-            task["id"],
-            cause,
-            "handoff_opened",
-            {"failed_node": failed_key, "pr_number": number, "head_sha": head},
-        )
-        return True
     except Exception as exc:
         # Optional recovery must never prevent the existing planner path.
         logger.warning("Factory handoff skipped for %s: %s", task["id"], exc)
@@ -4376,6 +4368,19 @@ def _insert_handoff_round(
         except Exception:
             logger.exception("Factory handoff skip audit failed for %s", task["id"])
             return False
+    try:
+        _record_allowance(task["id"], policy, cause)
+        _audit_once(
+            task["id"],
+            cause,
+            "handoff_opened",
+            {"failed_node": failed_key, "pr_number": number, "head_sha": head},
+        )
+    except Exception:
+        logger.exception(
+            "Factory handoff post-commit bookkeeping failed for %s", task["id"]
+        )
+    return True
 
 
 def _insert_review_round(
