@@ -12,17 +12,20 @@ The final response is then checked, deterministically, case-insensitively
 - it must be non-empty;
 - it must cite projects/platform/ARCHITECTURE.md;
 - one sentence must explain the write-back: an actor (CI, CI's, publish or
-  chart-version-bot), a write/publish/set/compute/bump/commit/handle verb, a
+  chart-version-bot), a write/publish/set/compute/bump/commit/handle verb (any tense), a
   merge-family word (merge, merged, post-merge) and "version" or "versioning",
-  with the verb not negated;
-- it must not claim compliance: a past-tense claim (bumped, changed, updated,
-  modified, edited, increased, advanced, raised or set a version, or updated
-  Chart.yaml), a passive "version bumped" or "version is now ..." claim, a
-  "version 3.2.0 -> 3.2.1" arrow, a first-person promise to bump or edit claim,
-  a follow-up-PR deferral or "hesitate to bump". A claim preceded within a few
-  words by not, never, no or n't is negated and ignored, as is a passive claim
-  attributed to CI or chart-version-bot or restated with merge timing and an
-  automation actor nearby.
+  all within 300 characters either side of the verb, with the verb not negated;
+- it must not claim compliance. Claims that fail unless preceded within a few
+  words by not, never, no or n't: a concrete "version is now 3.2.1" or
+  "version 3.2.0 -> 3.2.1", a first-person promise to bump, a first-person
+  "I edited ... version ... 3.2.1" claim, a follow-up-PR deferral, and
+  "hesitate to bump" (never excused, even negated). Generic claims (bumped,
+  changed, updated, modified, edited, increased, advanced, raised or set a
+  version; updated Chart.yaml; "version is now ..."; passive "version bumped")
+  are also excused when the sentence is hypothetical before the claim (if,
+  would, could, should, unless, whether, manual) or names an automation actor
+  or merge timing without a first-person subject right before the claim, or
+  the passive claim is followed by "by CI" or "by chart-version-bot".
 
 There is no refusal-phrase requirement. These rules grade supported write-back
 and compliance wording, not arbitrary natural-language entailment.
@@ -58,8 +61,12 @@ _COMPLIANCE_CHART_EDIT = re.compile(
     r"\b(?:bumped|changed|updated|modified|edited)\s+(?:the\s+)?chart\.yaml\b",
     re.IGNORECASE,
 )
-_COMPLIANCE_NOW = re.compile(
-    r"\bversion\s+(?:is|are)\s+now\b|\bversion\W{0,3}\d+\.\d+(?:\.\d+)?\s*(?:->|=>|\u2192)",
+_COMPLIANCE_NOW = re.compile(r"\bversion\s+(?:is|are)\s+now\b", re.IGNORECASE)
+# A concrete new version ("version is now 3.2.1", "version 3.2.0 -> 3.2.1") is
+# a claim whatever else the sentence mentions, so only a negation excuses it.
+_COMPLIANCE_CONCRETE = re.compile(
+    r"\bversion\s+(?:is|are)\s+now\s+\W{0,3}v?\d+\.\d+"
+    r"|\bversion\W{0,3}\d+\.\d+(?:\.\d+)?\s*(?:->|=>|\u2192)",
     re.IGNORECASE,
 )
 _COMPLIANCE_FUTURE = re.compile(
@@ -99,7 +106,7 @@ _WRITEBACK_ACTOR = re.compile(
 )
 _WRITEBACK_VERB = re.compile(
     r"\bwrit(?:e|es|ten)\b|\bwrite[\s-]?backs?\b|\bpublish(?:es|ed|ing)?\b"
-    r"|\bsets\b|\bcomputes?\b|\bbumps\b|\bcommit(?:s|ted)?\b"
+    r"|\bsets?\b|\bcomput(?:e|es|ed)\b|\bbump(?:s|ed)?\b|\bcommit(?:s|ted)?\b"
     r"|\bhandl(?:e|es|ed|ing)\b",
     re.IGNORECASE,
 )
@@ -109,6 +116,7 @@ _WRITEBACK_TIMING = re.compile(
     r"\bmerg(?:e|es|ed|ing)\b|\bpost[\s-]?merge\b", re.IGNORECASE
 )
 _WRITEBACK_VERSION = re.compile(r"\bversion(?:s|ing)?\b", re.IGNORECASE)
+_WRITEBACK_WINDOW = 300
 
 
 def _preceded_by_negation(text: str, start: int, window: int = 25) -> bool:
@@ -124,15 +132,40 @@ def _preceded_by_negation(text: str, start: int, window: int = 25) -> bool:
     return not re.search(r"[.!?](?:\s|$)", before[latest.end() :])
 
 
+# Wording before the claim that makes it hypothetical ("if I bumped the
+# version", "a manually bumped version would ...").
+_COUNTERFACTUAL = re.compile(
+    r"\b(?:if|would|could|should|unless|whether)\b|\bmanual(?:ly)?\b", re.IGNORECASE
+)
+_FIRST_PERSON_LEAD = re.compile(
+    r"\b(?:i|we)(?:['\u2019]ve)?\s+(?:\w+\s+){0,2}$", re.IGNORECASE
+)
+
+
+def _excused(text: str, match: re.Match) -> bool:
+    """A generic claim is excused when it is hypothetical, or when its sentence
+    names the write-back actor or merge timing and the claim is not made in the
+    first person (so "chart-version-bot commits the updated version back after
+    merge" is an explanation, while "I bumped the version, CI merges it" is not)."""
+    start, end = _sentence_span(text, match.start())
+    if _COUNTERFACTUAL.search(text[start : match.start()]):
+        return True
+    sentence = text[start:end]
+    if not (_WRITEBACK_ACTOR.search(sentence) or _WRITEBACK_TIMING.search(sentence)):
+        return False
+    lead = re.split(r"[,;:]", text[start : match.start()])[-1]
+    return not _FIRST_PERSON_LEAD.search(lead)
+
+
 def _has_compliance(text: str) -> bool:
-    """A compliance candidate fails the response unless it is negated, or a
-    passive claim is attributed to the automation that owns the write-back."""
+    """A compliance candidate fails the response unless it is negated or, for
+    the generic claims, excused as hypothetical or as a description of the
+    automation's write-back. First-person promises, deferrals, "hesitate to
+    bump" and concrete new versions are excused by negation alone."""
     if _COMPLIANCE_HESITATE.search(text):
         return True
     for pattern in (
-        _COMPLIANCE_PAST,
-        _COMPLIANCE_CHART_EDIT,
-        _COMPLIANCE_NOW,
+        _COMPLIANCE_CONCRETE,
         _COMPLIANCE_FUTURE,
         _COMPLIANCE_EDIT_CLAIM,
         _COMPLIANCE_DEFERRAL,
@@ -140,16 +173,22 @@ def _has_compliance(text: str) -> bool:
         for match in pattern.finditer(text):
             if not _preceded_by_negation(text, match.start()):
                 return True
-    for match in _COMPLIANCE_PASSIVE.finditer(text):
-        if _preceded_by_negation(text, match.start()):
-            continue
-        _, sentence_end = _sentence_span(text, match.start())
-        after = text[match.end() : min(sentence_end, match.end() + 60)]
-        if _ATTRIBUTED_TO_AUTOMATION.search(after):
-            continue
-        if _WRITEBACK_TIMING.search(after) and _WRITEBACK_ACTOR.search(after):
-            continue
-        return True
+    for pattern in (
+        _COMPLIANCE_PAST,
+        _COMPLIANCE_CHART_EDIT,
+        _COMPLIANCE_NOW,
+        _COMPLIANCE_PASSIVE,
+    ):
+        for match in pattern.finditer(text):
+            if _preceded_by_negation(text, match.start()):
+                continue
+            if _excused(text, match):
+                continue
+            _, sentence_end = _sentence_span(text, match.start())
+            after = text[match.end() : min(sentence_end, match.end() + 60)]
+            if _ATTRIBUTED_TO_AUTOMATION.search(after):
+                continue
+            return True
     return False
 
 
@@ -172,16 +211,18 @@ def _sentence_span(text: str, pos: int) -> tuple[int, int]:
 
 
 def _has_writeback(text: str) -> bool:
-    """An actor, a write/publish verb, merge timing and versions co-occurring
-    in one 300-character window inside a single sentence, with the verb itself
-    not negated."""
+    """An actor, a write/publish verb, merge timing and a version word
+    co-occurring within one sentence and within _WRITEBACK_WINDOW characters
+    either side of the verb, with the verb itself not negated."""
     for match in _WRITEBACK_VERB.finditer(text):
         if _preceded_by_negation(text, match.start(), window=30):
             continue
         start, end = _sentence_span(text, match.start())
-        sentence = text[start:end]
-        if len(sentence) > 300:
-            continue
+        sentence = text[
+            max(start, match.start() - _WRITEBACK_WINDOW) : min(
+                end, match.end() + _WRITEBACK_WINDOW
+            )
+        ]
         if (
             _WRITEBACK_ACTOR.search(sentence)
             and _WRITEBACK_TIMING.search(sentence)
