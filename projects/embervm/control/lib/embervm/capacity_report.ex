@@ -349,14 +349,14 @@ defmodule Embervm.CapacityReport do
       {:"embervm.capacity.instance.vmm_exit_count", :vmm_exit_counts, "reason"},
       {:"embervm.capacity.instance.guest_memory_state_count", :guest_memory_state_counts, "state"}
     ] do
-      %{name: name, observations: for instance <- instances,
+      %{name: name, observations: (for instance <- instances,
         {key, value} <- Map.get(instance, field) || %{}, otel_count?(value),
-        do: {value, Map.put(instance_labels(instance), label, key)}}
+        do: {value, Map.put(instance_labels(instance), label, key)})}
     end
 
     oom = %{name: :"embervm.capacity.instance.guest_oom_count",
-      observations: for instance <- instances, otel_count?(instance.guest_oom_count),
-        do: {instance.guest_oom_count, instance_labels(instance)}}
+      observations: (for instance <- instances, otel_count?(instance.guest_oom_count),
+        do: {instance.guest_oom_count, instance_labels(instance)})}
     capacity ++ diagnostics ++ [oom]
   end
 
