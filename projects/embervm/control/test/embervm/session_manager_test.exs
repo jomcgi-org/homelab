@@ -7282,7 +7282,6 @@ defmodule Embervm.SessionManagerTest do
     end
     :sys.replace_state(ctx.mgr, fn state -> put_in(state.relighting[parked.session_id], [:waiting]) end)
     assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
-    put_session_workload(ctx, started.workload, persistence_workload_opts())
     :sys.replace_state(ctx.mgr, fn state -> %{state | relighting: %{}} end)
     :sys.replace_state(ctx.mgr, fn state -> put_in(state.pressure_waits[parked.session_id], %{first_denied_at: 1}) end)
     assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
@@ -7445,6 +7444,7 @@ defmodule Embervm.SessionManagerTest do
     expected = %{"session_id" => parked.session_id, "generation" => parked.generation,
       "invoke_started_at" => parked.invoke_started_at, "updated_at" => parked.updated_at}
     assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    put_session_workload(ctx, started.workload, persistence_workload_opts())
     assert {:ok, _} = SessionManager.invoke(ctx.mgr, parked.session_id, %{body: ~s({"message":"continue"}), dispatch_id: "successor"})
     assert_receive {:resumed_assign, assign}, 1_000
     assert assign.dispatch_id == "successor"
