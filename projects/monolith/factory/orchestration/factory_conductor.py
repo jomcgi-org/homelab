@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -439,7 +439,7 @@ def ingest_eligible(policy: dict) -> None:
         )
 
 
-def _task(task_id: str) -> dict:
+def _task(task_id: str, *, session: Session | None = None) -> dict:
     """The task row, plus the issue number its receipt was opened for.
 
     SwarmTask does not carry the issue: the receipt owns that link. Reading it
@@ -448,7 +448,7 @@ def _task(task_id: str) -> dict:
     """
     from factory.orchestration.factory_models import FactoryReceipt
 
-    with Session(get_engine()) as db:
+    with nullcontext(session) if session is not None else Session(get_engine()) as db:
         task = db.get(SwarmTask, task_id)
         if task is None:
             raise ValueError("factory task missing")
@@ -3168,7 +3168,9 @@ def _policy_bounds(
     return bounds, cost_clamped
 
 
-def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
+def _prepare_add(
+    task: dict, policy: dict, source: dict, *, snapshot: DecisionSnapshot | None = None
+) -> dict:
     """Resolve one add against policy, or refuse it with a stated code.
 
     Single decisions and batched plan edits share this so a plan cannot reach
@@ -3177,7 +3179,7 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     raw_key = source["node_key"]
     from factory.orchestration.factory_refine import task_class_for
 
-    task_class = task_class_for(task["id"])
+    task_class = snapshot.task_class if snapshot else task_class_for(task["id"])
     if is_advisory(task_class):
         raise _EditRefused(
             "advisory_task_no_dag",
@@ -3218,6 +3220,10 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         choice = (
             judgment_floor(policy)
             if task_class in JUDGMENT_CLASSES
+            else snapshot.model_choices[
+                "implement" if role == "implement" else "worker"
+            ]
+            if snapshot is not None
             else select_model("implement" if role == "implement" else "worker", policy)
         )
         model = choice["model"]
@@ -3242,7 +3248,13 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
     review = role == "review"
-    review_cost = _review_reservation_usd(task, policy, model) if review else None
+    review_cost = (
+        snapshot.review_costs[model]
+        if review and snapshot is not None
+        else _review_reservation_usd(task, policy, model)
+        if review
+        else None
+    )
     bounds, cost_clamped = _policy_bounds(policy, source, review_cost=review_cost)
     if review_cost is not None:
         bounds["max_cost_usd"] = review_cost
@@ -3346,6 +3358,343 @@ def _projected_nodes(prepared: list[dict], live: list[dict]) -> list[dict]:
     return list(projected.values())
 
 
+@dataclass(frozen=True)
+class DecisionSnapshot:
+    """Detached inputs from one repeatable-read transaction, with routing evidence."""
+
+    task: dict
+    policy: dict
+    nodes: list[dict]
+    runs: list[dict]
+    revision: int
+    review_rounds_used: int
+    review_rounds_remaining: int
+    task_class: str
+    model_choices: dict
+    review_costs: dict
+    review_sizing_advisory: bool = False
+
+
+@dataclass(frozen=True)
+class DecisionProjection:
+    """A proposal, not admission authority. Validation refusals have no figures."""
+
+    revision: int
+    edits: list[dict]
+    prepared: list[dict]
+    allowance: dict | None = None
+    envelope: dict | None = None
+    reserves: dict | None = None
+    spare_turns: int | None = None
+    spare_usd: float | None = None
+    refusal: dict | None = None
+
+
+def _decision_snapshot(
+    task_id: str, policy: dict | None = None, *, decision: dict | None = None
+) -> DecisionSnapshot:
+    """Read graph, history, rounds and effective policy from one DB snapshot.
+
+    No GitHub reads. Review sizing uses the no-patch estimate and is advisory
+    when a delivered PR exists. Submission can supply its live PR sizing in
+    the detached snapshot without changing the pure projection. Quota routing
+    is captured once, never fetched by project_decision.
+    """
+    from factory.orchestration import factory_controls as controls
+    from factory.orchestration.model_pool import quota_summary
+
+    with Session(get_engine()) as db:
+        # PostgreSQL READ COMMITTED would allow the separate SELECTs to see
+        # different commits. SQLite's legacy driver does not begin on SELECT.
+        if db.bind.dialect.name == "postgresql":
+            db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        elif db.bind.dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN")
+        task = _task(task_id, session=db)
+        receipt = controls._receipt(db, task_id)
+        if policy is None:
+            if receipt is None or not receipt.policy_json:
+                raise ValueError("factory task has no policy")
+            policy = controls._effective_policy(db, receipt)
+        revision = graph.current_version(task_id, session=db)
+        nodes = graph.load_graph(task_id, version=revision, session=db)
+        runs = graph.node_runs(task_id, session=db)
+        used = _review_rounds_used(task_id, session=db)
+        remaining = max(
+            0,
+            policy.get("max_review_rounds", controls.DEFAULT_MAX_REVIEW_ROUNDS) - used,
+        )
+        task_class = (
+            controls.DEFAULT_TASK_CLASS
+            if receipt is None
+            else controls.receipt_task_class(receipt)
+        )
+        sources = (
+            decision.get("edits", [])
+            if decision and decision.get("action") == "plan"
+            else [decision]
+            if decision
+            else []
+        )
+        roles = {
+            "implement" if source.get("role") == "implement" else "worker"
+            for source in sources
+            if isinstance(source, dict)
+            and source.get("action") == "add_node"
+            and source.get("role") != "review"
+            and "model" not in source
+            and task_class not in JUDGMENT_CLASSES
+        }
+        quota = (
+            quota_summary()
+            if any(len(pool_for(role, policy)) > 1 for role in roles)
+            else {}
+        )
+        choices = {role: select_model(role, policy, quota=quota) for role in roles}
+        costs = {
+            model: review_reservation_usd(model, 0, policy["turn_budget_usd"])
+            for model in policy["allowed_models"]
+        }
+        return DecisionSnapshot(
+            task,
+            dict(policy),
+            nodes,
+            runs,
+            revision,
+            used,
+            remaining,
+            task_class,
+            choices,
+            costs,
+            _latest_pr(runs) is not None,
+        )
+
+
+def project_decision(
+    task: dict,
+    policy: dict,
+    decision: dict | None,
+    snapshot: DecisionSnapshot,
+    *,
+    observed_branch_head: str | None = None,
+    projected_nodes: list[dict] | None = None,
+    review_rounds_remaining: int | None = None,
+    fan_ins_remaining: int | None = None,
+) -> DecisionProjection:
+    """Pure preparation and sizing shared by submission and advisory preview.
+
+    Never calls GitHub or reads/writes a session. The submitter supplies its
+    observed branch head; preview supplies None. Branch movement and other
+    graph-commit checks remain authoritative at apply time. Engine insertions
+    pass projected_nodes and retain their existing reserve overrides.
+    """
+    from factory.orchestration.factory_controls import (
+        allowance_from_graph,
+        envelope_excess,
+        task_turn_ceiling,
+    )
+
+    prepared = []
+    if decision is not None:
+        review_bounds = {"max_review_rounds", "max_review_recovery_rounds"}
+        if review_bounds.intersection(decision) or any(
+            isinstance(edit, dict) and review_bounds.intersection(edit)
+            for edit in (decision.get("edits") or [])
+        ):
+            return DecisionProjection(
+                snapshot.revision,
+                [],
+                [],
+                refusal={
+                    "code": "bound_exceeds_policy",
+                    "detail": "max_review_rounds and max_review_recovery_rounds are server policy "
+                    "and a decision cannot set them",
+                },
+            )
+        action = decision.get("action")
+        sources = decision.get("edits") if action == "plan" else [decision]
+        if (
+            action not in ("plan", "add_node")
+            or not isinstance(sources, list)
+            or not 1 <= len(sources) <= MAX_PLAN_EDITS
+        ):
+            return DecisionProjection(
+                snapshot.revision,
+                [],
+                [],
+                refusal={
+                    "code": "validation_failed",
+                    "detail": "plan edits are not a bounded list",
+                },
+            )
+        for index, source in enumerate(sources):
+            try:
+                if not isinstance(source, dict) or source.get("action") not in (
+                    "add_node",
+                    "discard_node",
+                ):
+                    raise ValueError(f"plan edit {index} is not a graph operation")
+                if source["action"] == "add_node":
+                    prepared.append(
+                        _prepare_add(task, policy, source, snapshot=snapshot)
+                    )
+                else:
+                    prepared.append(
+                        {
+                            "op": "discard_node",
+                            "node_key": source["node_key"],
+                            "observed_branch_head": observed_branch_head,
+                            "activities_claim_write": False,
+                            "stated_reason": source["reason"],
+                        }
+                    )
+            except (ValueError, KeyError, TypeError) as exc:
+                detail = getattr(exc, "reason", str(exc))
+                if action == "plan" and isinstance(source, dict):
+                    detail = f"edit {index} ({source.get('node_key')}): {detail}"
+                return DecisionProjection(
+                    snapshot.revision,
+                    [],
+                    prepared,
+                    refusal={
+                        "code": getattr(exc, "code", "validation_failed"),
+                        "detail": detail,
+                    },
+                )
+        prepared = graph._resolve_batch_deps(
+            prepared, {node["node_key"] for node in snapshot.nodes}
+        )
+        projected_nodes = _projected_nodes(prepared, snapshot.nodes)
+    if projected_nodes is None:
+        raise ValueError("a decision or projected graph is required")
+    edits = [
+        {
+            key: value
+            for key, value in edit.items()
+            if key not in ("role", "raw_prompt", "raw_node_key", "cost_clamped")
+        }
+        for edit in prepared
+    ]
+    planner_rounds = snapshot.review_rounds_remaining
+    planner_fan_ins = _planned_fan_ins(task["id"], policy, projected_nodes)
+    rounds = (
+        planner_rounds if review_rounds_remaining is None else review_rounds_remaining
+    )
+    fan_ins = planner_fan_ins if fan_ins_remaining is None else fan_ins_remaining
+    allowance = allowance_from_graph(
+        projected_nodes,
+        snapshot.runs,
+        policy,
+        review_rounds_remaining=rounds,
+        fan_ins_remaining=fan_ins,
+        graph_revision=snapshot.revision,
+    )
+    reviewable = any(node["node_key"].startswith("review_") for node in projected_nodes)
+    accounted = allowance_from_graph(
+        snapshot.nodes,
+        snapshot.runs,
+        policy,
+        review_rounds_remaining=planner_rounds,
+        fan_ins_remaining=planner_fan_ins,
+        graph_revision=snapshot.revision,
+        reviewable=reviewable,
+    )
+    # Ask the accounting owner for reserve components instead of duplicating
+    # its review pricing or attempt arithmetic here.
+    review_reserve = allowance_from_graph(
+        [],
+        [],
+        policy,
+        review_rounds_remaining=rounds,
+        graph_revision=snapshot.revision,
+        reviewable=reviewable,
+    )
+    fan_in_reserve = allowance_from_graph(
+        [],
+        [],
+        policy,
+        review_rounds_remaining=0,
+        fan_ins_remaining=fan_ins,
+        graph_revision=snapshot.revision,
+    )
+    excess = envelope_excess(allowance, policy, accounted=accounted)
+    return DecisionProjection(
+        revision=snapshot.revision,
+        edits=edits,
+        prepared=prepared,
+        allowance=allowance,
+        envelope={
+            "turns": {
+                "needed": allowance["turns"],
+                "allowed": task_turn_ceiling(policy),
+            },
+            "usd": {"needed": allowance["usd"], "allowed": policy["task_budget_usd"]},
+        },
+        reserves={
+            "review": {
+                "count": allowance["review_rounds_reserved"],
+                "turns": review_reserve["turns"],
+                "usd": review_reserve["usd"],
+            },
+            "fan_in": {
+                "count": allowance["fan_ins_reserved"],
+                "turns": fan_in_reserve["turns"],
+                "usd": fan_in_reserve["usd"],
+            },
+        },
+        spare_turns=max(0, task_turn_ceiling(policy) - accounted["turns"]),
+        spare_usd=round(max(0.0, policy["task_budget_usd"] - accounted["usd"]), 6),
+        refusal=None
+        if excess is None
+        else {
+            "code": "envelope_exceeded",
+            "detail": "envelope exceeded: " + json.dumps(excess, sort_keys=True),
+        },
+    )
+
+
+def preview_decision(
+    task_id: str, decision: dict, *, expected_revision: int, policy: dict | None = None
+) -> dict:
+    """Read-only advisory core, not an access surface or an authorization grant.
+
+    No GitHub reads, including branch-head discovery or review patch sizing.
+    A delivered PR uses the fallback review estimate until submission refreshes
+    it. The next adapter must authenticate the planner and bound evaluations.
+    """
+    from factory.orchestration.turn_artifact import schema_errors
+
+    snapshot = _decision_snapshot(task_id, policy, decision=decision)
+    result = {"advisory": True, "revision": snapshot.revision}
+    if type(expected_revision) is not int or expected_revision != snapshot.revision:
+        return {
+            **result,
+            "ok": False,
+            "refusal": {
+                "code": "stale_revision",
+                "detail": "expected graph revision is not current",
+            },
+        }
+    errors = schema_errors(decision, DECISION_SCHEMA)
+    if errors or decision.get("action") not in ("plan", "add_node"):
+        return {
+            **result,
+            "ok": False,
+            "refusal": {
+                "code": "validation_failed",
+                "detail": "; ".join(errors) or "preview requires plan or add_node",
+            },
+        }
+    projection = project_decision(snapshot.task, snapshot.policy, decision, snapshot)
+    return {
+        **result,
+        "ok": projection.refusal is None,
+        "review_sizing_advisory": snapshot.review_sizing_advisory,
+        "projection": asdict(projection),
+        "refusal": projection.refusal,
+    }
+
+
 def _envelope_refusal(
     task_id: str,
     policy: dict,
@@ -3376,44 +3725,17 @@ def _envelope_refusal(
     is sized with the reserve in place. A spare that dropped the reserve would
     promise a turn the planner cannot spend (#6000).
     """
-    from factory.orchestration.factory_controls import (
-        allowance_from_graph,
-        envelope_excess,
+    snapshot = _decision_snapshot(task_id, policy)
+    projection = project_decision(
+        snapshot.task,
+        snapshot.policy,
+        None,
+        snapshot,
+        projected_nodes=projected,
+        review_rounds_remaining=review_rounds_remaining,
+        fan_ins_remaining=fan_ins_remaining,
     )
-
-    runs = graph.node_runs(task_id)
-    revision = graph.current_version(task_id)
-    rounds = (
-        _rounds_remaining(task_id, policy)
-        if review_rounds_remaining is None
-        else review_rounds_remaining
-    )
-    fan_ins = (
-        _planned_fan_ins(task_id, policy, projected)
-        if fan_ins_remaining is None
-        else fan_ins_remaining
-    )
-    allowance = allowance_from_graph(
-        projected,
-        runs,
-        policy,
-        review_rounds_remaining=rounds,
-        fan_ins_remaining=fan_ins,
-        graph_revision=revision,
-    )
-    if envelope_excess(allowance, policy) is None:
-        return None
-    accounted = allowance_from_graph(
-        graph.load_graph(task_id),
-        runs,
-        policy,
-        review_rounds_remaining=_rounds_remaining(task_id, policy),
-        fan_ins_remaining=_planned_fan_ins(task_id, policy, projected),
-        graph_revision=revision,
-        reviewable=any(node["node_key"].startswith("review_") for node in projected),
-    )
-    excess = envelope_excess(allowance, policy, accounted=accounted)
-    return "envelope exceeded: " + json.dumps(excess, sort_keys=True)
+    return None if projection.refusal is None else projection.refusal["detail"]
 
 
 def _resync_allowance(task_id: str, policy: dict, revision: int) -> None:
@@ -3459,6 +3781,57 @@ def _observed_branch_head(task: dict) -> str | None:
         return None
 
 
+def _submission_projection(
+    task: dict, policy: dict, decision: dict
+) -> DecisionProjection:
+    """Capture external evidence only on submission, then use the pure owner."""
+    snapshot = _decision_snapshot(task["id"], policy, decision=decision)
+    sources = decision["edits"] if decision["action"] == "plan" else [decision]
+    observed_head = (
+        _observed_branch_head(task)
+        if any(
+            isinstance(source, dict) and source.get("action") == "discard_node"
+            for source in sources
+        )
+        else None
+    )
+    review_models = {
+        source.get("model", pool_for("reviewer", policy)[0])
+        for source in sources
+        if isinstance(source, dict) and source.get("role") == "review"
+    }
+    number = _latest_pr(snapshot.runs)
+    if review_models and number is not None:
+        try:
+            pull = github_get(task["repo"], f"pulls/{number}")
+        except (httpx.HTTPError, ValueError):
+            logger.info("Review sizing unavailable for PR %s", number)
+            pull = {}
+        additions, deletions = pull.get("additions"), pull.get("deletions")
+        lines = (
+            additions + deletions
+            if all(
+                type(value) is int and value >= 0 for value in (additions, deletions)
+            )
+            else 0
+        )
+        snapshot = replace(
+            snapshot,
+            review_costs={
+                **snapshot.review_costs,
+                **{
+                    model: review_reservation_usd(
+                        model, lines, policy["turn_budget_usd"]
+                    )
+                    for model in review_models
+                },
+            },
+        )
+    return project_decision(
+        task, policy, decision, snapshot, observed_branch_head=observed_head
+    )
+
+
 def _apply_decision(
     task: dict, policy: dict, decision: dict, cause: str, runs: list[dict]
 ) -> None:
@@ -3499,53 +3872,15 @@ def _apply_decision(
         edits = decision["edits"]
         if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
             raise ValueError("plan edits are not a bounded list")
-        prepared: list[dict] = []
-        head_read = False
-        observed_head = None
-        for index, item in enumerate(edits):
-            if not isinstance(item, dict) or item.get("action") not in (
-                "add_node",
-                "discard_node",
-            ):
-                raise ValueError(f"plan edit {index} is not a graph operation")
-            try:
-                if item["action"] == "add_node":
-                    prepared.append(_prepare_add(task, policy, item))
-                else:
-                    if not head_read:
-                        observed_head, head_read = _observed_branch_head(task), True
-                    prepared.append(
-                        {
-                            "op": "discard_node",
-                            "node_key": item["node_key"],
-                            "observed_branch_head": observed_head,
-                            "activities_claim_write": False,
-                            "stated_reason": item["reason"],
-                        }
-                    )
-            except ValueError as exc:
-                code = getattr(exc, "code", "validation_failed")
-                reason = getattr(exc, "reason", str(exc))
-                _reject_plan_decision(
-                    task,
-                    cause,
-                    action,
-                    code,
-                    f"edit {index} ({item.get('node_key')}): {reason}",
-                    runs,
-                )
-                return
-        live = graph.load_graph(task["id"])
-        # Resolve the dependency aliases apply_edits will resolve, so the
-        # concurrency read here is the concurrency the graph will store.
-        resolved = graph._resolve_batch_deps(
-            prepared, {node["node_key"] for node in live}
-        )
-        projected = _projected_nodes(resolved, live)
-        excess = _envelope_refusal(task["id"], policy, projected)
-        if excess is not None:
+        projection = _submission_projection(task, policy, decision)
+        if projection.refusal is not None:
             _reject_plan_decision(
-                task, cause, action, "envelope_exceeded", excess, runs
+                task,
+                cause,
+                action,
+                projection.refusal["code"],
+                projection.refusal["detail"],
+                runs,
             )
             return
         result = graph.apply_edits(
@@ -3557,18 +3892,10 @@ def _apply_decision(
             expected_version=decision.get(
                 "expected_version", graph.current_version(task["id"])
             ),
-            edits=[
-                {
-                    field: value
-                    for field, value in edit.items()
-                    if field
-                    not in ("role", "raw_prompt", "raw_node_key", "cost_clamped")
-                }
-                for edit in resolved
-            ],
+            edits=projection.edits,
         )
         if result.ok:
-            _audit_clamped_bounds(task["id"], cause, resolved)
+            _audit_clamped_bounds(task["id"], cause, projection.prepared)
             _record_allowance(task["id"], policy, cause)
         else:
             _reject_plan_decision(
@@ -3580,18 +3907,18 @@ def _apply_decision(
                 runs,
             )
     elif action == "add_node":
-        try:
-            edit = _prepare_add(task, policy, decision)
-        except _EditRefused as exc:
-            _reject_plan_decision(task, cause, action, exc.code, exc.reason, runs)
-            return
-        projected = _projected_nodes([edit], graph.load_graph(task["id"]))
-        excess = _envelope_refusal(task["id"], policy, projected)
-        if excess is not None:
+        projection = _submission_projection(task, policy, decision)
+        if projection.refusal is not None:
             _reject_plan_decision(
-                task, cause, action, "envelope_exceeded", excess, runs
+                task,
+                cause,
+                action,
+                projection.refusal["code"],
+                projection.refusal["detail"],
+                runs,
             )
             return
+        edit = projection.prepared[0]
         result = _add(
             task,
             policy,
@@ -3688,13 +4015,13 @@ def _apply_decision(
         _escalate_task(task, decision, cause, runs)
 
 
-def _review_rounds_used(task_id: str) -> int:
+def _review_rounds_used(task_id: str, *, session: Session | None = None) -> int:
     """Count engine-owned rounds from the version ledger, not from live nodes.
 
     A discarded correction node must not refund a round, so the count comes
     from the causes that were actually applied.
     """
-    with Session(get_engine()) as db:
+    with nullcontext(session) if session is not None else Session(get_engine()) as db:
         causes = db.exec(
             select(SwarmPlanVersion.cause_ref).where(
                 SwarmPlanVersion.task_id == task_id,
