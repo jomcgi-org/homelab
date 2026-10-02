@@ -261,3 +261,9 @@ whatsapp:
 # ADR agents/063 amendment). GKE only: the operator runs here, not on k3s.
 tailnet:
   enabled: true
+
+# Enabled 2026-10-01 for the #5571 live checks: the environment:homelab
+# deployment-observation writer on the hub only. cdHealth and podRestartWatch
+# are unchanged. Set back to false to roll back.
+deploymentObservations:
+  enabled: true

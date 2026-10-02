@@ -1719,7 +1719,10 @@ def test_deployment_observation_gate_renders_independently(tmp_path, enabled):
 def test_deployed_startup_controls_remain_enabled(renders, tier):
     env = _startup_control_env(renders[tier])
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
-    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == "false"
+    # Enabled on the hub only for the #5571 live checks.
+    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == (
+        "true" if tier == "gke" else "false"
+    )
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
 
@@ -1731,13 +1734,16 @@ def recovery_gke_render():
 
 
 @pytest.mark.parametrize("tier", ["prod", "gke", "dev", "recovery-gke"])
-def test_deployment_observations_stay_off_with_a_bounded_cycle_everywhere(
+def test_deployment_observations_hub_only_with_a_bounded_cycle_everywhere(
     renders, recovery_gke_render, tier
 ):
     rendered = recovery_gke_render if tier == "recovery-gke" else renders[tier]
     env = _startup_control_env(rendered)
 
-    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == "false"
+    # Only the hub (#5571, environment:homelab) writes deployment observations.
+    assert env["DEPLOYMENT_OBSERVATIONS_ENABLED"]["value"] == (
+        "true" if tier == "gke" else "false"
+    )
     assert env["DEPLOYMENT_OBSERVATIONS_TIMEOUT_S"]["value"] == "120"
     # The observation cycle runs after the latch write; its timeout plus the
     # probe interval must stay under the public reader's staleness bound,
