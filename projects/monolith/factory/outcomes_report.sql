@@ -37,7 +37,7 @@ cohort AS (
       AND fr.created_at >= p.cohort_start AND fr.created_at < p.cohort_end
       AND fr.created_at < p.as_of
 ),
-runs AS (
+runs AS NOT MATERIALIZED (
     SELECT r.id, r.task_id, r.node_key, r.attempt, r.dispatch_key, r.session_id,
            r.created_at,
            CASE WHEN r.finished_at < p.as_of THEN r.finished_at END AS finished_at,
@@ -85,6 +85,16 @@ starts AS (
     LEFT JOIN runs r ON r.task_id = s.task_id AND r.dispatch_key = s.start_key
     WHERE s.created_at < p.as_of
 ),
+factory_sessions AS MATERIALIZED (
+    -- Scan factory-prefixed sessions once, using a cohort semi-join.
+    SELECT split_part(s.local_session_id, ':', 2) AS task_id, s.id AS session_id
+    FROM agent_sessions.agent_sessions s
+    CROSS JOIN params p
+    WHERE s.local_session_id LIKE 'factory:%'
+      AND s.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM cohort c
+                  WHERE c.task_id = split_part(s.local_session_id, ':', 2))
+),
 session_links AS (
     -- UNION deduplicates a session reached through several ownership paths.
     SELECT task_id, session_id FROM runs WHERE session_id IS NOT NULL
@@ -93,50 +103,65 @@ session_links AS (
     UNION
     SELECT task_id, task_session_id FROM cohort WHERE task_session_id IS NOT NULL
     UNION
-    SELECT c.task_id, s.id
-    FROM cohort c
-    JOIN agent_sessions.agent_sessions s
-      ON split_part(s.local_session_id, ':', 1) = 'factory'
-     AND split_part(s.local_session_id, ':', 2) = c.task_id
-    CROSS JOIN params p
-    WHERE s.created_at < p.as_of
+    SELECT task_id, session_id FROM factory_sessions
 ),
-session_owners AS (
-    -- One contribution owner per task/session, earliest run wins reused sessions.
+run_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM runs WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+start_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM starts WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+session_owner_sources AS (
+    -- Reduce candidates together so low cohort estimates cannot nest owner joins.
+    SELECT task_id, session_id, role, model, 1 AS priority FROM run_owners
+    UNION ALL
+    SELECT task_id, session_id, role, model, 2 FROM start_owners
+    UNION ALL
     SELECT l.task_id, l.session_id,
-           COALESCE(r.role, s.role,
-                    CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
-                    'unassigned') AS role,
-           COALESCE(r.model, s.model, 'unknown') AS model
-    FROM session_links l
-    JOIN cohort c ON c.task_id = l.task_id
-    JOIN agent_sessions.agent_sessions a ON a.id = l.session_id
-    CROSS JOIN params p
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM runs r
-        WHERE r.task_id = l.task_id AND r.session_id = l.session_id
-        ORDER BY r.created_at, r.id LIMIT 1
-    ) r ON true
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM starts s
-        WHERE s.task_id = l.task_id AND s.session_id = l.session_id
-        ORDER BY s.created_at, s.id LIMIT 1
-    ) s ON true
-    WHERE a.created_at < p.as_of
+           CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
+           NULL::text, 3
+    FROM session_links l JOIN cohort c ON c.task_id = l.task_id
 ),
-turns AS (
-    -- Unique turn IDs and one owner per task/session prevent duplicate paths.
-    SELECT t.id, o.task_id, o.role,
-           COALESCE(NULLIF(t.model, ''), o.model) AS model, t.list_cost_usd
-    FROM session_owners o
-    JOIN agent_sessions.agent_turns t ON t.session_id = o.session_id
+session_owners AS MATERIALIZED (
+    -- Each priority has at most one non-null candidate per task/session.
+    SELECT o.task_id, o.session_id,
+           COALESCE(MAX(o.role) FILTER (WHERE o.priority = 1),
+                    MAX(o.role) FILTER (WHERE o.priority = 2),
+                    MAX(o.role) FILTER (WHERE o.priority = 3), 'unassigned') AS role,
+           COALESCE(MAX(o.model) FILTER (WHERE o.priority = 1),
+                    MAX(o.model) FILTER (WHERE o.priority = 2), 'unknown') AS model
+    FROM session_owner_sources o
+    JOIN agent_sessions.agent_sessions a ON a.id = o.session_id
+    CROSS JOIN params p
+    WHERE a.created_at < p.as_of
+    GROUP BY o.task_id, o.session_id
+),
+session_turns AS MATERIALIZED (
+    -- Preserve actual model switches before assigning each task/session owner.
+    SELECT t.session_id, NULLIF(t.model, '') AS actual_model,
+           SUM(t.list_cost_usd) AS list_usd,
+           COUNT(*) FILTER (WHERE t.list_cost_usd IS NULL) AS unpriced_turns,
+           COUNT(*) AS turn_count
+    FROM agent_sessions.agent_turns t
     CROSS JOIN params p
     WHERE t.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM session_owners o WHERE o.session_id = t.session_id)
+    GROUP BY t.session_id, NULLIF(t.model, '')
+),
+turns AS (
+    -- A shared session still contributes once to each linked task.
+    SELECT o.task_id, o.role, COALESCE(t.actual_model, o.model) AS model,
+           t.list_usd, t.unpriced_turns, t.turn_count
+    FROM session_owners o JOIN session_turns t ON t.session_id = o.session_id
 ),
 task_cost AS (
-    SELECT task_id, COALESCE(SUM(list_cost_usd), 0) AS list_usd,
-           COUNT(*) FILTER (WHERE list_cost_usd IS NULL) AS unpriced_turns,
-           COUNT(*) AS turn_count
+    SELECT task_id, COALESCE(SUM(list_usd), 0) AS list_usd,
+           SUM(unpriced_turns)::bigint AS unpriced_turns,
+           SUM(turn_count)::bigint AS turn_count
     FROM turns GROUP BY task_id
 ),
 task_ledger AS (
@@ -350,7 +375,7 @@ cohort AS (
       AND fr.created_at >= p.cohort_start AND fr.created_at < p.cohort_end
       AND fr.created_at < p.as_of
 ),
-runs AS (
+runs AS NOT MATERIALIZED (
     SELECT r.id, r.task_id, r.node_key, r.attempt, r.dispatch_key, r.session_id,
            r.created_at,
            CASE WHEN r.finished_at < p.as_of THEN r.finished_at END AS finished_at,
@@ -398,6 +423,16 @@ starts AS (
     LEFT JOIN runs r ON r.task_id = s.task_id AND r.dispatch_key = s.start_key
     WHERE s.created_at < p.as_of
 ),
+factory_sessions AS MATERIALIZED (
+    -- Scan factory-prefixed sessions once, using a cohort semi-join.
+    SELECT split_part(s.local_session_id, ':', 2) AS task_id, s.id AS session_id
+    FROM agent_sessions.agent_sessions s
+    CROSS JOIN params p
+    WHERE s.local_session_id LIKE 'factory:%'
+      AND s.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM cohort c
+                  WHERE c.task_id = split_part(s.local_session_id, ':', 2))
+),
 session_links AS (
     -- UNION deduplicates a session reached through several ownership paths.
     SELECT task_id, session_id FROM runs WHERE session_id IS NOT NULL
@@ -406,50 +441,65 @@ session_links AS (
     UNION
     SELECT task_id, task_session_id FROM cohort WHERE task_session_id IS NOT NULL
     UNION
-    SELECT c.task_id, s.id
-    FROM cohort c
-    JOIN agent_sessions.agent_sessions s
-      ON split_part(s.local_session_id, ':', 1) = 'factory'
-     AND split_part(s.local_session_id, ':', 2) = c.task_id
-    CROSS JOIN params p
-    WHERE s.created_at < p.as_of
+    SELECT task_id, session_id FROM factory_sessions
 ),
-session_owners AS (
-    -- One contribution owner per task/session, earliest run wins reused sessions.
+run_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM runs WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+start_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM starts WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+session_owner_sources AS (
+    -- Reduce candidates together so low cohort estimates cannot nest owner joins.
+    SELECT task_id, session_id, role, model, 1 AS priority FROM run_owners
+    UNION ALL
+    SELECT task_id, session_id, role, model, 2 FROM start_owners
+    UNION ALL
     SELECT l.task_id, l.session_id,
-           COALESCE(r.role, s.role,
-                    CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
-                    'unassigned') AS role,
-           COALESCE(r.model, s.model, 'unknown') AS model
-    FROM session_links l
-    JOIN cohort c ON c.task_id = l.task_id
-    JOIN agent_sessions.agent_sessions a ON a.id = l.session_id
-    CROSS JOIN params p
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM runs r
-        WHERE r.task_id = l.task_id AND r.session_id = l.session_id
-        ORDER BY r.created_at, r.id LIMIT 1
-    ) r ON true
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM starts s
-        WHERE s.task_id = l.task_id AND s.session_id = l.session_id
-        ORDER BY s.created_at, s.id LIMIT 1
-    ) s ON true
-    WHERE a.created_at < p.as_of
+           CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
+           NULL::text, 3
+    FROM session_links l JOIN cohort c ON c.task_id = l.task_id
 ),
-turns AS (
-    -- Unique turn IDs and one owner per task/session prevent duplicate paths.
-    SELECT t.id, o.task_id, o.role,
-           COALESCE(NULLIF(t.model, ''), o.model) AS model, t.list_cost_usd
-    FROM session_owners o
-    JOIN agent_sessions.agent_turns t ON t.session_id = o.session_id
+session_owners AS MATERIALIZED (
+    -- Each priority has at most one non-null candidate per task/session.
+    SELECT o.task_id, o.session_id,
+           COALESCE(MAX(o.role) FILTER (WHERE o.priority = 1),
+                    MAX(o.role) FILTER (WHERE o.priority = 2),
+                    MAX(o.role) FILTER (WHERE o.priority = 3), 'unassigned') AS role,
+           COALESCE(MAX(o.model) FILTER (WHERE o.priority = 1),
+                    MAX(o.model) FILTER (WHERE o.priority = 2), 'unknown') AS model
+    FROM session_owner_sources o
+    JOIN agent_sessions.agent_sessions a ON a.id = o.session_id
+    CROSS JOIN params p
+    WHERE a.created_at < p.as_of
+    GROUP BY o.task_id, o.session_id
+),
+session_turns AS MATERIALIZED (
+    -- Preserve actual model switches before assigning each task/session owner.
+    SELECT t.session_id, NULLIF(t.model, '') AS actual_model,
+           SUM(t.list_cost_usd) AS list_usd,
+           COUNT(*) FILTER (WHERE t.list_cost_usd IS NULL) AS unpriced_turns,
+           COUNT(*) AS turn_count
+    FROM agent_sessions.agent_turns t
     CROSS JOIN params p
     WHERE t.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM session_owners o WHERE o.session_id = t.session_id)
+    GROUP BY t.session_id, NULLIF(t.model, '')
+),
+turns AS (
+    -- A shared session still contributes once to each linked task.
+    SELECT o.task_id, o.role, COALESCE(t.actual_model, o.model) AS model,
+           t.list_usd, t.unpriced_turns, t.turn_count
+    FROM session_owners o JOIN session_turns t ON t.session_id = o.session_id
 ),
 task_cost AS (
-    SELECT task_id, COALESCE(SUM(list_cost_usd), 0) AS list_usd,
-           COUNT(*) FILTER (WHERE list_cost_usd IS NULL) AS unpriced_turns,
-           COUNT(*) AS turn_count
+    SELECT task_id, COALESCE(SUM(list_usd), 0) AS list_usd,
+           SUM(unpriced_turns)::bigint AS unpriced_turns,
+           SUM(turn_count)::bigint AS turn_count
     FROM turns GROUP BY task_id
 ),
 task_ledger AS (
@@ -593,6 +643,18 @@ tasks AS (
                 ELSE 'censored' END AS outcome_state
     FROM task_evidence e CROSS JOIN params p
 ),
+contribution_turns AS (
+    SELECT task_id, role, model, COALESCE(SUM(list_usd), 0) AS list_usd,
+           SUM(unpriced_turns)::bigint AS unpriced_turns
+    FROM turns GROUP BY task_id, role, model
+),
+contribution_ledger AS (
+    SELECT task_id, role, model, SUM(settled_usd) AS settled_usd,
+           SUM(exposure_usd) AS exposure_usd,
+           COUNT(*) FILTER (WHERE unsettled) AS unsettled_reservations,
+           COUNT(*) FILTER (WHERE missing_settled_cost) AS missing_settled_costs
+    FROM starts GROUP BY task_id, role, model
+),
 contributions AS (
     -- Each source aggregates independently, so ledger and turns never fan out.
     SELECT c.task_class, r.task_id, r.role, r.model, 1 AS attempts,
@@ -604,19 +666,19 @@ contributions AS (
     FROM runs r JOIN cohort c ON c.task_id = r.task_id
     UNION ALL
     SELECT c.task_class, t.task_id, t.role, t.model, 0, 0, 0,
-           COALESCE(t.list_cost_usd, 0), (t.list_cost_usd IS NULL)::int, 0, 0, NULL
-    FROM turns t JOIN cohort c ON c.task_id = t.task_id
+           t.list_usd, t.unpriced_turns, 0, 0, NULL
+    FROM contribution_turns t JOIN cohort c ON c.task_id = t.task_id
     UNION ALL
     SELECT c.task_class, s.task_id, s.role, s.model, 0, 0, 0,
            0, 0, s.settled_usd, s.exposure_usd, NULL
-    FROM starts s JOIN cohort c ON c.task_id = s.task_id
+    FROM contribution_ledger s JOIN cohort c ON c.task_id = s.task_id
 )
 SELECT task_class, role, model, SUM(attempts) AS attempts,
        SUM(succeeded) AS attempt_success_numerator, SUM(judged) AS attempt_success_denominator,
        SUM(attempts - judged) AS attempt_success_unknown_count,
        1.0 * SUM(succeeded) / NULLIF(SUM(judged), 0) AS attempt_success_rate,
        COUNT(DISTINCT task_id) AS distinct_tasks,
-       SUM(list_usd) AS list_usd, SUM(unpriced_turns) AS unpriced_turns,
+       SUM(list_usd) AS list_usd, SUM(unpriced_turns)::bigint AS unpriced_turns,
        SUM(settled_usd) AS settled_usd, SUM(exposure_usd) AS exposure_usd,
        SUM(settled_usd + exposure_usd) AS ledger_upper_usd, SUM(minutes) AS minutes
 FROM contributions GROUP BY task_class, role, model ORDER BY task_class, role, model;
@@ -647,7 +709,7 @@ cohort AS (
       AND fr.created_at >= p.cohort_start AND fr.created_at < p.cohort_end
       AND fr.created_at < p.as_of
 ),
-runs AS (
+runs AS NOT MATERIALIZED (
     SELECT r.id, r.task_id, r.node_key, r.attempt, r.dispatch_key, r.session_id,
            r.created_at,
            CASE WHEN r.finished_at < p.as_of THEN r.finished_at END AS finished_at,
@@ -695,6 +757,16 @@ starts AS (
     LEFT JOIN runs r ON r.task_id = s.task_id AND r.dispatch_key = s.start_key
     WHERE s.created_at < p.as_of
 ),
+factory_sessions AS MATERIALIZED (
+    -- Scan factory-prefixed sessions once, using a cohort semi-join.
+    SELECT split_part(s.local_session_id, ':', 2) AS task_id, s.id AS session_id
+    FROM agent_sessions.agent_sessions s
+    CROSS JOIN params p
+    WHERE s.local_session_id LIKE 'factory:%'
+      AND s.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM cohort c
+                  WHERE c.task_id = split_part(s.local_session_id, ':', 2))
+),
 session_links AS (
     -- UNION deduplicates a session reached through several ownership paths.
     SELECT task_id, session_id FROM runs WHERE session_id IS NOT NULL
@@ -703,50 +775,65 @@ session_links AS (
     UNION
     SELECT task_id, task_session_id FROM cohort WHERE task_session_id IS NOT NULL
     UNION
-    SELECT c.task_id, s.id
-    FROM cohort c
-    JOIN agent_sessions.agent_sessions s
-      ON split_part(s.local_session_id, ':', 1) = 'factory'
-     AND split_part(s.local_session_id, ':', 2) = c.task_id
-    CROSS JOIN params p
-    WHERE s.created_at < p.as_of
+    SELECT task_id, session_id FROM factory_sessions
 ),
-session_owners AS (
-    -- One contribution owner per task/session, earliest run wins reused sessions.
+run_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM runs WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+start_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM starts WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+session_owner_sources AS (
+    -- Reduce candidates together so low cohort estimates cannot nest owner joins.
+    SELECT task_id, session_id, role, model, 1 AS priority FROM run_owners
+    UNION ALL
+    SELECT task_id, session_id, role, model, 2 FROM start_owners
+    UNION ALL
     SELECT l.task_id, l.session_id,
-           COALESCE(r.role, s.role,
-                    CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
-                    'unassigned') AS role,
-           COALESCE(r.model, s.model, 'unknown') AS model
-    FROM session_links l
-    JOIN cohort c ON c.task_id = l.task_id
-    JOIN agent_sessions.agent_sessions a ON a.id = l.session_id
-    CROSS JOIN params p
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM runs r
-        WHERE r.task_id = l.task_id AND r.session_id = l.session_id
-        ORDER BY r.created_at, r.id LIMIT 1
-    ) r ON true
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM starts s
-        WHERE s.task_id = l.task_id AND s.session_id = l.session_id
-        ORDER BY s.created_at, s.id LIMIT 1
-    ) s ON true
-    WHERE a.created_at < p.as_of
+           CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
+           NULL::text, 3
+    FROM session_links l JOIN cohort c ON c.task_id = l.task_id
 ),
-turns AS (
-    -- Unique turn IDs and one owner per task/session prevent duplicate paths.
-    SELECT t.id, o.task_id, o.role,
-           COALESCE(NULLIF(t.model, ''), o.model) AS model, t.list_cost_usd
-    FROM session_owners o
-    JOIN agent_sessions.agent_turns t ON t.session_id = o.session_id
+session_owners AS MATERIALIZED (
+    -- Each priority has at most one non-null candidate per task/session.
+    SELECT o.task_id, o.session_id,
+           COALESCE(MAX(o.role) FILTER (WHERE o.priority = 1),
+                    MAX(o.role) FILTER (WHERE o.priority = 2),
+                    MAX(o.role) FILTER (WHERE o.priority = 3), 'unassigned') AS role,
+           COALESCE(MAX(o.model) FILTER (WHERE o.priority = 1),
+                    MAX(o.model) FILTER (WHERE o.priority = 2), 'unknown') AS model
+    FROM session_owner_sources o
+    JOIN agent_sessions.agent_sessions a ON a.id = o.session_id
+    CROSS JOIN params p
+    WHERE a.created_at < p.as_of
+    GROUP BY o.task_id, o.session_id
+),
+session_turns AS MATERIALIZED (
+    -- Preserve actual model switches before assigning each task/session owner.
+    SELECT t.session_id, NULLIF(t.model, '') AS actual_model,
+           SUM(t.list_cost_usd) AS list_usd,
+           COUNT(*) FILTER (WHERE t.list_cost_usd IS NULL) AS unpriced_turns,
+           COUNT(*) AS turn_count
+    FROM agent_sessions.agent_turns t
     CROSS JOIN params p
     WHERE t.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM session_owners o WHERE o.session_id = t.session_id)
+    GROUP BY t.session_id, NULLIF(t.model, '')
+),
+turns AS (
+    -- A shared session still contributes once to each linked task.
+    SELECT o.task_id, o.role, COALESCE(t.actual_model, o.model) AS model,
+           t.list_usd, t.unpriced_turns, t.turn_count
+    FROM session_owners o JOIN session_turns t ON t.session_id = o.session_id
 ),
 task_cost AS (
-    SELECT task_id, COALESCE(SUM(list_cost_usd), 0) AS list_usd,
-           COUNT(*) FILTER (WHERE list_cost_usd IS NULL) AS unpriced_turns,
-           COUNT(*) AS turn_count
+    SELECT task_id, COALESCE(SUM(list_usd), 0) AS list_usd,
+           SUM(unpriced_turns)::bigint AS unpriced_turns,
+           SUM(turn_count)::bigint AS turn_count
     FROM turns GROUP BY task_id
 ),
 task_ledger AS (
@@ -945,7 +1032,7 @@ cohort AS (
       AND fr.created_at >= p.cohort_start AND fr.created_at < p.cohort_end
       AND fr.created_at < p.as_of
 ),
-runs AS (
+runs AS NOT MATERIALIZED (
     SELECT r.id, r.task_id, r.node_key, r.attempt, r.dispatch_key, r.session_id,
            r.created_at,
            CASE WHEN r.finished_at < p.as_of THEN r.finished_at END AS finished_at,
@@ -993,6 +1080,16 @@ starts AS (
     LEFT JOIN runs r ON r.task_id = s.task_id AND r.dispatch_key = s.start_key
     WHERE s.created_at < p.as_of
 ),
+factory_sessions AS MATERIALIZED (
+    -- Scan factory-prefixed sessions once, using a cohort semi-join.
+    SELECT split_part(s.local_session_id, ':', 2) AS task_id, s.id AS session_id
+    FROM agent_sessions.agent_sessions s
+    CROSS JOIN params p
+    WHERE s.local_session_id LIKE 'factory:%'
+      AND s.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM cohort c
+                  WHERE c.task_id = split_part(s.local_session_id, ':', 2))
+),
 session_links AS (
     -- UNION deduplicates a session reached through several ownership paths.
     SELECT task_id, session_id FROM runs WHERE session_id IS NOT NULL
@@ -1001,50 +1098,65 @@ session_links AS (
     UNION
     SELECT task_id, task_session_id FROM cohort WHERE task_session_id IS NOT NULL
     UNION
-    SELECT c.task_id, s.id
-    FROM cohort c
-    JOIN agent_sessions.agent_sessions s
-      ON split_part(s.local_session_id, ':', 1) = 'factory'
-     AND split_part(s.local_session_id, ':', 2) = c.task_id
-    CROSS JOIN params p
-    WHERE s.created_at < p.as_of
+    SELECT task_id, session_id FROM factory_sessions
 ),
-session_owners AS (
-    -- One contribution owner per task/session, earliest run wins reused sessions.
+run_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM runs WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+start_owners AS (
+    SELECT DISTINCT ON (task_id, session_id) task_id, session_id, role, model
+    FROM starts WHERE session_id IS NOT NULL
+    ORDER BY task_id, session_id, created_at, id
+),
+session_owner_sources AS (
+    -- Reduce candidates together so low cohort estimates cannot nest owner joins.
+    SELECT task_id, session_id, role, model, 1 AS priority FROM run_owners
+    UNION ALL
+    SELECT task_id, session_id, role, model, 2 FROM start_owners
+    UNION ALL
     SELECT l.task_id, l.session_id,
-           COALESCE(r.role, s.role,
-                    CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
-                    'unassigned') AS role,
-           COALESCE(r.model, s.model, 'unknown') AS model
-    FROM session_links l
-    JOIN cohort c ON c.task_id = l.task_id
-    JOIN agent_sessions.agent_sessions a ON a.id = l.session_id
-    CROSS JOIN params p
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM runs r
-        WHERE r.task_id = l.task_id AND r.session_id = l.session_id
-        ORDER BY r.created_at, r.id LIMIT 1
-    ) r ON true
-    LEFT JOIN LATERAL (
-        SELECT role, model FROM starts s
-        WHERE s.task_id = l.task_id AND s.session_id = l.session_id
-        ORDER BY s.created_at, s.id LIMIT 1
-    ) s ON true
-    WHERE a.created_at < p.as_of
+           CASE WHEN c.task_session_id = l.session_id THEN 'conductor' END,
+           NULL::text, 3
+    FROM session_links l JOIN cohort c ON c.task_id = l.task_id
 ),
-turns AS (
-    -- Unique turn IDs and one owner per task/session prevent duplicate paths.
-    SELECT t.id, o.task_id, o.role,
-           COALESCE(NULLIF(t.model, ''), o.model) AS model, t.list_cost_usd
-    FROM session_owners o
-    JOIN agent_sessions.agent_turns t ON t.session_id = o.session_id
+session_owners AS MATERIALIZED (
+    -- Each priority has at most one non-null candidate per task/session.
+    SELECT o.task_id, o.session_id,
+           COALESCE(MAX(o.role) FILTER (WHERE o.priority = 1),
+                    MAX(o.role) FILTER (WHERE o.priority = 2),
+                    MAX(o.role) FILTER (WHERE o.priority = 3), 'unassigned') AS role,
+           COALESCE(MAX(o.model) FILTER (WHERE o.priority = 1),
+                    MAX(o.model) FILTER (WHERE o.priority = 2), 'unknown') AS model
+    FROM session_owner_sources o
+    JOIN agent_sessions.agent_sessions a ON a.id = o.session_id
+    CROSS JOIN params p
+    WHERE a.created_at < p.as_of
+    GROUP BY o.task_id, o.session_id
+),
+session_turns AS MATERIALIZED (
+    -- Preserve actual model switches before assigning each task/session owner.
+    SELECT t.session_id, NULLIF(t.model, '') AS actual_model,
+           SUM(t.list_cost_usd) AS list_usd,
+           COUNT(*) FILTER (WHERE t.list_cost_usd IS NULL) AS unpriced_turns,
+           COUNT(*) AS turn_count
+    FROM agent_sessions.agent_turns t
     CROSS JOIN params p
     WHERE t.created_at < p.as_of
+      AND EXISTS (SELECT 1 FROM session_owners o WHERE o.session_id = t.session_id)
+    GROUP BY t.session_id, NULLIF(t.model, '')
+),
+turns AS (
+    -- A shared session still contributes once to each linked task.
+    SELECT o.task_id, o.role, COALESCE(t.actual_model, o.model) AS model,
+           t.list_usd, t.unpriced_turns, t.turn_count
+    FROM session_owners o JOIN session_turns t ON t.session_id = o.session_id
 ),
 task_cost AS (
-    SELECT task_id, COALESCE(SUM(list_cost_usd), 0) AS list_usd,
-           COUNT(*) FILTER (WHERE list_cost_usd IS NULL) AS unpriced_turns,
-           COUNT(*) AS turn_count
+    SELECT task_id, COALESCE(SUM(list_usd), 0) AS list_usd,
+           SUM(unpriced_turns)::bigint AS unpriced_turns,
+           SUM(turn_count)::bigint AS turn_count
     FROM turns GROUP BY task_id
 ),
 task_ledger AS (

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import itertools
 import json
+import random
 import re
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -816,3 +818,515 @@ def test_first_pass_ci_is_unknown_even_after_success(session, rows, ejections):
     assert row["first_pass_ci_unknown_count"] == 1
     assert row["first_pass_ci_rate"] is None
     assert _single(_report(session), 3)["first_pass_ci_unknown_count"] == 1
+
+
+def _scaled_fixture(rows, *, seed=6774, count=224):
+    """Generate sources and retain Python records for an independent reduction.
+
+    No expected totals are read back from SQL. Keep creation order for earliest
+    owner ties, including retry sessions and a session shared by two tasks.
+    """
+    rng = random.Random(seed)
+    tasks, runs, starts, sessions, turns = [], [], [], {}, []
+
+    def session_row(task, **kwargs):
+        sid = rows.session_row(task, **kwargs)
+        sessions[sid] = {
+            "task": task if kwargs.get("named") else None,
+            "created": START,
+        }
+        return sid
+
+    def run(task, **kwargs):
+        key = rows.run(task, **kwargs)
+        runs.append(dict(task=task, key=key, order=len(runs), **kwargs))
+        return key
+
+    def start(task, **kwargs):
+        rows.start(task, **kwargs)
+        starts.append(dict(task=task, order=len(starts), **kwargs))
+
+    def turn(sid, **kwargs):
+        rows.turn(sid, **kwargs)
+        turns.append(dict(session_id=sid, **kwargs))
+
+    shared = None
+    for index in range(count):
+        kind = index % 8
+        task_class = ("bug-fix", "feature")[index % 2]
+        model = ("model-a", "model-b")[index % 3 == 0]
+        task = rows.task(
+            task_class=task_class,
+            settled=MERGED if kind == 6 else None,
+        )
+        primary = session_row(task, named=True)
+        conductor = session_row(task)
+        starter = session_row(task)
+        prefix_only = session_row(task)
+        sessions[prefix_only]["task"] = task
+        # Keep two distinct factory-prefix-only paths per task.
+        rows.session.execute(
+            text(
+                "UPDATE agent_sessions.agent_sessions SET local_session_id = :name WHERE id = :id"
+            ),
+            {"name": f"factory:{task}:prefix-only", "id": prefix_only},
+        )
+        rows.session.execute(
+            text("UPDATE swarm.swarm_task SET session_id = :sid WHERE id = :task"),
+            {"sid": conductor, "task": task},
+        )
+        key = run(
+            task,
+            node="implement",
+            model=model,
+            session_id=primary,
+            at=START,
+            attempt=1,
+            status="succeeded",
+        )
+        run(
+            task,
+            node="review_1",
+            model="reviewer",
+            session_id=primary,
+            at=START,
+            attempt=1,
+            status="failed",
+        )
+        run(
+            task,
+            node="implement",
+            model="retry",
+            session_id=primary,
+            at=START + timedelta(hours=1),
+            attempt=2,
+            status="succeeded",
+        )
+        run(
+            task,
+            node="correct_1",
+            model="corrector",
+            session_id=None,
+            at=AS_OF - timedelta(minutes=30),
+            attempt=1,
+            status="succeeded",
+        )
+        run(
+            task,
+            node="implement",
+            model="future",
+            session_id=primary,
+            at=AS_OF,
+            attempt=3,
+            status="succeeded",
+        )
+        if index == 0:
+            late = session_row(task)
+            sessions[late]["created"] = AS_OF
+            rows.session.execute(
+                text(
+                    "UPDATE agent_sessions.agent_sessions SET created_at = :at WHERE id = :id"
+                ),
+                {"at": AS_OF, "id": late},
+            )
+            run(
+                task,
+                node="investigate_late",
+                model="late-session",
+                session_id=late,
+                at=START,
+                attempt=1,
+                status="succeeded",
+            )
+            turn(late, seq=1, model=None, cost=17, at=START)
+        if index % 2 == 0:
+            shared = primary
+        else:
+            run(
+                task,
+                node="review_shared",
+                model="reviewer",
+                session_id=shared,
+                at=START,
+                attempt=1,
+                status="succeeded",
+            )
+        start(
+            task,
+            key=key,
+            model="ledger",
+            session_id=primary,
+            status="succeeded",
+            cost=3.25,
+            maximum=10,
+            at=START,
+            updated=START,
+        )
+        ledger_cases = [
+            ("reserved", None, 10, None, START),
+            ("uncertain", 15, 5, None, START),
+            ("failed", None, 7, None, START),
+            ("cancelled", None, 11, "no_model_post", START),
+            ("failed", None, 11, "capacity_denied", START),
+            ("failed", None, 11, "no_session_created", START),
+            ("succeeded", 100, 13, None, AS_OF),
+        ]
+        for offset, (status, cost, maximum, basis, updated) in enumerate(ledger_cases):
+            start(
+                task,
+                key=f"ledger:{offset}",
+                model="ledger" if offset == 0 else "later-ledger",
+                session_id=starter,
+                status=status,
+                cost=cost,
+                maximum=maximum,
+                basis=basis,
+                at=START + timedelta(minutes=offset),
+                updated=updated,
+            )
+        start(
+            task,
+            key="excluded",
+            model="future",
+            session_id=primary,
+            status="reserved",
+            cost=None,
+            maximum=1000,
+            at=AS_OF,
+            updated=AS_OF,
+        )
+        for seq in range(1, (4, 12, 52)[index % 3] + 1):
+            turn(
+                primary,
+                seq=seq,
+                model=(model, "switched", "", None)[seq % 4],
+                cost=None if seq % 5 == 0 else rng.choice([0.25, 1.5, 2.0]),
+                at=START + timedelta(hours=seq % 3),
+            )
+        for sid in (conductor, starter, prefix_only):
+            turn(sid, seq=1, model=None, cost=None, at=START)
+            turn(sid, seq=2, model="switched", cost=0.5, at=START)
+        turn(primary, seq=100, model="excluded", cost=1000, at=AS_OF)
+        turn(
+            primary,
+            seq=101,
+            model="excluded",
+            cost=1000,
+            at=AS_OF + timedelta(seconds=1),
+        )
+        pr = 200000 + index
+        historical = kind == 4
+        merged = kind < 6
+        if historical:
+            rows.audit(
+                task,
+                "finish_task",
+                at=MERGED,
+                evidence={"pr_url": f"https://github.com/jomcgi-org/homelab/pull/{pr}"},
+            )
+        elif merged:
+            rows.merge(
+                task,
+                pr=pr,
+                conclusion=None if kind == 5 else "failure" if kind == 2 else "success",
+                window=kind != 3,
+            )
+            if kind == 1:
+                rows.audit(task, "reverted", at=MERGED + timedelta(days=1))
+        metadata = merged and (historical or index % 5 != 0)
+        lines, files = (25, 100, 400)[index % 3], (1, 3, 8)[index % 3]
+        if metadata:
+            rows.metadata(pr=pr, lines=lines, files=files)
+        labels = index % 4 != 0
+        if labels:
+            rows.labels(task, ["scaled", "scaled"])
+        tasks.append(
+            {
+                "task": task,
+                "task_class": task_class,
+                "model": model,
+                "kind": kind,
+                "primary": primary,
+                "conductor": conductor,
+                "historical": historical,
+                "merged": merged,
+                "metadata": metadata,
+                "lines": lines,
+                "files": files,
+                "labels": labels,
+            }
+        )
+
+    # Noise has matching factory prefixes and ownership sources, but no cohort receipt.
+    for at in (START - timedelta(seconds=1), END):
+        task = rows.task(created=at)
+        sid = rows.session_row(task, named=True)
+        rows.run(task, session_id=sid)
+        rows.start(task, session_id=sid, status="reserved", maximum=10000)
+        rows.turn(sid, cost=10000)
+    return {
+        "tasks": tasks,
+        "runs": runs,
+        "starts": starts,
+        "sessions": sessions,
+        "turns": turns,
+    }
+
+
+def _scaled_expected(fixture, as_of):
+    """Reduce generated source records with Python loops, independently of CTEs."""
+    contributions = defaultdict(
+        lambda: {
+            "attempts": 0,
+            "attempt_success_numerator": 0,
+            "attempt_success_denominator": 0,
+            "attempt_success_unknown_count": 0,
+            "list_usd": 0.0,
+            "unpriced_turns": 0,
+            "settled_usd": 0.0,
+            "exposure_usd": 0.0,
+            "minutes": None,
+            "task_ids": set(),
+        }
+    )
+    totals = []
+    for task in fixture["tasks"]:
+        task_id, task_class = task["task"], task["task_class"]
+        runs = [r for r in fixture["runs"] if r["task"] == task_id and r["at"] < as_of]
+        starts = [
+            s for s in fixture["starts"] if s["task"] == task_id and s["at"] < as_of
+        ]
+        links = {task["conductor"]}
+        links.update(
+            sid for sid, s in fixture["sessions"].items() if s["task"] == task_id
+        )
+        links.update(r["session_id"] for r in runs if r["session_id"] is not None)
+        links.update(s["session_id"] for s in starts if s["session_id"] is not None)
+        total = dict(
+            task,
+            list_usd=0.0,
+            unpriced_turns=0,
+            turn_count=0,
+            settled_usd=0.0,
+            exposure_usd=0.0,
+            unsettled_reservations=0,
+            missing_settled_costs=0,
+        )
+
+        def contribution(role, model, task_class=task_class, task_id=task_id):
+            c = contributions[task_class, role, model]
+            c["task_ids"].add(task_id)
+            return c
+
+        for r in runs:
+            role = r["node"].split("_")[0]
+            c = contribution(role, r["model"])
+            completed = r["at"] + timedelta(hours=1) < as_of
+            c["attempts"] += 1
+            c["attempt_success_numerator"] += int(
+                completed and r["status"] == "succeeded"
+            )
+            c["attempt_success_denominator"] += int(completed)
+            c["attempt_success_unknown_count"] += int(not completed)
+            if completed:
+                c["minutes"] = (c["minutes"] or 0) + 60
+        for s in starts:
+            matching = next((r for r in runs if r["key"] == s["key"]), None)
+            role = matching["node"].split("_")[0] if matching else "unassigned"
+            terminal = s["status"] in ("succeeded", "failed", "cancelled")
+            free = s.get("basis") in (
+                "no_model_post",
+                "capacity_denied",
+                "no_session_created",
+            )
+            missing = (
+                terminal and s["updated"] < as_of and s["cost"] is None and not free
+            )
+            settled = (s["cost"] or 0) if terminal and s["updated"] < as_of else 0
+            unsettled = s["updated"] >= as_of or s["status"] in (
+                "reserved",
+                "uncertain",
+            )
+            if s["status"] in ("reserved", "uncertain"):
+                exposure = max(s["maximum"], s["cost"] or 0)
+            elif s["updated"] >= as_of or missing:
+                exposure = s["maximum"]
+            else:
+                exposure = 0
+            c = contribution(role, s["model"])
+            for key, value in (("settled_usd", settled), ("exposure_usd", exposure)):
+                c[key] += value
+                total[key] += value
+            total["unsettled_reservations"] += int(unsettled)
+            total["missing_settled_costs"] += int(missing)
+        for sid in links:
+            if fixture["sessions"][sid]["created"] >= as_of:
+                continue
+            candidates = sorted(
+                (r for r in runs if r["session_id"] == sid),
+                key=lambda r: (r["at"], r["order"]),
+            )
+            start_candidates = sorted(
+                (s for s in starts if s["session_id"] == sid),
+                key=lambda s: (s["at"], s["order"]),
+            )
+            if candidates:
+                role, model = (
+                    candidates[0]["node"].split("_")[0],
+                    candidates[0]["model"],
+                )
+            elif start_candidates:
+                owner = start_candidates[0]
+                matching = next((r for r in runs if r["key"] == owner["key"]), None)
+                role = matching["node"].split("_")[0] if matching else "unassigned"
+                model = owner["model"]
+            else:
+                role = "conductor" if sid == task["conductor"] else "unassigned"
+                model = "unknown"
+            for t in fixture["turns"]:
+                if t["session_id"] != sid or t["at"] >= as_of:
+                    continue
+                c = contribution(role, t["model"] or model)
+                for key, value in (
+                    ("list_usd", t["cost"] or 0),
+                    ("unpriced_turns", int(t["cost"] is None)),
+                ):
+                    c[key] += value
+                    total[key] += value
+                total["turn_count"] += 1
+        kind = task["kind"]
+        state = (
+            "positives",
+            "reverted",
+            "ci_failed",
+            "pending_maturity",
+            "unknown",
+            "unknown",
+            "failed",
+            "censored",
+        )[kind]
+        if kind == 1 and as_of <= MERGED + timedelta(days=1):
+            state = "pending_maturity"
+        if kind == 0 and as_of <= MERGED + timedelta(days=7):
+            state = "pending_maturity"
+        total["state"] = state
+        total["ledger_upper_usd"] = total["settled_usd"] + total["exposure_usd"]
+        totals.append(total)
+    for c in contributions.values():
+        c["distinct_tasks"] = len(c.pop("task_ids"))
+        c["ledger_upper_usd"] = c["settled_usd"] + c["exposure_usd"]
+        denominator = c["attempt_success_denominator"]
+        c["attempt_success_rate"] = (
+            c["attempt_success_numerator"] / denominator if denominator else None
+        )
+    return totals, contributions
+
+
+def _assert_scaled(report, fixture, as_of):
+    totals, contributions = _scaled_expected(fixture, as_of)
+    costs = ("list_usd", "unpriced_turns", "exposure_usd", "ledger_upper_usd")
+
+    def assert_totals(actual, selected, *, states=()):
+        assert actual["tasks"] == len(selected)
+        for state in states:
+            assert actual[state] == sum(t["state"] == state for t in selected)
+        for key in costs:
+            assert actual[key] == pytest.approx(sum(t[key] for t in selected), abs=1e-9)
+        positives = sum(t["state"] == "positives" for t in selected)
+        for ratio, key in (
+            ("usd_per_positive_lower", "list_usd"),
+            ("usd_per_positive_upper", "ledger_upper_usd"),
+        ):
+            expected = sum(t[key] for t in selected) / positives if positives else None
+            assert (
+                actual[ratio] == pytest.approx(expected, abs=1e-9)
+                if expected is not None
+                else actual[ratio] is None
+            )
+
+    groups = defaultdict(list)
+    bands = defaultdict(list)
+    for t in totals:
+        groups[t["task_class"], t["model"]].append(t)
+        dimensions = {
+            "diff_size": "unknown"
+            if not t["metadata"]
+            else "S"
+            if t["lines"] < 50
+            else "M"
+            if t["lines"] < 300
+            else "L",
+            "changed_files": "unknown"
+            if not t["metadata"]
+            else "S"
+            if t["files"] < 2
+            else "M"
+            if t["files"] < 6
+            else "L",
+            "labels": '["scaled"]' if t["merged"] and t["labels"] else "unknown",
+            "turn_count": "unknown"
+            if not t["merged"]
+            else "S"
+            if t["turn_count"] < 10
+            else "M"
+            if t["turn_count"] < 50
+            else "L",
+        }
+        for dimension, band in dimensions.items():
+            bands[t["task_class"], t["model"], dimension, band].append(t)
+    assert len(report[SECTIONS[0]]) == len(groups)
+    for actual in report[SECTIONS[0]]:
+        selected = groups[actual["task_class"], actual["initiating_model"]]
+        assert_totals(actual, selected, states=STATES)
+        assert actual["settled_usd"] == pytest.approx(
+            sum(t["settled_usd"] for t in selected)
+        )
+        assert actual["first_pass_ci_unknown_count"] == len(selected)
+    assert len(report[SECTIONS[1]]) == len(contributions)
+    for actual in report[SECTIONS[1]]:
+        expected = contributions[actual["task_class"], actual["role"], actual["model"]]
+        for key, value in expected.items():
+            assert (
+                actual[key] == pytest.approx(value, abs=1e-9)
+                if value is not None
+                else actual[key] is None
+            )
+    assert len(report[SECTIONS[2]]) == len(bands)
+    for actual in report[SECTIONS[2]]:
+        selected = bands[
+            actual["task_class"],
+            actual["initiating_model"],
+            actual["dimension"],
+            actual["band"],
+        ]
+        assert_totals(actual, selected, states=("positives", "censored"))
+    coverage = _single(report, 3)
+    expected = {
+        "tasks": len(totals),
+        "unknown_ci_evidence": sum(t["kind"] in (4, 5) for t in totals),
+        "historical_unjudged_merges": sum(t["historical"] for t in totals),
+        "pending_maturity": sum(t["state"] == "pending_maturity" for t in totals),
+        "censored_tasks": sum(t["state"] == "censored" for t in totals),
+        "missing_size_metadata": sum(not t["metadata"] for t in totals),
+        "missing_file_metadata": sum(not t["metadata"] for t in totals),
+        "missing_label_metadata": sum(
+            not (t["merged"] and t["labels"]) for t in totals
+        ),
+        "first_pass_ci_unknown_count": len(totals),
+        "escalation_unknown_count": 0,
+        "missing_initiating_model": 0,
+    }
+    for key in (
+        "unpriced_turns",
+        "unsettled_reservations",
+        "exposure_usd",
+        "missing_settled_costs",
+    ):
+        expected[key] = sum(t[key] for t in totals)
+    assert dict(coverage) == expected
+
+
+def test_scaled_cohort_preserves_all_sections(session, rows):
+    fixture = _scaled_fixture(rows)
+    for as_of in (START + timedelta(days=8), AS_OF, AS_OF + timedelta(seconds=1)):
+        _assert_scaled(_report(session, as_of=as_of), fixture, as_of)
