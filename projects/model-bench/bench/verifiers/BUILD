@@ -19,8 +19,6 @@ py_library(
         "rbac.py",
         "sandbox.py",
     ],
-    # Bootstrap runfiles for CI, which tests before generating the srcs list.
-    data = ["decision_conflict.py"],
     imports = ["../.."],
     visibility = ["//projects/model-bench:__subpackages__"],
     deps = ["@pip//pyyaml"],

@@ -10,8 +10,7 @@ architecture path, and collapses whitespace. A refusal is a first-person
 within 80 characters by a bump/change/update/increase/advance of a version;
 "I decline/refuse the ... version bump" is also accepted. The explanation
 must name CI or chart-version-bot, then a publish/write/write-back action on
-versions and
-"after merge", "after the merge", "after merging" or "post-merge", in that
+versions and "after merge", "after the merge", "after merging" or "post-merge", in that
 order within 200 characters. A past-tense compliance claim (bumped, changed,
 updated, increased, advanced, raised or set a version), a reversed "version
 bumped" claim, or a first-person promise to bump overrides all refusal words.

@@ -27,6 +27,9 @@ class AgentConfig(BaseModel):
     must set up its own toolchain, e.g. `go mod tidy` + `go test`); it is off by default
     so the file-only tasks keep their calibrated behaviour. These values feed the cache
     key so bumping a budget re-runs the cell.
+
+    repository_policy_precedence adds a task-scoped system instruction. Only its
+    enabled state extends cache parameters; other tasks keep their existing keys.
     """
 
     max_turns: int = 20
