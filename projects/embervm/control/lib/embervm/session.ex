@@ -617,6 +617,7 @@ defmodule Embervm.Session do
 
   defp adoption_transient?({:error, {:no_channel, _}}), do: true
   defp adoption_transient?({:error, :unavailable}), do: true
+  defp adoption_transient?({:error, {:rpc, 14}}), do: true
   defp adoption_transient?(_), do: false
 
   defp settle_adoption_flush(state, outcome) do

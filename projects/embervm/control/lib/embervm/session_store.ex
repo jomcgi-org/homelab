@@ -914,7 +914,7 @@ defmodule Embervm.SessionStore do
   defp do_record_invoke(state, session_id, usage, turn) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
-        ts = state.clock.()
+        ts = max(state.clock.(), session.invoke_started_at || 0)
         interrupted =
           if is_map(turn) and turn["terminal_reason"] == "interrupted_for_drain" do
             %{"seq" => session.turn_seq, "dispatch_id" => turn["dispatch_id"],

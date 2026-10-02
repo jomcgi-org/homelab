@@ -22,6 +22,7 @@ _GATES = (
     "EMBERVM_ASYNC_LIFECYCLE_WRITES",
     "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS",
     "EMBERVM_CROSS_NODE_REJOIN",
+    "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES",
 )
 
 
@@ -62,6 +63,7 @@ def test_gates_default_off() -> None:
         "EMBERVM_ASYNC_LIFECYCLE_WRITES": "false",
         "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS": "false",
         "EMBERVM_CROSS_NODE_REJOIN": "false",
+        "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES": "false",
     }
 
 
@@ -72,6 +74,7 @@ def test_gates_default_off() -> None:
         ("asyncLifecycleWrites", "EMBERVM_ASYNC_LIFECYCLE_WRITES"),
         ("drainInstanceScopedSessions", "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS"),
         ("crossNodeRejoin", "EMBERVM_CROSS_NODE_REJOIN"),
+        ("restartFlushInflightInvokes", "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES"),
     ],
 )
 def test_gate_flips_via_its_chart_key(key: str, env_name: str) -> None:

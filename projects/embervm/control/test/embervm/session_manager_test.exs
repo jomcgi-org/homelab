@@ -74,6 +74,12 @@ defmodule Embervm.SessionManagerTest do
     def append(server, op), do: Embervm.OpLog.SQLite.append(server, op)
   end
 
+  defmodule UnavailableInvokeCompletionOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    def append(_server, %Embervm.OpLog.Op{kind: :session_invoked}), do: {:error, :unavailable}
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
   defmodule UnavailableCreateOpLog do
     def load_sessions(server), do: SQLite.load_sessions(server)
     def append(_server, %Embervm.OpLog.Op{kind: :session_created}), do: {:error, :unavailable}
@@ -241,6 +247,7 @@ defmodule Embervm.SessionManagerTest do
       # Test-only watchdog budget (#4434); nil keeps the production formula.
       invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms),
       drain_bank_retry_ms: Keyword.get(opts, :drain_bank_retry_ms, 10),
+      drain_flush_ms: Keyword.get(opts, :drain_flush_ms, 60_000),
       clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     ]
 
@@ -273,6 +280,7 @@ defmodule Embervm.SessionManagerTest do
         session_opts: session_opts,
         async_writer: writer,
         async_lifecycle_writes: async,
+        restart_flush_inflight_invokes: Keyword.get(opts, :restart_flush_inflight_invokes, false),
         metering: Keyword.get(opts, :metering, Embervm.Metering),
         op_log: manager_op_log,
         op_log_mod: Keyword.get(opts, :op_log_mod, SQLite),
@@ -299,6 +307,7 @@ defmodule Embervm.SessionManagerTest do
 
     %{
       mgr: mgr,
+      mgr_opts: mgr_opts,
       store: store,
       op_log: op_log,
       writer: writer,
@@ -7358,6 +7367,169 @@ defmodule Embervm.SessionManagerTest do
   end
 
   defp index_of(list, elem), do: Enum.find_index(list, &(&1 == elem))
+
+  # Model a control-plane restart with the same durable store and node facts,
+  # but neither the old manager nor its per-session process survives.
+  defp restart_for_adoption(ctx, session) do
+    [{pid, _}] = Registry.lookup(ctx.registry, session.session_id)
+    :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
+    :ok = GenServer.stop(ctx.mgr)
+    report_session_vm(ctx, session.session_id, session.workload, session.vm_id)
+    {:ok, mgr} = SessionManager.start_link(ctx.mgr_opts)
+    ctx = %{ctx | mgr: mgr}
+    assert :ok = SessionManager.reconcile(mgr)
+    ctx
+  end
+
+  defp adoption_response(req) do
+    %SessionInterruptResponse{terminal_reason: "interrupted_for_drain",
+      dispatch_id: req.dispatch_id, cli_session_id: "cli-recovered",
+      transcript_path: "/workspace/transcript.jsonl"}
+  end
+
+  test "restart adoption flush parks exact evidence and relight resumes the interrupted turn" do
+    parent = self()
+    ctx = start_stack(restart_flush_inflight_invokes: true, drain_flush_ms: 240_000,
+      prime_fun: fake_prime_fun("vm-adoption"),
+      interrupt_fun: fn _, req ->
+        send(parent, {:adoption_interrupt, self(), req})
+        receive do :release -> {:ok, adoption_response(req)} end
+      end,
+      assign_fun: fn ch, req -> send(parent, {:resumed_assign, req}); default_assign(ch, req) end)
+    created = create_persistence_session(ctx)
+    {:ok, started} = SessionStore.record_invoke_started(ctx.store, created.session_id, "persisted-dispatch")
+    ctx = restart_for_adoption(ctx, started)
+    assert_receive {:adoption_interrupt, worker, req}, 1_000
+    assert req.vm_id == started.vm_id
+    assert req.session_id == started.session_id
+    assert req.dispatch_id == "persisted-dispatch"
+    assert req.reason == "interrupted_for_drain"
+    assert req.timeout_ms > 0 and req.timeout_ms <= 120_000
+    [{pid, _}] = Registry.lookup(ctx.registry, started.session_id)
+    refute Embervm.Session.quiescent?(pid)
+    assert :sys.get_state(pid).idle_timer == nil
+    assert {:error, :busy} = Embervm.Session.pressure_bank(pid)
+    send(pid, :maybe_bank)
+    _ = :sys.get_state(pid)
+    assert {:ok, %{state: :running, interrupted_turn: nil}} = SessionStore.get(ctx.store, started.session_id)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    refute_receive {:adoption_interrupt, _, _}, 30
+    send(worker, :release)
+    assert eventually(fn -> :sys.get_state(pid).adoption_flush == nil end)
+    # Drive the normal idle-timer message without waiting the workload's 300s.
+    send(pid, :maybe_bank)
+    parked = wait_for_state(ctx, started.session_id, :parked)
+    marker = %{"seq" => started.turn_seq, "dispatch_id" => "persisted-dispatch",
+      "cli_session_id" => "cli-recovered", "transcript_path" => "/workspace/transcript.jsonl"}
+    assert parked.interrupted_turn == marker
+    assert parked.last_invoke_at >= parked.invoke_started_at
+    expected = %{"session_id" => parked.session_id, "generation" => parked.generation,
+      "invoke_started_at" => parked.invoke_started_at, "updated_at" => parked.updated_at}
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy_parked(ctx.mgr, parked.session_id, expected)
+    assert {:ok, _} = SessionManager.invoke(ctx.mgr, parked.session_id, %{body: ~s({"message":"continue"}), dispatch_id: "successor"})
+    assert_receive {:resumed_assign, assign}, 1_000
+    assert assign.dispatch_id == "successor"
+    body = :json.decode(assign.request.body)
+    assert body["session_id"] == marker["cli_session_id"]
+    assert body["message"] =~ marker["transcript_path"]
+    assert body["message"] =~ "previous turn (#{started.turn_seq})"
+    assert body["dispatch_id"] == "successor"
+  end
+
+  test "adoption queues invokes and blocks idle, pressure and drain banking until settlement" do
+    for draining <- [false, true] do
+      parent = self()
+      ctx = start_stack(restart_flush_inflight_invokes: true,
+        prime_fun: fake_prime_fun("vm-pending-#{draining}"),
+        interrupt_fun: fn _, req ->
+          send(parent, {:pending_flush, self(), req})
+          receive do :release -> {:ok, adoption_response(req)} end
+        end,
+        assign_fun: fn ch, req -> send(parent, {:pending_assign, req}); default_assign(ch, req) end)
+      created = create_persistence_session(ctx)
+      {:ok, started} = SessionStore.record_invoke_started(ctx.store, created.session_id, "pending-dispatch")
+      ctx = restart_for_adoption(ctx, started)
+      assert_receive {:pending_flush, worker, _}, 1_000
+      [{pid, _}] = Registry.lookup(ctx.registry, started.session_id)
+      if draining, do: Embervm.Session.drain(pid, System.system_time(:millisecond) + 2_000)
+      _ = :sys.get_state(pid)
+      refute Embervm.Session.quiescent?(pid)
+      assert {:error, :busy} = Embervm.Session.pressure_bank(pid)
+      send(pid, :maybe_bank)
+      send(pid, :drain_bank)
+      _ = :sys.get_state(pid)
+      assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, started.session_id)
+      caller = if not draining do
+        Task.async(fn -> Embervm.Session.invoke(pid, %{body: ~s({"message":"continue"}), dispatch_id: "queued"}) end)
+      end
+      if caller, do: assert(eventually(fn -> :queue.len(:sys.get_state(pid).queue) == 1 end))
+      refute_receive {:pending_assign, _}, 30
+      send(worker, :release)
+      if caller do
+        assert {:ok, _} = Task.await(caller, 1_000)
+        assert_receive {:pending_assign, req}, 1_000
+        assert :json.decode(req.request.body)["session_id"] == "cli-recovered"
+        assert :json.decode(req.request.body)["message"] =~ "/workspace/transcript.jsonl"
+      else
+        assert wait_for_state(ctx, started.session_id, :parked).interrupted_turn["dispatch_id"] == "pending-dispatch"
+      end
+    end
+  end
+
+  for mode <- [:flag_off, :legacy, :completed, :wrong_dispatch, :empty_path, :empty_cli, :fence, :append_error, :unavailable] do
+    test "adoption flush fails closed for #{mode}" do
+      mode = unquote(mode)
+      parent = self()
+      ctx = start_stack(restart_flush_inflight_invokes: mode != :flag_off, drain_flush_ms: 180,
+        store_op_log_mod: if(mode == :append_error, do: UnavailableInvokeCompletionOpLog, else: SQLite),
+        prime_fun: fake_prime_fun("vm-fail-closed"),
+        interrupt_fun: fn _, req ->
+          send(parent, {:fail_closed_flush, self(), req})
+          if mode == :unavailable do
+            {:error, %GRPC.RPCError{status: 14}}
+          else
+            receive do :release -> :ok end
+            response = adoption_response(req)
+            response = case mode do
+              :wrong_dispatch -> %{response | dispatch_id: "wrong"}
+              :empty_path -> %{response | transcript_path: ""}
+              :empty_cli -> %{response | cli_session_id: ""}
+              _ -> response
+            end
+            {:ok, response}
+          end
+        end)
+      created = create_persistence_session(ctx)
+      {:ok, started} = SessionStore.record_invoke_started(ctx.store, created.session_id, "old-dispatch")
+      if mode == :completed, do: SessionStore.record_invoke(ctx.store, created.session_id, nil)
+      if mode == :legacy do
+        {:ok, legacy} = SessionStore.get(ctx.store, created.session_id)
+        :sys.replace_state(ctx.store, fn state ->
+          :ets.insert(state.sessions, {legacy.session_id, %{legacy | inflight_dispatch_id: nil}})
+          state
+        end)
+      end
+      {:ok, row} = SessionStore.get(ctx.store, created.session_id)
+      ctx = restart_for_adoption(ctx, row)
+      [{pid, _}] = Registry.lookup(ctx.registry, started.session_id)
+      if mode in [:flag_off, :legacy, :completed] do
+        assert Embervm.Session.quiescent?(pid)
+        refute_receive {:fail_closed_flush, _, _}, 30
+      else
+        assert_receive {:fail_closed_flush, worker, _}, 1_000
+        if mode == :fence, do: SessionStore.record_invoke_started(ctx.store, created.session_id, "new-dispatch")
+        if mode != :unavailable, do: send(worker, :release)
+        assert eventually(fn -> :sys.get_state(pid).adoption_flush == nil end)
+        if mode == :unavailable do
+          assert_receive {:fail_closed_flush, _, _}, 1_000
+        end
+      end
+      send(pid, :maybe_bank)
+      parked = wait_for_state(ctx, created.session_id, :parked)
+      assert parked.interrupted_turn == nil
+      assert Enum.count(op_kinds_for(ctx, created.session_id), &(&1 == :session_invoked)) == if(mode == :completed, do: 1, else: 0)
+    end
+  end
 
   defp report_session_vm(ctx, session_id, workload, vm_id \\ nil) do
     vm_id = vm_id || "vm-#{session_id}"

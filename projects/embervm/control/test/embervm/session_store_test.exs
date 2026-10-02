@@ -100,6 +100,61 @@ defmodule Embervm.SessionStoreTest do
     def load_sessions(op_log), do: SQLite.load_sessions(op_log)
   end
 
+  defmodule RejectInvokeCompletionOpLog do
+    def append(_op_log, %{kind: :session_invoked}), do: {:error, :injected_write_failure}
+    def append(op_log, op), do: SQLite.append(op_log, op)
+    def load_sessions(op_log), do: SQLite.load_sessions(op_log)
+  end
+
+  test "adoption recovery is fenced, duplicate safe, durable and consumed by the next start", %{path: path} do
+    {op_log, store} = start_pair(path, clock: fn -> 1_000 end)
+    {:ok, created} = create(store)
+    {:ok, first} = SessionStore.record_invoke_started(store, created.session_id, "first")
+    # Same clock tick: the next start advances, and recovery cannot finish before it.
+    {:ok, started} = SessionStore.record_invoke_started(store, created.session_id, "second")
+    assert started.invoke_started_at > first.invoke_started_at
+    assert {:error, :adoption_fence_mismatch} = SessionStore.record_adoption_flush(store,
+      created.session_id, first.invoke_started_at, "first", "cli", "/transcript")
+    assert {:ok, recovered} = SessionStore.record_adoption_flush(store, created.session_id,
+      started.invoke_started_at, "second", "cli", "/transcript")
+    marker = %{"seq" => started.turn_seq, "dispatch_id" => "second", "cli_session_id" => "cli", "transcript_path" => "/transcript"}
+    assert recovered.interrupted_turn == marker
+    assert recovered.last_invoke_at >= started.invoke_started_at
+    assert {:error, :adoption_fence_mismatch} = SessionStore.record_adoption_flush(store,
+      created.session_id, started.invoke_started_at, "second", "cli", "/transcript")
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+    assert Enum.count(ops, &(&1.kind == :session_invoked)) == 1
+    GenServer.stop(store)
+    GenServer.stop(op_log)
+    {_, store} = start_pair(path)
+    assert {:ok, %{interrupted_turn: ^marker}} = SessionStore.get(store, created.session_id)
+    assert {:ok, next} = SessionStore.record_invoke_started(store, created.session_id, "next")
+    assert next.interrupted_turn == marker
+    assert {:ok, %{interrupted_turn: nil}} = SessionStore.get(store, created.session_id)
+  end
+
+  for mode <- [:wrong_time, :wrong_id, :empty_id, :empty_cli, :empty_path, :completed, :not_running, :append_failure] do
+    test "adoption store refuses #{mode} without a recovery op", %{path: path} do
+      mode = unquote(mode)
+      {:ok, op_log} = SQLite.start_link(path: path, name: nil)
+      {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log,
+        op_log_mod: if(mode == :append_failure, do: RejectInvokeCompletionOpLog, else: SQLite))
+      {:ok, created} = create(store)
+      {:ok, started} = SessionStore.record_invoke_started(store, created.session_id, "exact")
+      if mode == :completed, do: SessionStore.record_invoke(store, created.session_id, nil)
+      if mode == :not_running, do: SessionStore.adopt_state(store, created.session_id, :banked)
+      {:ok, before} = SessionStore.get(store, created.session_id)
+      assert {:error, _} = SessionStore.record_adoption_flush(store, created.session_id,
+        if(mode == :wrong_time, do: started.invoke_started_at + 1, else: started.invoke_started_at),
+        case mode do :wrong_id -> "wrong"; :empty_id -> ""; _ -> "exact" end,
+        if(mode == :empty_cli, do: "", else: "cli"),
+        if(mode == :empty_path, do: "", else: "/transcript"))
+      assert {:ok, ^before} = SessionStore.get(store, created.session_id)
+      {:ok, ops} = SQLite.read_from(op_log, 0)
+      assert Enum.count(ops, &(&1.kind == :session_invoked)) == if(mode == :completed, do: 1, else: 0)
+    end
+  end
+
   test "invoke start errors leave dispatch identity and turn state untouched", %{path: path} do
     {:ok, op_log} = SQLite.start_link(path: path, name: nil)
     {:ok, store} = SessionStore.start_link(name: nil, op_log: op_log, op_log_mod: RejectInvokeStartOpLog)
