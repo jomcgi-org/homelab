@@ -245,6 +245,12 @@ const TOOLS: ToolSpec[] = [
           description: 'Optional note type filter, for example "concept"',
         }),
       ),
+      scope: Type.Optional(
+        Type.String({
+          description:
+            'Narrow to one authorized scope, for example "repo:jomcgi-org/homelab"; unauthorized values return no results',
+        }),
+      ),
     }),
   },
   {
