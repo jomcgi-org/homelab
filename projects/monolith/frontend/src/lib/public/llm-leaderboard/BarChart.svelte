@@ -51,9 +51,7 @@
     {/each}
   </ol>
   {#if cfg.candidatesOnly && rows.length < models.length}
-    <p class="omit">
-      Claude omitted: its own harness counts these differently.
-    </p>
+    <p class="omit">Claude omitted (different harness).</p>
   {/if}
 </section>
 

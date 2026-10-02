@@ -28,7 +28,7 @@
 <section class="panel matrix">
   <header class="panel-head">
     <span class="t">Per-task results</span>
-    <span class="u">columns keyed to the task list below</span>
+    <span class="u">numbers key to the task list</span>
   </header>
   <div class="panel-body scroll">
     <table class:hovering={hot}>
@@ -87,10 +87,8 @@
   <p class="key">
     <span><i class="cell pass"></i>passed</span>
     <span><i class="cell fail"></i>failed</span>
-    <span><i class="cell errored"></i>errored before grading, not counted</span>
-    <span
-      ><i class="cell none"></i>not run (task added after the model's run)</span
-    >
+    <span><i class="cell errored"></i>errored (not counted)</span>
+    <span><i class="cell none"></i>not run</span>
   </p>
 </section>
 

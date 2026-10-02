@@ -116,7 +116,7 @@
 
 <Seo
   title="LLM Leaderboard · jomcgi.dev"
-  description="Agentic coding benchmark over a real homelab monolith: which budget and self-hosted LLMs can do the work, graded by the repo's own tests."
+  description="Personal benchmark: LLMs doing real tasks in my monorepos, graded by the repo's own tests."
   path="/app/llm-leaderboard"
 />
 
@@ -131,13 +131,9 @@
     </header>
 
     <div class="lead">
-      <h1>Which models can do the homelab's real work?</h1>
+      <h1>LLM leaderboard</h1>
       <p>
-        Each model gets a snapshot of this repo taken just before a real fix,
-        file tools, and the issue. It makes the change itself over several
-        turns, then the fix commit's own test grades it. Easy and standard tasks
-        are the floor a model must clear; the hard tasks, cost and speed rank
-        the ones that do. Claude is the ceiling, not a competitor.
+        Models doing real tasks in my monorepos, graded by the repo's own tests.
       </p>
     </div>
 
@@ -183,114 +179,110 @@
 
     <Selector {models} {selected} onchange={choose} />
 
-    <section>
-      <p class="sec-label">/ Headline metrics</p>
-      <div class="grid2">
-        {#each ["hard", "cost", "wall", "tokens"] as metric}
-          <BarChart
-            models={shown}
-            {metric}
-            {hot}
-            onhover={(id) => (hot = id)}
-          />
-        {/each}
-      </div>
-      <p class="caption">
-        Means per task, so one task blowing up stays visible. Cost is list price
-        through OpenRouter; Claude rows use the representative API price though
-        they ran through Claude Code. Self-hosted rows cost $0 and their
-        wall-time is a single RTX 4090, so compare them on pass and tokens.
+    {#if !shown.length}
+      <p class="panel empty">
+        No models selected. Pick a preset or search above.
       </p>
-    </section>
+    {:else}
+      <section>
+        <p class="sec-label">/ Headline metrics</p>
+        <div class="grid2">
+          {#each ["hard", "cost", "wall", "tokens"] as metric}
+            <BarChart
+              models={shown}
+              {metric}
+              {hot}
+              onhover={(id) => (hot = id)}
+            />
+          {/each}
+        </div>
+        <p class="caption">Means per task. Self-hosted: $0, one RTX 4090.</p>
+      </section>
 
-    <section>
-      <p class="sec-label">/ Capability vs efficiency</p>
-      <Scatter models={shown} {hot} onhover={(id) => (hot = id)} />
-    </section>
+      <section>
+        <p class="sec-label">/ Capability vs efficiency</p>
+        <Scatter models={shown} {hot} onhover={(id) => (hot = id)} />
+      </section>
 
-    <section>
-      <p class="sec-label">/ Every task</p>
-      <TaskMatrix models={shown} {tasks} {hot} onhover={(id) => (hot = id)} />
-    </section>
+      <section>
+        <p class="sec-label">/ Every task</p>
+        <TaskMatrix models={shown} {tasks} {hot} onhover={(id) => (hot = id)} />
+      </section>
 
-    <section>
-      <p class="sec-label">
-        / Ranked
-        <span class="aside">hard-task pass rate, then $ per solve</span>
-      </p>
-      <div class="panel table-wrap">
-        <table class="ranked" class:hovering={hot}>
-          <thead>
-            <tr>
-              {#each COLS as [key, label], i}
-                <th
-                  class:l={i < 2}
-                  aria-sort={sortKey === key
-                    ? sortDir > 0
-                      ? "ascending"
-                      : "descending"
-                    : undefined}
-                >
-                  <button
-                    type="button"
-                    class:on={sortKey === key}
-                    onclick={() => sortBy(key)}
-                    >{label}{sortKey === key
+      <section>
+        <p class="sec-label">
+          / Ranked
+          <span class="aside">hard-task pass rate, then $ per solve</span>
+        </p>
+        <div class="panel table-wrap">
+          <table class="ranked" class:hovering={hot}>
+            <thead>
+              <tr>
+                {#each COLS as [key, label], i}
+                  <th
+                    class:l={i < 2}
+                    aria-sort={sortKey === key
                       ? sortDir > 0
-                        ? " ↓"
-                        : " ↑"
-                      : ""}</button
+                        ? "ascending"
+                        : "descending"
+                      : undefined}
                   >
-                </th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each rows as m (m.id)}
-              <tr
-                data-model={m.id}
-                class:hot={hot === m.id}
-                onmouseenter={() => (hot = m.id)}
-                onmouseleave={() => (hot = null)}
-              >
-                <td class="l num rk">{ranked.indexOf(m) + 1}</td>
-                <td class="l">
-                  <span class="nm"
-                    ><i class="sw" data-slot={providerSlot(m.id)}
-                    ></i>{shortName(m)}</span
-                  >
-                  <span class="slug"
-                    >{m.id}{#if m.role === "anchor"}
-                      · ceiling{:else if m.self_hosted}
-                      · self-hosted{/if}</span
-                  >
-                </td>
-                <td class="num">{m.hard_pass}/{m.hard_n}</td>
-                <td class="num">{m.floor_pass}/{m.floor_n}</td>
-                <td class="num">{money(m.cost_usd)}</td>
-                <td class="num">{money(m.cost_per_solve_usd)}</td>
-                <td class="num">{secs((m.mean_latency_ms ?? 0) / 1000)}</td>
-                <td class="num"
-                  >{m.role === "anchor" ? "n/a" : kfmt(m.mean_tokens)}</td
-                >
-                <td class="num"
-                  >{m.role === "anchor"
-                    ? "n/a"
-                    : METRICS.turns.fmt(m.mean_turns)}</td
-                >
-                <td class="num">{Math.round((m.tool_use_ok ?? 0) * 100)}%</td>
+                    <button
+                      type="button"
+                      class:on={sortKey === key}
+                      onclick={() => sortBy(key)}
+                      >{label}{sortKey === key
+                        ? sortDir > 0
+                          ? " ↓"
+                          : " ↑"
+                        : ""}</button
+                    >
+                  </th>
+                {/each}
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-      <p class="caption">
-        Hard and floor count graded tasks; cells that errored before grading (a
-        provider fault or a prompt past the context window) are left out rather
-        than scored as failures. Claude's steps and tokens come from its own
-        harness and are not comparable to the candidate rows.
-      </p>
-    </section>
+            </thead>
+            <tbody>
+              {#each rows as m (m.id)}
+                <tr
+                  data-model={m.id}
+                  class:hot={hot === m.id}
+                  onmouseenter={() => (hot = m.id)}
+                  onmouseleave={() => (hot = null)}
+                >
+                  <td class="l num rk">{ranked.indexOf(m) + 1}</td>
+                  <td class="l">
+                    <span class="nm"
+                      ><i class="sw" data-slot={providerSlot(m.id)}
+                      ></i>{shortName(m)}</span
+                    >
+                    <span class="slug"
+                      >{m.id}{#if m.role === "anchor"}
+                        · ceiling{:else if m.self_hosted}
+                        · self-hosted{/if}</span
+                    >
+                  </td>
+                  <td class="num">{m.hard_pass}/{m.hard_n}</td>
+                  <td class="num">{m.floor_pass}/{m.floor_n}</td>
+                  <td class="num">{money(m.cost_usd)}</td>
+                  <td class="num">{money(m.cost_per_solve_usd)}</td>
+                  <td class="num">{secs((m.mean_latency_ms ?? 0) / 1000)}</td>
+                  <td class="num"
+                    >{m.role === "anchor" ? "n/a" : kfmt(m.mean_tokens)}</td
+                  >
+                  <td class="num"
+                    >{m.role === "anchor"
+                      ? "n/a"
+                      : METRICS.turns.fmt(m.mean_turns)}</td
+                  >
+                  <td class="num">{Math.round((m.tool_use_ok ?? 0) * 100)}%</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="caption">Errored cells are excluded, not failed.</p>
+      </section>
+    {/if}
 
     <section>
       <p class="sec-label">
@@ -317,14 +309,9 @@
     </section>
 
     <footer class="caption method">
-      Method: SWE-bench style. Each task snapshots the parent of a real fix
-      commit, the model edits it through list, read and write tools, and the fix
-      commit's gold test runs against the result. A "repo test" task is graded
-      by the monolith's own pytest suite, a "behavioural" one by a hand-written
-      check. Source:
       <a href="https://github.com/jomcgi/homelab/tree/main/projects/model-bench"
         >projects/model-bench</a
-      >.
+      >
     </footer>
   </div>
 </main>
@@ -460,6 +447,14 @@
     font-size: 0.7rem;
     text-align: right;
     white-space: nowrap;
+  }
+
+  .empty {
+    margin: 0;
+    padding: 1.2em 0.8em;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.78rem;
   }
 
   .method {
