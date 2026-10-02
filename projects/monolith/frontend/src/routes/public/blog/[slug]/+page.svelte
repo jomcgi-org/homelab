@@ -17,13 +17,15 @@
       before: '<h3 id="32-improvements"',
       load: () => import("$lib/public/posts/QwenReplay.svelte"),
     },
+    // A post with no sections mounts its recording after the intro.
     "ember-conformance": {
-      within: '<h3 id="21-replay"',
-      before: '<h3 id="22-the-nine-rules"',
       load: () => import("$lib/public/posts/ConformanceReplay.svelte"),
     },
   };
   const replay = replays[data.slug];
+  // A single-page post has no index to follow, so the spine column goes and
+  // the breadcrumb sits above the article instead.
+  const single = !data.toc.length;
 
   // "5.1 Prefill was copying whole layers" -> ["5.1", "Prefill was ..."] so
   // the number sits in its own fixed column and the titles align.
@@ -176,51 +178,54 @@
 
 <main class="td post-page">
   <div class="frame">
-    <div class="journal">
-      <aside class="spine">
-        <div class="trail-dock">
-          <Trail post={data.title} />
-        </div>
-        {#if data.toc.length}
-          <nav class="toc" aria-label="Sections" onclick={onIndexClick}>
-            <p class="sec-label">/ Index</p>
-            <ol>
-              {#each data.toc as section}
-                <li>
-                  <a
-                    href={`#${section.id}`}
-                    class:active={activeId === section.id}
-                    aria-current={activeId === section.id
-                      ? "location"
-                      : undefined}
-                    ><span class="num">{split(section.text)[0]}</span><span
-                      >{split(section.text)[1]}</span
-                    ></a
-                  >
-                  {#if section.children.length}
-                    <ol>
-                      {#each section.children as sub}
-                        <li>
-                          <a
-                            href={`#${sub.id}`}
-                            class:active={activeId === sub.id}
-                            aria-current={activeId === sub.id
-                              ? "location"
-                              : undefined}
-                            ><span class="num">{split(sub.text)[0]}</span><span
-                              >{split(sub.text)[1]}</span
-                            ></a
-                          >
-                        </li>
-                      {/each}
-                    </ol>
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-          </nav>
-        {/if}
-      </aside>
+    <div class="journal" class:single>
+      {#if single}
+        <div class="trail-inline"><Trail post={data.title} /></div>
+      {:else}
+        <aside class="spine">
+          <div class="trail-dock">
+            <Trail post={data.title} />
+          </div>
+          {#if data.toc.length}
+            <nav class="toc" aria-label="Sections" onclick={onIndexClick}>
+              <p class="sec-label">/ Index</p>
+              <ol>
+                {#each data.toc as section}
+                  <li>
+                    <a
+                      href={`#${section.id}`}
+                      class:active={activeId === section.id}
+                      aria-current={activeId === section.id
+                        ? "location"
+                        : undefined}
+                      ><span class="num">{split(section.text)[0]}</span><span
+                        >{split(section.text)[1]}</span
+                      ></a
+                    >
+                    {#if section.children.length}
+                      <ol>
+                        {#each section.children as sub}
+                          <li>
+                            <a
+                              href={`#${sub.id}`}
+                              class:active={activeId === sub.id}
+                              aria-current={activeId === sub.id
+                                ? "location"
+                                : undefined}
+                              ><span class="num">{split(sub.text)[0]}</span
+                              ><span>{split(sub.text)[1]}</span></a
+                            >
+                          </li>
+                        {/each}
+                      </ol>
+                    {/if}
+                  </li>
+                {/each}
+              </ol>
+            </nav>
+          {/if}
+        </aside>
+      {/if}
 
       <div class="post-frame">
         <article class="edition">
@@ -237,13 +242,30 @@
             <!-- Server-rendered, constrained first-party markdown. -->
             <div class="post-body">{@html data.preamble}</div>
           {/if}
+          {#if replay && !replay.within}
+            <div class="post-body">
+              {#await replay.load()}
+                <p>Loading the recording...</p>
+              {:then module}
+                <module.default />
+              {:catch}
+                <p>
+                  The recording could not load. Refresh the page to try again.
+                </p>
+              {/await}
+            </div>
+          {/if}
         </article>
 
         <!-- One panel per numbered section: a page flip between them. -->
         {#each data.sections as section}
-          {@const replayBoundary = replay ? section.indexOf(replay.before) : -1}
+          {@const replayBoundary = replay?.within
+            ? section.indexOf(replay.before)
+            : -1}
           {@const showReplay =
-            replay && section.includes(replay.within) && replayBoundary >= 0}
+            replay?.within &&
+            section.includes(replay.within) &&
+            replayBoundary >= 0}
           <section class="edition post-body">
             {@html showReplay ? section.slice(0, replayBoundary) : section}
             {#if showReplay}
@@ -290,6 +312,15 @@
     display: grid;
     grid-template-columns: minmax(12em, 15em) minmax(0, 54em);
     gap: clamp(2em, 4vw, 4em);
+  }
+
+  .journal.single {
+    grid-template-columns: minmax(0, 54em);
+    justify-content: center;
+  }
+  .trail-inline {
+    grid-column: 1;
+    margin-bottom: 1.25rem;
   }
 
   .spine {
@@ -754,6 +785,7 @@
     }
 
     .trail-dock,
+    .trail-inline,
     .sec-label {
       display: none;
     }
