@@ -1,5 +1,7 @@
 """Regression tests for source-specific knowledge extraction lenses."""
 
+import pytest
+
 from knowledge.extraction import _lens, build_extraction_prompt
 from knowledge.models import RawInput
 
@@ -65,6 +67,35 @@ def test_repo_diff_lens_is_unchanged():
         "ARCHITECTURE.md, runbooks, ADRs marked Accepted) makes a claim the diff "
         "contradicts."
     )
+
+
+@pytest.mark.parametrize(
+    "source", ["claude-session", "ember-session", "codex-session", "agent-report"]
+)
+def test_lens_distinguishes_replacement_from_disagreement(source):
+    lens = _lens(_raw(source))
+
+    assert "related note's fact has been REPLACED by a newer behaviour or state" in lens
+    assert "set `edges.supersedes` to that note's id" in lens
+    assert "using only ids from the Related notes list" in lens
+    assert (
+        "Keep `edges.contradicts` for a disagreement that does not establish a replacement"
+    ) in lens
+
+
+def test_dispute_lens_defines_states_from_the_disputes_point_of_view():
+    lens = _lens(_raw("dispute"))
+
+    assert "Seek disconfirming AND confirming evidence in the checkout" in lens
+    assert "States describe the dispute." in lens
+    for definition in (
+        "confirmed: the dispute is upheld, the note is wrong or doubtful but no replacement is established.",
+        "narrowed: the dispute is upheld for part of the note, and a replacement assertion limits the fact's scope.",
+        "superseded: the dispute establishes that a newer fact replaces the note, and a replacement assertion records it.",
+        "invalidated: the dispute establishes that the note is false.",
+        "rejected: the dispute fails, and the fact holds as written.",
+    ):
+        assert definition in lens
 
 
 def test_ember_prompt_embeds_the_session_lens(monkeypatch):

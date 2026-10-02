@@ -1219,6 +1219,9 @@ window as columns. A dispute opens a `knowledge.disputes` row keyed by the
 stable note id, so it survives a reindex, and never deletes the disputed fact;
 a resolution that dead-letters ends `resolution_failed`, stays visible as
 disputed, and alerts Discord through `ops_health`. Replay reopens the dispute.
+Resolution states describe the dispute: `confirmed` upholds it and keeps the
+note disputed, while `rejected` means the fact holds as written and restores
+its captured verification state when safe.
 A distress report notifies Discord and is retained but never extracted. Doc
 drift found by the repository diff feed opens human-reviewed documentation PRs
 on the routine lane, a demand-driven review turn verifies them against main,

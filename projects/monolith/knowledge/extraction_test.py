@@ -820,7 +820,11 @@ def test_apply_downgrades_verified_assertion_without_evidence(session, monkeypat
     assert note.verification_state == "unverified"
 
 
-def test_apply_supersedes_live_note_and_keeps_edge(session, monkeypatch):
+@pytest.mark.parametrize(
+    "source",
+    ["repo-diff", "claude-session", "ember-session", "codex-session", "agent-report"],
+)
+def test_apply_supersedes_live_note_and_keeps_edge(session, monkeypatch, source):
     old = Note(
         note_id="old-setting",
         path="old-setting.md",
@@ -831,10 +835,14 @@ def test_apply_supersedes_live_note_and_keeps_edge(session, monkeypatch):
     )
     session.add(old)
     session.commit()
-    raw = _raw(session, "repo-diff")
+    raw = _raw(session, source)
     monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context",
+        lambda *_args, **_kwargs: [{"note_id": old.note_id, "score": 1.0}],
+    )
 
-    apply_extraction(
+    applied = apply_extraction(
         session,
         raw.raw_id,
         _result(
@@ -854,8 +862,12 @@ def test_apply_supersedes_live_note_and_keeps_edge(session, monkeypatch):
     )
 
     session.refresh(old)
+    assert applied["atoms"] == ["new-setting"]
+    assert applied["rejected"] == []
     assert old.verification_state == "invalidated"
-    assert old.valid_until is not None
+    assert old.valid_until == datetime(2026, 9, 3, 12, tzinfo=timezone.utc).replace(
+        tzinfo=None
+    )
     edge = session.exec(
         select(NoteLink).where(
             NoteLink.target_id == "old-setting",
@@ -863,10 +875,16 @@ def test_apply_supersedes_live_note_and_keeps_edge(session, monkeypatch):
         )
     ).one()
     assert edge.kind == "edge"
+    replacement = session.exec(select(Note).where(Note.note_id == "new-setting")).one()
+    assert edge.src_note_fk == replacement.id
 
 
-def test_apply_ignores_unresolved_supersedes_id(session, monkeypatch):
-    raw = _raw(session, "repo-diff")
+@pytest.mark.parametrize(
+    "source",
+    ["repo-diff", "claude-session", "ember-session", "codex-session", "agent-report"],
+)
+def test_apply_ignores_unresolved_supersedes_id(session, monkeypatch, source):
+    raw = _raw(session, source)
     monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
 
     applied = apply_extraction(
@@ -888,6 +906,57 @@ def test_apply_ignores_unresolved_supersedes_id(session, monkeypatch):
 
     assert applied["atoms"] == ["current-contract"]
     assert session.exec(select(Note)).one().verification_state == "unverified"
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["repo-diff", "claude-session", "ember-session", "codex-session", "agent-report"],
+)
+@pytest.mark.parametrize("target_state", ["deleted", "superseded"])
+def test_apply_leaves_inactive_supersedes_target_unchanged(
+    session, source, target_state
+):
+    previous = datetime(2026, 8, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    old = Note(
+        note_id="inactive-setting",
+        path="inactive-setting.md",
+        title="Inactive setting",
+        content_hash="inactive-hash",
+        content="The old setting routes requests through the legacy path.",
+        verification_state="verified" if target_state == "deleted" else "invalidated",
+        deleted_at=previous if target_state == "deleted" else None,
+        valid_until=previous if target_state == "superseded" else None,
+    )
+    session.add(old)
+    session.commit()
+    raw = _raw(session, source)
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [
+                {
+                    "title": "Current routing",
+                    "body": "When the new setting is enabled, requests use the new path.",
+                    "scope": "repo:acme/repo",
+                    "verification_state": "verified",
+                    "confidence": 1,
+                    "observed_at": "2026-09-03T12:00:00Z",
+                    "edges": {"supersedes": [old.note_id]},
+                    "evidence": ["settings.py:10"],
+                }
+            ]
+        ),
+    )
+
+    assert applied["atoms"] == ["current-routing"]
+    session.refresh(old)
+    assert old.verification_state == (
+        "verified" if target_state == "deleted" else "invalidated"
+    )
+    assert old.deleted_at == (previous if target_state == "deleted" else None)
+    assert old.valid_until == (previous if target_state == "superseded" else None)
 
 
 def _doc_drift(path: str) -> dict:
