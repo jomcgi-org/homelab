@@ -16055,7 +16055,6 @@ def dispatch_closing_prompt(task, node_key, monkeypatch):
         pinned["artifact_schema"],
         pinned["retry_context"],
         pinned["branch"],
-        pinned.get("closing_instruction", ""),
     )
     return prompt, run["pin"]
 
