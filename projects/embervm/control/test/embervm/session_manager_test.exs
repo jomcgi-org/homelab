@@ -7387,6 +7387,24 @@ defmodule Embervm.SessionManagerTest do
       transcript_path: "/workspace/transcript.jsonl"}
   end
 
+  test "claimed primed adoption never flushes even with an unfinished durable invoke" do
+    parent = self()
+    ctx = start_stack(restart_flush_inflight_invokes: true,
+      interrupt_fun: fn _, _ -> send(parent, :unexpected_primed_flush); {:error, :bad} end)
+    put_session_workload(ctx, "wl-primed-no-flush")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-primed-no-flush", "p1")
+    {:ok, started} = SessionStore.record_invoke_started(ctx.store, created.session_id, "primed-dispatch")
+    [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
+    :ok = GenServer.stop(ctx.mgr)
+    put_session_workload(ctx, started.workload, primed_ids: [started.vm_id])
+    {:ok, mgr} = SessionManager.start_link(ctx.mgr_opts)
+    assert :ok = SessionManager.reconcile(mgr)
+    [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    assert Embervm.Session.quiescent?(pid)
+    refute_receive :unexpected_primed_flush, 30
+  end
+
   test "restart adoption flush parks exact evidence and relight resumes the interrupted turn" do
     parent = self()
     ctx = start_stack(restart_flush_inflight_invokes: true, drain_flush_ms: 240_000,
