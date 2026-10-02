@@ -10958,7 +10958,9 @@ def test_claude_interrupt_and_continuation_bill_once(tmp_path, monkeypatch, drai
 def test_claude_interrupt_zero_result_preserves_previous_model_baseline(
     tmp_path, monkeypatch
 ):
-    adapter, first = _claude_interrupted_usage(tmp_path, monkeypatch, "zero_after_prior")
+    adapter, first = _claude_interrupted_usage(
+        tmp_path, monkeypatch, "zero_after_prior"
+    )
     try:
         assert first["total_cost_usd"] == pytest.approx(0.007)
         assert first["modelUsage"]["model"]["inputTokens"] == 10
@@ -10967,9 +10969,9 @@ def test_claude_interrupt_zero_result_preserves_previous_model_baseline(
         assert second["total_cost_usd"] == pytest.approx(0.001)
         assert second["modelUsage"]["model"]["inputTokens"] == 6
         assert second["modelUsage"]["model"]["costUSD"] == pytest.approx(0.001)
-        assert 0.020 + first["total_cost_usd"] + second["total_cost_usd"] == pytest.approx(
-            second["cumulative_total_cost_usd"]
-        )
+        assert 0.020 + first["total_cost_usd"] + second[
+            "total_cost_usd"
+        ] == pytest.approx(second["cumulative_total_cost_usd"])
     finally:
         adapter._close_process(kill=True)
 
