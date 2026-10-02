@@ -5554,6 +5554,19 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_audit_feedback_test",
+    srcs = ["knowledge/audit_feedback_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_audit_test",
     srcs = ["knowledge/audit_test.py"],
     data = ["//projects/monolith/chart:migrations"],

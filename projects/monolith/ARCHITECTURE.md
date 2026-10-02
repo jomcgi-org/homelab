@@ -1238,7 +1238,8 @@ The sampled KG audit (#6721) is staged behind `knowledge.audit.enabled`, false
 in both chart defaults and the hub values. Its scheduled `kg-audit` row uses
 the ordinary `kg-drain` lane and admission caps. Each invocation pins a
 repository-only sample before Luna starts: six uniform notes and six weighted
-by recent retrievals, observation age and provenance count, with a 14-day
+by recent retrievals, observation age and provenance count, with a daily
+interval and a 14-day
 cooldown. The audit ledger keeps these streams separate. Defects request at
 most five ordinary open disputes per run, with reporter `kg-audit`; the normal
 resolver session handles each repair. Clarity-only repairs and process-issue
@@ -1253,15 +1254,27 @@ Turn costs are recorded before output validation. A previous root's known
 bill above $2, including expansions, defers subsequent scheduled intervals
 until the ceiling is raised or the recorded cost is reconciled. Missing costs
 stay NULL; the sample, expansion, dispute and turn-timeout bounds still apply.
-Process feedback is a subsequent implementation slice.
+After scheduled apply, process feedback aggregates defects over 28 days. Five
+defects across three distinct scheduled roots propose one extraction lens,
+prompt or ranking change in a GitHub issue keyed by cause. Expansion findings
+count under their scheduled root. At most two issues can be filed in a trailing
+seven-day window. A committed `write_started` row reserves the cause and weekly
+slot before HTTP; ambiguous writes reconcile the exact issue marker without
+another create. Unresolved writes retain their slot until reconciled. Filing
+requires both the audit kill switch and `issues.enabled`, and failures leave
+the audit job successful. The loop gates and reroutes no work. Its only repair
+writes are ordinary disputes and process issues. Clarity repairs stay off until
+a 20 to 30 note labelled calibration set exists.
 
-**Why.** A uniform stream measures repository error without weighting it by
+**Why.** #6721 requires a measured error rate and process feedback from repeated
+defects. A uniform stream measures repository error without weighting it by
 retrieval popularity. Weighted sampling finds defects in frequently recalled
 or poorly supported notes. Reusing dispute resolution preserves its evidence
 and public visibility contracts; the audit cannot confirm itself or edit a
 note's verification, confidence or validity. Repo scope limits v1 evidence to
 the checkout. Live validation is required before enabling the loop.
 (see: /projects/monolith/knowledge/audit.py)
+(see: /projects/monolith/knowledge/audit_feedback.py)
 (see: /projects/monolith/knowledge/disputes.py)
 
 Knowledge RAG embeds a query, performs cosine retrieval over HNSW-indexed

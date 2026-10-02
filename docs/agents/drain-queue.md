@@ -14,6 +14,18 @@ exists to turn idle capacity into audits, reports, and small PRs. The same
 drainer claims `kg-drain` jobs for knowledge extraction, and `docfix:` jobs are
 one-shot `qwen-drain` tasks for human-reviewed documentation PRs.
 
+The default-off KG audit uses that same `kg-drain` admission, quota floors and
+daily job cap. Its recurring `kg-audit` payload is
+`{"mode": "audit", "stream": "scheduled"}`. One-shot expansion jobs named
+`kg-audit-x:<root_run_id>:<depth>` carry `mode: audit`, `stream: expansion`,
+`root_run_id`, `depth`, `note_ids` and `parent_finding_ids`. The root ledger
+reserves at most eight neighbours across two depths, including pending jobs.
+These jobs validate pinned repository-scoped samples; ordinary self-disputes
+go to separate resolver sessions. Process-issue filing runs after scheduled
+apply in its own best-effort step. The audit neither gates nor reroutes work.
+`knowledge.audit.enabled` disables the whole loop, and clarity repairs and
+issue filing have separate default-off switches.
+
 ## Queueing work
 
 Register with the MCP tool `monolith-agent-register-routine-job`:
