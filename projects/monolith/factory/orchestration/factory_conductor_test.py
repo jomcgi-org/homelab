@@ -10449,6 +10449,261 @@ def test_an_exhausted_loop_on_a_delivering_round_names_no_correction(feedback_db
     assert "delivered nothing" not in deviation["text"]
 
 
+def handoff_task(monkeypatch, *, status="failed", review=True):
+    """An exhausted implementation whose draft PR survived its guest."""
+    task, policy = feedback_task()
+    assert conductor._add(
+        task, policy, "implement_fix", "bounded work", [], "luna",
+        "test:implement_fix", "test fixture", max_attempts=1,
+        turn_timeout_seconds=30,
+    ).ok
+    run_feedback_node(
+        task, "implement_fix",
+        {"status": "needs_work", "summary": "guest died", "pr_number": None,
+         "head_sha": None},
+        status=status,
+    )
+    if review:
+        assert conductor._add(
+            task, policy, "review_fix", "review work", ["implement_fix"], "opus",
+            "test:review_fix", "test fixture", review=True,
+            turn_timeout_seconds=40,
+        ).ok
+    pull = {
+        "number": 21, "state": "open", "draft": True,
+        "head": {"ref": conductor.delivery_branch(task), "sha": HEAD_ONE,
+                 "repo": {"full_name": task["repo"]}},
+        "base": {"ref": task["base_branch"]},
+        "body": "", "additions": 10, "deletions": 0,
+    }
+    checks = {"statuses": [{"context": "pr-checks", "state": "success"}]}
+
+    def read(_repo, path):
+        if path == "pulls/21":
+            return pull
+        if path == f"commits/{HEAD_ONE}/status":
+            return checks
+        pytest.fail(f"unexpected GitHub read: {path}")
+
+    def listed(_repo, path):
+        from urllib.parse import quote
+
+        expected = quote(f"owner:{conductor.delivery_branch(task)}", safe="")
+        assert path == f"pulls?state=open&head={expected}&per_page=20&page=1"
+        return [pull]
+
+    monkeypatch.setattr(conductor, "github_get", read)
+    monkeypatch.setattr(conductor, "github_list", listed)
+    return task, policy, pull, checks
+
+
+def assert_handoff_planner(task, *, code="node_failed", node="implement_fix"):
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "implement_handoff_1" not in nodes
+    assert "review_handoff_1" not in nodes
+    assert node in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == code
+    assert deviation["node_key"] == node
+    return nodes
+
+
+def test_handoff_opens_for_passing_owned_draft(feedback_db, monkeypatch):
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert set(nodes) == {"implement_handoff_1", "review_handoff_1"}
+    implement, review = nodes["implement_handoff_1"], nodes["review_handoff_1"]
+    assert implement["deps"] == []
+    assert review["deps"] == ["implement_handoff_1"]
+    assert implement["max_attempts"] == review["max_attempts"] == 1
+    assert implement["max_cost_usd"] == policy["turn_budget_usd"]
+    assert implement["turn_timeout_seconds"] == 30
+    assert review["turn_timeout_seconds"] == 40
+    assert implement["model"] == "luna" and review["model"] == "opus"
+    assert "PR #21" in implement["prompt"] and HEAD_ONE in implement["prompt"]
+    assert "Make NO source commits" in implement["prompt"]
+    assert "gh pr ready" in implement["prompt"]
+    assert conductor._closing_instruction(task) in implement["prompt"]
+    assert conductor._handoff_rounds_used(task["id"]) == 1
+    assert conductor._review_rounds_used(task["id"]) == 0
+    assert conductor._failed_round(task["id"], list(nodes.values()),
+                                   conductor.graph.node_runs(task["id"])) is None
+    assert len(conductor.graph.node_runs(task["id"])) == 1
+    assert not any(conductor._ENGINE_ROUND_KEY.fullmatch(key) for key in nodes)
+    with Session(feedback_db) as db:
+        audits = db.exec(select(FactoryAudit).where(
+            FactoryAudit.task_id == task["id"],
+            FactoryAudit.action == "handoff_opened",
+        )).all()
+        assert len(audits) == 1
+        detail = json.loads(audits[0].detail_json)
+        assert detail["failed_node"] == "implement_fix"
+        assert detail["pr_number"] == 21 and detail["head_sha"] == HEAD_ONE
+
+
+@pytest.mark.parametrize("contexts", [
+    [{"context": "pr-checks", "state": "pending"}],
+    [{"context": "pr-checks", "state": "success"},
+     {"context": "another-required", "state": "failure"}],
+    [{"context": "pr-checks", "state": "success"},
+     {"context": "another-required", "state": "pending"}],
+    [],
+])
+def test_handoff_requires_passing_exact_head_checks(feedback_db, monkeypatch, contexts):
+    task, policy, _pull, checks = handoff_task(monkeypatch)
+    checks["statuses"] = contexts
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+@pytest.mark.parametrize("surface", ["none", "branch", "fork", "base", "multiple", "conflict"])
+def test_handoff_requires_one_owned_open_pr(feedback_db, monkeypatch, surface):
+    task, policy, pull, _checks = handoff_task(monkeypatch)
+    if surface == "none":
+        monkeypatch.setattr(conductor, "github_list", lambda *_: [])
+    elif surface == "multiple":
+        monkeypatch.setattr(conductor, "github_list", lambda *_: [pull, pull])
+    elif surface == "branch":
+        pull["head"]["ref"] = "factory/another-task"
+    elif surface == "fork":
+        pull["head"]["repo"]["full_name"] = "fork/repo"
+    elif surface == "base":
+        pull["base"]["ref"] = "other-base"
+    else:
+        pull["mergeable"] = False
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+@pytest.mark.parametrize("reader", ["github_get", "github_list"])
+def test_handoff_github_error_falls_through_same_tick(feedback_db, monkeypatch, reader):
+    import httpx
+
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+
+    def unreachable(*_args):
+        raise httpx.ConnectError("github unreachable")
+
+    monkeypatch.setattr(conductor, reader, unreachable)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+@pytest.mark.parametrize("response", [None, [], {"head": None}, {"statuses": None}])
+def test_handoff_unexpected_github_shape_falls_through(feedback_db, monkeypatch, response):
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: response)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+def test_handoff_bound_survives_discard(feedback_db, monkeypatch):
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    conductor.reconcile_task(task["id"], policy, object())
+    for key in ("review_handoff_1", "implement_handoff_1"):
+        assert conductor.graph.discard_node(
+            task["id"], key, author_kind="engine", author="test",
+            cause_kind="test", cause_ref=f"discard:{key}", stated_reason="test",
+            expected_version=conductor.graph.current_version(task["id"]),
+        ).ok
+    assert conductor._handoff_rounds_used(task["id"]) == 1
+    assert conductor._add(
+        task, policy, "implement_again", "work", [], "luna", "test:again",
+        "test fixture", max_attempts=1,
+    ).ok
+    fail_round_node(task, "implement_again")
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task, node="implement_again")
+
+
+@pytest.mark.parametrize("dependent", ["ran", "armed", "implement", "chain"])
+def test_handoff_refuses_unsafe_dependents(feedback_db, monkeypatch, dependent):
+    from factory.orchestration.models import SwarmPlanNode
+
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    if dependent == "ran":
+        fail_round_node(task, "review_fix")
+    elif dependent == "armed":
+        with Session(feedback_db) as db:
+            node = db.exec(select(SwarmPlanNode).where(
+                SwarmPlanNode.task_id == task["id"],
+                SwarmPlanNode.node_key == "review_fix",
+            )).one()
+            node.armed_at = conductor.datetime.now(conductor.timezone.utc)
+            db.commit()
+    else:
+        assert conductor._add(
+            task, policy, "implement_more", "work",
+            ["implement_fix" if dependent == "implement" else "review_fix"],
+            "luna", "test:more", "test fixture",
+        ).ok
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+@pytest.mark.parametrize("key,role", [("handoff_1", "implement"), ("review_handoff_1", "review")])
+def test_handoff_keys_are_reserved_from_planner(feedback_db, key, role):
+    task, _policy = planned_task(feedback_task(), [plan_edit(key, role)])
+    nodes = conductor.graph.load_graph(task["id"])
+    assert [node["node_key"] for node in nodes] == ["conductor_1"]
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[0]["refusal_code"] == "engine_handoff_key_reserved"
+
+
+def test_handoff_never_overrides_node_escalation(feedback_db, monkeypatch):
+    task, policy, _pull, _checks = handoff_task(monkeypatch, status="escalated")
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task, code="node_escalated")
+
+
+@pytest.mark.parametrize("refusal", ["envelope", "graph", "stale"])
+def test_handoff_refusal_leaves_old_graph_and_adds_planner(feedback_db, monkeypatch, refusal):
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    if refusal == "envelope":
+        original = conductor._envelope_refusal
+        monkeypatch.setattr(conductor, "_envelope_refusal", lambda *a, **kw:
+                            "too large" if kw.get("review_rounds_remaining") == 0
+                            else original(*a, **kw))
+    else:
+        original = conductor.graph.apply_edits
+
+        def refuse(*args, **kwargs):
+            if kwargs["cause_kind"] == conductor.HANDOFF_CAUSE_KIND:
+                if refusal == "stale":
+                    kwargs["expected_version"] -= 1
+                    return original(*args, **kwargs)
+                return conductor.graph.GraphOp(ok=False, refusal_code="unsettled_start")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(conductor.graph, "apply_edits", refuse)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = assert_handoff_planner(task)
+    assert "review_fix" in nodes
+    assert conductor._handoff_rounds_used(task["id"]) == 0
+
+
+def test_handoff_review_changes_use_existing_correction_loop(feedback_db, monkeypatch):
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(task, "implement_handoff_1", {
+        "status": "complete", "summary": "verified", "pr_number": 21,
+        "head_sha": HEAD_ONE,
+    }, head=HEAD_ONE)
+    run_feedback_node(task, "review_handoff_1", {
+        "verdict": "changes_requested", "summary": "fix one defect",
+        "pr_number": 21, "head_sha": HEAD_ONE,
+    }, head=HEAD_ONE)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_1", "review_1"} <= set(nodes)
+    assert nodes["correct_1"]["deps"] == ["review_handoff_1"]
+    assert not any(key.startswith("conductor_") for key in nodes)
+    assert conductor._review_rounds_used(task["id"]) == 1
+
+
 def test_a_reopened_round_is_briefed_at_the_live_task_branch_head(
     feedback_db, monkeypatch
 ):
