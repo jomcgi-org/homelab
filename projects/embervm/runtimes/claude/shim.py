@@ -2907,7 +2907,10 @@ class ClaudeProcess:
         model_usage = record.get("modelUsage")
         if isinstance(model_usage, dict):
             record["modelUsage"] = _model_usage_delta(model_usage, models)
-            models = _model_usage_snapshot(model_usage)
+            # A zeroed crash result must not erase the per-model ledger before
+            # interrupted transcript recovery subtracts previously billed work.
+            if cumulative >= baseline["total"]:
+                models = _model_usage_snapshot(model_usage)
         baselines[session_id] = {
             "total": max(cumulative, baseline["total"]),
             "models": models,

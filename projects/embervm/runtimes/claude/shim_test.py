@@ -10834,20 +10834,30 @@ sys.stdin.readline()
 if '--resume' in sys.argv:
     print(json.dumps({'type': 'result', 'session_id': 's', 'result': 'OK',
                       'total_cost_usd': running + 0.001,
+                      'modelUsage': {'model': {'inputTokens': 116 if mode == 'zero_after_prior' else 15,
+                                               'costUSD': running + 0.001}},
                       'usage': {'input_tokens': 5, 'output_tokens': 2}}), flush=True)
     for line in sys.stdin:
         pass
     sys.exit(0)
+if mode == 'zero_after_prior':
+    print(json.dumps({'type': 'result', 'session_id': 's', 'result': 'prior',
+                      'total_cost_usd': 0.020,
+                      'modelUsage': {'model': {'inputTokens': 100, 'costUSD': 0.020}},
+                      'usage': {'input_tokens': 100, 'output_tokens': 2}}), flush=True)
+    sys.stdin.readline()
 def stop(signum, frame):
-    if mode in ('result', 'zero_result', 'unknown_zero'):
+    if mode in ('result', 'zero_result', 'unknown_zero', 'zero_after_prior'):
         print(json.dumps({'type': 'result', 'session_id': 's', 'result': '',
                           'total_cost_usd': 0.027 if mode == 'result' else 0,
+                          'modelUsage': {'model': {'inputTokens': 10 if mode == 'result' else 0,
+                                                   'costUSD': 0.027 if mode == 'result' else 0}},
                           'usage': {}}), flush=True)
-    if mode in ('result', 'transcript', 'zero_result'):
+    if mode in ('result', 'transcript', 'zero_result', 'zero_after_prior'):
         with open(transcript, 'a') as stream:
             stream.write(json.dumps({'type': 'cost-state', 'sessionId': 's',
                                      'totalCostUSD': 0.027,
-                                     'modelUsage': {'model': {'inputTokens': 10,
+                                     'modelUsage': {'model': {'inputTokens': 110 if mode == 'zero_after_prior' else 10,
                                                             'costUSD': 0.027}}}) + '\n')
     sys.exit(0)
 signal.signal(signal.SIGINT, stop)
@@ -10880,6 +10890,10 @@ def _claude_interrupted_usage(tmp_path, monkeypatch, mode, drain=False):
         return event
 
     monkeypatch.setattr(adapter, "_parse_line", observe)
+    if mode == "zero_after_prior":
+        assert adapter.turn("prior", model="opus")["total_cost_usd"] == pytest.approx(
+            0.020
+        )
     records, errors = [], []
 
     def turn():
@@ -10935,6 +10949,25 @@ def test_claude_interrupt_and_continuation_bill_once(tmp_path, monkeypatch, drai
         assert first["total_cost_usd"] == pytest.approx(0.027)
         assert second["total_cost_usd"] == pytest.approx(0.001)
         assert first["total_cost_usd"] + second["total_cost_usd"] == pytest.approx(
+            second["cumulative_total_cost_usd"]
+        )
+    finally:
+        adapter._close_process(kill=True)
+
+
+def test_claude_interrupt_zero_result_preserves_previous_model_baseline(
+    tmp_path, monkeypatch
+):
+    adapter, first = _claude_interrupted_usage(tmp_path, monkeypatch, "zero_after_prior")
+    try:
+        assert first["total_cost_usd"] == pytest.approx(0.007)
+        assert first["modelUsage"]["model"]["inputTokens"] == 10
+        assert first["modelUsage"]["model"]["costUSD"] == pytest.approx(0.007)
+        second = adapter.turn("continue", model="opus")
+        assert second["total_cost_usd"] == pytest.approx(0.001)
+        assert second["modelUsage"]["model"]["inputTokens"] == 6
+        assert second["modelUsage"]["model"]["costUSD"] == pytest.approx(0.001)
+        assert 0.020 + first["total_cost_usd"] + second["total_cost_usd"] == pytest.approx(
             second["cumulative_total_cost_usd"]
         )
     finally:
