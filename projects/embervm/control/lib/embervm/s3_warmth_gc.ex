@@ -33,7 +33,10 @@ defmodule Embervm.S3WarmthGc do
       NodeCapacity DROPS a non-dispatchable node's row, so a down node's
       unreported disk bundles would otherwise look orphaned. Expiry tombstones
       keep this gate closed for the stateful TTL grace window. An empty registry
-      aborts while brick capacity is expected.
+      aborts while brick capacity is expected. `fleet_snapshot/1` records the
+      approved {instance_id, configured_id, pod_uid} identities; its /2 arm
+      requires that subset to remain expected and fresh at plan time and before
+      every prefix delete. Plan holds union the start and plan inventories.
     * Empty-CP-state guard: candidates in S3 while the corresponding store
       tracks NOTHING aborts (a sweep firing mid-rebuild after a CP restart must
       never read "empty desired set" as "everything is orphaned"). A minimum CP
@@ -47,6 +50,8 @@ defmodule Embervm.S3WarmthGc do
       fully-qualified LISTED key (never a prefix, never bucket-wide); meta.json
       goes FIRST so a crashed half-delete reads as incomplete, not stale-valid;
       each prefix is rechecked against live ETS immediately before its deletes;
+      a changed or unreadable fleet aborts all remaining deletes, while a new
+      reference or unexpired parked deadline holds that prefix;
       per-sweep caps bound prefix count and bytes; any delete failure aborts
       the remainder of the sweep.
 
@@ -66,7 +71,10 @@ defmodule Embervm.S3WarmthGc do
        absent) older than the per-prefix TTL: 8 hours for stateful/ and 7 days
        for the other allowlisted artifact kinds.
     5. The key parse was unambiguous.
-    6. The fleet-freshness precondition held for the whole sweep.
+    6. The approved fleet identities remain expected, present, fresh and modeled
+       at sweep start, plan time and every per-prefix recheck. A failed fleet
+       precondition halts the remaining sweep. These reads are not atomic with
+       the following deletes (A1 below).
 
   Group prefixes (`group_set/...`) are Tier 1 only: set_id not desired, not
   node-reported, owning group instance absent or terminal, plus the age gate.
@@ -75,6 +83,14 @@ defmodule Embervm.S3WarmthGc do
   while their instance is actively live or node-reported. Parked sessions and
   their workspace lineages use the age gate once the CP expiry deadline has
   passed; an orphan with no registry row uses the configured age gate directly.
+
+  A1 decision: the recheck/delete window remains unresolved. Restore fails on
+  absent metadata or a missing payload file, but SessionManager registers the
+  non-terminal heir only after its restore worker completes. The GC cannot see
+  that in-flight restore in SessionStore. Fail-closed restore errors do not
+  prove preservation of the last durable copy. A shared restore/delete fence
+  needs separate control-plane work before claiming this window safe; this
+  change leaves the destructive gate default-off.
 
   Coexistence with the WarmthReaper (#36) is disjoint by construction: this GC
   excludes anything node-reported, the reaper enumerates only what nodes report,
@@ -280,7 +296,9 @@ defmodule Embervm.S3WarmthGc do
          {:ok, workspace_keys} <- list_or_abort(state, "session-workspace/"),
          {:ok, group_keys} <- list_or_abort(state, "group_set/"),
          {:ok, snapshot} <- cp_snapshot(state, fleet),
-         :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, state.allow_empty_kinds) do
+         :ok <- check_empty_cp_state(snapshot, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys, state.allow_empty_kinds),
+         {:ok, plan_fleet} <- fleet_snapshot(state, fleet.approved_instances) do
+      snapshot = union_reported_holds(snapshot, plan_fleet.facts)
       {candidates, shadowed, ambiguous} = parse_candidates(state, stateful_keys, session_keys, serving_keys, workspace_keys, group_keys)
       {eligible, held} = build_plan(state, snapshot, candidates)
       held = shadowed ++ held
@@ -289,7 +307,7 @@ defmodule Embervm.S3WarmthGc do
 
       case persist_manifest(state, plan, eligible, held, ambiguous) do
         :ok ->
-          deleted = if state.enabled, do: apply_deletes(state, snapshot, plan), else: []
+          deleted = if state.enabled, do: apply_deletes(state, fleet, plan), else: []
           {:ok, %{plan: plan, eligible: eligible, held: held, ambiguous: ambiguous, deleted: deleted}}
 
         {:error, reason} ->
@@ -312,7 +330,7 @@ defmodule Embervm.S3WarmthGc do
     end
   end
 
-  # THE load-bearing safety check. NodeCapacity's per-node staleness contract:
+  # NodeCapacity's per-instance staleness contract:
   # every fact carries `updated_at` (monotonic ms, stamped by NodeRegistry on
   # each NodeStatus projection), and the registry DROPS a node's row the moment
   # it stops being dispatchable. So "this node's disk inventory is represented
@@ -322,13 +340,19 @@ defmodule Embervm.S3WarmthGc do
   # a modeled CPU vendor so stateful assignments can be matched to their vendor
   # pool. An empty registry aborts because brick capacity is expected and there
   # is no basis to claim the inventory is complete.
-  defp fleet_snapshot(state) do
+  defp fleet_snapshot(state, approved_instances \\ MapSet.new()) do
     now = state.clock.()
     expected_instances = expected_instances(state)
+    identities = MapSet.new(expected_instances, &{&1.instance_id, &1.node_id, &1.pod_uid})
 
-    if expected_instances == [] do
+    cond do
+      expected_instances == [] ->
       abort(:no_expected_nodes, "node registry is empty while brick capacity is expected")
-    else
+
+      not MapSet.subset?(approved_instances, identities) ->
+        abort(:fleet_changed, "approved instance identities disappeared or changed during the sweep")
+
+      true ->
       {facts, stale} =
         Enum.reduce(expected_instances, {[], []}, fn instance, {facts, stale} ->
           case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
@@ -336,7 +360,9 @@ defmodule Embervm.S3WarmthGc do
               vendor = normalized_vendor(capacity)
               age = now - Map.get(capacity, :updated_at, now - state.freshness_window_ms - 1)
 
-              if age <= state.freshness_window_ms and vendor in state.vendors do
+              if is_integer(Map.get(capacity, :updated_at)) and
+                   Map.get(capacity, :instance_id) == instance.instance_id and
+                   age <= state.freshness_window_ms and vendor in state.vendors do
                 {[capacity | facts], stale}
               else
                 {facts, [instance.instance_id | stale]}
@@ -357,7 +383,10 @@ defmodule Embervm.S3WarmthGc do
           |> Enum.reject(&MapSet.member?(expected_ids, Map.get(&1, :instance_id)))
 
         if unexpected == [] do
-          {:ok, %{facts: facts, node_vendors: node_vendors(facts, state.vendors)}}
+          # Validate every reported inventory while errors still abort the fleet
+          # precondition, including at delete time.
+          reported_holds(facts)
+          {:ok, %{facts: facts, node_vendors: node_vendors(facts, state.vendors), approved_instances: identities}}
         else
           abort(
             :fleet_stale,
@@ -373,26 +402,31 @@ defmodule Embervm.S3WarmthGc do
         )
       end
     end
+  rescue
+    e -> abort(:fleet_stale, "fleet evidence unreadable: #{inspect(e)}")
+  catch
+    kind, reason -> abort(:fleet_stale, "fleet evidence unreadable: #{inspect({kind, reason})}")
   end
 
   defp expected_instances(state) do
     case state.node_registry_fun.() do
       registry when is_map(registry) ->
-        Enum.map(registry, fn {instance_id, facts} ->
+        Enum.map(registry, fn {instance_id, %{configured_id: node_id, pod_uid: pod_uid}} ->
+          unless is_binary(instance_id) and instance_id != "" and
+                   is_binary(node_id) and node_id != "" and is_binary(pod_uid) and pod_uid != "" do
+            raise ArgumentError, "unreadable registry identity"
+          end
+
           %{
             instance_id: instance_id,
-            node_id: Map.get(facts, :configured_id, ""),
-            pod_uid: Map.get(facts, :pod_uid, "")
+            node_id: node_id,
+            pod_uid: pod_uid
           }
         end)
 
       _ ->
-        []
+        raise ArgumentError, "node registry returned a non-map"
     end
-  rescue
-    _ -> []
-  catch
-    _, _ -> []
   end
 
   defp normalized_vendor(facts) do
@@ -414,6 +448,50 @@ defmodule Embervm.S3WarmthGc do
     end
   end
 
+  defp reported_holds(facts) do
+    Map.new([
+      {:reported_refs, :stateful_bundles, :snapshot_ref},
+      {:reported_set_ids, :group_bundle_sets, :set_id},
+      {:reported_session_refs, :session_snapshots, :snapshot_ref},
+      {:reported_serving_refs, :serving_snapshots, :snapshot_ref},
+      {:reported_lineages, :session_volumes, :lineage_id}
+    ], fn {hold, inventory, field} ->
+      refs =
+        for fact <- facts,
+            item <- Map.get(fact, inventory, []) || [],
+            ref = Map.fetch!(item, field),
+            is_binary(ref), ref != "",
+            into: MapSet.new(), do: ref
+
+      {hold, refs}
+    end)
+  end
+
+  defp union_reported_holds(snapshot, facts) do
+    Enum.reduce(reported_holds(facts), snapshot, fn {hold, refs}, acc ->
+      Map.update!(acc, hold, &MapSet.union(&1, refs))
+    end)
+  end
+
+  defp parked_expiry_holds(rows) do
+    Map.new([{:parked_session_expiries, :snapshot_ref, :ref}, {:parked_lineage_expiries, :lineage_id, :lineage}],
+      fn {hold, field, kind} ->
+        expiries =
+          Enum.reduce(rows, %{}, fn row, acc ->
+            key = Map.get(row, field)
+            expiry = Map.get(row, :expires_at)
+
+            if row.state == :parked and is_binary(key) and key != "" and is_integer(expiry) do
+              Map.update(acc, {kind, key}, expiry, &max(&1, expiry))
+            else
+              acc
+            end
+          end)
+
+        {hold, expiries}
+      end)
+  end
+
   # One consistent read of every CP truth source. Store call failures abort (a
   # dead store must read as "unknown", never as "empty").
   defp cp_snapshot(state, fleet) do
@@ -421,41 +499,6 @@ defmodule Embervm.S3WarmthGc do
     group_rows = GroupStore.all(state.group_store)
     session_rows = SessionStore.all(state.session_store)
     serving_rows = ServingStore.all(state.serving_store)
-    facts = fleet.facts
-
-    reported_refs =
-      for fact <- facts,
-          bundle <- Map.get(fact, :stateful_bundles, []) || [],
-          is_binary(bundle.snapshot_ref),
-          bundle.snapshot_ref != "",
-          into: MapSet.new(),
-          do: bundle.snapshot_ref
-
-    reported_set_ids =
-      for fact <- facts,
-          set <- Map.get(fact, :group_bundle_sets, []) || [],
-          is_binary(set.set_id),
-          set.set_id != "",
-          into: MapSet.new(),
-          do: set.set_id
-
-    reported_session_refs =
-      for fact <- facts,
-          ref <- Map.get(fact, :session_snapshots, []) || [],
-          is_binary(ref.snapshot_ref), ref.snapshot_ref != "",
-          into: MapSet.new(), do: ref.snapshot_ref
-
-    reported_serving_refs =
-      for fact <- facts,
-          ref <- Map.get(fact, :serving_snapshots, []) || [],
-          is_binary(ref.snapshot_ref), ref.snapshot_ref != "",
-          into: MapSet.new(), do: ref.snapshot_ref
-
-    reported_lineages =
-      for fact <- facts,
-          volume <- Map.get(fact, :session_volumes, []) || [],
-          is_binary(volume.lineage_id), volume.lineage_id != "",
-          into: MapSet.new(), do: volume.lineage_id
 
     active_session_rows = Enum.filter(session_rows, &session_actively_live?/1)
     active_serving_rows = Enum.filter(serving_rows, &serving_actively_live?/1)
@@ -500,35 +543,12 @@ defmodule Embervm.S3WarmthGc do
         ),
       live_group_ids:
         for(row <- group_rows, not GroupState.terminal?(row.state), into: MapSet.new(), do: row.instance_id),
-      reported_refs: reported_refs,
-      reported_set_ids: reported_set_ids,
-      reported_session_refs: reported_session_refs,
-      reported_serving_refs: reported_serving_refs,
-      reported_lineages: reported_lineages,
       referenced_lineages: referenced_lineages,
       referenced_session_refs: referenced_session_refs,
-      referenced_serving_refs: referenced_serving_refs,
-      parked_session_expiries:
-        for(
-          row <- session_rows,
-          row.state == :parked,
-          is_binary(row.snapshot_ref),
-          row.snapshot_ref != "",
-          is_integer(Map.get(row, :expires_at)),
-          into: %{},
-          do: {{:ref, row.snapshot_ref}, Map.get(row, :expires_at)}
-        ),
-      parked_lineage_expiries:
-        for(
-          row <- session_rows,
-          row.state == :parked,
-          is_binary(row.lineage_id),
-          row.lineage_id != "",
-          is_integer(Map.get(row, :expires_at)),
-          into: %{},
-          do: {{:lineage, row.lineage_id}, Map.get(row, :expires_at)}
-        )
+      referenced_serving_refs: referenced_serving_refs
     }
+    |> Map.merge(reported_holds(fleet.facts))
+    |> Map.merge(parked_expiry_holds(session_rows))
 
     {:ok, snapshot}
   rescue
@@ -1035,8 +1055,11 @@ defmodule Embervm.S3WarmthGc do
   # the prefix's own listing; a violation means a composition bug, so the whole
   # sweep aborts rather than trusting any further composed key. Any delete
   # failure also aborts the remainder (the next sweep re-plans from a fresh
-  # listing).
-  defp apply_deletes(state, _snapshot, plan) do
+  # listing). Fleet-precondition failures halt the sweep and return prefixes
+  # already deleted; reference and parked-expiry holds skip only that prefix.
+  defp apply_deletes(state, fleet, plan) do
+    state = Map.put(state, :approved_instances, fleet.approved_instances)
+
     Enum.reduce_while(plan, [], fn entry, deleted ->
       case recheck_live(state, entry) do
         :ok ->
@@ -1053,6 +1076,10 @@ defmodule Embervm.S3WarmthGc do
         {:blocked, reason} ->
           Logger.warning("embervm s3 warmth gc: recheck blocked #{entry.prefix} (#{reason}); skipping")
           {:cont, deleted}
+
+        {:abort, reason} ->
+          abort(reason, "#{entry.prefix}: fleet precondition failed; aborting remaining deletes")
+          {:halt, deleted}
       end
     end)
     |> Enum.reverse()
@@ -1060,10 +1087,23 @@ defmodule Embervm.S3WarmthGc do
 
   # The per-prefix recheck: re-read the live ETS truth sources for exactly the
   # conditions that can CHANGE between plan and delete (a relight re-desiring a
-  # ref, a node re-reporting a bundle, a workload waking). Age and parse cannot
-  # regress, so they are not re-evaluated.
-  defp recheck_live(state, %{kind: :stateful} = entry) do
-    with {:ok, fleet} <- fleet_snapshot(state) do
+  # ref, a node re-reporting a bundle, a workload waking or parking). First
+  # revalidate the sweep-start identities and fleet evidence for every kind.
+  # Parked expiry uses a fresh wall-clock read and the plan's shared predicate.
+  # Artifact age and parse cannot regress, so they are not re-evaluated. A1
+  # remains unresolved: this check is sequential with the following delete.
+  defp recheck_live(state, entry) do
+    case fleet_snapshot(state, state.approved_instances) do
+      {:ok, fleet} -> recheck_references(state, entry, fleet)
+      {:error, reason} -> {:abort, reason}
+    end
+  rescue
+    _ -> {:blocked, "registry_unreadable"}
+  catch
+    _, _ -> {:blocked, "registry_unreadable"}
+  end
+
+  defp recheck_references(state, %{kind: :stateful} = entry, fleet) do
       reported? =
         Enum.any?(fleet.facts, fn fact ->
           Enum.any?(Map.get(fact, :stateful_bundles, []) || [], &(&1.snapshot_ref == entry.ref))
@@ -1086,13 +1126,9 @@ defmodule Embervm.S3WarmthGc do
         tier1_liveness == :unknown -> {:blocked, "vendor pool evidence became unknown"}
         true -> :ok
       end
-    else
-      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
-    end
   end
 
-  defp recheck_live(state, %{kind: :group} = entry) do
-    with {:ok, fleet} <- fleet_snapshot(state) do
+  defp recheck_references(state, %{kind: :group} = entry, fleet) do
       reported? =
         Enum.any?(fleet.facts, fn fact ->
           Enum.any?(Map.get(fact, :group_bundle_sets, []) || [], &(&1.set_id == entry.set_id))
@@ -1108,19 +1144,23 @@ defmodule Embervm.S3WarmthGc do
         reported? -> {:blocked, "set became node-reported"}
         true -> :ok
       end
-    else
-      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
-    end
   end
 
-  defp recheck_live(state, %{kind: kind} = entry) when kind in [:session, :serving, :session_workspace] do
-    with {:ok, fleet} <- fleet_snapshot(state) do
+  defp recheck_references(state, %{kind: kind} = entry, fleet) when kind in [:session, :serving, :session_workspace] do
       try do
         facts = fleet.facts
         session_rows = SessionStore.all(state.session_store)
         serving_rows = ServingStore.all(state.serving_store)
+        parked = parked_expiry_holds(session_rows)
+        now = state.wall_clock.()
 
         cond do
+          kind == :session and parked_session_not_expired?(parked, entry.ref, now) ->
+            {:blocked, "session parked expiry became held"}
+
+          kind == :session_workspace and parked_session_not_expired?(parked, entry.lineage, now, :lineage) ->
+            {:blocked, "lineage parked expiry became held"}
+
           kind == :session and
               (Enum.any?(facts, fn f ->
                  Enum.any?(Map.get(f, :session_snapshots, []) || [], &(&1.snapshot_ref == entry.ref))
@@ -1150,9 +1190,6 @@ defmodule Embervm.S3WarmthGc do
       catch
         _, _ -> {:blocked, "registry_unreadable"}
       end
-    else
-      {:error, _reason} -> {:blocked, "fleet evidence became incomplete"}
-    end
   end
 
   defp workload_liveness_now(state, fleet, vendor, workload) do

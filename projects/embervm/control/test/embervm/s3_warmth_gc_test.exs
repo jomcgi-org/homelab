@@ -1223,6 +1223,220 @@ defmodule Embervm.S3WarmthGcTest do
 
   # -- pre-delete recheck ------------------------------------------------------
 
+  for observed_at <- [:start, :plan] do
+    test "planning holds all kinds reported at sweep #{observed_at}" do
+      prefixes = [
+        "stateful/amd/wl/state-old", "session/amd/wl/session-old",
+        "serving/amd/wl/serving-old", "session-workspace/wl/lineage-old",
+        "group_set/amd/group-old/set-old"
+      ]
+      objects = Enum.reduce(prefixes, %{}, &Map.merge(&2, artifact(&1, @wall - 30 * @day)))
+      {agent, s3} = new_s3(objects)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+      observed_at = unquote(observed_at)
+
+      registry_fun = fn ->
+        call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+        reported? = (observed_at == :start and call == 1) or (observed_at == :plan and call == 2)
+        if reported? do
+          put_node_fact(table, "node-4", [%{snapshot_ref: "state-old"}], [%{set_id: "set-old"}], @mono,
+            session_snapshots: [%{snapshot_ref: "session-old"}], serving_snapshots: [%{snapshot_ref: "serving-old"}],
+            session_volumes: [%{lineage_id: "lineage-old"}])
+        else
+          put_node_fact(table, "node-4", [], [])
+        end
+        %{"node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"}}
+      end
+
+      gc = start_gc(s3, enabled: true, capacity_table: table, node_registry_fun: registry_fun,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "state-old")]),
+        group_store: start_store([group_row(:destroyed, "group-old", "set-old")]),
+        session_store: start_store([session_row(:destroyed, "wl", "lineage-old", "session-old")]),
+        serving_store: start_store([serving_row(:destroyed, "wl", "serving-old")]), volume_fun: fn _ -> nil end)
+
+      assert {:ok, %{plan: [], held: held, deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert Enum.sort(Enum.map(held, & &1.prefix)) == Enum.sort(prefixes)
+      assert deleted(agent) == []
+    end
+  end
+
+  for change <- [:absent, :stale] do
+    test "plan-time fleet revalidation aborts when an approved instance becomes #{change}" do
+      %{agent: agent, s3: s3, table: table, base_opts: base_opts} = orphan_fixture()
+      change = unquote(change)
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      registry_fun = fn ->
+        call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+
+        if call == 2 do
+          if change == :absent do
+            NodeCapacity.drop(table, {"node-4", "pod"})
+          else
+            put_node_fact(table, "node-4", [], [], @mono - 600_000)
+          end
+        end
+
+        %{"node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"}}
+      end
+
+      gc = start_gc(s3, base_opts ++ [enabled: true, node_registry_fun: registry_fun])
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+      assert puts(agent) == []
+    end
+  end
+
+  test "a delete-time fleet identity change halts workspace and later planned deletes" do
+    workspace = "session-workspace/dead-wl/lineage-old"
+    %{prefix: later, agent: agent, s3: s3, table: table, base_opts: base_opts} =
+      orphan_fixture(artifact(workspace, @wall - 40 * @day))
+
+    put_node_fact(table, "node-9", [], [])
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    registry_fun = fn ->
+      call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+      remaining = %{"node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"}}
+
+      if call >= 3 do
+        NodeCapacity.drop(table, {"node-9", "pod"})
+        remaining
+      else
+        Map.put(remaining, "node-9/pod", %{configured_id: "node-9", pod_uid: "pod"})
+      end
+    end
+
+    gc = start_gc(s3, base_opts ++ [enabled: true, node_registry_fun: registry_fun,
+      session_store: start_store([session_row(:destroyed, "dead-wl", "lineage-old", nil)])])
+
+    assert {:ok, %{plan: [%{prefix: ^workspace}, %{prefix: ^later}], deleted: []}} = S3WarmthGc.sweep_now(gc)
+    assert deleted(agent) == []
+    assert Agent.get(calls, & &1) == 3
+  end
+
+  test "a fleet abort returns prefixes already deleted and halts the remainder" do
+    prior = "stateful/amd/dead-wl/state-prior"
+    workspace = "session-workspace/dead-wl/lineage-old"
+    objects = artifact(prior, @wall - 50 * @day) |> Map.merge(artifact(workspace, @wall - 40 * @day))
+    %{prefix: later, agent: agent, s3: s3, table: table, base_opts: base_opts} = orphan_fixture(objects)
+    put_node_fact(table, "node-9", [], [])
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    registry_fun = fn ->
+      call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+      remaining = %{"node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"}}
+      if call >= 4 do
+        NodeCapacity.drop(table, {"node-9", "pod"})
+        remaining
+      else
+        Map.put(remaining, "node-9/pod", %{configured_id: "node-9", pod_uid: "pod"})
+      end
+    end
+
+    gc = start_gc(s3, base_opts ++ [enabled: true, node_registry_fun: registry_fun,
+      session_store: start_store([session_row(:destroyed, "dead-wl", "lineage-old", nil)])])
+    assert {:ok, %{plan: [%{prefix: ^prior}, %{prefix: ^workspace}, %{prefix: ^later}], deleted: [^prior]}} = S3WarmthGc.sweep_now(gc)
+    assert deleted(agent) == [prior <> "/meta.json", prior <> "/memfile"]
+    assert Agent.get(calls, & &1) == 4
+  end
+
+  test "a changed pod UID under the same registry instance aborts planning" do
+    %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    registry_fun = fn ->
+      call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+      %{"node-4/pod" => %{configured_id: "node-4", pod_uid: if(call == 1, do: "pod", else: "replacement")}}
+    end
+    gc = start_gc(s3, base_opts ++ [enabled: true, node_registry_fun: registry_fun])
+    assert {:error, :fleet_changed} = S3WarmthGc.sweep_now(gc)
+    assert deleted(agent) == []
+    assert puts(agent) == []
+  end
+
+  for {kind, prefix} <- [session: "session/amd/wl/session-old", session_workspace: "session-workspace/wl/lineage-old"],
+      expiry <- [:future, :past, :nil] do
+    test "#{kind} recheck honors a #{expiry} parked expiry" do
+      prefix = unquote(prefix)
+      expiry = case unquote(expiry) do
+        :future -> @wall + @day
+        :past -> @wall - 1
+        :nil -> nil
+      end
+      {agent, s3} = new_s3(artifact(prefix, @wall - 30 * @day))
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+      {:ok, sessions} = SeqStoreStub.start_link([
+        [session_row(:destroyed, "wl", "lineage-old", "session-old")],
+        [session_row(:parked, "wl", "lineage-old", "session-old", expires_at: expiry)]
+      ])
+
+      gc = start_gc(s3, enabled: true, capacity_table: table,
+        stateful_store: start_store([]), group_store: start_store([]), session_store: sessions)
+
+      assert {:ok, %{plan: [%{prefix: ^prefix}], deleted: prefixes}} = S3WarmthGc.sweep_now(gc)
+
+      if unquote(expiry) == :future do
+        assert prefixes == []
+        assert deleted(agent) == []
+      else
+        assert prefixes == [prefix]
+        assert deleted(agent) == [prefix <> "/meta.json", prefix <> "/memfile"]
+      end
+    end
+  end
+
+  for failure <- [:raises, :non_map, :unreadable_fact] do
+    test "unreadable #{failure} fleet evidence at recheck halts deletion" do
+      %{agent: agent, s3: s3, table: table, base_opts: base_opts} = orphan_fixture()
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+      failure = unquote(failure)
+
+      registry_fun = fn ->
+        call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+
+        if call >= 3 do
+          case failure do
+            :raises -> raise "registry unavailable"
+            :non_map -> :unreadable
+            :unreadable_fact ->
+              NodeCapacity.put(table, {"node-4", "pod"}, :unreadable)
+              %{"node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"}}
+          end
+        else
+          %{"node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"}}
+        end
+      end
+
+      gc = start_gc(s3, base_opts ++ [enabled: true, node_registry_fun: registry_fun])
+      assert {:ok, %{plan: [_], deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+  end
+
+  test "parked expiry uses a fresh wall clock at recheck" do
+    prefix = "session-workspace/wl/lineage-old"
+    {agent, s3} = new_s3(artifact(prefix, @wall - 30 * @day))
+    table = new_cap_table()
+    put_node_fact(table, "node-4", [], [])
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    wall_clock = fn ->
+      call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+      if call >= 3, do: @wall + 2 * @day, else: @wall
+    end
+    {:ok, sessions} = SeqStoreStub.start_link([
+      [session_row(:destroyed, "wl", "lineage-old", nil)],
+      [session_row(:parked, "wl", "lineage-old", nil, expires_at: @wall + @day)]
+    ])
+    gc = start_gc(s3, enabled: true, capacity_table: table, wall_clock: wall_clock,
+      stateful_store: start_store([]), group_store: start_store([]), session_store: sessions)
+    assert {:ok, %{deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+    assert deleted(agent) == [prefix <> "/meta.json", prefix <> "/memfile"]
+    assert Agent.get(calls, & &1) == 3
+  end
+
   test "the per-prefix recheck blocks a delete when the ref becomes desired after planning" do
     %{prefix: _prefix, agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
 
