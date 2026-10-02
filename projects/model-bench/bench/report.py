@@ -34,7 +34,8 @@ def render_leaderboard(
     Returns:
         Markdown string with sections: Agentic, Excluded harness errors, Frontier
         ceiling, Scored tasks, Budget tier, All results, Anchors, Pareto frontier,
-        Retired. Section headers are fixed and always emitted even when inputs are empty.
+        Retired. Section headers are fixed and always emitted even when inputs
+        are empty.
     """
     lines: list[str] = []
     lines.append("# model-bench leaderboard")
@@ -88,8 +89,8 @@ def render_leaderboard(
             )
         )
         lines.append(
-            "| Model | hard | score | frontier | mean tokens | mean turns | wall-time (s) "
-            "| cost ($) | $/solve | tool-use ok | norms | errored |"
+            "| Model | hard | score | frontier | mean tokens | mean turns "
+            "| wall-time (s) | cost ($) | $/solve | tool-use ok | norms | errored |"
         )
         lines.append("| --- " * 12 + "|")
         for r in qualified:
@@ -173,7 +174,8 @@ def render_leaderboard(
             key=lambda r: (-r.get("hard_pass", 0), r.get("mean_latency_ms", 0.0))
         )
         lines.append(
-            "| Model | hard | score | frontier | pass rate | wall-time (s) | rental ($) | tasks |"
+            "| Model | hard | score | frontier | pass rate | wall-time (s) "
+            "| rental ($) | tasks |"
         )
         lines.append("| --- " * 8 + "|")
         for r in ceiling_rows:
