@@ -61,10 +61,16 @@ WITH turn_cost AS (
 ),
 merged AS (
     SELECT DISTINCT ON (a.task_id) a.task_id, a.created_at AS merged_at,
-           (a.detail_json::jsonb ->> 'pr_number')::int AS pr_number,
-           a.detail_json::jsonb -> 'ci' ->> 'conclusion' AS ci_conclusion
+           (a.detail_json::jsonb ->> 'pr_number')::int AS pr_number
     FROM swarm.factory_audit a
     WHERE a.action = 'merged'
+    ORDER BY a.task_id, a.created_at
+),
+merge_ci AS (
+    SELECT DISTINCT ON (a.task_id) a.task_id,
+           a.detail_json::jsonb ->> 'conclusion' AS ci_conclusion
+    FROM swarm.factory_audit a
+    WHERE a.action = 'merge_ci'
     ORDER BY a.task_id, a.created_at
 ),
 reverted AS (
@@ -80,7 +86,7 @@ impl AS (
 ),
 tasks AS (
     SELECT fr.task_id, fr.created_at, impl.model, tc.cost, m.merged_at,
-           m.ci_conclusion, (rv.task_id IS NOT NULL) AS reverted,
+           ci.ci_conclusion, (rv.task_id IS NOT NULL) AS reverted,
            CASE WHEN p.number IS NULL THEN 'unknown'
                 WHEN p.additions + p.deletions < 50 THEN 'S'
                 WHEN p.additions + p.deletions < 300 THEN 'M'
@@ -89,6 +95,7 @@ tasks AS (
     LEFT JOIN impl ON impl.task_id = fr.task_id
     LEFT JOIN turn_cost tc ON tc.task_id = fr.task_id
     LEFT JOIN merged m ON m.task_id = fr.task_id
+    LEFT JOIN merge_ci ci ON ci.task_id = fr.task_id
     LEFT JOIN reverted rv ON rv.task_id = fr.task_id
     LEFT JOIN observability.merged_prs p ON p.number = m.pr_number
     WHERE fr.task_id IS NOT NULL AND impl.model IS NOT NULL

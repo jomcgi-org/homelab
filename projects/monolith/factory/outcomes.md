@@ -21,9 +21,10 @@ writes. The script also sets `default_transaction_read_only`.
 - **Attempt ok:** `swarm_node_run.status = 'succeeded'`. This is the node's own
   verdict, not the task's outcome.
 - **Positive outcome:** the task merged (a `merged` audit) and was not
-  reverted (no `reverted` audit). CI conclusion comes from the `merged`
-  audit's `ci.conclusion` once landing records it. Until then `ci_green` is
-  blank, which means unknown, not red.
+  reverted (no `reverted` audit). CI conclusion comes from the `merge_ci`
+  audit, and reverts from the `reverted` / `revert_window_closed` audits.
+  Merges from before those audits shipped have neither, so they count as
+  unknown, not red.
 - **Cost:** a bracket.
   - `list_usd` sums the attempt's own priced turns
     (`agent_turns.list_cost_usd`). This is a lower bound: turns that ended in
