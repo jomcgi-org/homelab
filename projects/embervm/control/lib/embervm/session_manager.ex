@@ -3461,7 +3461,7 @@ defmodule Embervm.SessionManager do
             Process.put(:workspace_prime_issued, true)
             prime_fun.(channel, request)
           end}
-          outcome =
+          outcome = try do
             Tracer.with_span "embervm.session.rejoin",
                              %{attributes: %{
                                "ember.session_id" => session_id,
@@ -3479,6 +3479,11 @@ defmodule Embervm.SessionManager do
                 other -> {:error, other}
               end
             end
+          rescue
+            error -> {:error, {:rejoin_raised, error}}
+          catch
+            kind, reason -> {:error, {:rejoin_raised, {kind, reason}}}
+          end
 
           send(owner, {:rejoin_done, session_id, outcome, Process.get(:workspace_prime_issued, false)})
         end)

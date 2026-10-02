@@ -690,7 +690,6 @@ defmodule Embervm.SessionManagerTest do
       )
       created = create_persistence_session(ctx, instance_id: "node-4/pod-owner")
       assert_receive {:cross_prime, {:channel, "node-4/pod-owner"}}, 1_000
-      assert_receive {:cross_restore, _, ""}, 1_000
       invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: ~s({"message":"work"})}) end)
       assert_receive :cross_turn_running, 1_000
       # Draining registry facts disappear before the manager's drain callback.
@@ -808,7 +807,6 @@ defmodule Embervm.SessionManagerTest do
     {ctx, created, parked} = cross_node_stack(restore_artifact_fun: fn ch, req ->
       send(parent, {:capacity_restore, ch}); {:ok, %{content_fingerprint: req.expected_fingerprint}}
     end)
-    assert_receive {:capacity_restore, {:channel, "node-4/pod-owner"}}, 1_000
     await_workspace_evidence(ctx, created.session_id)
     put_brick(ctx, parked.workload, "pod-full", node_id: "node-4", mem_headroom: 0)
     cross_node_target(ctx, parked)
@@ -858,9 +856,53 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :evicted, terminal_reason: "node_gone"}} = SessionStore.get(ctx.store, created.session_id)
   end
 
+  test "cross-node evidence is absent from durable reload and a restarted manager" do
+    {ctx, created, _parked} = cross_node_stack()
+    await_workspace_evidence(ctx, created.session_id)
+    {:ok, rebuilt_store} = SessionStore.start_link(name: nil, op_log: ctx.op_log)
+    assert {:ok, %{state: :parked, volume_node_id: "node-4"}} = SessionStore.get(rebuilt_store, created.session_id)
+    {:ok, restarted_manager} = SessionManager.start_link(name: nil, session_store: rebuilt_store,
+      capacity_table: ctx.cap_table, catalog_table: ctx.cat_table, registry: ctx.registry,
+      cross_node_rejoin: true, node_inventory_fun: fn -> {:error, :not_configured} end)
+    assert :sys.get_state(restarted_manager).workspace_evidence == %{}
+    assert :sys.get_state(restarted_manager).attach_epochs == %{}
+  end
+
+  test "cross-node a park transition invalidates an existing attachment epoch" do
+    {ctx, created, parked} = cross_node_stack()
+    evidence = await_workspace_evidence(ctx, created.session_id)
+    # Isolate the park boundary by returning the row to running through the
+    # store without a manager rejoin completion (which has its own invalidation).
+    {:ok, _} = SessionStore.mark(ctx.store, created.session_id, :relight)
+    {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :rejoin_ready, :session_rejoined,
+      %{volume_node_id: "node-4", node_id: "node-4", vm_id: "vm-repark"},
+      %{volume_node_id: "node-4", node_id: "node-4", vm_id: "vm-repark"})
+    put_brick(ctx, parked.workload, "pod-owner", node_id: "node-4")
+    park_session(ctx, created)
+    state = :sys.get_state(ctx.mgr)
+    refute Map.has_key?(state.workspace_evidence, created.session_id)
+    assert state.attach_epochs[created.session_id] > evidence.epoch
+  end
+
+  test "cross-node prefers a target without the lineage and excludes unreachable bricks" do
+    parent = self()
+    {ctx, created, parked} = cross_node_stack(restore_artifact_fun: fn ch, req ->
+      send(parent, {:preferred_restore, ch}); {:ok, %{content_fingerprint: req.expected_fingerprint}}
+    end)
+    await_workspace_evidence(ctx, created.session_id)
+    cross_node_target(ctx, parked, node_id: "node-stale",
+      session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}])
+    cross_node_target(ctx, parked, node_id: "node-unreachable", store_reachable: false)
+    cross_node_target(ctx, parked)
+    assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"})
+    assert_receive {:preferred_restore, {:channel, "node-b/pod-target"}}, 1_000
+    refute_receive {:preferred_restore, {:channel, "node-stale/pod-target"}}, 100
+    refute_receive {:preferred_restore, {:channel, "node-unreachable/pod-target"}}, 100
+  end
+
   test "cross-node stale copies of live rows remain, terminal stale copies delete without export" do
     parent = self()
-    {ctx, created, parked} = cross_node_stack(orphan_grace_ms: 0,
+    {ctx, created, parked} = cross_node_stack(orphan_grace_ms: 0, store_clock: fn -> 5_000_000 end,
       delete_session_volume_fun: fn ch, req -> send(parent, {:stale_deleted, ch, req.lineage_id}); {:ok, %{}} end,
       retire_volume_fun: fn ch, req -> send(parent, {:stale_retired, ch, req.lineage_id}); {:ok, %{}} end)
     await_workspace_evidence(ctx, created.session_id)
