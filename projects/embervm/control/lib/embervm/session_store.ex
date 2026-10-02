@@ -522,7 +522,7 @@ defmodule Embervm.SessionStore do
            is_binary(cli) and cli != "" and is_binary(path) and path != "" and
            (is_nil(last) or last < started_at) ->
         do_record_invoke(state, session_id, nil, %{"terminal_reason" => "interrupted_for_drain",
-          "dispatch_id" => dispatch_id, "session_id" => cli, "transcript_path" => path})
+          "dispatch_id" => dispatch_id, "session_id" => cli, "transcript_path" => path}, started_at)
 
       _ ->
         {:reply, {:error, :adoption_fence_mismatch}, state}
@@ -911,10 +911,13 @@ defmodule Embervm.SessionStore do
   # record an invoke (a banked/relighting session is not serving); a non-running
   # state is `{:error, :not_running}` so a race cannot journal an invoke against a
   # session that already banked or failed.
-  defp do_record_invoke(state, session_id, usage, turn) do
+  defp do_record_invoke(state, session_id, usage, turn, min_completion_at \\ nil) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
-        ts = max(state.clock.(), session.invoke_started_at || 0)
+        ts = state.clock.()
+        # Only adoption needs this floor: invoke starts can advance within one
+        # clock tick. Keep ordinary (including flag-off) completion unchanged.
+        ts = if is_integer(min_completion_at), do: max(ts, min_completion_at), else: ts
         interrupted =
           if is_map(turn) and turn["terminal_reason"] == "interrupted_for_drain" do
             %{"seq" => session.turn_seq, "dispatch_id" => turn["dispatch_id"],
