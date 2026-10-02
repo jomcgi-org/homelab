@@ -51,6 +51,7 @@ __all__ = [
     "build_repo_diff_prompt",
     "count_gaps_review_queue",
     "count_notes_review_queue",
+    "defer_audit_if_over_budget",
     "defer_recall",
     "enqueue_extraction",
     "get_embedding_client",
@@ -65,6 +66,7 @@ __all__ = [
     "raw_extras_by_id",
     "recall_prompt_ready",
     "recent_dispute_resolution_failures",
+    "record_audit_cost",
     "record_extraction_failure",
     "render_correction_prompt",
     "search_notes",
@@ -154,6 +156,22 @@ def audit_enabled() -> bool:
     from knowledge.audit import audit_enabled as _enabled
 
     return _enabled()
+
+
+def defer_audit_if_over_budget(
+    session: Session, job_name: str, payload: dict, invocation_key: str
+) -> str | None:
+    from knowledge.audit import defer_audit_if_over_budget as _defer
+
+    return _defer(session, job_name, payload, invocation_key)
+
+
+def record_audit_cost(
+    session: Session, job_name: str, payload: dict, cost: object
+) -> None:
+    from knowledge.audit import record_audit_cost as _record
+
+    _record(session, job_name, payload, cost)
 
 
 def build_audit_prompt(

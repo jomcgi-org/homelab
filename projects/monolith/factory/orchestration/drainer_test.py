@@ -447,11 +447,22 @@ def test_repo_diff_mode_dispatches_through_repo_apply(monkeypatch):
     assert completions == [("kg-repo-diff", "ok", "no changes", False)]
 
 
-def test_audit_mode_has_no_raw_id_or_correction_turn(monkeypatch):
+@pytest.mark.parametrize(
+    "stream,cost", [("scheduled", None), ("scheduled", 2.25), ("expansion", 0.5)]
+)
+def test_audit_mode_has_no_raw_id_or_correction_turn(monkeypatch, stream, cost):
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
     prompts = []
     applied = []
     monkeypatch.setattr("knowledge.api.audit_enabled", lambda: True)
+    deferred = []
+    monkeypatch.setattr(
+        drainer, "defer_kg_audit", lambda *args, **kwargs: deferred.append(args) or None
+    )
+    bills = []
+    monkeypatch.setattr(
+        drainer, "record_kg_audit_cost", lambda *args, **kwargs: bills.append(args)
+    )
     monkeypatch.setattr(
         drainer,
         "build_kg_prompt",
@@ -469,20 +480,54 @@ def test_audit_mode_has_no_raw_id_or_correction_turn(monkeypatch):
         "build_kg_correction_prompt",
         lambda *_: pytest.fail("audit entered correction turn"),
     )
-    payload = {"mode": "audit", "stream": "scheduled"}
+    payload = {"mode": "audit", "stream": stream}
     job = {
         "name": "kg-audit",
         "routine_kind": "kg-drain",
         "interval_secs": 86400,
         "payload": payload,
     }
-    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+    _, _, starts, completions, _, _ = _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *args: {
+            "result_text": "finished",
+            "terminal_reason": "stop",
+            "cost_usd": cost,
+        },
+    )
     assert prompts[0]["mode"] == "audit"
     assert prompts[0]["_audit_job_name"] == "kg-audit"
     assert prompts[0]["_audit_invocation_key"] == starts[0][0]
     assert "_audit_invocation_key" not in payload
-    assert applied == [("kg-audit", prompts[0], "finished")]
+    assert applied == [
+        ("kg-audit", {**prompts[0], "_audit_cost_usd": cost}, "finished")
+    ]
+    assert bool(deferred) == (stream == "scheduled")
+    assert bills == [("kg-audit", prompts[0], cost)]
     assert completions == [("kg-audit", "ok", "audit completed", False)]
+
+
+def test_audit_budget_deferral_finishes_interval_without_session(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr("knowledge.api.audit_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer,
+        "defer_kg_audit",
+        lambda *args, **kwargs: "previous run exceeded ceiling",
+    )
+    monkeypatch.setattr(
+        drainer, "build_kg_prompt", lambda *_: pytest.fail("deferred run sampled")
+    )
+    job = {
+        "name": "kg-audit",
+        "routine_kind": "kg-drain",
+        "interval_secs": 86400,
+        "payload": {"mode": "audit", "stream": "scheduled"},
+    }
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+    assert starts == []
+    assert completions == [("kg-audit", "deferred", "previous run exceeded ceiling")]
 
 
 def test_disabled_audit_does_not_start_even_if_its_job_was_already_claimed(monkeypatch):

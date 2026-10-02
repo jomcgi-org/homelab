@@ -1,26 +1,491 @@
 """Hermetic audit contracts, including the consumers of ordinary open disputes."""
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
 from sqlalchemy import text
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from knowledge import audit
+from knowledge.entities import Entity, NoteEntity
 from knowledge.models import (
     AtomRawProvenance,
     AuditFinding,
     AuditProcessIssue,
     AuditRun,
+    Chunk,
     Dispute,
     Note,
+    NoteLink,
     NoteRetrieval,
     RawInput,
 )
 from knowledge.store import KnowledgeStore, open_dispute_note_ids
+
+
+def _link(session, source, target):
+    session.add_all(
+        [NoteLink(src_note_fk=source.id, target_id=target.note_id, kind="link")]
+    )
+    session.commit()
+
+
+def _expansion_payload(session, root_id, depth):
+    return json.loads(
+        session.execute(
+            text("SELECT payload FROM routine_jobs WHERE name = :name"),
+            {"name": f"kg-audit-x:{root_id}:{depth}"},
+        ).scalar_one()
+    )
+
+
+def _apply_defect(session, run, note_id, **extra):
+    payload = {"_audit_invocation_key": run.metrics["invocation_key"], **extra}
+    return audit.apply_audit(
+        session,
+        run.job_name,
+        payload,
+        _output([_verdict(note_id, correctness="confirmed", cause="source_wrong")]),
+    )
+
+
+def test_expansion_chain_reserves_k_across_depths_and_replays(session, monkeypatch):
+    monkeypatch.setenv("KG_AUDIT_EXPANSION_MAX_NOTES", "2")
+    root_note = _note(session, "root")
+    _, root, _ = _prepare(session)
+    first = _note(session, "first")
+    _link(session, root_note, first)
+    _apply_defect(session, root, "root")
+    payload = _expansion_payload(session, root.id, 1)
+    assert payload["note_ids"] == ["first"]
+    assert audit.register_expansion(session, root) == 0
+    prompt = audit.build_audit_prompt(
+        session, f"kg-audit-x:{root.id}:1", payload, "child"
+    )
+    assert (
+        audit.build_audit_prompt(session, f"kg-audit-x:{root.id}:1", payload, "retry")
+        == prompt
+    )
+    child = session.exec(select(AuditRun).where(AuditRun.stream == "expansion")).one()
+    finding = session.exec(
+        select(AuditFinding).where(AuditFinding.run_id == child.id)
+    ).one()
+    assert (
+        finding.depth == 1
+        and finding.parent_finding_id == payload["parent_finding_ids"][0]
+    )
+    assert (
+        child.sampled_expansion == 1
+        and child.sampled_uniform == child.sampled_weighted == 0
+    )
+    for note_id in ("second", "third"):
+        _link(session, first, _note(session, note_id))
+    _link(session, first, root_note)
+    _apply_defect(session, child, "first")
+    second_payload = _expansion_payload(session, root.id, 2)
+    assert second_payload["note_ids"] == ["second"]
+    audit.build_audit_prompt(
+        session, f"kg-audit-x:{root.id}:2", second_payload, "grandchild"
+    )
+    grandchild = session.exec(select(AuditRun).where(AuditRun.depth == 2)).one()
+    _link(
+        session,
+        session.exec(select(Note).where(Note.note_id == "second")).one(),
+        _note(session, "fourth"),
+    )
+    _apply_defect(session, grandchild, "second")
+    assert not session.execute(
+        text("SELECT name FROM routine_jobs WHERE name LIKE :suffix"), {"suffix": "%:3"}
+    ).all()
+    assert (
+        sum(len(item["note_ids"]) for item in root.metrics["expansion_reservations"])
+        == 2
+    )
+    assert (
+        len(
+            session.exec(
+                select(AuditFinding).where(AuditFinding.stream == "expansion")
+            ).all()
+        )
+        == 2
+    )
+
+
+def test_expansion_depth_cap_even_with_spare_k(session, monkeypatch):
+    monkeypatch.setenv("KG_AUDIT_EXPANSION_MAX_DEPTH", "1")
+    parent = _note(session, "root")
+    _, root, _ = _prepare(session)
+    peer = _note(session, "peer")
+    _link(session, parent, peer)
+    _apply_defect(session, root, "root")
+    payload = _expansion_payload(session, root.id, 1)
+    audit.build_audit_prompt(session, f"kg-audit-x:{root.id}:1", payload, "depth-one")
+    child = session.exec(select(AuditRun).where(AuditRun.depth == 1)).one()
+    _link(session, peer, _note(session, "too-deep"))
+    _apply_defect(session, child, "peer")
+    assert not session.execute(
+        text("SELECT name FROM routine_jobs WHERE name LIKE :suffix"), {"suffix": "%:2"}
+    ).all()
+
+
+def test_neighbours_links_both_directions_entities_and_same_raw_embeddings(session):
+    parent = _note(session, "root")
+    _, root, _ = _prepare(session)
+    peers = {
+        name: _note(session, name)
+        for name in (
+            "out",
+            "in",
+            "entity",
+            "embedding",
+            "unrelated",
+            "disputed",
+            "legacy",
+            "other-scope",
+        )
+    }
+    peers["legacy"].verification_state = "legacy"
+    peers["other-scope"].scope = "environment:homelab"
+    session.add_all(
+        [
+            Dispute(note_id="disputed", reason="already open"),
+            Entity(kind="project", slug="test", title="Test", source="manifest"),
+        ]
+    )
+    session.commit()
+    entity = session.exec(select(Entity)).one()
+    session.add_all(
+        [
+            NoteEntity(
+                note_id=note_id, entity_id=entity.id, role="subject", source="test"
+            )
+            for note_id in ("root", "entity", "out", "legacy", "other-scope")
+        ]
+    )
+    session.commit()
+    for name in ("out", "legacy", "other-scope", "disputed"):
+        _link(session, parent, peers[name])
+    _link(session, peers["in"], parent)
+    raw = RawInput(
+        raw_id="shared", path="shared.md", source="agent-report", content_hash="shared"
+    )
+    session.add_all([raw])
+    session.commit()
+    session.add_all(
+        [
+            AtomRawProvenance(atom_fk=note.id, raw_fk=raw.id, gardener_version="test")
+            for note in (parent, peers["embedding"])
+        ]
+    )
+    session.add_all(
+        [
+            Chunk(
+                note_fk=note.id,
+                chunk_index=0,
+                chunk_text="text",
+                embedding=[1.0] + [0.0] * 1023,
+            )
+            for note in (parent, peers["embedding"], peers["unrelated"])
+        ]
+    )
+    session.commit()
+    _apply_defect(session, root, "root")
+    payload = _expansion_payload(session, root.id, 1)
+    assert set(payload["note_ids"]) == {"out", "in", "entity", "embedding"}
+    assert len(payload["note_ids"]) == len(set(payload["note_ids"]))
+    assert (
+        payload["parent_finding_ids"]
+        == [session.exec(select(AuditFinding)).one().id] * 4
+    )
+
+
+def test_clarity_triggers_expansion_but_placement_alone_does_not(session):
+    parent = _note(session, "root")
+    _, root, _ = _prepare(session)
+    _link(session, parent, _note(session, "peer"))
+    finding = session.exec(select(AuditFinding)).one()
+    finding.correctness, finding.clarity, finding.placement = (
+        "holds",
+        "clear",
+        "misplaced",
+    )
+    session.flush()
+    assert audit.register_expansion(session, root) == 0
+    finding.clarity = "unclear"
+    session.flush()
+    assert audit.register_expansion(session, root) == 1
+    session.commit()
+
+
+def test_expansion_rechecks_eligibility_and_requires_reserved_payload(session):
+    parent = _note(session, "root")
+    _, root, _ = _prepare(session)
+    peer = _note(session, "peer")
+    _link(session, parent, peer)
+    _apply_defect(session, root, "root")
+    payload = _expansion_payload(session, root.id, 1)
+    name = f"kg-audit-x:{root.id}:1"
+    with pytest.raises(ValueError, match="reserved neighbourhood"):
+        audit.build_audit_prompt(
+            session, name, {**payload, "note_ids": ["root"]}, "bad"
+        )
+    session.add_all([Dispute(note_id=peer.note_id, reason="arrived after reservation")])
+    session.commit()
+    audit.build_audit_prompt(session, name, payload, "good")
+    child = session.exec(select(AuditRun).where(AuditRun.depth == 1)).one()
+    assert child.sampled_expansion == 0
+
+
+def test_wilson_uniform_only_hit_rate_and_resolver_outcomes():
+    def row(stream="uniform", **values):
+        return {
+            "created_at": NOW.replace(tzinfo=None),
+            "stream": stream,
+            "correctness": "holds",
+            "clarity": "clear",
+            "placement": "ok",
+            "cause": None,
+            "dispute_id": None,
+            **values,
+        }
+
+    findings = [
+        row(correctness="confirmed", dispute_id=1, cause="source_wrong")
+        for _ in range(5)
+    ]
+    findings += [row() for _ in range(5)]
+    findings += [
+        row("weighted", correctness="invalidated", dispute_id=2),
+        row("expansion", clarity="unclear", dispute_id=3),
+        row("expansion"),
+        row("uniform", correctness="unknown", clarity="unknown", placement="unknown"),
+        row(created_at=NOW - timedelta(days=29), correctness="invalidated"),
+    ]
+    metrics = audit.compute_audit_metrics(
+        findings,
+        [{"id": 1, "started_at": NOW, "cost_usd": None}],
+        {1: "rejected", 2: "narrowed", 3: "open"},
+        now=NOW,
+    )
+    values = metrics["uniform"]["correctness"]
+    assert values["count"] == 10 and values["rate"] == 0.5
+    assert values["ci_low"] == pytest.approx(0.23659309)
+    assert values["ci_high"] == pytest.approx(0.76340691)
+    assert metrics["neighbourhood_hit_rate"] == 0.5
+    assert metrics["repairs"] == {
+        "disputes_filed": 3,
+        "confirmed": 0,
+        "narrowed": 1,
+        "superseded": 0,
+        "invalidated": 0,
+        "rejected": 1,
+    }
+    assert metrics["causes_over_time"] == {"2026-10-02": {"source_wrong": 5}}
+    assert metrics["cost_per_run"] == {"1": None}
+    assert (
+        audit.compute_audit_metrics([], [], {}, now=NOW)["uniform"]["clarity"]["rate"]
+        is None
+    )
+
+
+@pytest.mark.parametrize("cost", [None, 0.0, 2.5, float("nan"), True])
+def test_run_cost_and_next_interval_deferred_without_hiding_bill(session, cost):
+    _note(session)
+    _, run, _ = _prepare(session)
+    audit.apply_audit(
+        session,
+        run.job_name,
+        {**PAYLOAD, "_audit_cost_usd": cost},
+        _output([_verdict("fact")]),
+    )
+    expected = cost if cost in (0.0, 2.5) and not isinstance(cost, bool) else None
+    assert run.cost_usd == expected
+    assert run.metrics["statistics"]["cost_per_run"][str(run.id)] == expected
+    summary = audit.defer_audit_if_over_budget(session, "kg-audit", PAYLOAD, "next")
+    assert bool(summary) == (cost == 2.5)
+    if summary:
+        assert "exceeded" in summary
+        assert (
+            audit.defer_audit_if_over_budget(session, "kg-audit", PAYLOAD, "next")
+            == summary
+        )
+        assert (
+            audit.defer_audit_if_over_budget(session, "kg-audit", PAYLOAD, "later")
+            == summary
+        )
+        assert (
+            session.exec(select(AuditRun).where(AuditRun.status == "deferred"))
+            .first()
+            .cost_usd
+            is None
+        )
+
+
+@pytest.mark.parametrize("enabled,fail", [(True, False), (False, False), (True, True)])
+def test_search_counting_best_effort_and_flag_preserves_response(
+    session, monkeypatch, enabled, fail
+):
+    from knowledge import mcp
+
+    results = [{"note_id": "fact", "score": 0.9, "extra": "unchanged"}]
+    _note(session)
+    monkeypatch.setenv("KG_AUDIT_ENABLED", str(enabled).lower())
+    monkeypatch.setattr("core.db.get_engine", lambda: session.get_bind())
+    monkeypatch.setattr(mcp, "get_engine", lambda: session.get_bind())
+    monkeypatch.setattr(mcp, "current_principal", lambda: object())
+    monkeypatch.setattr(
+        mcp,
+        "authorize_retrieval",
+        lambda *args, **kwargs: SimpleNamespace(
+            scopes=("repo:jomcgi-org/homelab",), include_unscoped=False
+        ),
+    )
+    monkeypatch.setattr(mcp, "audit_personal_retrieval", lambda *args, **kwargs: None)
+
+    async def embed(_query):
+        return [0.0] * 1024
+
+    monkeypatch.setattr(mcp, "EmbeddingClient", lambda: SimpleNamespace(embed=embed))
+    monkeypatch.setattr(
+        mcp.KnowledgeStore, "search_notes_with_context", lambda *args, **kwargs: results
+    )
+    if fail:
+        session.execute(
+            text(
+                "CREATE TRIGGER fail_count BEFORE INSERT ON note_retrievals "
+                "BEGIN SELECT RAISE(FAIL, 'forced accounting failure'); END"
+            )
+        )
+        session.commit()
+    assert asyncio.run(mcp.search_knowledge("fact")) == {"results": results}
+    assert asyncio.run(mcp.search_knowledge("fact")) == {"results": results}
+    counts = session.exec(select(NoteRetrieval)).all()
+    assert [item.count for item in counts] == ([2] if enabled and not fail else [])
+    assert session.exec(select(Note)).one().note_id == "fact"
+
+
+@pytest.mark.parametrize("dialect", [sqlite.dialect(), postgresql.dialect()])
+def test_retrieval_upsert_is_one_batched_statement(monkeypatch, dialect):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("KG_AUDIT_ENABLED", "true")
+    session = MagicMock()
+    session.get_bind.return_value.dialect = dialect
+    audit.record_retrievals(session, ["b", "a", "b"])
+    session.execute.assert_called_once()
+    statement = session.execute.call_args.args[0].compile(dialect=dialect)
+    assert str(statement).count("ON CONFLICT") == 1
+    assert list(statement.params.values()).count("b") == 1
+
+
+def test_postgres_embedding_query_restricts_shared_raw_and_ranks_distance(session):
+    from unittest.mock import MagicMock
+
+    peer = _note(session)
+    postgres_session = MagicMock()
+    postgres_session.get_bind.return_value.dialect = postgresql.dialect()
+    postgres_session.exec.return_value.all.return_value = []
+    audit._embedding_neighbours(
+        postgres_session, peer, audit._eligible(NOW, audit.AuditSettings()), 2
+    )
+    query = postgres_session.exec.call_args.args[0].compile(
+        dialect=postgresql.dialect()
+    )
+    assert "<=>" in str(query)
+    assert "atom_raw_provenance" in str(query)
+    assert "notes.scope" in str(query)
+    assert "LIMIT" in str(query)
+
+
+def test_cost_is_retained_for_invalid_output_and_defers_next_run(session):
+    _note(session)
+    _, run, _ = _prepare(session)
+    audit.record_audit_cost(session, run.job_name, PAYLOAD, 3.0)
+    with pytest.raises(ValueError):
+        audit.apply_audit(session, run.job_name, PAYLOAD, "not a verdict")
+    session.rollback()
+    assert run.cost_usd == 3.0
+    assert (
+        audit.defer_audit_if_over_budget(session, run.job_name, PAYLOAD, "next")
+        is not None
+    )
+
+
+def test_expansion_bill_counts_towards_root_ceiling(session):
+    _note(session)
+    _, run, _ = _prepare(session)
+    run.cost_usd = 1.5
+    session.add_all(
+        [
+            AuditRun(
+                job_name=f"kg-audit-x:{run.id}:1",
+                root_run_id=run.id,
+                stream="expansion",
+                depth=1,
+                prompt_version="test",
+                cost_usd=1.0,
+            )
+        ]
+    )
+    session.commit()
+    assert "2.50" in audit.defer_audit_if_over_budget(
+        session, "kg-audit", PAYLOAD, "next"
+    )
+
+
+def test_metrics_emit_uniform_intervals_and_actual_resolver_outcomes(
+    session, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    parent = _note(session, "root")
+    _, root, _ = _prepare(session)
+    peer = _note(session, "peer")
+    _link(session, parent, peer)
+    tracer = MagicMock()
+    monkeypatch.setattr(audit, "_TRACER", tracer)
+    _apply_defect(session, root, "root", _audit_cost_usd=0.25)
+    dispute = session.exec(select(Dispute)).one()
+    dispute.state = "rejected"
+    session.commit()
+    payload = _expansion_payload(session, root.id, 1)
+    audit.build_audit_prompt(session, f"kg-audit-x:{root.id}:1", payload, "child")
+    child = session.exec(select(AuditRun).where(AuditRun.stream == "expansion")).one()
+    result = _apply_defect(session, child, "peer", _audit_cost_usd=0.5)
+    attributes = dict(
+        call.args
+        for call in tracer.start_as_current_span.return_value.__enter__.return_value.set_attribute.call_args_list
+    )
+    assert attributes["kg_audit.defect_rate.correctness"] == 1.0
+    assert 0 < attributes["kg_audit.defect_rate.correctness.ci_low"] < 1
+    assert attributes["kg_audit.defect_rate.correctness.ci_high"] == pytest.approx(1)
+    assert attributes["kg_audit.neighbourhood_hit_rate"] == 1.0
+    assert attributes["kg_audit.repairs.rejected"] == 1
+    assert attributes["kg_audit.repairs.confirmed"] == 0
+    assert attributes["kg_audit.cost_usd"] == 0.5
+    assert child.metrics["statistics"]["uniform"]["correctness"]["count"] == 1
+    assert result["kg_audit.sampled.expansion"] == 1
+
+
+def test_disabled_audit_does_not_expand_record_cost_or_defer(session, monkeypatch):
+    _note(session)
+    _, root, _ = _prepare(session)
+    monkeypatch.setenv("KG_AUDIT_ENABLED", "false")
+    assert audit.register_expansion(session, root) == 0
+    audit.record_audit_cost(session, root.job_name, PAYLOAD, 9.0)
+    assert root.cost_usd is None
+    assert (
+        audit.defer_audit_if_over_budget(session, root.job_name, PAYLOAD, "next")
+        is None
+    )
+    assert len(session.exec(select(AuditRun)).all()) == 1
+
 
 NOW = datetime(2026, 10, 2, tzinfo=timezone.utc)
 PAYLOAD = {

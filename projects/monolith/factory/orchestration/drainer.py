@@ -677,6 +677,38 @@ def build_kg_prompt(payload: dict) -> str:
 
 
 @DBOS.step()
+def defer_kg_audit(
+    name: str, payload: dict, *, expected_holder: str | None = None
+) -> str | None:
+    from agent.api import lock_claim
+    from core.db import get_engine
+    from knowledge.api import defer_audit_if_over_budget
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        if not lock_claim(session, name, expected_holder):
+            raise RuntimeError("routine job claim ownership changed")
+        return defer_audit_if_over_budget(
+            session, name, payload, payload["_audit_invocation_key"]
+        )
+
+
+@DBOS.step()
+def record_kg_audit_cost(
+    name: str, payload: dict, cost: object, *, expected_holder: str | None = None
+) -> None:
+    from agent.api import lock_claim
+    from core.db import get_engine
+    from knowledge.api import record_audit_cost
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        if not lock_claim(session, name, expected_holder):
+            raise RuntimeError("routine job claim ownership changed")
+        record_audit_cost(session, name, payload, cost)
+
+
+@DBOS.step()
 def apply_kg_extraction(
     name: str,
     payload: dict,
@@ -1607,6 +1639,16 @@ def drain_cycle() -> dict:
                                 "_audit_job_name": name,
                                 "_audit_invocation_key": local_session_id,
                             }
+                            if job_payload.get("stream", "scheduled") == "scheduled":
+                                deferred = defer_kg_audit(
+                                    name, job_payload, **ownership
+                                )
+                                if deferred is not None:
+                                    finish_drainer_job(
+                                        name, "deferred", deferred, **ownership
+                                    )
+                                    cancel_drainer_reservation(local_session_id)
+                                    continue
                         elif not _is_repo_diff(job_payload):
                             raw_id = _kg_raw_id(job_payload)
                         prompt = build_kg_prompt(job_payload)
@@ -1660,9 +1702,18 @@ def drain_cycle() -> dict:
                         raise TimeoutError(
                             f"turn timed out after {turn_timeout} seconds"
                         )
+                    if job_kind == KG_JOB_KIND and _is_audit(job_payload):
+                        record_kg_audit_cost(
+                            name, job_payload, turn.get("cost_usd"), **ownership
+                        )
                     output = _completed_output(turn, session_id)
                     if job_kind == KG_JOB_KIND:
                         result_text = str(turn.get("result_text") or "")
+                        if _is_audit(job_payload):
+                            job_payload = {
+                                **job_payload,
+                                "_audit_cost_usd": turn.get("cost_usd"),
+                            }
                         applied = apply_kg_extraction(
                             name, job_payload, result_text, **ownership
                         )

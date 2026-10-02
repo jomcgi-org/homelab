@@ -284,6 +284,14 @@ async def search_knowledge(
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=not include_history,
             )
+    from knowledge.audit import count_retrievals
+
+    try:
+        await asyncio.to_thread(count_retrievals, [item["note_id"] for item in results])
+    except Exception:
+        logger.warning(
+            "knowledge mcp: optional retrieval accounting failed", exc_info=True
+        )
     return {"results": results}
 
 
