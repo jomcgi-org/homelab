@@ -1516,8 +1516,8 @@ uncertain in this shape settles on its task's next reconciler tick.
 
 `FACTORY_BOUND_ZERO_TURN_SETTLEMENT_ENABLED` stages the post-guest proof from
 #6288 and defaults to false in both chart defaults and the GKE overlay. Its
-live validation is tracked on #6559. It is
-not a general uncertain-attempt sweeper. The owning DBOS workflow must already
+live validation is tracked on #6559. It is not a general uncertain-attempt
+sweeper. The owning DBOS workflow must already
 be terminal, and the exact factory run and start must still be active and
 unpriced. The session must still own one bound guest, zero `AgentTurn` rows, one
 claimed and unconsumed sequence-one `PendingMessage`, and one matching project
@@ -1573,8 +1573,14 @@ blind database edit.
 ##### Live validation evidence
 
 Each #6559 checklist item needs read-only evidence from a disposable factory
-node with the switch on for that node only. Record the task, node key, attempt,
-local session id and guest id first. Before and after each step, record the
+node. The switch has no per-node scope: it is one process-wide environment
+variable on the monolith Deployment, so enabling it in `values-gke.yaml` arms
+the proof for every bound zero-turn attempt the hub supervises. Before enabling
+it, confirm read-only that the disposable node's attempt is the only one in
+this shape (a terminal workflow, an active unpriced run, a bound guest, zero
+`AgentTurn` rows, one claimed sequence-one `PendingMessage` and a `running` or
+`uncertain` project permit). Record the task, node key, attempt, local session
+id and guest id first. Before and after each step, record the
 exact `AgentSession` (`status`, `ember_session_id`, `guest_cleanup_id`), its
 `AgentTurn` and `PendingMessage` rows, the `AgentCapacityReservation` permit
 (`state`, `outcome`), the node run and `FactoryStart` (`status`, `cost_usd`), and
@@ -1583,21 +1589,26 @@ the task's supervision audits (`stop_events` in
 proof, never apply SQL to production, and roll back by setting
 `agents.sessions.boundZeroTurnSettlementEnabled` back to false in
 `projects/monolith/deploy/values-gke.yaml`. Tests below are in
-`factory_conductor_test.py` unless noted; they are the hermetic cover for the
-same case, not a substitute for the live record.
+`factory_conductor_test.py` unless noted and give hermetic cover for the same
+case; each item still needs its live record.
 
 1. Strictly longer than `turn_timeout_seconds`. Record the node's pinned
-   `turn_timeout_seconds`, every `bound_zero_turn_observation` (its `evidence`,
-   `first_observed_at`, `observed_at`) and the `bound_zero_turn_fence`
-   (`held_seconds`). The span from the first to the last `observed_at` before
-   the fence must exceed that node's `turn_timeout_seconds`. Test:
+   `turn_timeout_seconds`, the `bound_zero_turn_observation` (its `evidence`,
+   `first_observed_at`, `observed_at`) and the `bound_zero_turn_fence` (its
+   `evidence`, `first_observed_at`, `observed_at`, `held_seconds`). A
+   completed-invoke run writes one observation and persists nothing for
+   unchanged later samples, so judge the window on the fence record: its
+   `observed_at` minus its `first_observed_at` must exceed that node's
+   `turn_timeout_seconds`, and its `evidence` must equal the observation's.
+   `held_seconds` is truncated to whole seconds, so a valid fence can show it
+   equal to `turn_timeout_seconds`. Test:
    `test_bound_zero_turn_settlement_waits_strictly_past_timeout_and_is_atomic`.
 2. Slow invoke, newer `turn_seq` or invoke timestamp, replacement generation,
    draining. Record the sampled `SessionView` fields (`session_id`, `state`,
    `turn_seq`, `generation`, `invoke_started_at`, `last_invoke_at`,
    `updated_at`, `node.health`, `node.draining`) on each tick, the
    `bound_zero_turn_reset` reason, and confirm no fence, no new `AgentTurn`, one
-   dispatch and the permit still `running`. Tests:
+   dispatch and the permit state unchanged from its starting state. Tests:
    `test_bound_zero_turn_slow_live_invoke_never_starts_proof`,
    `test_bound_zero_turn_progress_or_identity_change_restarts_proof`,
    `test_bound_zero_turn_claim_heartbeat_restarts_window_and_fence_stops_refresh`.
@@ -1631,8 +1642,9 @@ same case, not a substitute for the live record.
    count (at most two) and its `precondition`, the cleared
    `ember_session_id` and `guest_cleanup_id` on only that session, and that
    later ticks add no audit, request, notification or retry. Any
-   `intervention_required` audit (`bound_zero_turn_destroy_exhausted`,
-   `bound_zero_turn_fenced_lookup_unavailable`) appears once. Tests:
+   `intervention_required` `stop_observation` with reason
+   `bound_zero_turn_destroy_exhausted` or
+   `bound_zero_turn_fenced_lookup_unavailable` appears once. Tests:
    `test_bound_zero_turn_destroy_requests_are_durably_capped`,
    `test_bound_zero_turn_fenced_lookup_outage_raises_one_liveness_alarm`,
    `test_bound_zero_turn_completion_refusal_releases_fence`,
