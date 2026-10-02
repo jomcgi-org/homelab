@@ -279,7 +279,9 @@
                         >{Math.round((m.index_coverage ?? 0) * 100)}%</td
                       >
                       <td class="num">{money(m.cost_usd)}</td>
-                      <td class="num">{secs((m.mean_latency_ms ?? 0) / 1000)}</td>
+                      <td class="num"
+                        >{secs((m.mean_latency_ms ?? 0) / 1000)}</td
+                      >
                       <td class="l">{m.index_low_n.join(", ")}</td>
                     </tr>
                   {/each}
@@ -293,7 +295,9 @@
               measured on fewer than {index.min_n} tasks.
             </p>
           {:else}
-            <p class="panel empty">No selected model has a {activeRole} index.</p>
+            <p class="panel empty">
+              No selected model has a {activeRole} index.
+            </p>
           {/if}
         </section>
       {/if}
