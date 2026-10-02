@@ -1639,7 +1639,7 @@ defmodule Embervm.Router do
             session_id: session_id,
             dispatch_id: dispatch_id,
             outcome: "requested",
-            relay: result
+            relay: Map.take(result, [:terminal_reason, :killed, :timeout])
           })
 
         {:error, :stale_dispatch} ->
@@ -2573,6 +2573,7 @@ defmodule Embervm.Router do
       base_digest: session.base_digest,
       created_at: session.created_at,
       invoke_started_at: Map.get(session, :invoke_started_at),
+      inflight_dispatch_id: Map.get(session, :inflight_dispatch_id),
       last_invoke_at: session.last_invoke_at,
       expires_at: session.expires_at,
       updated_at: session.updated_at,

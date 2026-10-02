@@ -666,7 +666,7 @@ defmodule Embervm.Session do
         # This synchronous durable stamp deliberately precedes the channel dial
         # and assign wait inside the worker. Its cost is accepted because the
         # value authorizes another service to destroy this live guest.
-        case record_invoke_started(state) do
+        case record_invoke_started(state, Map.get(req, :dispatch_id)) do
           {:ok, session} ->
             session = %{session | interrupted_turn: state.interrupted_turn || session.interrupted_turn}
             req = prepare_turn(req, session)
@@ -693,7 +693,7 @@ defmodule Embervm.Session do
   # shape as the dispatcher's assign watchdog; the two must stay strictly above
   # their respective server-enforced deadlines.
   defp prepare_turn(req, session) do
-    dispatch_id = Map.get(req, :dispatch_id) || "#{session.session_id}:#{session.invoke_started_at}"
+    dispatch_id = session.inflight_dispatch_id
     body =
       try do
         payload = :json.decode(req.body)
@@ -839,7 +839,12 @@ defmodule Embervm.Session do
                    terminal_reason: response.terminal_reason,
                    killed: response.killed,
                    timeout: response.timeout
-                 }}
+                 }
+                 |> Map.merge(
+                   %{dispatch_id: response.dispatch_id, cli_session_id: response.cli_session_id,
+                     transcript_path: response.transcript_path}
+                   |> Map.reject(fn {_key, value} -> value in [nil, ""] end)
+                 )}
 
               {:error, reason} ->
                 {:error, normalize_interrupt_error(reason)}
@@ -1050,8 +1055,8 @@ defmodule Embervm.Session do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp record_invoke_started(state) do
-    Embervm.SessionStore.record_invoke_started(state.session_store, state.session_id)
+  defp record_invoke_started(state, dispatch_id) do
+    Embervm.SessionStore.record_invoke_started(state.session_store, state.session_id, dispatch_id)
   end
 
   # Fail the session: append session_failed, reply {:error, reason} to the in-flight

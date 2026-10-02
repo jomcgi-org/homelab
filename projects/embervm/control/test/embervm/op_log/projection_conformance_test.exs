@@ -40,6 +40,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
       redrive_resets_the_attempt_budget: &__MODULE__.task_redrive/2,
       audit_only_kinds_write_ops_without_projection_rows: &__MODULE__.audit_only_kinds/2,
       session_lifecycle_from_create_to_relit: &__MODULE__.session_lifecycle/2,
+      session_dispatch_identity_survives_replay: &__MODULE__.session_dispatch_identity/2,
       session_destroy_intent_and_terminals: &__MODULE__.session_destroying_and_terminals/2,
       terminal_session_cannot_be_revived_by_a_late_relit: &__MODULE__.session_relit_guard/2,
       serving_lifecycle_including_endpoint_clearing: &__MODULE__.serving_lifecycle/2,
@@ -70,6 +71,28 @@ defmodule Embervm.OpLog.ProjectionConformance do
 
   defp assert_eq(left, right, msg \\ "assert equal") do
     ExUnit.Assertions.assert(left == right, message: "#{msg}: #{inspect(left)} != #{inspect(right)}")
+  end
+
+  def session_dispatch_identity(backend, server) do
+    {:ok, _} = append(server, backend, :session_created, 100,
+      session_id: "s-dispatch", principal: "p1", workload: "wl-session",
+      payload: %{node_id: "node-4", token_sha256: "hash"})
+    assert_eq(one(backend, server, :load_sessions).inflight_dispatch_id, nil, "legacy/create row has no dispatch")
+    {:ok, _} = append(server, backend, :session_invoke_started, 101,
+      session_id: "s-dispatch", payload: %{turn_seq: 1})
+    assert_eq(one(backend, server, :load_sessions).inflight_dispatch_id, nil, "old event cannot invent recovery evidence")
+
+    for {ts, seq, id} <- [{102, 2, "exact-id"}, {103, 3, "s-dispatch:103"}, {102, 2, "exact-id"}] do
+      {:ok, _} = append(server, backend, :session_invoke_started, ts,
+        session_id: "s-dispatch", payload: %{turn_seq: seq, dispatch_id: id})
+    end
+    current = one(backend, server, :load_sessions)
+    assert_eq(current.inflight_dispatch_id, "s-dispatch:103", "replayed old event cannot replace the newer identity")
+    assert_eq(current.invoke_started_at, 103, "identity remains paired with the newest start")
+    assert_eq(current.turn_seq, 3, "turn sequence remains monotonic")
+    assert_eq(current.last_invoke_at, nil, "no response recorded yet")
+    {:ok, _} = append(server, backend, :session_invoked, 104, session_id: "s-dispatch")
+    assert_eq(one(backend, server, :load_sessions).inflight_dispatch_id, current.inflight_dispatch_id, "completion retains dispatch evidence")
   end
 
   # -- task projection ------------------------------------------------------

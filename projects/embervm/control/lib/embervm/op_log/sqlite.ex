@@ -1255,10 +1255,10 @@ defmodule Embervm.OpLog.SQLite do
   # session_invoked, which is emitted only after successful completion.
   defp project(conn, %Op{kind: :session_invoke_started} = op, _seq) do
     sql =
-      "UPDATE sessions SET turn_seq=MAX(turn_seq, ?), interrupted_turn_json=NULL, invoke_started_at=MAX(COALESCE(invoke_started_at, ?), ?), updated_at=? WHERE session_id=?"
+      "UPDATE sessions SET turn_seq=MAX(turn_seq, ?), interrupted_turn_json=NULL, inflight_dispatch_id=CASE WHEN invoke_started_at IS NULL OR invoke_started_at <= ? THEN ? ELSE inflight_dispatch_id END, invoke_started_at=MAX(COALESCE(invoke_started_at, ?), ?), updated_at=? WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :turn_seq, 0), op.ts, op.ts, op.ts, op.session_id]),
+         :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :turn_seq, 0), op.ts, Map.get(op.payload, :dispatch_id), op.ts, op.ts, op.ts, op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2781,7 +2781,7 @@ defmodule Embervm.OpLog.SQLite do
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json,
-           turn_seq, interrupted_turn_json
+           turn_seq, interrupted_turn_json, inflight_dispatch_id
     FROM sessions
     """
 
@@ -2821,7 +2821,8 @@ defmodule Embervm.OpLog.SQLite do
          stop_intent_json,
          stop_completion_json,
          turn_seq,
-         interrupted_turn_json
+         interrupted_turn_json,
+         inflight_dispatch_id
        ]} ->
         session = %{
           session_id: session_id,
@@ -2849,7 +2850,8 @@ defmodule Embervm.OpLog.SQLite do
           stop_intent: Embervm.SessionStopProof.decode(stop_intent_json),
           stop_completion: Embervm.SessionStopProof.decode(stop_completion_json),
           turn_seq: turn_seq,
-          interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json)
+          interrupted_turn: Embervm.SessionStopProof.decode(interrupted_turn_json),
+          inflight_dispatch_id: inflight_dispatch_id
         }
 
         collect_sessions(conn, stmt, [session | acc])
@@ -3791,7 +3793,8 @@ defmodule Embervm.OpLog.SQLite do
   defp migrate_sessions_turn_state(conn) do
     with {:ok, cols} <- table_columns(conn, "sessions"),
          :ok <- add_column_if_missing(conn, cols, "turn_seq", "ALTER TABLE sessions ADD COLUMN turn_seq INTEGER NOT NULL DEFAULT 0"),
-         :ok <- add_column_if_missing(conn, cols, "interrupted_turn_json", "ALTER TABLE sessions ADD COLUMN interrupted_turn_json TEXT") do
+         :ok <- add_column_if_missing(conn, cols, "interrupted_turn_json", "ALTER TABLE sessions ADD COLUMN interrupted_turn_json TEXT"),
+         :ok <- add_column_if_missing(conn, cols, "inflight_dispatch_id", "ALTER TABLE sessions ADD COLUMN inflight_dispatch_id TEXT") do
       :ok
     end
   end

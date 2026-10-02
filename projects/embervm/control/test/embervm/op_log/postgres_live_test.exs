@@ -48,7 +48,36 @@ defmodule Embervm.OpLog.PostgresLiveTest do
       Embervm.TestProcess.stop_safely(cleanup_conn)
     end)
 
-    %{server: server}
+    %{server: server, adapter_opts: adapter_opts}
+  end
+
+  test "dispatch evidence survives reopen and migration of a populated legacy table twice", %{server: server, adapter_opts: opts} do
+    assert {:ok, _} = append(server, :session_created, 100, session_id: "s-dispatch",
+      principal: "p1", workload: "wl", payload: %{node_id: "node-4", token_sha256: "hash"})
+    assert {:ok, _} = append(server, :session_invoke_started, 101, session_id: "s-dispatch", payload: %{turn_seq: 1})
+    GenServer.stop(server)
+    {:ok, conn} = Postgrex.start_link(opts)
+    assert {:ok, _} = Postgrex.query(conn, "ALTER TABLE sessions DROP COLUMN inflight_dispatch_id", [])
+    GenServer.stop(conn)
+
+    for _ <- 1..2 do
+      {:ok, reopened} = Postgres.start_link(name: nil, dsn: opts)
+      assert {:ok, [%{session_id: "s-dispatch", invoke_started_at: 101,
+        inflight_dispatch_id: nil, turn_seq: 1}]} = Postgres.load_sessions(reopened)
+      GenServer.stop(reopened)
+    end
+    {:ok, reopened} = Postgres.start_link(name: nil, dsn: opts)
+    assert {:ok, _} = append(reopened, :session_invoke_started, 102,
+      session_id: "s-dispatch", payload: %{turn_seq: 2, dispatch_id: "exact-dispatch"})
+    GenServer.stop(reopened)
+    {:ok, final} = Postgres.start_link(name: nil, dsn: opts)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(final) end)
+    assert {:ok, [%{inflight_dispatch_id: "exact-dispatch", last_invoke_at: nil}]} = Postgres.load_sessions(final)
+    assert {:ok, ops} = Postgres.read_from(final, 0)
+    assert List.last(ops).payload["dispatch_id"] == "exact-dispatch"
+    assert {:ok, _} = append(final, :session_invoke_started, 101,
+      session_id: "s-dispatch", payload: %{turn_seq: 1, dispatch_id: "stale-dispatch"})
+    assert {:ok, [%{inflight_dispatch_id: "exact-dispatch", invoke_started_at: 102}]} = Postgres.load_sessions(final)
   end
 
   test "strict session stop intent and completion project with nullable invocation identity", %{server: server} do

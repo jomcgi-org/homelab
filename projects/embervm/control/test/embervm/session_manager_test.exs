@@ -1824,6 +1824,25 @@ defmodule Embervm.SessionManagerTest do
     assert is_integer(session.last_invoke_at)
   end
 
+  for requested_id <- [nil, "header-dispatch:exact/identity"] do
+    test "guest receives the persisted #{inspect(requested_id)} dispatch identity" do
+      parent = self()
+      ctx = start_stack(store_clock: fn -> 5_000_000 end, assign_fun: fn _, req ->
+        send(parent, {:assigned_dispatch, req.dispatch_id, :json.decode(req.request.body)})
+        {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200, body: "ok"}}}
+      end)
+      put_session_workload(ctx, "wl-dispatch-record")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-dispatch-record", "p1")
+      assert {:ok, _} = SessionManager.invoke(ctx.mgr, created.session_id,
+        %{body: ~s({"message":"work","dispatch_id":"untrusted-body-id"}), dispatch_id: unquote(requested_id)})
+      {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+      persisted_id = session.inflight_dispatch_id
+      assert persisted_id == (unquote(requested_id) || "#{created.session_id}:#{session.invoke_started_at}")
+      assert_receive {:assigned_dispatch, ^persisted_id, %{"dispatch_id" => ^persisted_id, "turn_seq" => 1}}, 1_000
+      assert {:ok, [%{inflight_dispatch_id: ^persisted_id}]} = SQLite.load_sessions(ctx.op_log)
+    end
+  end
+
   test "invoke-start op-log unavailability leaves the session in its prior live state" do
     ctx = start_stack(store_op_log_mod: UnavailableInvokeOpLog)
     put_session_workload(ctx, "wl-invoke-unavailable")
@@ -1836,7 +1855,7 @@ defmodule Embervm.SessionManagerTest do
 
     assert Process.alive?(session_pid)
     assert [{^session_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
-    assert {:ok, %{state: :running, invoke_started_at: nil, last_invoke_at: nil}} =
+    assert {:ok, %{state: :running, invoke_started_at: nil, inflight_dispatch_id: nil, last_invoke_at: nil}} =
              SessionStore.get(ctx.store, created.session_id)
   end
 
@@ -5436,6 +5455,30 @@ defmodule Embervm.SessionManagerTest do
     assert wait_for_state(ctx, created.session_id, :banked).state == :banked
   end
 
+  test "interrupt outcome carries recovery fields without recording a completed invoke" do
+    parent = self()
+    ctx = start_stack(assign_fun: fn _, _ ->
+      send(parent, {:recovery_assign, self()})
+      receive do :finish -> :ok end
+      {:ok, %SessionAssignResponse{response: %GuestResponse{status_code: 200, body: "ok"}}}
+    end, interrupt_fun: fn _, req ->
+      {:ok, %SessionInterruptResponse{terminal_reason: "interrupted_for_drain",
+        dispatch_id: req.dispatch_id, cli_session_id: "cli-recovery", transcript_path: "/workspace/turn.json"}}
+    end)
+    put_session_workload(ctx, "wl-interrupt-recovery")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-interrupt-recovery", "p1")
+    caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id,
+      %{body: ~s({"message":"work"}), dispatch_id: "dispatch-recovery"}) end)
+    assert_receive {:recovery_assign, worker}, 1_000
+    expected = %{terminal_reason: "interrupted_for_drain", killed: false, timeout: false,
+      dispatch_id: "dispatch-recovery", cli_session_id: "cli-recovery", transcript_path: "/workspace/turn.json"}
+    assert {:ok, ^expected} = SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-recovery")
+    assert {:ok, ^expected} = SessionManager.interrupt(ctx.mgr, created.session_id, "dispatch-recovery")
+    assert {:ok, %{last_invoke_at: nil, interrupted_turn: nil}} = SessionStore.get(ctx.store, created.session_id)
+    send(worker, :finish)
+    assert {:ok, _} = Task.await(caller, 1_000)
+  end
+
   test "interrupt is exact, duplicate-safe, and leaves the session reusable" do
     parent = self()
 
@@ -7381,8 +7424,8 @@ defmodule Embervm.SessionManagerTest do
   defmodule DrainRecordStore do
     use GenServer
     def init(opts), do: {:ok, opts}
-    def handle_call({:record_invoke_started, id}, _from, state) do
-      {:reply, {:ok, %{session_id: id, invoke_started_at: 1, turn_seq: 1, interrupted_turn: nil}}, state}
+    def handle_call({:record_invoke_started, id, dispatch_id}, _from, state) do
+      {:reply, {:ok, %{session_id: id, invoke_started_at: 1, inflight_dispatch_id: dispatch_id || "#{id}:1", turn_seq: 1, interrupted_turn: nil}}, state}
     end
     def handle_call({:record_invoke, _, _, _}, _from, state) do
       send(state.parent, :record_attempted)
