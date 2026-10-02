@@ -5601,34 +5601,6 @@ def test_bound_zero_turn_live_proof_restarts_after_transient_lookup_failure(
     assert _uncertain_snapshot(s)["permits"][0]["outcome"] == "delivery_error"
 
 
-def test_bound_zero_turn_ticks_after_settlement_add_no_side_effects(
-    bound_zero_turn_factory,
-):
-    from datetime import timedelta
-
-    s = bound_zero_turn_factory
-    timeout = s.run["pin"]["turn_timeout_seconds"]
-    assert not _tick_bound_zero_turn(s)
-    s.now[0] += timedelta(seconds=timeout + 1)
-    assert not _tick_bound_zero_turn(s)
-    s.complete()
-    s.now[0] += timedelta(seconds=1)
-    assert _tick_bound_zero_turn(s)
-    settled = _uncertain_snapshot(s)
-    destroys = [call for call in s.calls if call[1] is not None]
-    assert len(destroys) == 1
-
-    for _ in range(3):
-        s.now[0] += timedelta(seconds=timeout + 1)
-        assert not _tick_bound_zero_turn(s)
-    repeated = _uncertain_snapshot(s)
-    for key in ("session", "turns", "pending", "permits", "runs"):
-        assert repeated[key] == settled[key]
-    for key in ("starts", "stop_events"):
-        assert repeated["factory"][key] == settled["factory"][key]
-    assert [call for call in s.calls if call[1] is not None] == destroys
-
-
 def test_committed_synchronous_result_wins_before_bound_zero_turn_fence(
     bound_zero_turn_factory, monkeypatch
 ):

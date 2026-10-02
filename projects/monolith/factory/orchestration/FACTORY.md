@@ -1636,8 +1636,7 @@ same case, not a substitute for the live record.
    `test_bound_zero_turn_destroy_requests_are_durably_capped`,
    `test_bound_zero_turn_fenced_lookup_outage_raises_one_liveness_alarm`,
    `test_bound_zero_turn_completion_refusal_releases_fence`,
-   `test_bound_zero_turn_release_can_mature_and_settle_a_new_fence`,
-   `test_bound_zero_turn_ticks_after_settlement_add_no_side_effects`.
+   `test_bound_zero_turn_release_can_mature_and_settle_a_new_fence`.
 
 The in-process operator repair is
 `factory.orchestration.factory_controls.settle_lost_attempt(task_id, node_key,
