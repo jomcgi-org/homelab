@@ -219,3 +219,32 @@ def test_attempt_without_score_key_loads_legacy_cache():
         }
     )
     assert attempt.score is None
+
+
+def test_anchor_harness_errors_are_harness_errors():
+    from bench.schema import Attempt, ResultCell
+
+    def cell(feedback):
+        return ResultCell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            outcome="fail",
+            attempts=[
+                Attempt(
+                    passed=False,
+                    feedback=feedback,
+                    latency_ms=0,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                )
+            ],
+            cost_usd=0.0,
+            harness_version="x",
+            prompt_template_hash="p",
+        )
+
+    assert cell("[harness error] HTTPStatusError").is_harness_error
+    assert cell("[anchor harness error] FileNotFoundError: 'go'").is_harness_error
+    assert not cell("assert 1 == 2").is_harness_error
