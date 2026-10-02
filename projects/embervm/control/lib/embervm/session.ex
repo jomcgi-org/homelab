@@ -274,18 +274,32 @@ defmodule Embervm.Session do
       drain_flush_timer: nil,
       drain_flush_deadline: nil,
       completion_pending: false,
+      adoption_flush: Keyword.get(opts, :adoption_flush),
+      adoption_flush_deadline: nil,
+      adoption_flush_timer: nil,
       clock: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
     }
 
+    if state.adoption_flush do
+      {:ok, state, {:continue, :adoption_flush}}
+    else
     if state.draining do
       {:ok, state, {:continue, :drain}}
     else
       {:ok, arm_idle_timer(state)}
     end
+    end
   end
 
   @impl true
   def handle_continue(:drain, state), do: {:noreply, maybe_drain_bank(state)}
+  def handle_continue(:adoption_flush, state) do
+    now = state.clock.()
+    deadline = now + max(0, min(state.drain_flush_ms, 120_000))
+    deadline = if state.draining, do: min(deadline, state.drain_deadline || deadline), else: deadline
+    state = %{state | adoption_flush_deadline: deadline}
+    {:noreply, start_adoption_interrupt(state)}
+  end
 
   @impl true
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
@@ -371,6 +385,7 @@ defmodule Embervm.Session do
     deadline = min(deadline, state.drain_deadline || deadline)
     flush_deadline = min(state.drain_flush_deadline || deadline, state.clock.() + flush_window(deadline, state.clock.(), state.drain_flush_ms, state.drain_bank_budget_ms))
     state = %{state | queue: :queue.new(), drain_deadline: deadline, drain_flush_deadline: flush_deadline}
+    state = bound_adoption_deadline(state, deadline)
     state = interrupt_for_drain(state)
     {:noreply, maybe_drain_bank(state)}
   end
@@ -383,6 +398,22 @@ defmodule Embervm.Session do
   end
 
   @impl true
+  def handle_info({:adoption_interrupt_done, dispatch_id, outcome}, %{adoption_flush: %{dispatch_id: dispatch_id}} = state) do
+    state = clear_interrupt_worker(state, :adoption_interrupt_done, dispatch_id)
+    if adoption_transient?(outcome) and state.clock.() < state.adoption_flush_deadline do
+      Process.send_after(self(), :retry_adoption_interrupt, 50)
+      {:noreply, state}
+    else
+      {:noreply, settle_adoption_flush(state, outcome)}
+    end
+  end
+  def handle_info({:adoption_interrupt_done, dispatch_id, _}, state),
+    do: {:noreply, clear_interrupt_worker(state, :adoption_interrupt_done, dispatch_id)}
+  def handle_info(:retry_adoption_interrupt, %{adoption_flush: nil} = state), do: {:noreply, state}
+  def handle_info(:retry_adoption_interrupt, state), do: {:noreply, start_adoption_interrupt(state)}
+  def handle_info(:adoption_flush_expired, %{adoption_flush: nil} = state), do: {:noreply, state}
+  def handle_info(:adoption_flush_expired, state), do: {:noreply, settle_adoption_flush(state, {:error, :deadline})}
+
   def handle_info({:invoke_done, pid, outcome}, %{worker: {pid, ref, from, timer}} = state) do
     Process.demonitor(ref, [:flush])
     # Defensive cancellation: a late {:invoke_timeout, ref} is harmless because
@@ -564,7 +595,61 @@ defmodule Embervm.Session do
 
   # -- idle-bank -------------------------------------------------------------
 
-  defp quiescent_state?(state), do: is_nil(state.worker) and not state.completion_pending and :queue.is_empty(state.queue)
+  defp quiescent_state?(state), do: is_nil(state.adoption_flush) and is_nil(state.worker) and not state.completion_pending and :queue.is_empty(state.queue)
+
+  defp bound_adoption_deadline(%{adoption_flush: nil} = state, _deadline), do: state
+  defp bound_adoption_deadline(state, deadline) do
+    deadline = min(state.adoption_flush_deadline, deadline)
+    if state.adoption_flush_timer, do: Process.cancel_timer(state.adoption_flush_timer)
+    %{state | adoption_flush_deadline: deadline,
+      adoption_flush_timer: Process.send_after(self(), :adoption_flush_expired, max(0, deadline - state.clock.()))}
+  end
+
+  defp start_adoption_interrupt(state) do
+    remaining = state.adoption_flush_deadline - state.clock.()
+    if remaining <= 0 do
+      settle_adoption_flush(state, {:error, :deadline})
+    else
+      state = bound_adoption_deadline(state, state.adoption_flush_deadline)
+      spawn_interrupt_worker(state, state.adoption_flush.dispatch_id, "interrupted_for_drain", remaining, :adoption_interrupt_done)
+    end
+  end
+
+  defp adoption_transient?({:error, {:no_channel, _}}), do: true
+  defp adoption_transient?({:error, :unavailable}), do: true
+  defp adoption_transient?(_), do: false
+
+  defp settle_adoption_flush(state, outcome) do
+    # A turn finishing between control-plane death and this flush has no
+    # interrupted record. It still ends parked_response_lost, as before.
+    result = record_adoption_outcome(state, outcome)
+    if state.adoption_flush_timer, do: Process.cancel_timer(state.adoption_flush_timer)
+    dispatch_id = state.adoption_flush.dispatch_id
+    Enum.each(state.interrupt_workers, fn {ref, {pid, tag, id}} ->
+      if tag == :adoption_interrupt_done and id == dispatch_id do
+        Process.demonitor(ref, [:flush])
+        Process.exit(pid, :kill)
+      end
+    end)
+    state = clear_interrupt_worker(state, :adoption_interrupt_done, dispatch_id)
+    Logger.info("session adoption flush settled", session_id: state.session_id,
+      adoption_dispatch_id: dispatch_id, adoption_flush_result: inspect(result))
+    state = %{state | adoption_flush: nil, adoption_flush_timer: nil, adoption_flush_deadline: nil}
+    if state.draining, do: maybe_drain_bank(state), else: maybe_start_next(state)
+  end
+
+  defp record_adoption_outcome(state, {:ok, %{dispatch_id: id, cli_session_id: cli, transcript_path: path}})
+       when is_binary(cli) and cli != "" and is_binary(path) and path != "" do
+    if id == state.adoption_flush.dispatch_id and state.clock.() < state.adoption_flush_deadline do
+      Embervm.SessionStore.record_adoption_flush(state.session_store, state.session_id,
+        state.adoption_flush.invoke_started_at, id, cli, path)
+    else
+      {:error, :invalid_recovery}
+    end
+  catch
+    :exit, reason -> {:error, {:store_call_failed, reason}}
+  end
+  defp record_adoption_outcome(_state, outcome), do: {:error, {:no_recovery, outcome}}
 
   defp banking_enabled?(%{idle_bank_ms: ms}), do: is_integer(ms) and ms > 0
 
@@ -660,6 +745,7 @@ defmodule Embervm.Session do
   # Start the head of the queue if nothing is in flight; otherwise leave it queued.
   # When the queue empties with no worker, the session is quiescent: arm the idle
   # timer so a sustained idle period banks.
+  defp maybe_start_next(%{adoption_flush: flush} = state) when not is_nil(flush), do: state
   defp maybe_start_next(%{worker: nil} = state) do
     case :queue.out(state.queue) do
       {{:value, {from, req, enqueued_at}}, rest} ->
@@ -811,7 +897,7 @@ defmodule Embervm.Session do
     end
   end
 
-  defp spawn_interrupt_worker(state, dispatch_id, reason \\ "user_interrupt", timeout_ms \\ @interrupt_timeout_ms) do
+  defp spawn_interrupt_worker(state, dispatch_id, reason \\ "user_interrupt", timeout_ms \\ @interrupt_timeout_ms, message_tag \\ nil) do
     owner = self()
     dial_id = state.dial_id
     vm_id = state.vm_id
@@ -819,7 +905,7 @@ defmodule Embervm.Session do
     channel_fun = state.channel_fun
     interrupt_fun = state.interrupt_fun
 
-    tag = if reason == "interrupted_for_drain", do: :drain_interrupt_done, else: :interrupt_done
+    tag = message_tag || if reason == "interrupted_for_drain", do: :drain_interrupt_done, else: :interrupt_done
     {pid, ref} = spawn_monitor(fn ->
       outcome =
         case channel_fun.(dial_id) do
