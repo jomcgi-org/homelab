@@ -17,6 +17,7 @@ from knowledge.models import (
     AuditRun,
     Dispute,
     Note,
+    NoteRetrieval,
     RawInput,
 )
 from knowledge.store import KnowledgeStore, open_dispute_note_ids
@@ -234,6 +235,53 @@ def test_streams_are_disjoint_seeded_and_stored_separately(session):
     assert run.sampled_uniform == run.sampled_weighted == 6
     assert len({finding.note_id for finding in findings}) == 12
     assert {finding.stream for finding in findings} == {"uniform", "weighted"}
+
+
+def test_weighted_stream_reads_only_recent_retrievals_and_bounds_its_pool(
+    session, monkeypatch
+):
+    monkeypatch.setenv("KG_AUDIT_SAMPLES_PER_DAY", "2")
+    for index in range(6):
+        _note(session, f"fact-{index}")
+    uniform = audit.sample_notes(session, seed=42, now=NOW)[0][0].note_id
+    candidate = next(
+        f"fact-{index}" for index in range(6) if f"fact-{index}" != uniform
+    )
+    session.add_all(
+        [
+            NoteRetrieval(note_id=candidate, day=NOW.date(), count=100),
+            NoteRetrieval(
+                note_id=candidate,
+                day=(NOW - timedelta(days=31)).date(),
+                count=1_000_000,
+            ),
+            NoteRetrieval(
+                note_id=candidate, day=(NOW + timedelta(days=1)).date(), count=1_000_000
+            ),
+        ]
+    )
+    session.commit()
+    original_random = audit.random.Random
+    weights_seen = []
+
+    class RecordingRandom(original_random):
+        def choices(self, population, weights=None, **kwargs):
+            weights_seen.append(list(weights))
+            return super().choices(population, weights=weights, **kwargs)
+
+    monkeypatch.setattr(audit.random, "Random", RecordingRandom)
+    audit.sample_notes(session, seed=42, now=NOW)
+    assert len(weights_seen[0]) <= audit.WEIGHTED_POOL_SIZE
+    assert max(weights_seen[0]) > min(weights_seen[0])
+    assert max(weights_seen[0]) < 12
+
+
+def test_malformed_bounds_fail_closed_before_run_or_job(session, monkeypatch):
+    monkeypatch.setenv("KG_AUDIT_SAMPLES_PER_DAY", "13")
+    with pytest.raises(ValueError, match="split evenly"):
+        audit.ensure_audit_job(session)
+    assert not session.exec(select(AuditRun)).all()
+    assert not session.execute(text("SELECT * FROM routine_jobs")).all()
 
 
 def test_replay_reuses_persisted_sample_and_nonce_fenced_prompt(session, monkeypatch):
