@@ -49,6 +49,10 @@ def render_leaderboard(
     qualified = [r for r in rows if r.get("qualified")]
     disqualified = [r for r in rows if not r.get("qualified")]
 
+    def _frontier(r) -> str:
+        score = r.get("frontier_score")
+        return f"{score:.2f}" if score is not None else "n/a"
+
     def _cps(r) -> str:
         cps = r.get("cost_per_solve")
         return f"{cps:.4f}" if cps is not None else "n/a"
@@ -57,7 +61,7 @@ def render_leaderboard(
     lines.append("")
     lines.append(
         "Cleared the easy+standard viability floor (at most one miss). Ranked by "
-        "hard-task pass, then cost."
+        "hard-task pass, then frontier score, then cost."
     )
     lines.append("")
     if qualified:
@@ -65,18 +69,20 @@ def render_leaderboard(
         qualified.sort(
             key=lambda r: (
                 -r.get("hard_pass", 0),
+                -(r.get("frontier_score") or 0.0),
                 r.get("cost", 0.0),
                 r.get("mean_latency_ms", 0.0),
             )
         )
         lines.append(
-            "| Model | hard | mean tokens | mean turns | wall-time (s) "
+            "| Model | hard | frontier | mean tokens | mean turns | wall-time (s) "
             "| cost ($) | $/solve | tool-use ok | errored |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for r in qualified:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
+                f"| {_frontier(r)} "
                 f"| {r.get('mean_tokens', 0):.0f} | {r.get('mean_turns', 0):.1f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
                 f"| {r.get('cost', 0.0):.4f} | {_cps(r)} "
@@ -152,12 +158,13 @@ def render_leaderboard(
             key=lambda r: (-r.get("hard_pass", 0), r.get("mean_latency_ms", 0.0))
         )
         lines.append(
-            "| Model | hard | pass rate | wall-time (s) | rental ($) | tasks |"
+            "| Model | hard | frontier | pass rate | wall-time (s) | rental ($) | tasks |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
         for r in ceiling_rows:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
+                f"| {_frontier(r)} "
                 f"| {r.get('pass_rate', 0.0):.2f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
                 f"| {r.get('cost', 0.0):.4f} | {r.get('n', 0)} |"

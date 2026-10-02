@@ -12,6 +12,7 @@ py_library(
         "__init__.py",
         "agent.py",
         "cache.py",
+        "calibrate.py",
         "claude_code.py",
         "cli.py",
         "judge.py",
@@ -39,6 +40,17 @@ py_test(
     deps = [
         ":bench",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "calibrate_test",
+    srcs = ["calibrate_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 
