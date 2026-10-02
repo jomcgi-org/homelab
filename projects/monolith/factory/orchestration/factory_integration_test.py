@@ -376,6 +376,30 @@ def test_planner_preview_binding_must_match_active_admitted_task(
     s = bound_preview
     binding = s.binding
     if change == "wrong_task":
+        with Session(db) as session:
+            session.add(
+                SwarmTask(
+                    id="other-task",
+                    task_text="other",
+                    conductor_model="opus",
+                    start_state="factory",
+                )
+            )
+            session.commit()
+            session.add(
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=8,
+                    generation=0,
+                    title="other",
+                    body="other",
+                    url="https://example.test/8",
+                    actor="test",
+                    task_id="other-task",
+                    state="admitted",
+                )
+            )
+            session.commit()
         binding = replace(binding, task_id="other-task")
     elif change == "missing_run":
         binding = replace(binding, planner_run_id=binding.planner_run_id + 1)
@@ -506,6 +530,52 @@ def test_planner_preview_does_not_authorize_submission_after_state_changes(
         ).all()
         assert json.loads(audits[-1].detail_json)["refusal_code"] == "envelope_exceeded"
     assert graph.current_version(s.task["id"]) == s.revision
+
+
+def test_planner_preview_limit_is_per_exact_run(db, bound_preview, monkeypatch):
+    s = bound_preview
+    assert s.call(preview_proposal(), s.revision)["ok"]
+    assert s.call(preview_proposal(), s.revision)["ok"]
+    assert graph.record_outcome(
+        s.task["id"],
+        "conductor_1",
+        1,
+        "succeeded",
+        cost_usd=0.25,
+        head_sha=None,
+        outcome_json="{}",
+    ).ok
+    assert conductor._add(
+        s.task,
+        s.policy,
+        "conductor_2",
+        "planner",
+        [],
+        "opus",
+        "test:later-planner",
+        "test",
+    ).ok
+    assert graph.admit_dispatch(s.task["id"], "conductor_2").ok
+    with Session(db) as session:
+        run_id = (
+            session.exec(
+                select(SwarmNodeRun).where(
+                    SwarmNodeRun.task_id == s.task["id"],
+                    SwarmNodeRun.node_key == "conductor_2",
+                )
+            )
+            .one()
+            .id
+        )
+    _adapter, _binding, _principal, call = bind_test_planner(
+        db, monkeypatch, s.task["id"], run_id
+    )
+    assert call(preview_proposal(), graph.current_version(s.task["id"]))["ok"]
+    assert sorted(preview_ledger(db)) == [
+        (s.binding.planner_run_id, 1),
+        (s.binding.planner_run_id, 2),
+        (run_id, 1),
+    ]
 
 
 def test_autonomous_intake_receipt_flows_through_admission(db, policy, monkeypatch):
