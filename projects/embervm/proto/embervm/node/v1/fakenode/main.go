@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -348,13 +350,14 @@ func (s *fakeServer) ExportArtifact(_ context.Context, req *nodev1.ExportArtifac
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.store[key] {
-		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: true, Generation: volGen(art)}, nil
+		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: true, Generation: volGen(art), ContentFingerprint: workspaceFingerprint(art)}, nil
 	}
 	s.store[key] = true
 	return &nodev1.ExportArtifactResponse{
-		BytesMoved: uint64(len(art.GetWorkload()) + len(art.GetRef())),
-		Skipped:    false,
-		Generation: volGen(art),
+		BytesMoved:         uint64(len(art.GetWorkload()) + len(art.GetRef())),
+		Skipped:            false,
+		Generation:         volGen(art),
+		ContentFingerprint: workspaceFingerprint(art),
 	}, nil
 }
 
@@ -366,20 +369,36 @@ func (s *fakeServer) ExportArtifact(_ context.Context, req *nodev1.ExportArtifac
 // mismatch, the fake mirrors the arch-mismatch behavior noded already has).
 func (s *fakeServer) RestoreArtifact(_ context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
 	art := req.GetArtifact()
+	if req.GetExpectedFingerprint() != "" && art.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		return nil, status.Error(codes.InvalidArgument, "expected fingerprint requires SESSION_WORKSPACE")
+	}
 	key := storeKey(art)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.store[key] {
 		return nil, status.Errorf(codes.FailedPrecondition, "artifact %q absent from store", key)
 	}
+	if expected := req.GetExpectedFingerprint(); expected != "" && expected != workspaceFingerprint(art) {
+		return nil, status.Errorf(codes.FailedPrecondition, "fingerprint mismatch: expected %s, store %s", expected, workspaceFingerprint(art))
+	}
 	if v := req.GetVendor(); v != "" && strings.Contains(art.GetRef(), "vendor-mismatch") {
 		return nil, status.Errorf(codes.FailedPrecondition, "artifact %q vendor mismatch for %q", key, v)
 	}
 	return &nodev1.RestoreArtifactResponse{
-		BytesMoved: uint64(len(art.GetWorkload()) + len(art.GetRef())),
-		Skipped:    false,
-		Generation: volGen(art),
+		BytesMoved:         uint64(len(art.GetWorkload()) + len(art.GetRef())),
+		Skipped:            false,
+		Generation:         volGen(art),
+		ContentFingerprint: workspaceFingerprint(art),
 	}, nil
+}
+
+// workspaceFingerprint models stable plaintext identity without a real disk.
+func workspaceFingerprint(art *nodev1.ArtifactRef) string {
+	if art.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(storeKey(art)))
+	return hex.EncodeToString(sum[:])
 }
 
 // EvictArtifact deletes the key from the store (remote=true) and is idempotent on

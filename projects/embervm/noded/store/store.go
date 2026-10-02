@@ -37,6 +37,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
@@ -67,6 +68,10 @@ var ErrNotPresent = errors.New("store: artifact not present (no meta.json)")
 // ErrKeyRequired is returned when an encrypted artifact is restored without
 // its 32-byte data key. Plaintext artifacts never require a key.
 var ErrKeyRequired = errors.New("store: encrypted artifact requires a data key")
+
+// ErrFingerprintMismatch refuses a restore whose plaintext content differs
+// from the caller's expected export. No local files are written on this error.
+var ErrFingerprintMismatch = errors.New("store: artifact fingerprint mismatch")
 
 const fileEncryptionAES256GCMV1 = "aes-256-gcm-v1"
 
@@ -166,6 +171,16 @@ type ExportOptions struct {
 	EnforceDeviceShape bool
 	// DataKeySucceededFn observes a validated key and envelope before upload.
 	DataKeySucceededFn func()
+	// ContentFingerprint receives the locally computed plaintext fingerprint
+	// only on successful export, including a checksum-equal skipped upload.
+	ContentFingerprint *string
+}
+
+// RestoreOptions optionally fences a restore to a previously exported payload.
+type RestoreOptions struct {
+	ExpectedFingerprint string
+	// ContentFingerprint receives the verified fingerprint on success only.
+	ContentFingerprint *string
 }
 
 // Store is the S3-API object-store client. It is safe for concurrent use (the
@@ -181,6 +196,9 @@ type Store struct {
 	rewrapper   EnvelopeRewrapper
 	credentials credentials
 	now         func() time.Time
+	// Fixed stripes bound memory while serializing writers to the same prefix,
+	// including synchronous RPCs, the async queue, and the drain backstop.
+	exportLocks [64]sync.Mutex
 }
 
 // Option configures an optional Store capability.
@@ -489,6 +507,10 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 	if s == nil {
 		return 0, false, ErrNotPresent
 	}
+	stripe := sha256.Sum256([]byte(prefix))
+	lock := &s.exportLocks[int(stripe[0])%len(s.exportLocks)]
+	lock.Lock()
+	defer lock.Unlock()
 	meta := Meta{
 		Files:           make(map[string]FileMeta, len(files)),
 		Generation:      generation,
@@ -536,6 +558,14 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 	if len(options) > 0 {
 		opts = options[0]
 	}
+	// Capture this export's local metadata, not a later store marker belonging
+	// to a concurrent writer on another node. Transport metadata is excluded.
+	fingerprint := FilesFingerprint(meta.Files)
+	defer func() {
+		if err == nil && opts.ContentFingerprint != nil {
+			*opts.ContentFingerprint = fingerprint
+		}
+	}()
 
 	// Idempotency short-circuit: if the store already holds a meta.json whose
 	// per-file checksums match ours, the artifact is already durable at this
@@ -710,7 +740,7 @@ func deviceIDsString(ids *[]string) string {
 // and renamed into place only after its checksum matches, so a mismatch (or a
 // short read) never leaves a corrupt file on disk. It returns the bytes written
 // and the marker's generation.
-func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte) (bytesMoved int64, generation uint64, err error) {
+func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte, options ...RestoreOptions) (bytesMoved int64, generation uint64, err error) {
 	if s == nil {
 		return 0, 0, ErrNotPresent
 	}
@@ -721,6 +751,17 @@ func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte
 	if !present {
 		return 0, 0, ErrNotPresent
 	}
+	var opts RestoreOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	fingerprint := FilesFingerprint(meta.Files)
+	if opts.ExpectedFingerprint != "" && opts.ExpectedFingerprint != fingerprint {
+		return 0, 0, fmt.Errorf("%w: expected %s, store %s", ErrFingerprintMismatch, opts.ExpectedFingerprint, fingerprint)
+	}
+	// Keep this exact metadata for every file verification. A later cross-node
+	// overwrite can only fail closed via SHA-256 or AEAD verification, never
+	// silently substitute different plaintext under the accepted fingerprint.
 	if err := os.MkdirAll(localDir, 0o700); err != nil {
 		return 0, 0, fmt.Errorf("store: mkdir restore dir %q: %w", localDir, err)
 	}
@@ -730,6 +771,9 @@ func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte
 			return bytesMoved, 0, ferr
 		}
 		bytesMoved += n
+	}
+	if opts.ContentFingerprint != nil {
+		*opts.ContentFingerprint = fingerprint
 	}
 	return bytesMoved, meta.Generation, nil
 }
@@ -1099,6 +1143,37 @@ func (s *Store) getMeta(ctx context.Context, prefix string) (bool, Meta, error) 
 		return false, Meta{}, fmt.Errorf("store: decode meta for %q: %w", prefix, derr)
 	}
 	return true, meta, nil
+}
+
+// FilesFingerprint hashes sorted plaintext entries as
+// "name\x00<decimal size>\x00<lowercase sha256>\n" using SHA-256, in lowercase hex.
+// Compression, encryption, and nonce describe transport, not content identity.
+func FilesFingerprint(files map[string]FileMeta) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	h := sha256.New()
+	for _, name := range names {
+		fm := files[name]
+		fmt.Fprintf(h, "%s\x00%d\x00%s\n", name, fm.Size, strings.ToLower(fm.Sha256))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// LocalFilesFingerprint fingerprints the enumerated artifact files in a local
+// directory using the same plaintext metadata as Export.
+func LocalFilesFingerprint(localDir string, files []string) (string, error) {
+	meta := make(map[string]FileMeta, len(files))
+	for _, name := range files {
+		fm, err := fileMeta(filepath.Join(localDir, name))
+		if err != nil {
+			return "", fmt.Errorf("store: fingerprint local file %q: %w", name, err)
+		}
+		meta[name] = fm
+	}
+	return FilesFingerprint(meta), nil
 }
 
 // fileMeta computes one local file's size and hex SHA-256 for the export marker.

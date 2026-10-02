@@ -1896,6 +1896,11 @@ message ExportArtifactResponse {
   uint64 bytes_moved = 1;
   bool skipped = 2;
   uint64 generation = 3;
+  // Plaintext files fingerprint of this successful export, including skipped
+  // uploads. Lowercase hex SHA-256 of entries sorted by name, each encoded as
+  // "name\x00<decimal size>\x00<lowercase sha256>\n". Set only for
+  // SESSION_WORKSPACE; transport metadata is excluded.
+  string content_fingerprint = 4;
 }
 
 // RestoreArtifactRequest asks the daemon to fetch one artifact from the store
@@ -1917,6 +1922,9 @@ message RestoreArtifactRequest {
   // The MAC is HMAC-SHA256 over the label embervm-restore-cap-v1 followed by
   // every preceding capability byte.
   bytes capability = 4;
+  // Optional plaintext files fingerprint recorded by a previous export. Valid
+  // only for SESSION_WORKSPACE; mismatched local or store content is refused.
+  string expected_fingerprint = 5;
 }
 
 // RestoreArtifactResponse reports the outcome. bytes_moved is 0 when the artifact
@@ -1941,6 +1949,9 @@ message RestoreArtifactResponse {
   // at once. Only the BASE kind ever sets accepted; the small warmth/volume
   // kinds still restore inline and return accepted=false.
   bool accepted = 4;
+  // Verified plaintext files fingerprint on successful SESSION_WORKSPACE
+  // restore, including a matching local copy returned as skipped.
+  string content_fingerprint = 5;
 }
 
 // EvictArtifactRequest asks the daemon to delete one artifact. remote=true

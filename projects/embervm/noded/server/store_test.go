@@ -156,6 +156,13 @@ func (f *fakeStore) Export(ctx context.Context, prefix, localDir string, files [
 		got[name] = string(b)
 		total += int64(len(b))
 	}
+	if len(options) > 0 && options[0].ContentFingerprint != nil {
+		fingerprint, err := store.LocalFilesFingerprint(localDir, files)
+		if err != nil {
+			return 0, false, err
+		}
+		*options[0].ContentFingerprint = fingerprint
+	}
 	var devices snapshotmeta.DeviceSet
 	if data, ok := got[snapshotmeta.JailResourcesFile]; ok {
 		var err error
@@ -178,7 +185,7 @@ func (f *fakeStore) Export(ctx context.Context, prefix, localDir string, files [
 	return total, false, nil
 }
 
-func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []byte) (int64, uint64, error) {
+func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []byte, options ...store.RestoreOptions) (int64, uint64, error) {
 	f.mu.Lock()
 	f.restoreCalls++
 	art, ok := f.arts[prefix]
@@ -187,6 +194,15 @@ func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []by
 	f.mu.Unlock()
 	if !ok {
 		return 0, 0, errFakeNotPresent
+	}
+	meta := make(map[string]store.FileMeta, len(art.files))
+	for name, content := range art.files {
+		sum := sha256.Sum256([]byte(content))
+		meta[name] = store.FileMeta{Size: int64(len(content)), Sha256: hex.EncodeToString(sum[:])}
+	}
+	fingerprint := store.FilesFingerprint(meta)
+	if len(options) > 0 && options[0].ExpectedFingerprint != "" && options[0].ExpectedFingerprint != fingerprint {
+		return 0, 0, fmt.Errorf("%w: expected %s, store %s", store.ErrFingerprintMismatch, options[0].ExpectedFingerprint, fingerprint)
 	}
 	if len(art.envelope) > 0 && len(key) != 32 {
 		return 0, 0, store.ErrKeyRequired
@@ -213,6 +229,9 @@ func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []by
 	}
 	if restoreErr != nil {
 		return total, 0, restoreErr
+	}
+	if len(options) > 0 && options[0].ContentFingerprint != nil {
+		*options[0].ContentFingerprint = fingerprint
 	}
 	return total, art.gen, nil
 }
@@ -475,6 +494,115 @@ func (d *diskScanStatefulDriver) ScanStatefulBundles() []substrate.StatefulBundl
 func newStoreTestServer(t *testing.T, fs *fakeStore) *Server {
 	t.Helper()
 	return newStoreTestServerWithVendor(t, fs, "amd")
+}
+
+func TestWorkspaceExportFingerprint(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "detached"}
+	dir := s.artifactLocalDir(ref)
+	writeBundleFiles(t, dir, map[string]string{"workspace.img": "parked workspace"})
+	files, err := enumerateArtifactFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.LocalFilesFingerprint(dir, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skip := range []bool{false, true} {
+		resp, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{Artifact: ref})
+		if err != nil || resp.GetSkipped() != skip || resp.GetContentFingerprint() != want {
+			t.Fatalf("export response=%v, err=%v; want skipped=%v, fingerprint=%q", resp, err, skip, want)
+		}
+	}
+}
+
+func TestWorkspaceRestoreFingerprint(t *testing.T) {
+	for _, scenario := range []string{"overwritten store", "local mismatch", "local match", "download match", "legacy local mismatch", "missing store"} {
+		t.Run(scenario, func(t *testing.T) {
+			fs := newFakeStore()
+			s := newStoreTestServer(t, fs)
+			ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "parked"}
+			prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+			source := t.TempDir()
+			writeBundleFiles(t, source, map[string]string{"workspace.img": "original parked workspace"})
+			var expected string
+			_, _, err := fs.Export(context.Background(), prefix, source, []string{"workspace.img"}, 0, 1, "", "", store.ExportOptions{ContentFingerprint: &expected})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := s.artifactLocalDir(ref)
+			if scenario == "overwritten store" {
+				writeBundleFiles(t, source, map[string]string{"workspace.img": "newer workspace"})
+				if _, _, err := fs.Export(context.Background(), prefix, source, []string{"workspace.img"}, 0, 2, "", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var localBytes string
+			switch scenario {
+			case "local match":
+				localBytes = "original parked workspace"
+			case "local mismatch", "legacy local mismatch":
+				localBytes = "different local workspace"
+			}
+			if localBytes != "" {
+				writeBundleFiles(t, dir, map[string]string{"workspace.img": localBytes})
+			}
+			if scenario == "legacy local mismatch" {
+				expected = ""
+			}
+			if scenario == "missing store" {
+				if err := fs.DeleteArtifact(context.Background(), prefix); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{Artifact: ref, ExpectedFingerprint: expected})
+			switch scenario {
+			case "overwritten store", "local mismatch":
+				if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), expected) {
+					t.Fatalf("mismatch response=%v, err=%v, want FailedPrecondition naming expected fingerprint", resp, err)
+				}
+			case "missing store":
+				if status.Code(err) != codes.NotFound {
+					t.Fatalf("missing store err=%v, want NotFound", err)
+				}
+			default:
+				if err != nil || resp.GetSkipped() != (localBytes != "") {
+					t.Fatalf("restore response=%v, err=%v", resp, err)
+				}
+				if expected != "" && resp.GetContentFingerprint() != expected {
+					t.Fatalf("restored fingerprint=%q, want %q", resp.GetContentFingerprint(), expected)
+				}
+			}
+			got, readErr := os.ReadFile(filepath.Join(dir, "workspace.img"))
+			if localBytes != "" {
+				if readErr != nil || string(got) != localBytes {
+					t.Fatalf("local bytes changed: got=%q, err=%v, want %q", got, readErr, localBytes)
+				}
+			} else if scenario == "overwritten store" || scenario == "missing store" {
+				if !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatalf("failed restore created local file: err=%v", readErr)
+				}
+			} else if readErr != nil || string(got) != "original parked workspace" {
+				t.Fatalf("downloaded bytes=%q, err=%v", got, readErr)
+			}
+		})
+	}
+}
+
+func TestRestoreFingerprintRequiresWorkspace(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	for kind := nodev1.ArtifactKind_ARTIFACT_KIND_UNSPECIFIED; kind <= nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE; kind++ {
+		if kind == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+			continue
+		}
+		_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+			Artifact: &nodev1.ArtifactRef{Kind: kind, Workload: "sbx", Ref: "parked"}, ExpectedFingerprint: "expected",
+		})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("kind=%v, err=%v, want InvalidArgument", kind, err)
+		}
+	}
 }
 
 // newStoreTestServerWithVendor mirrors newStoreTestServer but lets a test pick
@@ -3294,6 +3422,9 @@ func TestRunExportJobSkipsAttachedSessionWorkspace(t *testing.T) {
 	}
 
 	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-live"}
+	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("sync export attached workspace: %v, want FailedPrecondition", err)
+	}
 	key := artifactPrefix(ref, s.cfg.CpuVendor)
 	s.runExportJob(ctx, exportJob{ref: ref, key: key})
 
