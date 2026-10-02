@@ -114,6 +114,20 @@ def test_factory_tools_are_registered():
     } <= registered, f"factory tools not registered; got: {sorted(registered)}"
 
 
+def test_planner_preview_adapter_does_not_register_a_tool_or_relax_operator_floor():
+    from factory.orchestration import planner_preview
+    from core.mcp_app import mcp as shared
+
+    registered = {tool.name for tool in asyncio.run(shared.list_tools())}
+    assert "preview_planner_decision" not in registered
+    assert "factory_planner_preview" not in registered
+    principal = _principal(authority=Authority.DELEGATED, kind=PrincipalKind.WORKLOAD)
+    assert mcp._refuse(principal)["error"] == mcp.OPERATOR_REQUIRED
+    assert planner_preview.verified_planner_binding(principal) is None
+    assert mcp._refuse(_principal()) is None
+    assert planner_preview.verified_planner_binding(_principal()) is None
+
+
 @pytest.mark.parametrize(
     "principal",
     [
