@@ -63,7 +63,7 @@
 
   li {
     display: grid;
-    grid-template-columns: minmax(0, 13em) minmax(0, 1fr) 7.5em;
+    grid-template-columns: minmax(0, 14em) minmax(0, 1fr) 9.5em;
     gap: 0.7em;
     align-items: center;
     padding: 0.2em 0;
@@ -125,6 +125,12 @@
   @media (max-width: 520px) {
     li {
       grid-template-columns: minmax(0, 8em) minmax(0, 1fr) 6em;
+    }
+
+    /* The note drops under the value rather than pushing past the sheet. */
+    .val small {
+      display: block;
+      margin-left: 0;
     }
   }
 </style>

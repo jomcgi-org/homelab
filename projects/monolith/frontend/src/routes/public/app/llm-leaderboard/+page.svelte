@@ -102,10 +102,7 @@
     [...models]
       .filter(
         (m) =>
-          hardRate(m) >= 1 &&
-          m.role !== "anchor" &&
-          !m.self_hosted &&
-          m.cost_per_solve_usd > 0,
+          hardRate(m) >= 1 && m.role !== "anchor" && m.cost_per_solve_usd > 0,
       )
       .sort((a, b) => a.cost_per_solve_usd - b.cost_per_solve_usd)[0],
   );
@@ -196,7 +193,9 @@
             />
           {/each}
         </div>
-        <p class="caption">Means per task. Self-hosted: $0, one RTX 4090.</p>
+        <p class="caption">
+          Means per task. Self-hosted: factory local rate, one RTX 4090.
+        </p>
       </section>
 
       <section>
@@ -263,8 +262,14 @@
                   </td>
                   <td class="num">{m.hard_pass}/{m.hard_n}</td>
                   <td class="num">{m.floor_pass}/{m.floor_n}</td>
-                  <td class="num">{money(m.cost_usd)}</td>
-                  <td class="num">{money(m.cost_per_solve_usd)}</td>
+                  <td class="num"
+                    >{money(m.cost_usd)}{m.cost_estimated ? " est." : ""}</td
+                  >
+                  <td class="num"
+                    >{money(m.cost_per_solve_usd)}{m.cost_estimated
+                      ? " est."
+                      : ""}</td
+                  >
                   <td class="num">{secs((m.mean_latency_ms ?? 0) / 1000)}</td>
                   <td class="num"
                     >{m.role === "anchor" ? "n/a" : kfmt(m.mean_tokens)}</td

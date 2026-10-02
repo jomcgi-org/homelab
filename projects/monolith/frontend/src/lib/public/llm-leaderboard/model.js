@@ -140,12 +140,16 @@ export const METRICS = {
   },
   cost: {
     label: "Cost per task",
-    unit: "mean list price per task",
+    unit: "mean price per task",
     better: "lower",
     get: (m) => m.cost_usd,
     fmt: money,
     tick: (v) => `$${Number(v.toPrecision(2))}`,
-    note: (m) => (m.self_hosted ? "own GPU" : ""),
+    // Self-hosted rows are priced at the factory's local qwen rate
+    // (model-bench models.yaml `price`); "est." marks a row whose
+    // input/output split was estimated.
+    note: (m) =>
+      m.cost_estimated ? "local, est." : m.self_hosted ? "local" : "",
     log: true,
   },
   wall: {

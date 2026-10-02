@@ -331,6 +331,8 @@ async def _run(args) -> None:
                     return await client.complete(**kw)
 
                 def cost_fn(p, c):
+                    if model.price:
+                        return model.price.cost(p, c)
                     return client.cost_usd(model.id, p, c)
 
             verify = get_verifier(task.verifier.kind)
@@ -420,7 +422,11 @@ async def _run(args) -> None:
             chat=chat,
             verify=verify,
             verifier_args=task.verifier.args,
-            cost_fn=lambda p, c: client.cost_usd(model.id, p, c),
+            cost_fn=lambda p, c: (
+                model.price.cost(p, c)
+                if model.price
+                else client.cost_usd(model.id, p, c)
+            ),
             max_turns=task.agent.max_turns,
             max_tokens=task.agent.max_tokens or model.params.max_tokens,
             allow_exec=task.agent.exec,
@@ -700,6 +706,23 @@ def _report(args) -> None:
             else:
                 superseded += 1
     cells = [c for _, c in newest.values()]
+    # Models with a fixed rate are repriced from their recorded tokens, so a rate
+    # added after the run (or a cell recorded at $0 by a local endpoint) still
+    # reports at that rate.
+    priced = {m.id: m.price for m in reg if m.price}
+    cells = [
+        c.model_copy(
+            update={
+                "cost_usd": priced[c.model_id].cost(
+                    sum(a.prompt_tokens for a in c.attempts),
+                    sum(a.completion_tokens for a in c.attempts),
+                )
+            }
+        )
+        if c.model_id in priced
+        else c
+        for c in cells
+    ]
 
     if stale:
         logger.warning(

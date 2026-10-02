@@ -6,12 +6,12 @@ Cleared the easy+standard viability floor (at most one miss). Ranked by hard-tas
 
 | Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok | errored |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| qwen/qwen3.8-flash-next | 9/9 | 141817 | 11.4 | 301.3 | 0.0000 | 0.0000 | 1.00 | 1 |
+| qwen/qwen3.8-flash-next | 9/9 | 141817 | 11.4 | 301.3 | 0.0150 | 0.0150 | 1.00 | 1 |
 | qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 | 0 |
 | qwen/qwen3-coder-next | 7/7 | 217279 | 17.3 | 44.9 | 0.0279 | 0.0279 | 1.00 | 0 |
 | deepseek/deepseek-v4-pro | 7/7 | 98685 | 9.7 | 146.4 | 0.0454 | 0.0454 | 1.00 | 0 |
 | qwen/qwen3.7-plus | 7/7 | 290054 | 13.5 | 331.8 | 0.0992 | 0.0992 | 1.00 | 0 |
-| qwen/qwen3.8-27b | 6/7 | 113975 | 10.2 | 228.8 | 0.0000 | 0.0000 | 1.00 | 0 |
+| qwen/qwen3.8-27b | 6/7 | 113975 | 10.2 | 228.8 | 0.0121 | 0.0133 | 1.00 | 0 |
 | google/gemma-4-31b-it | 5/5 | 36490 | 7.0 | 225.8 | 0.0053 | 0.0053 | 1.00 | 2 |
 | deepseek/deepseek-v4-flash | 5/7 | 141741 | 12.2 | 237.6 | 0.0134 | 0.0164 | 1.00 | 0 |
 | z-ai/glm-4.7 | 5/7 | 95439 | 11.5 | 168.7 | 0.0442 | 0.0540 | 0.91 | 0 |
