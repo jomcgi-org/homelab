@@ -679,6 +679,7 @@ defmodule Embervm.SessionManager do
       # async-write race), rather than destroying it as a true orphan. The pending
       # check consults Embervm.AsyncWriter; async_writer is the process to ask.
       async_lifecycle_writes: Keyword.get(opts, :async_lifecycle_writes, false),
+      restart_flush_inflight_invokes: Keyword.get(opts, :restart_flush_inflight_invokes, false),
       async_writer: Keyword.get(opts, :async_writer, Embervm.AsyncWriter)
     }
 
@@ -5182,8 +5183,9 @@ defmodule Embervm.SessionManager do
         state
 
       [] ->
+        extra_opts = adoption_flush_opts(state, session)
         {start_result, state} =
-          start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id)
+          start_session_from_row(state, %{session | node_id: node_id, vm_id: vm_id}, node_id, vm_id, dial_id, extra_opts)
 
         case start_result do
           {:ok, _pid} ->
@@ -5200,6 +5202,19 @@ defmodule Embervm.SessionManager do
         end
     end
   end
+
+  defp adoption_flush_opts(%{restart_flush_inflight_invokes: true}, session) do
+    id = session.inflight_dispatch_id
+    started = session.invoke_started_at
+    last = session.last_invoke_at
+    if is_binary(id) and id != "" and is_integer(started) and
+         (is_nil(last) or last < started) do
+      [adoption_flush: %{dispatch_id: id, invoke_started_at: started}]
+    else
+      []
+    end
+  end
+  defp adoption_flush_opts(_state, _session), do: []
 
   # A session the node reports only as a snapshot: it is banked. Force ETS to banked
   # (idempotent) so a banking/relighting limbo whose bank/relight did not complete
