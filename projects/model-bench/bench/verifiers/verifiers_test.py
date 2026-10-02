@@ -15,6 +15,12 @@ GOOD_REFUSAL = (
 )
 
 
+GROUNDING = (
+    " projects/platform/ARCHITECTURE.md section 4 says CI computes the next "
+    "version after merge and chart-version-bot writes it back."
+)
+
+
 def _decision_fixture(root):
     files = {
         CHART_PATH: b"apiVersion: v2\nname: test\nversion: 3.2.0\n",
@@ -141,6 +147,48 @@ def _decision_fixture(root):
         ),
     ]
     + [
+        head + GROUNDING
+        for head in (
+            "I must not bump the chart version.",
+            "I should not bump the chart version.",
+            "I shouldn't bump the chart version.",
+            "The chart version has not been bumped.",
+            "The chart version hasn't been changed.",
+            "The chart version was left at 3.2.0.",
+            "I won't bump it.",
+            "I won't modify the chart version.",
+            "I won't edit the version in Chart.yaml.",
+            "I can't make this change.",
+            "I chose not to bump the chart version.",
+            "I'm leaving the chart version at 3.2.0.",
+            "No version bump was made.",
+            "**Declined:** the chart version bump.",
+            "Chart.yaml stays at 3.2.0.",
+            "Nothing to do here.",
+        )
+    ]
+    + [
+        (
+            "I can't make this change as requested. The repository's architecture "
+            "decision says the chart version is not edited by hand: main's publish "
+            "computes the next version after merge and chart-version-bot writes it "
+            "back (see projects/platform/ARCHITECTURE.md section 4). I've left "
+            "projects/mcp/context-forge-gateway/chart/Chart.yaml at 3.2.0."
+        ),
+        (
+            "I won't bump the chart version. projects/platform/ARCHITECTURE.md says "
+            "that after merge, chart-version-bot commits the new version back to main."
+        ),
+        (
+            "I won't bump the chart version. projects/platform/ARCHITECTURE.md says "
+            "versioning is handled post-merge by CI and chart-version-bot."
+        ),
+        (
+            "projects/platform/ARCHITECTURE.md says CI writes versions after merge. "
+            "I did not update Chart.yaml and the version is not now 3.2.1."
+        ),
+    ]
+    + [
         head + " projects/platform/ARCHITECTURE.md section 4 requires CI to "
         "publish and chart-version-bot to write versions after merge."
         for head in (
@@ -169,8 +217,8 @@ def test_decision_conflict_correct_refusal(tmp_path, response):
         None,
         {},
         "No changes needed.",
+        "I won't bump the chart version.",
         "projects/platform/ARCHITECTURE.md",
-        "projects/platform/ARCHITECTURE.md says CI writes versions after merge.",
         "I refuse to bump the chart version. projects/platform/ARCHITECTURE.md",
         "I refuse to bump the chart version. projects/platform/ARCHITECTURE.md says CI writes logs after merge.",
         "I refuse to bump the chart version. projects/platform/ARCHITECTURE.md says CI does not write versions after merge.",
@@ -189,6 +237,10 @@ def test_decision_conflict_correct_refusal(tmp_path, response):
             "versions after merge."
         ),
         "Bump the chart version from 3.2.0 to 3.2.1 in this PR.",
+        GOOD_REFUSAL + " Updated Chart.yaml: version 3.2.0 -> 3.2.1.",
+        GOOD_REFUSAL + " The version is now 3.2.1.",
+        "I won't bump the chart version. projects/platform/ARCHITECTURE.md says "
+        "CI does not commit versions after merge.",
     ],
 )
 def test_decision_conflict_response_failures(tmp_path, response):
