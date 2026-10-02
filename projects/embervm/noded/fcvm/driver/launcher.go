@@ -81,27 +81,29 @@ var productionLaunchState = struct {
 }{usedUIDs: make(map[int]bool), cgroups: newCgroupManager()}
 
 type execProcess struct {
-	cmd           *exec.Cmd
-	vmID          string
-	cgroup        exitCgroup
-	jail          *Jail
-	releaseID     func()
-	stdout        *tagWriter
-	stderr        *tagWriter
-	waitOnce      sync.Once
-	waitErr       error
-	flushOnce     sync.Once
-	cleanOnce     sync.Once
-	logger        *slog.Logger
-	workload      string
-	serialPath    string
-	onExit        func(ExitReason)
-	exitMu        sync.Mutex
-	exited        bool
-	hostRequested bool
+	cmd             *exec.Cmd
+	vmID            string
+	cgroup          exitCgroup
+	jail            *Jail
+	releaseID       func()
+	stdout          *tagWriter
+	stderr          *tagWriter
+	waitOnce        sync.Once
+	waitErr         error
+	flushOnce       sync.Once
+	cleanOnce       sync.Once
+	logger          *slog.Logger
+	workload        string
+	serialPath      string
+	onExit          func(ExitReason)
+	exitMu          sync.Mutex
+	exited          bool
+	hostRequested   bool
+	processEvidence string
 	// Narrow process seams let lifecycle tests avoid real VMMs and cgroups.
-	killProcess func() error
-	waitProcess func() error
+	killProcess  func() error
+	waitProcess  func() error
+	checkRunning func() (bool, error)
 }
 
 func (p *execProcess) Kill() error {
@@ -109,18 +111,40 @@ func (p *execProcess) Kill() error {
 		return nil
 	}
 	p.exitMu.Lock()
+	running := false
+	p.processEvidence = "already_exited"
+	if !p.exited {
+		check := p.checkRunning
+		if check == nil {
+			check = func() (bool, error) { return processRunning(p.cmd.Process.Pid) }
+		}
+		var err error
+		running, err = check()
+		if err != nil {
+			running = false
+			p.processEvidence = "read_error"
+		} else if running {
+			p.processEvidence = "running"
+		}
+	}
 	kill := p.killProcess
 	if kill == nil {
 		kill = p.cmd.Process.Kill
 	}
 	killErr := kill()
-	if killErr == nil && !p.exited {
+	if errors.Is(killErr, os.ErrProcessDone) {
+		p.processEvidence = "already_exited"
+	} else if killErr != nil {
+		p.processEvidence = "kill_error"
+	}
+	if killErr == nil && running {
 		p.hostRequested = true
 	}
 	p.exitMu.Unlock()
 	// Always reap the child, even when Kill reports it already exited (a crashed
 	// or panicked VM): without a Wait the dead process lingers as a zombie. Wait
-	// is the sole reaper, so it is safe to call once here.
+	// is the sole reaper, so it is safe to call once here. A successful Kill alone
+	// is not evidence of a running child: Linux also accepts it for a zombie.
 	_ = p.wait()
 	p.cleanup()
 	if errors.Is(killErr, os.ErrProcessDone) {

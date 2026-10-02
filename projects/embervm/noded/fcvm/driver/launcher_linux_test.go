@@ -5,6 +5,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -14,7 +15,54 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestExecProcessAlreadyExitedBeforeKill(t *testing.T) {
+	for _, panicMarker := range []bool{false, true} {
+		t.Run(fmt.Sprint(panicMarker), func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestExecOutputHelperProcess$")
+			cmd.Env = append(os.Environ(), "EMBER_OUTPUT_HELPER=1")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+			// Observe death without reaping: Release can arrive before its watcher
+			// has cached Wait, including while cmd.Wait drains stdout/stderr.
+			var info unix.Siginfo
+			if err := unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "serial.log")
+			serial := "normal exit"
+			want := ExitUnclassified
+			if panicMarker {
+				serial = "Kernel panic - not syncing"
+				want = ExitGuestKernelPanic
+			}
+			if err := os.WriteFile(path, []byte(serial), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var output lockedBuffer
+			var got ExitReason
+			p := &execProcess{cmd: cmd, serialPath: path,
+				logger: slog.New(slog.NewJSONHandler(&output, nil)),
+				onExit: func(reason ExitReason) { got = reason },
+			}
+			if err := p.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("reason = %q, want %q for already exited child", got, want)
+			}
+			records := decodeLogRecords(t, output.Bytes())
+			if len(records) != 1 || records[0]["exit_code"] != float64(0) {
+				t.Fatalf("exit event = %v", records)
+			}
+		})
+	}
+}
 
 func TestSetUnshareMountNSPreservesOtherCloneFlags(t *testing.T) {
 	cmd := exec.Command("true")
