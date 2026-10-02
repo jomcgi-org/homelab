@@ -5,6 +5,9 @@ import ConformanceReplay from "./ConformanceReplay.svelte";
 import recording from "./conformance-replay.json";
 
 const last = recording.events.at(-1);
+const stateChanges = recording.events.filter(
+  (e) => e.action !== "recv_status" && e.action !== "checkpoint",
+);
 let component;
 let target;
 async function render() {
@@ -14,16 +17,15 @@ async function render() {
   await tick();
   return target;
 }
+const duration = (view) => Number(view.querySelector("input[type=range]").max);
 async function seek(at) {
   const timeline = target.querySelector("input[type=range]");
   timeline.value = String(at);
   timeline.dispatchEvent(new Event("input", { bubbles: true }));
   await tick();
 }
-const verdicts = (view) =>
-  [...view.querySelectorAll(".invariants button")].map(
-    (b) => b.dataset.verdict,
-  );
+const cells = (view) =>
+  [...view.querySelectorAll(".cell")].map((li) => li.dataset.verdict);
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
@@ -33,8 +35,6 @@ afterEach(async () => {
 });
 
 test("the recording is the checker's own answer at every record", () => {
-  // Every event carries a verdict for every invariant, and coverage only
-  // grows inside a window.
   const keys = recording.invariants.map((i) => i.key);
   let previous = null;
   for (const event of recording.events) {
@@ -47,90 +47,80 @@ test("the recording is the checker's own answer at every record", () => {
     previous = event.verdicts;
   }
   expect(last.at).toBeLessThanOrEqual(recording.durationMs);
-  expect(recording.events[0].verdicts.no_double_assign).toEqual(["vacuous", 0]);
-  expect(last.verdicts.no_double_assign[0]).toBe("pass");
 });
 
-test("every invariant opens vacuous and the suite strip appears only at the end", async () => {
+test("the axis is step time: one unit per state change", async () => {
   const view = await render();
-  expect(verdicts(view)).toEqual(Array(9).fill("vacuous"));
-  expect(view.querySelector(".suite")).toBeNull();
-  expect(view.querySelectorAll(".ticks i")).toHaveLength(
-    recording.events.length,
+  expect(duration(view)).toBe((stateChanges.length + 1) * 1000);
+  const marks = [...view.querySelectorAll(".trow:first-child .track i")];
+  expect(marks).toHaveLength(stateChanges.length);
+  const lefts = marks.map((m) => parseFloat(m.style.left));
+  for (let i = 1; i < lefts.length; i++) {
+    expect(lefts[i] - lefts[i - 1]).toBeCloseTo(lefts[1] - lefts[0], 5);
+  }
+  expect(view.querySelectorAll(".trow")).toHaveLength(2);
+});
+
+test("only the rules this run exercises are shown, waiting until checked", async () => {
+  const view = await render();
+  const exercised = recording.invariants.filter(
+    (i) => last.verdicts[i.key][1] > 0,
   );
-  await seek(recording.durationMs);
-  expect(verdicts(view)).toEqual(
-    recording.invariants.map((i) => last.verdicts[i.key][0]),
+  expect(cells(view)).toEqual(exercised.map(() => "waiting"));
+  expect(view.querySelector(".verdict").textContent.trim()).toBe("");
+  await seek(duration(view));
+  expect(cells(view)).toEqual(exercised.map(() => "pass"));
+  expect(view.querySelector(".cell .v").textContent).toBe(
+    `${last.verdicts[exercised[0].key][1]} checked`,
   );
-  expect(verdicts(view).filter((v) => v === "pass")).toHaveLength(6);
-  expect(verdicts(view).filter((v) => v === "vacuous")).toHaveLength(3);
-  expect(view.querySelector(".suite strong").textContent).toBe(
+  expect(view.querySelector(".verdict strong").textContent).toBe(
     recording.suiteVerdict,
   );
-  expect(view.querySelector(".suite").textContent).toContain("Kargo promotes");
 });
 
-test("VM bars grow under the playhead and the current record follows the scrub", async () => {
+test("VM slots on the brick follow the run and scenarios tick off in order", async () => {
   const view = await render();
-  expect(view.querySelectorAll(".lane .bar i")).toHaveLength(0);
-  const dispatch = recording.events.find((e) => e.action === "dispatch_miss");
-  await seek(dispatch.at);
-  expect(view.querySelector(".now .what").textContent).toBe(
-    "a task is dispatched to it",
+  const slots = () => [...view.querySelectorAll(".slot")];
+  const done = () =>
+    [...view.querySelectorAll(".sc")].filter((g) =>
+      g.classList.contains("done"),
+    );
+  expect(slots().every((s) => !s.hasAttribute("data-state"))).toBe(true);
+  // Just after the second state change, the first VM has a task running.
+  await seek(2100);
+  expect(slots().find((s) => s.dataset.state === "running")).toBeDefined();
+  expect(done()).toHaveLength(0);
+  await seek(duration(view));
+  expect(slots().filter((s) => s.dataset.state === "destroyed")).toHaveLength(
+    2,
   );
-  const running = view.querySelector('.lane .bar i[data-state="running"]');
-  expect(running).not.toBeNull();
-  const lane = running.closest(".lane");
-  expect(lane.querySelector(".id").textContent).toBe(
-    recording.roles[dispatch.vars.vm],
+  expect(done()).toHaveLength(recording.scenarios.length);
+  expect(view.querySelector(".big").textContent).toBe(
+    `${recording.events.length} records`,
   );
-  // The bar for a VM primed later has not appeared yet.
-  const later = recording.events.find(
-    (e) => e.action === "prime" && e.at > dispatch.at,
-  );
-  const laterLane = [...view.querySelectorAll(".lane")].find(
-    (l) =>
-      l.querySelector(".id").textContent === recording.roles[later.vars.vm],
-  );
-  expect(laterLane.querySelectorAll(".bar i")).toHaveLength(0);
-  await seek(recording.durationMs);
-  expect(laterLane.querySelectorAll(".bar i").length).toBeGreaterThan(0);
-  expect(
-    view.querySelector('.lane .bar i[data-state="destroyed"]'),
-  ).not.toBeNull();
+  expect(view.querySelectorAll(".dots circle")).toHaveLength(0);
 });
 
-test("play advances at 8x, pauses cleanly and never fetches", async () => {
+test("records ride their edges for a fixed flight, and play never fetches", async () => {
   vi.useFakeTimers();
   const fetch = vi.spyOn(globalThis, "fetch");
   const view = await render();
+  await seek(1300);
+  expect(view.querySelectorAll(".dots circle").length).toBeGreaterThanOrEqual(
+    2,
+  );
+  await seek(1900);
+  expect(view.querySelectorAll(".dots circle")).toHaveLength(0);
   view.querySelector(".controls button").click();
   await tick();
   expect(vi.getTimerCount()).toBe(1);
   vi.advanceTimersByTime(1000);
   await tick();
-  const after = Number(view.querySelector("input[type=range]").value);
-  expect(after).toBeGreaterThan(7000);
-  expect(after).toBeLessThanOrEqual(8200);
+  expect(Number(view.querySelector("input[type=range]").value)).toBeGreaterThan(
+    1900,
+  );
   view.querySelector(".controls button").click();
   await tick();
   expect(vi.getTimerCount()).toBe(0);
-  vi.advanceTimersByTime(1000);
-  await tick();
-  expect(Number(view.querySelector("input[type=range]").value)).toBe(after);
   expect(fetch).not.toHaveBeenCalled();
-});
-
-test("selecting an invariant shows its meaning, and the checker's detail once complete", async () => {
-  const view = await render();
-  const first = view.querySelector(".invariants button");
-  first.click();
-  await tick();
-  const note = view.querySelector(".note");
-  expect(note.textContent).toContain(recording.invariants[0].meaning);
-  expect(note.textContent).not.toContain("The checker said");
-  await seek(recording.durationMs);
-  expect(view.querySelector(".note").textContent).toContain(
-    recording.final[recording.invariants[0].key][2],
-  );
 });

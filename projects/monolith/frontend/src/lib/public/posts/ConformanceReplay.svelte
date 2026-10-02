@@ -1,87 +1,139 @@
 <script>
   import recording from "./conformance-replay.json";
 
-  // A time scrub over the suite window. The trace is bursty (a prime, a
-  // dispatch and a heartbeat land within 40 ms, then five seconds of
-  // heartbeats), so the picture is the timeline itself: every record is a
-  // tick, VM lifetimes are bars that grow under the playhead, and the nine
-  // invariants fill in as the checker's coverage arrives. Play runs at 8x,
-  // so the 57 s window takes about 7 s.
-  const events = recording.events;
-  const duration = recording.durationMs;
-  const RATE = 8;
-  let position = $state(0);
-  let playing = $state(false);
-  let selected = $state(null);
-  let current = $derived(events.findLast((e) => e.at <= position) ?? null);
-  let verdicts = $derived((current ?? events[0]).verdicts);
-  let complete = $derived(position >= duration);
-  const pct = (ms) => (100 * ms) / duration + "%";
-  const seconds = (ms) => (ms / 1000).toFixed(1) + " s";
+  // The figure is the system: the runner drives the control plane, the
+  // control plane primes and destroys VMs on the brick over gRPC, and every
+  // move it makes is a record in the trace store. Play animates the same
+  // drawing with a recorded run.
+  //
+  // Step time, not wall time: state changes sit one unit apart and every
+  // other record is placed proportionally between the state changes it
+  // fell between. The order is the real run's; the spacing is not, so the
+  // 36 s of heartbeats while a session slept is one step like any other.
+  const STEP = 1000;
+  const isState = (e) =>
+    e.action !== "recv_status" && e.action !== "checkpoint";
+  const anchors = [
+    0,
+    ...recording.events.filter(isState).map((e) => e.at),
+    recording.durationMs,
+  ];
+  function stepTime(ms) {
+    let i = 0;
+    while (i < anchors.length - 2 && ms > anchors[i + 1]) i++;
+    const a = anchors[i];
+    const b = anchors[i + 1];
+    return (i + (b > a ? (ms - a) / (b - a) : 0)) * STEP;
+  }
+  const events = recording.events.map((e) => ({ ...e, at: stepTime(e.at) }));
+  const duration = (anchors.length - 1) * STEP;
+  // Short names for the drawing; the recording keeps the runner's own titles.
+  const names = {
+    S1: "clones over vsock",
+    S2: "sleep and relight",
+    S3: "second session",
+    S4: "invariants",
+    S5: "guest round trip",
+  };
+  let wall = 0;
+  const scenarios = recording.scenarios.map((s, i) => {
+    const from = wall;
+    wall += s.ms;
+    return {
+      id: s.id,
+      n: i + 1,
+      title: names[s.id] ?? s.title,
+      from: stepTime(from),
+      to: stepTime(Math.min(wall, recording.durationMs)),
+    };
+  });
+  const RATE = 1.4;
+  const FLIGHT = 650;
 
-  // VM lifetimes as segments. A prime opens a bar; a dispatch, a success
-  // and the destroy pair each close the open segment and start the next
-  // state. The runner also destroys VMs primed before the window opened,
-  // so a destroy of an unknown VM opens its bar at that point.
-  // What each VM was doing, from the runner's scenario log for this run.
-  const roles = recording.roles ?? {};
-  const lanes = (() => {
+  // VM slots on the brick as state segments.
+  const nextState = {
+    prime: "primed",
+    dispatch_miss: "running",
+    succeed: "finished",
+    begin_destroy: "destroying",
+    confirm_destroy: "destroyed",
+  };
+  const vms = (() => {
     const byId = new Map();
-    const open = (vm, at, state) => {
-      vm.segments.push({ from: at, to: null, state });
-    };
-    const close = (vm, at) => {
-      const last = vm.segments.at(-1);
-      if (last && last.to == null) last.to = at;
-    };
-    const next = {
-      prime: "primed",
-      dispatch_miss: "running",
-      succeed: "finished",
-      begin_destroy: "destroying",
-      confirm_destroy: "destroyed",
-    };
     for (const e of events) {
       const id = e.vars.vm;
-      if (!id || !next[e.action]) continue;
+      if (!id || !nextState[e.action]) continue;
       let vm = byId.get(id);
       if (!vm) {
-        vm = {
-          id,
-          lane: e.vars.lane ?? "session",
-          role: roles[id] ?? "",
-          segments: [],
-        };
+        vm = { id, role: recording.roles?.[id] ?? id, segments: [] };
         byId.set(id, vm);
       }
-      if (e.action === "prime") vm.lane = e.vars.lane;
-      close(vm, e.at);
-      open(vm, e.at, next[e.action]);
+      const last = vm.segments.at(-1);
+      if (last && last.to == null) last.to = e.at;
+      vm.segments.push({ from: e.at, to: null, state: nextState[e.action] });
     }
     return [...byId.values()];
   })();
 
-  function describe(e) {
-    const v = e.vars;
-    switch (e.action) {
-      case "prime":
-        return `a ${v.lane} VM is booted and waiting`;
-      case "dispatch_miss":
-        return "a task is dispatched to it";
-      case "succeed":
-        return "the task finishes";
-      case "begin_destroy":
-        return "the control plane records that it intends to destroy a VM";
-      case "confirm_destroy":
-        return "the node confirms the VM is gone";
-      case "checkpoint":
-        return `checkpoint: the node reports ${v.live_vms} live VM${v.live_vms === 1 ? "" : "s"}, the control plane knows ${v.known}`;
-      case "recv_status":
-        return "node heartbeat";
-      default:
-        return e.action;
+  // Edge endpoints in drawing units, and which edge a record travels.
+  const P = {
+    runner: [232, 100],
+    cpIn: [290, 100],
+    cpOut: [490, 92],
+    brickIn: [548, 92],
+    brickOut: [548, 112],
+    cpBack: [490, 112],
+    writer: [390, 196],
+    store: [390, 276],
+  };
+  const toBrick = new Set(["prime", "dispatch_miss", "begin_destroy"]);
+  const fromBrick = new Set(["succeed", "confirm_destroy"]);
+  const route = (e) =>
+    fromBrick.has(e.action)
+      ? [P.brickOut, P.cpBack]
+      : toBrick.has(e.action)
+        ? [P.cpOut, P.brickIn]
+        : null;
+  const shown = recording.invariants
+    .map((inv, k) => ({ ...inv, k }))
+    .filter((inv) => events.at(-1).verdicts[inv.key][1] > 0);
+  const traceRows = [
+    ["state changes", isState],
+    ["checkpoints", (e) => e.action === "checkpoint"],
+  ];
+  const pct = (ms) => (100 * ms) / duration + "%";
+
+  let position = $state(0);
+  let playing = $state(false);
+  let complete = $derived(position >= duration);
+  let seen = $derived(events.filter((e) => e.at <= position).length);
+  let current = $derived(seen ? events[seen - 1] : null);
+  let verdicts = $derived((current ?? events[0]).verdicts);
+  let dots = $derived.by(() => {
+    if (complete) return [];
+    const out = [];
+    for (const e of events) {
+      if (e.action === "recv_status") continue;
+      const f = (position - e.at) / FLIGHT;
+      if (f < 0 || f > 1) continue;
+      const r = route(e);
+      if (r) out.push({ path: r, f, small: false });
+      out.push({
+        path: [P.writer, P.store],
+        f,
+        small: e.action === "checkpoint",
+      });
     }
-  }
+    for (const s of scenarios) {
+      const f = (position - s.from) / FLIGHT;
+      if (f >= 0 && f <= 1)
+        out.push({ path: [P.runner, P.cpIn], f, small: false });
+    }
+    return out;
+  });
+  const slotState = (vm) =>
+    vm.segments.findLast((g) => g.from <= position)?.state ?? null;
+
   function toggle() {
     if (complete) position = 0;
     playing = !playing;
@@ -99,382 +151,514 @@
   });
 </script>
 
-<section
-  class="replay"
-  aria-label="Recorded conformance run on the dev cluster"
->
-  <div class="controls">
-    <button
-      type="button"
-      onclick={toggle}
-      onpointerdown={(event) => (event.currentTarget.dataset.pointer = "true")}
-      onkeydown={(event) => delete event.currentTarget.dataset.pointer}
-      onblur={(event) => delete event.currentTarget.dataset.pointer}
-      >{playing ? "Pause" : complete ? "Replay" : "Play"}</button
-    >
-    <span class="time">{seconds(position)}</span>
-    <span class="phase" role="status"
-      ><i class:complete></i>{complete ? "Run complete" : "Tracing"}</span
-    >
-  </div>
-
-  <div class="instrument">
-    <div class="strip" aria-label="Trace timeline">
-      <div class="ticks" aria-hidden="true">
-        {#each events as e (e.seq)}
-          <i class={e.action} style:left={pct(e.at)}></i>
-        {/each}
-        <b class="playhead" style:left={pct(position)}></b>
-      </div>
-      <label class="timeline"
-        ><span class="sr-only">Recorded time</span><input
+<section class="replay" aria-label="Trace conformance test, one recorded run">
+  <div class="cap">
+    <span><b>Fig. 1</b> Trace conformance test</span>
+    <span class="controls">
+      <button
+        type="button"
+        onclick={toggle}
+        onpointerdown={(event) =>
+          (event.currentTarget.dataset.pointer = "true")}
+        onkeydown={(event) => delete event.currentTarget.dataset.pointer}
+        onblur={(event) => delete event.currentTarget.dataset.pointer}
+        >{playing ? "Pause" : complete ? "Replay" : "Play"}</button
+      >
+      <label class="scrub"
+        ><span class="sr-only">Position in the run</span><input
           type="range"
           min="0"
           max={duration}
           step="10"
           bind:value={position}
           oninput={() => (playing = false)}
-          aria-valuetext={seconds(position)}
+          aria-valuetext={`record ${seen} of ${events.length}`}
         /></label
       >
-      <p class="now">
-        {#if current}
-          <span class="at">{seconds(current.at)}</span>
-          <span class="what">{describe(current)}</span>
-        {:else}
-          <span class="what">Nothing recorded yet.</span>
-        {/if}
-      </p>
-    </div>
+    </span>
+  </div>
 
-    <div class="lanes" aria-label="VMs on the brick over the window">
-      {#each lanes as vm (vm.id)}
-        <div class="lane">
-          <span class="label"><span class="id">{vm.role || vm.id}</span></span>
-          <span class="bar">
-            {#each vm.segments as seg}
-              {#if seg.from <= position}
+  <div class="topo">
+    <svg
+      viewBox="0 0 780 370"
+      role="img"
+      aria-label="The runner drives the control plane; the control plane primes and destroys VMs on the brick over gRPC; every move is a trace record"
+    >
+      <defs
+        ><marker
+          id="cr-ah"
+          viewBox="0 0 8 8"
+          refX="7"
+          refY="4"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto"
+          ><path d="M0,0 L8,4 L0,8 z" fill="currentColor" /></marker
+        ></defs
+      >
+      <g class="pod">
+        <rect x="16" y="20" width="216" height="330" />
+        <line x1="16" y1="46" x2="232" y2="46" />
+        <text class="t" x="26" y="38">RUNNER</text>
+        <text class="sub" x="86" y="38">scenario tests</text>
+        {#each scenarios as s (s.id)}
+          {@const y = 72 + (s.n - 1) * 58}
+          <g
+            class="sc"
+            class:on={position >= s.from && position < s.to}
+            class:done={position >= s.to}
+          >
+            <rect x="17" y={y - 18} width="214" height="56" />
+            {#if s.n < scenarios.length}<line
+                x1="16"
+                y1={y + 38}
+                x2="232"
+                y2={y + 38}
+              />{/if}
+            <text class="id" x="26" y={y + 11}>{s.n}</text>
+            <text x="48" y={y + 11}>{s.title}</text>
+            <text class="ok" x="222" y={y + 11} text-anchor="end"
+              >{position >= s.to ? "✓" : ""}</text
+            >
+          </g>
+        {/each}
+      </g>
+      <g class="pod">
+        <rect x="290" y="20" width="200" height="176" />
+        <line x1="290" y1="46" x2="490" y2="46" />
+        <text class="t" x="300" y="38">CONTROL PLANE</text>
+        <text class="row" x="300" y="74">dispatcher</text>
+        <text class="row" x="300" y="96">session manager</text>
+        <text class="row" x="300" y="118">node registry</text>
+        <line x1="290" y1="136" x2="490" y2="136" />
+        <text class="row" x="300" y="160">SpecTrace writer</text>
+        <text class="sub" x="300" y="180">one record per action</text>
+      </g>
+      <g class="pod">
+        <rect x="290" y="276" width="200" height="74" />
+        <line x1="290" y1="302" x2="490" y2="302" />
+        <text class="t" x="300" y="294">TRACE store</text>
+        <text class="big" x="300" y="336"
+          >{seen} record{seen === 1 ? "" : "s"}</text
+        >
+      </g>
+      <g class="pod">
+        <rect x="548" y="20" width="216" height="330" />
+        <line x1="548" y1="46" x2="764" y2="46" />
+        <text class="t" x="558" y="38">BRICK</text>
+        <text class="sub" x="606" y="38">noded + Firecracker</text>
+        {#each vms as vm, i (vm.id)}
+          {@const x = 560 + (i % 2) * 98}
+          {@const y = 64 + Math.floor(i / 2) * 92}
+          {@const state = slotState(vm)}
+          <g class="slot" data-state={state}>
+            <rect {x} {y} width="94" height="72" rx="3" />
+            <text x={x + 10} y={y + 26}>{vm.role}</text>
+            <text class="st" x={x + 10} y={y + 50}>{state ?? ""}</text>
+          </g>
+        {/each}
+      </g>
+      <g class="edge">
+        <line x1="232" y1="100" x2="290" y2="100" marker-end="url(#cr-ah)" />
+        <text class="lbl" x="261" y="90" text-anchor="middle">HTTP</text>
+        <line x1="490" y1="92" x2="548" y2="92" marker-end="url(#cr-ah)" />
+        <line x1="548" y1="112" x2="490" y2="112" marker-end="url(#cr-ah)" />
+        <text class="lbl" x="519" y="82" text-anchor="middle">gRPC</text>
+        <line x1="390" y1="196" x2="390" y2="276" marker-end="url(#cr-ah)" />
+        <text class="lbl" x="400" y="240">records</text>
+      </g>
+      <g class="dots" aria-hidden="true">
+        {#each dots as d}
+          <circle
+            class:small={d.small}
+            cx={d.path[0][0] + (d.path[1][0] - d.path[0][0]) * d.f}
+            cy={d.path[0][1] + (d.path[1][1] - d.path[0][1]) * d.f}
+            r={d.small ? 2.5 : 4}
+          />
+        {/each}
+      </g>
+    </svg>
+  </div>
+
+  <div class="part trace">
+    <header>
+      <span>Trace</span><small>records exported by the control plane</small>
+    </header>
+    <div class="rows" style:--f={position / duration}>
+      {#each traceRows as [label, pick] (label)}
+        <div class="trow">
+          <span class="label">{label}</span>
+          <span class="track">
+            {#each events as e, i (e.seq)}
+              {#if pick(e)}
                 <i
-                  data-state={seg.state}
-                  style:left={pct(seg.from)}
-                  style:width={pct(
-                    Math.min(position, seg.to ?? duration) - seg.from,
-                  )}
+                  class:seen={i < seen}
+                  class:cur={i === seen - 1}
+                  style:left={pct(e.at)}
                 ></i>
               {/if}
             {/each}
           </span>
         </div>
       {/each}
-      <ul class="legend" aria-label="Bar states">
-        {#each ["primed", "running", "finished", "destroying", "destroyed"] as state}
-          <li data-state={state}><i></i>{state}</li>
-        {/each}
-      </ul>
+      <b class="playhead"></b>
     </div>
+  </div>
 
-    <div class="invariants" aria-label="Invariant verdicts">
-      {#each recording.invariants as inv (inv.key)}
+  <div class="part check">
+    <header>
+      <span>Compliance</span><small
+        >do record sequences conform to our TLA+ spec</small
+      >
+      <span class="verdict" role="status"
+        >{#if complete}verdict: <strong data-verdict={recording.suiteVerdict}
+            >{recording.suiteVerdict}</strong
+          >{/if}</span
+      >
+    </header>
+    <div class="cells">
+      {#each shown as inv (inv.key)}
         {@const [verdict, coverage] = verdicts[inv.key]}
-        <button
-          type="button"
-          data-verdict={verdict}
-          aria-pressed={selected === inv.key}
-          onclick={() => (selected = selected === inv.key ? null : inv.key)}
-        >
-          <span class="name">{inv.name}</span>
-          <span class="verdict">{verdict}</span>
-          <span class="coverage">{coverage}</span>
-        </button>
+        {@const state = verdict === "vacuous" ? "waiting" : verdict}
+        <div class="cell" data-verdict={state}>
+          <span class="mark" aria-hidden="true"></span>
+          <span class="n">{inv.name}</span>
+          <span class="v"
+            >{state === "pass" ? `${coverage} checked` : state}</span
+          >
+        </div>
       {/each}
     </div>
-    {#if selected}
-      {@const inv = recording.invariants.find((i) => i.key === selected)}
-      <p class="caption note">
-        {inv.meaning}
-        {#if complete}
-          The checker said: "{recording.final[selected][2]}".
-        {/if}
-      </p>
-    {/if}
-
-    {#if complete}
-      <p class="suite" role="status">
-        All five scenarios passed in {(
-          recording.scenarios.reduce((t, s) => t + s.ms, 0) / 1000
-        ).toFixed(0)} s. Verdict
-        <strong data-verdict={recording.suiteVerdict}
-          >{recording.suiteVerdict}</strong
-        >: Kargo promotes the chart.
-      </p>
-    {/if}
   </div>
 </section>
 
 <style>
   .replay {
-    --primed: var(--ink-3);
-    --running: var(--accent-ink);
-    --finished: var(--ok);
-    --destroying: var(--replay-warm);
-    --destroyed: var(--ink-3);
+    --tint-accent: color-mix(in srgb, var(--accent-ink) 14%, var(--sheet));
+    --tint-ok: color-mix(in srgb, var(--ok) 18%, var(--sheet));
+    --tint-warm: color-mix(in srgb, var(--replay-warm) 22%, var(--sheet));
+    --label: 8.5rem;
+    margin: 1.2rem -1rem 0;
     min-width: 0;
     color: var(--ink);
     font-family: var(--font-ui);
+    border-top: 1px solid var(--stroke);
   }
-  .caption {
-    color: var(--ink-2);
-    font-size: 0.75rem;
-    line-height: 1.5;
+  .cap {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--line);
+    font: 0.7rem var(--font-code);
+  }
+  .cap b {
+    font-weight: 600;
   }
   .controls {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin: 0.9rem 0;
-    font-size: 0.75rem;
-  }
-  .controls > button {
-    width: 5.5rem;
-    flex-shrink: 0;
-  }
-  .controls :global(button[data-pointer]:focus) {
-    outline: none;
+    gap: 0.6rem;
   }
   button {
     font: inherit;
     color: var(--ink);
     background: var(--sheet);
     border: 1px solid var(--stroke);
-    padding: 0.5rem 0.65rem;
-    border-radius: 3px;
+    padding: 0.3rem 0.6rem;
+    border-radius: 2px;
     cursor: pointer;
+  }
+  .controls :global(button[data-pointer]:focus) {
+    outline: none;
   }
   button:focus-visible,
   input:focus-visible {
     outline: 2px solid var(--accent-ink);
-    outline-offset: 3px;
+    outline-offset: 2px;
   }
-  .time {
-    min-width: 3.5rem;
-    font-family: var(--font-code);
-  }
-  .phase {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-left: auto;
-    font: 0.7rem var(--font-code);
-    color: var(--ink-2);
-  }
-  .phase i {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: 50%;
-    background: var(--accent);
-  }
-  .phase i.complete {
-    background: var(--ok);
-  }
-  .instrument {
-    margin-inline: -1rem;
-    border-block: 1px solid var(--stroke);
-  }
-  .strip {
-    padding: 0.8rem 1rem 0.6rem;
-    border-bottom: 1px solid var(--line);
-  }
-  .ticks {
-    position: relative;
-    height: 1.6rem;
-    background: var(--band);
-    overflow: hidden;
-  }
-  .ticks i {
-    position: absolute;
-    bottom: 0;
-    width: 1px;
-    height: 100%;
-    background: var(--ink);
-  }
-  .ticks i.recv_status {
-    height: 35%;
-    background: var(--ink-3);
-  }
-  .ticks i.checkpoint {
-    height: 60%;
-    background: var(--ink-2);
-  }
-  .playhead {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    margin-left: -1px;
-    background: var(--accent-ink);
-  }
-  .timeline {
-    display: block;
-    margin-top: 0.15rem;
-  }
-  .timeline input {
-    display: block;
-    width: 100%;
+  .scrub input {
+    width: 9rem;
     margin: 0;
     accent-color: var(--accent-ink);
   }
-  .now {
+  .topo {
+    padding: 1rem 1rem 0.8rem;
+    border-bottom: 1px solid var(--stroke);
+    overflow-x: auto;
+  }
+  .topo svg {
+    display: block;
+    width: 100%;
+    min-width: 40rem;
+    height: auto;
+    color: var(--ink);
+  }
+  .pod rect {
+    fill: var(--sheet);
+    stroke: currentColor;
+    stroke-width: 1.25;
+  }
+  .pod line {
+    stroke: currentColor;
+    stroke-width: 1.25;
+  }
+  .pod text {
+    font-family: var(--font-code);
+    font-size: 12px;
+    fill: currentColor;
+  }
+  .pod .sub,
+  .pod .row {
+    fill: var(--ink-2);
+  }
+  .pod .t {
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .pod .big {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .edge line {
+    stroke: currentColor;
+    stroke-width: 1;
+  }
+  .edge .lbl {
+    font-family: var(--font-code);
+    font-size: 11px;
+    fill: var(--ink-2);
+  }
+  .sc text {
+    fill: var(--ink-3);
+  }
+  .sc .id {
+    font-weight: 600;
+  }
+  .sc.on text,
+  .sc.done text {
+    fill: var(--ink);
+  }
+  .sc rect {
+    fill: transparent;
+    stroke: none;
+    transition: fill 200ms ease;
+  }
+  .sc.on rect {
+    fill: var(--tint-accent);
+  }
+  .sc line {
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+  .sc .ok {
+    fill: var(--ok);
+  }
+  .slot rect {
+    fill: var(--band);
+    stroke: var(--ink-3);
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+    transition:
+      fill 240ms ease,
+      stroke 240ms ease;
+  }
+  .slot text {
+    font-size: 11.5px;
+    fill: var(--ink-3);
+  }
+  .slot .st {
+    font-size: 10.5px;
+  }
+  .slot[data-state] text {
+    fill: var(--ink);
+  }
+  .slot[data-state] .st {
+    fill: var(--ink-2);
+  }
+  .slot[data-state="primed"] rect {
+    stroke: var(--ink-2);
+    stroke-dasharray: none;
+  }
+  .slot[data-state="running"] rect {
+    fill: var(--tint-accent);
+    stroke: var(--accent-ink);
+    stroke-width: 2;
+    stroke-dasharray: none;
+  }
+  .slot[data-state="finished"] rect {
+    fill: var(--tint-ok);
+    stroke: var(--ok);
+    stroke-dasharray: none;
+  }
+  .slot[data-state="destroying"] rect {
+    fill: var(--tint-warm);
+    stroke: var(--replay-warm);
+    stroke-width: 2;
+    stroke-dasharray: none;
+  }
+  .slot[data-state="destroyed"] rect {
+    fill: transparent;
+  }
+  .slot[data-state="destroyed"] text {
+    fill: var(--ink-3);
+  }
+  .dots circle {
+    fill: var(--accent-ink);
+  }
+  .dots circle.small {
+    fill: var(--ink-3);
+  }
+  .part header {
     display: flex;
-    flex-wrap: wrap;
+    align-items: baseline;
     gap: 0.5rem;
-    min-height: 1.4rem;
-    margin: 0.5rem 0 0;
-    font: 0.7rem var(--font-code);
-    overflow-wrap: anywhere;
+    padding: 0.45rem 1rem;
+    border-bottom: 1px solid var(--stroke);
+    font: 0.72rem var(--font-code);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
-  .now .at {
-    min-width: 3rem;
+  .part header small {
+    text-transform: none;
+    letter-spacing: 0;
     color: var(--ink-2);
   }
-  .now .what {
-    color: var(--ink-2);
+  .part header .verdict {
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: 0;
   }
-  .lanes {
-    padding: 0.6rem 1rem 0.5rem;
-    border-bottom: 1px solid var(--line);
+  .verdict strong[data-verdict="pass"] {
+    color: var(--ok);
   }
-  .lane {
+  .verdict strong[data-verdict="fail"] {
+    color: var(--replay-hot);
+  }
+  .trace {
+    border-bottom: 1px solid var(--stroke);
+  }
+  .rows {
+    position: relative;
     display: grid;
-    grid-template-columns: 7.5rem minmax(0, 1fr);
+    gap: 0.3rem;
+    padding: 0.6rem 1rem 0.5rem;
+    font: 0.72rem var(--font-code);
+  }
+  .trow {
+    display: grid;
+    grid-template-columns: var(--label) minmax(0, 1fr);
     align-items: center;
     gap: 0.5rem;
-    height: 1.35rem;
+    height: 1.25rem;
   }
-  .lane .label {
-    font: 0.65rem var(--font-code);
+  .trow .label {
+    color: var(--ink-2);
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
-  .lane .bar {
+  .trow .track {
     position: relative;
     display: block;
-    height: 0.8rem;
+    height: 0.85rem;
     background: var(--band);
   }
-  .lane .bar i {
+  .trow .track i {
     position: absolute;
     top: 0;
     bottom: 0;
-    background: var(--ink-3);
+    width: 4px;
+    margin-left: -2px;
+    background: var(--accent-ink);
+    opacity: 0.18;
   }
-  .legend li[data-state="primed"] i,
-  .lane .bar i[data-state="primed"] {
-    background: var(--primed);
+  .trow:nth-child(2) .track i {
+    background: var(--ink-2);
   }
-  .legend li[data-state="running"] i,
-  .lane .bar i[data-state="running"] {
-    background: var(--running);
+  .trow .track i.seen {
+    opacity: 1;
   }
-  .legend li[data-state="finished"] i,
-  .lane .bar i[data-state="finished"] {
-    background: var(--finished);
-    opacity: 0.6;
+  .trow .track i.seen.cur {
+    background: var(--accent-ink);
   }
-  .legend li[data-state="destroying"] i,
-  .lane .bar i[data-state="destroying"] {
-    background: var(--destroying);
+  /* The playhead spans both tracks: the rows' inline padding and the label
+     column are subtracted so it lines up with the marks. */
+  .rows .playhead {
+    position: absolute;
+    top: 0.6rem;
+    bottom: 0.5rem;
+    left: calc(
+      1rem + var(--label) + 0.5rem + (100% - 2rem - var(--label) - 0.5rem) *
+        var(--f, 0)
+    );
+    width: 2px;
+    margin-left: -1px;
+    background: var(--accent-ink);
+    pointer-events: none;
   }
-  .legend li[data-state="destroyed"] i,
-  .lane .bar i[data-state="destroyed"] {
-    background: var(--destroyed);
-    opacity: 0.4;
-  }
-  .legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem 1rem;
-    margin: 0.5rem 0 0;
-    padding: 0;
-    list-style: none;
-    font: 0.65rem var(--font-code);
-    color: var(--ink-2);
-  }
-  .legend li {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-  .legend i {
-    width: 0.8rem;
-    height: 0.5rem;
-  }
-  .invariants {
+  .cells {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1px;
     background: var(--line);
-    border-bottom: 1px solid var(--line);
   }
-  .invariants button {
+  .cell {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "name coverage" "verdict coverage";
-    gap: 0.15rem 0.5rem;
+    grid-template-columns: 1.3rem minmax(0, 1fr);
+    grid-template-areas: "m n" "m v";
+    gap: 0 0.55rem;
     align-items: center;
-    min-width: 0;
-    padding: 0.6rem 0.8rem;
-    border: 0;
-    border-radius: 0;
-    text-align: left;
+    min-height: 3.4rem;
+    padding: 0.6rem 1rem;
     background: var(--sheet);
     font-size: 0.75rem;
-    transition: background-color 240ms ease;
   }
-  .invariants .name {
-    grid-area: name;
+  .cells .mark {
+    grid-area: m;
+    position: relative;
+    box-sizing: border-box;
+    width: 1.1rem;
+    height: 1.1rem;
+    border: 1.5px dashed var(--ink-3);
+    border-radius: 50%;
+    transition:
+      background-color 240ms ease,
+      border-color 240ms ease;
+  }
+  .cells .n {
+    grid-area: n;
+    line-height: 1.2;
     overflow-wrap: anywhere;
   }
-  .invariants .verdict {
-    grid-area: verdict;
+  .cells .v {
+    grid-area: v;
     font: 0.65rem var(--font-code);
+    color: var(--ink-3);
+  }
+  .cell[data-verdict="waiting"] .n {
     color: var(--ink-2);
   }
-  .invariants .coverage {
-    grid-area: coverage;
-    font: 1.3rem var(--font-code);
-    color: var(--ink-3);
+  .cell[data-verdict="pass"] .mark {
+    border: 0;
+    background: var(--ok);
   }
-  .invariants button[data-verdict="pass"] {
-    background: color-mix(in srgb, var(--ok) 18%, var(--sheet));
+  .cell[data-verdict="pass"] .mark::after {
+    content: "";
+    position: absolute;
+    left: 0.32rem;
+    top: 0.17rem;
+    width: 0.3rem;
+    height: 0.55rem;
+    border: solid var(--sheet);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
   }
-  .invariants button[data-verdict="pass"] .coverage {
-    color: var(--ink);
-  }
-  .invariants button[data-verdict="fail"] {
-    background: color-mix(in srgb, var(--replay-hot) 18%, var(--sheet));
-  }
-  .invariants button[data-verdict="vacuous"] .verdict {
-    color: var(--ink-3);
-  }
-  .invariants button[aria-pressed="true"] {
-    box-shadow: inset 0 0 0 2px var(--accent-ink);
-  }
-  .note {
-    margin: 0;
-    padding: 0.7rem 1rem;
-  }
-  .suite {
-    margin: 0;
-    padding: 0.7rem 1rem;
-    border-top: 1px solid var(--line);
-    font-size: 0.8rem;
-  }
-  .suite strong[data-verdict="pass"] {
+  .cell[data-verdict="pass"] .v {
     color: var(--ok);
   }
-  .suite strong[data-verdict="fail"] {
-    color: var(--replay-hot);
+  .cell[data-verdict="fail"] .mark {
+    border: 0;
+    background: var(--replay-hot);
   }
   .sr-only {
     position: absolute;
@@ -484,11 +668,24 @@
     clip-path: inset(50%);
   }
   @media (max-width: 640px) {
-    .lane {
-      grid-template-columns: 6rem minmax(0, 1fr);
+    .replay {
+      --label: 6rem;
     }
-    .invariants {
+    .cap {
+      flex-wrap: wrap;
+    }
+    .scrub input {
+      width: 7rem;
+    }
+    .cells {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sc rect,
+    .slot rect,
+    .cells .mark {
+      transition: none;
     }
   }
 </style>
