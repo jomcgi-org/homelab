@@ -1,14 +1,21 @@
-# hard: multi-site (#6694). Real fix b116a00dd ("fix(observability): preserve trace
-# correlation on errors") changed two sites; the prompt describes only the first.
+# hard: multi-site (#6694). Three sites, each needing its own discovery; the
+# prompt reports only the first, from the API pod, and states the rest as a
+# system property ("every private monolith process that exports spans").
 #   formatter: core/log.py appends IDs after the traceback (the reported symptom).
+#     Real fix b116a00dd.
 #   jobs-runtime: app/jobs_main.py runs _setup_otel but configures plain logging,
-#     so the batch-job process never emits IDs at all. Finding it means asking
-#     "where else does the monolith produce spans?"
-# Grading is per site (pytest graded mode): formatter = the fix commit's own
-# core/log_test.py; jobs-runtime = a behavioural test that runs two real jobs
-# commands and checks the root handler's output under a recording span.
+#     so the general-purpose jobs process never emits IDs. Also fixed in b116a00dd.
+#   grid-job: stars/grid_gen/job.py is a separate span-exporting process with its
+#     own basicConfig. Overlaid from eb77fb86b, which added its tracing two hours
+#     after b116a00dd and reintroduced the same gap (still open on main).
+# Discovery is a search for span exporters (_setup_otel / TracerProvider), not
+# for callers of configure_logging: the grid job never calls it.
+# Grading is per site (pytest graded mode): formatter = b116a00dd's own
+# core/log_test.py; the two runtime sites = behavioural tests that run each
+# process's real entrypoint and check the primary line of an exception record
+# formatted under a recording span by the handlers it installed.
 id: trace-correlation-multisite-01
-version: v1
+version: v2
 class: code-fix
 tier: hard
 mode: agentic
@@ -16,26 +23,32 @@ source_commit: b116a00ddebd2edc4c8047cd82d0e2340b7431ef
 snapshot:
   preset: monolith-backend
   commit: 1349d1fe44c08bea8937f1e3ab6e7ebdf038da5b
+  overlays:
+  - commit: eb77fb86b3ef058fc47e707da98dc7f1a9b67b08
+    paths:
+    - projects/monolith/stars/grid_gen/__init__.py
+    - projects/monolith/stars/grid_gen/job.py
 agent:
-  max_turns: 30
+  max_turns: 40
 prompt: |
   This is a snapshot of a real FastAPI monolith backend. Its private processes
-  emit OpenTelemetry spans to Honeycomb, and their log lines carry the active
-  span's IDs (`trace_id=<32 hex> span_id=<16 hex>`) so an operator can pivot
-  between a trace and the pod logs.
+  export OpenTelemetry spans to Honeycomb, and a log line emitted under a
+  recording span is meant to carry that span's IDs
+  (`trace_id=<32 hex> span_id=<16 hex>`) so an operator can pivot from a trace
+  to the matching pod log line and back.
 
-  That pivot is broken for failures. When an exception is logged under a
-  recording span (for example `logger.exception("embedding call failed")`), the
-  IDs are not on the log line itself: they end up glued to the end of the
-  traceback's last line. An operator who greps pod logs for a failing span's
-  trace_id lands on a stack frame, or misses the event entirely when the
-  traceback is collapsed.
+  An operator investigating a failed request on the API pod found that pivot
+  broken for errors. When an exception is logged under a recording span (for
+  example `logger.exception("embedding call failed")`), the IDs are not on the
+  log line itself: they are glued to the end of the traceback's last line, so
+  grepping the pod logs for the trace_id lands on a stack frame, or misses the
+  event entirely when the traceback is collapsed.
 
-  Fix trace correlation so that error logs are correlatable everywhere the
-  monolith produces spans: the IDs must sit on the primary log line (the one
-  with the level, logger name and message), and any traceback or stack text
-  must follow unmodified. Output with no recording span must stay byte for byte
-  what it is today. Keep the public (non-private) profile free of trace IDs.
+  Requirement: in every private monolith process that exports spans, a record
+  logged under a recording span carries the span's IDs on its primary line (the
+  one with the level, logger name and message), with any traceback following
+  unmodified. Output with no recording span must stay what it is today, and the
+  public profile must stay free of trace IDs.
 verifier:
   kind: pytest
   args:
@@ -302,11 +315,11 @@ verifier:
                 assert f"trace_id={second_context.trace_id:032x}" not in first_line
                 assert f"trace_id={first_context.trace_id:032x}" not in second_line
       app/jobs_trace_context_test.py: |
-        """Hidden grader: the jobs runtime logs must carry trace correlation.
+        """Hidden grader: the general-purpose jobs process logs must carry trace IDs.
 
-        Behavioural, not implementation-bound: run a real jobs command (its HTTP call
-        mocked), then format a record under a recording span with whatever formatter the
-        command left on the root handlers.
+        Behavioural, not implementation-bound: run real jobs commands (HTTP and DB
+        mocked), then format an exception record under a recording span with whatever
+        handlers the command left on the root logger.
         """
 
         import logging
@@ -318,13 +331,39 @@ verifier:
         import app.jobs_main as jobs_main
 
 
-        def _root_line_under_span(message: str) -> tuple[str, str]:
+        def _process_handlers():
+            # pytest's own capture handlers are not the process's log output.
+            return [
+                h
+                for h in logging.getLogger().handlers
+                if not type(h).__module__.startswith("_pytest")
+            ]
+
+
+        def _exception_record(message):
+            try:
+                raise ValueError("boom")
+            except ValueError as error:
+                return logging.LogRecord(
+                    "job",
+                    logging.ERROR,
+                    __file__,
+                    1,
+                    message,
+                    (),
+                    (ValueError, error, error.__traceback__),
+                )
+
+
+        def _assert_primary_lines_carry_trace_id(message):
             tracer = TracerProvider().get_tracer(__name__)
-            record = logging.LogRecord("job", logging.WARNING, __file__, 1, message, (), None)
             with tracer.start_as_current_span("job") as span:
                 trace_id = f"{span.get_span_context().trace_id:032x}"
-                (handler,) = logging.getLogger().handlers
-                return handler.format(record), trace_id
+                lines = [h.format(_exception_record(message)) for h in _process_handlers()]
+            assert lines, "the command left no log handler on the root logger"
+            for line in lines:
+                first = line.splitlines()[0]
+                assert message in first and f"trace_id={trace_id}" in first, line
 
 
         def _run(monkeypatch, *argv):
@@ -338,19 +377,19 @@ verifier:
 
 
         def test_internal_trigger_job_logs_carry_trace_id(monkeypatch):
+            saved = logging.getLogger().handlers[:]
             try:
                 _run(monkeypatch, "agent-drain-trigger")
-                line, trace_id = _root_line_under_span("drain failed")
-                assert line.startswith("WARNING job: drain failed")
-                assert f"trace_id={trace_id}" in line
+                _assert_primary_lines_carry_trace_id("drain failed")
             finally:
-                logging.basicConfig(force=True)
+                logging.getLogger().handlers = saved
 
 
         def test_backfill_job_logs_carry_trace_id(monkeypatch):
             report = jobs_main.TurnPricingBackfillReport(
                 priced=0, skipped_unknown_model=0, skipped_zero=0
             )
+            saved = logging.getLogger().handlers[:]
             try:
                 with (
                     mock.patch("core.db.get_engine"),
@@ -359,13 +398,85 @@ verifier:
                     ),
                 ):
                     _run(monkeypatch, "price-turns-backfill")
-                line, trace_id = _root_line_under_span("backfill failed")
-                assert f"trace_id={trace_id}" in line
+                _assert_primary_lines_carry_trace_id("backfill failed")
             finally:
-                logging.basicConfig(force=True)
+                logging.getLogger().handlers = saved
+      stars/grid_gen/job_trace_context_test.py: |
+        """Hidden grader: the stars grid job process logs must carry trace IDs.
+
+        Runs the real job entrypoint (inputs, compute and ingest replaced) and formats
+        an exception record, inside the job's own span, with the handlers the
+        entrypoint installed. Starts from an empty root logger, as a fresh process
+        would, so a non-forcing logging setup still takes effect.
+        """
+
+        import logging
+        from unittest import mock
+
+        from opentelemetry.sdk.trace import TracerProvider
+
+        from stars.grid_gen import job
+
+
+        def _process_handlers():
+            return [
+                h
+                for h in logging.getLogger().handlers
+                if not type(h).__module__.startswith("_pytest")
+            ]
+
+
+        def _exception_record(message):
+            try:
+                raise RuntimeError("geospatial computation produced no sites")
+            except RuntimeError as error:
+                return logging.LogRecord(
+                    "monolith.stars.grid_gen",
+                    logging.ERROR,
+                    __file__,
+                    1,
+                    message,
+                    (),
+                    (RuntimeError, error, error.__traceback__),
+                )
+
+
+        def test_grid_job_logs_carry_trace_id():
+            root = logging.getLogger()
+            saved = root.handlers[:]
+            root.handlers = []
+            provider = TracerProvider()
+            tracer = provider.get_tracer(__name__)
+            seen = {}
+
+            def fake_run(config, *, tracer=None, **kwargs):
+                with tracer.start_as_current_span("stars.grid.compute") as span:
+                    seen["trace_id"] = f"{span.get_span_context().trace_id:032x}"
+                    seen["lines"] = [
+                        h.format(_exception_record("compute stage failed"))
+                        for h in _process_handlers()
+                    ]
+                return 1
+
+            try:
+                with (
+                    mock.patch.object(job, "_setup_otel", return_value=(provider, tracer)),
+                    mock.patch.object(job.GridJobConfig, "from_env", return_value=object()),
+                    mock.patch.object(job, "run", fake_run),
+                ):
+                    job.main()
+            finally:
+                root.handlers = saved
+            assert seen.get("lines"), "the job left no log handler on the root logger"
+            for line in seen["lines"]:
+                first = line.splitlines()[0]
+                assert "compute stage failed" in first, line
+                assert f"trace_id={seen['trace_id']}" in first, line
     sites:
       formatter:
       - core/log_test.py
       jobs-runtime:
       - app/jobs_trace_context_test.py
+      grid-job:
+      - stars/grid_gen/job_trace_context_test.py
     pass_threshold: 1.0

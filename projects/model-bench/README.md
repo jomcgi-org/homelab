@@ -74,8 +74,13 @@ The `pytest` verifier has a graded multi-site mode too. When a real fix had to t
 several places, `sites:` maps each site to the gold test targets that prove it fixed,
 and each site runs as its own pytest invocation. The score is the fraction of sites
 fixed, so a model that repairs only the reported symptom lands at a partial score.
-`trace-correlation-multisite-01` is the first such task: its prompt describes one
-site and the real fix needed two.
+`trace-correlation-multisite-01` is the first such task: its prompt reports one
+site from the API pod and states the rest as a property of every span-exporting
+process, and there are three sites to find.
+
+A snapshot can also carry `overlays:` (each a `commit` plus `paths`), extracted on top
+of the base commit with the same strip. Use it when a task combines real code from
+more than one point in history, e.g. a later process that reintroduced the same bug.
 
 ## Setup
 
