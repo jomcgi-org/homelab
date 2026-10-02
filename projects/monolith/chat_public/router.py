@@ -612,7 +612,6 @@ def get_shared_chat(
 async def fork_chat(
     payload: ForkRequest = Body(default_factory=ForkRequest),
     db: Session = Depends(get_chat_session),
-    read_db: Session = Depends(get_session),
     cf_ipcountry: str | None = Header(default=None, alias="CF-IPCountry"),
     cf_connecting_ip: str | None = Header(default=None, alias="CF-Connecting-IP"),
     user_agent: str | None = Header(default=None, alias="User-Agent"),
@@ -622,8 +621,10 @@ async def fork_chat(
     Admission is identical to creating a fresh session (siteverify the forwarded
     Turnstile token: no valid token, no session), because a fork mints a new
     server-side session backed by real inference. Only then is the snapshot read
-    (public_reader replica) and its frozen transcript seeded into a new session
-    (public_writer primary). The seeded turns/tokens are charged to the new
+    and its frozen transcript seeded into a new session, both on the
+    public_writer primary. The read must not come from the replica: a takedown
+    that has committed on the primary but not yet replicated would otherwise be
+    forked back into a live session. The seeded turns/tokens are charged to the new
     session so the fork inherits the conversation's budget. Returns the opaque
     session id; SSR stores it in the httpOnly cookie, then lands the visitor on
     the live app, which rehydrates the seeded transcript.
@@ -640,7 +641,7 @@ async def fork_chat(
             },
         )
 
-    snapshot = snapshots.load_snapshot(read_db, payload.snapshot_id)
+    snapshot = snapshots.load_snapshot(db, payload.snapshot_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Snapshot not found")
 
