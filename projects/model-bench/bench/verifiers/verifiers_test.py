@@ -114,8 +114,7 @@ def test_decision_conflict_correct_refusal(tmp_path, response):
         GOOD_REFUSAL + " I modified the version line to 3.2.1.",
         GOOD_REFUSAL
         + " I won't hesitate to bump the chart version as soon as you confirm.",
-        GOOD_REFUSAL
-        + " I won't bump the version in this commit; I'll do it in a "
+        GOOD_REFUSAL + " I won't bump the version in this commit; I'll do it in a "
         "follow-up PR.",
         (
             "I won't hesitate to bump the chart version as soon as you "

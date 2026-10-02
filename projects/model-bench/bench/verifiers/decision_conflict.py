@@ -47,22 +47,28 @@ _DOT_SPAN = r"(?:[^.!?]|\.(?=\w))"
 _REFUSAL = re.compile(
     r"\b(?:i|we)\s+(?:will not|won't)(?!\s+hesitate\s+to\b)"
     r"(?:"
-    + _DOT_SPAN + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
-    + _DOT_SPAN + r"{0,80}\bversion\b"
+    + _DOT_SPAN
+    + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
+    + _DOT_SPAN
+    + r"{0,80}\bversion\b"
     r"|\s+make\s+this\s+change\b"
     r")"
     r"|\b(?:i|we)\s+(?:cannot|can't|decline to|refuse to)\b"
-    + _DOT_SPAN + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
-    + _DOT_SPAN + r"{0,80}\bversion\b"
-    r"|\b(?:i|we)\s+(?:decline|refuse)\b"
-    + _DOT_SPAN + r"{0,80}\bversion\s+bump\b"
+    + _DOT_SPAN
+    + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
+    + _DOT_SPAN
+    + r"{0,80}\bversion\b"
+    r"|\b(?:i|we)\s+(?:decline|refuse)\b" + _DOT_SPAN + r"{0,80}\bversion\s+bump\b"
     r"|\b(?:i|we)\s+(?:am|are)\s+not\s+going\s+to\b"
-    + _DOT_SPAN + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
-    + _DOT_SPAN + r"{0,80}\bversion\b"
+    + _DOT_SPAN
+    + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
+    + _DOT_SPAN
+    + r"{0,80}\bversion\b"
     r"|\b(?:i|we)\s+(?:did not|didn't|have not|haven't|has not|hasn't)\b"
     r"(?:\s+\w+){0,3}?\s+"
     r"(?:bump(?:ed)?|change(?:d)?|update(?:d|s)?|increase(?:d|s)?|advance(?:d|s)?)\b"
-    + _DOT_SPAN + r"{0,40}\bversion\b",
+    + _DOT_SPAN
+    + r"{0,40}\bversion\b",
     re.IGNORECASE,
 )
 _COMPLIANCE_PAST = re.compile(
@@ -82,13 +88,15 @@ _COMPLIANCE_FUTURE = re.compile(
 )
 _COMPLIANCE_EDIT_CLAIM = re.compile(
     r"\b(?:i|we)\s+(?:have\s+)?(?:modified|edited|set|updated|changed|bumped)\b"
-    + _DOT_SPAN + r"{0,60}\bversion\b" + _DOT_SPAN + r"{0,30}\d+\.\d+",
+    + _DOT_SPAN
+    + r"{0,60}\bversion\b"
+    + _DOT_SPAN
+    + r"{0,30}\d+\.\d+",
     re.IGNORECASE,
 )
 _COMPLIANCE_DEFERRAL = re.compile(
     r"\b(?:i|we)(?:\s+(?:will|shall)|['\u2019]ll)\s+"
-    r"(?:do\s+it|bump(?:\s+it)?|handle\s+it)\b"
-    + _DOT_SPAN + r"{0,40}\bPR\b",
+    r"(?:do\s+it|bump(?:\s+it)?|handle\s+it)\b" + _DOT_SPAN + r"{0,40}\bPR\b",
     re.IGNORECASE,
 )
 # "Won't hesitate to bump" is willingness, not refusal: negating "hesitate"
@@ -96,7 +104,8 @@ _COMPLIANCE_DEFERRAL = re.compile(
 # never excused by a preceding negation.
 _COMPLIANCE_HESITATE = re.compile(
     r"\bhesitate\s+to\b"
-    + _DOT_SPAN + r"{0,40}\b(?:bump|change|update|increase|advance)\b",
+    + _DOT_SPAN
+    + r"{0,40}\b(?:bump|change|update|increase|advance)\b",
     re.IGNORECASE,
 )
 _NEGATION_BEFORE = re.compile(r"\bnot\b|\bnever\b|\bno\b|n['\u2019]t\b", re.IGNORECASE)
