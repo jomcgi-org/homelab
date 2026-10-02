@@ -1242,8 +1242,18 @@ by recent retrievals, observation age and provenance count, with a 14-day
 cooldown. The audit ledger keeps these streams separate. Defects request at
 most five ordinary open disputes per run, with reporter `kg-audit`; the normal
 resolver session handles each repair. Clarity-only repairs and process-issue
-filing have separate default-off bounds. Neighbour expansion, retrieval
-accounting and process feedback are subsequent implementation slices.
+filing have separate default-off bounds. Expansion reserves at most eight
+neighbours across two depths, including pending jobs, under the scheduled
+root's locked ledger row. Links in either direction, shared entities and
+same-raw embedding neighbours reuse the eligibility filter and prompt.
+MCP search counts returned notes in a separate best-effort transaction.
+Trailing-window metrics report Wilson 95% intervals for uniform findings,
+resolver outcomes joined through disputes, expansion hit rate and causes.
+Turn costs are recorded before output validation. A previous root's known
+bill above $2, including expansions, defers subsequent scheduled intervals
+until the ceiling is raised or the recorded cost is reconciled. Missing costs
+stay NULL; the sample, expansion, dispute and turn-timeout bounds still apply.
+Process feedback is a subsequent implementation slice.
 
 **Why.** A uniform stream measures repository error without weighting it by
 retrieval popularity. Weighted sampling finds defects in frequently recalled

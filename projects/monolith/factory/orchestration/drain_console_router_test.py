@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import pytest
 from agent.config import DrainerSettings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -100,12 +101,13 @@ def test_console_composes_jobs_and_lane(monkeypatch):
     assert body["jobs"][0]["state"] == "error"
 
 
-def test_console_accepts_audit_payload_without_raw_id_or_prompt(monkeypatch):
+@pytest.mark.parametrize("stream", ["scheduled", "expansion"])
+def test_console_accepts_audit_payload_without_raw_id_or_prompt(monkeypatch, stream):
     job = _job(
-        name="kg-audit",
+        name="kg-audit" if stream == "scheduled" else "kg-audit-x:1:1",
         routine_kind="kg-drain",
         interval_secs=86400,
-        payload={"mode": "audit", "stream": "scheduled"},
+        payload={"mode": "audit", "stream": stream},
         last_status="ok",
         last_summary="KG audit: sampled 6 uniform, 6 weighted; filed 1 dispute",
     )
@@ -113,7 +115,7 @@ def test_console_accepts_audit_payload_without_raw_id_or_prompt(monkeypatch):
     response = _client().get("/api/agents/drain/console")
     assert response.status_code == 200
     entry = response.json()["jobs"][0]
-    assert entry["name"] == "kg-audit"
+    assert entry["name"] == job["name"]
     assert entry["kind"] == "kg-drain"
     assert "filed 1 dispute" in entry["summary_head"]
 
