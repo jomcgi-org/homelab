@@ -176,4 +176,6 @@ class ResultCell(BaseModel):
 
     @property
     def is_harness_error(self) -> bool:
-        return any("[harness error]" in attempt.feedback for attempt in self.attempts)
+        # Both the candidate tool loop ("[harness error]") and the Claude Code anchor
+        # path ("[anchor harness error]") mark failures that never reached grading.
+        return any("harness error]" in attempt.feedback for attempt in self.attempts)
