@@ -28,8 +28,9 @@ def render_leaderboard(
                  CEILING section (the capability + cost/wall ceiling to match and beat),
                  since they run via Claude Code (own harness) and are a reference, not a
                  ranked competitor.
-        scored_tasks: optional per-task rows shared with the JSON report, with keys
-                 id, tier, passed, n, mean_score, restricted to scored agentic tasks.
+        scored_tasks: optional per-task rows, computed separately from the JSON
+                 report (harness-error cells excluded), with keys id, tier, passed,
+                 n, mean_score, restricted to scored agentic tasks.
 
     Returns:
         Markdown string with sections: Agentic, Excluded harness errors, Frontier

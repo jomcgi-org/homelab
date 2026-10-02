@@ -182,3 +182,40 @@ def test_resultcell_without_harness_error_is_not_classified_as_one():
         prompt_template_hash="x",
     )
     assert cell.is_harness_error is False
+
+
+def _attempt(score):
+    return Attempt(
+        passed=False,
+        feedback="",
+        score=score,
+        latency_ms=1,
+        prompt_tokens=1,
+        completion_tokens=1,
+    )
+
+
+@pytest.mark.parametrize("score", [None, 0, 0.0, 0.37, 1, 1.0])
+def test_attempt_accepts_none_or_finite_unit_scores(score):
+    assert _attempt(score).score == score
+
+
+@pytest.mark.parametrize(
+    "score", [-0.2, 1.5, float("nan"), float("inf"), float("-inf")]
+)
+def test_attempt_rejects_out_of_range_or_non_finite_scores(score):
+    with pytest.raises(ValueError):
+        _attempt(score)
+
+
+def test_attempt_without_score_key_loads_legacy_cache():
+    attempt = Attempt.model_validate(
+        {
+            "passed": True,
+            "feedback": "",
+            "latency_ms": 1,
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+        }
+    )
+    assert attempt.score is None
