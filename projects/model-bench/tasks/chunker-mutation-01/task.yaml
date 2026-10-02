@@ -1,0 +1,159 @@
+# hard: mutation score (#6692). Successor to whatsapp-timeparse-mutation-01, which
+# Sonnet and Opus both saturated. The chunker is stateful (paragraph accumulation,
+# code fences, oversized-paragraph word splits, same-header merges) and its token
+# estimate is int(words * 1.3), so many mutants only show on inputs built from the
+# arithmetic. Four of the real mutants live in the same-header merge path, which only
+# runs when consecutive sections share a heading line. The equivalent mutants include
+# dead code (the inner flush in the word-split loop can never fire) and were checked
+# by differential fuzzing (6k random docs, no divergence).
+#
+# Calibration 2026-10-02 (Claude Code subagents, 2 runs each): Haiku 0.33/0.48,
+# Sonnet 0.71/0.90, Opus 1.0/0.95. The repo's own hand-written chunker tests score
+# 0.10-0.43.
+id: chunker-mutation-01
+version: v1
+class: code-fix
+tier: hard
+mode: agentic
+snapshot:
+  commit: 6a3d40b914e46be9c07c2393f831665261efa006
+  paths:
+  - projects/monolith/knowledge/chunker.py
+  strip_components: 2
+agent:
+  max_turns: 30
+  exec: true
+prompt: |
+  This is a module from a real FastAPI monolith backend: knowledge/chunker.py, the
+  markdown-aware chunker that splits notes into heading-aware chunks before they are
+  embedded. It has no tests. Write a pytest test suite for it at
+  knowledge/chunker_test.py (import it as `from knowledge.chunker import ...`; the repo
+  root is on PYTHONPATH).
+
+  The suite is graded by running it against hidden variants of the module that each
+  contain one realistic bug. It scores by how many of the buggy variants it catches,
+  scaled down by the share of its tests that fail against the module as it is now, so
+  every test should pass on the current module. Test observable behaviour only: do not
+  assert on the module's source text, and do not modify knowledge/chunker.py. Only
+  knowledge/chunker_test.py is graded.
+target_files:
+- knowledge/chunker_test.py
+verifier:
+  kind: mutation
+  args:
+    module: knowledge/chunker.py
+    module_sha256: 8c68a5ffeca7d0e68c7f9e6c96075a6f470215af3c5b679515c0d496ad3d7a06
+    tests:
+    - knowledge/chunker_test.py
+    pass_threshold: 0.85
+    mutants:
+    - id: index-one-based
+      find: for idx, (header, text) in enumerate(merged)
+      replace: for idx, (header, text) in enumerate(merged, start=1)
+    - id: header-text-only
+      find: last_header = match.group(0).strip()
+      replace: last_header = match.group(2).strip()
+    - id: h4-is-heading
+      find: pattern = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
+      replace: pattern = re.compile(r"^(#{1,4})\s+(.+)$", re.MULTILINE)
+    - id: paragraph-join
+      find: |-
+        if current:
+                chunks.append("\n\n".join(current))
+            return chunks
+      replace: |-
+        if current:
+                chunks.append("\n".join(current))
+            return chunks
+    - id: split-boundary
+      find: 'if current_tokens + para_tokens > max_tokens and current:'
+      replace: 'if current_tokens + para_tokens >= max_tokens and current:'
+    - id: hashtag-is-heading
+      find: pattern = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
+      replace: pattern = re.compile(r"^(#{1,3})\s*(.+)$", re.MULTILINE)
+    - id: token-rounding
+      find: return int(len(text.split()) * 1.3)
+      replace: return round(len(text.split()) * 1.3)
+    - id: token-factor
+      find: return int(len(text.split()) * 1.3)
+      replace: return int(len(text.split()) * 1.25)
+    - id: header-only-doc
+      find: |-
+        if not sections:
+                sections = [("", content.strip())]
+      replace: |-
+        if not sections:
+                sections = []
+    - id: empty-leading-chunk
+      find: 'if current_tokens + para_tokens > max_tokens and current:'
+      replace: 'if current_tokens + para_tokens > max_tokens:'
+    - id: word-split-boundary
+      find: 'if buf_tokens + word_tokens > max_tokens and buf:'
+      replace: 'if buf_tokens + word_tokens >= max_tokens and buf:'
+    - id: oversize-tail-isolated
+      find: |-
+        if buf:
+                        current.append(" ".join(buf))
+                        current_tokens += buf_tokens
+      replace: |-
+        if buf:
+                        chunks.append(" ".join(buf))
+    - id: unterminated-fence-dropped
+      find: |-
+        if code_block_lines:
+                parts.append("\n".join(code_block_lines))
+      replace: |-
+        if code_block_lines:
+                pass
+    - id: indented-fence
+      find: 'if line.strip().startswith("```"):'
+      replace: 'if line.startswith("```"):'
+    - id: fence-not-own-paragraph
+      find: |-
+        if part.strip().startswith("```"):
+                    if current_para:
+      replace: |-
+        if False:
+                    if current_para:
+    - id: merge-across-headers
+      find: |2
+                    and merged[-1][0] == header
+      replace: ''
+    - id: merge-min-boundary
+      find: and _estimate_tokens(chunk_text) < min_tokens
+      replace: and _estimate_tokens(chunk_text) <= min_tokens
+    - id: merge-max-boundary
+      find: and _estimate_tokens(merged[-1][1] + "\n\n" + chunk_text) <= max_tokens
+      replace: and _estimate_tokens(merged[-1][1] + "\n\n" + chunk_text) < max_tokens
+    - id: merge-join
+      find: merged[-1] = (prev_header, prev_text + "\n\n" + chunk_text)
+      replace: merged[-1] = (prev_header, prev_text + "\n" + chunk_text)
+    - id: default-max-tokens
+      find: 'max_tokens: int = 512,'
+      replace: 'max_tokens: int = 500,'
+    - id: default-min-tokens
+      find: 'min_tokens: int = 50,'
+      replace: 'min_tokens: int = 40,'
+    equivalent:
+    - id: eq-section-gap
+      find: 'if last_pos < match.start():'
+      replace: 'if last_pos <= match.start():'
+    - id: eq-dead-inner-flush
+      find: |
+        if current:
+                                chunks.append("\n\n".join(current))
+                                current = []
+                                current_tokens = 0
+      replace: |
+        if False:
+                                pass
+    - id: eq-empty-check
+      find: |-
+        if not content.strip():
+                return []
+      replace: |-
+        if not content:
+                return []
+    - id: eq-comment
+      find: '# Split oversized paragraph by words'
+      replace: '# Oversized paragraph: fall back to splitting on words'

@@ -7,6 +7,10 @@ the suite is re-run. A mutant is killed when the suite fails on it. The score is
 fraction killed, so a happy-path suite and a boundary-hunting one land at different
 points rather than both "passing".
 
+A suite with some wrong tests is not thrown away: tests that fail on the unmodified
+module are dropped, the rest are run against the mutants, and the kill fraction is
+scaled by the share of tests that were correct. A suite where nothing passes scores 0.
+
 Equivalent mutants are behaviour-preserving rewrites (reordered conditions, an edited
 comment). A behavioural test cannot tell them apart from the original, so killing one
 means the suite asserts on source text (a hash, inspect.getsource) instead of
@@ -41,11 +45,15 @@ def _apply(source: str, mutant: dict) -> str:
 
 
 def _run_suite(
-    workdir: Path, python: Path, tests: list[str], timeout_s: int
+    workdir: Path,
+    python: Path,
+    tests: list[str],
+    timeout_s: int,
+    flags: tuple[str, ...] = ("-x",),
 ) -> SandboxResult:
     # -x: one failure is enough to call a mutant killed. A timeout (rc 124) counts as
     # a kill too: an infinite loop is a caught bug.
-    cmd = [str(python), "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *tests]
+    cmd = [str(python), "-m", "pytest", "-q", *flags, "-p", "no:cacheprovider", *tests]
     return run_sandboxed(
         cmd,
         cwd=workdir,
@@ -104,14 +112,21 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
             False, f"{module} was modified; only the tests may change", 0.0
         )
 
-    baseline = _run_suite(workdir, python, tests, timeout_s)
-    if baseline.rc != 0:
+    # -rA lists every outcome by node id. Passing ids carry no trailing message, so
+    # they parse cleanly and become the exact selection run against each mutant.
+    baseline = _run_suite(workdir, python, tests, timeout_s, flags=("-rA",))
+    lines = (baseline.stdout or "").splitlines()
+    passing = [ln.split(" ", 1)[1] for ln in lines if ln.startswith("PASSED ")]
+    n_bad = sum(ln.startswith(("FAILED ", "ERROR ")) for ln in lines)
+    if not passing or baseline.timed_out:
         detail = (baseline.stdout or "") + (baseline.stderr or "")
         return VerifyResult(
             False,
-            "tests fail on the unmodified module:\n" + detail[-2000:],
+            "no test passes on the unmodified module:\n" + detail[-2000:],
             0.0,
         )
+    correct = len(passing) / (len(passing) + n_bad)
+    selection = tests if n_bad == 0 else passing
 
     # Resolve every patch up front so a stale task fails before any suite runs.
     jobs = [(m["id"], False, _apply(source, m)) for m in mutants] + [
@@ -120,7 +135,9 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         kills = list(
             pool.map(
-                lambda job: _killed(workdir, module, job[2], python, tests, timeout_s),
+                lambda job: _killed(
+                    workdir, module, job[2], python, selection, timeout_s
+                ),
                 jobs,
             )
         )
@@ -136,9 +153,14 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
 
     real = [(mid, k) for (mid, equiv, _), k in zip(jobs, kills) if not equiv]
     killed = sum(k for _, k in real)
-    score = killed / len(real)
+    score = killed / len(real) * correct
     survived = [mid for mid, k in real if not k]
     feedback = f"killed {killed}/{len(real)} mutants"
+    if n_bad:
+        feedback += (
+            f"; {n_bad} of {len(passing) + n_bad} tests failed on the unmodified "
+            f"module and were dropped (score x{correct:.2f})"
+        )
     if survived:
         feedback += f"; survived: {', '.join(survived)}"
     return VerifyResult(score >= threshold, feedback, score)
