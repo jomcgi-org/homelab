@@ -2553,15 +2553,17 @@ def test_list_sessions_defaults_to_claude_runtime(monkeypatch):
 
 def test_interrupt_session_sends_exact_identity_with_session_capability(monkeypatch):
     requests = []
+    expected = {
+        "outcome": "requested",
+        "dispatch_id": "dispatch-exact",
+        "relay": {"terminal_reason": "user_interrupt", "killed": False, "timeout": False},
+    }
 
     async def handler(request):
         requests.append(request)
         return httpx.Response(
             202,
-            json={
-                "outcome": "requested",
-                "dispatch_id": "dispatch-exact",
-            },
+            json=expected,
             request=request,
         )
 
@@ -2572,8 +2574,12 @@ def test_interrupt_session_sends_exact_identity_with_session_capability(monkeypa
         )
     )
 
-    assert result["outcome"] == "requested"
-    assert len(requests) == 1
+    assert result == expected
+    replay = asyncio.run(transport.EmberVmShimTransport().interrupt_session(
+        "s-1", "session-token", "dispatch-exact"
+    ))
+    assert replay == result
+    assert len(requests) == 2
     assert requests[0].method == "POST"
     assert str(requests[0].url) == "https://ember.test/v1/sessions/s-1/interrupt"
     assert requests[0].headers["authorization"] == "Bearer session-token"

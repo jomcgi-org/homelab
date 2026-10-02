@@ -33,6 +33,22 @@ describe("Stop control state", () => {
     ).toBe("confirmed");
   });
 
+  test("reconciles a settled 202 replay through the persisted turn", () => {
+    const replay = {
+      ...identity,
+      outcome: "requested",
+      relay: { terminal_reason: "user_interrupt" },
+    };
+    const detail = {
+      turns: [{ seq: 4, terminal_reason: "user_interrupt" }],
+      stop_control: { active: null },
+    };
+    const confirmed = reconcileStop(replay, detail);
+    expect(confirmed.outcome).toBe("confirmed");
+    expect(stopInFlight(confirmed)).toBe(false);
+    expect(reconcileStop(replay, detail)).toEqual(confirmed);
+  });
+
   test("reports completion winning the race without replacing its result", () => {
     const result = reconcileStop(
       { ...identity, outcome: "requested" },

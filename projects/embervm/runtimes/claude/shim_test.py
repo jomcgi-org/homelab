@@ -7395,13 +7395,95 @@ def test_process_manager_interrupt_is_exact_duplicate_safe_and_successor_fenced(
     assert first_adapter.calls == 1
     assert outcomes[0]["terminal_reason"] == "user_interrupt"
 
-    # An exact duplicate replays the first acknowledgment and never reaches the
-    # successor adapter. Any different stale identity is rejected.
-    assert manager.interrupt("dispatch-1") == outcomes[0]
+    # A successor fences even an exact duplicate of the previous dispatch.
+    with pytest.raises(shim.SessionConflictError, match="no longer active"):
+        manager.interrupt("dispatch-1")
     assert first_adapter.calls == 1
     assert successor_adapter.calls == 0
     with pytest.raises(shim.SessionConflictError, match="no longer active"):
         manager.interrupt("dispatch-old")
+
+
+@pytest.mark.parametrize(
+    ("family", "model"),
+    [("claude", None), ("codex", "luna"), ("pi", "pi-spark"), ("muse", "spark")],
+)
+def test_process_manager_interrupt_replays_after_completion_on_every_runtime(
+    family, model, tmp_path, monkeypatch
+):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._dispatch_lock = threading.Lock()
+    manager._active_dispatch_id = None
+    manager._last_interrupt_id = None
+    manager._last_interrupt_result = None
+    entered = threading.Event()
+    finish = threading.Event()
+
+    class Adapter:
+        workspace = None
+
+        def __init__(self):
+            self.calls = 0
+
+        def turn(self, *args, **kwargs):
+            entered.set()
+            assert finish.wait(2)
+            return {"result": "finished"}
+
+        def interrupt(self, **kwargs):
+            self.calls += 1
+            finish.set()
+            return {"terminal_reason": "user_interrupt", "killed": False, "timeout": False}
+
+    for name in ("claude", "codex", "pi", "muse"):
+        setattr(manager, name, Adapter())
+    for name in ("ensure_workspace_volume", "apply_egress_ca_trust", "_sync_session_volume"):
+        monkeypatch.setattr(shim, name, lambda: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda *_: None)
+    monkeypatch.setattr(shim, "_capture_turn_diff", lambda *_: None)
+    monkeypatch.setattr(shim, "_capture_turn_artifact", lambda *_: None)
+
+    def stop(dispatch_id):
+        handler = object.__new__(shim.RequestHandler)
+        raw = json.dumps({"dispatch_id": dispatch_id}).encode()
+        handler.path = shim.INTERRUPT_PATH
+        handler.headers = {"Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        responses = []
+        handler._send = lambda status, body: responses.append((status, body))
+        handler.manager = manager
+        handler.do_POST()
+        return responses[0]
+
+    results = []
+    turn = threading.Thread(target=lambda: results.append(manager.turn(
+        "first", model=model, dispatch_id="dispatch-1", turn_seq=1
+    )))
+    turn.start()
+    assert entered.wait(1)
+    first = stop("dispatch-1")
+    turn.join(2)
+    assert not turn.is_alive()
+    assert results[0]["terminal_reason"] == "user_interrupt"
+    assert manager._active_dispatch_id is None
+    assert stop("dispatch-1") == first
+    assert first == (200, {"terminal_reason": "user_interrupt", "killed": False, "timeout": False})
+    assert getattr(manager, family).calls == 1
+
+    entered.clear()
+    finish.clear()
+    successor = threading.Thread(target=lambda: manager.turn(
+        "second", model=model, dispatch_id="dispatch-2", turn_seq=2
+    ))
+    successor.start()
+    assert entered.wait(1)
+    assert stop("dispatch-1")[0] == 409
+    finish.set()
+    successor.join(2)
+    assert not successor.is_alive()
+    assert stop("dispatch-1")[0] == 409
+    assert getattr(manager, family).calls == 1
 
 
 def test_interrupt_http_endpoint_requires_and_forwards_exact_dispatch():

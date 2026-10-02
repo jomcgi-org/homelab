@@ -6572,6 +6572,8 @@ class ProcessManager:
                     raise SessionConflictError("another dispatch is already active")
                 self._active_dispatch_id = dispatch_id
                 self._active_dispatch_adapter = adapter
+                self._last_interrupt_id = None
+                self._last_interrupt_result = None
                 self._active_provider_done = threading.Event()
                 self._active_interrupt_record = (threading.Event(), {})
                 self._interrupt_reason = None
@@ -6697,6 +6699,7 @@ class ProcessManager:
             if (
                 self._last_interrupt_id == dispatch_id
                 and self._last_interrupt_result is not None
+                and self._active_dispatch_id in (None, dispatch_id)
             ):
                 result = dict(self._last_interrupt_result)
                 if (

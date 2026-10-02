@@ -143,9 +143,12 @@ defmodule Embervm.Session do
   @doc """
   Interrupt one exact active dispatch without ending the session.
 
-  Exact-dispatch primitive: duplicate-safe and stale-safe. Reached only through
-  `Embervm.SessionManager.interrupt/3`, which has no production caller yet
-  (#6256 follow-up); the drain path uses `interrupt_for_drain/1` directly.
+  Exact-dispatch primitive: duplicate-safe and stale-safe. Reached through
+  `Embervm.SessionManager.interrupt/3`; the drain path uses
+  `interrupt_for_drain/1` directly.
+
+  A successful interrupt replays its original outcome after the turn ends,
+  until the next dispatch starts. Failed relays are not retained after the turn.
   """
   @spec interrupt(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
   def interrupt(server, dispatch_id) when is_binary(dispatch_id) do
@@ -256,6 +259,7 @@ defmodule Embervm.Session do
       worker: nil,
       dispatch_id: nil,
       interrupt: nil,
+      last_interrupt: nil,
       interrupt_workers: %{},
       interrupted_turn: nil,
       turn_seq: 0,
@@ -340,6 +344,15 @@ defmodule Embervm.Session do
       not is_binary(dispatch_id) or dispatch_id == "" ->
         {:reply, {:error, :invalid_dispatch}, state}
 
+      match?({^dispatch_id, {:ok, _}}, state.last_interrupt) ->
+        {^dispatch_id, outcome} = state.last_interrupt
+        {:reply, outcome, state}
+
+      state.last_interrupt == {dispatch_id, nil} and
+          match?({^dispatch_id, waiters} when is_list(waiters), state.interrupt) ->
+        {^dispatch_id, waiters} = state.interrupt
+        {:noreply, %{state | interrupt: {dispatch_id, [from | waiters]}}}
+
       state.dispatch_id != dispatch_id or is_nil(state.worker) ->
         {:reply, {:error, :stale_dispatch}, state}
 
@@ -358,7 +371,7 @@ defmodule Embervm.Session do
 
       true ->
         state = spawn_interrupt_worker(state, dispatch_id)
-        {:noreply, %{state | interrupt: {dispatch_id, [from]}}}
+        {:noreply, %{state | interrupt: {dispatch_id, [from]}, last_interrupt: {dispatch_id, nil}}}
     end
   end
 
@@ -510,10 +523,14 @@ defmodule Embervm.Session do
       when is_list(waiters) do
     state = clear_interrupt_worker(state, :interrupt_done, dispatch_id)
     Enum.each(waiters, &GenServer.reply(&1, outcome))
-    # Remember the outcome while the interrupted turn is still in flight so a
-    # repeat interrupt for the same dispatch answers without a second relay.
+    # A successor clears the replay candidate even if this relay replies after
+    # both invokes finish. Keep the original waiters, but never revive its cache.
+    last_interrupt =
+      if state.last_interrupt == {dispatch_id, nil} and match?({:ok, _}, outcome),
+        do: {dispatch_id, outcome},
+        else: nil
     interrupt = if state.dispatch_id == dispatch_id, do: {dispatch_id, {:done, outcome}}, else: nil
-    {:noreply, %{state | interrupt: interrupt}}
+    {:noreply, %{state | interrupt: interrupt, last_interrupt: last_interrupt}}
   end
 
   def handle_info({:interrupt_done, dispatch_id, _outcome}, state),
@@ -762,7 +779,7 @@ defmodule Embervm.Session do
             # Last-resort wall clock (#4434): must fire AFTER the gRPC deadline the
             # server enforces, so the normal DEADLINE_EXCEEDED path gets first shot.
             timer = Process.send_after(self(), {:invoke_timeout, ref}, invoke_watchdog_ms(state))
-            %{state | queue: rest, worker: {pid, ref, from, timer}, dispatch_id: Map.get(req, :dispatch_id), interrupted_turn: nil, turn_seq: session.turn_seq}
+            %{state | queue: rest, worker: {pid, ref, from, timer}, dispatch_id: Map.get(req, :dispatch_id), last_interrupt: nil, interrupted_turn: nil, turn_seq: session.turn_seq}
 
           {:error, reason} ->
             GenServer.reply(from, {:error, {:invoke_start_not_recorded, reason}})
@@ -879,8 +896,7 @@ defmodule Embervm.Session do
     end)
   end
 
-  # A turn ended: forget its dispatch and any completed interrupt outcome. Waiters
-  # on a relay still in flight are kept so `:interrupt_done` can answer them.
+  # A turn ended: retain only the successful replay cache and in-flight waiters.
   defp clear_turn(%{interrupt: {_dispatch_id, waiters}} = state) when is_list(waiters),
     do: %{state | worker: nil, dispatch_id: nil}
 
