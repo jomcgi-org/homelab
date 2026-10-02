@@ -1551,6 +1551,7 @@ def _stop_dispatch(
                 select(AgentResultReceipt).where(
                     AgentResultReceipt.session_id == session_id,
                     AgentResultReceipt.seq == stop_request.turn_seq,
+                    AgentResultReceipt.superseded_at.is_(None),
                 )
             ).all()
             if any(
