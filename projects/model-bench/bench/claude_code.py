@@ -171,7 +171,11 @@ async def complete(**kwargs) -> AnchorCompletion:
     """
     prompt = _flatten_messages(kwargs.get("messages") or [])
     model = kwargs.get("model")
-    res = _invoke(prompt, model=cli_model(model) if model else None)
+    # api_model wins over the registry id, as on the agentic path: an anchor id like
+    # claude-sonnet-5.5-cc is not itself a CLI model name.
+    res = _invoke(
+        prompt, model=cli_model(model, kwargs.get("api_model")) if model else None
+    )
     return AnchorCompletion(
         text=res.text, prompt_tokens=0, completion_tokens=0, latency_ms=res.wall_ms
     )
