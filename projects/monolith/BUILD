@@ -5556,7 +5556,7 @@ py_test(
 py_test(
     name = "knowledge_audit_test",
     srcs = ["knowledge/audit_test.py"],
-    data = ["chart/migrations/20261002150000_knowledge_notes_dead_letter_disputed.sql"],
+    data = ["//projects/monolith/chart:migrations"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",

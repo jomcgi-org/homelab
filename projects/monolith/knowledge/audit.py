@@ -491,7 +491,7 @@ def apply_audit(
             finding.evidence,
             {
                 "reporter_subject": "kg-audit",
-                "reporter_authority": "derived",
+                "reporter_authority": "delegated",
                 "reporter_kind": "workload",
             },
         )
