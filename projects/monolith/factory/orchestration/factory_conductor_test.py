@@ -995,6 +995,21 @@ def test_preview_and_actual_submission_share_projection(
         assert conductor._add(
             task, policy, key, "planner", [], "opus", "test:planner", "test"
         ).ok
+        workflow = f"factory-node:{task['id']}:{key}:1"
+        assert conductor.reserve_node(
+            task["id"],
+            key,
+            workflow,
+            {
+                "repo": task["repo"],
+                "branch": f"factory/{task['id']}",
+                "workflow_id": workflow,
+                "artifact_path": f".factory/{key}.json",
+                "artifact_schema": conductor.DECISION_SCHEMA,
+                "hydration_branch": "main",
+                "retry_context": "[]",
+            },
+        )
     revision = conductor.graph.current_version(task["id"])
     decision = (
         edits[0]
@@ -1182,6 +1197,163 @@ def test_preview_captures_effective_funding_and_is_pure(feedback_db, monkeypatch
     assert projection.refusal is None
     assert asdict(snapshot) == captured
     assert preview_database_rows(feedback_db) == before
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {},
+        {"action": "plan", "reason": "invalid", "edits": None},
+        {"action": "plan", "reason": "invalid", "edits": {}},
+        {"action": "add_node", "reason": "missing fields"},
+        {"action": "request_funding", "reason": "not a proposed graph"},
+    ],
+)
+def test_preview_invalid_input_is_a_read_only_typed_refusal(feedback_db, decision):
+    task, policy = feedback_task()
+    before = preview_database_rows(feedback_db)
+    result = conductor.preview_decision(task["id"], decision, expected_revision=0)
+    assert result["refusal"]["code"] == "validation_failed"
+    assert not result["ok"] and "projection" not in result
+    assert preview_database_rows(feedback_db) == before
+
+
+def test_preview_snapshot_keeps_concurrent_commit_out_of_its_figures(feedback_db):
+    from sqlalchemy import event
+
+    task, policy = feedback_task()
+    # WAL permits an independent writer to commit while the read transaction
+    # holds its original snapshot. This is a commit between revision and nodes,
+    # not a mock of a snapshot or a test of just the isolation setting.
+    with feedback_db.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+    changed = []
+
+    def commit_after_revision(
+        _connection, _cursor, statement, _parameters, _context, _many
+    ):
+        if changed or "max(" not in statement or "swarm_plan_version" not in statement:
+            return
+        changed.append(True)
+        assert conductor._add(
+            task, policy, "implement_racing", "race", [], "luna", "test:race", "test"
+        ).ok
+
+    event.listen(feedback_db, "after_cursor_execute", commit_after_revision)
+    try:
+        preview = conductor.preview_decision(
+            task["id"], preview_add(), expected_revision=0
+        )
+    finally:
+        event.remove(feedback_db, "after_cursor_execute", commit_after_revision)
+    assert changed and preview["ok"] and preview["revision"] == 0
+    assert preview["projection"]["allowance"]["turns"] == 2
+    assert preview["projection"]["allowance"]["usd"] == 2.0
+    assert conductor.graph.current_version(task["id"]) == 1
+    stale = conductor.preview_decision(task["id"], preview_add(), expected_revision=0)
+    assert stale["refusal"]["code"] == "stale_revision" and stale["revision"] == 1
+    decision = {
+        "action": "plan",
+        "reason": "stale evidence",
+        "expected_version": 0,
+        "edits": [preview_add()],
+    }
+    conductor._apply_decision(task, policy, decision, "test:stale-submit", [])
+    assert (
+        feedback_audits(feedback_db, task["id"])[-1]["refusal_code"] == "stale_version"
+    )
+
+
+def test_preview_freezes_routing_for_implicit_models(feedback_db, monkeypatch):
+    from dataclasses import asdict
+    from factory.orchestration import factory_refine
+
+    task, policy = feedback_task()
+    decision = preview_add()
+    decision.pop("model")
+    snapshot = conductor._decision_snapshot(task["id"], decision=decision)
+    before = asdict(snapshot)
+    monkeypatch.setattr(
+        conductor,
+        "select_model",
+        lambda *_args, **_kwargs: pytest.fail("projection must use captured routing"),
+    )
+    monkeypatch.setattr(
+        factory_refine,
+        "task_class_for",
+        lambda *_: pytest.fail("projection must use captured class"),
+    )
+    monkeypatch.setattr(
+        conductor.graph,
+        "node_runs",
+        lambda *_args, **_kwargs: pytest.fail("projection must use captured runs"),
+    )
+    projection = conductor.project_decision(task, snapshot.policy, decision, snapshot)
+    assert projection.refusal is None and projection.edits[0]["model"] == "luna"
+    assert asdict(snapshot) == before
+
+
+def test_preview_does_not_fetch_review_patch_but_submission_keeps_live_sizing(
+    feedback_db, monkeypatch
+):
+    from dataclasses import asdict, replace
+
+    task, policy = feedback_task()
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_done",
+        {
+            "status": "complete",
+            "summary": "done",
+            "pr_number": 99,
+            "head_sha": "a" * 40,
+        },
+    )
+    decision = preview_add("check", role="review", deps=["implement_done"])
+    revision = conductor.graph.current_version(task["id"])
+    before = preview_database_rows(feedback_db)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("preview must not fetch patch")
+    )
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision
+    )
+    assert preview["review_sizing_advisory"] is True
+    assert preview["projection"]["edits"][0]["max_cost_usd"] == 10.0
+    assert preview_database_rows(feedback_db) == before
+    snapshot = conductor._decision_snapshot(task["id"], decision=decision)
+    cost = conductor.review_reservation_usd("opus", 100_000, policy["turn_budget_usd"])
+    live_snapshot = replace(
+        snapshot, review_costs={**snapshot.review_costs, "opus": cost}
+    )
+    expected = conductor.project_decision(task, policy, decision, live_snapshot)
+    actual = []
+    original = conductor.project_decision
+
+    def capture(*args, **kwargs):
+        result = original(*args, **kwargs)
+        actual.append(asdict(result))
+        return result
+
+    monkeypatch.setattr(conductor, "project_decision", capture)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: {"additions": 100_000, "deletions": 0}
+    )
+    conductor._apply_decision(
+        task,
+        policy,
+        decision,
+        "test:live-sizing",
+        conductor.graph.node_runs(task["id"]),
+    )
+    assert actual == [asdict(expected)]
+    assert cost > 10.0
+    # The live graph is judged anew, not admitted by a smaller advisory figure.
+    assert (
+        feedback_audits(feedback_db, task["id"])[-1]["reason"]
+        == expected.refusal["detail"]
+    )
 
 
 def clamp_audits(engine, task_id):

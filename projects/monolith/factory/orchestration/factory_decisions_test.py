@@ -1974,8 +1974,16 @@ def test_two_matching_refusals_escalate_with_the_deficit(db, monkeypatch):
     }
     monkeypatch.setattr(
         conductor,
-        "_envelope_refusal",
-        lambda *_args, **_kwargs: "envelope exceeded: " + json.dumps(deficit),
+        "_submission_projection",
+        lambda *_args, **_kwargs: conductor.DecisionProjection(
+            revision=0,
+            edits=[],
+            prepared=[],
+            refusal={
+                "code": "envelope_exceeded",
+                "detail": "envelope exceeded: " + json.dumps(deficit),
+            },
+        ),
     )
     escalations = []
     monkeypatch.setattr(
@@ -2212,8 +2220,16 @@ def _repeated_deficit(monkeypatch, task, policy, deficit):
     _merit_judge(monkeypatch)
     monkeypatch.setattr(
         conductor,
-        "_envelope_refusal",
-        lambda *_args, **_kwargs: "envelope exceeded: " + json.dumps(deficit),
+        "_submission_projection",
+        lambda *_args, **_kwargs: conductor.DecisionProjection(
+            revision=0,
+            edits=[],
+            prepared=[],
+            refusal={
+                "code": "envelope_exceeded",
+                "detail": "envelope exceeded: " + json.dumps(deficit),
+            },
+        ),
     )
     escalations = []
     monkeypatch.setattr(
