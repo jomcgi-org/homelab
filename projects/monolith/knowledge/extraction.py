@@ -366,7 +366,10 @@ def ensure_repo_diff_job(session: Session) -> bool:
 
 def sweep_unqueued_raws(session: Session, limit: int = 50) -> int:
     """Register extraction jobs missed by ingest or eligible after a failure."""
+    from knowledge.audit import ensure_audit_job
+
     ensure_repo_diff_job(session)
+    ensure_audit_job(session)
     try:
         reconcile_repo_diff_gaps(session)
     except Exception:  # noqa: BLE001 - reconciliation must not break the sweep

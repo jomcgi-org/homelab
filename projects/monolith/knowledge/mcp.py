@@ -17,20 +17,20 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
 import yaml
 from auth.api import current_principal
 from core.db import get_engine
 from shared.embedding import EmbeddingClient
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from knowledge.atoms import index_atom
 from knowledge.board import mirror_distress
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
+from knowledge.disputes import create_dispute
 from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
-from knowledge.models import SCOPE_PATTERN, AgentReportWriteFailure, Dispute
+from knowledge.models import SCOPE_PATTERN, AgentReportWriteFailure
 from knowledge.notes import resolve_note_body
 from knowledge.raw_write import persist_raw_with_status
 from knowledge.redact import redact_text
@@ -72,7 +72,6 @@ _EVIDENCE_ITEMS_CAP = 20
 _EVIDENCE_JOINED_CAP = 10_000
 _REASON_CAP = 4_000
 _VALIDITY_HINT_CAP = 200
-_DISPUTED_NOTE_BODY_CAP = 8 * 1024
 _NOTIFY_SUMMARY_CAP = 300
 _NOTIFY_INTERVENTION_CAP = 400
 _NOTIFY_MESSAGE_CAP = 1_800
@@ -376,7 +375,7 @@ def _report_knowledge_sync(
                 "status": "queued" if created else "duplicate",
                 "scope": scope,
             }
-    except Exception as exc:  # noqa: BLE001 - tool failures are returned in-band
+    except Exception as exc:
         logger.exception("report_knowledge raw write failed")
         try:
             with Session(get_engine()) as session:
@@ -387,7 +386,7 @@ def _report_knowledge_sync(
                     )
                 )
                 session.commit()
-        except Exception:  # noqa: BLE001 - preserve the original tool failure
+        except Exception:
             logger.exception("report_knowledge failure record could not be persisted")
         return {"error": f"report could not be persisted: {type(exc).__name__}"}
 
@@ -438,79 +437,22 @@ def _dispute_fact_sync(
         return {"error": evidence_error}
 
     with Session(get_engine()) as session:
-        note = KnowledgeStore(session).get_note_by_id(fact_id)
-        if note is None:
-            return {"error": "unknown fact"}
-
-        existing_dispute = session.exec(
-            select(Dispute).where(
-                Dispute.note_id == fact_id,
-                Dispute.reporter_subject == reporter["reporter_subject"],
-                Dispute.reason == reason,
-                Dispute.state == "open",
-            )
-        ).first()
-        if existing_dispute is not None:
-            return {
-                "dispute_id": existing_dispute.id,
-                "note_id": fact_id,
-                "status": "already-disputed",
-                "raw_id": existing_dispute.raw_id,
-            }
-
-        quoted_title = "\n".join(
-            f"> {line}" for line in str(note.get("title") or fact_id).splitlines()
-        )
-        note_body = str(note.get("content") or "")[:_DISPUTED_NOTE_BODY_CAP]
-        quoted_body = "\n".join(f"> {line}" for line in note_body.splitlines())
-        content = _markdown_raw(
-            {
-                "title": f"Dispute: {str(note.get('title') or fact_id)[:80]}",
-                "note_id": fact_id,
-                "reporter": reporter["reporter_subject"],
-                "dispute_nonce": str(uuid4()),
-            },
-            (
-                "## Current fact\n\n"
-                f"{quoted_title}\n\n{quoted_body}\n\n"
-                f"## Reason\n\n{reason}\n\n"
-                f"## Evidence\n\n{_evidence_markdown(evidence)}"
-            ),
-        )
         try:
-            raw, _ = persist_raw_with_status(
+            result = create_dispute(
                 session,
-                content=content,
-                source="dispute",
-                original_url=None,
-                extra={"note_id": fact_id, **reporter},
-                commit=False,
+                fact_id,
+                reason,
+                evidence,
+                reporter,
+                raw_writer=persist_raw_with_status,
+                store_factory=KnowledgeStore,
             )
-            raw_id = raw.raw_id
-            dispute = Dispute(
-                note_id=fact_id,
-                raw_id=raw_id,
-                reason=reason,
-                evidence=evidence or [],
-                reporter_subject=reporter["reporter_subject"],
-                reporter_authority=reporter["reporter_authority"],
-                previous_verification_state=note["verification_state"],
-                state="open",
-            )
-            session.add(dispute)
-            session.flush()
-            dispute_id = dispute.id
             session.commit()
         except Exception:
             session.rollback()
             raise
 
-        return {
-            "dispute_id": dispute_id,
-            "note_id": fact_id,
-            "status": "disputed",
-            "raw_id": raw_id,
-        }
+        return result
 
 
 @_knowledge_tool

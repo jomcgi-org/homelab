@@ -1245,6 +1245,26 @@ evolves.
 (see: /projects/monolith/knowledge/docfix.py)
 (see: /projects/monolith/knowledge/recall.py)
 
+The sampled KG audit (#6721) is staged behind `knowledge.audit.enabled`, false
+in both chart defaults and the hub values. Its scheduled `kg-audit` row uses
+the ordinary `kg-drain` lane and admission caps. Each invocation pins a
+repository-only sample before Luna starts: six uniform notes and six weighted
+by recent retrievals, observation age and provenance count, with a 14-day
+cooldown. The audit ledger keeps these streams separate. Defects request at
+most five ordinary open disputes per run, with reporter `kg-audit`; the normal
+resolver session handles each repair. Clarity-only repairs and process-issue
+filing have separate default-off bounds. Neighbour expansion, retrieval
+accounting and process feedback are subsequent implementation slices.
+
+**Why.** A uniform stream measures repository error without weighting it by
+retrieval popularity. Weighted sampling finds defects in frequently recalled
+or poorly supported notes. Reusing dispute resolution preserves its evidence
+and public visibility contracts; the audit cannot confirm itself or edit a
+note's verification, confidence or validity. Repo scope limits v1 evidence to
+the checkout. Live validation is required before enabling the loop.
+(see: /projects/monolith/knowledge/audit.py)
+(see: /projects/monolith/knowledge/disputes.py)
+
 Knowledge RAG embeds a query, performs cosine retrieval over HNSW-indexed
 chunks, ranks matching notes, and returns note, section, snippet, and edge
 context. Public retrieval reads only the `public_api` views, never the

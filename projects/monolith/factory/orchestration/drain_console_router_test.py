@@ -2,11 +2,11 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from agent.config import DrainerSettings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import factory.orchestration.drain_console_router as drain_console_router
-from agent.config import DrainerSettings
+from factory.orchestration import drain_console_router
 
 NOW = datetime.now(timezone.utc)
 
@@ -98,6 +98,24 @@ def test_console_composes_jobs_and_lane(monkeypatch):
     assert body["queue"]["error"] == 1
     assert body["jobs"][0]["name"] == "qd-a"
     assert body["jobs"][0]["state"] == "error"
+
+
+def test_console_accepts_audit_payload_without_raw_id_or_prompt(monkeypatch):
+    job = _job(
+        name="kg-audit",
+        routine_kind="kg-drain",
+        interval_secs=86400,
+        payload={"mode": "audit", "stream": "scheduled"},
+        last_status="ok",
+        last_summary="KG audit: sampled 6 uniform, 6 weighted; filed 1 dispute",
+    )
+    _patch_common(monkeypatch, [job])
+    response = _client().get("/api/agents/drain/console")
+    assert response.status_code == 200
+    entry = response.json()["jobs"][0]
+    assert entry["name"] == "kg-audit"
+    assert entry["kind"] == "kg-drain"
+    assert "filed 1 dispute" in entry["summary_head"]
 
 
 def test_console_bounds_job_history_newest_first(monkeypatch):
@@ -285,7 +303,7 @@ def test_requeue_rearms_dead_one_shot(monkeypatch):
     _patch_common(monkeypatch, [_job()])
     triggered = []
 
-    import agent.routine_jobs as routine_jobs
+    from agent import routine_jobs
 
     monkeypatch.setattr(
         routine_jobs, "trigger_job", lambda name: triggered.append(name) or True

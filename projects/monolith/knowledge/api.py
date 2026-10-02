@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 from knowledge.extraction import (
     EXTRACTION_VERSION,
-    ExtractionOutputInvalid,
     KG_JOB_KIND,
+    ExtractionOutputInvalid,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.recall import (
@@ -34,39 +34,42 @@ if TYPE_CHECKING:
     from sqlmodel import Session
 
 __all__ = [
-    "KnowledgeStore",
-    "MAX_GARDENER_RETRIES",
-    "ExtractionOutputInvalid",
     "EXTRACTION_VERSION",
     "KG_JOB_KIND",
+    "MAX_GARDENER_RETRIES",
+    "ExtractionOutputInvalid",
+    "KnowledgeStore",
+    "active_blocker_topics_for_poll",
     "append_message_recall",
-    "attach_recall",
-    "defer_recall",
-    "matches_message_recall",
-    "recall_prompt_ready",
-    "prepare_recall",
-    "get_store",
-    "search_notes",
-    "raw_extras_by_id",
-    "search_public_chunks",
-    "get_embedding_client",
-    "ingest_raw",
-    "ingest_raw_with_status",
-    "enqueue_extraction",
-    "sweep_unqueued_raws",
+    "apply_audit",
     "apply_extraction",
     "apply_repo_diff",
+    "attach_recall",
+    "audit_enabled",
+    "build_audit_prompt",
     "build_extraction_prompt",
     "build_repo_diff_prompt",
-    "render_correction_prompt",
-    "record_extraction_failure",
-    "kg_health",
-    "recent_dispute_resolution_failures",
-    "count_notes_review_queue",
     "count_gaps_review_queue",
+    "count_notes_review_queue",
+    "defer_recall",
+    "enqueue_extraction",
+    "get_embedding_client",
+    "get_store",
+    "ingest_raw",
+    "ingest_raw_with_status",
+    "kg_health",
     "list_tasks_daily",
     "list_tasks_weekly",
-    "active_blocker_topics_for_poll",
+    "matches_message_recall",
+    "prepare_recall",
+    "raw_extras_by_id",
+    "recall_prompt_ready",
+    "recent_dispute_resolution_failures",
+    "record_extraction_failure",
+    "render_correction_prompt",
+    "search_notes",
+    "search_public_chunks",
+    "sweep_unqueued_raws",
 ]
 
 # Over-fetch factor for the public-chunk search: pull this many times the
@@ -84,7 +87,7 @@ def active_blocker_topics_for_poll(lanes: tuple[str, ...]) -> frozenset[str]:
 
 
 def ingest_raw(
-    session: "Session",
+    session: Session,
     *,
     content: str,
     source: str,
@@ -108,7 +111,7 @@ def ingest_raw(
 
 
 def ingest_raw_with_status(
-    session: "Session",
+    session: Session,
     *,
     content: str,
     source: str,
@@ -141,14 +144,36 @@ def redact_text(text: str) -> tuple[str, int]:
     return _redact_text(text)
 
 
-def enqueue_extraction(session: "Session", raw_id: str, *, commit: bool = True) -> bool:
+def enqueue_extraction(session: Session, raw_id: str, *, commit: bool = True) -> bool:
     from knowledge.extraction import enqueue_extraction as _enqueue_extraction
 
     return _enqueue_extraction(session, raw_id, commit=commit)
 
 
+def audit_enabled() -> bool:
+    from knowledge.audit import audit_enabled as _enabled
+
+    return _enabled()
+
+
+def build_audit_prompt(
+    session: Session, job_name: str, payload: dict, invocation_key: str
+) -> str:
+    from knowledge.audit import build_audit_prompt as _build
+
+    return _build(session, job_name, payload, invocation_key)
+
+
+def apply_audit(
+    session: Session, job_name: str, payload: dict, result_text: str
+) -> dict:
+    from knowledge.audit import apply_audit as _apply
+
+    return _apply(session, job_name, payload, result_text)
+
+
 def apply_extraction(
-    session: "Session",
+    session: Session,
     raw_id: str,
     result_text: str,
     *,
@@ -172,13 +197,13 @@ def render_correction_prompt(rejected: list[dict]) -> str:
     return _render_prompt(rejected)
 
 
-def apply_repo_diff(session: "Session", job_name: str, result_text: str) -> dict:
+def apply_repo_diff(session: Session, job_name: str, result_text: str) -> dict:
     from knowledge.extraction import apply_repo_diff as _apply_repo_diff
 
     return _apply_repo_diff(session, job_name, result_text)
 
 
-def build_extraction_prompt(session: "Session", raw) -> str:
+def build_extraction_prompt(session: Session, raw) -> str:
     from knowledge.extraction import build_extraction_prompt as _build_prompt
 
     return _build_prompt(session, raw)
@@ -190,14 +215,14 @@ def build_repo_diff_prompt(last_sha: str | None) -> str:
     return _build_repo_diff_prompt(last_sha)
 
 
-def sweep_unqueued_raws(session: "Session", limit: int = 50) -> int:
+def sweep_unqueued_raws(session: Session, limit: int = 50) -> int:
     from knowledge.extraction import sweep_unqueued_raws as _sweep_unqueued_raws
 
     return _sweep_unqueued_raws(session, limit)
 
 
 def record_extraction_failure(
-    session: "Session", raw_id: str, error: str, attempt: int
+    session: Session, raw_id: str, error: str, attempt: int
 ) -> None:
     from knowledge.extraction import record_extraction_failure as _record_failure
 
@@ -211,7 +236,7 @@ async def kg_health() -> dict:
 
 
 def recent_dispute_resolution_failures(
-    session: "Session", since: "datetime", note_limit: int
+    session: Session, since: datetime, note_limit: int
 ) -> tuple[int, list[str]]:
     """Read the failed-resolution count and bounded note ids for ops alerting."""
     from sqlalchemy import func
@@ -236,14 +261,14 @@ def recent_dispute_resolution_failures(
     return int(count), list(note_ids)
 
 
-def search_notes(session: "Session", query_embedding: list[float], **kwargs):
+def search_notes(session: Session, query_embedding: list[float], **kwargs):
     """Search knowledge notes by embedding similarity."""
     return KnowledgeStore(session).search_notes_with_context(
         query_embedding=query_embedding, **kwargs
     )
 
 
-def raw_extras_by_id(session: "Session", raw_ids: list[str]) -> dict[str, dict]:
+def raw_extras_by_id(session: Session, raw_ids: list[str]) -> dict[str, dict]:
     """Return durable authorization metadata for the selected raw inputs."""
     from sqlmodel import select
 
@@ -256,7 +281,7 @@ def raw_extras_by_id(session: "Session", raw_ids: list[str]) -> dict[str, dict]:
 
 
 def search_public_chunks(
-    session: "Session", query_embedding: list[float], *, limit: int = 6
+    session: Session, query_embedding: list[float], *, limit: int = 6
 ) -> list[dict]:
     """pgvector cosine search over the public-only chunk view.
 
@@ -322,7 +347,7 @@ def search_public_chunks(
     return out
 
 
-def get_store(session: "Session") -> KnowledgeStore:
+def get_store(session: Session) -> KnowledgeStore:
     """Return a KnowledgeStore instance for the given session."""
     return KnowledgeStore(session)
 
@@ -334,7 +359,7 @@ def get_embedding_client():
     return EmbeddingClient()
 
 
-def count_notes_review_queue(session: "Session", *, limit: int = 200) -> int:
+def count_notes_review_queue(session: Session, *, limit: int = 200) -> int:
     """Count notes pending review (mode='pending'), capped at ``limit`` rows.
 
     Reuses the exact query behind ``GET /notes/review-queue``, so the count
@@ -345,7 +370,7 @@ def count_notes_review_queue(session: "Session", *, limit: int = 200) -> int:
     return len(list_notes_for_review(session, mode="pending", limit=limit))
 
 
-def count_gaps_review_queue(session: "Session", *, limit: int = 200) -> int:
+def count_gaps_review_queue(session: Session, *, limit: int = 200) -> int:
     """Count gaps pending review (mode='pending'), capped at ``limit`` rows.
 
     Reuses the exact query behind ``GET /gaps/review-queue``, so the count
@@ -356,12 +381,12 @@ def count_gaps_review_queue(session: "Session", *, limit: int = 200) -> int:
     return len(list_gaps_for_review(session, mode="pending", limit=limit))
 
 
-def list_tasks_daily(session: "Session") -> list[dict]:
+def list_tasks_daily(session: Session) -> list[dict]:
     """Tasks due today or overdue (delegates to KnowledgeStore.list_tasks_daily)."""
     return KnowledgeStore(session).list_tasks_daily()
 
 
-def list_tasks_weekly(session: "Session") -> list[dict]:
+def list_tasks_weekly(session: Session) -> list[dict]:
     """Tasks due this week (delegates to KnowledgeStore.list_tasks_weekly)."""
     return KnowledgeStore(session).list_tasks_weekly()
 
