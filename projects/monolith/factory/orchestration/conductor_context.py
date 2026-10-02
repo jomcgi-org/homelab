@@ -7,17 +7,24 @@ supporting context and is never interpreted as a command or scheduling state.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from threading import BoundedSemaphore
 
+from opentelemetry import trace
 from sqlmodel import Session, select
 
 from factory.orchestration import factory_controls as controls
 from factory.orchestration.factory_decisions import _iso, _request_records
 from factory.orchestration.factory_models import FactoryControl, FactoryReceipt
+from factory.orchestration.tracing import set_attributes
+
+logger = logging.getLogger(__name__)
 
 _REPORT_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="factory-knowledge")
 _REPORT_SLOTS = BoundedSemaphore(2)
@@ -27,6 +34,7 @@ PLANNER_KNOWLEDGE_LIMIT = 5
 PLANNER_KNOWLEDGE_CANDIDATE_LIMIT = 50
 PLANNER_CONTEXT_FOLLOWUP_LIMIT = 1
 RECENT_EXCHANGE_LIMIT = 10
+KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS = 4
 
 
 def continuity_enabled() -> bool:
@@ -413,9 +421,11 @@ async def retrieve_knowledge(
     if not requested_scopes:
         raise ValueError("at least one authorized scope is required")
 
+    started = time.monotonic()
     try:
         vector = await asyncio.wait_for(
-            EmbeddingClient().embed(query[:2000]), timeout=4
+            EmbeddingClient().embed(query[:2000]),
+            timeout=KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS,
         )
 
         def search():
@@ -450,9 +460,31 @@ async def retrieve_knowledge(
                 return rows, authorized
 
         rows, authorized_raw_ids = await asyncio.wait_for(
-            asyncio.to_thread(search), timeout=4
+            asyncio.to_thread(search), timeout=KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS
         )
-    except Exception:
+    except Exception as exc:
+        exception_class = type(exc).__name__
+        elapsed_seconds = time.monotonic() - started
+        logger.warning(
+            "Planner knowledge retrieval unavailable: exception_class=%s "
+            "elapsed_seconds=%s receipt_id=%s",
+            exception_class,
+            elapsed_seconds,
+            receipt_id,
+            extra={
+                "knowledge_exception_class": exception_class,
+                "knowledge_elapsed_seconds": elapsed_seconds,
+                "receipt_id": receipt_id,
+            },
+        )
+        set_attributes(
+            trace.get_current_span(),
+            {
+                "factory.knowledge.exception_class": exception_class,
+                "factory.knowledge.elapsed_seconds": elapsed_seconds,
+                "factory.receipt_id": receipt_id,
+            },
+        )
         retrieved_at = _now()
         return {
             "status": "unavailable",
@@ -718,7 +750,7 @@ def planner_context_with_deadline(task_id: str, query: str, timeout: int) -> dic
         finally:
             _PLANNER_SLOTS.release()
 
-    future = _PLANNER_POOL.submit(load)
+    future = _PLANNER_POOL.submit(contextvars.copy_context().run, load)
     try:
         return future.result(timeout=timeout)
     except FutureTimeout:
