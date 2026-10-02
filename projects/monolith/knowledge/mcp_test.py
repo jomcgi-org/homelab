@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from auth.api import Authority, Principal, PrincipalKind, anonymous_principal
+from sqlalchemy.dialects import postgresql
 from sqlmodel import Session, select
 
 from knowledge.mcp import (
@@ -397,6 +398,187 @@ class TestSearchKnowledge:
 
         assert result["reason"] == "embedding_failed"
         audit.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "principal",
+        [
+            _principal(),
+            _principal(scopes=("openid",), groups=("homelab-admin",)),
+            _principal(scopes=(), groups=("kg-agents",)),
+        ],
+    )
+    async def test_scope_narrows_exact_and_group_grants(self, principal):
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        with (
+            patch("knowledge.mcp.current_principal", return_value=principal),
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = (
+                CANNED_RESULTS
+            )
+            result = await search_knowledge(
+                "attention",
+                limit=5,
+                type="paper",
+                include_deployment_observations=True,
+                scope="repo:jomcgi-org/homelab",
+            )
+
+        assert result == {"results": CANNED_RESULTS}
+        mock_embed.embed.assert_awaited_once_with("attention")
+        MockStore.return_value.search_notes_with_context.assert_called_once_with(
+            query_embedding=FAKE_EMBEDDING,
+            limit=5,
+            type_filter="paper",
+            scope_filter="repo:jomcgi-org/homelab",
+            include_unscoped=False,
+            include_deployment_observations=True,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scope", ["personal:agent@example.com", "repo:jomcgi-org/homelab"]
+    )
+    async def test_scope_with_personal_opt_in_is_audited_and_excludes_null(self, scope):
+        session = MagicMock()
+        context = MagicMock()
+        context.__enter__.return_value = session
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        principal = _principal(personal=True)
+        with (
+            patch("knowledge.mcp.current_principal", return_value=principal),
+            patch("knowledge.mcp.Session", return_value=context),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.audit_personal_retrieval") as audit,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            result = await search_knowledge(
+                "attention", include_personal=True, scope=scope
+            )
+
+        assert result == {"results": []}
+        audit.assert_called_once_with(
+            session, principal, audit.call_args.args[2], entrypoint="mcp"
+        )
+        assert audit.call_args.args[2].personal_scope == "personal:agent@example.com"
+        MockStore.return_value.search_notes_with_context.assert_called_once_with(
+            query_embedding=FAKE_EMBEDDING,
+            limit=20,
+            type_filter=None,
+            scope_filter=scope,
+            include_unscoped=False,
+            include_deployment_observations=False,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            "repo:other-org/other",
+            "repo:",
+            "repo:jomcgi-org",
+            "repo:jomcgi-org/*",
+            "REPO:jomcgi-org/homelab",
+            "repo:jomcgi-org/homelab ",
+            "",
+            "personal:agent@example.com",
+        ],
+    )
+    async def test_scope_widening_and_near_misses_return_only_empty_results(
+        self, scope
+    ):
+        mock_embed = AsyncMock()
+        with (
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed) as Embed,
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            result = await search_knowledge("attention", scope=scope)
+
+        assert result == {"results": []}
+        Embed.assert_not_called()
+        mock_embed.embed.assert_not_awaited()
+        MockStore.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refused_scope_is_audited_before_return_when_personal_is_requested(
+        self,
+    ):
+        mock_embed = AsyncMock()
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(personal=True),
+            ),
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+            patch("knowledge.mcp.audit_personal_retrieval") as audit,
+        ):
+            result = await search_knowledge(
+                "attention", include_personal=True, scope="repo:other-org/other"
+            )
+
+        assert result == {"results": []}
+        audit.assert_called_once()
+        mock_embed.embed.assert_not_awaited()
+        MockStore.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refused_scope_and_authorized_empty_search_have_identical_shape(self):
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        with (
+            patch("knowledge.mcp.Session"),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            empty = await search_knowledge("attention", scope="repo:jomcgi-org/homelab")
+            refused = await search_knowledge("attention", scope="repo:other-org/other")
+
+        assert refused == empty == {"results": []}
+        mock_embed.embed.assert_awaited_once_with("attention")
+        MockStore.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scope", [None, "repo:jomcgi-org/homelab"])
+    async def test_scope_reaches_real_store_ranking_sql(self, scope):
+        session = MagicMock()
+        session.execute.return_value.all.return_value = []
+        context = MagicMock()
+        context.__enter__.return_value = session
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        with (
+            patch("knowledge.mcp.Session", return_value=context),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+        ):
+            kwargs = {} if scope is None else {"scope": scope}
+            result = await search_knowledge("attention", **kwargs)
+
+        assert result == {"results": []}
+        session.execute.assert_called_once()
+        statement = session.execute.call_args.args[0]
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+        assert "knowledge.notes.scope IN" in sql
+        assert "knowledge.notes.scope IS NULL" not in sql
+        assert sql.index("WHERE") < sql.index("LIMIT")
+        expected_scopes = list(DEFAULT_SCOPES) if scope is None else [scope]
+        assert compiled.params["scope_1"] == expected_scopes
 
 
 class TestGetNote:

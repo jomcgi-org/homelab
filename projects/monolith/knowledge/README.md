@@ -29,6 +29,12 @@ The generic `operators` group, generic OAuth scopes, and server defaults do not
 authorize a search. Anonymous callers and authenticated callers without a
 mapped grant fail closed.
 
+MCP callers can supply `scope`, for example `repo:jomcgi-org/homelab`, to narrow
+search to one exactly matching authorized scope; unauthorized values return the
+same empty result as a search with no matches. Narrowed searches exclude legacy
+NULL-scoped notes even with `include_personal=true`, and personal opt-in remains
+audited before the scope check.
+
 The `kg search` CLI currently supplies only its Cloudflare Access cookie, not
 the Authentik bearer required by this policy, so human CLI search is denied.
 Issue #6306 tracks acquiring and sending a separate Authentik bearer while

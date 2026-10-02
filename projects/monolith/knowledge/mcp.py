@@ -202,6 +202,7 @@ async def search_knowledge(
     type: str | None = None,
     include_personal: bool = False,
     include_deployment_observations: bool = False,
+    scope: str | None = None,
 ) -> dict:
     """Semantic search over the knowledge graph.
 
@@ -219,6 +220,9 @@ async def search_knowledge(
         include_deployment_observations: Include server-projected deployment
             observation facts (one per app per cd poll). Hidden by default so
             they cannot crowd ordinary knowledge out of the top results.
+        scope: Optionally narrow to one scope the caller is already authorized
+            for, e.g. "repo:jomcgi-org/homelab". Exact membership only; a value
+            outside the caller's authorized scopes returns no results.
     """
     principal = current_principal()
     try:
@@ -246,6 +250,9 @@ async def search_knowledge(
         if len(query) < 2:
             return {"results": []}
 
+        if scope is not None and scope not in authorization.scopes:
+            return {"results": []}
+
         embed_client = EmbeddingClient()
         try:
             vector = await embed_client.embed(query)
@@ -253,14 +260,24 @@ async def search_knowledge(
             logger.exception("knowledge mcp: embedding call failed")
             return {"error": "embedding unavailable", "reason": "embedding_failed"}
 
-        results = KnowledgeStore(session).search_notes_with_context(
-            query_embedding=vector,
-            limit=min(limit, 100),
-            type_filter=type,
-            scope_filters=authorization.scopes,
-            include_unscoped=authorization.include_unscoped,
-            include_deployment_observations=include_deployment_observations,
-        )
+        if scope is None:
+            results = KnowledgeStore(session).search_notes_with_context(
+                query_embedding=vector,
+                limit=min(limit, 100),
+                type_filter=type,
+                scope_filters=authorization.scopes,
+                include_unscoped=authorization.include_unscoped,
+                include_deployment_observations=include_deployment_observations,
+            )
+        else:
+            results = KnowledgeStore(session).search_notes_with_context(
+                query_embedding=vector,
+                limit=min(limit, 100),
+                type_filter=type,
+                scope_filter=scope,
+                include_unscoped=False,
+                include_deployment_observations=include_deployment_observations,
+            )
     return {"results": results}
 
 
