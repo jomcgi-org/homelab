@@ -9,7 +9,6 @@ from auth.api import Authority, Principal, PrincipalKind
 from sqlmodel import Session, select
 
 from knowledge.frontmatter import ParsedFrontmatter
-from knowledge.mcp import search_knowledge
 from knowledge.models import Note
 from knowledge.store import KnowledgeStore
 from shared.testing.markers import covers_public, covers_route
@@ -17,7 +16,13 @@ from shared.testing.markers import covers_public, covers_route
 
 @covers_public("knowledge.mcp.search_knowledge")
 @pytest.mark.asyncio
-async def test_mcp_search_history_preserves_other_filters(knowledge_mcp_engine):
+async def test_mcp_search_history_preserves_other_filters(
+    live_server_with_fake_embedding, knowledge_mcp_engine
+):
+    # Let the HTTP harness set its database URL before importing MCP or
+    # temporarily overriding the shared engine for MCP-owned sessions.
+    from knowledge.mcp import search_knowledge
+
     scope = "repo:history-test/homelab"
     principal = Principal(
         subject="history-test@example.com",
