@@ -250,3 +250,23 @@ def test_anchor_cell_fails_on_cli_error(monkeypatch, tmp_path):
     assert cell.outcome == "fail"
     assert called["verify"] is False  # a CLI error short-circuits grading
     assert "is_error" in cell.attempts[0].feedback
+
+
+def test_complete_uses_api_model_over_registry_id(monkeypatch):
+    seen = {}
+
+    def fake_invoke(prompt, **kw):
+        seen["model"] = kw.get("model")
+        return claude_code.ClaudeResult(
+            text="ok", num_turns=1, is_error=False, wall_ms=1
+        )
+
+    monkeypatch.setattr(claude_code, "_invoke", fake_invoke)
+    asyncio.run(
+        claude_code.complete(
+            model="anthropic/claude-sonnet-5.5-cc",
+            api_model="claude-sonnet-5-5",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+    )
+    assert seen["model"] == "claude-sonnet-5-5"

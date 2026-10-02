@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime
+import functools
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import yaml
 
-from bench import claude_code
+from bench import claude_code, pairwise
 from bench.agent import run_agent_cell
 from bench.cache import (
     HARNESS_VERSION,
@@ -32,7 +33,6 @@ from bench.cache import (
     fixture_hash,
     is_cached,
 )
-from bench import pairwise
 from bench.judge import JudgeConfig, judge_free_text
 from bench.openrouter import OpenRouterClient
 from bench.pareto import aggregate_by_class, coarse_tier, pareto_frontier, qualifies
@@ -383,7 +383,9 @@ async def _run(args) -> None:
 
         try:
             if model.provider == "claude-code":
-                complete = claude_code.complete
+                complete = functools.partial(
+                    claude_code.complete, api_model=model.api_model
+                )
 
                 def cost_fn(p, c):
                     return 0.0  # free under Max
@@ -515,6 +517,7 @@ async def _run(args) -> None:
         if model.provider == "claude-code":
             c1 = await claude_code.complete(
                 model=model.id,
+                api_model=model.api_model,
                 messages=[{"role": "user", "content": task.prompt}],
                 temperature=0.0,
             )
