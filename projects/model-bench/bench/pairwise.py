@@ -23,9 +23,9 @@ import itertools
 import json
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 
 RUBRIC_VERSION = "1"
 RUBRIC = """\
