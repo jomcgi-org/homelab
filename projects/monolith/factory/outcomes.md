@@ -193,6 +193,14 @@ and unknown-count column. Zero denominators return SQL `NULL`.
 
 ## Limits and outstanding acceptance
 
+The `outcomes_report_test` BDD target executes all four sections from the SQL
+file against PostgreSQL 16 with chart migrations and SAVEPOINT-isolated fixtures.
+It checks mature and unjudged outcomes, strict cutoffs, retries and model switches,
+duplicate ownership paths, cost bounds, terminal elapsed times, difficulty bands,
+and unknown first-pass CI. The loader rolls back the report's read-only SET
+before returning the fixture session. These fixtures cover repository predicates;
+the operational checklist below still requires sampled production evidence.
+
 Starts, receipts, runs, and work items contain mutable fields. The report
 cannot reconstruct every past status, session binding, or label set. It masks
 post-cutoff finishes, retains reservation exposure for post-cutoff start
