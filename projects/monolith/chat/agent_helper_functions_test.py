@@ -29,11 +29,57 @@ from pydantic_ai.models.function import FunctionModel
 from chat.agent import (
     ChatDeps,
     _coerce_username,
+    _format_sandbox_result,
     build_system_prompt,
     create_agent,
     format_context_messages,
 )
 from chat.models import Attachment, Blob, Message, UserChannelSummary
+
+
+class TestFormatSandboxResult:
+    def test_broker_failure(self):
+        assert _format_sandbox_result({"error": "could not reach embervm"}) == (
+            "sandbox error: could not reach embervm"
+        )
+
+    def test_guest_timeout_keeps_partial_output(self):
+        result = {
+            "stdout": "partial output\n",
+            "stderr": "partial diagnostics\n",
+            "exit_code": -1,
+            "error": "timed out after 25s",
+            "files": [{"path": "partial.txt"}],
+        }
+        assert _format_sandbox_result(result) == (
+            "partial output\n\n[stderr]\npartial diagnostics\n\n"
+            "[exit code -1]\n[error: timed out after 25s]\n"
+            "[files attached to reply: partial.txt]"
+        )
+
+    def test_success_output_is_unchanged(self):
+        result = {
+            "stdout": "42\n",
+            "stderr": "warning\n",
+            "exit_code": 0,
+            "files": [{"path": "plot.png"}, {"path": "data.csv"}],
+        }
+        assert _format_sandbox_result(result) == (
+            "42\n\n[stderr]\nwarning\n\n[exit code 0]\n"
+            "[files attached to reply: plot.png, data.csv]"
+        )
+
+    def test_output_collection_error_keeps_successful_exit_code(self):
+        assert _format_sandbox_result(
+            {
+                "stdout": "42\n",
+                "exit_code": 0,
+                "error": "collecting output files: permission denied",
+            }
+        ) == (
+            "42\n\n[exit code 0]\n"
+            "[error: collecting output files: permission denied]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +553,37 @@ class TestWebSearchTool:
             )
 
         assert captured == ["mocked result text"]
+
+
+class TestRunCodeTool:
+    @pytest.mark.parametrize(
+        ("exit_code", "error"),
+        [
+            (-1, "timed out after 25s"),
+            (0, "collecting output files: permission denied"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_guest_errors_keep_generated_files(self, exit_code, error):
+        result = {
+            "stdout": "partial output\n",
+            "stderr": "partial diagnostics\n",
+            "exit_code": exit_code,
+            "error": error,
+            "files": [{"path": "partial.txt", "content_b64": "cGFydGlhbA=="}],
+        }
+        captured: list[str] = []
+        deps = _make_deps()
+        agent = create_agent(base_url="http://fake:8080")
+        with patch("chat.agent.run_code_in_sandbox", new=AsyncMock(return_value=result)):
+            await agent.run(
+                "p",
+                model=_capturing_model("run_code", {"code": "source"}, captured),
+                deps=deps,
+            )
+
+        assert deps.generated_files == [("partial.txt", b"partial")]
+        assert captured == [_format_sandbox_result(result)]
 
 
 # ===========================================================================

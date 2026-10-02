@@ -33,8 +33,12 @@ SANDBOX_WORKLOAD_PREFIX = os.environ.get("SANDBOX_WORKLOAD_PREFIX", "sandbox-")
 SCRATCH_POSTGRES_DSN = os.environ.get("SCRATCH_POSTGRES_DSN", "")
 
 SANDBOX_CONNECT_TIMEOUT = 5.0
-# Guest wall-clock cap is 25s inside a 30s workload requestTimeout; read a
-# little past that so the daemon's timeout error reaches us intact.
+# Mirrors maxTimeout in projects/firecracker/sandbox/guest-init/internal/handler/
+# handler.go: the guest defaults to 20s when omitted and clamps above 25s.
+# Keep below the smallest sandbox Workload timeoutSeconds (30s).
+SANDBOX_GUEST_TIMEOUT_SECONDS = 25
+# Request the 25s guest wall clock inside a 30s Workload request timeout; read a
+# little past that so the guest's timeout error reaches us intact.
 SANDBOX_READ_TIMEOUT = 35.0
 
 
@@ -67,7 +71,9 @@ async def run_code_in_sandbox(
 
     Returns the daemon's structured response on success: ``stdout``,
     ``stderr``, ``exit_code``, ``files`` (base64-encoded), ``duration_ms``,
-    and ``truncated``. On failure, a dict with a single ``error`` key.
+    and ``truncated``. A guest-side failure such as a timeout returns the guest
+    response with ``exit_code`` -1 and an ``error`` field alongside partial
+    ``stdout`` and ``stderr``. A broker failure returns only an ``error`` key.
 
     The language selects the workload. Each call is one-shot and has no state
     shared with any other call.
@@ -78,7 +84,10 @@ async def run_code_in_sandbox(
     if not code or not code.strip():
         return {"error": "no code provided"}
 
-    payload: dict = {"code": _with_scratch_env(code, language)}
+    payload: dict = {
+        "code": _with_scratch_env(code, language),
+        "timeout_seconds": SANDBOX_GUEST_TIMEOUT_SECONDS,
+    }
     if files:
         payload["files"] = files
 
