@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
+from bench.norms import safe_norms
 from bench.schema import Attempt, ResultCell
 
 MAX_READ_BYTES = 100_000
@@ -178,6 +179,7 @@ async def run_agent_cell(
     max_turns: int = 20,
     max_tokens: int = 8192,
     allow_exec: bool = False,
+    norms_opts: dict | None = None,
 ) -> ResultCell:
     """Run one agentic (task, model) cell and grade the resulting workdir.
 
@@ -197,6 +199,7 @@ async def run_agent_cell(
     saw_tool_call = False  # did the model ever drive the loop with a tool call?
     saw_bad_args = False  # did any tool call carry unparseable arguments?
     score: float | None = None
+    norms: dict | None = None
     try:
         for turns in range(1, max_turns + 1):
             res = await chat(
@@ -240,6 +243,8 @@ async def run_agent_cell(
                 break
         r = verify(workdir, verifier_args)
         passed, feedback, score = r.passed, r.feedback, r.score
+        if passed:
+            norms = safe_norms(fixture_dir, workdir, norms_opts)
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
         passed, feedback = False, f"[harness error] {type(exc).__name__}: {exc}"
     finally:
@@ -276,4 +281,5 @@ async def run_agent_cell(
         prompt_template_hash="agent",
         turns=turns,
         tool_use_ok=tool_use_ok,
+        norms=norms,
     )

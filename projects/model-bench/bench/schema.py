@@ -107,6 +107,10 @@ class TaskSpec(BaseModel):
     # is not part of any cell key, so recording it never invalidates cached cells.
     calibration: dict[str, Any] | None = None
 
+    # Size (added + removed lines) of the real fix, so the norms score can flag a
+    # bloated diff. Optional: tasks without it skip the size signal.
+    gold_diff_lines: int | None = None
+
 
 class Attempt(BaseModel):
     passed: bool
@@ -132,6 +136,9 @@ class ResultCell(BaseModel):
     # Agentic-only signals (None for single-shot cells).
     turns: int | None = None
     tool_use_ok: bool | None = None
+    # Deterministic norms signals (bench/norms.py), computed only for a passing
+    # agentic cell. None for failures, single-shot cells and older cached cells.
+    norms: dict | None = None
 
     @property
     def total_latency_ms(self) -> int:
@@ -148,6 +155,10 @@ class ResultCell(BaseModel):
     @property
     def first_attempt_score(self) -> float | None:
         return self.attempts[0].score
+
+    @property
+    def norms_score(self) -> float | None:
+        return self.norms.get("norms_score") if self.norms else None
 
     @property
     def is_harness_error(self) -> bool:

@@ -228,3 +228,41 @@ def test_run_agent_cell_records_graded_score(tmp_path):
     )
     assert cell.outcome == "fail"
     assert cell.attempts[0].score == 0.25
+
+
+def test_run_agent_cell_scores_norms_only_on_a_pass(tmp_path):
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    async def fake_chat(**kwargs):
+        return ChatResult(
+            message={
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "done", "arguments": "{}"}}
+                ]
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=1,
+        )
+
+    def run(passed):
+        return asyncio.run(
+            run_agent_cell(
+                task_id="t",
+                task_version="v1",
+                model_id="m",
+                content_hash="h",
+                fixture_dir=tmp_path,
+                task_prompt="p",
+                chat=fake_chat,
+                verify=lambda w, a: VerifyResult(passed, ""),
+                verifier_args={},
+                cost_fn=lambda p, c: 0.0,
+                norms_opts={"target_files": ["f.py"], "lint": False},
+            )
+        )
+
+    ok = run(True)
+    assert ok.norms is not None and ok.norms["files_changed"] == 0
+    assert ok.norms_score == 1.0
+    assert run(False).norms is None

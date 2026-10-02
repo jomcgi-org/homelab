@@ -248,6 +248,9 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     assert t["blurb"] and "Second sentence." not in t["blurb"]
     # Binary verifiers carry no partial credit.
     assert mt["score"] is None and t["mean_score"] is None
+    # No cell carries norms in this fixture, so the norms fields stay empty.
+    assert mt["norms_score"] is None and t["mean_norms"] is None
+    assert data["models"][0]["mean_norms"] is None
 
 
 def test_aggregate_agentic_group_excludes_harness_errors_from_all_metrics():
@@ -318,6 +321,7 @@ def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
         "cost": 0.0,
         "cost_per_solve": None,
         "tool_ok_rate": 0.0,
+        "mean_norms": None,
         "errored": 1,
         "errored_tasks": ["floor-error"],
     }
@@ -477,3 +481,15 @@ def test_review_diff_covers_edited_and_new_files(tmp_path):
     assert "-x = 1\n+x = 2" in diff
     assert "new file mode 100644\n--- /dev/null\n+++ b/pkg/new.py" in diff
     assert "+y = 1" in diff
+
+
+def test_aggregate_agentic_group_means_norms_over_passed_cells():
+    passed = _agentic_cell("a", "m", True, 2, 100, True)
+    passed.norms = {"norms_score": 0.5}
+    passed2 = _agentic_cell("b", "m", True, 2, 100, True)
+    passed2.norms = {"norms_score": 1.0}
+    unscored = _agentic_cell("c", "m", True, 2, 100, True)
+    failed = _agentic_cell("d", "m", False, 2, 100, True)
+    stats = _aggregate_agentic_group([passed, passed2, unscored, failed], {})
+    assert stats["mean_norms"] == 0.75
+    assert _aggregate_agentic_group([failed], {})["mean_norms"] is None

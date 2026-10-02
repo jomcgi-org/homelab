@@ -95,6 +95,18 @@ place. A patch with `content` instead of `find`/`replace` writes a whole file (a
 rewritten module, or a new migration). `-02` is the harder sibling of `-01`: ten
 cross-referencing plants and four decoys.
 
+
+## Norms score (quality above the pass floor)
+
+A passing agentic cell also gets a deterministic `norms` record (`bench/norms.py`),
+computed from the fixture and the final workdir: files changed outside `target_files`,
+leftover debug lines (`print(` outside tests, `breakpoint(`, `console.log(`, TODO /
+FIXME / XXX), new ruff findings (pinned ruff, default rules), diff size against the
+task's optional `gold_diff_lines`, and whether code changed without a test. `norms_score`
+is 1 minus a weighted mean of those penalties (weights in `WEIGHTS`); a signal the task
+cannot support is dropped and the rest renormalised. The leaderboard shows the mean
+over passed cells as the `norms` column.
+
 ## Setup
 
 Two interpreters are involved:
