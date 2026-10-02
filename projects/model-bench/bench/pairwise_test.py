@@ -125,3 +125,19 @@ def test_ratings_with_ci_brackets_the_point_estimate():
     assert lo <= out["a"]["judge_rating"] <= hi
     assert out["a"]["judge_rating"] > out["b"]["judge_rating"]
     assert out["a"]["judge_games"] == 10
+
+
+def test_pick_judge_resolves_ids_through_cli_names():
+    # The Sonnet anchor's registry id is not its CLI name; without the map the
+    # fallback (Sonnet) would judge its own pair against Opus.
+    names = {"anthropic/claude-sonnet-5.5-cc": "claude-sonnet-5-5"}
+    assert (
+        pairwise.pick_judge(
+            "anthropic/claude-sonnet-5.5-cc",
+            "anthropic/claude-opus-5.5",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            names,
+        )
+        is None
+    )

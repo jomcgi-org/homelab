@@ -861,6 +861,10 @@ def _judge(args) -> None:
         judge=args.judge_model,
         fallback=args.fallback_judge,
         max_pairs_per_task=args.pairs,
+        cli_names={
+            m.id: claude_code.cli_model(m.id, m.api_model)
+            for m in load_registry(Path(args.tasks).parent / "models.yaml")
+        },
     )
     ratings = pairwise.ratings_with_ci(verdicts)
     out = results_root / "judge" / "ratings.json"

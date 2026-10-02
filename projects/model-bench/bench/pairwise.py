@@ -75,10 +75,20 @@ def _cli_name(model_id: str) -> str:
 
 
 def pick_judge(
-    a: str, b: str, judge: str = DEFAULT_JUDGE, fallback: str = FALLBACK_JUDGE
+    a: str,
+    b: str,
+    judge: str = DEFAULT_JUDGE,
+    fallback: str = FALLBACK_JUDGE,
+    cli_names: dict[str, str] | None = None,
 ) -> str | None:
-    """The judge for a pair: never a model judging its own output."""
-    names = {_cli_name(a), _cli_name(b)}
+    """The judge for a pair: never a model judging its own output.
+
+    cli_names maps a registry id to the CLI model it runs as (its api_model). The
+    id alone is not enough: anthropic/claude-sonnet-5.5-cc runs as
+    claude-sonnet-5-5, the fallback judge.
+    """
+    known = cli_names or {}
+    names = {known.get(a, _cli_name(a)), known.get(b, _cli_name(b))}
     if judge not in names:
         return judge
     if fallback not in names:
@@ -188,6 +198,7 @@ def judge_all(
     fallback: str = FALLBACK_JUDGE,
     max_pairs_per_task: int | None = None,
     seed: int = 0,
+    cli_names: dict[str, str] | None = None,
 ) -> tuple[list[Verdict], int]:
     """Judge every pair of passing candidates within each task.
 
@@ -206,7 +217,7 @@ def judge_all(
         if max_pairs_per_task is not None and len(pairs) > max_pairs_per_task:
             pairs = rng.sample(pairs, max_pairs_per_task)
         for x, y in pairs:
-            who = pick_judge(x.model_id, y.model_id, judge, fallback)
+            who = pick_judge(x.model_id, y.model_id, judge, fallback, cli_names)
             if who is None:
                 skipped += 1
                 continue
