@@ -16,6 +16,7 @@ py_library(
         "claude_code.py",
         "cli.py",
         "judge.py",
+        "norms.py",
         "openrouter.py",
         "pareto.py",
         "registry.py",
@@ -77,6 +78,16 @@ py_test(
 py_test(
     name = "judge_test",
     srcs = ["judge_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "norms_test",
+    srcs = ["norms_test.py"],
     imports = [".."],
     deps = [
         ":bench",

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
+from bench.norms import safe_norms
 from bench.schema import Attempt, ResultCell
 
 # Override for tests / non-standard installs. Default resolves `claude` on PATH.
@@ -182,6 +183,7 @@ def run_anchor_agent_cell(
     verify,
     verifier_args: dict,
     cli_model_name: str | None = None,
+    norms_opts: dict | None = None,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
 ) -> ResultCell:
     """Run one agentic anchor cell: hand the whole task to `claude -p` in a workdir copy,
@@ -198,6 +200,7 @@ def run_anchor_agent_cell(
     turns = 0
     wall_ms = 0
     score: float | None = None
+    norms: dict | None = None
     rental_cost = 0.0
     try:
         res = _invoke(
@@ -215,6 +218,8 @@ def run_anchor_agent_cell(
         else:
             r = verify(workdir, verifier_args)
             passed, feedback, score = r.passed, r.feedback, r.score
+            if passed:
+                norms = safe_norms(fixture_dir, workdir, norms_opts)
     except Exception as exc:  # noqa: BLE001 - a subprocess/verify error becomes a fail cell
         passed, feedback = False, f"[anchor harness error] {type(exc).__name__}: {exc}"
     finally:
@@ -242,4 +247,5 @@ def run_anchor_agent_cell(
         prompt_template_hash="agent",
         turns=turns,
         tool_use_ok=True,
+        norms=norms,
     )

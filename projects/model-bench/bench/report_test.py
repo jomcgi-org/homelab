@@ -84,7 +84,7 @@ def test_agentic_gate_splits_qualified_and_disqualified():
     # The flunker sits in the disqualified section with its failed floor task.
     assert md.index("flunker") > dq
     assert "slo-budget-breach-01" in md
-    assert "| cost ($) | $/solve | tool-use ok | errored |" in md
+    assert "| cost ($) | $/solve | tool-use ok | norms | errored |" in md
     assert "| Model | floor | failed floor tasks | tool-use ok | errored |" in md
     assert "## Excluded: harness errors" in md
     assert "provider error, context overflow, or harness bug" in md
@@ -155,3 +155,20 @@ def test_all_results_shows_non_qualifiers():
     assert (
         "No qualifying budget candidates yet." in md
     )  # correctly excluded from budget tier
+
+
+def test_qualified_table_shows_mean_norms():
+    md = render_leaderboard(
+        per_class={},
+        anchors={},
+        frontier={},
+        retired=[],
+        agentic={
+            "scored/m": _agentic_stats(mean_norms=0.875),
+            "unscored/m": _agentic_stats(),
+        },
+    )
+    scored = next(ln for ln in md.splitlines() if ln.startswith("| scored/m"))
+    unscored = next(ln for ln in md.splitlines() if ln.startswith("| unscored/m"))
+    assert "| 0.88 |" in scored
+    assert "| n/a |" in unscored

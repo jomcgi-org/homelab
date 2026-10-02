@@ -412,6 +412,10 @@ async def _run(args) -> None:
             )
 
         verify = get_verifier(task.verifier.kind)
+        norms_opts = {
+            "target_files": task.target_files or None,
+            "gold_diff_lines": task.gold_diff_lines,
+        }
 
         # Anchors run agentically inside Claude Code's own harness (its native tools),
         # not the bench's OpenRouter tool loop, and are graded by the same verifier. It
@@ -428,6 +432,7 @@ async def _run(args) -> None:
                 verify=verify,
                 verifier_args=task.verifier.args,
                 cli_model_name=claude_code.cli_model(model.id, model.api_model),
+                norms_opts=norms_opts,
             )
 
         async def chat(**kw):
@@ -454,6 +459,7 @@ async def _run(args) -> None:
             max_turns=task.agent.max_turns,
             max_tokens=task.agent.max_tokens or model.params.max_tokens,
             allow_exec=task.agent.exec,
+            norms_opts=norms_opts,
         )
 
     async def _judge_cell(task: TaskSpec, model, key: str) -> ResultCell | None:
@@ -649,6 +655,7 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
             "cost": 0.0,
             "cost_per_solve": None,
             "tool_ok_rate": 0.0,
+            "mean_norms": None,
             "errored": len(errored),
             "errored_tasks": errored_tasks,
         }
@@ -662,6 +669,11 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
     floor_failed = sorted(
         cell.task_id for cell in floor if not cell.first_attempt_passed
     )
+    norms = [
+        cell.norms_score
+        for cell in graded
+        if cell.first_attempt_passed and cell.norms_score is not None
+    ]
     return {
         "n": n,
         "pass_rate": pass_rate,
@@ -697,6 +709,9 @@ def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -
         # bargain. Infinite when nothing passes (rendered as a sentinel).
         "cost_per_solve": (cost / pass_rate) if pass_rate > 0 else None,
         "tool_ok_rate": sum(1 for cell in graded if cell.tool_use_ok) / n,
+        # Quality above the pass floor: mean norms score (bench/norms.py) over the
+        # passed cells that carry one. None until a passing cell has been scored.
+        "mean_norms": float(mean(norms)) if norms else None,
         # Excluded, not hidden: a model with errored cells is under-measured rather
         # than bad, and the leaderboard says so rather than scoring it as a failure.
         "errored": len(errored),
@@ -949,11 +964,15 @@ def _write_leaderboard_json(
     for cell in cells:
         if cell.turns is None or cell.task_id not in agentic_ids:
             continue
-        d = per_task.setdefault(cell.task_id, {"passed": 0, "n": 0, "scores": []})
+        d = per_task.setdefault(
+            cell.task_id, {"passed": 0, "n": 0, "scores": [], "norms": []}
+        )
         d["n"] += 1
         d["passed"] += int(cell.first_attempt_passed)
         if cell.first_attempt_score is not None:
             d["scores"].append(cell.first_attempt_score)
+        if cell.norms_score is not None:
+            d["norms"].append(cell.norms_score)
         # Last cell wins if a (model, task) somehow has duplicates on disk; within one
         # harness version there is exactly one cached cell per pair.
         per_model_tasks.setdefault(cell.model_id, {})[cell.task_id] = {
@@ -961,6 +980,7 @@ def _write_leaderboard_json(
             "passed": cell.first_attempt_passed,
             # Partial credit from a graded verifier (mutation score); None when binary.
             "score": cell.first_attempt_score,
+            "norms_score": cell.norms_score,
             "tokens": cell.total_tokens,
             "turns": cell.turns,
             "latency_ms": cell.total_latency_ms,
@@ -998,6 +1018,9 @@ def _write_leaderboard_json(
             "n": v["n"],
             "mean_score": (
                 round(sum(v["scores"]) / len(v["scores"]), 3) if v["scores"] else None
+            ),
+            "mean_norms": (
+                round(sum(v["norms"]) / len(v["norms"]), 3) if v["norms"] else None
             ),
         }
         for tid, v in sorted(per_task.items())
@@ -1038,6 +1061,9 @@ def _write_leaderboard_json(
                 else None
             ),
             "tool_use_ok": round(s["tool_ok_rate"], 4),
+            "mean_norms": (
+                round(s["mean_norms"], 4) if s.get("mean_norms") is not None else None
+            ),
             # Per-task breakdown, ordered by task id so it lines up with tasks_json.
             "tasks": [
                 per_model_tasks[mid][tid]

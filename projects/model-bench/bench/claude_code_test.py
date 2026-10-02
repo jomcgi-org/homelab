@@ -193,6 +193,8 @@ def test_anchor_cell_passes_and_is_free(monkeypatch, tmp_path):
     assert cell.tool_use_ok is True
     assert cell.attempts[0].latency_ms == 1234
     assert cell.attempts[0].prompt_tokens == 0
+    # A passing anchor cell carries norms (no edits here, so a clean 1.0).
+    assert cell.norms is not None and cell.norms_score == 1.0
 
 
 def test_anchor_cell_fails_when_verifier_fails(monkeypatch, tmp_path):
@@ -217,6 +219,7 @@ def test_anchor_cell_fails_when_verifier_fails(monkeypatch, tmp_path):
     assert cell.outcome == "fail"
     assert "route missing" in cell.attempts[0].feedback
     assert cell.attempts[0].score == 0.4
+    assert cell.norms is None  # norms are only scored above the pass floor
 
 
 def test_anchor_cell_fails_on_cli_error(monkeypatch, tmp_path):

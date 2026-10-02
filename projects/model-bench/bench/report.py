@@ -18,7 +18,7 @@ def render_leaderboard(
         frontier: task_class -> list of non-dominated model ids.
         retired: list of dicts with keys id, reason, date, pass1, cost.
         agentic: model_id -> dict with keys n, errored, errored_tasks, pass_rate,
-                 mean_tokens, mean_turns, cost, tool_ok_rate. The agentic tool-calling
+                 mean_tokens, mean_turns, cost, tool_ok_rate, mean_norms. The agentic tool-calling
                  leaderboard: the primary contract of this benchmark.
                  Optional/back-compatible.
         agentic_anchor_ids: set of model_ids in `agentic` that are anchors. They are
@@ -57,6 +57,11 @@ def render_leaderboard(
         cps = r.get("cost_per_solve")
         return f"{cps:.4f}" if cps is not None else "n/a"
 
+    def _norms(r) -> str:
+        # Mean norms score over passed cells (bench/norms.py); n/a until scored.
+        nm = r.get("mean_norms")
+        return f"{nm:.2f}" if nm is not None else "n/a"
+
     lines.append("## Agentic leaderboard: qualified")
     lines.append("")
     lines.append(
@@ -76,9 +81,9 @@ def render_leaderboard(
         )
         lines.append(
             "| Model | hard | frontier | mean tokens | mean turns | wall-time (s) "
-            "| cost ($) | $/solve | tool-use ok | errored |"
+            "| cost ($) | $/solve | tool-use ok | norms | errored |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- " * 11 + "|")
         for r in qualified:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
@@ -86,7 +91,8 @@ def render_leaderboard(
                 f"| {r.get('mean_tokens', 0):.0f} | {r.get('mean_turns', 0):.1f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
                 f"| {r.get('cost', 0.0):.4f} | {_cps(r)} "
-                f"| {r.get('tool_ok_rate', 0.0):.2f} | {r.get('errored', 0)} |"
+                f"| {r.get('tool_ok_rate', 0.0):.2f} | {_norms(r)} "
+                f"| {r.get('errored', 0)} |"
             )
     else:
         lines.append("No qualified models yet.")
