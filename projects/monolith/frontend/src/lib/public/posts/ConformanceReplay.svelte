@@ -343,7 +343,7 @@
     font: 0.7rem var(--font-code);
     scroll-behavior: auto;
   }
-  .trace li {
+  .trace ol li {
     display: grid;
     grid-template-columns: 3.4rem 7.5rem minmax(0, 1fr);
     gap: 0.5rem;
@@ -351,13 +351,13 @@
     line-height: 1.5;
     overflow-wrap: anywhere;
   }
-  .trace li.recv_status {
+  .trace ol li.recv_status {
     color: var(--ink-3);
   }
-  .trace li.checkpoint {
+  .trace ol li.checkpoint {
     color: var(--ink-2);
   }
-  .trace li[aria-current="step"] {
+  .trace ol li[aria-current="step"] {
     background: var(--band);
     color: var(--ink);
   }
@@ -535,7 +535,7 @@
       border-left: 0;
       border-top: 1px solid var(--stroke);
     }
-    .trace li {
+    .trace ol li {
       grid-template-columns: 3rem minmax(0, 1fr);
     }
     .trace .what {
