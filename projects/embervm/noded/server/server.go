@@ -47,6 +47,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	"github.com/jomcgi/homelab/projects/embervm/noded/egress"
+	"github.com/jomcgi/homelab/projects/embervm/noded/guestmem"
 	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/snapshotmeta"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
@@ -168,6 +169,7 @@ type BuildDriverSpec struct {
 // Server implements nodev1.NodeServiceServer.
 type Server struct {
 	nodev1.UnimplementedNodeServiceServer
+	guestMemory *guestmem.Poller
 
 	cfg           config.Config
 	driver        vmDriver
@@ -543,6 +545,12 @@ func New(opts Options) *Server {
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
 	// rescan). Only when serving is configured; task/session-only builds skip it.
 	s.reconcileServingImagesFromDisk()
+	s.guestMemory = guestmem.New(guestmem.Options{
+		Enabled:  s.cfg.GuestMemoryFeedbackEnabled,
+		Interval: s.cfg.GuestMemoryFeedbackInterval,
+		Event:    s.guestMemoryEvent,
+	})
+
 	// Load the last-synced workload registry from NVMe and mark it STALE (ADR
 	// embervm/012, never warm-to-dead): a restarted daemon serves the warm pool it
 	// already knew from the cached table while it waits for the control plane to
@@ -1228,6 +1236,7 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	egressCancel := func() {}
 	defer func() {
 		egressCancel()
+		s.forgetGuestMemory(h)
 		if rerr := bd.Release(context.Background(), h); rerr != nil {
 			s.logger.Warn("noded: release build guest", "base", baseKey, "err", rerr)
 		}
@@ -1237,6 +1246,7 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	}()
 
 	uds := bd.VsockUDSPath(h.ThreadID)
+	s.trackGuestMemory(h, workload, uds)
 	egressCancel = s.startEgress(uds, h.ID, workload)
 
 	// Zip lane: prime the vsock path open, then hydrate the shim with the archive
@@ -1265,6 +1275,7 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 		return 0, fmt.Errorf("guest readiness: %w", err)
 	}
 	markGuestReady(bd, h)
+	s.forgetGuestMemory(h)
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1493,6 +1504,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore snapshot %q: %v", ref, err)
 	}
 	uds := s.driver.VsockUDSPath(h.ThreadID)
+	s.trackGuestMemory(h, base.workload, uds)
 
 	// Shake out Firecracker's post-restore vsock RX-queue race off the readiness
 	// path (best-effort), then health-gate on the boot or restore budget selected
@@ -2031,6 +2043,7 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	snapshotStarted := false
 	if err := e.teardown.run(func() error {
 		snapshotStarted = true
+		s.forgetGuestMemory(e.handle)
 		ref, snapshotErr = s.sessionDriver.SnapshotSession(ctx, e.handle, newID("sess"))
 		if snapshotErr != nil && snapshotTeardownConfirmed(snapshotErr) {
 			e.teardown.released = true
@@ -2129,6 +2142,7 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight session snapshot %q: %v", ref, err)
 	}
 	uds := s.driver.VsockUDSPath(h.ThreadID)
+	s.trackGuestMemory(h, workload, uds)
 
 	// Shake out the post-restore vsock RX-queue race, then health-gate on the short
 	// restore budget (same mechanics as Prime).
@@ -2505,6 +2519,11 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		LocalBases:            s.localBasesStatus(),
 		ScratchGeneration:     scratchGeneration,
 		VmmExitCounts:         s.vmmExitCounts(),
+	}
+	if s.cfg.GuestMemoryFeedbackEnabled {
+		memory := s.guestMemory.Snapshot()
+		ns.GuestMemoryStateCounts = memory.Counts
+		ns.GuestOomCount = memory.GuestOOM
 	}
 	s.activatorMu.RLock()
 	activatorEnabled := s.activatorEnabled
@@ -3462,6 +3481,7 @@ func (s *Server) reap(h substrate.Handle, egressCancel func()) error {
 }
 
 func (s *Server) reapTracked(h substrate.Handle, egressCancel func(), progress *vmTeardown) error {
+	s.forgetGuestMemory(h)
 	if egressCancel != nil {
 		egressCancel()
 	}

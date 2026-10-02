@@ -11,6 +11,37 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 )
 
+func TestGuestMemoryFeedbackConfig(t *testing.T) {
+	for _, tc := range []struct {
+		enabled, interval    string
+		wantEnabled, invalid bool
+		wantInterval         time.Duration
+	}{
+		{"", "", false, false, 10 * time.Second},
+		{"true", "2s", true, false, 2 * time.Second},
+		{"false", "5m", false, false, 5 * time.Minute},
+		{"true", "0s", true, true, 0},
+		{"true", "500ms", true, true, 0},
+		{"false", "6m", false, true, 0},
+		{"false", "bad", false, true, 0},
+	} {
+		t.Run(tc.enabled+tc.interval, func(t *testing.T) {
+			t.Setenv("EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_ENABLED", tc.enabled)
+			t.Setenv("EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_INTERVAL", tc.interval)
+			c, err := Load()
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), "GUEST_MEMORY_FEEDBACK_INTERVAL") {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil || c.GuestMemoryFeedbackEnabled != tc.wantEnabled || c.GuestMemoryFeedbackInterval != tc.wantInterval {
+				t.Fatalf("enabled=%v interval=%v err=%v", c.GuestMemoryFeedbackEnabled, c.GuestMemoryFeedbackInterval, err)
+			}
+		})
+	}
+}
+
 func TestLoadRootfsPendingMaxAge(t *testing.T) {
 	for _, tc := range []struct {
 		value   string

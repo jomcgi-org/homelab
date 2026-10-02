@@ -568,6 +568,10 @@ containers:
         value: {{ $ctx.Values.noded.firecracker.guestOomScoreAdj | quote }}
       - name: EMBERVM_NODED_JAILER_ENABLED
         value: {{ $ctx.Values.noded.jailer.enabled | quote }}
+      - name: EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_ENABLED
+        value: {{ $ctx.Values.noded.guestMemoryFeedback.enabled | quote }}
+      - name: EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_INTERVAL
+        value: {{ $ctx.Values.noded.guestMemoryFeedback.interval | quote }}
       - name: EMBERVM_NODED_BOOT_READY_TIMEOUT
         value: {{ $ctx.Values.noded.firecracker.bootReadyTimeout | quote }}
       {{- with $ctx.Values.noded.firecracker.kernelBootArgs }}

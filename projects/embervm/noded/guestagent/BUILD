@@ -15,6 +15,7 @@ go_library(
         "clock_linux.go",
         "clock_other.go",
         "frame.go",
+        "memory.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/noded/guestagent",
     visibility = ["//visibility:public"],
@@ -34,6 +35,7 @@ go_test(
     srcs = [
         "agent_test.go",
         "frame_test.go",
+        "memory_test.go",
     ],
     embed = [":guestagent"],
 )

@@ -182,6 +182,7 @@ func (s *Server) startServingRelight(ctx context.Context, req *nodev1.StartServi
 // probe. On a readiness failure it reaps the VM and releases the tap (no half-alive
 // endpoint), returning FAILED_PRECONDITION.
 func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, healthPath string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartServingResponse, error) {
+	s.trackGuestMemory(h, workload, s.driver.VsockUDSPath(h.ThreadID))
 	if err := s.waitServingReady(ctx, ip, port, healthPath, readyBudget); err != nil {
 		s.reapServing(h, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving guest not ready over tap: %v", err)
@@ -289,6 +290,7 @@ func (s *Server) stopServingBank(ctx context.Context, req *nodev1.StopServingReq
 	if err := e.teardown.run(func() error {
 		snapshotStarted = true
 		e.probe.Stop()
+		s.forgetGuestMemory(e.handle)
 		ref, snapshotErr = s.servingDriver.SnapshotServing(ctx, e.handle, newID("serv"), e.ip.String())
 		if snapshotErr != nil && snapshotTeardownConfirmed(snapshotErr) {
 			e.teardown.released = true

@@ -2308,4 +2308,13 @@ message NodeStatus {
   // Absent on older daemons means unsupported, not evidence of healthy guests
   // or zero failures. Counters are observation only, not admission/banking input.
   map<string, uint64> vmm_exit_counts = 40;
+
+  // Diagnostic guest telemetry only. Absent map means feedback is disabled or
+  // unsupported by this daemon. Exactly five state keys: pending, ok, stale,
+  // unsupported, error. Only ok has fresh usable evidence, not application
+  // health. No VM identities or guest-supplied workload labels are exported.
+  map<string, uint64> guest_memory_state_counts = 41;
+  // Sum of positive oom_kill deltas within individual host activations since
+  // daemon start. The first report of every activation is a baseline only.
+  uint64 guest_oom_count = 42;
 }

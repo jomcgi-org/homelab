@@ -385,6 +385,7 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 // and, once process cessation is confirmed, releases the tap and DETACHES the
 // volume (never rolling the generation back), returning FAILED_PRECONDITION.
 func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, workload, sourceRef string, ip net.IP, port uint32, generation uint64, wasRelight bool, coldBootReason string, readyBudget time.Duration, origin nodev1.InstanceOrigin) (*nodev1.StartStatefulResponse, error) {
+	s.trackGuestMemory(h, workload, s.driver.VsockUDSPath(h.ThreadID))
 	if err := s.waitStatefulReady(ctx, ip, port, readyBudget); err != nil {
 		s.reapStateful(h, ip, workload)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful guest not ready over tap: %v", err)
@@ -539,8 +540,10 @@ func (s *Server) stopStatefulCheckpoint(ctx context.Context, vmID string) (*node
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful vm %q not checkpointable (unknown or a stop is already in flight)", vmID)
 	}
 	snapshotRef := newID("state")
+	s.forgetGuestMemory(e.handle)
 	token, err := s.statefulDriver.CheckpointStateful(ctx, e.handle, snapshotRef, e.generation, e.ip.String())
 	if err != nil {
+		s.trackGuestMemory(e.handle, e.workload, s.driver.VsockUDSPath(e.handle.ThreadID))
 		s.statefulVMs.clearInFlight(vmID)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: checkpoint stateful vm %q: %v", vmID, err)
 	}
@@ -686,6 +689,7 @@ func (s *Server) abortCheckpoint(ctx context.Context, e *statefulEntry, token st
 	}
 	// Resumed hot: record the advanced generation, clear the checkpoint + stop guard.
 	s.statefulVMs.resumeFromCheckpoint(e.vmID, gen)
+	s.trackGuestMemory(e.handle, e.workload, s.driver.VsockUDSPath(e.handle.ThreadID))
 	s.signalChange()
 	// Report the generation so the control plane's blessing ledger can confirm the
 	// value it issued was recorded (it blessed the same number pre-dispatch). Zero
@@ -741,6 +745,7 @@ func (s *Server) stopStatefulBank(ctx context.Context, vmID string) (*nodev1.Sto
 	}
 	e.probe.Stop()
 	snapshotRef := newID("state")
+	s.forgetGuestMemory(e.handle)
 	ref, err := s.statefulDriver.SnapshotStateful(ctx, e.handle, snapshotRef, e.generation, e.ip.String())
 	if err != nil {
 		// A bank is destructive: SnapshotStateful tore the VM down on failure, so
