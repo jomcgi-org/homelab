@@ -45,6 +45,7 @@ function text(data) {
 function sharing(data) {
   if (!data.has("dm_readable")) return {};
   const value = data.get("dm_readable");
+  if (value === "") return {};
   if (value !== "true" && value !== "false")
     throw new Error("Invalid DM-sharing choice.");
   return { dm_readable: value === "true" };

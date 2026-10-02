@@ -18,7 +18,6 @@
   } = $props();
   const panelId = $props.id();
   let kind = $state(untrack(() => initialKind));
-  let shareChoice = $state("default");
   $effect(() => {
     kind = initialKind;
   });
@@ -97,22 +96,12 @@
           {#if kind === "character"}
             <label
               >DM sharing
-              <select
-                value={shareChoice}
-                onchange={(event) => {
-                  shareChoice = event.currentTarget.value;
-                }}
-              >
-                <option value="default">Campaign default</option>
+              <select name="dm_readable">
+                <option value="">Campaign default</option>
                 <option value="false">Private</option>
                 <option value="true">Share with DM</option>
               </select>
             </label>
-            {#if shareChoice !== "default"}<input
-                type="hidden"
-                name="dm_readable"
-                value={shareChoice}
-              />{/if}
           {:else}<p>
               Party notes are shared with the DM and players with a character.
             </p>{/if}

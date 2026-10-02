@@ -90,28 +90,41 @@ describe("NotesPanel", () => {
     const form = root.querySelector('form[aria-label="Add note"]');
     form.querySelector('[name="title"]').value = "Found a map";
     form.querySelector('[name="markdown"]').value = "## North\nTravel tomorrow";
-    const select = form.querySelector("select");
+    const select = form.querySelector('select[name="dm_readable"]');
+    expect(select).not.toBeNull();
     expect([...select.options].map((option) => option.textContent)).toEqual([
       "Campaign default",
       "Private",
       "Share with DM",
+    ]);
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "",
+      "false",
+      "true",
     ]);
     expect(Object.fromEntries(new FormData(form))).toEqual({
       campaign_id: campaignId,
       kind: "character",
       title: "Found a map",
       markdown: "## North\nTravel tomorrow",
+      dm_readable: "",
     });
-    for (const choice of ["false", "true", "default"]) {
+    for (const choice of ["false", "true", ""]) {
       select.value = choice;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      await tick();
       const fields = new FormData(form);
       expect(fields.get("title")).toBe("Found a map");
       expect(fields.get("markdown")).toBe("## North\nTravel tomorrow");
-      if (choice === "default") expect(fields.has("dm_readable")).toBe(false);
-      else expect(fields.get("dm_readable")).toBe(choice);
+      expect(fields.get("dm_readable")).toBe(choice);
     }
+  });
+
+  it("SSR renders a named DM-sharing select so the default submits without JS", async () => {
+    const { render } = await import("svelte/server");
+    const { body } = render(NotesPanel, {
+      props: { campaignId, notes: [note()] },
+    });
+    expect(body).toContain('name="dm_readable"');
+    expect(body).toContain('value=""');
   });
 
   it("labels the DM character tab Shared with you and permits only party quick-add", async () => {
