@@ -2467,11 +2467,17 @@ proposed `value` and `reason`. The builder chooses it and comments
 `Decided by the conductor: <value>, because <reason>; reversible` once.
 `spending`, `prod_deletion` and `external_account` keep the human decision path.
 A case-insensitive heuristic backstop also escalates restricted terms in a
-parameter's proposed value, even when the model labels the gate reversible.
-Explanatory reasons are not authority requests: saying a default does not spend
-money or touch an account must not block it. Recording a staged live-validation
+gate's proposed value, even when the model labels the gate reversible.
+Every gate requires an `effects` object with exactly four booleans:
+`spends_money`, `deletes_data`, `touches_external_account`, and `uses_credentials`.
+Declare each true when choosing the value or acting on the gate would have that
+effect, including using or changing credentials. Any true effect keeps the human
+decision path for every gate kind. Resolution and refinement share this check;
+`reason` is free prose and may explain safety. Recording a staged live-validation
 scope and its outstanding checklist does not authorize performing those checks.
 A documented default does not authorize bucket creation, deletion or credentials.
+New and in-flight artifacts with missing or malformed effects fail validation
+and cannot resolve. Stored conductor decisions remain readable without effects.
 Unclassified legacy questions retain their existing escalation path.
 
 For `live_validation`, the conductor records a default-off or staged repository
