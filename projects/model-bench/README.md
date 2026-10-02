@@ -49,7 +49,8 @@ A mutant's `find` text must occur exactly once in the module, so bumping the fix
 commit fails loudly instead of silently grading a no-op.
 
 The leaderboard shows the mean graded score over scored tasks next to the hard
-pass count. Failed cells without a score count as 0; harness errors are excluded.
+pass count. A task is scored when any current, non-retired cell on it carries a
+graded score. Failed cells without a score count as 0; harness errors are excluded.
 
 ## Performance (speedup) tasks
 

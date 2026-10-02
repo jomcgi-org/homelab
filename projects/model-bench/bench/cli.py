@@ -917,7 +917,27 @@ def _report(args) -> None:
             group, tier_of, scored_ids=scored_ids
         )
 
-    tasks_json, _ = _leaderboard_task_data(cells=cells, tasks=tasks)
+    # Scored-task rows use the same graded semantics as the per-model mean_score:
+    # current agentic tasks, non-retired models, harness-error cells excluded, and
+    # failed cells without a score count as 0 via _cell_score. (The JSON
+    # tasks[].mean_score is left untouched for the frontend.)
+    scored_cells: dict[str, list[ResultCell]] = {}
+    for group in agentic_groups.values():
+        for cell in group:
+            if cell.task_id in scored_ids and not cell.is_harness_error:
+                scored_cells.setdefault(cell.task_id, []).append(cell)
+    scored_tasks = [
+        {
+            "id": tid,
+            "tier": tier_of.get(tid, "standard"),
+            "passed": sum(1 for cell in group if cell.first_attempt_passed),
+            "n": len(group),
+            "mean_score": round(
+                sum(_cell_score(cell) for cell in group) / len(group), 3
+            ),
+        }
+        for tid, group in sorted(scored_cells.items())
+    ]
 
     md = render_leaderboard(
         per_class=per_class,
@@ -929,7 +949,7 @@ def _report(args) -> None:
         # but the markdown splits them into a ceiling section instead of the cost-ranked
         # candidate tables, where their free (cost=0) rows would otherwise dominate.
         agentic_anchor_ids=anchor_ids,
-        scored_tasks=[row for row in tasks_json if row["id"] in scored_ids],
+        scored_tasks=scored_tasks,
     )
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
