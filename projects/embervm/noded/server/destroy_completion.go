@@ -380,7 +380,7 @@ func (s *Server) destroyStrict(ctx context.Context, req *nodev1.DestroyRequest) 
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	e.teardown.started.Store(true)
+	e.beginTeardown()
 	if err := s.reapSessionEntryWithProof(e, want, s.destroyProofs.commit); err != nil {
 		return nil, destroyProofError(err)
 	}

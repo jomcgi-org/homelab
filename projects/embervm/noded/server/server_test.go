@@ -321,6 +321,7 @@ type fakeTransport struct {
 	waitReadyContinue <-chan struct{}
 	roundTripErr      error
 	interruptErr      error
+	interruptResponse string
 	interruptBodies   []string
 	// hydrate capture: hydrates counts the calls, hydrateBytes records the last
 	// archive delivered so a zip test can assert the exact bytes were hydrated, and
@@ -408,6 +409,7 @@ func (f *fakeTransport) RoundTrip(ctx context.Context, udsPath string, req *http
 	f.roundTrips++
 	rtErr := f.roundTripErr
 	interruptErr := f.interruptErr
+	interruptResponse := f.interruptResponse
 	block := f.blockRoundTrip
 	stateSource := f.stateSource
 	f.mu.Unlock()
@@ -419,12 +421,13 @@ func (f *fakeTransport) RoundTrip(ctx context.Context, udsPath string, req *http
 		if interruptErr != nil {
 			return nil, interruptErr
 		}
+		if interruptResponse == "" {
+			interruptResponse = `{"terminal_reason":"user_interrupt","killed":false,"timeout":false}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body: io.NopCloser(bytes.NewReader([]byte(
-				`{"terminal_reason":"user_interrupt","killed":false,"timeout":false}`,
-			))),
+			Body:       io.NopCloser(strings.NewReader(interruptResponse)),
 		}, nil
 	}
 
@@ -2906,6 +2909,148 @@ func TestSessionInFlightGuard(t *testing.T) {
 	close(gate) // release the first
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first SessionAssign: %v", err)
+	}
+}
+
+// cancelSessionAssign waits for the node handler to return, rather than just
+// the gRPC client's cancellation, so assertions observe the released guard.
+func cancelSessionAssign(t *testing.T, srv *Server, tr *fakeTransport, vmID string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := tr.roundTripCount()
+	done := make(chan error, 1)
+	go func() {
+		response, err := srv.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+			VmId: vmID, SessionId: "s-abandoned", DispatchId: "abandoned",
+			Request: &nodev1.GuestRequest{Body: []byte("work")}, TimeoutMs: 5000,
+		})
+		if err == nil && !response.GetSuspect() {
+			err = fmt.Errorf("caller cancellation lost the existing suspect response")
+		}
+		done <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for tr.roundTripCount() == before {
+		if time.Now().After(deadline) {
+			t.Fatal("assign never reached the guest")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("caller-cancelled assign changed its response: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled assign did not release its guard")
+	}
+}
+
+func TestSessionInterruptAfterCallerCancellation(t *testing.T) {
+	drv := &fakeDriver{}
+	tr := &fakeTransport{
+		blockRoundTrip:    make(chan struct{}),
+		interruptResponse: `{"terminal_reason":"interrupted_for_drain","killed":false,"timeout":false,"dispatch_id":"abandoned","cli_session_id":"cli-preserved","transcript_path":"/workspace/.ember/interrupted-turns/saved.json"}`,
+	}
+	client, srv := newSessionTestServer(t, drv, tr, 8)
+	vmID := primeSessionVM(t, srv, drv, "s-abandoned", "echo", "sref-abandoned", "")
+	cancelSessionAssign(t, srv, tr, vmID)
+	response, err := client.SessionInterrupt(context.Background(), &nodev1.SessionInterruptRequest{
+		VmId: vmID, SessionId: "s-abandoned", DispatchId: "abandoned", Reason: "interrupted_for_drain",
+	})
+	if err != nil {
+		t.Fatalf("interrupt abandoned dispatch: %v", err)
+	}
+	if response.GetDispatchId() != "abandoned" || response.GetCliSessionId() != "cli-preserved" || response.GetTranscriptPath() != "/workspace/.ember/interrupted-turns/saved.json" {
+		t.Fatalf("interrupt lost durable guest evidence: %+v", response)
+	}
+	for _, request := range []*nodev1.SessionInterruptRequest{
+		{VmId: vmID, SessionId: "s-abandoned", DispatchId: "other"},
+		{VmId: vmID, SessionId: "other-session", DispatchId: "abandoned"},
+	} {
+		_, err := client.SessionInterrupt(context.Background(), request)
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("wrong identity code = %v, want FailedPrecondition", status.Code(err))
+		}
+	}
+	if tr.interruptCount() != 1 || drv.LiveCount() != 1 {
+		t.Fatalf("interrupt count = %d, live VMs = %d, want 1/1", tr.interruptCount(), drv.LiveCount())
+	}
+}
+
+func TestAbandonedDispatchClearedByNextOperation(t *testing.T) {
+	for _, action := range []string{"assign", "assign-ended", "bank-guard", "teardown", "remove"} {
+		t.Run(action, func(t *testing.T) {
+			drv := &fakeDriver{}
+			tr := &fakeTransport{blockRoundTrip: make(chan struct{})}
+			client, srv := newSessionTestServer(t, drv, tr, 8)
+			vmID := primeSessionVM(t, srv, drv, "s-abandoned", "echo", "sref-abandoned", "")
+			cancelSessionAssign(t, srv, tr, vmID)
+			e := srv.sessionVMs.get(vmID)
+			switch action {
+			case "assign", "assign-ended":
+				if _, ok := srv.sessionVMs.beginSessionAssign(vmID, "s-abandoned", "successor"); !ok {
+					t.Fatal("successor could not take the guard")
+				}
+				if action == "assign-ended" {
+					e.endInFlight()
+				}
+			case "bank-guard":
+				if _, ok := srv.sessionVMs.beginInFlight(vmID); !ok {
+					t.Fatal("Bank could not take the guard")
+				}
+			case "teardown":
+				srv.sessionVMs.forTeardown(vmID)
+			case "remove":
+				srv.sessionVMs.remove(vmID)
+			}
+			e.mu.Lock()
+			abandoned := e.abandonedDispatch
+			e.mu.Unlock()
+			if abandoned != "" {
+				t.Fatalf("abandoned dispatch retained after %s", action)
+			}
+			_, err := client.SessionInterrupt(context.Background(), &nodev1.SessionInterruptRequest{
+				VmId: vmID, SessionId: "s-abandoned", DispatchId: "abandoned",
+			})
+			if status.Code(err) != codes.FailedPrecondition || tr.interruptCount() != 0 {
+				t.Fatalf("stale interrupt after %s: %v, guest calls %d", action, err, tr.interruptCount())
+			}
+		})
+	}
+}
+
+func TestSessionAssignDeadlineDoesNotAbandonDispatch(t *testing.T) {
+	for _, callerDeadline := range []bool{false, true} {
+		t.Run(fmt.Sprint(callerDeadline), func(t *testing.T) {
+			drv := &fakeDriver{}
+			tr := &fakeTransport{blockRoundTrip: make(chan struct{})}
+			client, srv := newSessionTestServer(t, drv, tr, 8)
+			vmID := primeSessionVM(t, srv, drv, "s-abandoned", "echo", "sref-abandoned", "")
+			ctx := context.Background()
+			timeout := uint32(10)
+			if callerDeadline {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 10*time.Millisecond)
+				defer cancel()
+				timeout = 5000
+			}
+			_, err := srv.SessionAssign(ctx, &nodev1.SessionAssignRequest{
+				VmId: vmID, SessionId: "s-abandoned", DispatchId: "abandoned",
+				Request: &nodev1.GuestRequest{Body: []byte("work")}, TimeoutMs: timeout,
+			})
+			if status.Code(err) != codes.DeadlineExceeded {
+				t.Fatalf("assign code = %v, want DeadlineExceeded", status.Code(err))
+			}
+			_, err = client.SessionInterrupt(context.Background(), &nodev1.SessionInterruptRequest{
+				VmId: vmID, SessionId: "s-abandoned", DispatchId: "abandoned",
+			})
+			if status.Code(err) != codes.FailedPrecondition || tr.interruptCount() != 0 {
+				t.Fatalf("deadline retained an interrupt target: %v, calls %d", err, tr.interruptCount())
+			}
+		})
 	}
 }
 

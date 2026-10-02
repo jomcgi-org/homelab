@@ -779,6 +779,11 @@ message SessionInterruptResponse {
   string terminal_reason = 1;
   bool killed = 2;
   bool timeout = 3;
+  // Additive recovery evidence, populated only when the guest durably persisted
+  // an interrupted-turn record for this exact dispatch. Empty otherwise.
+  string dispatch_id = 4;
+  string cli_session_id = 5;
+  string transcript_path = 6;
 }
 
 // BankRequest pauses, snapshots, and destroys a live session VM. session_id is
