@@ -154,6 +154,7 @@ export const METRICS = {
     better: "lower",
     get: (m) => (m.mean_latency_ms ?? 0) / 1000,
     fmt: secs,
+    tick: (v) => `${Math.round(v)}s`,
     note: (m) => (m.self_hosted ? "one 4090" : ""),
   },
   tokens: {
@@ -184,6 +185,32 @@ export function plottable(models, key) {
   return METRICS[key].candidatesOnly
     ? models.filter((m) => m.role !== "anchor")
     : [...models];
+}
+
+// Pareto frontier of {x, y} points where lower x and higher y are better: a
+// point is on it when no other point has at least its y for at most its x,
+// with one of the two strictly better. Returned left to right.
+export function paretoFrontier(points) {
+  return points
+    .filter(
+      (p) =>
+        !points.some(
+          (q) =>
+            q !== p && q.y >= p.y && q.x <= p.x && (q.y > p.y || q.x < p.x),
+        ),
+    )
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+}
+
+// Providers present in a selection, in palette order.
+export function providersIn(models) {
+  const rank = (p) => {
+    const i = PROVIDERS.indexOf(p);
+    return i === -1 ? PROVIDERS.length : i;
+  };
+  return [...new Set(models.map((m) => provider(m.id)))].sort(
+    (a, b) => rank(a) - rank(b),
+  );
 }
 
 export function sortByMetric(models, key) {
