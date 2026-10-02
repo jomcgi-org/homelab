@@ -6,16 +6,18 @@
   // budget models, and a log bar would hide exactly that.
   import { METRICS, providerSlot, shortName, sortByMetric } from "./model.js";
 
-  let { models = [], metric = "hard", hot = null, onhover = () => {} } =
-    $props();
+  let {
+    models = [],
+    metric = "hard",
+    hot = null,
+    onhover = () => {},
+  } = $props();
 
   const cfg = $derived(METRICS[metric]);
   const rows = $derived(sortByMetric(models, metric));
   const max = $derived(
-    Math.max(
-      metric === "hard" ? 1 : 0,
-      ...rows.map((m) => cfg.get(m) ?? 0),
-    ) || 1,
+    Math.max(metric === "hard" ? 1 : 0, ...rows.map((m) => cfg.get(m) ?? 0)) ||
+      1,
   );
 </script>
 
@@ -49,7 +51,9 @@
     {/each}
   </ol>
   {#if cfg.candidatesOnly && rows.length < models.length}
-    <p class="omit">Claude omitted: its own harness counts these differently.</p>
+    <p class="omit">
+      Claude omitted: its own harness counts these differently.
+    </p>
   {/if}
 </section>
 
