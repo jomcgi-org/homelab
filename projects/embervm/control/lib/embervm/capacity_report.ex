@@ -75,7 +75,7 @@ defmodule Embervm.CapacityReport do
         aggregation:
           "Summed headroom and free slots are descriptive signals, not a placement guarantee, reservation, scaling decision, or target.",
         diagnostics:
-          "Exit and guest OOM counters are cumulative since daemon start and reset with a new daemon instance. Guest memory states are current counts. Diagnostic only, not an admission or banking input; an unavailable guest state is neither healthy nor OOM. Unsupported fields emit no observation. Values above signed 64-bit range remain in JSON and logs but are omitted from OTel."
+          "Exit and guest OOM counters are cumulative since daemon start and reset with a new daemon instance. The daemon guest OOM total saturates at uint64 maximum. Guest memory states are current counts. Diagnostic only, not an admission or banking input; an unavailable guest state is neither healthy nor OOM. Unsupported fields emit no observation. Values above signed 64-bit range remain in JSON and logs but are omitted from OTel."
       },
       instances: instances,
       workloads: workloads,

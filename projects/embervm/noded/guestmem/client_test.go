@@ -103,6 +103,9 @@ func TestClientEvidence(t *testing.T) {
 			if errors.Is(err, ErrUnsupported) != (tc.want == Unsupported) {
 				t.Fatalf("err=%v want=%s", err, tc.want)
 			}
+			if errors.Is(err, ErrAgentUnavailable) != (tc.want == Unsupported && tc.name != "old agent") {
+				t.Fatalf("transport failure incorrectly cached as confirmed capability: %v", err)
+			}
 		})
 	}
 }
@@ -122,6 +125,9 @@ func TestDialAndTimeoutStates(t *testing.T) {
 			_, err := c.Fetch(context.Background(), "uds", "nonce")
 			if err == nil || errors.Is(err, ErrUnsupported) != tc.unsupported {
 				t.Fatalf("err=%v", err)
+			}
+			if errors.Is(err, ErrAgentUnavailable) != (tc.err == syscall.ECONNREFUSED) {
+				t.Fatalf("refused listener must remain retryable: %v", err)
 			}
 		})
 	}

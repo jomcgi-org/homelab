@@ -1118,7 +1118,9 @@ Any future automatic action needs its own flag and issue, gated separately
 from telemetry rollout. The control plane reports fixed-cardinality instance
 diagnostics and logs positive counter deltas. Exit and guest OOM counters are
 cumulative since daemon start; new instances, boots and backwards counters
-establish fresh baselines.
+establish fresh baselines. The daemon guest OOM total saturates at the uint64
+limit. A listener unavailable during guest boot is retried; only an explicit
+unsupported-command response suppresses further probes for that activation.
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
