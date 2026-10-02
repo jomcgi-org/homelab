@@ -418,6 +418,10 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 			"host_requested": 11, "host_cgroup_oom": 2,
 			"guest_kernel_panic": 3, "unclassified": 4,
 		},
+		GuestMemoryStateCounts: map[string]uint64{
+			"pending": 1, "ok": 2, "stale": 3, "unsupported": 4, "error": 5,
+		},
+		GuestOomCount: 7,
 		// Continuity facts (R6): a fixed drain deadline and store reachability so
 		// the client can assert the new node-level fields round-trip. The bundle,
 		// volume, and set exported flags below prove the per-artifact fields cross.
@@ -628,6 +632,10 @@ func (s *fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerS
 				"host_requested": uint64(i), "host_cgroup_oom": 2,
 				"guest_kernel_panic": 3, "unclassified": 4,
 			},
+			GuestMemoryStateCounts: map[string]uint64{
+				"pending": 1, "ok": 2, "stale": 3, "unsupported": 4, "error": 5,
+			},
+			GuestOomCount: 7 + uint64(i),
 		}); err != nil {
 			return err
 		}

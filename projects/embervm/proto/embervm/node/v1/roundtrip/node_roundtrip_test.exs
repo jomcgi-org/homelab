@@ -110,6 +110,8 @@ defmodule Embervm.NodeRoundtripTest do
              "guest_kernel_panic" => 3,
              "unclassified" => 4
            }
+    assert ns.guest_memory_state_counts == %{"pending" => 1, "ok" => 2, "stale" => 3, "unsupported" => 4, "error" => 5}
+    assert ns.guest_oom_count == 7
     assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512}] = ns.session_volumes
   end
 
@@ -867,6 +869,10 @@ defmodule Embervm.NodeRoundtripTest do
     assert Enum.map(statuses, & &1.live_vms) == [0, 1, 2]
     assert Enum.all?(statuses, &(&1.node_id == "node-4"))
     assert Enum.map(statuses, & &1.vmm_exit_counts["host_requested"]) == [0, 1, 2]
+    assert Enum.map(statuses, & &1.guest_oom_count) == [7, 8, 9]
+    assert Enum.all?(statuses, &(&1.guest_memory_state_counts == %{
+      "pending" => 1, "ok" => 2, "stale" => 3, "unsupported" => 4, "error" => 5
+    }))
     assert Enum.all?(statuses, fn s ->
              s.vmm_exit_counts["host_cgroup_oom"] == 2 and
                s.vmm_exit_counts["guest_kernel_panic"] == 3 and
