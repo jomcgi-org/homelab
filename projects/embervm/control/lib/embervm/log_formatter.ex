@@ -37,6 +37,10 @@ defmodule Embervm.LogFormatter do
     :error,
     # CapacityObserver metadata.
     :instance_id,
+    # NodeRegistry diagnostic lifecycle deltas.
+    :boot_id,
+    :delta,
+    :total,
     :vm_id,
     :elapsed_ms,
     :alarm_threshold_ms,

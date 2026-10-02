@@ -117,6 +117,97 @@ defmodule Embervm.NodeRegistryTest do
     assert NodeRegistry.diagnostic_facts(%{status | guest_memory_state_counts: %{"unknown" => 9}}).guest_memory_state_counts == nil
   end
 
+  defp diagnostic_status(exits, oom) do
+    %{node_status() | vmm_exit_counts: exits, guest_memory_state_counts: %{"ok" => 1}, guest_oom_count: oom}
+  end
+
+  defp diagnostic_log(fun) do
+    ExUnit.CaptureLog.capture_log([format: "$message $metadata\n", metadata: [:reason, :kind, :delta, :total]], fun)
+  end
+
+  test "diagnostic deltas baseline first reports, unsupported transitions, repeats and daemon resets" do
+    {reg, _table} = start_registry([])
+    baseline = diagnostic_status(%{"host_requested" => 10, "host_cgroup_oom" => 2}, 5)
+    assert diagnostic_log(fn ->
+      :ok = NodeRegistry.inject_status(reg, "node-4", baseline)
+      :ok = NodeRegistry.inject_status(reg, "node-4", baseline)
+    end) == ""
+
+    increased = diagnostic_status(%{"host_requested" => 12, "host_cgroup_oom" => 3}, 7)
+    log = diagnostic_log(fn ->
+      :ok = NodeRegistry.inject_status(reg, "node-4", increased)
+      :ok = NodeRegistry.inject_status(reg, "node-4", increased)
+    end)
+    assert length(Regex.scan(~r/embervm vmm exit observed/, log)) == 2
+    assert length(Regex.scan(~r/embervm guest oom observed/, log)) == 1
+    assert log =~ "reason=host_requested"
+    assert log =~ "delta=2"
+    assert log =~ "total=12"
+    assert log =~ "kind=guest_oom"
+
+    assert diagnostic_log(fn ->
+      # One backwards counter rebaselines the whole daemon, even if others rise.
+      :ok = NodeRegistry.inject_status(reg, "node-4", diagnostic_status(%{"host_requested" => 1, "host_cgroup_oom" => 99}, 100))
+      # Disabled feedback cannot turn its default uint64 zero into evidence.
+      :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | guest_oom_count: 999})
+      :ok = NodeRegistry.inject_status(reg, "node-4", increased)
+    end) == ""
+    assert diagnostic_log(fn ->
+      :ok = NodeRegistry.inject_status(reg, "node-4", diagnostic_status(increased.vmm_exit_counts, 1))
+    end) == ""
+    log = diagnostic_log(fn ->
+      :ok = NodeRegistry.inject_status(reg, "node-4", diagnostic_status(increased.vmm_exit_counts, 2))
+    end)
+    assert log =~ "delta=1"
+
+    # A new control-plane process owns no previous daemon baseline.
+    {restarted, _} = start_registry([])
+    assert diagnostic_log(fn -> :ok = NodeRegistry.inject_status(restarted, "node-4", increased) end) == ""
+  end
+
+  test "diagnostic series and baselines clear on drain and age-out" do
+    {clock, advance} = new_clock()
+    {reg, table} = start_registry(clock: clock, age_check_ms: 60_000)
+    status = diagnostic_status(%{"host_requested" => 1}, 1)
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{status | draining: true})
+    assert NodeRegistry.capacity(table) == []
+    assert :sys.get_state(reg).node_runtime["node-4"].diagnostic_baseline == nil
+    assert diagnostic_log(fn ->
+      :ok = NodeRegistry.inject_status(reg, "node-4", diagnostic_status(%{"host_requested" => 3}, 3))
+    end) == ""
+    advance.(5_000)
+    :ok = NodeRegistry.tick(reg)
+    assert NodeRegistry.capacity(table) == []
+    assert :sys.get_state(reg).node_runtime["node-4"].diagnostic_baseline == nil
+  end
+
+  test "new boot, instance expiry and disconnect discard diagnostic baselines" do
+    {clock, advance} = new_clock()
+    {reg, table} = start_registry(register_seams(clock: clock, down_expire_after_ms: 90_000))
+    registration = %{"node" => "node-4", "pod_uid" => "diag", "address" => "test:9090", "boot_id" => "boot-1"}
+    :ok = NodeRegistry.register(reg, registration)
+    await_initial_status(reg, "node-4/diag")
+    status = diagnostic_status(%{"host_requested" => 3}, 3)
+    :ok = NodeRegistry.inject_status(reg, "node-4/diag", status)
+    :ok = NodeRegistry.register(reg, Map.put(registration, "boot_id", "boot-2"))
+    await_initial_status(reg, "node-4/diag")
+    assert diagnostic_log(fn -> :ok = NodeRegistry.inject_status(reg, "node-4/diag", status) end) == ""
+    {pid, _} = :sys.get_state(reg).node_runtime["node-4/diag"].streamer
+    send(reg, {:watch_result, pid, {:error, :disconnected}})
+    snapshot = NodeRegistry.status(reg)
+    assert snapshot["node-4/diag"].facts.vmm_exit_counts == nil
+    assert snapshot["node-4/diag"].facts.guest_oom_count == nil
+    assert :sys.get_state(reg).node_runtime["node-4/diag"].diagnostic_baseline == nil
+    advance.(100_000)
+    :ok = NodeRegistry.tick(reg)
+    refute Map.has_key?(:sys.get_state(reg).node_runtime, "node-4/diag")
+    assert NodeRegistry.capacity(table) == []
+    :ok = NodeRegistry.register(reg, Map.put(registration, "pod_uid", "new-diag"))
+    await_initial_status(reg, "node-4/new-diag")
+    assert diagnostic_log(fn -> :ok = NodeRegistry.inject_status(reg, "node-4/new-diag", status) end) == ""
+  end
+
   test "a healthy NodeStatus publishes dispatchable capacity facts" do
     {clock, _advance} = new_clock()
     {reg, table} = start_registry(clock: clock)
