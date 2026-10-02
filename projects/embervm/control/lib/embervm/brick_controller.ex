@@ -113,7 +113,12 @@ defmodule Embervm.BrickController do
   must also report `exported: true`. A candidate blocked only on workspaces gets
   an asynchronous pre-drain archive request and stays alive as `archive_pending`.
   ArchiveVolume's enqueue acknowledgement cannot release it. After 180s the
-  controller alarms and keeps waiting, without annotating or shrinking. A fresh
+  controller alarms and keeps waiting, without annotating or shrinking. The
+  observable alarm signals are a one-time `Logger.error` and the
+  `archive_pending` reason on the decision span; the `[:embervm, :brick,
+  :archive_ack_timeout]` telemetry event has no handler or exporter yet. The
+  request goes to the victim instance (never the bare node), withholding any
+  lineage whose workload runs a live session VM on a co-located sibling. A fresh
   controller re-derives the rail from node facts after restart. A fact whose
   session workspace scan is incomplete (`session_volumes_complete` false: a scan
   error, a partial scan, or a daemon that predates the field) is never a safe
@@ -232,7 +237,7 @@ defmodule Embervm.BrickController do
     * `:clock`                - `() -> integer()` ms clock (injected in tests).
     * `:archive_ack_gate`     - require exported workspaces (default false).
     * `:archive_ack_timeout_ms` - alarm after this wait (default 180s), never force removal.
-    * `:archive_fun`          - `(node_id, volumes) -> :ok`, async archive request.
+    * `:archive_fun`          - `(instance_id, volumes) -> :ok`, async archive request to that brick.
     * `:reconcile_on_start`   - reconcile once immediately (default true).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -1325,7 +1330,9 @@ defmodule Embervm.BrickController do
   # preemption drain (noded SIGTERM -> registry drain edge -> DrainCoordinator
   # force-bank) is the backstop for exactly that window.
   defp prepare_scale_down(state, class, now) do
-    case pick_archive_victim(state, state.facts_fun.(), class) do
+    facts = state.facts_fun.()
+
+    case pick_archive_victim(state, facts, class) do
       {:safe, victim} ->
         {direct_victim(state, class, victim), clear_archive_pending(state, class)}
 
@@ -1335,10 +1342,12 @@ defmodule Embervm.BrickController do
         elapsed = now - wait.blocked_since
 
         if elapsed >= state.archive_ack_timeout_ms do
-          metadata = %{size_class: class, pod_uid: uid, node_id: Map.get(victim, :node_id)}
+          metadata = %{size_class: class, pod_uid: uid, node_id: Map.get(victim, :node_id),
+            instance_id: victim_instance_id(victim)}
           if not wait.alarmed do
             Logger.error("brick autoscale: workspace archive acknowledgement timed out; keeping victim",
               size_class: class, pod_uid: uid, node_id: metadata.node_id,
+              instance_id: metadata.instance_id,
               elapsed_ms: elapsed, archive_ack_timeout_ms: state.archive_ack_timeout_ms)
           end
 
@@ -1349,8 +1358,19 @@ defmodule Embervm.BrickController do
         # An incomplete scan holds the victim under the same timeout alarm but
         # requests no archive: the inventory is unknown, so there is nothing
         # known to archive, and an empty request must never read as success.
+        #
+        # The request is addressed to the victim INSTANCE, never the bare node:
+        # the inventory is node-shared but the exported/attached flags are
+        # per-process, so only the victim's own export flips the victim's fact.
+        # A lineage whose workload runs a live session VM on a co-located
+        # sibling is held back (the victim cannot see that attachment, and an
+        # export of a live-mounted image would overwrite the store's last
+        # consistent copy); the victim stays pending until the sibling parks.
         if session_volumes_complete?(victim) do
-          state.archive_fun.(Map.get(victim, :node_id), unexported_volumes(victim))
+          case archivable_volumes(victim, facts) do
+            [] -> :ok
+            volumes -> state.archive_fun.(victim_instance_id(victim), volumes)
+          end
         end
         wait = %{wait | alarmed: elapsed >= state.archive_ack_timeout_ms}
         {{:skip, :archive_pending},
@@ -1390,6 +1410,32 @@ defmodule Embervm.BrickController do
             {:pending, victim}
         end
     end
+  end
+
+  # The channel key of the brick: the fact's instance_id, else the node name
+  # for a legacy fact that predates instance identity.
+  defp victim_instance_id(fact) do
+    case Map.get(fact, :instance_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> Map.get(fact, :node_id)
+    end
+  end
+
+  # The victim's unexported volumes minus any whose workload has a live session
+  # VM on a co-located sibling instance (same node, different instance).
+  defp archivable_volumes(victim, facts) do
+    victim_id = victim_instance_id(victim)
+    node_id = Map.get(victim, :node_id)
+
+    live_workloads =
+      for sibling <- facts,
+          Map.get(sibling, :node_id) == node_id,
+          victim_instance_id(sibling) != victim_id,
+          vm <- Map.get(sibling, :session_vms) || [],
+          into: MapSet.new(),
+          do: Map.get(vm, :workload)
+
+    Enum.reject(unexported_volumes(victim), &MapSet.member?(live_workloads, Map.get(&1, :workload)))
   end
 
   defp unexported_volumes(fact) do

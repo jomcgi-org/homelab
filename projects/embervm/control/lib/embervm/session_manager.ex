@@ -418,10 +418,18 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, :sweep, :infinity)
   end
 
-  @doc "Request workspace archives asynchronously through the owning-instance path."
+  @doc """
+  Request workspace archives asynchronously from exactly one brick instance.
+
+  `instance_id` is the channel key of the brick (the scale-down victim), never a
+  node name: the volume inventory is node-shared but the attach/export state is
+  per process, so only the victim's own export flips the victim's fact. The
+  request ledger is keyed `{instance_id, lineage_id}`. The caller is
+  responsible for withholding lineages a co-located sibling may have attached.
+  """
   @spec request_archive(GenServer.server(), String.t(), [map()]) :: :ok
-  def request_archive(server \\ __MODULE__, node_id, volumes) do
-    GenServer.cast(server, {:request_archive, node_id, volumes})
+  def request_archive(server \\ __MODULE__, instance_id, volumes) do
+    GenServer.cast(server, {:request_archive, instance_id, volumes})
   end
 
   # -- GenServer callbacks ---------------------------------------------------
@@ -1122,8 +1130,8 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
-  def handle_cast({:request_archive, node_id, volumes}, state) do
-    sessions = Enum.map(volumes, &Map.put(&1, :volume_node_id, node_id))
+  def handle_cast({:request_archive, instance_id, volumes}, state) do
+    sessions = Enum.map(volumes, &Map.put(&1, :archive_instance_id, instance_id))
     {:noreply, request_archives(state, sessions)}
   end
 
@@ -1141,8 +1149,8 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
-  def handle_info({:archive_result, node_id, lineage_id, result, at_ms}, state) do
-    {:noreply, record_archive_result(state, {node_id, lineage_id}, result, at_ms)}
+  def handle_info({:archive_result, owner, lineage_id, result, at_ms}, state) do
+    {:noreply, record_archive_result(state, {owner, lineage_id}, result, at_ms)}
   end
 
   # The async result of an in-flight relight worker (spawned by park_and_relight):
@@ -6330,15 +6338,18 @@ defmodule Embervm.SessionManager do
     now = state.monotonic_clock.()
 
     Enum.reduce(sessions, state, fn session, acc ->
-      node_id = Map.get(session, :volume_node_id)
+      # An explicit archive_instance_id (the brick scale-down gate) owns the
+      # ledger key; the drain path keys by the volume's node and resolves the
+      # owning instance at dial time.
+      owner = Map.get(session, :archive_instance_id) || Map.get(session, :volume_node_id)
       lineage_id = Map.get(session, :lineage_id)
-      key = {node_id, lineage_id}
+      key = {owner, lineage_id}
       previous = Map.get(acc.archive_acks, key)
 
       recent? = previous != nil and (previous.in_flight or
         (previous.last_result == :ok and now - previous.acked_at < @archive_request_backoff_ms))
 
-      if is_binary(node_id) and is_binary(lineage_id) and not recent? and
+      if is_binary(owner) and is_binary(lineage_id) and not recent? and
            (map_size(acc.archive_acks) < @max_archive_results or previous != nil) do
         manager = self()
         {_pid, monitor} = spawn_monitor(fn ->
@@ -6351,7 +6362,7 @@ defmodule Embervm.SessionManager do
               kind, reason -> {:error, {kind, reason}}
             end
 
-          send(manager, {:archive_result, node_id, lineage_id, result, acc.monotonic_clock.()})
+          send(manager, {:archive_result, owner, lineage_id, result, acc.monotonic_clock.()})
         end)
 
         entry = %{requested_at: now, last_result: nil, acked_at: nil, in_flight: true}
@@ -6363,7 +6374,7 @@ defmodule Embervm.SessionManager do
     end)
   end
 
-  defp record_archive_result(state, {node_id, lineage_id} = key, result, at_ms) do
+  defp record_archive_result(state, {owner, lineage_id} = key, result, at_ms) do
     case Map.get(state.archive_acks, key) do
       %{in_flight: true} = entry ->
         workers = Enum.reduce(state.archive_workers, state.archive_workers, fn {monitor, worker_key}, acc ->
@@ -6380,7 +6391,7 @@ defmodule Embervm.SessionManager do
 
         :telemetry.execute([:embervm, :session, :archive_result],
           %{count: 1, elapsed_ms: max(0, at_ms - entry.requested_at)},
-          %{node_id: node_id, lineage_id: lineage_id, result: result})
+          %{owner: owner, lineage_id: lineage_id, result: result})
 
         prune_archive_results(%{state | archive_acks: Map.put(state.archive_acks, key, entry),
           archive_workers: workers})
@@ -6395,6 +6406,44 @@ defmodule Embervm.SessionManager do
       not entry.in_flight and entry.requested_at < horizon
     end)
     %{state | archive_acks: kept}
+  end
+
+  # The brick scale-down gate targets one INSTANCE: dial exactly that channel
+  # key, with no owner lookup (first-in-ETS on a shared node can resolve to a
+  # sibling whose export would never flip the victim's flag, or worse, to a
+  # non-owner that passes its attached guard on a live-mounted image). Ungated
+  # by the persistence flag like retire_session_volume/2: the victim cannot be
+  # released until its fact reports the workspace exported, so a disarmed flag
+  # must not turn the request into a silent success that strands the victim.
+  defp archive_session_volume(state, %{archive_instance_id: instance_id, workload: workload, lineage_id: lineage_id})
+       when is_binary(instance_id) and is_binary(workload) and is_binary(lineage_id) do
+    req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+
+    result =
+      with {:ok, channel} <- safe_channel(state.channel_fun, instance_id) do
+        try do
+          state.archive_volume_fun.(channel, req)
+        rescue
+          error -> {:error, error}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+      end
+
+    case result do
+      {:ok, %{skipped: true}} ->
+        Logger.warning("embervm archive skipped, lineage still attached",
+          workload: workload, lineage_id: lineage_id, instance_id: instance_id)
+        {:error, :archive_skipped}
+
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.warning("embervm session workspace archive failed; keeping volume",
+          workload: workload, lineage_id: lineage_id, instance_id: instance_id, reason: inspect(other))
+        {:error, other}
+    end
   end
 
   defp archive_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})

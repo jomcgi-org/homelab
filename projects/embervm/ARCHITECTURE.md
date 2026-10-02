@@ -1091,10 +1091,23 @@ transfer, so its RPC acknowledgement cannot authorize scale-down. The optional
 and requests archives before choosing a victim. A fact whose workspace scan is
 incomplete (`session_volumes_complete` false) is likewise never a safe victim
 and requests no archive, since an empty list from a failed scan must never
-read as safe. A blocked victim stays alive;
+read as safe. The volume inventory is node-shared but the exported and attached
+flags are per brick process, so each request is addressed to the victim
+instance (never the node name or first-in-table owner) and its ledger is keyed
+`{instance_id, lineage_id}`; only the victim's own export flips the victim's
+fact. A lineage whose workload runs a live session VM on a co-located sibling
+is withheld from the request, because the victim cannot see that attachment
+and exporting a live-mounted image would overwrite the last consistent store
+copy. The request ignores the workload persistence flag, like workspace
+retirement, so a disarmed flag cannot strand a victim behind a silent success.
+A blocked victim stays alive;
 `timeoutMs: 180000` bounds the quiet wait to the `drain_node` default deadline,
-then logs an error once and emits timeout telemetry each tick. It never forces
-removal. The timeout is a reversible alarm threshold. Restarted controllers
+then logs an error once (`Logger.error`) and keeps the `archive_pending`
+reason on the controller's decision span every tick. It never forces removal.
+The `[:embervm, :brick, :archive_ack_timeout]` and
+`[:embervm, :session, :archive_result]` telemetry events are emitted but no
+handler or metrics exporter consumes them, so they are not an exported signal:
+the one-time error log and the span reason are the observable ones. The timeout is a reversible alarm threshold. Restarted controllers
 re-derive eligibility from node facts, independently of their request ledger.
 The gate lands default-off for staging. Enabling it in deploy values and live
 acceptance remain on #6533.

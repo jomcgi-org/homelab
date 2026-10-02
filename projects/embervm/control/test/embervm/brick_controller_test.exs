@@ -484,8 +484,8 @@ defmodule Embervm.BrickControllerTest do
     {record, calls} = new_recorder()
     {annotate, annotated} = new_annotator()
     {clock, advance} = new_clock()
-    fact = %{size_class: "2gi", pod_uid: "uid-a", node_id: "node-4", live_vms: 0,
-      session_volumes_complete: true,
+    fact = %{size_class: "2gi", pod_uid: "uid-a", node_id: "node-4",
+      instance_id: "node-4/uid-a", live_vms: 0, session_volumes_complete: true,
       session_volumes: [%{workload: "shell", lineage_id: "unknown"},
         %{workload: "shell", lineage_id: "pending", exported: false}]}
     {:ok, facts} = Agent.start_link(fn -> [fact] end)
@@ -509,7 +509,7 @@ defmodule Embervm.BrickControllerTest do
     ctx = archive_gate_stack()
     log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
     assert log =~ "reason=archive_pending"
-    assert_receive {:archive, "node-4", volumes}
+    assert_receive {:archive, "node-4/uid-a", volumes}
     assert Enum.map(volumes, & &1.lineage_id) == ["unknown", "pending"]
     assert ctx.annotated.() == []
     assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
@@ -533,13 +533,14 @@ defmodule Embervm.BrickControllerTest do
 
   test "an incomplete fact ranks after a complete brick so the archivable sibling is archived" do
     ctx = archive_gate_stack()
-    incomplete = %{ctx.fact | pod_uid: "uid-0", node_id: "node-0", session_volumes: [],
+    incomplete = %{ctx.fact | pod_uid: "uid-0", node_id: "node-0",
+      instance_id: "node-0/uid-0", session_volumes: [],
       session_volumes_complete: false}
     Agent.update(ctx.facts, fn [complete] -> [incomplete, complete] end)
     archive_gate_tick(ctx)
-    assert_receive {:archive, "node-4", volumes}
+    assert_receive {:archive, "node-4/uid-a", volumes}
     assert Enum.map(volumes, & &1.lineage_id) == ["unknown", "pending"]
-    refute_receive {:archive, "node-0", _}
+    refute_receive {:archive, "node-0/uid-0", _}
     assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-a"]
   end
 
@@ -587,7 +588,7 @@ defmodule Embervm.BrickControllerTest do
     ctx.advance.(180_000)
     log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(ctx.pid) end)
     assert log =~ "workspace archive acknowledgement timed out; keeping victim"
-    assert_receive {:archive_timeout, %{count: 1, elapsed_ms: 180_000}, %{pod_uid: "uid-a"}}
+    assert_receive {:archive_timeout, %{count: 1, elapsed_ms: 180_000}, %{pod_uid: "uid-a", instance_id: "node-4/uid-a"}}
     log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(ctx.pid) end)
     refute log =~ "workspace archive acknowledgement timed out"
     assert_receive {:archive_timeout, _, _}
@@ -621,7 +622,7 @@ defmodule Embervm.BrickControllerTest do
 
   test "a fully safe sibling takes precedence over a less warm archive-pending brick" do
     ctx = archive_gate_stack()
-    sibling = %{ctx.fact | pod_uid: "uid-b", session_volumes: []}
+    sibling = %{ctx.fact | pod_uid: "uid-b", instance_id: "node-4/uid-b", session_volumes: []}
       |> Map.put(:session_volumes_complete, true)
       |> Map.put(:stateful_bundles, [%{exported: true}])
     Agent.update(ctx.facts, fn facts -> facts ++ [sibling] end)
@@ -632,7 +633,8 @@ defmodule Embervm.BrickControllerTest do
 
   test "pending archive candidate stays stable across fact reordering and volume count changes" do
     ctx = archive_gate_stack()
-    sibling = %{ctx.fact | pod_uid: "uid-b", session_volumes: [hd(ctx.fact.session_volumes)]}
+    sibling = %{ctx.fact | pod_uid: "uid-b", instance_id: "node-4/uid-b",
+      session_volumes: [hd(ctx.fact.session_volumes)]}
     Agent.update(ctx.facts, fn facts -> facts ++ [sibling] end)
     archive_gate_tick(ctx)
     assert_receive {:archive, _, [_]}
@@ -642,6 +644,49 @@ defmodule Embervm.BrickControllerTest do
     assert_receive {:archive, _, volumes}
     assert length(volumes) == 3
     assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-b"]
+  end
+
+  test "co-located bricks sharing a lineage: the archive targets the victim instance, not the node" do
+    ctx = archive_gate_stack()
+    # Sibling "uid-0" sorts first and lists the same node-shared inventory, but
+    # is busy (live VM), so "uid-a" is the only victim candidate.
+    sibling = %{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1}
+    Agent.update(ctx.facts, fn facts -> [sibling | facts] end)
+    archive_gate_tick(ctx)
+    assert_receive {:archive, "node-4/uid-a", volumes}
+    assert Enum.map(volumes, & &1.lineage_id) == ["unknown", "pending"]
+    refute_receive {:archive, "node-4/uid-0", _}
+    refute_receive {:archive, "node-4", _}
+    # The victim's own fact flipping exported releases it, wedge free.
+    Agent.update(ctx.facts, fn [sibling, victim] ->
+      [sibling, %{victim | session_volumes: Enum.map(victim.session_volumes, &Map.put(&1, :exported, true))}]
+    end)
+    BrickController.reconcile_now(ctx.pid)
+    assert [{_, "brick-a", _}] = ctx.annotated.()
+  end
+
+  test "a lineage whose workload runs a live VM on a co-located sibling is held, not archived" do
+    ctx = archive_gate_stack()
+    sibling = %{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1,
+      session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]}
+    Agent.update(ctx.facts, fn facts -> [sibling | facts] end)
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=archive_pending"
+    refute_receive {:archive, _, _}
+    assert ctx.annotated.() == []
+    assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-a"]
+  end
+
+  test "only lineages of the sibling's live workloads are withheld from the archive request" do
+    ctx = archive_gate_stack()
+    victim = %{ctx.fact | session_volumes: [%{workload: "shell", lineage_id: "attached"},
+      %{workload: "other", lineage_id: "parked", exported: false}]}
+    sibling = %{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1,
+      session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]}
+    Agent.update(ctx.facts, fn _ -> [sibling, victim] end)
+    archive_gate_tick(ctx)
+    assert_receive {:archive, "node-4/uid-a", [%{lineage_id: "parked"}]}
+    assert ctx.annotated.() == []
   end
 
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do
