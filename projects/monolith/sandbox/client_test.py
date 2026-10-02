@@ -6,6 +6,9 @@ assert the EmberVM routing and Idempotency-Key.
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from sandbox import client
@@ -70,6 +73,48 @@ async def test_supported_language_routes_to_its_workload(language, workload):
     assert post["url"] == f"http://ev/v1/workloads/{workload}/tasks?wait=true"
     assert "Idempotency-Key" in post["headers"]
     assert post["json"]["code"] == "source"
+    assert post["json"]["timeout_seconds"] == 25
+
+
+@pytest.mark.asyncio
+async def test_guest_timeout_response_is_returned_verbatim(monkeypatch):
+    response = {
+        "exit_code": -1,
+        "error": "timed out after 25s",
+        "stdout": "partial output\n",
+        "stderr": "partial diagnostics\n",
+        "duration_ms": 25000,
+        "truncated": False,
+        "files": [{"path": "partial.txt", "content_b64": "cGFydGlhbA=="}],
+    }
+
+    async def timeout_post(self, url, json=None, headers=None):
+        return _Resp(response)
+
+    monkeypatch.setattr(_FakeClient, "post", timeout_post)
+
+    result = await client.run_code_in_sandbox("source")
+
+    assert result is response
+
+
+@pytest.mark.parametrize("language", client.SUPPORTED_LANGUAGES)
+@pytest.mark.parametrize(
+    "files",
+    [None, [{"path": "input.txt", "content_b64": "aW5wdXQ="}]],
+)
+@pytest.mark.asyncio
+async def test_guest_timeout_does_not_change_idempotency_key(language, files):
+    code = "same source"
+    file_parts = sorted(
+        json.dumps(item, sort_keys=True, ensure_ascii=True) for item in (files or [])
+    )
+    original_material = "\0".join([language, code, *file_parts]).encode()
+    expected_key = hashlib.sha256(original_material).hexdigest()
+
+    await client.run_code_in_sandbox(code, language=language, files=files)
+
+    assert _FakeClient.posts[0]["headers"]["Idempotency-Key"] == expected_key
 
 
 @pytest.mark.asyncio

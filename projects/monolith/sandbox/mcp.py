@@ -17,7 +17,7 @@ async def run_code(
 ) -> dict:
     """Run short code in an isolated, one-shot, zero-egress sandbox.
 
-    There is no network at all. The run is killed after roughly 25 seconds of
+    There is no network at all. The run is killed after 25 seconds of
     wall-clock time, which includes compilation for compiled languages.
     Nothing persists between calls. Only files written to the working
     directory with a plain relative filename are returned. Absolute paths and
@@ -53,6 +53,8 @@ async def run_code(
     Returns:
         stdout, stderr, exit_code, duration_ms, truncated, and files. A compile
         error has a nonzero exit_code and the compiler's diagnostics on stderr.
-        Broker failures return a dict with a single error key.
+        A guest timeout returns exit_code -1, error "timed out after 25s", and
+        any partial stdout and stderr alongside the other response fields.
+        Broker failures return a dict with only an error key.
     """
     return await run_code_in_sandbox(code, language=language, files=files)

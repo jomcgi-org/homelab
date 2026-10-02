@@ -287,6 +287,24 @@ def _coerce_username(value: Any) -> str | None:
     return str(value)
 
 
+def _format_sandbox_result(result: dict) -> str:
+    """Render guest output and errors, or a broker-only failure."""
+    if "exit_code" not in result and result.get("error"):
+        return f"sandbox error: {result['error']}"
+    parts = []
+    if result.get("stdout"):
+        parts.append(result["stdout"])
+    if result.get("stderr"):
+        parts.append(f"[stderr]\n{result['stderr']}")
+    parts.append(f"[exit code {result.get('exit_code', '?')}]")
+    if result.get("error"):
+        parts.append(f"[error: {result['error']}]")
+    if result.get("files"):
+        names = ", ".join(f.get("path", "?") for f in result["files"])
+        parts.append(f"[files attached to reply: {names}]")
+    return "\n".join(parts)
+
+
 @dataclass
 class ChatDeps:
     channel_id: str
@@ -1304,7 +1322,7 @@ def create_agent(
     ) -> str:
         """Run short code in an isolated, one-shot, zero-egress sandbox.
 
-        There is no network at all. The run is killed after roughly 25 seconds
+        There is no network at all. The run is killed after 25 seconds
         of wall-clock time, including compilation for compiled languages.
         Nothing persists between calls. Only files written to the working
         directory with a plain relative filename are returned. Absolute paths
@@ -1334,11 +1352,12 @@ def create_agent(
 
         The result contains stdout, stderr, exit_code, duration_ms, truncated,
         and files. A compile error has a nonzero exit_code with the compiler's
-        own diagnostics on stderr.
+        own diagnostics on stderr. A timed-out run reports the error with any
+        partial output and generated files.
         """
         result = await run_code_in_sandbox(code, language=language)
-        if result.get("error"):
-            return f"sandbox error: {result['error']}"
+        if "exit_code" not in result:
+            return _format_sandbox_result(result)
         for f in result.get("files", []):
             try:
                 ctx.deps.generated_files.append(
@@ -1346,16 +1365,7 @@ def create_agent(
                 )
             except (KeyError, ValueError):
                 continue
-        parts = []
-        if result.get("stdout"):
-            parts.append(result["stdout"])
-        if result.get("stderr"):
-            parts.append(f"[stderr]\n{result['stderr']}")
-        parts.append(f"[exit code {result.get('exit_code', '?')}]")
-        if result.get("files"):
-            names = ", ".join(f.get("path", "?") for f in result["files"])
-            parts.append(f"[files attached to reply: {names}]")
-        return "\n".join(parts)
+        return _format_sandbox_result(result)
 
     # All tools are registered now; snapshot their signposts once so the
     # prepare_tools callback above can serve them from a plain dict.
