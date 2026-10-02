@@ -1,0 +1,1010 @@
+# frontier: security review (#6760), shape 3. A pending change to the shotter
+# screenshot service (capture history, share links, watchlists, two MCP tools),
+# written on top of real monolith code at 130910e75, with nine planted
+# vulnerabilities and four decoys that look dangerous but are safe in context.
+#
+# Plants (expected difficulty):
+#   header-identity-trust        medium  owner taken from cf-access-authenticated-user-email (#6036)
+#   idor-guessable-capture-id    hard    PNG route checks no owner; ids are timestamp-predictable
+#   mass-assignment-owner-key    medium  PATCH model accepts owner and s3_key (read any object)
+#   share-token-logged           easy    share token written to the info log
+#   timing-unsafe-token-compare  medium  share token compared with !=
+#   storage-key-traversal        medium  caller label in the S3 key (../ into another prefix)
+#   ssrf-redirect-rebinding      hard    callback IPs checked at registration only; redirects followed
+#   unsafe-yaml-load             easy    yaml.load with yaml.Loader on caller YAML
+#   public-destructive-mcp-tool  hard    delete tool tagged mcp:public (needs core/mcp_policy.py)
+# Decoys: order-by-allowlist (f-string SQL over a Literal-keyed map),
+# hashed-token-log (a sha256 prefix, not the token), constant-time-challenge
+# (hmac.compare_digest), public-static-hosts-tool (read-only static list).
+id: security-review-01
+version: v1
+class: code-fix
+tier: frontier
+mode: agentic
+snapshot:
+  commit: 130910e751664c15c955cc5db393597aee5a5be5
+  paths:
+  - projects/monolith/shotter
+  - projects/monolith/core/mcp_policy.py
+  - projects/monolith/core/mcp_app.py
+  - projects/monolith/core/db.py
+  - projects/monolith/auth/principal.py
+  - projects/monolith/auth/dependencies.py
+  - projects/monolith/auth/api.py
+  strip_components: 2
+  exclude:
+  - '*_test.py'
+  - tests/
+  patches:
+  - file: shotter/models.py
+    content: |
+      """Stored screenshot captures and watchlists (ADR embervm/035 section 5).
+
+      A capture row records one rendered PNG: who asked for it, which page it shows,
+      and where the PNG lives in SeaweedFS. Captures are private to their owner
+      unless the owner mints a share link. A watchlist re-captures a page on a
+      schedule and notifies the owner's callback when the render changes.
+      """
+
+      from __future__ import annotations
+
+      from datetime import datetime, timezone
+
+      from sqlmodel import Field, SQLModel
+
+
+      def _now() -> datetime:
+          return datetime.now(timezone.utc)
+
+
+      class Capture(SQLModel, table=True):
+          __tablename__ = "captures"
+          __table_args__ = {"schema": "shotter"}
+
+          id: str = Field(primary_key=True)
+          # The principal subject that requested the capture.
+          owner: str = Field(index=True)
+          url: str
+          label: str
+          s3_key: str
+          width: int
+          height: int
+          pinned: bool = False
+          # Opaque share token; NULL until the owner shares the capture.
+          share_token: str | None = None
+          created_at: datetime = Field(default_factory=_now)
+
+
+      class Watch(SQLModel, table=True):
+          __tablename__ = "watches"
+          __table_args__ = {"schema": "shotter"}
+
+          id: str = Field(primary_key=True)
+          owner: str = Field(index=True)
+          url: str
+          # Where change notifications are POSTed.
+          callback_url: str
+          # HMAC key for the X-Shotter-Signature header on notifications.
+          signing_secret: str
+          interval_minutes: int = 60
+          last_sha256: str | None = None
+          created_at: datetime = Field(default_factory=_now)
+  - file: shotter/router.py
+    content: |
+      """Capture history, sharing and watchlists over HTTP (ADR embervm/035 section 5).
+
+      - ``POST /api/shotter/captures``: render a page and store the PNG for the caller.
+      - ``GET /api/shotter/captures``: the caller's capture history, newest first.
+      - ``GET /api/shotter/captures/{id}/png``: the stored PNG.
+      - ``PATCH /api/shotter/captures/{id}``: rename or pin a capture.
+      - ``POST /api/shotter/captures/{id}/share`` / ``DELETE .../share``: mint or
+        revoke a share link.
+      - ``GET /public/shotter/shared/{id}``: the PNG behind a share link, no login.
+
+      The ``/api`` routes need a signed-in principal; ``/public`` is reachable by
+      anyone holding a share link.
+      """
+
+      from __future__ import annotations
+
+      import base64
+      import hashlib
+      import logging
+      import secrets
+      import time
+      from typing import Literal
+
+      from auth.api import Principal, get_principal
+      from core.db import get_session
+      from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+      from pydantic import BaseModel
+      from sqlmodel import Session, select, text
+
+      from shotter import client, s3
+      from shotter.mcp import validate_screenshot_url, validate_timeout_ms
+      from shotter.models import Capture
+
+      logger = logging.getLogger("monolith.shotter.router")
+
+      router = APIRouter()
+      public_router = APIRouter()
+
+      # Sort orders the history page offers, mapped to their SQL. Only these keys are
+      # accepted (the query parameter is a Literal), so the f-string below never sees
+      # caller text.
+      _ORDER = {
+          "newest": "created_at DESC",
+          "oldest": "created_at ASC",
+          "label": "label ASC",
+      }
+
+
+      def _signed_in(principal: Principal = Depends(get_principal)) -> Principal:
+          if principal.authority == "anonymous":
+              raise HTTPException(status_code=401, detail="sign in to use captures")
+          return principal
+
+
+      def _requester(request: Request, principal: Principal) -> str:
+          """The owner identity for this request.
+
+          Cloudflare Access puts the signed-in user's email on every request it
+          forwards, which is the identity the history page shows, so prefer it and
+          fall back to the token's subject for API callers that skip Access.
+          """
+          return (
+              request.headers.get("cf-access-authenticated-user-email")
+              or principal.subject
+          )
+
+
+      def _new_capture_id() -> str:
+          # Millisecond timestamp plus a short suffix: sorts by creation time in the
+          # bucket listing and is unique enough for one user's history.
+          return f"cap-{int(time.time() * 1000)}-{secrets.randbelow(100):02d}"
+
+
+      class CaptureRequest(BaseModel):
+          url: str
+          label: str
+          width: int = 1024
+          height: int = 768
+          timeout_ms: int = 30_000
+
+
+      class CaptureUpdate(BaseModel):
+          label: str | None = None
+          pinned: bool | None = None
+          owner: str | None = None
+          s3_key: str | None = None
+
+
+      @router.post("/api/shotter/captures")
+      async def create_capture(
+          body: CaptureRequest,
+          request: Request,
+          principal: Principal = Depends(_signed_in),
+          session: Session = Depends(get_session),
+      ) -> dict:
+          validate_screenshot_url(body.url, body.width, body.height)
+          validate_timeout_ms(body.timeout_ms)
+          owner = _requester(request, principal)
+          result = await client.capture(
+              url=body.url, width=body.width, height=body.height, timeout_ms=body.timeout_ms
+          )
+          png = base64.b64decode(result["png_b64"])
+          key = s3.put_capture(owner, body.label, png)
+          capture = Capture(
+              id=_new_capture_id(),
+              owner=owner,
+              url=body.url,
+              label=body.label,
+              s3_key=key,
+              width=body.width,
+              height=body.height,
+          )
+          session.add(capture)
+          session.commit()
+          return {"id": capture.id, "label": capture.label}
+
+
+      @router.get("/api/shotter/captures")
+      def list_captures(
+          request: Request,
+          order: Literal["newest", "oldest", "label"] = "newest",
+          principal: Principal = Depends(_signed_in),
+          session: Session = Depends(get_session),
+      ) -> list[dict]:
+          owner = _requester(request, principal)
+          rows = session.execute(
+              text(
+                  "SELECT id, label, url, pinned, created_at FROM shotter.captures "
+                  f"WHERE owner = :owner ORDER BY pinned DESC, {_ORDER[order]}"
+              ),
+              {"owner": owner},
+          ).all()
+          return [dict(row._mapping) for row in rows]
+
+
+      @router.get("/api/shotter/captures/{capture_id}/png")
+      def capture_png(
+          capture_id: str,
+          principal: Principal = Depends(_signed_in),
+          session: Session = Depends(get_session),
+      ) -> Response:
+          # Capture ids are not listed anywhere but the owner's own history, so
+          # holding one means it came from that page.
+          capture = session.get(Capture, capture_id)
+          if capture is None:
+              raise HTTPException(status_code=404)
+          return Response(content=s3.get_capture(capture.s3_key), media_type="image/png")
+
+
+      def _owned(session: Session, capture_id: str, owner: str) -> Capture:
+          capture = session.get(Capture, capture_id)
+          if capture is None or capture.owner != owner:
+              raise HTTPException(status_code=404)
+          return capture
+
+
+      @router.patch("/api/shotter/captures/{capture_id}")
+      def update_capture(
+          capture_id: str,
+          body: CaptureUpdate,
+          request: Request,
+          principal: Principal = Depends(_signed_in),
+          session: Session = Depends(get_session),
+      ) -> dict:
+          capture = _owned(session, capture_id, _requester(request, principal))
+          for field, value in body.model_dump(exclude_unset=True).items():
+              setattr(capture, field, value)
+          session.add(capture)
+          session.commit()
+          return {"id": capture.id, "label": capture.label, "pinned": capture.pinned}
+
+
+      @router.post("/api/shotter/captures/{capture_id}/share")
+      def share_capture(
+          capture_id: str,
+          request: Request,
+          principal: Principal = Depends(_signed_in),
+          session: Session = Depends(get_session),
+      ) -> dict:
+          capture = _owned(session, capture_id, _requester(request, principal))
+          token = secrets.token_urlsafe(24)
+          capture.share_token = token
+          session.add(capture)
+          session.commit()
+          logger.info("shared capture %s with token %s", capture.id, token)
+          return {"url": f"/public/shotter/shared/{capture.id}?t={token}"}
+
+
+      @router.delete("/api/shotter/captures/{capture_id}/share")
+      def unshare_capture(
+          capture_id: str,
+          request: Request,
+          principal: Principal = Depends(_signed_in),
+          session: Session = Depends(get_session),
+      ) -> dict:
+          capture = _owned(session, capture_id, _requester(request, principal))
+          if capture.share_token:
+              # Log a short digest so a revoke can be matched to a share in the logs
+              # without the log line itself granting access.
+              digest = hashlib.sha256(capture.share_token.encode()).hexdigest()[:12]
+              logger.info("revoked share %s on capture %s", digest, capture.id)
+          capture.share_token = None
+          session.add(capture)
+          session.commit()
+          return {"id": capture.id, "shared": False}
+
+
+      @public_router.get("/public/shotter/shared/{capture_id}")
+      def shared_png(
+          capture_id: str,
+          t: str = Query(..., min_length=1),
+          session: Session = Depends(get_session),
+      ) -> Response:
+          capture = session.exec(select(Capture).where(Capture.id == capture_id)).first()
+          if capture is None or capture.share_token is None or t != capture.share_token:
+              raise HTTPException(status_code=404)
+          return Response(content=s3.get_capture(capture.s3_key), media_type="image/png")
+  - file: shotter/watch.py
+    content: |
+      """Watchlists: re-capture a page on a schedule and notify the owner on change.
+
+      An owner registers a page and a callback URL. The scheduler re-renders the
+      page every ``interval_minutes``; when the PNG's sha256 changes, the callback
+      gets a signed JSON POST. Owners can bulk-import watches from the YAML export
+      the history page offers.
+      """
+
+      from __future__ import annotations
+
+      import hashlib
+      import hmac
+      import ipaddress
+      import json
+      import logging
+      import secrets
+      import socket
+      from urllib.parse import urlsplit
+
+      import httpx
+      import yaml
+      from sqlmodel import Session
+
+      from shotter.models import Watch
+
+      logger = logging.getLogger("monolith.shotter.watch")
+
+      _NOTIFY_TIMEOUT_S = 10.0
+
+
+      class InvalidCallback(ValueError):
+          """The callback URL is not an acceptable notification target."""
+
+
+      def validate_callback(url: str) -> None:
+          """Reject callbacks that would point the monolith at the cluster.
+
+          The callback must be https on the default port, and its host must resolve
+          only to public addresses: no loopback, link-local, RFC 1918 or other
+          private ranges, so a watch cannot be used to reach in-cluster services.
+          """
+          parsed = urlsplit(url)
+          if parsed.scheme != "https" or parsed.port not in (None, 443):
+              raise InvalidCallback("callback must be https on the default port")
+          host = parsed.hostname or ""
+          try:
+              infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+          except socket.gaierror as exc:
+              raise InvalidCallback(f"callback host {host!r} does not resolve") from exc
+          for info in infos:
+              addr = ipaddress.ip_address(info[4][0])
+              if not addr.is_global:
+                  raise InvalidCallback(f"callback host {host!r} resolves to {addr}")
+
+
+      def verify_challenge(watch: Watch, echoed: str, challenge: str) -> bool:
+          """Whether the callback echoed the registration challenge back correctly.
+
+          Registration POSTs a random challenge; the receiver proves it controls the
+          endpoint by echoing its HMAC under the watch's signing secret.
+          """
+          expected = hmac.new(
+              watch.signing_secret.encode(), challenge.encode(), hashlib.sha256
+          ).hexdigest()
+          return hmac.compare_digest(expected, echoed)
+
+
+      def new_watch(owner: str, url: str, callback_url: str, interval_minutes: int) -> Watch:
+          validate_callback(callback_url)
+          return Watch(
+              id=f"w-{secrets.token_hex(8)}",
+              owner=owner,
+              url=url,
+              callback_url=callback_url,
+              signing_secret=secrets.token_hex(32),
+              interval_minutes=max(15, interval_minutes),
+          )
+
+
+      def import_watches(session: Session, owner: str, document: str) -> list[Watch]:
+          """Bulk-create watches from the history page's YAML export."""
+          data = yaml.load(document, Loader=yaml.Loader) or {}
+          watches = [
+              new_watch(owner, item["url"], item["callback_url"], int(item.get("interval", 60)))
+              for item in data.get("watches", [])
+          ]
+          session.add_all(watches)
+          session.commit()
+          return watches
+
+
+      async def notify(watch: Watch, sha256: str) -> None:
+          """POST a signed change notification to the watch's callback."""
+          body = json.dumps(
+              {"watch": watch.id, "url": watch.url, "sha256": sha256}, sort_keys=True
+          ).encode()
+          signature = hmac.new(watch.signing_secret.encode(), body, hashlib.sha256).hexdigest()
+          async with httpx.AsyncClient(
+              timeout=_NOTIFY_TIMEOUT_S, follow_redirects=True
+          ) as http:
+              response = await http.post(
+                  watch.callback_url,
+                  content=body,
+                  headers={
+                      "content-type": "application/json",
+                      "x-shotter-signature": signature,
+                  },
+              )
+          if response.status_code >= 400:
+              logger.warning(
+                  "watch %s callback returned %s", watch.id, response.status_code
+              )
+  - file: shotter/s3.py
+    content: |
+      """Screenshot PNG storage on the SeaweedFS S3 gateway.
+
+      A sibling of artifact/s3.py, not a reuse: artifact hardcodes an
+      ``index.html`` object suffix and ``text/html`` content type for a
+      self-contained HTML page, this domain stores a PNG under a content-addressed
+      key instead. The client construction mirrors artifact/s3.py and
+      faas/storage.py (dummy creds, path-style addressing, scheme guard on the
+      endpoint). boto3 is imported lazily inside each function so importing this
+      module never pulls boto3 into the public app's import closure (this domain
+      is excluded from the public binary entirely, but the convention is kept for
+      consistency with the domains that are).
+
+      Upload is best-effort, mirroring chat.store._blob_s3_put: the returned URL is
+      computed from the PNG's content hash before the upload is even attempted, so
+      the MCP tool can still hand back a real ImageContent block with the rendered
+      PNG bytes already embedded even when the SeaweedFS write itself fails or is
+      unavailable. The stored URL is a durable reference for later lookup, not the
+      only way to get at the image; the tool's caller already has the bytes.
+      """
+
+      from __future__ import annotations
+
+      import hashlib
+      import logging
+      import os
+
+      logger = logging.getLogger("monolith.shotter.s3")
+
+
+      def _bucket() -> str:
+          return os.environ.get("SHOTTER_S3_BUCKET", "shotter")
+
+
+      def _object_key(sha256: str) -> str:
+          return f"{sha256}.png"
+
+
+      def _normalized_endpoint() -> str:
+          endpoint = os.environ.get("SEAWEEDFS_S3_ENDPOINT", "")
+          if endpoint and not endpoint.startswith(("http://", "https://")):
+              # The chart injects a scheme-less host:port; boto3 requires a scheme
+              # and SeaweedFS S3 is plaintext HTTP.
+              endpoint = "http://" + endpoint
+          return endpoint
+
+
+      def _client():
+          """Build a SeaweedFS S3 client (mirrors artifact/s3.py / faas/storage.py)."""
+          import boto3
+          from botocore.config import Config
+
+          endpoint = _normalized_endpoint()
+          if not endpoint:
+              raise RuntimeError("SEAWEEDFS_S3_ENDPOINT unset; cannot store screenshot")
+          # Scheme guaranteed by _normalized_endpoint; the inline nosemgrep clears
+          # the pre-commit boto3-endpoint-url-missing-scheme hook (the Bazel
+          # semgrep test, which ignores nosemgrep, is covered by exclude_rules in
+          # projects/monolith/BUILD).
+          return boto3.client(  # nosemgrep: boto3-endpoint-url-missing-scheme
+              "s3",
+              endpoint_url=endpoint,
+              aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID", "duckdb"),
+              aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY", "duckdb"),
+              region_name=os.environ.get("AWS_REGION", "us-east-1"),
+              config=Config(s3={"addressing_style": "path"}),
+          )
+
+
+      def _object_url(bucket: str, key: str) -> str:
+          """Build the object's URL from the configured S3 endpoint.
+
+          Falls back to a bare ``bucket/key`` path when SEAWEEDFS_S3_ENDPOINT is
+          unset (e.g. a hermetic unit test), so a missing or unreachable endpoint
+          never blocks the caller from getting back a non-empty, well-formed URL
+          string for the object this call was about to write.
+          """
+          endpoint = _normalized_endpoint()
+          if not endpoint:
+              return f"{bucket}/{key}"
+          return f"{endpoint.rstrip('/')}/{bucket}/{key}"
+
+
+      def put_screenshot(png_bytes: bytes) -> tuple[str, bool]:
+          """Best-effort upload of a captured screenshot PNG.
+
+          Returns ``(url, stored)``. ``url`` is always populated because it is derived
+          from the content hash rather than from the write, and ``stored`` says whether
+          an object actually exists behind it. Callers must surface ``stored``: the
+          upload is deliberately non-fatal so a SeaweedFS blip does not discard a
+          screenshot the caller can already see, but a URL that 404s must never be
+          indistinguishable from one that resolves.
+
+          Content-addressed at ``s3://<bucket>/<sha256>.png``, so re-capturing an
+          unchanged render dedupes for free. Creates the bucket once and retries on
+          a missing bucket (mirrors artifact.s3.put_artifact / chat.store).
+          """
+          from botocore.exceptions import ClientError
+
+          sha256 = hashlib.sha256(png_bytes).hexdigest()
+          bucket = _bucket()
+          key = _object_key(sha256)
+          url = _object_url(bucket, key)
+
+          try:
+              client = _client()
+
+              def _put():
+                  return client.put_object(
+                      Bucket=bucket,
+                      Key=key,
+                      Body=png_bytes,
+                      ContentType="image/png",
+                  )
+
+              try:
+                  _put()
+              except ClientError as exc:
+                  code = exc.response.get("Error", {}).get("Code", "")
+                  if code in ("NoSuchBucket", "404"):
+                      client.create_bucket(Bucket=bucket)
+                      _put()
+                  else:
+                      raise
+          except Exception:  # noqa: BLE001 - upload is best-effort, see module docstring
+              logger.exception("shotter screenshot S3 upload failed for %s", key)
+              # Best-effort, but never silent. The URL is derived from the content
+              # hash before the upload is attempted, so on this path it names an
+              # object that does not exist. Returning it without saying so would hand
+              # the caller a link that 404s with no way to tell that from a working
+              # one, which is worse than having no link at all. The caller decides
+              # what to do; it already holds the PNG bytes either way.
+              return url, False
+
+          return url, True
+
+
+      def capture_key(owner: str, label: str) -> str:
+          """Object key for a stored capture: one prefix per owner, named by label.
+
+          Labels are what the owner calls the capture ("pricing page, dark mode"), so
+          they are kept human readable in the bucket listing. The key is scoped under
+          the owner's prefix so one owner's captures never collide with another's.
+          """
+          name = label.strip().removesuffix(".png")
+          return f"captures/{owner}/{name}.png"
+
+
+      def put_capture(owner: str, label: str, png_bytes: bytes) -> str:
+          """Store a capture PNG under the owner's prefix and return its key.
+
+          Unlike put_screenshot this write is not best-effort: a stored capture is
+          what the history page lists, so a failed write must fail the request.
+          """
+          key = capture_key(owner, label)
+          _client().put_object(
+              Bucket=_bucket(), Key=key, Body=png_bytes, ContentType="image/png"
+          )
+          return key
+
+
+      def get_capture(key: str) -> bytes:
+          """Read a stored capture PNG by its object key."""
+          obj = _client().get_object(Bucket=_bucket(), Key=key)
+          return obj["Body"].read()
+
+
+      def delete_capture(key: str) -> None:
+          """Delete a stored capture PNG. Missing objects are not an error."""
+          _client().delete_object(Bucket=_bucket(), Key=key)
+  - file: shotter/mcp.py
+    content: |
+      """MCP tool that captures a screenshot of a deployed jomcgi.dev page.
+
+      ADR embervm/035: an EmberVM task-class guest runs headless Chromium and
+      renders one URL to a PNG on request. This module validates the requested URL
+      (the second, independent layer of ADR embervm/035 section 4, not the primary
+      control) and shapes the guest's response into a real FastMCP ImageContent
+      block plus a stored SeaweedFS URL (ADR embervm/035 section 5).
+      """
+
+      from __future__ import annotations
+
+      import asyncio
+      import base64
+      import logging
+      from urllib.parse import urlsplit
+
+      from mcp.types import ImageContent
+
+      from core.mcp_app import mcp
+      from core.mcp_policy import PUBLIC_TAG
+      from shotter import client, s3
+      from shotter.hosts import HOST_SERVICE_MAP
+
+      logger = logging.getLogger(__name__)
+
+      # Generous enough for a 4K capture (3840x2160), tight enough to reject an
+      # abusive or accidental request outright rather than silently clamping it. A
+      # silent clamp would hide the caller's mistake instead of surfacing it.
+      _MAX_DIMENSION = 4096
+
+      _DEFAULT_WIDTH = 1024
+      _DEFAULT_HEIGHT = 768
+      _DEFAULT_TIMEOUT_MS = 30_000
+
+      # Mirrors the guest handler's own bounds (screenshot.go's
+      # minNavigateTimeoutMs / maxNavigateTimeoutMs): rejecting an out-of-range
+      # timeout_ms here, the same way width and height are already rejected,
+      # surfaces the caller's mistake as a real validation error instead of a
+      # guest-side 400 that raise_for_status() turns into a bare
+      # httpx.HTTPStatusError several hops later.
+      _MIN_TIMEOUT_MS = 1_000
+      _MAX_TIMEOUT_MS = 45_000
+
+
+      class InvalidShotterURL(ValueError):
+          """The requested URL fails shotter's scheme, host, or shape validation."""
+
+
+      class InvalidViewportDimension(ValueError):
+          """The requested viewport width or height is out of bounds."""
+
+
+      class InvalidTimeoutMs(ValueError):
+          """The requested render timeout is out of bounds."""
+
+
+      def validate_screenshot_url(url: str, width: int, height: int) -> None:
+          """Validate a screenshot request before it ever reaches the EmberVM client.
+
+          This is the SECOND of two layers (ADR embervm/035 section 4). The
+          PRIMARY control is the in-guest proxy's hard allowlist, Go code running
+          inside the Firecracker guest (issue #4994 T2), covered by its own Go
+          test in that package: a Python check here cannot observe what the guest
+          actually enforces. This layer exists so an obviously invalid request
+          never reaches EmberVM at all, and so a caller gets an immediate, specific
+          error instead of a guest-side failure several hops later.
+
+          Raises InvalidShotterURL or InvalidViewportDimension on a bad request;
+          returns None when the request is acceptable.
+          """
+          parsed = urlsplit(url)
+
+          if parsed.scheme != "https":
+              raise InvalidShotterURL(
+                  f"shotter only accepts the https scheme, got {parsed.scheme or '(none)'!r}"
+              )
+          if parsed.username is not None or parsed.password is not None:
+              raise InvalidShotterURL(
+                  "URL must not contain embedded credentials (userinfo before @)"
+              )
+          if parsed.port is not None:
+              raise InvalidShotterURL(
+                  "URL must not specify an explicit port, expected the standard "
+                  f"HTTPS port, got {parsed.port}"
+              )
+
+          host = parsed.hostname or ""
+          if host not in HOST_SERVICE_MAP:
+              raise InvalidShotterURL(
+                  f"{host!r} is not allowed: not a recognized host in the shotter "
+                  f"allowlist, only {sorted(HOST_SERVICE_MAP)} are mapped"
+              )
+
+          _validate_dimension("width", width)
+          _validate_dimension("height", height)
+
+
+      def _validate_dimension(name: str, value: int) -> None:
+          if value <= 0:
+              raise InvalidViewportDimension(
+                  f"{name} must be a positive, non-zero value, got {value}"
+              )
+          if value > _MAX_DIMENSION:
+              raise InvalidViewportDimension(
+                  f"{name} {value} exceeds the max of {_MAX_DIMENSION}"
+              )
+
+
+      def validate_timeout_ms(timeout_ms: int) -> None:
+          """Reject an out-of-bounds render timeout instead of forwarding it.
+
+          Width and height get this treatment already; timeout_ms did not, so a
+          range mistake here used to reach the guest, which 400s, and
+          raise_for_status() turned that into a bare httpx.HTTPStatusError with no
+          indication the problem was the timeout value.
+          """
+          if timeout_ms < _MIN_TIMEOUT_MS or timeout_ms > _MAX_TIMEOUT_MS:
+              raise InvalidTimeoutMs(
+                  f"timeout_ms {timeout_ms} is out of bounds "
+                  f"[{_MIN_TIMEOUT_MS}, {_MAX_TIMEOUT_MS}]"
+              )
+
+
+      async def screenshot_url(
+          url: str,
+          width: int = _DEFAULT_WIDTH,
+          height: int = _DEFAULT_HEIGHT,
+          timeout_ms: int = _DEFAULT_TIMEOUT_MS,
+      ) -> ImageContent:
+          """Render a jomcgi.dev or private.jomcgi.dev page and return it as an image.
+
+          Only these two hosts are ever dispatched, an in-cluster mapping (ADR
+          embervm/035), and both are always fetched over HTTPS with no port, no
+          embedded credentials, and no query string trickery around scheme or
+          host. The rendered viewport is bounded (default 1024x768, up to
+          4096x4096) and the whole request is bounded by timeout_ms.
+
+          Args:
+              url: An https URL under jomcgi.dev or private.jomcgi.dev. Any other
+                  host, scheme, port, or embedded userinfo is rejected before
+                  dispatch.
+              width: Viewport width in pixels, 1 to 4096. Defaults to 1024.
+              height: Viewport height in pixels, 1 to 4096. Defaults to 768.
+              timeout_ms: Overall render budget in milliseconds, 1000 to 45000.
+                  Defaults to 30000. A page that does not finish loading in time
+                  surfaces as a timeout error rather than a partial or corrupt
+                  image. An out-of-bounds value is rejected outright, the same as
+                  an out-of-bounds width or height.
+
+          Returns:
+              An image content block: the rendered PNG, embedded directly, plus
+              metadata with the page's final URL after any redirect, the HTTP
+              status the page returned, the viewport actually used, and a stored
+              URL where the same PNG is archived for later reference.
+          """
+          validate_screenshot_url(url, width, height)
+          validate_timeout_ms(timeout_ms)
+
+          result = await client.capture(
+              url=url, width=width, height=height, timeout_ms=timeout_ms
+          )
+
+          png_b64 = result["png_b64"]
+          png_bytes = base64.b64decode(png_b64)
+          # put_screenshot is a synchronous, multi-megabyte S3 PUT (boto3). Off the
+          # event loop: if SeaweedFS drops SYNs instead of refusing, botocore's own
+          # retries would otherwise stall the loop for minutes, taking health
+          # probes and every other in-flight request down with it.
+          stored_url, stored = await asyncio.to_thread(s3.put_screenshot, png_bytes)
+
+          return ImageContent(
+              type="image",
+              data=png_b64,
+              mimeType="image/png",
+              _meta={
+                  "url": stored_url,
+                  # Whether the object behind `url` actually exists. The upload is
+                  # best-effort so a SeaweedFS blip does not throw away a screenshot
+                  # the caller can already see inline, but a URL that 404s must not be
+                  # indistinguishable from one that works.
+                  "stored": stored,
+                  "final_url": result.get("final_url"),
+                  "status": result.get("status"),
+                  "width": result.get("width"),
+                  "height": result.get("height"),
+              },
+          )
+
+
+      def allowed_hosts() -> list[str]:
+          """The hosts screenshot_jomcgi_dev will render, so a caller can check first.
+
+          Static, read-only, and already documented in the tool description, so it
+          is safe to answer for anyone who reaches the surface.
+          """
+          return sorted(HOST_SERVICE_MAP)
+
+
+      def delete_capture(capture_id: str) -> dict:
+          """Delete a stored capture and its PNG.
+
+          Used by the history page's agent assistant to tidy a user's captures.
+
+          Args:
+              capture_id: The capture to delete.
+          """
+          from core.db import get_engine
+          from sqlmodel import Session
+
+          from shotter.models import Capture
+
+          with Session(get_engine()) as session:
+              capture = session.get(Capture, capture_id)
+              if capture is None:
+                  return {"deleted": False}
+              s3.delete_capture(capture.s3_key)
+              session.delete(capture)
+              session.commit()
+          return {"deleted": True}
+
+
+      def register_mcp_tools() -> None:
+          """Register the shotter tools with the shared FastMCP instance."""
+          mcp.tool(name="screenshot_jomcgi_dev")(screenshot_url)
+          mcp.tool(name="shotter_allowed_hosts", tags={PUBLIC_TAG})(allowed_hosts)
+          mcp.tool(name="shotter_delete_capture", tags={PUBLIC_TAG})(delete_capture)
+  - file: shotter/module.py
+    content: |
+      """FastMonolith module export for the shotter domain (see framework/core.py).
+
+      Lives in its own file (not __init__.py) so importing the domain package does
+      not pull the framework or FastAPI: standalone binaries that reuse domain code
+      (e.g. trips_backfill, the knowledge tools) glob only their own sources.
+      """
+
+      from framework import Module as _Module
+
+
+      def _register_mcp() -> None:
+          """Attach the shotter MCP tools to the shared FastMCP instance.
+
+          Unlike sandbox.mcp (which registers via a bare ``@mcp.tool`` decorator at
+          import time), shotter.mcp exposes an explicit ``register_mcp_tools()``
+          so the BDD specs can call it directly and deterministically instead of
+          relying on import-time side effects. This wrapper calls it, mirroring
+          the shape every other module's ``register_mcp`` has (an import alone
+          would not actually attach the tool).
+          """
+          from shotter.mcp import register_mcp_tools  # noqa: PLC0415
+
+          register_mcp_tools()
+
+
+      def _register(app) -> None:
+          """Mount the capture history API and the public share-link route."""
+          from shotter.router import public_router, router  # noqa: PLC0415
+
+          app.include_router(router)
+          app.include_router(public_router)
+
+
+      MODULE = _Module(
+          name="shotter",
+          register=_register,
+          register_mcp=_register_mcp,
+      )
+  - file: chart/migrations/20261003090000_shotter_captures.sql
+    content: |
+      -- Stored shotter captures and watchlists (ADR embervm/035 section 5).
+      CREATE SCHEMA IF NOT EXISTS shotter;
+
+      CREATE TABLE shotter.captures (
+          id TEXT PRIMARY KEY,
+          owner TEXT NOT NULL,
+          url TEXT NOT NULL,
+          label TEXT NOT NULL,
+          s3_key TEXT NOT NULL,
+          width INTEGER NOT NULL,
+          height INTEGER NOT NULL,
+          pinned BOOLEAN NOT NULL DEFAULT false,
+          share_token TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX captures_owner ON shotter.captures (owner);
+      CREATE UNIQUE INDEX captures_share_token ON shotter.captures (share_token)
+          WHERE share_token IS NOT NULL;
+
+      CREATE TABLE shotter.watches (
+          id TEXT PRIMARY KEY,
+          owner TEXT NOT NULL,
+          url TEXT NOT NULL,
+          callback_url TEXT NOT NULL,
+          signing_secret TEXT NOT NULL,
+          interval_minutes INTEGER NOT NULL DEFAULT 60,
+          last_sha256 TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX watches_owner ON shotter.watches (owner);
+  review_diff:
+    base: 130910e751664c15c955cc5db393597aee5a5be5
+    file: REVIEW.diff
+    paths:
+    - projects/monolith/shotter/models.py
+    - projects/monolith/shotter/router.py
+    - projects/monolith/shotter/watch.py
+    - projects/monolith/shotter/s3.py
+    - projects/monolith/shotter/mcp.py
+    - projects/monolith/shotter/module.py
+    - projects/monolith/chart/migrations/20261003090000_shotter_captures.sql
+agent:
+  max_turns: 40
+prompt: |
+  This checkout is part of a real FastAPI monolith backend. REVIEW.diff at the repo
+  root is a pending change, already applied to the tree, that adds capture history,
+  share links and watchlists to the shotter screenshot service: new HTTP routes,
+  SeaweedFS storage, outgoing webhook notifications and two more MCP tools. Do a
+  security review of it the way an application security engineer would before it
+  ships: find the vulnerabilities the change introduces. The surrounding auth and
+  MCP policy code is in auth/ and core/; the schema is under chart/migrations/.
+
+  Write your findings to review.json at the repo root as a JSON list:
+  [{"file": "<path relative to the repo root>", "line": <line number in the
+  post-change file>, "description": "<the vulnerability and how it would be
+  exploited>"}]. One entry per vulnerability, at the line where it is. Report real
+  vulnerabilities only: a finding that is not one costs points, and some code that
+  looks dangerous is safe in context. Do not modify any other file.
+target_files:
+- review.json
+verifier:
+  kind: review-findings
+  args:
+    file: review.json
+    tolerance: 2
+    fp_penalty: 0.25
+    decoy_penalty: 0.5
+    pass_threshold: 0.8
+    bugs:
+    - id: header-identity-trust
+      file: shotter/router.py
+      lines:
+      - 62
+      - 65
+    - id: idor-guessable-capture-id
+      file: shotter/router.py
+      lines:
+      - - 68
+        - 71
+      - - 139
+        - 147
+    - id: mass-assignment-owner-key
+      file: shotter/router.py
+      lines:
+      - - 82
+        - 86
+      - - 165
+        - 167
+    - id: share-token-logged
+      file: shotter/router.py
+      lines:
+      - 185
+      - 185
+    - id: timing-unsafe-token-compare
+      file: shotter/router.py
+      lines:
+      - 215
+      - 215
+    - id: storage-key-traversal
+      file: shotter/s3.py
+      lines:
+      - 143
+      - 145
+    - id: ssrf-redirect-rebinding
+      file: shotter/watch.py
+      lines:
+      - - 47
+        - 53
+      - - 97
+        - 100
+    - id: unsafe-yaml-load
+      file: shotter/watch.py
+      lines:
+      - 82
+      - 82
+    - id: public-destructive-mcp-tool
+      file: shotter/mcp.py
+      lines:
+      - - 199
+        - 201
+      - - 226
+        - 226
+    decoys:
+    - id: order-by-allowlist
+      file: shotter/router.py
+      lines:
+      - 128
+      - 129
+    - id: hashed-token-log
+      file: shotter/router.py
+      lines:
+      - 198
+      - 201
+    - id: constant-time-challenge
+      file: shotter/watch.py
+      lines:
+      - 61
+      - 65
+    - id: public-static-hosts-tool
+      file: shotter/mcp.py
+      lines:
+      - - 190
+        - 196
+      - - 225
+        - 225

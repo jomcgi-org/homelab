@@ -1,6 +1,6 @@
 import json
 
-import pytest  # noqa: F401
+import pytest
 
 from bench.verifiers import get_verifier
 
@@ -129,3 +129,39 @@ def test_multi_range_bug_matches_at_either_site(tmp_path):
     for line in (30, 61):
         r = _grade(tmp_path, [{"file": "pkg/purge.py", "line": line}])
         assert r.score == 0.5 and "missed: fk" in r.feedback
+
+
+def test_f2_scoring_weights_recall_over_precision(tmp_path):
+    (tmp_path / "review.json").write_text(
+        json.dumps(
+            [
+                {"file": "pkg/purge.py", "line": 12, "description": "x"},
+                {"file": "pkg/purge.py", "line": 50, "description": "noise"},
+            ]
+        )
+    )
+    r = get_verifier("review-findings")(tmp_path, _args(scoring="f2"))
+    # recall 1/2, precision 1/2: F2 = 5 * 0.25 / (2 + 0.5) = 0.5
+    assert r.score == pytest.approx(0.5)
+
+
+def test_f2_scoring_counts_decoys_double_by_default(tmp_path):
+    (tmp_path / "review.json").write_text(
+        json.dumps(
+            [
+                {"file": "pkg/purge.py", "line": 12, "description": "x"},
+                {"file": "pkg/purge.py", "line": 30, "description": "y"},
+                {"file": "pkg/purge.py", "line": 60, "description": "decoy"},
+            ]
+        )
+    )
+    decoys = [{"id": "d", "file": "pkg/purge.py", "lines": [60, 60]}]
+    r = get_verifier("review-findings")(tmp_path, _args(scoring="f2", decoys=decoys))
+    # recall 1, precision 2 / (2 + 2): F2 = 5 * 0.5 / (2 + 1) = 0.8333
+    assert r.score == pytest.approx(5 * 0.5 / 3)
+
+
+def test_unknown_scoring_is_rejected(tmp_path):
+    (tmp_path / "review.json").write_text("[]")
+    with pytest.raises(ValueError, match="scoring"):
+        get_verifier("review-findings")(tmp_path, _args(scoring="vibes"))

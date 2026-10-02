@@ -10,6 +10,11 @@ a duplicate and neither scores nor costs. Any other finding is a false positive.
 score = max(0, (matched - fp_penalty * false_positives) / bugs), so a reviewer that
 sprays findings at every line pays for the noise, and one that finds the obvious
 bugs but misses the subtle ones lands in between.
+
+``scoring: f2`` instead scores the recall-weighted F2 used by security discovery
+benchmarks: recall = matched / bugs, precision = matched / (matched + false
+positives + decoy_weight * decoy hits). A missed vulnerability costs more than a
+false alarm, but a reviewer that sprays still loses on precision.
 """
 
 from __future__ import annotations
@@ -69,6 +74,14 @@ def _distance(line: int, target: dict) -> int:
     )
 
 
+def _f2(matched: int, bugs: int, wrong: float) -> float:
+    if matched == 0:
+        return 0.0
+    recall = matched / bugs
+    precision = matched / (matched + wrong)
+    return 5 * precision * recall / (4 * precision + recall)
+
+
 @register("review-findings")
 def verify(workdir: Path, args: dict) -> VerifyResult:
     name: str = args.get("file", "review.json")
@@ -80,6 +93,9 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
     fp_penalty: float = args.get("fp_penalty", 0.25)
     decoy_penalty: float = args.get("decoy_penalty", fp_penalty)
     threshold: float = args.get("pass_threshold", 1.0)
+    scoring: str = args.get("scoring", "penalty")
+    if scoring not in ("penalty", "f2"):
+        raise ValueError(f"unknown review scoring {scoring!r}")
 
     path = workdir / name
     if not path.is_file():
@@ -120,8 +136,15 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
             matched.add(target["id"])
         # A repeat finding on an already-matched bug neither scores nor costs.
 
-    penalty = fp_penalty * false_positives + decoy_penalty * len(decoy_hits)
-    score = max(0.0, (len(matched) - penalty) / len(bugs))
+    if scoring == "f2":
+        score = _f2(
+            len(matched),
+            len(bugs),
+            false_positives + args.get("decoy_weight", 2.0) * len(decoy_hits),
+        )
+    else:
+        penalty = fp_penalty * false_positives + decoy_penalty * len(decoy_hits)
+        score = max(0.0, (len(matched) - penalty) / len(bugs))
     missed = [b["id"] for b in bugs if b["id"] not in matched]
     feedback = (
         f"matched {len(matched)}/{len(bugs)} planted bugs, "

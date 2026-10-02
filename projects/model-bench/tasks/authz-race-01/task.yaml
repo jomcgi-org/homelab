@@ -1,0 +1,248 @@
+# frontier: order-of-events authorization (#6760), shape 4. Planted into real
+# chat_public code at 130910e75: fork_chat resolves the snapshot on the
+# public_reader replica BEFORE awaiting Turnstile (a plausible optimisation, so an
+# unknown id never spends a verification) and then forks from that stale object.
+# A takedown that commits while siteverify is in flight is undone by the fork.
+#
+# Sites (each also requires a live fork to work and an unknown id to be rejected
+# before verification, the behaviour the planted docstring documents, so an
+# over-correction that drops it scores nothing):
+#   takedown-during-admission  re-check after the await (any connection)
+#   replica-lag                re-check on the primary: the replica can lag the
+#                              takedown ("more easily while under load")
+# Variants: untouched 0, main's original order (load after the await, on the
+# replica, no early reject) 0, re-check on the replica 0.5, gold (re-check on the
+# primary) 1.0. Gold 20/20 clean; untouched fails 5/5.
+id: authz-race-01
+version: v1
+class: code-fix
+tier: frontier
+mode: agentic
+snapshot:
+  preset: monolith-backend
+  commit: 130910e751664c15c955cc5db393597aee5a5be5
+  patches:
+  - file: chat_public/router.py
+    find: |2
+          server-side session backed by real inference. Only then is the snapshot read
+          (public_reader replica) and its frozen transcript seeded into a new session
+    replace: |2
+          server-side session backed by real inference. The snapshot is resolved
+          first, on the public_reader replica, so an unknown or mistyped id is
+          rejected without spending a Turnstile verification (siteverify is rate
+          limited per site key, and a crawler replaying stale share links would
+          otherwise burn it). Its frozen transcript is then seeded into a new session
+  - file: chat_public/router.py
+    find: |2+
+          """
+          result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
+          if not result.success:
+              raise HTTPException(
+                  status_code=_limit_status("turnstile_failed"),
+                  detail={
+                      "code": "turnstile_failed",
+                      "message": "Challenge verification failed. Please try again.",
+                  },
+              )
+
+          snapshot = snapshots.load_snapshot(read_db, payload.snapshot_id)
+          if snapshot is None:
+              raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    replace: |2+
+          """
+          snapshot = snapshots.load_snapshot(read_db, payload.snapshot_id)
+          if snapshot is None:
+              raise HTTPException(status_code=404, detail="Snapshot not found")
+
+          result = await turnstile.siteverify(payload.turnstile_token, cf_connecting_ip)
+          if not result.success:
+              raise HTTPException(
+                  status_code=_limit_status("turnstile_failed"),
+                  detail={
+                      "code": "turnstile_failed",
+                      "message": "Challenge verification failed. Please try again.",
+                  },
+              )
+
+agent:
+  max_turns: 40
+  exec: true
+prompt: |
+  This is a snapshot of a real FastAPI monolith backend. It serves a public chat
+  (chat_public): visitors can share a conversation as a read-only snapshot link,
+  and anyone holding the link can "fork" it into a new, continuable chat.
+  Operators can take a conversation down, which deletes its shared snapshots.
+
+  Security report from an internal red-team exercise:
+
+    We shared a chat containing (fake) personal details, opened the share link
+    in a second browser, and filed a takedown for the conversation. The takedown
+    job finished and reported the snapshot deleted. At about the same moment the
+    second browser clicked "Fork this chat" and got a brand-new live session
+    holding the full taken-down transcript. That session is not covered by the
+    takedown, so the content stays reachable after we were told it was gone.
+    We could reproduce it a few times, more easily while the site was under
+    load, and never when the fork was clearly before or after the takedown.
+
+  Find and fix the root cause so that a fork can never resurrect a snapshot whose
+  takedown has already committed. Normal forks of a live snapshot must keep
+  working. Keep the change minimal and do not change the takedown job itself.
+target_files:
+- chat_public/router.py
+verifier:
+  kind: pytest
+  args:
+    tests:
+      chat_public/fork_takedown_race_test.py: |
+        """Hidden grader for authz-race-01: a fork must not outlive a takedown.
+
+        Two in-memory SQLite engines stand in for the Postgres primary (public_writer,
+        where takedown deletes) and the public_reader replica. The Turnstile call is
+        replaced by a coroutine that applies the takedown while the handler is awaiting
+        it, which is the interleaving the security report describes, made deterministic.
+        """
+
+        from __future__ import annotations
+
+        import pytest
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from sqlmodel import Session, SQLModel, create_engine, func, select
+        from sqlmodel.pool import StaticPool
+
+        from chat_public import turnstile
+        from chat_public.db import get_chat_session
+        from chat_public.models import ChatMessage, ChatSession, ChatSnapshot
+        from core.db import get_session
+
+        SNAPSHOT_ID = "snap-takedown-race"
+        TRANSCRIPT = [
+            {"role": "user", "content": "my home address is 12 Example Road"},
+            {"role": "assistant", "content": "noted"},
+        ]
+
+
+        def _engine():
+            return create_engine(
+                "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+            )
+
+
+        @pytest.fixture
+        def dbs():
+            stripped = {}
+            for table in SQLModel.metadata.tables.values():
+                if table.schema is not None:
+                    stripped[table.name] = table.schema
+                    table.schema = None
+            try:
+                primary_engine, replica_engine = _engine(), _engine()
+                SQLModel.metadata.create_all(primary_engine)
+                SQLModel.metadata.create_all(replica_engine)
+                with Session(primary_engine) as primary, Session(replica_engine) as replica:
+                    for db in (primary, replica):
+                        db.add(
+                            ChatSnapshot(
+                                id=SNAPSHOT_ID,
+                                transcript=TRANSCRIPT,
+                                message_count=len(TRANSCRIPT),
+                            )
+                        )
+                        db.commit()
+                    yield primary, replica
+            finally:
+                for table in SQLModel.metadata.tables.values():
+                    if table.name in stripped:
+                        table.schema = stripped[table.name]
+
+
+        @pytest.fixture
+        def client(dbs):
+            primary, replica = dbs
+            from chat_public.router import router
+
+            app = FastAPI()
+            app.include_router(router)
+            app.dependency_overrides[get_chat_session] = lambda: primary
+            app.dependency_overrides[get_session] = lambda: replica
+            yield TestClient(app, raise_server_exceptions=False)
+
+
+        def _takedown(db: Session) -> None:
+            snapshot = db.get(ChatSnapshot, SNAPSHOT_ID)
+            if snapshot is not None:
+                db.delete(snapshot)
+                db.commit()
+
+
+        def _verify_with(monkeypatch, during=None):
+            calls = []
+
+            async def fake_siteverify(token, remoteip=None):
+                calls.append(token)
+                if during is not None:
+                    during()
+                return turnstile.TurnstileResult(success=True, outcome="passed")
+
+            monkeypatch.setattr(turnstile, "siteverify", fake_siteverify)
+            return calls
+
+
+        def _sessions(db: Session) -> int:
+            return db.exec(select(func.count()).select_from(ChatSession)).one()
+
+
+        def _fork(client, snapshot_id=SNAPSHOT_ID):
+            return client.post(
+                "/internal/chat/fork",
+                json={"snapshot_id": snapshot_id, "turnstile_token": "tok"},
+            )
+
+
+        def test_takedown_during_verification_blocks_the_fork(client, dbs, monkeypatch):
+            primary, replica = dbs
+            _verify_with(monkeypatch, during=lambda: (_takedown(primary), _takedown(replica)))
+            response = _fork(client)
+            assert response.status_code == 404
+            assert _sessions(primary) == 0
+
+
+        def test_takedown_not_yet_on_the_replica_still_blocks_the_fork(
+            client, dbs, monkeypatch
+        ):
+            primary, _replica = dbs
+            # The takedown commits on the primary; the replica has not replayed it yet.
+            _verify_with(monkeypatch, during=lambda: _takedown(primary))
+            response = _fork(client)
+            assert response.status_code == 404
+            assert _sessions(primary) == 0
+
+
+        def test_fork_of_a_live_snapshot_still_works(client, dbs, monkeypatch):
+            primary, _replica = dbs
+            _verify_with(monkeypatch)
+            response = _fork(client)
+            assert response.status_code == 200, response.text
+            session_id = response.json()["session_id"]
+            seeded = primary.exec(
+                select(ChatMessage).where(ChatMessage.session_id == session_id)
+            ).all()
+            assert [m.content for m in seeded] == [row["content"] for row in TRANSCRIPT]
+
+
+        def test_unknown_snapshot_is_rejected_before_verification(client, monkeypatch):
+            calls = _verify_with(monkeypatch)
+            response = _fork(client, snapshot_id="no-such-snapshot")
+            assert response.status_code == 404
+            assert calls == []
+    sites:
+      takedown-during-admission:
+      - chat_public/fork_takedown_race_test.py::test_takedown_during_verification_blocks_the_fork
+      - chat_public/fork_takedown_race_test.py::test_fork_of_a_live_snapshot_still_works
+      - chat_public/fork_takedown_race_test.py::test_unknown_snapshot_is_rejected_before_verification
+      replica-lag:
+      - chat_public/fork_takedown_race_test.py::test_takedown_not_yet_on_the_replica_still_blocks_the_fork
+      - chat_public/fork_takedown_race_test.py::test_fork_of_a_live_snapshot_still_works
+      - chat_public/fork_takedown_race_test.py::test_unknown_snapshot_is_rejected_before_verification
+    pass_threshold: 1.0
