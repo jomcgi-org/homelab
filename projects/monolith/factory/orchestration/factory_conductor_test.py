@@ -1708,7 +1708,9 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     # but live checks. The bound moved from 20,800 to 21,100.
     # The exact gate-dependent closing contract adds about 200 characters to
     # the planner's task section (#6641), while historical evidence stays bounded.
-    assert len(prompt) < 21_500
+    # #6309 requires four declared effects on every gate. The prompt explains
+    # those booleans and free reason prose, adding about 450 characters.
+    assert len(prompt) < 22_000
     assert (task, nodes, runs) == before
 
 
