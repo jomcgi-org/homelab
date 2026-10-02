@@ -22,6 +22,13 @@ filter, never legitimately sent by a client, so removing it unconditionally on
 ingress is correct for every route and closes the same gap on the Cloudflare
 lane, which predates this policy.
 
+Cf-Access-Authenticated-User-Email is stripped too (#6036). Cloudflare Access
+sets it on the requests it proxies, but nothing in the cluster validates it, so
+any caller that reaches a backend another way can name any address. Backends
+read the verified X-Auth-Email instead; removing the Cloudflare header here
+means no new reader of it can reappear. Cf-Access-Jwt-Assertion is NOT removed:
+it is the signed token the security policy verifies.
+
 This is the first ClientTrafficPolicy in the repo. It deliberately sets ONLY
 this field, so every other client-traffic default stays exactly as it was when
 no policy existed.
@@ -42,4 +49,5 @@ spec:
     earlyRequestHeaders:
       remove:
         - X-Auth-Email
+        - Cf-Access-Authenticated-User-Email
 {{- end }}

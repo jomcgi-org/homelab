@@ -1,6 +1,7 @@
 const API_BASE = process.env.API_BASE;
 
 export async function POST({ params, request }) {
+  const email = request.headers.get("x-auth-email");
   try {
     const res = await fetch(
       `${API_BASE}/api/swarm/runs/${encodeURIComponent(params.id)}/nodes/${encodeURIComponent(params.key)}/decision`,
@@ -9,13 +10,11 @@ export async function POST({ params, request }) {
         headers: {
           "Content-Type":
             request.headers.get("content-type") || "application/json",
-          ...(request.headers.get("Cf-Access-Authenticated-User-Email")
-            ? {
-                "Cf-Access-Authenticated-User-Email": request.headers.get(
-                  "Cf-Access-Authenticated-User-Email",
-                ),
-              }
-            : {}),
+          // The verified identity is the claim Envoy projected into
+          // X-Auth-Email, which the gateway strips on ingress. Nothing
+          // validates Cf-Access-Authenticated-User-Email, so it is never
+          // forwarded as an identity (#6036).
+          ...(email ? { "X-Auth-Email": email } : {}),
         },
         body: await request.text(),
         signal: AbortSignal.timeout(10000),

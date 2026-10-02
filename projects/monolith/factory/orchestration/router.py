@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from core.identity import verified_email
 from goosecracker.api import REPO_CATALOG
 from framework import log_task_exception
 import shared.inference
@@ -1131,7 +1132,7 @@ def promote_session(request: Request, body: PromoteSessionRequest):
         1,
         "grow_from_session",
         "user",
-        request.headers.get("Cf-Access-Authenticated-User-Email") or "operator",
+        verified_email(request) or "operator",
         json.dumps({"from_session_id": body.session_id}),
         "promotion",
         stated_reason="user promoted session to run",
@@ -1178,7 +1179,7 @@ async def decide_run(
         raise HTTPException(
             status_code=409, detail="workflow is not awaiting a decision"
         )
-    header_actor = request.headers.get("Cf-Access-Authenticated-User-Email")
+    header_actor = verified_email(request)
     actor_subject = header_actor or "operator"
     actor_authority = "cloudflare-access" if header_actor else "anonymous"
     from factory.orchestration.store import InvalidDecision, NoOpenDecision
@@ -1239,7 +1240,7 @@ async def cancel_run(workflow_id: str, request: Request) -> dict:
     from factory.execution.api import reap_sessions_for_workflow
 
     guest_sessions = await reap_sessions_for_workflow(workflow_id)
-    actor = request.headers.get("Cf-Access-Authenticated-User-Email") or "operator"
+    actor = verified_email(request) or "operator"
     try:
         await merge_workflow_attributes(
             dbos,
@@ -1270,7 +1271,7 @@ async def raise_budget(
 ) -> dict:
     """Raise the budget ceiling for a run and release its budget boundary."""
     dbos = _dbos()
-    header_actor = request.headers.get("Cf-Access-Authenticated-User-Email")
+    header_actor = verified_email(request)
     actor_subject = header_actor or "operator"
     actor_authority = "cloudflare-access" if header_actor else "anonymous"
 
