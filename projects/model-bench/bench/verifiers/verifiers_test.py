@@ -189,7 +189,8 @@ def _decision_fixture(root):
         ),
     ]
     + [
-        "I left Chart.yaml at 3.2.0. Per projects/platform/ARCHITECTURE.md section 4, " + tail
+        "I left Chart.yaml at 3.2.0. Per projects/platform/ARCHITECTURE.md section 4, "
+        + tail
         for tail in (
             "after a PR merges to main, CI computes the next semver and "
             "chart-version-bot writes the bumped version back to Chart.yaml.",
