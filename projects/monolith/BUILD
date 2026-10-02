@@ -2846,6 +2846,17 @@ py_test(
 )
 
 py_test(
+    name = "agent_kubernetes_cluster_snapshot_test",
+    srcs = ["//projects/monolith/agent_kubernetes:cluster_snapshot_test.py"],
+    imports = ["."],
+    deps = [
+        "//projects/monolith/agent_kubernetes",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+py_test(
     name = "framework_core_test",
     srcs = ["framework/core_test.py"],
     imports = ["."],

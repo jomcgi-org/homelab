@@ -1455,9 +1455,16 @@ def test_the_prompt_offers_closing_only_when_it_is_available():
     assert "critical" in open_lane
     assert "search_knowledge" in open_lane
     assert "report_knowledge" in open_lane
+    assert "call `cluster_snapshot` on the same `agents` server" in open_lane
+    assert (
+        "cluster: <application> <sync>/<health> rev <revision> (snapshot_at)"
+        in open_lane
+    )
+    assert "stale true or complete false means unknown, not healthy" in open_lane
     assert "decision a person can make in about a minute" in open_lane
     assert "`defer` when the issue is worth doing" in open_lane
     shut = refine.refine_prompt(task, receipt, closing=False)
+    assert "call `cluster_snapshot` on the same `agents` server" in shut
     assert "Closing is switched off for this run" in shut
     assert "recommend: close" in shut
     assert "supersedes" not in shut

@@ -10,7 +10,12 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
-from agent_kubernetes import kubernetes_pod_logs, kubernetes_read, verify_deployment
+from agent_kubernetes import (
+    cluster_snapshot,
+    kubernetes_pod_logs,
+    kubernetes_read,
+    verify_deployment,
+)
 from auth.api import (
     Authority,
     PrincipalMiddleware,
@@ -43,6 +48,7 @@ AGENT_TOOLS = (
     kubernetes_read,
     kubernetes_pod_logs,
     verify_deployment,
+    cluster_snapshot,
 )
 AGENT_TOOL_NAMES = tuple(tool.__name__ for tool in AGENT_TOOLS)
 
