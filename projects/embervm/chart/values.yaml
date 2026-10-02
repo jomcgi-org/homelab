@@ -260,6 +260,10 @@ nodeConfirmedDestroy: false
 # sibling nodeConfirmedDestroy above has had all along.
 asyncLifecycleWrites: false
 
+# Flush exact unfinished invokes on control-plane restart before idle parking.
+# Default off for staged rollout; recovery evidence is never fabricated.
+restartFlushInflightInvokes: false
+
 # Instance-scoped session drain. Read at boot as
 # EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS. False (the default) keeps the old
 # behaviour: a brick drain edge interrupts and banks every running session on
