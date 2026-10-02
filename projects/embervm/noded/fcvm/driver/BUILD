@@ -6,6 +6,7 @@ go_library(
         "cgroup_linux.go",
         "cgroup_other.go",
         "driver.go",
+        "exit.go",
         "gueststats.go",
         "jail.go",
         "jail_mount_linux.go",
@@ -44,6 +45,7 @@ go_test(
     srcs = [
         "cgroup_linux_test.go",
         "driver_test.go",
+        "exit_test.go",
         "group_test.go",
         "gueststats_test.go",
         "launcher_linux_test.go",

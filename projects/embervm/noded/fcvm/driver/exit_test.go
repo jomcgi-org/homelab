@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -102,7 +103,7 @@ func TestVMMExitClassification(t *testing.T) {
 	}
 }
 
-func TestVMMExitWatcherAndConcurrentReleaseShareWait(t *testing.T) {
+func TestVMMExitWatcherReportsBeforeRelease(t *testing.T) {
 	done := make(chan struct{})
 	observed := make(chan ExitReason, 1)
 	var waits atomic.Int32
@@ -125,6 +126,40 @@ func TestVMMExitWatcherAndConcurrentReleaseShareWait(t *testing.T) {
 	_ = p.Wait()
 	if waits.Load() != 1 {
 		t.Fatalf("reaped %d times", waits.Load())
+	}
+}
+
+func TestVMMExitConcurrentKillAndWaitReapOnce(t *testing.T) {
+	done := make(chan struct{})
+	var killOnce sync.Once
+	var waits, events atomic.Int32
+	p := &execProcess{
+		waitProcess: func() error { waits.Add(1); <-done; return nil },
+		killProcess: func() error { killOnce.Do(func() { close(done) }); return nil },
+		logger:      slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		onExit:      func(ExitReason) { events.Add(1) },
+	}
+	var workers sync.WaitGroup
+	for range 10 {
+		workers.Go(func() { _ = p.Wait() })
+		workers.Go(func() { _ = p.Kill() })
+	}
+	workers.Wait()
+	if waits.Load() != 1 || events.Load() != 1 {
+		t.Fatalf("waits=%d events=%d, want one each", waits.Load(), events.Load())
+	}
+}
+
+func TestVMMExitCountsSharedAcrossBuildAndRestoreDrivers(t *testing.T) {
+	counters := &VMMExitCounters{}
+	restore := New(Config{ExitCounters: counters}, nil, nil)
+	build := New(Config{ExitCounters: counters}, nil, nil)
+	restore.recordVMMExit(ExitHostCgroupOOM)
+	build.recordVMMExit(ExitHostCgroupOOM)
+	build.recordVMMExit(ExitHostRequested)
+	counts := restore.VMMExitCounts()
+	if counts[string(ExitHostCgroupOOM)] != 2 || counts[string(ExitHostRequested)] != 1 {
+		t.Fatalf("shared counts = %v", counts)
 	}
 }
 

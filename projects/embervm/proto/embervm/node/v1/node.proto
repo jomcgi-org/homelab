@@ -2301,4 +2301,11 @@ message NodeStatus {
   // inventories this status reports. The control plane matches it against the
   // independently transported registration before consuming wipe repair state.
   string scratch_generation = 39;
+
+  // vmm_exit_counts is cumulative since daemon start across restore and base
+  // build VMMs. Exactly four reason keys: host_requested, host_cgroup_oom,
+  // guest_kernel_panic, unclassified. Never labelled by VM or workload IDs.
+  // Absent on older daemons means unsupported, not evidence of healthy guests
+  // or zero failures. Counters are observation only, not admission/banking input.
+  map<string, uint64> vmm_exit_counts = 40;
 }

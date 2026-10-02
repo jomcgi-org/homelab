@@ -478,7 +478,7 @@ func (f *fakeTransport) interruptCount() int {
 
 // newTestServer wires the Server behind a real in-process gRPC dial (bufconn),
 // so tests exercise the wire path (marshalling, status codes) end to end.
-func newTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxLive int) (nodev1.NodeServiceClient, *Server) {
+func newTestServer(t *testing.T, drv vmDriver, tr *fakeTransport, maxLive int) (nodev1.NodeServiceClient, *Server) {
 	t.Helper()
 	s := New(Options{
 		Config:    config.Config{Arch: "amd64", Node: "node-4", MaxLiveVMs: maxLive, SnapshotRoot: t.TempDir()},
@@ -2598,6 +2598,34 @@ func TestNodeStatusReportsPrimedVMIDs(t *testing.T) {
 // hard-coded 0) all read from the injected budget hooks rather than the
 // cgroup filesystem, mirroring how memHeadroom is already overridden in
 // tests for determinism.
+type exitCountingDriver struct {
+	*fakeDriver
+	counts map[string]uint64
+}
+
+func (d *exitCountingDriver) VMMExitCounts() map[string]uint64 { return d.counts }
+
+func TestNodeStatusCarriesVMMExitCounts(t *testing.T) {
+	client, _ := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+	// A driver without the observation seam must not synthesize healthy zeros.
+	unsupported, err := client.GetNodeStatus(t.Context(), &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unsupported.GetVmmExitCounts()) != 0 {
+		t.Fatal("unsupported driver advertised exit counts")
+	}
+	want := map[string]uint64{"host_requested": 11, "host_cgroup_oom": 2, "guest_kernel_panic": 3, "unclassified": 4}
+	client, _ = newTestServer(t, &exitCountingDriver{fakeDriver: &fakeDriver{}, counts: want}, &fakeTransport{}, 8)
+	ns, err := client.GetNodeStatus(t.Context(), &nodev1.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ns.GetVmmExitCounts(), want) {
+		t.Fatalf("counts = %v, want %v", ns.GetVmmExitCounts(), want)
+	}
+}
+
 func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}
