@@ -65,6 +65,21 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     assert {:ok, [%{stop_intent: ^intent, stop_completion: ^completion}]} = Postgres.load_sessions(server)
   end
 
+  test "session_rejoined persists the moved volume owner, preserves a legacy owner and guards terminals", %{server: server} do
+    assert {:ok, _} = append(server, :session_created, 100, session_id: "s-move",
+      tenant: "t1", principal: "p1", workload: "wl", payload: %{node_id: "node-a", volume_node_id: "node-a", token_sha256: "hash"})
+    assert {:ok, _} = append(server, :session_parked, 101, session_id: "s-move", payload: %{volume_node_id: "node-a"})
+    assert {:ok, _} = append(server, :session_rejoined, 102, session_id: "s-move",
+      payload: %{node_id: "node-b", vm_id: "vm-b", volume_node_id: "node-b"})
+    assert {:ok, [%{state: :running, node_id: "node-b", vm_id: "vm-b", volume_node_id: "node-b"}]} = Postgres.load_sessions(server)
+    assert {:ok, _} = append(server, :session_rejoined, 103, session_id: "s-move", payload: %{node_id: "node-b", vm_id: "vm-b"})
+    assert {:ok, [%{volume_node_id: "node-b"}]} = Postgres.load_sessions(server)
+    assert {:ok, _} = append(server, :session_destroyed, 104, session_id: "s-move", payload: %{reason: :destroyed})
+    assert {:ok, _} = append(server, :session_rejoined, 105, session_id: "s-move",
+      payload: %{node_id: "node-c", vm_id: "late", volume_node_id: "node-c"})
+    assert {:ok, [%{state: :destroyed, volume_node_id: "node-b"}]} = Postgres.load_sessions(server)
+  end
+
   test "append and read_from preserve monotonic ordering and read after a sequence", %{server: server} do
     seqs =
       for {kind, ts} <- [{:denied, 10}, {:drain, 20}, {:quota_enforced, 30}] do

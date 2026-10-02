@@ -1195,8 +1195,12 @@ defmodule Embervm.OpLog.Postgres do
     )
   end
 
-  defp project(conn, %Op{kind: :session_rejoined} = op, _seq),
-    do: project(conn, %{op | kind: :session_relit}, nil)
+  defp project(conn, %Op{kind: :session_rejoined} = op, _seq) do
+    exec(conn,
+      "UPDATE sessions SET state='running', node_id=$1, vm_id=$2, updated_at=$3, volume_node_id=COALESCE($5, volume_node_id) WHERE session_id=$4 AND state NOT IN ('destroyed','expired','evicted','failed')",
+      [Map.get(op.payload, :node_id), Map.get(op.payload, :vm_id), op.ts, op.session_id,
+       Map.get(op.payload, :volume_node_id)])
+  end
 
   # session_destroying: the durable destroy INTENT (ADR embervm/014 decision 5).
   # A non-terminal state marker appended BEFORE the teardown, so a CP crash

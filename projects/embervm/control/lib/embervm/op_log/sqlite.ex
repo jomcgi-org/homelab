@@ -1334,8 +1334,16 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  defp project(conn, %Op{kind: :session_rejoined} = op, _seq),
-    do: project(conn, %{op | kind: :session_relit}, nil)
+  defp project(conn, %Op{kind: :session_rejoined} = op, _seq) do
+    sql = "UPDATE sessions SET state='running', node_id=?, vm_id=?, updated_at=?, volume_node_id=COALESCE(?, volume_node_id) WHERE session_id=? AND state NOT IN ('destroyed','expired','evicted','failed')"
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [Map.get(op.payload, :node_id), Map.get(op.payload, :vm_id), op.ts,
+           Map.get(op.payload, :volume_node_id), op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
 
   # session_destroying: the durable destroy INTENT (ADR embervm/014 decision 5).
   # A non-terminal state marker appended BEFORE the node-confirmed teardown RPC, so

@@ -269,6 +269,11 @@ asyncLifecycleWrites: false
 # whose placement is unknown is still drained.
 drainInstanceScopedSessions: false
 
+# EMBERVM_CROSS_NODE_REJOIN. False preserves node-pinned workspace rejoin.
+# True permits another brick only after a synchronous export proves the current
+# unattached workspace fingerprint. CP restarts discard that in-memory proof.
+crossNodeRejoin: false
+
 # existing op_log_mod/0 selection and avoids inventing a second switch.
 specTrace:
   # Default OFF in production. ON in dev for local spec validation.
