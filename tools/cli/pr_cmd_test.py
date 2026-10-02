@@ -44,6 +44,7 @@ WRITEBACK = {
             "chore(charts): publish 1 chart version(s)\n\n"
             "projects/monolith/chart: 0.558.10 -> 0.559.0\n\n"
             f"Chart-Source-Commit: {SOURCE}\n"
+            "Chart-Publication-Complete: true\n"
             "Chart-Published: projects/monolith/chart 0.559.0\n"
         )
     }
@@ -177,28 +178,24 @@ def test_ejection_from_the_queue_fails_and_points_at_ci_triage(monkeypatch, cloc
     assert "ci-triage" in result.output
 
 
-def test_git_app_waits_for_reconcile_past_argocd_cache(monkeypatch, clock):
-    gh = FakeGh([_pr("MERGED")], files=["projects/gke-apps/monolith-public/x.yaml"])
-    gh.commits = [
-        {
-            "commit": {
-                "message": f"chore(charts): publish 0\n\nChart-Source-Commit: {SOURCE}\n"
-            }
+def test_missing_chart_metadata_never_verifies_an_old_healthy_app(monkeypatch, clock):
+    receipt = {
+        "commit": {
+            "message": (
+                f"Chart-Source-Commit: {SOURCE}\nChart-Publication-Complete: true\n"
+            )
         }
-    ]
-    early = (T0 + timedelta(minutes=1)).isoformat()
-    late = (T0 + timedelta(minutes=6)).isoformat()
+    }
+    gh = FakeGh([_pr("MERGED")], commits=[receipt])
     seen = _install(
         monkeypatch,
         gh,
-        [_verified(reconciled_at=early), _verified(reconciled_at=late)],
+        [_verified(reconciled_at=(T0 + timedelta(minutes=6)).isoformat())],
     )
-
-    result = CliRunner().invoke(app, ["pr", "land", "7"])
-
-    assert result.exit_code == 0, result.output
-    assert len(seen) == 2
-    assert seen[0] == ("/api/cluster/applications/monolith-public/verdict", {})
+    result = CliRunner().invoke(app, ["pr", "land", "7", "--app", "monolith"])
+    assert result.exit_code == 1
+    assert "missing chart publication metadata" in result.output
+    assert seen == []
 
 
 def test_failed_rollout_exits_nonzero_with_the_failing_check(monkeypatch, clock):
@@ -257,3 +254,48 @@ def test_infer_apps_maps_project_and_hub_paths(monkeypatch):
     )
 
     assert apps == ["embervm", "monolith"]
+
+
+def test_reused_chart_receipt_still_requires_the_published_revision(monkeypatch, clock):
+    receipt = {
+        "commit": {
+            "message": (
+                "chore(charts): publish 0 chart version(s)\n\n"
+                f"Chart-Source-Commit: {SOURCE}\n"
+                "Chart-Publication-Complete: true\n"
+                "Chart-Published: projects/monolith/chart 0.559.0\n"
+            )
+        }
+    }
+    gh = FakeGh([_pr("MERGED")], commits=[receipt])
+    seen = _install(
+        monkeypatch,
+        gh,
+        [
+            {"verdict": "in_progress", "checks": []},
+            _verified(),
+        ],
+    )
+    result = CliRunner().invoke(app, ["pr", "land", "7", "--app", "monolith"])
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 2
+    assert all(params == {"expected_revision": "0.559.0"} for _, params in seen)
+
+
+def test_incomplete_publication_is_not_a_rollout_receipt(monkeypatch, clock):
+    receipt = {
+        "commit": {
+            "message": (
+                f"Chart-Source-Commit: {SOURCE}\n"
+                "Chart-Published: projects/monolith/chart 0.559.0\n"
+            )
+        }
+    }
+    gh = FakeGh([_pr("MERGED")], commits=[receipt])
+    seen = _install(monkeypatch, gh, [_verified()])
+    result = CliRunner().invoke(
+        app, ["pr", "land", "7", "--app", "monolith", "--timeout", "1"]
+    )
+    assert result.exit_code == 1
+    assert "timed out waiting for the chart write-back" in result.output
+    assert seen == []
