@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 REQUIRED_ENV = {
     "DATABASE_URL",
     "EMBEDDING_URL",
     "KNOWLEDGE_DEFAULT_REPO_SCOPE",
+    "KG_AUDIT_ENABLED",
     "AGENT_BOARD_ENABLED",
     "AUTH_AUTHENTIK_JWKS_URL",
     "AUTH_AUTHENTIK_ISSUER",
@@ -35,6 +35,36 @@ def _chart_dir() -> Path:
     if not (chart / "Chart.yaml").exists():
         raise RuntimeError("Could not find monolith-agents Chart.yaml")
     return chart
+
+
+@pytest.mark.parametrize("enabled", ["false", "true"])
+def test_audit_kill_switch_reaches_agents_counter(enabled: str) -> None:
+    result = subprocess.run(
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "monolith-agents",
+            str(_chart_dir()),
+            "--set",
+            "agents.enabled=true",
+            "--set",
+            f"knowledge.audit.enabled={enabled}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    deployments = [
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc and doc["kind"] == "Deployment"
+    ]
+    assert len(deployments) == 1
+    env = {
+        item["name"]: item.get("value")
+        for item in deployments[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["KG_AUDIT_ENABLED"] == enabled
 
 
 @pytest.fixture(scope="module")

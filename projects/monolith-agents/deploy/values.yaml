@@ -47,3 +47,8 @@ onepassword:
 
 agents:
   enabled: true
+
+knowledge:
+  audit:
+    # Keep the monolith audit kill switch mirrored off until live validation.
+    enabled: false

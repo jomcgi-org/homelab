@@ -1239,28 +1239,34 @@ in both chart defaults and the hub values. Its scheduled `kg-audit` row uses
 the ordinary `kg-drain` lane and admission caps. Each invocation pins a
 repository-only sample before Luna starts: six uniform notes and six weighted
 by recent retrievals, observation age and provenance count, with a daily
-interval and a 14-day
-cooldown. The audit ledger keeps these streams separate. Defects request at
-most five ordinary open disputes per run, with reporter `kg-audit`; the normal
+interval and a 14-day cooldown. Reconciliation updates a changed interval
+without replacing a claimed invocation. The audit ledger keeps these streams
+separate. Defects request at most five ordinary open disputes per run, with
+reporter `kg-audit`; the normal
 resolver session handles each repair. Clarity-only repairs and process-issue
 filing have separate default-off bounds. Expansion reserves at most eight
 neighbours across two depths, including pending jobs, under the scheduled
 root's locked ledger row. Links in either direction, shared entities and
 same-raw embedding neighbours reuse the eligibility filter and prompt.
-MCP search counts returned notes in a separate best-effort transaction.
+MCP search counts returned notes in a separate best-effort transaction. The
+agents tier mirrors `knowledge.audit.enabled` and has only the column grants
+needed to insert counters and update their count. Activate or disable the same
+kill-switch key on both deployments; this tier starts no audit jobs.
 Trailing-window metrics report Wilson 95% intervals for uniform findings,
 resolver outcomes joined through disputes, expansion hit rate and causes.
-Turn costs are recorded before output validation. A previous root's known
-bill above $2, including expansions, defers subsequent scheduled intervals
-until the ceiling is raised or the recorded cost is reconciled. Missing costs
+Turn costs are recorded before output validation. Any scheduled root's known
+bill above $2, including late expansions after newer roots, defers subsequent
+scheduled intervals until the ceiling is raised or the recorded cost is
+reconciled. Missing costs
 stay NULL; the sample, expansion, dispute and turn-timeout bounds still apply.
 After scheduled apply, process feedback aggregates defects over 28 days. Five
 defects across three distinct scheduled roots propose one extraction lens,
 prompt or ranking change in a GitHub issue keyed by cause. Expansion findings
 count under their scheduled root. At most two issues can be filed in a trailing
 seven-day window. A committed `write_started` row reserves the cause and weekly
-slot before HTTP; ambiguous writes reconcile the exact issue marker without
-another create. Unresolved writes retain their slot until reconciled. Filing
+slot before HTTP; ambiguous writes reconcile the exact issue marker across
+open and closed issues without another create. Unresolved writes retain their
+slot until reconciled. Filing
 requires both the audit kill switch and `issues.enabled`, and failures leave
 the audit job successful. The loop gates and reroutes no work. Its only repair
 writes are ordinary disputes and process issues. Clarity repairs stay off until

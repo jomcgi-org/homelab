@@ -8673,6 +8673,11 @@ bdd_test(
 # Real-Postgres test: asserts the public_reader role's GRANTs isolate private rows
 # (ADR 004). Uses the bdd_test harness for the pg fixture + applied migrations.
 bdd_test(
+    name = "knowledge_audit_grants_test",
+    srcs = ["knowledge/audit_grants_test.py"],
+)
+
+bdd_test(
     name = "public_reader_grants_test",
     srcs = ["public_reader_grants_test.py"],
 )

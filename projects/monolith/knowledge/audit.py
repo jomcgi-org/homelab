@@ -138,12 +138,14 @@ def ensure_audit_job(session: Session) -> bool:
         )
         return result.rowcount > 0
     expression = ":payload" if sqlite else "CAST(:payload AS JSONB)"
+    changed = "IS NOT" if sqlite else "IS DISTINCT FROM"
     result = session.execute(
         text(
             f"INSERT INTO {table} "
             "(name, routine_kind, interval_secs, next_run_at, payload, created_by) "
             f"VALUES (:name, 'kg-drain', :interval, CURRENT_TIMESTAMP, {expression}, :creator) "
-            "ON CONFLICT (name) DO NOTHING"
+            "ON CONFLICT (name) DO UPDATE SET interval_secs = EXCLUDED.interval_secs "
+            f"WHERE routine_jobs.interval_secs {changed} EXCLUDED.interval_secs"
         ),
         {
             "name": AUDIT_JOB_NAME,
@@ -327,22 +329,24 @@ def defer_audit_if_over_budget(
         return (
             existing.metrics.get("summary") if existing.status == "deferred" else None
         )
-    previous = session.exec(
-        select(AuditRun)
-        .where(AuditRun.stream == "scheduled", AuditRun.status != "deferred")
-        .order_by(AuditRun.id.desc())
-    ).first()
-    if previous is None:
-        return None
-    costs = session.exec(
-        select(AuditRun.cost_usd).where(
-            or_(AuditRun.root_run_id == previous.id, AuditRun.id == previous.id)
+    root = aliased(AuditRun)
+    # Expansions can complete after newer roots. Every unresolved root bill
+    # remains a bound, even when it is no longer the latest scheduled row.
+    overrun = session.exec(
+        select(root.id, func.sum(AuditRun.cost_usd))
+        .join(
+            AuditRun,
+            or_(AuditRun.root_run_id == root.id, AuditRun.id == root.id),
         )
-    ).all()
-    known_cost = sum(cost for cost in costs if cost is not None)
-    if known_cost <= audit_settings().max_run_cost_usd:
+        .where(root.stream == "scheduled", root.status != "deferred")
+        .group_by(root.id)
+        .having(func.sum(AuditRun.cost_usd) > audit_settings().max_run_cost_usd)
+        .order_by(root.id.desc())
+    ).first()
+    if overrun is None:
         return None
-    summary = f"KG audit deferred: previous root {previous.id} exceeded the dollar ceiling (${known_cost:.2f})"
+    root_id, known_cost = overrun
+    summary = f"KG audit deferred: previous root {root_id} exceeded the dollar ceiling (${known_cost:.2f})"
     run = AuditRun(
         job_name=job_name,
         prompt_version=AUDIT_PROMPT_VERSION,
@@ -351,7 +355,7 @@ def defer_audit_if_over_budget(
         metrics={
             "invocation_key": invocation_key,
             "summary": summary,
-            "previous_root_run_id": previous.id,
+            "previous_root_run_id": root_id,
             "known_cost_usd": known_cost,
         },
     )

@@ -3,6 +3,7 @@
   (dict "name" "DATABASE_URL" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.database.secretName "key" .Values.database.secretKey)))
   (dict "name" "EMBEDDING_URL" "value" .Values.embeddingUrl)
   (dict "name" "KNOWLEDGE_DEFAULT_REPO_SCOPE" "value" .Values.knowledge.defaultRepoScope)
+  (dict "name" "KG_AUDIT_ENABLED" "value" (.Values.knowledge.audit.enabled | toString))
   (dict "name" "AGENT_BOARD_ENABLED" "value" (.Values.agentBoard.enabled | default false | toString))
   (dict "name" "AUTH_AUTHENTIK_JWKS_URL" "value" .Values.auth.authentik.jwksUrl)
   (dict "name" "AUTH_AUTHENTIK_ISSUER" "value" .Values.auth.authentik.issuer)

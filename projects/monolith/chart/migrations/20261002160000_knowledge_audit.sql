@@ -56,3 +56,6 @@ CREATE TABLE knowledge.note_retrievals (
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (note_id, day)
 );
+-- The agents MCP tier increments returned-note counters, never the audit ledger.
+GRANT INSERT (note_id, day, count), UPDATE (count)
+    ON knowledge.note_retrievals TO agents_writer;
