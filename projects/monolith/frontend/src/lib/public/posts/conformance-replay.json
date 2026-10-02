@@ -1,0 +1,1567 @@
+{
+  "version": 1,
+  "recordedAt": "2026-10-02T18:52:29.130595507Z",
+  "chartVersion": "0.145.5",
+  "runId": "b09f9ba00074036757ab18d7fc2eb52e",
+  "durationMs": 57000,
+  "conditions": "The dev cluster on the GKE hub, one 2 GiB brick, during a scheduled conformance run. The verdict after each record is the live checker's answer for the window from suite start to that record.",
+  "invariants": [
+    {
+      "key": "no_double_assign",
+      "name": "No double assign",
+      "meaning": "No two live tasks share a VM."
+    },
+    {
+      "key": "dispatch_provenance",
+      "name": "Dispatch provenance",
+      "meaning": "Every dispatch says where its VM came from."
+    },
+    {
+      "key": "adopt_idempotent",
+      "name": "Adopt idempotent",
+      "meaning": "A VM re-learned after a restart appears once."
+    },
+    {
+      "key": "health_monotonic",
+      "name": "Health monotonic",
+      "meaning": "A node goes down and comes back through the states in order."
+    },
+    {
+      "key": "prime_before_checkpoint",
+      "name": "Prime before checkpoint",
+      "meaning": "Every VM in a checkpoint was primed or adopted first."
+    },
+    {
+      "key": "destroy_intent_precedes_record",
+      "name": "Destroy intent first",
+      "meaning": "A destroy is recorded as intended before it is recorded as done."
+    },
+    {
+      "key": "no_destroy_before_confirm",
+      "name": "No destroy before confirm",
+      "meaning": "A VM is recorded destroyed only after the node confirms it."
+    },
+    {
+      "key": "eventually_dispatched",
+      "name": "Eventually dispatched",
+      "meaning": "A queued task gets a VM within two checkpoints."
+    },
+    {
+      "key": "inventory_reconciled",
+      "name": "Inventory reconciled",
+      "meaning": "The VMs the node reports live are the VMs the control plane knows about."
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "S1",
+      "verdict": "pass",
+      "ms": 15430,
+      "title": "Two clones exchange markers over vsock"
+    },
+    {
+      "id": "S2",
+      "verdict": "pass",
+      "ms": 38235,
+      "title": "A session sleeps and relights"
+    },
+    {
+      "id": "S3",
+      "verdict": "pass",
+      "ms": 384,
+      "title": "A second session starts faster"
+    },
+    {
+      "id": "S4",
+      "verdict": "pass",
+      "ms": 49,
+      "title": "Control-plane invariants"
+    },
+    {
+      "id": "S5",
+      "verdict": "pass",
+      "ms": 1160,
+      "title": "A guest round-trips non-ASCII output"
+    }
+  ],
+  "suiteVerdict": "pass",
+  "final": {
+    "no_double_assign": ["pass", 3, "no vm_id appears in multiple dispatches"],
+    "dispatch_provenance": ["pass", 3, "all dispatches have provenance"],
+    "adopt_idempotent": ["vacuous", 0, "no records in trace"],
+    "health_monotonic": ["vacuous", 0, "no records in trace"],
+    "prime_before_checkpoint": [
+      "pass",
+      11,
+      "all checkpoint vm_ids have preceding prime or adopt"
+    ],
+    "destroy_intent_precedes_record": [
+      "pass",
+      2,
+      "2 confirmations, 0 snapshot-only, 2 examined; destroy intent precedes every destroy record"
+    ],
+    "no_destroy_before_confirm": [
+      "pass",
+      2,
+      "2 confirmations, 0 snapshot-only, 2 examined, 0 gate-off; confirmed_by teardown=2, absence=0, node_gone=0 ; all gated destroy confirmations have node confirmation or node departure"
+    ],
+    "eventually_dispatched": ["vacuous", 0, "no records in trace"],
+    "inventory_reconciled": [
+      "pass",
+      1,
+      "every examined node instance with unaccounted live_vms had checkpoint inventory"
+    ]
+  },
+  "events": [
+    {
+      "seq": 2734,
+      "at": 107,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["vacuous", 0],
+        "dispatch_provenance": ["vacuous", 0],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2735,
+      "at": 197,
+      "action": "prime",
+      "vars": {
+        "vm": "vm-7b1e3c",
+        "lane": "task",
+        "workload": "sandbox-python"
+      },
+      "verdicts": {
+        "no_double_assign": ["vacuous", 0],
+        "dispatch_provenance": ["vacuous", 0],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2736,
+      "at": 198,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-7b1e3c"]
+      },
+      "verdicts": {
+        "no_double_assign": ["vacuous", 0],
+        "dispatch_provenance": ["vacuous", 0],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2737,
+      "at": 201,
+      "action": "dispatch_miss",
+      "vars": {
+        "vm": "vm-7b1e3c",
+        "task": "nbishv",
+        "provenance": "miss",
+        "workload": "sandbox-python"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 1],
+        "dispatch_provenance": ["pass", 1],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2738,
+      "at": 233,
+      "action": "prime",
+      "vars": {
+        "vm": "vm-e1f5e9",
+        "lane": "task",
+        "workload": "sandbox-python"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 1],
+        "dispatch_provenance": ["pass", 1],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2739,
+      "at": 233,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-7b1e3c", "vm-e1f5e9"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 1],
+        "dispatch_provenance": ["pass", 1],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2740,
+      "at": 237,
+      "action": "dispatch_miss",
+      "vars": {
+        "vm": "vm-e1f5e9",
+        "task": "2mx22r",
+        "provenance": "miss",
+        "workload": "sandbox-python"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["vacuous", 0],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["vacuous", 0]
+      }
+    },
+    {
+      "seq": 2741,
+      "at": 2078,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 2,
+        "primed": 2,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 1],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2742,
+      "at": 2102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 1],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2743,
+      "at": 4101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 1],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2744,
+      "at": 6101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 1],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2745,
+      "at": 7083,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 2,
+        "primed": 0,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 2],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2746,
+      "at": 8101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 2],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2747,
+      "at": 10102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 2],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2748,
+      "at": 12090,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 2,
+        "primed": 0,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2749,
+      "at": 12102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2750,
+      "at": 14101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2751,
+      "at": 15391,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2752,
+      "at": 15399,
+      "action": "succeed",
+      "vars": {
+        "vm": "vm-7b1e3c",
+        "task": "nbishv"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2753,
+      "at": 15480,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2754,
+      "at": 15485,
+      "action": "succeed",
+      "vars": {
+        "vm": "vm-e1f5e9",
+        "task": "2mx22r"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2755,
+      "at": 16053,
+      "action": "prime",
+      "vars": {
+        "vm": "vm-161994",
+        "lane": "session",
+        "workload": "pi-runtime"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2756,
+      "at": 16054,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2757,
+      "at": 16101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 3],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2758,
+      "at": 17096,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 1,
+        "primed": 1,
+        "session_held": 1,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 4],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2759,
+      "at": 18102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 4],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2760,
+      "at": 20103,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 4],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2761,
+      "at": 22101,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 1,
+        "primed": 1,
+        "session_held": 1,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 5],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2762,
+      "at": 22101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 5],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2763,
+      "at": 24102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 5],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2764,
+      "at": 26102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 5],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2765,
+      "at": 27106,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 1,
+        "primed": 1,
+        "session_held": 1,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 6],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2766,
+      "at": 28102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 6],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2767,
+      "at": 30103,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 6],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2768,
+      "at": 32102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 6],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2769,
+      "at": 32111,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 1,
+        "primed": 1,
+        "session_held": 1,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 7],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2770,
+      "at": 34102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 7],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2771,
+      "at": 35844,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-161994"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 7],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2772,
+      "at": 36071,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 7],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2773,
+      "at": 36102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 7],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2774,
+      "at": 37117,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 1,
+        "primed": 0,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 8],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2775,
+      "at": 38103,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 8],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2776,
+      "at": 38327,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 8],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2777,
+      "at": 40102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 8],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2778,
+      "at": 42102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 8],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2779,
+      "at": 42129,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 0,
+        "primed": 0,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 9],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2780,
+      "at": 44102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 9],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2781,
+      "at": 46102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 9],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2782,
+      "at": 47134,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 0,
+        "primed": 0,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 10],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2783,
+      "at": 48101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 10],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2784,
+      "at": 50102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 10],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2785,
+      "at": 51250,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 10],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2786,
+      "at": 52102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 10],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2787,
+      "at": 52139,
+      "action": "checkpoint",
+      "vars": {
+        "live_vms": 1,
+        "primed": 0,
+        "session_held": 0,
+        "known": 0,
+        "queued": 0
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2788,
+      "at": 52721,
+      "action": "begin_destroy",
+      "vars": {
+        "vm": "vm-5f95e4",
+        "session": "MADHP8",
+        "gate": true
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2789,
+      "at": 52752,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["vacuous", 0],
+        "no_destroy_before_confirm": ["vacuous", 0],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2790,
+      "at": 52757,
+      "action": "confirm_destroy",
+      "vars": {
+        "vm": "vm-5f95e4",
+        "session": "MADHP8",
+        "confirmed_by": "teardown",
+        "node_confirmed": true
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2791,
+      "at": 52991,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2792,
+      "at": 54097,
+      "action": "prime",
+      "vars": {
+        "vm": "vm-46f27c",
+        "lane": "session",
+        "workload": "pi-runtime"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2793,
+      "at": 54098,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-46f27c"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2794,
+      "at": 54101,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-46f27c"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2795,
+      "at": 54110,
+      "action": "begin_destroy",
+      "vars": {
+        "vm": "vm-46f27c",
+        "session": "P9XWPE",
+        "gate": true
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2796,
+      "at": 54139,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 1],
+        "no_destroy_before_confirm": ["pass", 1],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2797,
+      "at": 54143,
+      "action": "confirm_destroy",
+      "vars": {
+        "vm": "vm-46f27c",
+        "session": "P9XWPE",
+        "confirmed_by": "teardown",
+        "node_confirmed": true
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2798,
+      "at": 54306,
+      "action": "prime",
+      "vars": {
+        "vm": "vm-08870f",
+        "lane": "task",
+        "workload": "sandbox-elixir"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2799,
+      "at": 54307,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": ["vm-08870f"]
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 2],
+        "dispatch_provenance": ["pass", 2],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2800,
+      "at": 54311,
+      "action": "dispatch_miss",
+      "vars": {
+        "vm": "vm-08870f",
+        "task": "6o7xs4",
+        "provenance": "miss",
+        "workload": "sandbox-elixir"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 3],
+        "dispatch_provenance": ["pass", 3],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2801,
+      "at": 55315,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 3],
+        "dispatch_provenance": ["pass", 3],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2802,
+      "at": 55319,
+      "action": "succeed",
+      "vars": {
+        "vm": "vm-08870f",
+        "task": "6o7xs4"
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 3],
+        "dispatch_provenance": ["pass", 3],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    },
+    {
+      "seq": 2803,
+      "at": 56102,
+      "action": "recv_status",
+      "vars": {
+        "health": "healthy",
+        "primed": []
+      },
+      "verdicts": {
+        "no_double_assign": ["pass", 3],
+        "dispatch_provenance": ["pass", 3],
+        "adopt_idempotent": ["vacuous", 0],
+        "health_monotonic": ["vacuous", 0],
+        "prime_before_checkpoint": ["pass", 11],
+        "destroy_intent_precedes_record": ["pass", 2],
+        "no_destroy_before_confirm": ["pass", 2],
+        "eventually_dispatched": ["vacuous", 0],
+        "inventory_reconciled": ["pass", 1]
+      }
+    }
+  ]
+}

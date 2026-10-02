@@ -374,6 +374,99 @@ def expert_paths() -> Figure:
     return f
 
 
+def conformance_loop() -> Figure:
+    """Exploded view of the path a chart takes from merge to production.
+
+    Parts sit on one assembly axis: the merge at the top, the control plane
+    and the checker in the middle, Kargo at the bottom. The runner stands to
+    the right because it both drives the control plane and reads the checker,
+    and its verdict is what Kargo polls."""
+    f = Figure(700, 604, "The conformance loop from merge to promotion")
+    ax = 240
+    for y1, y2 in ((84, 112), (222, 250), (360, 470), (540, 572)):
+        f.axis(ax, y1, y2)
+
+    # 1 Merge: chart published, synced to dev, rollout awaited.
+    f.box(40, 28, 620, 56)
+    f.text(50, 46, "MERGE TO MAIN: chart version published")
+    f.hline(40, 660, 54)
+    f.vline(246, 54, 84)
+    f.vline(453, 54, 84)
+    f.text(50, 72, "ArgoCD syncs embervm-dev")
+    f.text(256, 72, "Kargo waits for Healthy")
+    f.text(463, 72, "runner sees the new version")
+    f.keyed(20, 56, "1", 40, 56)
+
+    # 3 Control plane: the thing under test, and the trace it writes.
+    f.box(40, 112, 400, 110)
+    f.text(50, 130, "CONTROL PLANE: Elixir, one per cluster")
+    f.hline(40, 440, 138)
+    f.vline(220, 138, 222)
+    f.lines(50, 158, ["dispatcher", "session manager", "node registry"])
+    f.lines(230, 158, ["SpecTrace writer", "15 event kinds", "checkpoint every 5 s"])
+    f.hline(220, 440, 198)
+    f.text(230, 214, "store: {run_id, seq, action, vars}")
+    f.keyed(20, 167, "3", 40, 167)
+
+    # 2 Runner: drives the scenarios and folds them into one verdict.
+    f.box(480, 112, 180, 300)
+    f.text(490, 130, "RUNNER: every 30 min")
+    f.hline(480, 660, 138)
+    rows = [
+        "S1 two clones, vsock",
+        "S2 sleep and relight",
+        "S3 second start time",
+        "S4 invariants",
+        "S5 guest round trip",
+    ]
+    for i, row in enumerate(rows):
+        y = 138 + i * 40
+        f.text(490, y + 24, row)
+        f.hline(480, 660, y + 40)
+    f.text(490, 378, "GET /verdict")
+    f.lines(490, 393, ["chart version, verdict,", "previous verdict"], size=10, step=12)
+    f.keyed(570, 94, "2", 570, 112)
+    f.arrow(480, 150, 440, 150)
+    f.text(474, 142, "drives", anchor="end", size=10)
+
+    # 4 Checker: nine invariants, three verdict values.
+    f.box(40, 250, 400, 110)
+    f.text(50, 268, "CHECKER: 9 invariants from adoption.tla")
+    f.hline(40, 440, 276)
+    f.vline(173, 276, 328)
+    f.vline(306, 276, 328)
+    f.text(106, 306, "pass", anchor="middle")
+    f.text(239, 306, "fail", anchor="middle")
+    f.text(373, 306, "vacuous", anchor="middle")
+    f.hline(40, 440, 328)
+    f.text(50, 348, "GET /v1/conformance: one verdict per invariant")
+    f.keyed(20, 305, "4", 40, 305)
+    f.arrow(ax, 222, ax, 250)
+    f.text(ax + 8, 240, "trace window", size=10)
+    f.arrow(440, 318, 480, 318)
+    f.text(474, 332, "S4 reads", anchor="end", size=10)
+
+    # 5 The runner's verdict is what Kargo polls.
+    f.arrow(570, 412, 570, 470)
+    f.keyed(610, 441, "5", 570, 441)
+
+    # 6 Kargo: four rules, one of which promotes.
+    f.box(40, 470, 620, 70)
+    f.text(50, 488, "KARGO dev stage: polls /verdict for up to 75 min")
+    f.hline(40, 660, 496)
+    f.vline(246, 496, 540)
+    f.vline(453, 496, 540)
+    f.lines(50, 514, ["pass for this version:", "promote"])
+    f.lines(256, 514, ["fail after a pass:", "hold, keep polling"])
+    f.lines(463, 514, ["fail after a fail, or stale:", "promotion fails"])
+    f.keyed(20, 505, "6", 40, 505)
+
+    # Production, after the soak.
+    f.box(140, 572, 200, 32)
+    f.text(ax, 592, "PRODUCTION, after a 5 min soak", anchor="middle")
+    return f
+
+
 def main() -> None:
     for name, build in {
         "memory-tiers": memory_tiers,
@@ -382,6 +475,7 @@ def main() -> None:
         "prefill-chunk": prefill_chunk,
         "moe-selection": moe_selection,
         "expert-paths": expert_paths,
+        "conformance-loop": conformance_loop,
     }.items():
         (HERE / f"{name}.svg").write_text(build().svg(), encoding="utf-8")
 
