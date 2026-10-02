@@ -85,14 +85,15 @@ def _resolve_edge_targets(
 
 
 def open_dispute_note_ids(session: Session, note_ids: Iterable[str]) -> set[str]:
-    """Return note ids with an open dispute in one query."""
+    """Return note ids with unresolved (open or resolution_failed) disputes."""
     ids = list(note_ids)
     if not ids:
         return set()
     return set(
         session.execute(
             select(Dispute.note_id).where(
-                Dispute.note_id.in_(ids), Dispute.state == "open"
+                Dispute.note_id.in_(ids),
+                Dispute.state.in_(("open", "resolution_failed")),
             )
         )
         .scalars()

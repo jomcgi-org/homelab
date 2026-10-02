@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import core.db
 import pytest
 from core.platform_probe import PlatformProbe
+from knowledge.models import Dispute
 from sqlmodel import Session, SQLModel, create_engine
 
 from factory import ops_health
@@ -29,7 +30,11 @@ def engine(tmp_path, monkeypatch):
         f"sqlite:///{tmp_path / 'ops.db'}",
         connect_args={"check_same_thread": False},
         execution_options={
-            "schema_translate_map": {"swarm": None, "agent_sessions": None}
+            "schema_translate_map": {
+                "swarm": None,
+                "agent_sessions": None,
+                "knowledge": None,
+            }
         },
     )
     SQLModel.metadata.create_all(
@@ -44,6 +49,7 @@ def engine(tmp_path, monkeypatch):
                 WorkItem,
                 FactoryControl,
                 FactoryReceipt,
+                Dispute,
             )
         ],
     )
@@ -51,6 +57,117 @@ def engine(tmp_path, monkeypatch):
     ops_health.reset_caches()
     yield engine
     ops_health.reset_caches()
+
+
+# --- kg_dispute_resolution --------------------------------------------------
+
+
+def test_dispute_resolution_evaluate_reports_count_and_caps_note_ids():
+    note_ids = [f"note-{i}" for i in range(8)]
+    result = ops_health.evaluate_kg_dispute_resolution(9, note_ids)
+    assert result["ok"] is False
+    assert "9 dispute resolution(s) failed" in result["detail"]
+    assert "note-0" in result["detail"] and "note-4" in result["detail"]
+    assert "note-5" not in result["detail"]
+    assert ops_health.evaluate_kg_dispute_resolution(0, [])["ok"] is True
+
+
+def test_dispute_resolution_reader_filters_window_and_state(engine, monkeypatch):
+    monkeypatch.setattr(ops_health, "_now", lambda: NOW)
+    boundary = NOW - ops_health.KG_DISPUTE_FAILURE_WINDOW
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Dispute(
+                    note_id="recent",
+                    reason="wrong",
+                    state="resolution_failed",
+                    resolved_at=NOW,
+                ),
+                Dispute(
+                    note_id="boundary",
+                    reason="wrong",
+                    state="resolution_failed",
+                    resolved_at=boundary,
+                ),
+                Dispute(
+                    note_id="old",
+                    reason="wrong",
+                    state="resolution_failed",
+                    resolved_at=boundary - timedelta(seconds=1),
+                ),
+                Dispute(
+                    note_id="answered",
+                    reason="wrong",
+                    state="rejected",
+                    resolved_at=NOW,
+                ),
+                Dispute(note_id="open", reason="wrong"),
+            ]
+        )
+        session.commit()
+
+    assert ops_health._kg_dispute_resolution_rows_sync(boundary) == (
+        2,
+        ["boundary", "recent"],
+    )
+    result = asyncio.run(ops_health.kg_dispute_resolution_health())
+    assert result["ok"] is False
+    assert "2 dispute resolution(s)" in result["detail"]
+    assert "boundary" in result["detail"] and "recent" in result["detail"]
+    assert "old" not in result["detail"] and "answered" not in result["detail"]
+
+
+@pytest.mark.parametrize("age", [None, timedelta(hours=24, seconds=1)])
+def test_dispute_resolution_reader_old_or_absent_is_healthy(engine, monkeypatch, age):
+    monkeypatch.setattr(ops_health, "_now", lambda: NOW)
+    if age is not None:
+        with Session(engine) as session:
+            session.add(
+                Dispute(
+                    note_id="old",
+                    reason="wrong",
+                    state="resolution_failed",
+                    resolved_at=NOW - age,
+                )
+            )
+            session.commit()
+    assert asyncio.run(ops_health.kg_dispute_resolution_health())["ok"] is True
+
+
+def test_dispute_resolution_reader_caps_identifiers_not_count(engine):
+    with Session(engine) as session:
+        session.add_all(
+            [
+                Dispute(
+                    note_id=f"note-{i}",
+                    reason="wrong",
+                    state="resolution_failed",
+                    resolved_at=NOW,
+                )
+                for i in range(8)
+            ]
+        )
+        session.commit()
+    count, note_ids = ops_health._kg_dispute_resolution_rows_sync(
+        NOW - timedelta(hours=24)
+    )
+    assert count == 8
+    assert note_ids == [f"note-{i}" for i in range(5)]
+
+
+def test_dispute_resolution_check_registered_and_reader_error_is_unknown(monkeypatch):
+    def unreadable(_since):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(ops_health, "_kg_dispute_resolution_rows_sync", unreadable)
+    assert (
+        ops_health.CHECKS["kg_dispute_resolution"]
+        is ops_health.kg_dispute_resolution_health
+    )
+    result = asyncio.run(ops_health.kg_dispute_resolution_health())
+    assert result["status"] == "unknown"
+    assert result["ok"] is True
 
 
 # --- embervm_capacity -------------------------------------------------------

@@ -1217,7 +1217,9 @@ keep the human in the loop for review and override.
 Derived facts carry `scope`, `verification_state`, `confidence`, and a validity
 window as columns. A dispute opens a `knowledge.disputes` row keyed by the
 stable note id, so it survives a reindex, and never deletes the disputed fact;
-a distress report notifies Discord and is retained but never extracted. Doc
+a resolution that dead-letters ends `resolution_failed`, stays visible as
+disputed, and alerts Discord through `ops_health`. Replay reopens the dispute.
+A distress report notifies Discord and is retained but never extracted. Doc
 drift found by the repository diff feed opens human-reviewed documentation PRs
 on the routine lane, a demand-driven review turn verifies them against main,
 and the switch that would let it enqueue one stays off. Recall closes the loop:

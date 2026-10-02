@@ -114,11 +114,12 @@ def test_select_publishable_skips_redaction_without_logging_secret(
     assert secret not in caplog.text
 
 
-def test_select_publishable_filters_open_dispute(session):
+@pytest.mark.parametrize("state", ["open", "resolution_failed"])
+def test_select_publishable_filters_unresolved_dispute(session, state):
     _save(
         session,
         _note("disputed-fact"),
-        Dispute(note_id="disputed-fact", reason="Needs review", state="open"),
+        Dispute(note_id="disputed-fact", reason="Needs review", state=state),
     )
     assert select_publishable(session) == ([], 0)
     assert apply(session, dry_run=True).skipped_dispute == 1
@@ -151,7 +152,8 @@ def test_select_unpublishable_verification_state(session, state):
     assert select_unpublishable(session) == [state]
 
 
-def test_select_unpublishable_open_dispute(session):
+@pytest.mark.parametrize("state", ["open", "resolution_failed"])
+def test_select_unpublishable_unresolved_dispute(session, state):
     _save(
         session,
         _note(
@@ -159,7 +161,7 @@ def test_select_unpublishable_open_dispute(session):
             visibility="public",
             published_at=datetime.now(timezone.utc),
         ),
-        Dispute(note_id="open-dispute", reason="Needs review", state="open"),
+        Dispute(note_id="open-dispute", reason="Needs review", state=state),
     )
     assert select_unpublishable(session) == ["open-dispute"]
 

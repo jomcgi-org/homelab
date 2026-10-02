@@ -68,6 +68,10 @@ CODEX_QUOTA_MAX_AGE = timedelta(minutes=60)
 # factory_stuck
 UNCERTAIN_MAX_AGE = timedelta(hours=2)
 
+# kg_dispute_resolution
+KG_DISPUTE_FAILURE_WINDOW = timedelta(hours=24)
+KG_DISPUTE_NOTE_LIMIT = 5
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -550,11 +554,57 @@ async def _factory_stuck() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# kg_dispute_resolution
+
+
+def evaluate_kg_dispute_resolution(count: int, note_ids: list[str]) -> dict:
+    """Evaluate the count and bounded note ids of failures in the last 24 hours."""
+    if not count:
+        return {"ok": True, "detail": "no dispute resolutions failed in the last 24h"}
+    listed = ", ".join(note_ids[:KG_DISPUTE_NOTE_LIMIT])
+    return {
+        "ok": False,
+        "detail": f"{count} dispute resolution(s) failed in the last 24h; note ids: {listed}",
+    }
+
+
+def _kg_dispute_resolution_rows_sync(since: datetime) -> tuple[int, list[str]]:
+    from knowledge.models import Dispute
+    from sqlalchemy import func
+    from sqlmodel import select
+
+    with _db_session() as session:
+        predicates = (
+            Dispute.state == "resolution_failed",
+            Dispute.resolved_at >= since,
+        )
+        count = session.exec(
+            select(func.count()).select_from(Dispute).where(*predicates)
+        ).one()
+        note_ids = session.exec(
+            select(Dispute.note_id)
+            .where(*predicates)
+            .distinct()
+            .order_by(Dispute.note_id)
+            .limit(KG_DISPUTE_NOTE_LIMIT)
+        ).all()
+        return int(count), list(note_ids)
+
+
+async def _kg_dispute_resolution() -> dict:
+    count, note_ids = await asyncio.to_thread(
+        _kg_dispute_resolution_rows_sync, _now() - KG_DISPUTE_FAILURE_WINDOW
+    )
+    return evaluate_kg_dispute_resolution(count, note_ids)
+
 
 embervm_capacity_health = _CachedCheck("embervm_capacity", _embervm_capacity)
 agent_turns_health = _CachedCheck("agent_turns", _agent_turns)
 codex_quota_fresh_health = _CachedCheck("codex_quota_fresh", _codex_quota_fresh)
 factory_stuck_health = _CachedCheck("factory_stuck", _factory_stuck)
+kg_dispute_resolution_health = _CachedCheck(
+    "kg_dispute_resolution", _kg_dispute_resolution
+)
 
 CHECKS: dict[str, _CachedCheck] = {
     check.name: check
@@ -563,6 +613,7 @@ CHECKS: dict[str, _CachedCheck] = {
         agent_turns_health,
         codex_quota_fresh_health,
         factory_stuck_health,
+        kg_dispute_resolution_health,
     )
 }
 

@@ -601,11 +601,12 @@ def _record_failure(session: Session, raw: RawInput, error: str, attempt: int) -
             )
         ).all()
         for dispute in disputes:
+            dispute.state = "resolution_failed"
+            dispute.resolved_at = datetime.now(timezone.utc)
             if not dispute.resolution:
                 dispute.resolution = reason
             elif reason not in dispute.resolution:
                 dispute.resolution = f"{dispute.resolution}\n{reason}"
-            session.add(dispute)
     session.commit()
 
 

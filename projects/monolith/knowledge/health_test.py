@@ -48,6 +48,7 @@ class _Session:
                     or SimpleNamespace(
                         open_disputes=0,
                         oldest_open_dispute_seconds=None,
+                        resolution_failed_disputes=0,
                     )
                 ),
                 _Result(repo_diff or SimpleNamespace(last_sha=None, last_run_at=None)),
@@ -179,6 +180,7 @@ def test_kg_health_reports_stale_open_disputes():
         SimpleNamespace(
             open_disputes=2,
             oldest_open_dispute_seconds=48 * 60 * 60 + 1,
+            resolution_failed_disputes=3,
         ),
         SimpleNamespace(
             last_sha="a" * 40,
@@ -190,10 +192,32 @@ def test_kg_health_reports_stale_open_disputes():
 
     assert result["ok"] is False
     assert result["open_disputes"] == 2
+    assert result["resolution_failed_disputes"] == 3
     assert result["oldest_open_dispute_seconds"] == 48 * 60 * 60 + 1
     assert "swept_last_cycle" not in result
     assert result["repo_diff_last_sha"] == "a" * 40
     assert result["repo_diff_last_run_at"] == "2026-09-03T13:00:00+00:00"
+
+
+def test_failed_disputes_are_counted_without_changing_health_ok():
+    session = _Session(
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+        SimpleNamespace(
+            open_disputes=0,
+            oldest_open_dispute_seconds=None,
+            resolution_failed_disputes=2,
+        ),
+    )
+
+    result = _kg_health_core(session, 40)
+
+    assert result["ok"] is True
+    assert result["resolution_failed_disputes"] == 2
+    dispute_sql, _ = session.calls[4]
+    assert "count(*) FILTER (WHERE state = 'open')" in dispute_sql
+    assert "MIN(created_at) FILTER (WHERE state = 'open')" in dispute_sql
+    assert "count(*) FILTER (WHERE state = 'resolution_failed')" in dispute_sql
 
 
 def test_kg_health_reports_active_burst_cap_and_remaining_allowance():

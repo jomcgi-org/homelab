@@ -1247,7 +1247,7 @@ def test_invalid_output_does_not_write_dead_letter_before_drainer_ceiling(sessio
     assert rows == []
 
 
-def test_final_failure_records_ceiling_and_keeps_dispute_open(session):
+def test_final_failure_records_ceiling_and_terminates_dispute(session):
     raw = _raw(session, "dispute", extra={"note_id": "disputed-note"})
     dispute = Dispute(
         note_id="disputed-note",
@@ -1269,5 +1269,46 @@ def test_final_failure_records_ceiling_and_keeps_dispute_open(session):
     session.refresh(dispute)
     assert failed.retry_count == 3
     assert failed.error == "invalid output"
-    assert dispute.state == "open"
+    assert dispute.state == "resolution_failed"
+    assert isinstance(dispute.resolved_at, datetime)
     assert dispute.resolution == ("manual context\nextraction failed after 3 attempts")
+
+
+@pytest.mark.parametrize("attempt", [1, 2])
+def test_dispute_failure_below_ceiling_stays_open(session, attempt):
+    raw = _raw(session, "dispute")
+    dispute = Dispute(note_id="contested", raw_id=raw.raw_id, reason="wrong")
+    session.add(dispute)
+    session.commit()
+
+    record_extraction_failure(session, raw.raw_id, "invalid output", attempt)
+
+    session.refresh(dispute)
+    assert dispute.state == "open"
+    assert dispute.resolved_at is None
+    assert dispute.resolution is None
+
+
+@pytest.mark.parametrize("source", ["dispute", "agent-report"])
+def test_dead_letter_only_terminates_matching_open_dispute(session, source):
+    raw = _raw(session, source)
+    matching = Dispute(note_id="same", raw_id=raw.raw_id, reason="wrong")
+    unrelated = Dispute(note_id="other", raw_id="other-raw", reason="wrong")
+    resolved = Dispute(
+        note_id="same", raw_id=raw.raw_id, reason="answered", state="rejected"
+    )
+    session.add_all([matching, unrelated, resolved])
+    session.commit()
+
+    record_extraction_failure(session, raw.raw_id, "invalid output", 3)
+
+    session.refresh(matching)
+    session.refresh(unrelated)
+    session.refresh(resolved)
+    assert matching.state == ("resolution_failed" if source == "dispute" else "open")
+    assert unrelated.state == "open"
+    assert unrelated.resolved_at is None
+    assert unrelated.resolution is None
+    assert resolved.state == "rejected"
+    assert resolved.resolved_at is None
+    assert resolved.resolution is None
