@@ -131,6 +131,47 @@ def test_agent_other_tasks_keep_system_schema_and_verifier_call(tmp_path):
     assert TOOLS == baseline
 
 
+@pytest.mark.parametrize("arguments", ["null", "[]", '"finished"', "1"])
+def test_run_agent_cell_done_with_non_object_arguments(tmp_path, arguments):
+    # Valid JSON that is not an object must not crash the done handler: the
+    # summary is empty and the legacy two-argument verifier still runs.
+    seen = {}
+
+    async def fake_chat(**kwargs):
+        return ChatResult(
+            message={
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "done", "arguments": arguments}}
+                ]
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=1,
+        )
+
+    def verify(workdir, args):
+        seen["called"] = True
+        return VerifyResult(True, "")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=fake_chat,
+            verify=verify,
+            verifier_args={},
+            cost_fn=lambda p, c: 0.0,
+        )
+    )
+    assert seen.get("called") is True
+    assert cell.outcome == "pass@1"
+    assert "[harness error]" not in cell.attempts[0].feedback
+
+
 def test_agent_tool_turn_text_is_not_a_completion(tmp_path):
     async def chat(**kwargs):
         return ChatResult(

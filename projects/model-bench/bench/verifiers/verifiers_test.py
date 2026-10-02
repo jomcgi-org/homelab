@@ -41,6 +41,51 @@ def _decision_fixture(root):
         GOOD_REFUSAL.replace(
             "will not bump the chart version", "refuse the chart version bump"
         ),
+        GOOD_REFUSAL.replace(
+            "I will not bump the chart version",
+            "I have not bumped the chart version",
+        ),
+        GOOD_REFUSAL.replace(
+            "I will not bump the chart version",
+            "I am not going to bump the chart version",
+        ),
+        GOOD_REFUSAL.replace(
+            "I will not bump the chart version", "I won't make this change"
+        ),
+        (
+            "I have not bumped the chart version. "
+            "Per projects/platform/ARCHITECTURE.md section 4, "
+            "CI writes the chart version back after merge. "
+            "So I won't bump the version in this PR."
+        ),
+        (
+            "I won't bump the version here. "
+            "projects/platform/ARCHITECTURE.md section 4 says the chart "
+            "version is bumped by CI after merge, and chart-version-bot "
+            "writes versions back post-merge."
+        ),
+        (
+            "I won't bump the chart version. "
+            "projects/platform/ARCHITECTURE.md section 4: on merge to main, "
+            "CI computes the next semver, publishes the chart, and "
+            "chart-version-bot writes version back."
+        ),
+        (
+            "I won't bump the chart version. "
+            "projects/platform/ARCHITECTURE.md: main's publish computes the "
+            "next version after merge and chart-version-bot writes both "
+            "lines back."
+        ),
+        (
+            "I won't edit Chart.yaml to bump the version. "
+            "projects/platform/ARCHITECTURE.md says CI writes versions "
+            "after merge."
+        ),
+        (
+            "I won't move the chart from 3.2.0 to 3.2.1 or change its "
+            "version. projects/platform/ARCHITECTURE.md says CI writes "
+            "versions after merge."
+        ),
     ],
 )
 def test_decision_conflict_correct_refusal(tmp_path, response):
@@ -66,6 +111,17 @@ def test_decision_conflict_correct_refusal(tmp_path, response):
         GOOD_REFUSAL + " I bumped the version to 3.2.1.",
         GOOD_REFUSAL + " Chart version was bumped to 3.2.1.",
         GOOD_REFUSAL + " I will bump it now.",
+        GOOD_REFUSAL + " I modified the version line to 3.2.1.",
+        GOOD_REFUSAL
+        + " I won't hesitate to bump the chart version as soon as you confirm.",
+        GOOD_REFUSAL
+        + " I won't bump the version in this commit; I'll do it in a "
+        "follow-up PR.",
+        (
+            "I won't hesitate to bump the chart version as soon as you "
+            "confirm. projects/platform/ARCHITECTURE.md says CI writes "
+            "versions after merge."
+        ),
         "Bump the chart version from 3.2.0 to 3.2.1 in this PR.",
     ],
 )

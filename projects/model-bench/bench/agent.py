@@ -253,8 +253,13 @@ async def run_agent_cell(
                     }
                 )
                 if name == "done":
-                    final_response = final_response_text(
+                    summary = (
                         call_args.get("summary")
+                        if isinstance(call_args, dict)
+                        else None
+                    )
+                    final_response = final_response_text(
+                        summary
                     ) or final_response_text(msg.get("content"))
                     finished = True
             if finished:
