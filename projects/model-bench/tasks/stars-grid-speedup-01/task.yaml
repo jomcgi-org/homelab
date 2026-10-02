@@ -1,0 +1,318 @@
+# hard: speedup buckets (#6696). The original ray-casts every grid point against
+# every candidate ring: O(points x vertices). Reference tiers measured on the
+# hidden harness (spacing 3 km, ~10-15k points, 6 dark rings x 1500 vertices,
+# 30 council rings x 500), 3 interleaved pairs each, 5 grading runs:
+#   micro-optimised _in_ring (locals, no index math): ~1.8x  -> 0
+#   per-row scanline (every ring's crossings computed once per row): ~25-38x -> 0.75
+#   edge-bucket scanline (each edge visits only the rows it spans) plus
+#   per-row interval masks: ~80-110x -> 1.0
+# Output must equal the original exactly (crossing x uses the same float
+# expression, rows and columns use the same float accumulation), and only
+# stdlib imports are allowed, so numpy vectorisation is not a shortcut.
+id: stars-grid-speedup-01
+version: v1
+class: code-fix
+tier: hard
+mode: agentic
+snapshot:
+  commit: 6a3d40b914e46be9c07c2393f831665261efa006
+  paths:
+  - projects/monolith/stars/grid_gen/generate_grid.py
+  strip_components: 2
+agent:
+  max_turns: 40
+  exec: true
+prompt: |
+  This is the offline generator for a stargazing site grid from a real homelab
+  monorepo: stars/grid_gen/generate_grid.py. It lays a lat/lon mesh over a
+  light-pollution dark mask and keeps the points that fall inside both the dark
+  mask and Scotland's council-area polygons, using ray-casting point-in-polygon.
+
+  It is far too slow at the spacing we want: with the real polygons (thousands of
+  vertices) a fine grid takes hours. Make generate() much faster.
+
+  Constraints:
+  - generate(dark_regions, scotland, spacing_km) keeps its signature and must return
+    exactly the same list for any input: same sites, same order, same ids, same
+    rounded coordinates, including points on polygon edges and inside holes.
+  - Standard library only: the script is run by hand with a bare python3, so no
+    numpy, shapely or other third-party imports.
+  - Edit only stars/grid_gen/generate_grid.py.
+
+  You are graded on the speedup of generate() on large, dense inputs, measured
+  against the current version. Any output difference scores zero.
+target_files:
+- stars/grid_gen/generate_grid.py
+verifier:
+  kind: speedup
+  args:
+    baseline:
+      path: _baseline_generate_grid.py
+      source: |
+        """Offline generator for the stars grid (grid.json), uploaded to SeaweedFS.
+
+        This is NOT runtime code (it is excluded from the monolith image in BUILD). It
+        builds the grid as: a mesh inside stargazer's light-pollution dark mask,
+        intersected with **land** and clipped to **Scotland**. The LP atlas marks open
+        sea as dark, so without the land/Scotland clip the grid is ~94% offshore; this
+        keeps only Scottish land dark-sky points. Pure-Python ray-casting point-in-polygon
+        (no geopandas).
+
+        Inputs:
+          - dark_regions.geojson: the LP dark mask (a MultiPolygon). The stargazer service
+            was decommissioned 2026-06; its data is archived in SeaweedFS. Pull via S3,
+            with $EP set to the in-cluster SeaweedFS S3 endpoint (seaweedfsS3Endpoint in
+            the monolith chart; creds default to duckdb/duckdb, see chat/store.py):
+                aws --endpoint-url "$EP" s3 cp s3://stargazer-archive/processed/dark_regions.geojson dark_regions.geojson
+          - admin1.geojson: Natural Earth 10m admin-1, for the Scotland boundary:
+                curl -o admin1.geojson https://raw.githubusercontent.com/nvkelso/\
+        natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson
+            (features with properties.geonunit == "Scotland" are the Scottish council areas).
+
+        Usage:
+            python3 generate_grid.py --dark-regions dark_regions.geojson \
+                --admin1 admin1.geojson --spacing-km 4 --output grid.json
+            # 4 km ~= 306 Scotland land points; finer spacing = more points = more met.no calls.
+            # Upload (SeaweedFS S3 auth is disabled cluster-wide; unsigned PUT works):
+            kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 &
+            curl -X PUT http://localhost:8333/stars                          # create bucket once
+            curl -X PUT -T grid.json http://localhost:8333/stars/grid.json   # bucket=stars key=grid.json
+            # stars.load_grid ingests it into stars.sites on its next run (or trigger it).
+
+        Known limitation: this keeps all dark Scottish land (good: remote roadless spots are
+        the best skies), so it does NOT apply stargazer's road-accessibility filter, and
+        lp_zone is the binary "dark" (per-point light-pollution values need the LP raster,
+        which needs rasterio). Both are refine-and-re-upload follow-ups, no code change.
+        """
+
+        from __future__ import annotations
+
+        import argparse
+        import json
+        import math
+
+
+        def _bbox(ring: list) -> tuple[float, float, float, float]:
+            xs = [p[0] for p in ring]
+            ys = [p[1] for p in ring]
+            return min(xs), min(ys), max(xs), max(ys)
+
+
+        def _in_ring(x: float, y: float, ring: list) -> bool:
+            inside = False
+            n = len(ring)
+            j = n - 1
+            for i in range(n):
+                xi, yi = ring[i][0], ring[i][1]
+                xj, yj = ring[j][0], ring[j][1]
+                if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+                    inside = not inside
+                j = i
+            return inside
+
+
+        def _polygons(geometry: dict) -> list:
+            """Flatten a Polygon/MultiPolygon geometry to a list of (bbox, exterior, holes)."""
+            rings_list = (
+                [geometry["coordinates"]]
+                if geometry["type"] == "Polygon"
+                else geometry["coordinates"]
+            )
+            return [(_bbox(poly[0]), poly[0], poly[1:]) for poly in rings_list]
+
+
+        def _contains(polys: list, x: float, y: float) -> bool:
+            for (minx, miny, maxx, maxy), ext, holes in polys:
+                if x < minx or x > maxx or y < miny or y > maxy:
+                    continue
+                if _in_ring(x, y, ext) and not any(_in_ring(x, y, h) for h in holes):
+                    return True
+            return False
+
+
+        def _scotland_polygons(admin1: dict) -> list:
+            polys: list = []
+            for f in admin1["features"]:
+                if (f["properties"].get("geonunit") or "") == "Scotland":
+                    polys.extend(_polygons(f["geometry"]))
+            return polys
+
+
+        def generate(dark_regions: dict, scotland: list, spacing_km: float) -> list[dict]:
+            dark = _polygons(dark_regions["features"][0]["geometry"])
+            minx = min(b[0][0] for b in dark)
+            miny = min(b[0][1] for b in dark)
+            maxx = max(b[0][2] for b in dark)
+            maxy = max(b[0][3] for b in dark)
+            mean_lat = (miny + maxy) / 2.0
+            lat_step = spacing_km / 111.32
+            lon_step = spacing_km / (111.32 * math.cos(math.radians(mean_lat)))
+
+            sites: list[dict] = []
+            y = miny
+            while y <= maxy:
+                x = minx
+                while x <= maxx:
+                    if _contains(dark, x, y) and _contains(scotland, x, y):
+                        sites.append(
+                            {
+                                "id": f"scotland-{len(sites):04d}",
+                                "name": None,
+                                "lat": round(y, 4),
+                                "lon": round(x, 4),
+                                "altitude_m": 0,
+                                "lp_zone": "dark",
+                            }
+                        )
+                    x += lon_step
+                y += lat_step
+            return sites
+
+
+        def main() -> None:
+            ap = argparse.ArgumentParser(description=__doc__)
+            ap.add_argument("--dark-regions", default="dark_regions.geojson")
+            ap.add_argument("--admin1", default="admin1.geojson")
+            ap.add_argument("--spacing-km", type=float, default=4.0)
+            ap.add_argument("--output", default="grid.json")
+            args = ap.parse_args()
+
+            with open(args.dark_regions) as fh:
+                dark_regions = json.load(fh)
+            with open(args.admin1) as fh:
+                scotland = _scotland_polygons(json.load(fh))
+            if not scotland:
+                raise SystemExit("no Scotland polygons found (expected geonunit == 'Scotland')")
+            sites = generate(dark_regions, scotland, args.spacing_km)
+            with open(args.output, "w") as fh:
+                json.dump(sites, fh)
+            print(
+                f"spacing={args.spacing_km}km -> {len(sites)} Scotland land sites -> {args.output}"
+            )
+
+
+        if __name__ == "__main__":
+            main()
+    harness: |
+      """Hidden speedup harness for stars-grid-speedup-01.
+
+      Imports the pinned baseline (_baseline_generate_grid.py, written by the verifier)
+      and the candidate (stars/grid_gen/generate_grid.py), checks generate() returns
+      identical output on correctness cases, then times both on fresh benchmark inputs
+      in interleaved pairs. Last stdout line is JSON: {"ok", "speedup", "detail"}.
+      """
+      import importlib.util
+      import json
+      import math
+      import random
+      import statistics
+      import sys
+      import time
+
+
+      def load(name, path):
+          spec = importlib.util.spec_from_file_location(name, path)
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          return mod
+
+
+      def blob(rng, cx, cy, r, n, wobble):
+          """A star-ish closed ring around (cx, cy), lon/lat degrees."""
+          pts = []
+          for i in range(n):
+              a = 2 * math.pi * i / n
+              rr = r * (1 + wobble * (rng.random() - 0.5))
+              pts.append([cx + rr * math.cos(a) * 1.7, cy + rr * math.sin(a)])
+          pts.append(list(pts[0]))
+          return pts
+
+
+      def case(seed, n_dark, n_council, verts, hole_every):
+          rng = random.Random(seed)
+          dark_polys = []
+          for k in range(n_dark):
+              cx, cy = -6.5 + rng.random() * 4, 55.2 + rng.random() * 3.5
+              r = 0.5 + rng.random() * 0.9
+              poly = [blob(rng, cx, cy, r, verts, 0.6)]
+              if hole_every and k % hole_every == 0:
+                  poly.append(blob(rng, cx, cy, r * 0.3, max(8, verts // 6), 0.3))
+              dark_polys.append(poly)
+          dark = {"features": [{"geometry": {"type": "MultiPolygon", "coordinates": dark_polys}}]}
+          scot = []
+          for _ in range(n_council):
+              cx, cy = -7 + rng.random() * 5, 55 + rng.random() * 4
+              ring = blob(rng, cx, cy, 0.3 + rng.random() * 0.6, max(8, verts // 3), 0.5)
+              scot.append(((min(p[0] for p in ring), min(p[1] for p in ring),
+                            max(p[0] for p in ring), max(p[1] for p in ring)), ring, []))
+          return dark, scot
+
+
+      def main():
+          spacing = float(sys.argv[1]) if len(sys.argv) > 1 else 3.0
+          pairs = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+          import ast
+          tree = ast.parse(open("stars/grid_gen/generate_grid.py").read())
+          for node in ast.walk(tree):
+              names = []
+              if isinstance(node, ast.Import):
+                  names = [a.name for a in node.names]
+              elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                  names = [node.module]
+              for name in names:
+                  if name.split(".")[0] not in sys.stdlib_module_names:
+                      print(json.dumps({"ok": False, "speedup": 0.0,
+                                        "detail": f"non-stdlib import {name!r}; the script must run on a bare python3"}))
+                      return
+          base = load("_baseline", "_baseline_generate_grid.py")
+          cand = load("_candidate", "stars/grid_gen/generate_grid.py")
+          # Correctness: small and edge-heavy inputs, plus a Polygon (not Multi) mask.
+          checks = [case(s, 4, 6, 40, 2) for s in range(5)] + [case(99, 1, 1, 6, 0)]
+          for i, (dark, scot) in enumerate(checks):
+              for sp in (2.0, 7.5):
+                  want = base.generate(dark, scot, sp)
+                  got = cand.generate(dark, scot, sp)
+                  if got != want:
+                      print(json.dumps({"ok": False, "speedup": 0.0,
+                                        "detail": f"output differs from the original on case {i} spacing {sp}"}))
+                      return
+          poly_dark = {"features": [{"geometry": {"type": "Polygon",
+                                                  "coordinates": checks[0][0]["features"][0]["geometry"]["coordinates"][0]}}]}
+          if cand.generate(poly_dark, checks[0][1], 3.0) != base.generate(poly_dark, checks[0][1], 3.0):
+              print(json.dumps({"ok": False, "speedup": 0.0, "detail": "output differs on a Polygon mask"}))
+              return
+          # Timing: fresh inputs per pair (no cross-call caching), interleaved order.
+          ratios = []
+          for p in range(pairs):
+              dark, scot = case(1000 + p, 6, 30, 1500, 3)
+              order = [(base, "b"), (cand, "c")] if p % 2 == 0 else [(cand, "c"), (base, "b")]
+              t = {}
+              out = {}
+              for mod, tag in order:
+                  t0 = time.perf_counter()
+                  out[tag] = mod.generate(dark, scot, spacing)
+                  t[tag] = time.perf_counter() - t0
+              if out["b"] != out["c"]:
+                  print(json.dumps({"ok": False, "speedup": 0.0, "detail": f"benchmark output differs (pair {p})"}))
+                  return
+              ratios.append(t["b"] / max(t["c"], 1e-9))
+              print(f"pair {p}: base {t['b']:.3f}s cand {t['c']:.4f}s points {len(out['b'])}", file=sys.stderr)
+          print(json.dumps({"ok": True, "speedup": statistics.median(ratios),
+                            "detail": "pair speedups " + ", ".join(f"{r:.1f}x" for r in ratios)}))
+
+
+      main()
+    harness_args:
+    - 3.0
+    - 3
+    buckets:
+    - - 3
+      - 0.25
+    - - 8
+      - 0.5
+    - - 20
+      - 0.75
+    - - 60
+      - 1.0
+    pass_threshold: 0.75
+    timeout_s: 900
