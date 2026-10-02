@@ -36,6 +36,39 @@ def _venv_python(args: dict) -> Path:
     return base / "bin" / "python"
 
 
+def _run_pytest(workdir: Path, python: Path, targets: list[str], timeout_s: int):
+    cmd = [str(python), "-m", "pytest", "-q", "-p", "no:cacheprovider", *targets]
+    return run_sandboxed(
+        cmd,
+        cwd=workdir,
+        timeout_s=timeout_s,
+        # PYTHONPATH=. makes the fixture root a package root so the gold test imports
+        # the model's edited modules (home.*, knowledge.*, ...) from the snapshot.
+        extra_env={"PYTHONPATH": "."},
+    )
+
+
+def _verify_sites(workdir: Path, python: Path, args: dict) -> VerifyResult:
+    """Graded multi-site mode: args["sites"] maps a site id to the gold test targets
+    (files or node ids) that prove that site is fixed. Each site runs as its own
+    pytest invocation, so one unfixed site cannot mask or break another, and the score
+    is the fraction of sites whose targets all pass."""
+    sites: dict[str, list[str]] = args["sites"]
+    if not sites:
+        return VerifyResult(False, "[verifier setup] sites is empty", 0.0)
+    timeout_s = args.get("timeout_s", 180)
+    failed: dict[str, str] = {}
+    for site, targets in sites.items():
+        res = _run_pytest(workdir, python, list(targets), timeout_s)
+        if res.rc != 0:
+            failed[site] = ((res.stdout or "") + (res.stderr or ""))[-800:]
+    score = (len(sites) - len(failed)) / len(sites)
+    feedback = f"fixed {len(sites) - len(failed)}/{len(sites)} sites"
+    for site, tail in failed.items():
+        feedback += f"\n--- {site} still failing ---\n{tail}"
+    return VerifyResult(score >= args.get("pass_threshold", 1.0), feedback, score)
+
+
 @register("pytest")
 def verify(workdir: Path, args: dict) -> VerifyResult:
     python = _venv_python(args)
@@ -61,19 +94,14 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content)
 
+    if "sites" in args:
+        return _verify_sites(workdir, python, args)
+
     targets = args.get("targets") or list(args.get("tests", {}).keys())
     if not targets:
         return VerifyResult(False, "[verifier setup] pytest verifier needs targets")
 
-    cmd = [str(python), "-m", "pytest", "-q", "-p", "no:cacheprovider", *targets]
-    res = run_sandboxed(
-        cmd,
-        cwd=workdir,
-        timeout_s=args.get("timeout_s", 180),
-        # PYTHONPATH=. makes the fixture root a package root so the gold test imports
-        # the model's edited modules (home.*, knowledge.*, ...) from the snapshot.
-        extra_env={"PYTHONPATH": "."},
-    )
+    res = _run_pytest(workdir, python, targets, args.get("timeout_s", 180))
     if res.rc == 0:
         return VerifyResult(True, "")
     # Surface the tail of the pytest output so a failure is diagnosable in the cell.

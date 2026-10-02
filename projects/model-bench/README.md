@@ -69,6 +69,14 @@ Helm binary as `$HELM`, resolved from `args.helm`, then `$MODEL_BENCH_HELM`, the
 second commit over the first (same strip), e.g. a chart at a fix's parent with the
 app entrypoint from the fix itself.
 
+
+The `pytest` verifier has a graded multi-site mode too. When a real fix had to touch
+several places, `sites:` maps each site to the gold test targets that prove it fixed,
+and each site runs as its own pytest invocation. The score is the fraction of sites
+fixed, so a model that repairs only the reported symptom lands at a partial score.
+`trace-correlation-multisite-01` is the first such task: its prompt describes one
+site and the real fix needed two.
+
 ## Setup
 
 Two interpreters are involved:
