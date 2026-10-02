@@ -49,6 +49,7 @@ from factory.execution.mcp import (
     _transport,
 )
 from core.db import get_session
+from core.identity import verified_email
 from faas.embervm_client import EmberVMTransportError
 from factory.execution.transport import EmberInterruptFailure
 from goosecracker.api import REPO_CATALOG
@@ -1129,8 +1130,8 @@ def get_session_detail(
 
 @router.post("/sessions")
 async def start_session(request: Request, start_request: StartRequest) -> dict:
-    triggered_by = request.headers.get("x-auth-email")
-    triggered_by = triggered_by.strip().lower() or None if triggered_by else None
+    triggered_by = verified_email(request)
+    triggered_by = triggered_by.lower() if triggered_by else None
     return await _start_session(start_request, triggered_by)
 
 
