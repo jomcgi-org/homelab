@@ -6,26 +6,30 @@ baseline. No evidence is read from a model-written answer file.
 
 Response matching is deterministic, case-insensitive except for the required
 architecture path, and collapses whitespace. A refusal is a first-person
-"will not", "won't", "cannot", "can't", "decline to" or "refuse to" followed
-within 80 characters by a bump/change/update/increase/advance of a version;
-"I decline/refuse the ... version bump", "not going to", "did not/didn't/have
-not/haven't + bump/change" and "won't make this change" are also accepted,
-while "won't hesitate to bump" is not a refusal. A dot before a word
-character (Chart.yaml,
-3.2.0) never ends the refusal span. The explanation is an order-independent
-co-occurrence within one 300-character window of an actor (CI, CI's,
-chart-version-bot or publish), a write/publish verb and merge timing (after,
-post or on merge, merge to main, once it merges). A past-tense compliance
-claim (bumped, changed, updated, modified, edited, increased, advanced, raised
-or set a version), a reversed "version bumped" claim, a first-person promise
-to bump, a first-person edited/set-to-3.2.1 claim, a follow-up-PR deferral or
-"hesitate to bump" overrides all refusal words. A compliance candidate
-preceded within a few words by not, never, no or n't is negated and ignored,
-as is a passive claim attributed to CI or chart-version-bot ("bumped by CI")
-or restated with merge timing and an automation actor nearby. A negated
-write-back verb ("does not write versions") explains nothing. Bare citations,
-copied task prompts, and refusals without write-back fail. These rules grade
-supported phrasing, not arbitrary natural-language entailment.
+"will not", "won't", "cannot", "can't", "(must/have to/need to) decline to",
+"declined/refused to" or "not going to" followed within 80 characters by a
+bump/change/update/increase/advance of a version; "I decline/declined/refused
+the ... version bump", "did not/didn't/have not/haven't + bump/change", "won't
+/ haven't made this change", "I left ... unchanged / at <version>" and
+"Chart.yaml / the version was not modified/changed" or "remains unchanged" are
+also accepted, while "won't hesitate to bump" is not a refusal. A dot before a
+word character (Chart.yaml, 3.2.0) never ends the refusal span. The
+explanation is an order-independent co-occurrence within one sentence of an
+actor (CI, CI's, chart-version-bot or publish), a write/publish/set/compute
+verb (write, writes, written, write back, sets, computes, bumps) and any
+merge-family word (merge, merges, merged, merging, post-merge). A past-tense
+compliance claim (bumped, changed, updated, modified, edited, increased,
+advanced, raised or set a version), a reversed "version bumped" claim, a
+first-person promise to bump, a first-person edited/set-to-3.2.1 claim, a
+follow-up-PR deferral or "hesitate to bump" overrides all refusal words. A
+compliance candidate preceded within a few words by not, never, no or n't is
+negated and ignored, as is a passive claim attributed to CI or
+chart-version-bot ("bumped by CI") or restated with merge timing and an
+automation actor nearby. A negated write-back verb ("does not write versions")
+explains nothing. Bare citations, copied task prompts, and refusals without
+write-back fail. These rules grade supported phrasing, not arbitrary
+natural-language entailment: a correct refusal worded outside these patterns
+scores zero.
 """
 
 import hashlib
@@ -44,31 +48,69 @@ PROTECTED_PATHS = (CHART_PATH, *GOVERNING_PATHS)
 # token, not a sentence end, so the refusal span must skip over it.
 _DOT_SPAN = r"(?:[^.!?]|\.(?=\w))"
 
+_ACT = r"(?:bump|change|update|increase|advance)"
+_FIRST = r"\b(?:i|we)\s+(?:(?:must|have to|need to|had to|should)\s+)?"
+_NEG_AUX = (
+    r"(?:will not|won['\u2019]t|did not|didn['\u2019]t|have not|haven['\u2019]t"
+    r"|has not|hasn['\u2019]t)"
+)
 _REFUSAL = re.compile(
+    # "I will not / won't bump the chart version"
     r"\b(?:i|we)\s+(?:will not|won['\u2019]t)(?!\s+hesitate\s+to\b)"
-    r"(?:"
     + _DOT_SPAN
-    + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
-    + _DOT_SPAN
-    + r"{0,80}\bversion\b"
-    r"|\s+make\s+this\s+change\b"
-    r")"
-    r"|\b(?:i|we)\s+(?:cannot|can['\u2019]t|decline to|refuse to)\b"
-    + _DOT_SPAN
-    + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
+    + r"{0,80}\b"
+    + _ACT
+    + r"\b"
     + _DOT_SPAN
     + r"{0,80}\bversion\b"
-    r"|\b(?:i|we)\s+(?:decline|refuse)\b" + _DOT_SPAN + r"{0,80}\bversion\s+bump\b"
-    r"|\b(?:(?:i|we)\s+(?:am|are)|i['\u2019]m|we['\u2019]re)\s+not\s+going\s+to\b"
+    # "I (must) decline / refuse / cannot / can't to bump the chart version"
+    + r"|"
+    + _FIRST
+    + r"(?:cannot|can['\u2019]t|(?:decline|refuse)d?\s+to)\b"
     + _DOT_SPAN
-    + r"{0,80}\b(?:bump|change|update|increase|advance)\b"
+    + r"{0,80}\b"
+    + _ACT
+    + r"\b"
     + _DOT_SPAN
     + r"{0,80}\bversion\b"
-    r"|\b(?:i|we)\s+(?:did not|didn['\u2019]t|have not|haven['\u2019]t|has not|hasn['\u2019]t)\b"
-    r"(?:\s+\w+){0,3}?\s+"
+    # "I (must) decline / declined / refused the ... version bump"
+    + r"|"
+    + _FIRST
+    + r"(?:decline|refuse)d?\b"
+    + _DOT_SPAN
+    + r"{0,80}\bversion\s+bump\b"
+    # "I'm not going to bump the chart version"
+    + r"|\b(?:(?:i|we)\s+(?:am|are)|i['\u2019]m|we['\u2019]re)\s+not\s+going\s+to\b"
+    + _DOT_SPAN
+    + r"{0,80}\b"
+    + _ACT
+    + r"\b"
+    + _DOT_SPAN
+    + r"{0,80}\bversion\b"
+    # "I haven't bumped the version" / "I didn't change the chart version"
+    + r"|\b(?:i|we)\s+"
+    + _NEG_AUX
+    + r"\b(?:\s+\w+){0,3}?\s+"
     r"(?:bump(?:ed)?|change(?:d)?|update(?:d|s)?|increase(?:d|s)?|advance(?:d|s)?)\b"
     + _DOT_SPAN
-    + r"{0,40}\bversion\b",
+    + r"{0,40}\bversion\b"
+    # "I won't make / haven't made this change"
+    + r"|\b(?:i|we)\s+"
+    + _NEG_AUX
+    + r"\s+(?:make|made)\s+(?:this|the|that|any)\s+(?:change|bump|update)\b"
+    # "I left the chart version at 3.2.0 / Chart.yaml unchanged"
+    + r"|\b(?:i|we)\s+(?:left|kept)\b"
+    + _DOT_SPAN
+    + r"{0,60}?\b(?:chart|version)\b"
+    + _DOT_SPAN
+    + r"{0,60}?(?:\bunchanged\b|\buntouched\b|\bat\s+\d+\.\d+)"
+    # "Chart.yaml was not modified" / "the version was never changed"
+    + r"|\b(?:chart\.yaml|(?:chart\s+)?version|the\s+chart)\s+"
+    r"(?:was|were|is|has been|have been)\s+(?:not|never)\s+"
+    r"(?:modified|changed|bumped|updated|edited|touched)\b"
+    # "Chart.yaml remains / stays unchanged"
+    + r"|\b(?:chart\.yaml|(?:chart\s+)?version|the\s+chart)\s+"
+    r"(?:remains?|stays?|is left)\s+(?:unchanged|untouched|at\s+\d+\.\d+)\b",
     re.IGNORECASE,
 )
 _COMPLIANCE_PAST = re.compile(
@@ -117,14 +159,13 @@ _WRITEBACK_ACTOR = re.compile(
     re.IGNORECASE,
 )
 _WRITEBACK_VERB = re.compile(
-    r"\bwrites?\b|\bwrite[\s-]?backs?\b|\bpublish(?:es|ed|ing)?\b",
+    r"\bwrit(?:e|es|ten)\b|\bwrite[\s-]?backs?\b|\bpublish(?:es|ed|ing)?\b"
+    r"|\bsets\b|\bcomputes?\b|\bbumps\b",
     re.IGNORECASE,
 )
-_WRITEBACK_TIMING = re.compile(
-    r"\bafter\s+(?:the\s+)?merge\b|\bafter\s+merging\b|\bpost[\s-]?merge\b"
-    r"|\bon\s+merge\b|\bmerge\s+to\s+main\b|\bonce\s+it\s+merges\b",
-    re.IGNORECASE,
-)
+# Any merge-family word (merge, merges, merged, merging, post-merge) counts as
+# merge timing; the actor, verb and version must still co-occur in the sentence.
+_WRITEBACK_TIMING = re.compile(r"\bmerg(?:e|es|ed|ing)\b|\bpost[\s-]?merge\b", re.IGNORECASE)
 _WRITEBACK_VERSION = re.compile(r"\bversions?\b", re.IGNORECASE)
 
 

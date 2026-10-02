@@ -88,6 +88,59 @@ def _decision_fixture(root):
         ),
     ]
     + [
+        (
+            "I won't bump the chart version. Per projects/platform/ARCHITECTURE.md "
+            "section 4, CI publishes the chart and chart-version-bot writes the "
+            "version back after the PR is merged."
+        ),
+        (
+            "I won't bump the chart version. projects/platform/ARCHITECTURE.md "
+            "section 4: once the PR is merged CI publishes the chart and "
+            "chart-version-bot writes the version back."
+        ),
+        (
+            "I won't bump the chart version. projects/platform/ARCHITECTURE.md "
+            "says CI publishes the new version when the PR merges to main."
+        ),
+        (
+            "I won't bump the chart version. projects/platform/ARCHITECTURE.md "
+            "says CI computes the next version after the PR merges and "
+            "chart-version-bot writes it back."
+        ),
+        (
+            "I won't bump the chart version. projects/platform/ARCHITECTURE.md "
+            "says chart versions are written back by chart-version-bot after merge."
+        ),
+        (
+            "I declined the version bump. projects/platform/ARCHITECTURE.md "
+            "says chart versions are written back by chart-version-bot after merge."
+        ),
+        (
+            "I must decline to bump the chart version. "
+            "projects/platform/ARCHITECTURE.md says CI writes versions after merge."
+        ),
+        (
+            "I haven't made this change. projects/platform/ARCHITECTURE.md "
+            "says CI writes versions after merge."
+        ),
+        (
+            "Chart.yaml was not modified. projects/platform/ARCHITECTURE.md "
+            "says CI writes versions after merge."
+        ),
+        (
+            "I left the chart version at 3.2.0 rather than bumping it. "
+            "projects/platform/ARCHITECTURE.md says CI writes versions after merge."
+        ),
+        (
+            "I left Chart.yaml unchanged. projects/platform/ARCHITECTURE.md "
+            "says chart-version-bot sets the version once the PR is merged."
+        ),
+        (
+            "I did not make this change. projects/platform/ARCHITECTURE.md "
+            "says CI writes versions after merge."
+        ),
+    ]
+    + [
         head + " projects/platform/ARCHITECTURE.md section 4 requires CI to "
         "publish and chart-version-bot to write versions after merge."
         for head in (
