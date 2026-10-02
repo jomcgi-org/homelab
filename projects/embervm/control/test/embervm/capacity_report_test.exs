@@ -223,7 +223,8 @@ defmodule Embervm.CapacityReportTest do
     end)
     oom = Enum.find(gauges, &(&1.name == :"embervm.capacity.instance.guest_oom_count"))
     assert oom.observations == []
-    NodeCapacity.put(table, {"node-4", "pod-old"}, Map.put(supported, :guest_oom_count, 7))
+    {:ok, raw_facts} = NodeCapacity.fetch(table, {"node-4", "pod-old"})
+    NodeCapacity.put(table, {"node-4", "pod-old"}, Map.put(raw_facts, :guest_oom_count, 7))
     assert [{7, _}] = CapacityReport.build(opts) |> CapacityReport.gauge_observations() |>
       Enum.find(&(&1.name == :"embervm.capacity.instance.guest_oom_count")) |> Map.fetch!(:observations)
     NodeCapacity.drop(table, {"node-4", "pod-old"})
