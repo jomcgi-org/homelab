@@ -10449,32 +10449,58 @@ def test_an_exhausted_loop_on_a_delivering_round_names_no_correction(feedback_db
     assert "delivered nothing" not in deviation["text"]
 
 
-def handoff_task(monkeypatch, *, status="failed", review=True):
+def handoff_task(monkeypatch, *, status="failed", review=True, review_deps=None):
     """An exhausted implementation whose draft PR survived its guest."""
     task, policy = feedback_task()
     assert conductor._add(
-        task, policy, "implement_fix", "bounded work", [], "luna",
-        "test:implement_fix", "test fixture", max_attempts=1,
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+        max_attempts=1,
         turn_timeout_seconds=30,
     ).ok
     run_feedback_node(
-        task, "implement_fix",
-        {"status": "needs_work", "summary": "guest died", "pr_number": None,
-         "head_sha": None},
+        task,
+        "implement_fix",
+        {
+            "status": "needs_work",
+            "summary": "guest died",
+            "pr_number": None,
+            "head_sha": None,
+        },
         status=status,
     )
     if review:
         assert conductor._add(
-            task, policy, "review_fix", "review work", ["implement_fix"], "opus",
-            "test:review_fix", "test fixture", review=True,
+            task,
+            policy,
+            "review_fix",
+            "review work",
+            ["implement_fix"] if review_deps is None else review_deps,
+            "opus",
+            "test:review_fix",
+            "test fixture",
+            review=True,
             turn_timeout_seconds=40,
         ).ok
     pull = {
-        "number": 21, "state": "open", "draft": True,
-        "head": {"ref": conductor.delivery_branch(task), "sha": HEAD_ONE,
-                 "repo": {"full_name": task["repo"]}},
+        "number": 21,
+        "state": "open",
+        "draft": True,
+        "head": {
+            "ref": conductor.delivery_branch(task),
+            "sha": HEAD_ONE,
+            "repo": {"full_name": task["repo"]},
+        },
         "base": {"ref": task["base_branch"]},
-        "body": "", "additions": 10, "deletions": 0,
+        "body": "",
+        "additions": 10,
+        "deletions": 0,
     }
     checks = {"statuses": [{"context": "pr-checks", "state": "success"}]}
 
@@ -10508,10 +10534,11 @@ def assert_handoff_planner(task, *, code="node_failed", node="implement_fix"):
     return nodes
 
 
-def test_handoff_opens_for_passing_owned_draft(feedback_db, monkeypatch):
+@pytest.mark.parametrize("has_review", [True, False])
+def test_handoff_opens_for_passing_owned_draft(feedback_db, monkeypatch, has_review):
     from factory.orchestration.factory_models import FactoryAudit
 
-    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    task, policy, _pull, _checks = handoff_task(monkeypatch, review=has_review)
     conductor.reconcile_task(task["id"], policy, object())
     nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
     assert set(nodes) == {"implement_handoff_1", "review_handoff_1"}
@@ -10521,7 +10548,7 @@ def test_handoff_opens_for_passing_owned_draft(feedback_db, monkeypatch):
     assert implement["max_attempts"] == review["max_attempts"] == 1
     assert implement["max_cost_usd"] == policy["turn_budget_usd"]
     assert implement["turn_timeout_seconds"] == 30
-    assert review["turn_timeout_seconds"] == 40
+    assert review["turn_timeout_seconds"] == (40 if has_review else 60)
     assert implement["model"] == "luna" and review["model"] == "opus"
     assert "PR #21" in implement["prompt"] and HEAD_ONE in implement["prompt"]
     assert "Make NO source commits" in implement["prompt"]
@@ -10529,29 +10556,42 @@ def test_handoff_opens_for_passing_owned_draft(feedback_db, monkeypatch):
     assert conductor._closing_instruction(task) in implement["prompt"]
     assert conductor._handoff_rounds_used(task["id"]) == 1
     assert conductor._review_rounds_used(task["id"]) == 0
-    assert conductor._failed_round(task["id"], list(nodes.values()),
-                                   conductor.graph.node_runs(task["id"])) is None
+    assert (
+        conductor._failed_round(
+            task["id"], list(nodes.values()), conductor.graph.node_runs(task["id"])
+        )
+        is None
+    )
     assert len(conductor.graph.node_runs(task["id"])) == 1
     assert not any(conductor._ENGINE_ROUND_KEY.fullmatch(key) for key in nodes)
     with Session(feedback_db) as db:
-        audits = db.exec(select(FactoryAudit).where(
-            FactoryAudit.task_id == task["id"],
-            FactoryAudit.action == "handoff_opened",
-        )).all()
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "handoff_opened",
+            )
+        ).all()
         assert len(audits) == 1
         detail = json.loads(audits[0].detail_json)
         assert detail["failed_node"] == "implement_fix"
         assert detail["pr_number"] == 21 and detail["head_sha"] == HEAD_ONE
 
 
-@pytest.mark.parametrize("contexts", [
-    [{"context": "pr-checks", "state": "pending"}],
-    [{"context": "pr-checks", "state": "success"},
-     {"context": "another-required", "state": "failure"}],
-    [{"context": "pr-checks", "state": "success"},
-     {"context": "another-required", "state": "pending"}],
-    [],
-])
+@pytest.mark.parametrize(
+    "contexts",
+    [
+        [{"context": "pr-checks", "state": "pending"}],
+        [
+            {"context": "pr-checks", "state": "success"},
+            {"context": "another-required", "state": "failure"},
+        ],
+        [
+            {"context": "pr-checks", "state": "success"},
+            {"context": "another-required", "state": "pending"},
+        ],
+        [],
+    ],
+)
 def test_handoff_requires_passing_exact_head_checks(feedback_db, monkeypatch, contexts):
     task, policy, _pull, checks = handoff_task(monkeypatch)
     checks["statuses"] = contexts
@@ -10559,7 +10599,9 @@ def test_handoff_requires_passing_exact_head_checks(feedback_db, monkeypatch, co
     assert_handoff_planner(task)
 
 
-@pytest.mark.parametrize("surface", ["none", "branch", "fork", "base", "multiple", "conflict"])
+@pytest.mark.parametrize(
+    "surface", ["none", "branch", "fork", "base", "multiple", "conflict"]
+)
 def test_handoff_requires_one_owned_open_pr(feedback_db, monkeypatch, surface):
     task, policy, pull, _checks = handoff_task(monkeypatch)
     if surface == "none":
@@ -10592,8 +10634,91 @@ def test_handoff_github_error_falls_through_same_tick(feedback_db, monkeypatch, 
     assert_handoff_planner(task)
 
 
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        None,
+        {},
+        [None],
+        [{"context": "pr-checks"}],
+        [
+            {"context": "pr-checks", "state": "success"},
+            {"context": "route-b/semgrep", "state": None},
+        ],
+    ],
+)
+def test_handoff_malformed_statuses_fall_through(feedback_db, monkeypatch, statuses):
+    task, policy, _pull, checks = handoff_task(monkeypatch)
+    checks["statuses"] = statuses
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+def test_handoff_advisory_failures_do_not_block(feedback_db, monkeypatch):
+    task, policy, _pull, checks = handoff_task(monkeypatch)
+    checks["statuses"].append({"context": "route-b/semgrep", "state": "failure"})
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert keys == {"implement_handoff_1", "review_handoff_1"}
+
+
+def test_handoff_requires_granted_pr_match(feedback_db, monkeypatch):
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    monkeypatch.setattr(conductor, "delivery_pr_number", lambda _task: 22)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+@pytest.mark.parametrize("role", ["implement", "reviewer"])
+def test_handoff_requires_allowed_pool_heads(feedback_db, monkeypatch, role):
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    original = conductor.pool_for
+    monkeypatch.setattr(
+        conductor,
+        "pool_for",
+        lambda requested, policy: (
+            ["not-allowed"] if requested == role else original(requested, policy)
+        ),
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
+def test_handoff_skip_reason_is_audited_once(feedback_db, monkeypatch):
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, _pull, checks = handoff_task(monkeypatch)
+    checks["statuses"][0]["state"] = "pending"
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    for _ in range(2):
+        assert not conductor._insert_handoff_round(
+            task,
+            policy,
+            nodes,
+            runs,
+            {"code": "node_failed", "node_key": "implement_fix"},
+            conductor.graph.current_version(task["id"]),
+        )
+    with Session(feedback_db) as db:
+        audits = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "handoff_skipped",
+            )
+        ).all()
+        assert len(audits) == 1
+        assert (
+            json.loads(audits[0].detail_json)["reason"] == "required_checks_not_passed"
+        )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert_handoff_planner(task)
+
+
 @pytest.mark.parametrize("response", [None, [], {"head": None}, {"statuses": None}])
-def test_handoff_unexpected_github_shape_falls_through(feedback_db, monkeypatch, response):
+def test_handoff_unexpected_github_shape_falls_through(
+    feedback_db, monkeypatch, response
+):
     task, policy, _pull, _checks = handoff_task(monkeypatch)
     monkeypatch.setattr(conductor, "github_get", lambda *_: response)
     conductor.reconcile_task(task["id"], policy, object())
@@ -10605,14 +10730,26 @@ def test_handoff_bound_survives_discard(feedback_db, monkeypatch):
     conductor.reconcile_task(task["id"], policy, object())
     for key in ("review_handoff_1", "implement_handoff_1"):
         assert conductor.graph.discard_node(
-            task["id"], key, author_kind="engine", author="test",
-            cause_kind="test", cause_ref=f"discard:{key}", stated_reason="test",
+            task["id"],
+            key,
+            author_kind="engine",
+            author="test",
+            cause_kind="test",
+            cause_ref=f"discard:{key}",
+            stated_reason="test",
             expected_version=conductor.graph.current_version(task["id"]),
         ).ok
     assert conductor._handoff_rounds_used(task["id"]) == 1
     assert conductor._add(
-        task, policy, "implement_again", "work", [], "luna", "test:again",
-        "test fixture", max_attempts=1,
+        task,
+        policy,
+        "implement_again",
+        "work",
+        [],
+        "luna",
+        "test:again",
+        "test fixture",
+        max_attempts=1,
     ).ok
     fail_round_node(task, "implement_again")
     conductor.reconcile_task(task["id"], policy, object())
@@ -10623,28 +10760,50 @@ def test_handoff_bound_survives_discard(feedback_db, monkeypatch):
 def test_handoff_refuses_unsafe_dependents(feedback_db, monkeypatch, dependent):
     from factory.orchestration.models import SwarmPlanNode
 
-    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    task, policy, _pull, _checks = handoff_task(
+        monkeypatch, review_deps=[] if dependent == "ran" else None
+    )
     if dependent == "ran":
+        # Historic evidence can predate a changed dependency. Dispatch would
+        # refuse starting this review against the currently failed implementer.
         fail_round_node(task, "review_fix")
+        with Session(feedback_db) as db:
+            node = db.exec(
+                select(SwarmPlanNode).where(
+                    SwarmPlanNode.task_id == task["id"],
+                    SwarmPlanNode.node_key == "review_fix",
+                )
+            ).one()
+            node.deps_json = json.dumps(["implement_fix"])
+            db.commit()
     elif dependent == "armed":
         with Session(feedback_db) as db:
-            node = db.exec(select(SwarmPlanNode).where(
-                SwarmPlanNode.task_id == task["id"],
-                SwarmPlanNode.node_key == "review_fix",
-            )).one()
+            node = db.exec(
+                select(SwarmPlanNode).where(
+                    SwarmPlanNode.task_id == task["id"],
+                    SwarmPlanNode.node_key == "review_fix",
+                )
+            ).one()
             node.armed_at = conductor.datetime.now(conductor.timezone.utc)
             db.commit()
     else:
         assert conductor._add(
-            task, policy, "implement_more", "work",
+            task,
+            policy,
+            "implement_more",
+            "work",
             ["implement_fix" if dependent == "implement" else "review_fix"],
-            "luna", "test:more", "test fixture",
+            "luna",
+            "test:more",
+            "test fixture",
         ).ok
     conductor.reconcile_task(task["id"], policy, object())
     assert_handoff_planner(task)
 
 
-@pytest.mark.parametrize("key,role", [("handoff_1", "implement"), ("review_handoff_1", "review")])
+@pytest.mark.parametrize(
+    "key,role", [("handoff_1", "implement"), ("review_handoff_1", "review")]
+)
 def test_handoff_keys_are_reserved_from_planner(feedback_db, key, role):
     task, _policy = planned_task(feedback_task(), [plan_edit(key, role)])
     nodes = conductor.graph.load_graph(task["id"])
@@ -10660,13 +10819,21 @@ def test_handoff_never_overrides_node_escalation(feedback_db, monkeypatch):
 
 
 @pytest.mark.parametrize("refusal", ["envelope", "graph", "stale"])
-def test_handoff_refusal_leaves_old_graph_and_adds_planner(feedback_db, monkeypatch, refusal):
+def test_handoff_refusal_leaves_old_graph_and_adds_planner(
+    feedback_db, monkeypatch, refusal
+):
     task, policy, _pull, _checks = handoff_task(monkeypatch)
     if refusal == "envelope":
         original = conductor._envelope_refusal
-        monkeypatch.setattr(conductor, "_envelope_refusal", lambda *a, **kw:
-                            "too large" if kw.get("review_rounds_remaining") == 0
-                            else original(*a, **kw))
+        monkeypatch.setattr(
+            conductor,
+            "_envelope_refusal",
+            lambda *a, **kw: (
+                "too large"
+                if kw.get("review_rounds_remaining") == 0
+                else original(*a, **kw)
+            ),
+        )
     else:
         original = conductor.graph.apply_edits
 
@@ -10688,14 +10855,28 @@ def test_handoff_refusal_leaves_old_graph_and_adds_planner(feedback_db, monkeypa
 def test_handoff_review_changes_use_existing_correction_loop(feedback_db, monkeypatch):
     task, policy, _pull, _checks = handoff_task(monkeypatch)
     conductor.reconcile_task(task["id"], policy, object())
-    run_feedback_node(task, "implement_handoff_1", {
-        "status": "complete", "summary": "verified", "pr_number": 21,
-        "head_sha": HEAD_ONE,
-    }, head=HEAD_ONE)
-    run_feedback_node(task, "review_handoff_1", {
-        "verdict": "changes_requested", "summary": "fix one defect",
-        "pr_number": 21, "head_sha": HEAD_ONE,
-    }, head=HEAD_ONE)
+    run_feedback_node(
+        task,
+        "implement_handoff_1",
+        {
+            "status": "complete",
+            "summary": "verified",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    run_feedback_node(
+        task,
+        "review_handoff_1",
+        {
+            "verdict": "changes_requested",
+            "summary": "fix one defect",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
     conductor.reconcile_task(task["id"], policy, object())
     nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
     assert {"correct_1", "review_1"} <= set(nodes)

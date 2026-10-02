@@ -1265,22 +1265,25 @@ def _add(
 
 
 def _review_reservation_usd(
-    task: dict, policy: dict, model: str, *, pr_number: int | None = None
+    task: dict,
+    policy: dict,
+    model: str,
+    *,
+    pr_number: int | None = None,
+    pull: dict | None = None,
 ) -> float:
     """Use the latest delivered PR size when insertion has that evidence."""
     number = pr_number or _latest_pr(graph.node_runs(task["id"]))
     lines = 0
-    if number is not None:
+    if pull is None and number is not None:
         try:
             pull = github_get(task["repo"], f"pulls/{number}")
         except (httpx.HTTPError, ValueError):
             logger.info("Review sizing unavailable for PR %s", number)
-        else:
-            additions, deletions = pull.get("additions"), pull.get("deletions")
-            if all(
-                type(value) is int and value >= 0 for value in (additions, deletions)
-            ):
-                lines = additions + deletions
+    if pull is not None:
+        additions, deletions = pull.get("additions"), pull.get("deletions")
+        if all(type(value) is int and value >= 0 for value in (additions, deletions)):
+            lines = additions + deletions
     return review_reservation_usd(model, lines, policy["turn_budget_usd"])
 
 
@@ -4256,6 +4259,17 @@ def _insert_handoff_round(
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             return skip("unexpected_github_shape")
         checks = github_get(task["repo"], f"commits/{head}/status")
+        if (
+            not isinstance(checks, dict)
+            or not isinstance(checks.get("statuses"), list)
+            or any(
+                not isinstance(status, dict)
+                or not isinstance(status.get("context"), str)
+                or not isinstance(status.get("state"), str)
+                for status in checks["statuses"]
+            )
+        ):
+            return skip("unexpected_github_shape")
         if not _required_checks_passed(checks):
             return skip("required_checks_not_passed")
 
@@ -4319,7 +4333,7 @@ def _insert_handoff_round(
                 "stated_reason": "Independent exact-head review after verification handoff",
                 "max_attempts": 1,
                 "max_cost_usd": _review_reservation_usd(
-                    task, policy, reviewer_pool[0], pr_number=number
+                    task, policy, reviewer_pool[0], pr_number=number, pull=pull
                 ),
                 "turn_timeout_seconds": sized(dependents[0] if dependents else {}),
             },
