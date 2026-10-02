@@ -194,7 +194,8 @@ defmodule Embervm.NodeRegistryTest do
     await_initial_status(reg, "node-4/diag")
     assert diagnostic_log(fn -> :ok = NodeRegistry.inject_status(reg, "node-4/diag", status) end) == ""
     {pid, _} = :sys.get_state(reg).node_runtime["node-4/diag"].streamer
-    send(reg, {:watch_result, pid, {:error, :disconnected}})
+    Process.exit(pid, :kill)
+    eventually(fn -> not NodeRegistry.status(reg)["node-4/diag"].connected end, 200)
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4/diag"].facts.vmm_exit_counts == nil
     assert snapshot["node-4/diag"].facts.guest_oom_count == nil
