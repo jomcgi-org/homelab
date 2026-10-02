@@ -224,13 +224,6 @@
             y1={M.t}
             y2={M.t + ih}
           />
-          <text
-            class="zone-lab"
-            x={xs(bound) - 6}
-            y={M.t + ih - 8}
-            text-anchor="end"
-            >{cfg.better === "lower" ? "under the Claude ceiling" : ""}</text
-          >
         {/if}
 
         {#each yTicks as t}
@@ -303,12 +296,7 @@
         {/each}
       </svg>
     </div>
-    <p class="caption">
-      Square marks are the Claude anchors, run through Claude Code at the
-      representative API price. Shaded: cheaper or faster than the best anchor
-      on this metric. Self-hosted rows cost $0 and their wall-time is one local
-      RTX 4090, not a rented endpoint.
-    </p>
+    <p class="caption">Squares: Claude. Shaded: beats Claude on this axis.</p>
   </div>
 </section>
 
@@ -358,11 +346,6 @@
 
   .zone-edge {
     stroke: var(--stroke);
-  }
-
-  .zone-lab {
-    fill: var(--ink-2);
-    font-size: 10.5px;
   }
 
   .hit {

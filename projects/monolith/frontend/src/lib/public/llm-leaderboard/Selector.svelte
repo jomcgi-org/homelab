@@ -1,8 +1,8 @@
 <script>
   // Which models the page compares. Presets cover the usual questions; the
-  // drawer below them picks individual models, grouped by provider. The
-  // drawer is a native <details>, closed by default, per the tier's rule for
-  // long option lists.
+  // drawer picks individual models, grouped by provider. The drawer is a
+  // native <details>, closed by default per the tier's rule for long option
+  // lists, and opens as soon as the search box has a query.
   import {
     PRESETS,
     PROVIDERS,
@@ -16,10 +16,21 @@
 
   let { models = [], selected, onchange } = $props();
 
+  let query = $state("");
+  let open = $state(false);
   const active = $derived(matchPreset(models, selected));
+  // Matches the display name, the full slug and the provider, so "deepseek",
+  // "coder" and "qwen3.8" all find what you would expect.
+  const matches = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return models;
+    return models.filter((m) =>
+      `${shortName(m)} ${m.id}`.toLowerCase().includes(q),
+    );
+  });
   const groups = $derived.by(() => {
     const byProvider = new Map();
-    for (const m of rank(models)) {
+    for (const m of rank(matches)) {
       const key = provider(m.id);
       if (!byProvider.has(key)) byProvider.set(key, []);
       byProvider.get(key).push(m);
@@ -33,12 +44,24 @@
 
   function toggle(id) {
     const next = new Set(selected);
-    if (next.has(id)) {
-      // Never empty the page: the last model stays.
-      if (next.size === 1) return;
-      next.delete(id);
-    } else next.add(id);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     onchange(next);
+  }
+
+  function selectMatches() {
+    onchange(new Set([...selected, ...matches.map((m) => m.id)]));
+  }
+
+  function onSearch(event) {
+    query = event.currentTarget.value;
+    if (query.trim()) open = true;
+  }
+
+  function onKey(event) {
+    if (event.key === "Escape") query = "";
+    // Enter adds everything the query matches: type "qwen", press Enter.
+    if (event.key === "Enter" && query.trim()) selectMatches();
   }
 </script>
 
@@ -58,10 +81,33 @@
         >
       {/each}
     </div>
-    {#if !active}<span class="custom">custom selection</span>{/if}
+    <input
+      class="search"
+      type="search"
+      placeholder="Search models"
+      aria-label="Search models"
+      value={query}
+      oninput={onSearch}
+      onkeydown={onKey}
+    />
+    {#if query.trim()}
+      <button type="button" class="act" onclick={selectMatches}
+        >Add {matches.length} matching</button
+      >
+    {/if}
+    <button
+      type="button"
+      class="act"
+      disabled={!selected.size}
+      onclick={() => onchange(new Set())}>Clear all</button
+    >
+    {#if !active && selected.size}<span class="custom">custom</span>{/if}
   </div>
-  <details>
+  <details bind:open>
     <summary>Choose models</summary>
+    {#if !matches.length}
+      <p class="none">No model matches “{query.trim()}”.</p>
+    {/if}
     <div class="groups">
       {#each groups as [name, list]}
         <fieldset>
@@ -93,6 +139,51 @@
     flex-wrap: wrap;
     gap: 0.6em 1em;
     align-items: center;
+  }
+
+  .search {
+    flex: 0 1 14em;
+    min-width: 8em;
+    padding: 0.3em 0.6em;
+    border: 1px solid var(--ink);
+    border-radius: 0;
+    background: var(--sheet);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+  }
+
+  .search::placeholder {
+    color: var(--ink-2);
+  }
+
+  .act {
+    padding: 0.3em 0;
+    border: 0;
+    background: none;
+    color: var(--ink-2);
+    cursor: pointer;
+    font-family: var(--font-code);
+    font-size: 0.72rem;
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+
+  .act:hover:not(:disabled) {
+    color: var(--accent-ink);
+  }
+
+  .act:disabled {
+    cursor: default;
+    text-decoration: none;
+    opacity: 0.6;
+  }
+
+  .none {
+    margin: 0;
+    padding: 0.6em 0.8em;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
   }
 
   .custom {
