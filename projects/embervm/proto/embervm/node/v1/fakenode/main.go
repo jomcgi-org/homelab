@@ -442,8 +442,9 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		SessionVolumes: []*nodev1.SessionVolume{
 			{Workload: "sandbox-session", LineageId: "s-sess3", SizeBytes: 1024, AllocatedBytes: 512, Exported: true},
 		},
-		SnapshotDiskFreeBytes: 9_000_000_000,
-		SnapshotDiskUsedBytes: 1_000_000_000,
+		SessionVolumesComplete: true,
+		SnapshotDiskFreeBytes:  9_000_000_000,
+		SnapshotDiskUsedBytes:  1_000_000_000,
 		// Serving facts (R3): deterministic, so the client can assert the new
 		// repeated/scalar status fields round-trip.
 		ServingVms: []*nodev1.ServingVm{

@@ -122,7 +122,7 @@ defmodule Embervm.NodeRegistryTest do
       %SessionVolume{workload: "sandbox", lineage_id: "archived", size_bytes: 1024, allocated_bytes: 512, exported: true},
       %SessionVolume{workload: "sandbox", lineage_id: "pending", exported: false},
       %SessionVolume{workload: "sandbox", lineage_id: "old-daemon"}
-    ]}
+    ], session_volumes_complete: true}
 
     :ok = NodeRegistry.inject_status(reg, "node-4", status)
     assert [facts] = NodeRegistry.capacity(table)
@@ -131,7 +131,19 @@ defmodule Embervm.NodeRegistryTest do
       %{workload: "sandbox", lineage_id: "pending", size_bytes: 0, allocated_bytes: 0, exported: false},
       %{workload: "sandbox", lineage_id: "old-daemon", size_bytes: 0, allocated_bytes: 0, exported: false}
     ]
+    assert facts.session_volumes_complete == true
     assert {:ok, ^facts} = NodeCapacity.fetch(table, "node-4")
+  end
+
+  test "capacity reads a missing workspace scan completeness flag as incomplete" do
+    {clock, _advance} = new_clock()
+    {reg, table} = start_registry(clock: clock)
+    status = %NodeStatus{node_status() | session_volumes: []}
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", status)
+    assert [facts] = NodeRegistry.capacity(table)
+    assert facts.session_volumes == []
+    assert facts.session_volumes_complete == false
   end
 
   test "capacity normalizes reported node names to the registration identity" do

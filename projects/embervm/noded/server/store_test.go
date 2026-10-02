@@ -3324,8 +3324,8 @@ func TestRunExportJobExportsDetachedSessionWorkspace(t *testing.T) {
 	if !fs.has(key) {
 		t.Fatal("a detached lineage's workspace export must proceed")
 	}
-	if volumes := s.sessionVolumesStatus(); len(volumes) != 1 || !volumes[0].GetExported() {
-		t.Fatalf("detached workspace status = %v, want exported=true", volumes)
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !volumes[0].GetExported() || !complete {
+		t.Fatalf("detached workspace status = %v, complete=%t, want exported=true complete=true", volumes, complete)
 	}
 }
 
@@ -3338,13 +3338,13 @@ func TestSessionWorkspaceStatusFailsClosedAfterRestartAndWhileAttached(t *testin
 		t.Fatal(err)
 	}
 	s.exported.mark(key, 0)
-	if volumes := s.sessionVolumesStatus(); len(volumes) != 1 || !volumes[0].GetExported() {
-		t.Fatalf("detached status = %v, want exported=true", volumes)
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !volumes[0].GetExported() || !complete {
+		t.Fatalf("detached status = %v, complete=%t, want exported=true complete=true", volumes, complete)
 	}
 	// Re-open the same disk with a fresh daemon and an empty acknowledgement cache.
 	restarted := New(Options{Config: s.cfg, Driver: &fakeDriver{}, Transport: &fakeTransport{}, Store: newFakeStore(), Logger: s.logger})
-	if volumes := restarted.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() {
-		t.Fatalf("restart status = %v, want exported=false", volumes)
+	if volumes, complete := restarted.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() || !complete {
+		t.Fatalf("restart status = %v, complete=%t, want exported=false complete=true", volumes, complete)
 	}
 	seedBase(s, "sbx__deadbeef03", workload)
 	if _, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "sbx__deadbeef03", LineageId: lineage, VolumeMount: "/session", VolumeSizeBytes: 1 << 20}); err != nil {
@@ -3355,8 +3355,44 @@ func TestSessionWorkspaceStatusFailsClosedAfterRestartAndWhileAttached(t *testin
 	}
 	// Even an erroneously retained cache entry cannot report an attached copy.
 	s.exported.mark(key, 0)
-	if volumes := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() {
-		t.Fatalf("attached status = %v, want exported=false", volumes)
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() || !complete {
+		t.Fatalf("attached status = %v, complete=%t, want exported=false complete=true", volumes, complete)
+	}
+}
+
+func TestSessionVolumesStatusReportsIncompleteScan(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload = "sbx"
+	if err := s.volumes.CreateSession(workload, "lineage-good", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
+		t.Fatalf("clean scan status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
+	}
+	// A lineage dir without a workspace image fails its Stat, so the scan must
+	// skip it and report incomplete: the partial inventory is unknown, never
+	// empty, and the control plane must hold the brick.
+	if err := os.MkdirAll(s.volumes.SessionLineageDir(workload, "lineage-hidden"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	volumes, complete := s.sessionVolumesStatus()
+	if complete {
+		t.Fatalf("partial scan status = %v, want complete=false", volumes)
+	}
+	if len(volumes) != 1 || volumes[0].GetLineageId() != "lineage-good" {
+		t.Fatalf("partial scan status = %v, want only lineage-good", volumes)
+	}
+	if got := s.nodeStatus().GetSessionVolumesComplete(); got {
+		t.Fatalf("NodeStatus session_volumes_complete = true, want false on a partial scan")
+	}
+	if err := os.Remove(s.volumes.SessionLineageDir(workload, "lineage-hidden")); err != nil {
+		t.Fatal(err)
+	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
+		t.Fatalf("healed scan status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
+	}
+	if got := s.nodeStatus().GetSessionVolumesComplete(); !got {
+		t.Fatal("NodeStatus session_volumes_complete = false, want true on a clean scan")
 	}
 }
 
@@ -3548,8 +3584,8 @@ func TestSessionWorkspaceStatusPreservesPendingAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Pause the handoff after attachment, before publishing the VM registry.
-	if volumes := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() {
-		t.Fatalf("pending attachment status = %v, want exported=false", volumes)
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() || !complete {
+		t.Fatalf("pending attachment status = %v, complete=%t, want exported=false complete=true", volumes, complete)
 	}
 	if !s.volumes.IsLineageAttached(workload, lineage, map[string]struct{}{vmID: {}}) {
 		t.Fatal("NodeStatus pruned the attachment during a pending ownership handoff")

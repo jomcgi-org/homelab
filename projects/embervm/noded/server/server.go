@@ -2463,48 +2463,50 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	groupMemberVMs := s.groupMemberVmsStatus()
 	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs) + len(groupMemberVMs)
 	snaps := s.sessionSnapshotsStatus()
+	sessionVolumes, sessionVolumesComplete := s.sessionVolumesStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	vmOverheadMib := uint64(0)
 	if s.cfg.VMOverheadMib > 0 {
 		vmOverheadMib = uint64(s.cfg.VMOverheadMib)
 	}
 	ns := &nodev1.NodeStatus{
-		NodeId:                s.cfg.Node,
-		PodUid:                s.cfg.PodUID,
-		SizeClass:             s.cfg.SizeClass,
-		CpuVendor:             s.cfg.CpuVendor,
-		Workloads:             caps,
-		MemHeadroomMib:        s.memHeadroom(),
-		MemRejectFloorMib:     s.memRejectFloorMib(),
-		CpuHeadroomMillicores: uint32(s.cpuHeadroom()),
-		LiveVms:               uint32(live),
-		MaxLiveVms:            uint32(maxLive),
-		Draining:              s.isDraining(),
-		DrainDeadlineUnixMs:   s.drainDeadline(),
-		BuildError:            s.bases.firstBuildError(),
-		SessionVms:            sessionVMs,
-		SessionSnapshots:      snaps,
-		SessionVolumes:        s.sessionVolumesStatus(),
-		SnapshotDiskFreeBytes: freeBytes,
-		SnapshotDiskUsedBytes: usedBytes,
-		ServingVms:            servingVMs,
-		ServingSnapshots:      s.servingSnapshotsStatus(),
-		ServingSubnetCidr:     s.servingSubnetCIDR(),
-		StatefulVms:           statefulVMs,
-		StatefulBundles:       s.statefulBundlesStatus(),
-		Volumes:               s.volumesStatus(),
-		GroupNetworks:         s.groupNetworksStatus(),
-		GroupMemberVms:        groupMemberVMs,
-		GroupBundleSets:       s.groupBundleSetsStatus(),
-		StoreReachable:        s.storeReachableNow(),
-		MemBudgetMib:          s.memBudget(),
-		MemReservedMib:        s.claimedMib(),
-		AdmitsOnReservation:   s.cfg.AdmissionModel == "reserved",
-		VmOverheadMib:         vmOverheadMib,
-		CpuBudgetMillicores:   s.cpuBudget(),
-		CpuSku:                s.cpuSku(),
-		LocalBases:            s.localBasesStatus(),
-		ScratchGeneration:     scratchGeneration,
+		NodeId:                 s.cfg.Node,
+		PodUid:                 s.cfg.PodUID,
+		SizeClass:              s.cfg.SizeClass,
+		CpuVendor:              s.cfg.CpuVendor,
+		Workloads:              caps,
+		MemHeadroomMib:         s.memHeadroom(),
+		MemRejectFloorMib:      s.memRejectFloorMib(),
+		CpuHeadroomMillicores:  uint32(s.cpuHeadroom()),
+		LiveVms:                uint32(live),
+		MaxLiveVms:             uint32(maxLive),
+		Draining:               s.isDraining(),
+		DrainDeadlineUnixMs:    s.drainDeadline(),
+		BuildError:             s.bases.firstBuildError(),
+		SessionVms:             sessionVMs,
+		SessionSnapshots:       snaps,
+		SessionVolumes:         sessionVolumes,
+		SessionVolumesComplete: sessionVolumesComplete,
+		SnapshotDiskFreeBytes:  freeBytes,
+		SnapshotDiskUsedBytes:  usedBytes,
+		ServingVms:             servingVMs,
+		ServingSnapshots:       s.servingSnapshotsStatus(),
+		ServingSubnetCidr:      s.servingSubnetCIDR(),
+		StatefulVms:            statefulVMs,
+		StatefulBundles:        s.statefulBundlesStatus(),
+		Volumes:                s.volumesStatus(),
+		GroupNetworks:          s.groupNetworksStatus(),
+		GroupMemberVms:         groupMemberVMs,
+		GroupBundleSets:        s.groupBundleSetsStatus(),
+		StoreReachable:         s.storeReachableNow(),
+		MemBudgetMib:           s.memBudget(),
+		MemReservedMib:         s.claimedMib(),
+		AdmitsOnReservation:    s.cfg.AdmissionModel == "reserved",
+		VmOverheadMib:          vmOverheadMib,
+		CpuBudgetMillicores:    s.cpuBudget(),
+		CpuSku:                 s.cpuSku(),
+		LocalBases:             s.localBasesStatus(),
+		ScratchGeneration:      scratchGeneration,
 	}
 	s.activatorMu.RLock()
 	activatorEnabled := s.activatorEnabled
@@ -2929,14 +2931,22 @@ func bundleMetadataStatus(dir string) (uint32, string) {
 	return uint32(meta.SchemaVersion), meta.RootfsIdentity
 }
 
-func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {
+// sessionVolumesStatus projects the session workspace inventory into
+// NodeStatus. The returned complete flag mirrors the scan: true only after a
+// clean scan with no skipped entries. An incomplete or failed scan reports
+// complete=false (with whatever partial inventory was read) so the control
+// plane holds the brick instead of reading an empty list as safe.
+func (s *Server) sessionVolumesStatus() ([]*nodev1.SessionVolume, bool) {
 	if s.volumes == nil {
-		return nil
+		return nil, false
 	}
-	inventory, err := s.volumes.ScanSessions()
+	inventory, complete, err := s.volumes.ScanSessions()
 	if err != nil {
 		s.logger.Warn("noded: scan session volumes", "err", err)
-		return nil
+		return nil, false
+	}
+	if !complete {
+		s.logger.Warn("noded: session volume scan incomplete")
 	}
 	out := make([]*nodev1.SessionVolume, 0, len(inventory))
 	for _, v := range inventory {
@@ -2945,7 +2955,7 @@ func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {
 			Exported: !s.lineageAttached(v.Workload, v.LineageID) && s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, v.Workload, v.LineageID),
 		})
 	}
-	return out
+	return out, complete
 }
 
 func (s *Server) lineageAttached(workload, lineageID string) bool {
@@ -3231,13 +3241,36 @@ func (s *Server) drainSessionExports(exports *drainExports) int {
 			exports.pending["workspace inventory unavailable"] = true
 			return pending + 1
 		}
-		inventory, err := s.volumes.ScanSessions()
+		inventory, complete, err := s.volumes.ScanSessions()
 		if err != nil {
 			exports.scanErrors++
 			if exports.scanErrors >= drainExportScanErrorLimit {
 				s.logger.Warn("drain workspace scan retries exhausted", "error", err)
 				return pending
 			}
+			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
+			exports.pending["workspace inventory unavailable"] = true
+			return pending + 1
+		}
+		if !complete {
+			// A partial scan still queues the workspaces it did read, but the
+			// drain stays blocked: unknown inventory is never treated as done.
+			// Unlike a hard error this never exhausts: a persistent skip (for
+			// example unreadable session dirs) must hold the drain, not age
+			// out of it.
+			for _, volume := range inventory {
+				if s.lineageAttached(volume.Workload, volume.LineageID) {
+					continue
+				}
+				ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: volume.Workload, Ref: volume.LineageID}
+				key := artifactPrefix(ref, s.cfg.CpuVendor)
+				if !exports.workspaces[key] {
+					s.exported.clear(key)
+					exports.workspaces[key] = true
+				}
+				queue(ref)
+			}
+			s.logger.Warn("drain workspace scan incomplete")
 			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
 			exports.pending["workspace inventory unavailable"] = true
 			return pending + 1

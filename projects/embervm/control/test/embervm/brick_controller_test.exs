@@ -485,6 +485,7 @@ defmodule Embervm.BrickControllerTest do
     {annotate, annotated} = new_annotator()
     {clock, advance} = new_clock()
     fact = %{size_class: "2gi", pod_uid: "uid-a", node_id: "node-4", live_vms: 0,
+      session_volumes_complete: true,
       session_volumes: [%{workload: "shell", lineage_id: "unknown"},
         %{workload: "shell", lineage_id: "pending", exported: false}]}
     {:ok, facts} = Agent.start_link(fn -> [fact] end)
@@ -513,6 +514,36 @@ defmodule Embervm.BrickControllerTest do
     assert ctx.annotated.() == []
     assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
     assert :sys.get_state(ctx.pid).last_down_at == %{}
+  end
+
+  test "an incomplete workspace scan holds the victim without requesting an archive" do
+    ctx = archive_gate_stack()
+    Agent.update(ctx.facts, fn facts ->
+      Enum.map(facts, fn fact ->
+        %{fact | session_volumes: [], session_volumes_complete: false}
+      end)
+    end)
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=archive_pending"
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+    assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-a"]
+    refute_receive {:archive, _, _}
+  end
+
+  test "a fact without the scan completeness flag reads as incomplete and requests no archive" do
+    ctx = archive_gate_stack()
+    Agent.update(ctx.facts, fn facts ->
+      Enum.map(facts, fn fact ->
+        fact
+        |> Map.delete(:session_volumes_complete)
+        |> Map.put(:session_volumes, [])
+      end)
+    end)
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=archive_pending"
+    assert ctx.annotated.() == []
+    refute_receive {:archive, _, _}
   end
 
   test "archive gate releases the victim only when facts report every workspace exported" do
@@ -579,6 +610,7 @@ defmodule Embervm.BrickControllerTest do
   test "a fully safe sibling takes precedence over a less warm archive-pending brick" do
     ctx = archive_gate_stack()
     sibling = %{ctx.fact | pod_uid: "uid-b", session_volumes: []}
+      |> Map.put(:session_volumes_complete, true)
       |> Map.put(:stateful_bundles, [%{exported: true}])
     Agent.update(ctx.facts, fn facts -> facts ++ [sibling] end)
     archive_gate_tick(ctx)

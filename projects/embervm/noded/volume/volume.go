@@ -753,22 +753,32 @@ func (m *Manager) Scan() ([]Inventory, error) {
 // ScanSessions reports durable per-lineage workspace files. It deliberately
 // does not require a control-plane row: that is the fact needed to reap leaks
 // created before a session passed the readiness gate.
-func (m *Manager) ScanSessions() ([]SessionInventory, error) {
+//
+// The returned complete flag is true only after a clean scan with no skipped
+// entries. A workload whose ReadDir fails, or a lineage whose Stat or
+// allocated-bytes read fails (or whose image is not a regular file), is
+// skipped and marks the scan incomplete: callers must treat an incomplete
+// inventory as unknown, never as empty, or a failed scan reads as safe.
+// A missing session root is empty and complete; a root ReadDir failure
+// returns complete=false with the error.
+func (m *Manager) ScanSessions() ([]SessionInventory, bool, error) {
 	root := filepath.Join(m.root, "session")
 	workloads, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, true, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("volume: scan sessions %q: %w", root, err)
+		return nil, false, fmt.Errorf("volume: scan sessions %q: %w", root, err)
 	}
 	var out []SessionInventory
+	complete := true
 	for _, w := range workloads {
 		if !w.IsDir() {
 			continue
 		}
 		lineages, err := os.ReadDir(filepath.Join(root, w.Name()))
 		if err != nil {
+			complete = false
 			continue
 		}
 		for _, l := range lineages {
@@ -778,16 +788,18 @@ func (m *Manager) ScanSessions() ([]SessionInventory, error) {
 			path := m.SessionVolumePath(w.Name(), l.Name())
 			fi, err := os.Stat(path)
 			if err != nil || !fi.Mode().IsRegular() {
+				complete = false
 				continue
 			}
 			alloc, err := m.sessionAllocatedBytes(path)
 			if err != nil {
+				complete = false
 				continue
 			}
 			out = append(out, SessionInventory{Workload: w.Name(), LineageID: l.Name(), SizeBytes: uint64(fi.Size()), AllocatedBytes: alloc})
 		}
 	}
-	return out, nil
+	return out, complete, nil
 }
 
 func (m *Manager) sessionAllocatedBytes(path string) (uint64, error) {

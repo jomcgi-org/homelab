@@ -114,7 +114,11 @@ defmodule Embervm.BrickController do
   an asynchronous pre-drain archive request and stays alive as `archive_pending`.
   ArchiveVolume's enqueue acknowledgement cannot release it. After 180s the
   controller alarms and keeps waiting, without annotating or shrinking. A fresh
-  controller re-derives the rail from node facts after restart.
+  controller re-derives the rail from node facts after restart. A fact whose
+  session workspace scan is incomplete (`session_volumes_complete` false: a scan
+  error, a partial scan, or a daemon that predates the field) is never a safe
+  victim either: it stays alive as `archive_pending` under the same timeout
+  alarm, but requests no archive, since there is no known inventory to archive.
 
   ## fleet-full
 
@@ -1342,7 +1346,12 @@ defmodule Embervm.BrickController do
             %{count: 1, elapsed_ms: elapsed}, metadata)
         end
 
-        state.archive_fun.(Map.get(victim, :node_id), unexported_volumes(victim))
+        # An incomplete scan holds the victim under the same timeout alarm but
+        # requests no archive: the inventory is unknown, so there is nothing
+        # known to archive, and an empty request must never read as success.
+        if session_volumes_complete?(victim) do
+          state.archive_fun.(Map.get(victim, :node_id), unexported_volumes(victim))
+        end
         wait = %{wait | alarmed: elapsed >= state.archive_ack_timeout_ms}
         {{:skip, :archive_pending},
           %{state | archive_pending: Map.put(state.archive_pending, uid, wait)}}
@@ -1354,7 +1363,12 @@ defmodule Embervm.BrickController do
 
   defp pick_archive_victim(state, facts, class) do
     eligible = Enum.filter(facts, &legacy_victim?(&1, class))
-    safe = Enum.filter(eligible, &(not state.archive_ack_gate or unexported_volumes(&1) == []))
+    safe =
+      Enum.filter(
+        eligible,
+        &(not state.archive_ack_gate or
+            (session_volumes_complete?(&1) and unexported_volumes(&1) == []))
+      )
 
     case safe do
       [_ | _] -> {:safe, Enum.min_by(safe, &length(warmth_inventory(&1)))}
@@ -1378,13 +1392,20 @@ defmodule Embervm.BrickController do
     Enum.reject(Map.get(fact, :session_volumes) || [], &(Map.get(&1, :exported, false) == true))
   end
 
+  # A fact without a confirmed clean scan reads as incomplete (an old daemon,
+  # a scan error, or a partial scan): unknown inventory is never safe.
+  defp session_volumes_complete?(fact) do
+    Map.get(fact, :session_volumes_complete, false) == true
+  end
+
   defp clear_archive_pending(state, class) do
     %{state | archive_pending: Map.reject(state.archive_pending, fn {_uid, wait} -> wait.class == class end)}
   end
 
   defp prune_archive_pending(state, facts) do
     pending_uids = for fact <- facts,
-      legacy_victim?(fact, Map.get(fact, :size_class)) and unexported_volumes(fact) != [],
+      legacy_victim?(fact, Map.get(fact, :size_class)) and
+        (not session_volumes_complete?(fact) or unexported_volumes(fact) != []),
       into: MapSet.new(), do: Map.get(fact, :pod_uid)
     %{state | archive_pending: Map.filter(state.archive_pending, fn {uid, _wait} ->
       MapSet.member?(pending_uids, uid)

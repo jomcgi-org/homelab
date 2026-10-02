@@ -1088,7 +1088,10 @@ deployment state and lives in the fleet section.
 `session_volumes[].exported` fact. `ArchiveVolume` returns after enqueueing the
 transfer, so its RPC acknowledgement cannot authorize scale-down. The optional
 `bricks.autoscale.archiveAckGate` rail fails closed on a missing or false flag
-and requests archives before choosing a victim. A blocked victim stays alive;
+and requests archives before choosing a victim. A fact whose workspace scan is
+incomplete (`session_volumes_complete` false) is likewise never a safe victim
+and requests no archive, since an empty list from a failed scan must never
+read as safe. A blocked victim stays alive;
 `timeoutMs: 180000` bounds the quiet wait to the `drain_node` default deadline,
 then logs an error once and emits timeout telemetry each tick. It never forces
 removal. The timeout is a reversible alarm threshold. Restarted controllers

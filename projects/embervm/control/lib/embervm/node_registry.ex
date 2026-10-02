@@ -980,6 +980,12 @@ defmodule Embervm.NodeRegistry do
       session_vms: session_vms_from_status(s),
       session_snapshots: session_snapshots_from_status(s),
       session_volumes: session_volumes_from_status(s),
+      # Session workspace scan completeness (#6533, additive): true only when
+      # the daemon's session_volumes reflects a clean scan with no skipped
+      # entries. False on a scan error, a partial scan, or a daemon that
+      # predates the field (proto3 default), which the brick archive-ack gate
+      # reads as pending, never safe.
+      session_volumes_complete: session_volumes_complete_from_status(s),
       snapshot_disk_free_bytes: s.snapshot_disk_free_bytes,
       snapshot_disk_used_bytes: s.snapshot_disk_used_bytes,
       # Serving facts (R3): the node's LIVE serving VMs (with the daemon's health
@@ -1255,6 +1261,10 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp session_volumes_from_status(_s), do: []
+
+  defp session_volumes_complete_from_status(s) do
+    Map.get(s, :session_volumes_complete, false) == true
+  end
 
   # The node's CPUID vendor for restore-on-miss vendor keying (R7, ADR embervm/011).
   # Prefers the richer CpuSku.vendor (field 28) when the daemon reports it, falls
