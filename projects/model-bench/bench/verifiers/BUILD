@@ -14,6 +14,7 @@ py_library(
         "helm.py",
         "jsonmatch.py",
         "lint.py",
+        "mutation.py",
         "pytest.py",
         "rbac.py",
         "sandbox.py",
@@ -36,6 +37,16 @@ py_test(
 py_test(
     name = "verifiers_test",
     srcs = ["verifiers_test.py"],
+    imports = ["../.."],
+    deps = [
+        ":verifiers",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "mutation_test",
+    srcs = ["mutation_test.py"],
     imports = ["../.."],
     deps = [
         ":verifiers",
