@@ -626,7 +626,8 @@ defmodule Embervm.SessionManagerTest do
         {:ok, %{content_fingerprint: req.expected_fingerprint}}
       end,
       pressure_retry_interval_ms: 10,
-      pressure_wait_bound_ms: 500
+      pressure_wait_bound_ms: 500,
+      monotonic_clock: fn -> System.monotonic_time(:millisecond) end
     ], opts)
     ctx = start_stack(opts)
     created = create_persistence_session(ctx, instance_id: "node-4/pod-owner")
@@ -704,7 +705,7 @@ defmodule Embervm.SessionManagerTest do
       assert request.artifact.ref == parked.lineage_id
       cross_node_target(ctx, parked)
       # Another class remains on A. It must not disguise the absent class.
-      put_brick(ctx, "another-class", "pod-other", node_id: "node-4")
+      put_brick(ctx, "another-class", "pod-other", node_id: "node-4", mem_headroom: 0)
       if unquote(departure) == :departed do
         assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-owner"}) == 0
         assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, created.session_id)
@@ -777,7 +778,7 @@ defmodule Embervm.SessionManagerTest do
   test "cross-node pre-prime capacity failure retains proof and retries onto a reachable target" do
     {ctx, created, parked} = cross_node_stack()
     evidence = await_workspace_evidence(ctx, created.session_id)
-    put_brick(ctx, "another-class", "pod-other", node_id: "node-4")
+    put_brick(ctx, "another-class", "pod-other", node_id: "node-4", mem_headroom: 0)
     cross_node_target(ctx, parked, store_reachable: false)
     caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "{}"}) end)
     assert eventually(fn -> Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id) end)
