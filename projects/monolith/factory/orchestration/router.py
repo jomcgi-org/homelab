@@ -996,8 +996,8 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
 
     is_resubmission = body.task_id is not None
     task_id = body.task_id or models.mint_task_id()
-    triggered_by = request.headers.get("x-auth-email")
-    triggered_by = triggered_by.strip().lower() or None if triggered_by else None
+    triggered_by = verified_email(request)
+    triggered_by = triggered_by.lower() if triggered_by else None
     if is_resubmission:
         try:
             await asyncio.to_thread(

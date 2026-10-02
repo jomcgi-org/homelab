@@ -1202,6 +1202,43 @@ def test_start_session_persists_triggered_by_header(client, session, monkeypatch
     )
 
 
+def test_start_session_ignores_duplicated_triggered_by_header(
+    client, session, monkeypatch
+):
+    monkeypatch.setattr(
+        "factory.execution.router._persist_session",
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._persist_pending_message",
+        lambda session_id, prompt, model: (
+            store.create_pending_message(session, session_id, prompt, model).seq
+        ),
+    )
+    monkeypatch.setattr(
+        "factory.execution.router._schedule_next_message", lambda _: None
+    )
+
+    # Envoy appends its projected claim, so two values mean a forged one came
+    # first: no verified identity, nothing recorded (#6036).
+    response = client.post(
+        "/api/agents/sessions",
+        json={"prompt": "Hello"},
+        headers=[
+            ("X-Auth-Email", "forged@example.com"),
+            ("X-Auth-Email", "joe@example.com"),
+        ],
+    )
+
+    assert response.status_code == 200
+    session_id = response.json()["session_id"]
+    assert session.get(AgentSession, session_id).triggered_by is None
+
+
 def test_start_session_without_triggered_by_header_succeeds(
     client, session, monkeypatch
 ):
