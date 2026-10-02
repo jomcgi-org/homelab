@@ -153,7 +153,11 @@ models:
   # it sits beside the qwen3.8-27b row. Not on AA yet.
   - id: prism-ml/ternary-bonsai-2-27b
     display_name: bonsai-2-27b
-    status: experimental
+    status: retired
+    retired_reason:
+      "Darkbloom, its only OpenRouter provider, 429s from a shared upstream
+      pool; three passes could not finish without rate-limit errors"
+    retired_date: "2026-10-02"
     extra_body:
       reasoning:
         effort: xhigh
