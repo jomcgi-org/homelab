@@ -264,8 +264,16 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
     assert res_d.json() == res_missing.json()
 
 
-def test_public_reader_reads_published_fact_columns_and_sanitized_scope(session):
-    """The public role reads publication metadata, but only approved scopes."""
+@pytest.mark.parametrize("dispute_state", ["open", "resolution_failed"])
+def test_public_reader_reads_published_fact_columns_and_sanitized_scope(
+    session, dispute_state
+):
+    """The public role reads publication metadata, but only approved scopes.
+
+    The disputed flag stays set while the fact's dispute is open or
+    dead-lettered (resolution_failed): both states remain contested until a
+    replay resolves them.
+    """
     insert = text(
         """
         INSERT INTO knowledge.notes
@@ -311,9 +319,10 @@ def test_public_reader_reads_published_fact_columns_and_sanitized_scope(session)
         text(
             """
             INSERT INTO knowledge.disputes (note_id, reason, state)
-            VALUES ('published-fact', 'Needs review', 'open')
+            VALUES ('published-fact', 'Needs review', :state)
             """
-        )
+        ),
+        {"state": dispute_state},
     )
     session.commit()
 
