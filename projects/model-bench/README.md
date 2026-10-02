@@ -87,8 +87,13 @@ in task.yaml, so the fixture still regenerates from git), and writes the change 
 `REVIEW.diff` via `snapshot.review_diff` (base commit to the patched tree). The model
 writes `review.json` as `[{file, line, description}]`. A finding matches a planted
 bug on the same file within the bug's line range plus `tolerance`. The score is
-`(matched - fp_penalty * false_positives) / bugs`, floored at 0, so spraying findings
-scores nothing.
+`(matched - fp_penalty * false_positives - decoy_penalty * decoy_hits) / bugs`,
+floored at 0, so spraying findings scores nothing. `decoys` list code that looks
+wrong but is correct in context; a finding is owned by the nearest bug or decoy,
+and a bug's `lines` may list several ranges when the defect shows in more than one
+place. A patch with `content` instead of `find`/`replace` writes a whole file (a
+rewritten module, or a new migration). `-02` is the harder sibling of `-01`: ten
+cross-referencing plants and four decoys.
 
 ## Setup
 

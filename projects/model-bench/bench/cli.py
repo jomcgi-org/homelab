@@ -1306,9 +1306,14 @@ def _calibrate(args) -> None:
 
 def _apply_snapshot_patches(fixture: Path, patches: list[dict]) -> None:
     """Apply find/replace edits to snapshotted files. Each find must occur exactly
-    once, so a commit bump that drifts the file fails loudly."""
+    once, so a commit bump that drifts the file fails loudly. A patch with
+    ``content`` instead writes the whole file (a new file, or a rewrite)."""
     for patch in patches:
         target = fixture / patch["file"]
+        if "content" in patch:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(patch["content"])
+            continue
         source = target.read_text()
         n = source.count(patch["find"])
         if n != 1:
