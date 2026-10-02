@@ -11,7 +11,6 @@ from bench.cli import (
     _prune_stale,
     _report,
     _resolve_snapshot_preset,
-    _snapshot,
     _write_leaderboard_json,
     build_parser,
     load_tasks,
@@ -433,62 +432,3 @@ def test_snapshot_overlays_layer_a_second_commit(tmp_path):
     fixture = tasks / "t" / "fixture"
     assert (fixture / "chart.yaml").read_text() == "old\n"
     assert (fixture / "app.go").read_text() == "new\n"
-
-
-def test_snapshot_overlays_files_from_a_later_commit(tmp_path):
-    import subprocess
-
-    repo = tmp_path / "repo"
-    (repo / "proj").mkdir(parents=True)
-
-    def git(*a):
-        subprocess.run(
-            ["git", "-C", str(repo), *a],
-            check=True,
-            capture_output=True,
-            env={
-                "GIT_AUTHOR_NAME": "t",
-                "GIT_AUTHOR_EMAIL": "t@t",
-                "GIT_COMMITTER_NAME": "t",
-                "GIT_COMMITTER_EMAIL": "t@t",
-                "PATH": "/usr/bin:/bin",
-            },
-        )
-
-    def commit(message):
-        git("add", ".")
-        git("commit", "-qm", message)
-        return subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-
-    git("init", "-q")
-    (repo / "proj" / "base.py").write_text("old\n")
-    base = commit("base")
-    (repo / "proj" / "base.py").write_text("new\n")
-    (repo / "proj" / "later.py").write_text("later\n")
-    later = commit("later")
-
-    task_dir = tmp_path / "tasks" / "t"
-    task_dir.mkdir(parents=True)
-    (task_dir / "task.yaml").write_text(
-        f"""id: t
-snapshot:
-  commit: {base}
-  paths: [proj/base.py]
-  strip_components: 1
-  overlays:
-    - commit: {later}
-      paths: [proj/later.py]
-"""
-    )
-    _snapshot(
-        argparse.Namespace(repo=str(repo), tasks=str(tmp_path / "tasks"), task=None)
-    )
-    fixture = task_dir / "fixture"
-    # The base file stays at the base commit; the overlay adds the later file.
-    assert (fixture / "base.py").read_text() == "old\n"
-    assert (fixture / "later.py").read_text() == "later\n"

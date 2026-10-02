@@ -1217,30 +1217,11 @@ def _snapshot(args) -> None:
             archive = subprocess.run(
                 ["git", "-C", str(repo), "archive", overlay["commit"], "--"]
                 + overlay["paths"],
-
-
-        # Overlays lay files from other commits on top of the base snapshot, for a
-        # task that combines real code from more than one point in history (e.g. a
-        # later process that reintroduced the same bug). Same strip as the base.
-        for overlay in snap.get("overlays", []):
-            extra = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo),
-                    "archive",
-                    overlay["commit"],
-                    "--",
-                    *overlay["paths"],
-                ],
                 capture_output=True,
                 check=True,
                 timeout=120,
             )
             subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
-
-
-            subprocess.run(tar_cmd, input=extra.stdout, check=True, timeout=120)
         # Prune excludes (default: the parent's own *_test.py). The model never needs
         # them (the gold test is injected by the verifier), they bloat the fixture, and
         # committing real test files trips the repo's pre-commit semgrep hook.
