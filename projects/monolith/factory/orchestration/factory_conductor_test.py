@@ -918,6 +918,272 @@ def feedback_audits(engine, task_id):
         ]
 
 
+def preview_add(key="fix", *, role="implement", deps=(), **bounds):
+    return {
+        "action": "add_node",
+        "node_key": key,
+        "role": role,
+        "prompt": "Bounded test work",
+        "deps": list(deps),
+        "reason": "test",
+        "model": "opus" if role == "review" else "luna",
+        **bounds,
+    }
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "fitting",
+        "usd",
+        "turns",
+        "single",
+        "review",
+        "parallel",
+        "discard",
+        "charged",
+        "first_planner",
+        "later_planner",
+    ],
+)
+def test_preview_and_actual_submission_share_projection(
+    feedback_db, monkeypatch, scenario
+):
+    from dataclasses import asdict
+    from factory.orchestration import factory_controls as controls
+
+    task, policy = feedback_task(
+        max_turns=30,
+        task_budget_usd=200.0,
+        max_parallel_nodes=2 if scenario == "parallel" else 1,
+    )
+    edits = [preview_add()]
+    if scenario == "usd":
+        policy = {**policy, "task_budget_usd": 1.0}
+    elif scenario == "turns":
+        policy = {**policy, "max_turns_per_task": 1}
+    elif scenario == "review":
+        edits.append(preview_add("check", role="review", deps=["fix"]))
+    elif scenario == "parallel":
+        edits.append(preview_add("other"))
+    elif scenario in ("discard", "charged"):
+        complete_feedback_node(
+            task,
+            policy,
+            "implement_old",
+            {
+                "status": "needs_work",
+                "summary": "failed",
+                "pr_number": None,
+                "head_sha": None,
+            },
+            status="failed",
+        )
+        if scenario == "discard":
+            edits.insert(
+                0,
+                {
+                    "action": "discard_node",
+                    "node_key": "implement_old",
+                    "reason": "replace failed work",
+                },
+            )
+    elif scenario in ("first_planner", "later_planner"):
+        if scenario == "later_planner":
+            complete_feedback_node(task, policy, "conductor_1", preview_add("earlier"))
+        key = "conductor_2" if scenario == "later_planner" else "conductor_1"
+        assert conductor._add(
+            task, policy, key, "planner", [], "opus", "test:planner", "test"
+        ).ok
+    revision = conductor.graph.current_version(task["id"])
+    decision = (
+        edits[0]
+        if scenario == "single"
+        else {
+            "action": "plan",
+            "reason": "test plan",
+            "edits": edits,
+        }
+    )
+    decision["expected_version"] = revision
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision, policy=policy
+    )
+    assert preview["advisory"] and preview["revision"] == revision
+    # Capture the actual projection consumed by _apply_decision, not a second
+    # invocation of preview or a test of only the pure helper.
+    submitted = []
+    original = conductor.project_decision
+
+    def capture(*args, **kwargs):
+        result = original(*args, **kwargs)
+        submitted.append(result)
+        return result
+
+    monkeypatch.setattr(conductor, "project_decision", capture)
+    monkeypatch.setattr(conductor, "_observed_branch_head", lambda _task: None)
+    conductor._apply_decision(
+        task,
+        policy,
+        decision,
+        "test:preview-parity",
+        conductor.graph.node_runs(task["id"]),
+    )
+    assert len(submitted) == 1
+    assert preview["projection"] == asdict(submitted[0])
+    if scenario in ("usd", "turns"):
+        assert not preview["ok"]
+        audit = feedback_audits(feedback_db, task["id"])[-1]
+        assert audit["refusal_code"] == preview["refusal"]["code"]
+        assert audit["reason"] == preview["refusal"]["detail"]
+        assert conductor.graph.current_version(task["id"]) == revision
+    else:
+        assert preview["ok"]
+        assert conductor.graph.current_version(task["id"]) > revision
+        stored = controls.task_allowance(task["id"])
+        for field in ("turns", "usd", "review_rounds_reserved", "fan_ins_reserved"):
+            assert stored[field] == preview["projection"]["allowance"][field]
+    if scenario == "first_planner":
+        assert preview["projection"]["allowance"]["usd"] == 5.0
+        assert preview["projection"]["allowance"]["turns"] == 2
+    elif scenario == "later_planner":
+        assert preview["projection"]["allowance"]["usd"] == 5.25
+        assert preview["projection"]["allowance"]["turns"] == 2
+    elif scenario == "review":
+        assert preview["projection"]["reserves"]["review"] == {
+            "count": 1,
+            "turns": 2,
+            "usd": 12.0,
+        }
+    elif scenario == "parallel":
+        assert preview["projection"]["reserves"]["fan_in"] == {
+            "count": 1,
+            "turns": 2,
+            "usd": 2.0,
+        }
+
+
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        {"max_attempts": 3},
+        {"turn_timeout_seconds": 61},
+        {"max_cost_usd": 20.0},
+    ],
+)
+def test_preview_bounds_refusal_and_clamp_match_submission(feedback_db, action, bounds):
+    task, policy = feedback_task()
+    source = preview_add(**bounds)
+    decision = (
+        source
+        if action == "add_node"
+        else {"action": "plan", "reason": "test", "edits": [source]}
+    )
+    revision = conductor.graph.current_version(task["id"])
+    preview = conductor.preview_decision(
+        task["id"], decision, expected_revision=revision
+    )
+    conductor._apply_decision(task, policy, decision, "test:preview-bounds", [])
+    if "max_cost_usd" in bounds:
+        assert preview["ok"]
+        assert (
+            preview["projection"]["edits"][0]["max_cost_usd"]
+            == policy["turn_budget_usd"]
+        )
+        assert (
+            conductor.graph.load_graph(task["id"])[0]["max_cost_usd"]
+            == policy["turn_budget_usd"]
+        )
+    else:
+        audit = feedback_audits(feedback_db, task["id"])[-1]
+        assert audit["reason"] == preview["refusal"]["detail"]
+        assert (
+            audit["refusal_code"]
+            == preview["refusal"]["code"]
+            == "bound_exceeds_policy"
+        )
+
+
+def preview_database_rows(engine):
+    """All fixture tables, including receipts, audits, decisions and starts."""
+    from sqlalchemy import inspect, text
+
+    with engine.connect() as connection:
+        return {
+            table: connection.execute(text(f'SELECT * FROM "{table}" ORDER BY 1')).all()
+            for table in inspect(connection).get_table_names()
+        }
+
+
+def test_preview_is_read_only_and_stale_has_no_figures(feedback_db, monkeypatch):
+    task, policy = feedback_task()
+    revision = conductor.graph.current_version(task["id"])
+    before = preview_database_rows(feedback_db)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("preview must not read GitHub")
+    )
+    for budget in (40.0, 1.0, 40.0):
+        result = conductor.preview_decision(
+            task["id"],
+            preview_add(),
+            expected_revision=revision,
+            policy={**policy, "task_budget_usd": budget},
+        )
+        assert result["ok"] is (budget == 40.0)
+    stale = conductor.preview_decision(
+        task["id"], preview_add(), expected_revision=revision + 1
+    )
+    assert stale["refusal"]["code"] == "stale_revision"
+    assert stale["revision"] == revision and "projection" not in stale
+    assert preview_database_rows(feedback_db) == before
+    # A preview never grants stale admission or locks in a more generous policy.
+    conductor._apply_decision(
+        task,
+        {**policy, "task_budget_usd": 1.0},
+        preview_add(),
+        "test:current-policy",
+        [],
+    )
+    assert (
+        feedback_audits(feedback_db, task["id"])[-1]["refusal_code"]
+        == "envelope_exceeded"
+    )
+
+
+def test_preview_captures_effective_funding_and_is_pure(feedback_db, monkeypatch):
+    from dataclasses import asdict
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy = feedback_task(task_budget_usd=2.0)
+    with Session(feedback_db) as db:
+        db.add(
+            FactoryAudit(
+                task_id=task["id"],
+                actor="test",
+                action="funding_granted",
+                detail_json=json.dumps({"policy_overlay": {"task_budget_usd": 10.0}}),
+            )
+        )
+        db.commit()
+    before = preview_database_rows(feedback_db)
+    snapshot = conductor._decision_snapshot(task["id"], decision=preview_add())
+    captured = asdict(snapshot)
+    assert snapshot.policy["task_budget_usd"] == 10.0
+    monkeypatch.setattr(
+        conductor, "get_engine", lambda: pytest.fail("projection cannot read DB")
+    )
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("projection cannot read GitHub")
+    )
+    projection = conductor.project_decision(
+        snapshot.task, snapshot.policy, preview_add(), snapshot
+    )
+    assert projection.refusal is None
+    assert asdict(snapshot) == captured
+    assert preview_database_rows(feedback_db) == before
+
+
 def clamp_audits(engine, task_id):
     from factory.orchestration.factory_models import FactoryAudit
 
