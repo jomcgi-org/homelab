@@ -100,3 +100,77 @@ models:
   # Cheap cloud reference: $0.32/$1.28 per 1M, 1M context, tool-calling.
   - id: qwen/qwen3.7-plus
     status: active
+  # Cheap and mid-range models picked from Artificial Analysis's intelligence
+  # index vs cost per task (2026-10-02). Experimental so a bare `bench run` does
+  # not bill them; run one with `--model <id>`. Effort is OpenRouter's unified
+  # `reasoning.effort`, one setting per model, chosen from the AA rows that sit on
+  # or near its cost frontier.
+  #
+  # Cheap tier.
+  # GPT-6 Luna: the factory's `luna`. AA 32.9 at $0.029/task (high).
+  - id: openai/gpt-6-luna
+    display_name: gpt-6-luna
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: high
+  # MiMo-V2.6-Flash: open weights, 309B/15B active. AA 37.9 at $0.062/task.
+  # OpenRouter exposes no effort levels for MiMo, so it runs at the default.
+  - id: xiaomi/mimo-v2.6-flash
+    display_name: mimo-v2.6-flash
+    status: experimental
+  # Muse Spark 1.3 contributor tier: the factory's rate for the local qwen lane
+  # ($0.10/$0.20). Full-price Muse Spark 1.3 is AA 45.1 at $1.37/task (xhigh).
+  - id: meta/muse-spark-1.3-contributor
+    display_name: muse-spark-1.3
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: xhigh
+  # DeepSeek V4.1 Flash: open weights, successor to v4-flash. AA 39.5 at
+  # $0.265/task (max), 209 tok/s.
+  - id: deepseek/deepseek-v4.1-flash
+    display_name: deepseek-v4.1-flash
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: max
+  # GLM 5.3 Flash: open weights, successor to the GLM rows. AA 41.8 at
+  # $0.253/task; max is its default effort.
+  - id: z-ai/glm-5.3-flash
+    display_name: glm-5.3-flash
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: max
+  # Ternary Bonsai 2 27B: a ternary Qwen3.8-27B, small enough for the 4090, so
+  # it sits beside the qwen3.8-27b row. Not on AA yet.
+  - id: prism-ml/ternary-bonsai-2-27b
+    display_name: bonsai-2-27b
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: xhigh
+  #
+  # Mid-range tier: dearer per token, but faster and often fewer turns, which is
+  # what wall-time and cost per task measure.
+  # GPT-6.1 Sol: AA 47.8 at $0.214/task (medium), the best mid-range value.
+  - id: openai/gpt-6.1-sol
+    display_name: gpt-6.1-sol
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: medium
+  # Claude Sonnet 5.5 through OpenRouter in the bench's own tool loop, so its
+  # turns and tokens compare with the candidates (the Claude Code anchors run in
+  # their own harness). AA 46.7 at $1.08/task (high), 101 tok/s.
+  - id: anthropic/claude-sonnet-5.5
+    display_name: claude-sonnet-5.5
+    status: experimental
+    extra_body:
+      reasoning:
+        effort: high
+  # MiMo-V2.6-Pro: open weights, 1T+. AA 46.3 at $0.133/task, slow (44 tok/s).
+  - id: xiaomi/mimo-v2.6-pro
+    display_name: mimo-v2.6-pro
+    status: experimental
