@@ -1,14 +1,22 @@
 id: tokenbroker-spiffe-wiring-01
-version: v1
+version: v2
 class: config-plumbing
 # hard: real cross-layer change from 4e3d39b00 ("serve /token only over SPIFFE mTLS
 # on a second port"). The chart is at the fix's PARENT; main.go is overlaid from the
-# fix itself, so the app already speaks the contract and the model must read it to
-# learn the env var names (BROKER_TLS_LISTEN_ADDR, BROKER_SPIFFE_CLIENT_IDS) and know
-# that go-spiffe's default X509Source dials $SPIFFE_ENDPOINT_SOCKET. The change has
-# to land consistently in values, Deployment (env, port, CSI volume), Service and
-# CiliumNetworkPolicy. Graded per check (#6697), so a values-only or env-only edit
-# lands partway.
+# fix itself, so the app already speaks the contract and the model must read it.
+# v1 was too easy (Haiku 0.89, Sonnet and Opus 1.0), so v2 adds requirements whose
+# correct form only a careful reader of main.go gets right, and grades 15 checks:
+# - readiness: the TLS listener binds only after an SVID arrives, so a tcpSocket
+#   probe on it gates Ready; an httpGet probe fails the mTLS handshake (kubelet has
+#   no client SVID) and /healthz lives only on the plaintext mux;
+# - liveness is coupled to x509SourceTimeout (see the comment in main.go) and must
+#   keep its ~70s budget on the plaintext /healthz;
+# - kubelet probes come from the host entity, so with the policy on, the host rule
+#   must still reach the TLS port;
+# - validation: the broker refuses an unparseable client ID, and an empty
+#   trustDomain only when the default ID is used (an explicit list ignores it);
+# - release name and namespace differ in the checks, so mixing them up shows.
+# The gold commit itself scores below 1 (no readiness gate, no validation).
 tier: hard
 mode: agentic
 source_commit: 4e3d39b00763315e26b1e5677eeae2ad8f098b57
@@ -25,14 +33,14 @@ snapshot:
     - BUILD
     - "*_test.py"
 agent:
-  max_turns: 40
+  max_turns: 50
   exec: true
 prompt: |
   This checkout has the embervm Helm chart (chart/) and the token broker's
   entrypoint (tokenbroker/cmd/tokenbroker/main.go). The broker binary already
   supports serving grant tokens on a second, SPIFFE mTLS listener: read main.go for
-  its configuration contract. Wire that listener through the chart, behind a new
-  `tokenBroker.spiffe` values block that is off by default:
+  its configuration contract and runtime behaviour. Wire that listener through the
+  chart, behind a new `tokenBroker.spiffe` values block that is off by default:
 
   - `enabled` (default false), `tlsPort` (default 8443), `trustDomain` (default
     embervm.jomcgi.dev) and `clientSpiffeIds` (default empty list).
@@ -44,10 +52,18 @@ prompt: |
     noded ServiceAccount's SPIFFE ID
     (spiffe://<trustDomain>/ns/<release namespace>/sa/<noded service account>),
     because the noded pods are the ones that fetch tokens.
+  - While the mTLS listener is enabled, the broker pod must not report Ready until
+    that listener is accepting connections. An SVID can take up to a minute to
+    arrive, and the pod must not be restarted while it waits.
   - When `tokenBroker.networkPolicy.enabled` is also true, the broker's
-    CiliumNetworkPolicy admits the TLS port only from the noded and noded-brick
-    pods.
-  - With `enabled: false` the rendered manifests must not change.
+    CiliumNetworkPolicy admits the TLS port from the noded and noded-brick pods
+    and from nothing else that is not needed for the pod to work.
+  - A configuration the broker would refuse at startup must instead fail
+    `helm template` with an error that names the offending value, so it never
+    reaches the cluster as a crash-looping pod. Do not reject configurations the
+    broker accepts.
+  - With `enabled: false` the rendered manifests must not change, whatever the
+    other spiffe values are set to.
 
   `helm template` must keep rendering. Edit only files under chart/.
 target_files:
@@ -65,21 +81,42 @@ verifier:
 
       import yaml
 
-      NS = "broker-test"
-      # sha256 of the parsed default render of the untouched fixture (comments and
-      # formatting do not count, only the manifests).
-      OFF_SHA = "4f2741bb8b369df3da876143b4677fef9a5b04d2150e52f9a276089654c1260d"
+      REL, NS = "bench-rel", "broker-test"
+      # sha256 of the parsed render of the untouched fixture for each off-path
+      # combination (comments and formatting do not count, only the manifests).
+      OFF_SHAS = {
+          "default": "e33e799b4027a72b0040cffd42547cdd8308187cf36709802c8f37a75a92cd07",
+          "netpol_off": "51aebbb3e74f0c98138e3185b9e3190956580b2f4215b01eeee91e3768878b0d",
+          "spiffe_values_set": "e33e799b4027a72b0040cffd42547cdd8308187cf36709802c8f37a75a92cd07",
+      }
+      OFF_COMBOS = {
+          "default": [],
+          "netpol_off": ["--set", "tokenBroker.networkPolicy.enabled=false"],
+          "spiffe_values_set": [
+              "--set", "tokenBroker.spiffe.tlsPort=9443",
+              "--set", "tokenBroker.spiffe.trustDomain=example.org",
+              "--set-json", 'tokenBroker.spiffe.clientSpiffeIds=["spiffe://a.org/x"]',
+          ],
+      }
+      ON = ["--set", "tokenBroker.spiffe.enabled=true"]
+      NETPOL = ["--set", "tokenBroker.networkPolicy.enabled=true"]
       checks = {}
 
 
-      def render(*sets):
-          argv = [os.environ["HELM"], "template", NS, "chart", "--namespace", NS]
-          for s in sets:
-              argv += ["--set", s]
-          out = subprocess.run(argv, capture_output=True, text=True)
+      def helm(*extra):
+          argv = [os.environ["HELM"], "template", REL, "chart", "--namespace", NS, *extra]
+          return subprocess.run(argv, capture_output=True, text=True)
+
+
+      def render(*extra):
+          out = helm(*extra)
           if out.returncode != 0:
               return []
           return [d for d in yaml.safe_load_all(out.stdout) if d]
+
+
+      def sha(docs):
+          return hashlib.sha256(json.dumps(docs, sort_keys=True).encode()).hexdigest()
 
 
       def find(docs, kind, name_part):
@@ -114,14 +151,28 @@ verifier:
           return {}
 
 
+      def policy(docs):
+          return (find(docs, "CiliumNetworkPolicy", "tokenbroker") or {}).get("spec", {})
+
+
+      def covers(rule, port):
+          tps = rule.get("toPorts")
+          if not tps:
+              return True
+          return any(str(p.get("port")) == str(port) for tp in tps for p in tp.get("ports", []))
+
+
       def tls_rules(docs, port):
-          pol = find(docs, "CiliumNetworkPolicy", "tokenbroker") or {}
-          rules = []
-          for r in pol.get("spec", {}).get("ingress", []):
-              for tp in r.get("toPorts", []):
-                  if any(str(p.get("port")) == str(port) for p in tp.get("ports", [])):
-                      rules.append(r)
-          return rules
+          return [
+              r for r in policy(docs).get("ingress", [])
+              if r.get("toPorts") and covers(r, port)
+          ]
+
+
+      def probe_on_tls(c, port):
+          p = c.get("readinessProbe") or {}
+          tcp = p.get("tcpSocket") or {}
+          return "httpGet" not in p and str(tcp.get("port")) in ("https", str(port))
 
 
       values = yaml.safe_load(Path("chart/values.yaml").read_text())
@@ -133,10 +184,11 @@ verifier:
           and sp.get("clientSpiffeIds") == []
       )
 
-      on = render("tokenBroker.spiffe.enabled=true")
+      on = render(*ON)
       spec, c = broker(on)
       e = env(c)
-      checks["tls_listen_addr"] = e.get("BROKER_TLS_LISTEN_ADDR") == ":8443"
+      tls = e.get("BROKER_TLS_LISTEN_ADDR") == ":8443"
+      checks["tls_listen_addr"] = tls
 
       noded_sa = None
       for d in on:
@@ -146,10 +198,18 @@ verifier:
           "BROKER_SPIFFE_CLIENT_IDS"
       ) == f"spiffe://embervm.jomcgi.dev/ns/{NS}/sa/{noded_sa}"
 
-      _, c_list = broker(
-          render("tokenBroker.spiffe.enabled=true", "tokenBroker.spiffe.clientSpiffeIds={a,b}")
+      _, c_td = broker(render(*ON, "--set", "tokenBroker.spiffe.trustDomain=example.org"))
+      checks["client_ids_trust_domain"] = noded_sa is not None and env(c_td).get(
+          "BROKER_SPIFFE_CLIENT_IDS"
+      ) == f"spiffe://example.org/ns/{NS}/sa/{noded_sa}"
+
+      _, c_list = broker(render(
+          *ON, "--set-json",
+          'tokenBroker.spiffe.clientSpiffeIds=["spiffe://a.org/x","spiffe://b.org/y"]',
+      ))
+      checks["client_ids_list"] = (
+          env(c_list).get("BROKER_SPIFFE_CLIENT_IDS") == "spiffe://a.org/x,spiffe://b.org/y"
       )
-      checks["client_ids_list"] = env(c_list).get("BROKER_SPIFFE_CLIENT_IDS") == "a,b"
 
       csi_vols = {
           v["name"]
@@ -167,26 +227,47 @@ verifier:
       )
 
       sp_https = svc_port(on, "https")
-      checks["https_port"] = ports(c).get("https") == 8443 and sp_https.get(
-          "port"
-      ) == 8443 and str(sp_https.get("targetPort")) in ("https", "8443")
+      checks["https_port"] = (
+          ports(c).get("https") == 8443
+          and sp_https.get("port") == 8443
+          and str(sp_https.get("targetPort")) in ("https", "8443")
+      )
 
-      pol_on = render("tokenBroker.spiffe.enabled=true", "tokenBroker.networkPolicy.enabled=true")
-      rules = tls_rules(pol_on, 8443)
-      comps = set()
-      only_endpoints = bool(rules)
+      checks["readiness_gates_tls"] = probe_on_tls(c, 8443)
+
+      # main.go: x509SourceTimeout (60s) is coupled to the liveness probe's ~70s
+      # budget on the plaintext /healthz; the TLS listener has no /healthz.
+      live = c.get("livenessProbe") or {}
+      get = live.get("httpGet") or {}
+      budget = live.get("initialDelaySeconds", 0) + live.get(
+          "periodSeconds", 10
+      ) * live.get("failureThreshold", 3)
+      checks["liveness_budget_kept"] = (
+          tls
+          and get.get("path") == "/healthz"
+          and str(get.get("port")) in ("http", "8080")
+          and budget > 60
+      )
+
+      both = render(*ON, *NETPOL)
+      rules = tls_rules(both, 8443)
+      comps, only_endpoints = set(), bool(rules)
       for r in rules:
           if set(r) - {"fromEndpoints", "toPorts"}:
               only_endpoints = False
           for sel in r.get("fromEndpoints", []):
-              comps.add((sel.get("matchLabels") or {}).get("app.kubernetes.io/component"))
+              labels = sel.get("matchLabels") or {}
+              comps.add(labels.get("app.kubernetes.io/component"))
+              if labels.get("k8s:io.kubernetes.pod.namespace") != NS:
+                  only_endpoints = False
       checks["netpol_tls_scoped"] = only_endpoints and comps == {"noded", "noded-brick"}
 
-      custom = render(
-          "tokenBroker.spiffe.enabled=true",
-          "tokenBroker.networkPolicy.enabled=true",
-          "tokenBroker.spiffe.tlsPort=9443",
+      checks["netpol_probe_reach"] = tls and any(
+          "host" in (r.get("fromEntities") or []) and covers(r, 8443)
+          for r in policy(both).get("ingress", [])
       )
+
+      custom = render(*ON, *NETPOL, "--set", "tokenBroker.spiffe.tlsPort=9443")
       _, c9 = broker(custom)
       checks["custom_port_consistent"] = (
           env(c9).get("BROKER_TLS_LISTEN_ADDR") == ":9443"
@@ -194,11 +275,37 @@ verifier:
           and svc_port(custom, "https").get("port") == 9443
           and bool(tls_rules(custom, 9443))
           and not tls_rules(custom, 8443)
+          and probe_on_tls(c9, 9443)
       )
+
+      # Refused by main.go: a client ID spiffeid.FromString rejects, and the
+      # default ID when trustDomain is empty.
+      bad = {
+          "noded": ["--set-json", 'tokenBroker.spiffe.clientSpiffeIds=["noded"]'],
+          "https://example.org/x": [
+              "--set-json", 'tokenBroker.spiffe.clientSpiffeIds=["https://example.org/x"]'
+          ],
+          "trustDomain": ["--set", "tokenBroker.spiffe.trustDomain="],
+      }
+      rejected = 0
+      for needle, extra in bad.items():
+          out = helm(*ON, *extra)
+          if out.returncode != 0 and needle in out.stderr:
+              rejected += 1
+      checks["validation_rejects"] = rejected / len(bad)
+
+      # Accepted by main.go: an explicit list makes trustDomain irrelevant.
+      ok_list = render(
+          *ON, "--set", "tokenBroker.spiffe.trustDomain=",
+          "--set-json", 'tokenBroker.spiffe.clientSpiffeIds=["spiffe://a.org/x"]',
+      )
+      checks["validation_precise"] = rejected > 0 and bool(ok_list) and env(
+          broker(ok_list)[1]
+      ).get("BROKER_SPIFFE_CLIENT_IDS") == "spiffe://a.org/x"
 
       # Only meaningful once the listener exists: an untouched chart trivially
       # renders the same.
-      off = render()
-      off_sha = hashlib.sha256(json.dumps(off, sort_keys=True).encode()).hexdigest()
-      checks["off_unchanged"] = checks["tls_listen_addr"] and off_sha == OFF_SHA
+      checks["off_unchanged"] = tls and all(
+          sha(render(*extra)) == OFF_SHAS[name] for name, extra in OFF_COMBOS.items()
+      )
       print(json.dumps({"checks": checks}))
