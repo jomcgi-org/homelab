@@ -63,7 +63,27 @@ func (p *execProcess) observeExit() {
 	}
 	p.exitMu.Lock()
 	hostRequested := p.hostRequested
+	processEvidence := p.processEvidence
 	p.exitMu.Unlock()
+	if processEvidence == "" {
+		processEvidence = "not_requested"
+	}
+	// A child may exit naturally between the non-reaping liveness check and
+	// Kill. Require the SIGKILL outcome as well before attributing it to noded.
+	if hostRequested && p.cmd != nil && p.cmd.ProcessState == nil {
+		hostRequested = false
+		processEvidence = "exit_state_unknown"
+	}
+	if hostRequested && p.cmd != nil {
+		state, ok := p.cmd.ProcessState.Sys().(interface {
+			Signaled() bool
+			Signal() syscall.Signal
+		})
+		if !ok || !state.Signaled() || state.Signal() != syscall.SIGKILL {
+			hostRequested = false
+			processEvidence = "exit_before_kill"
+		}
+	}
 	reason := ExitUnclassified
 	cgroupState := "unsupported"
 	// Positive cgroup OOM evidence takes precedence over every other reason.
@@ -98,7 +118,7 @@ func (p *execProcess) observeExit() {
 	}
 	attrs := []any{
 		"vm", p.vmID, "workload", p.workload, "reason", string(reason),
-		"cgroup_evidence", cgroupState, "serial_evidence", serialState,
+		"cgroup_evidence", cgroupState, "serial_evidence", serialState, "process_evidence", processEvidence,
 	}
 	if p.cmd != nil && p.cmd.ProcessState != nil {
 		if code := p.cmd.ProcessState.ExitCode(); code >= 0 {

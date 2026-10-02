@@ -40,6 +40,7 @@ func TestVMMExitClassification(t *testing.T) {
 		want          ExitReason
 		cgroupState   string
 		serialState   string
+		processErr    error
 	}{
 		{name: "running host kill", want: ExitHostRequested, cgroupState: "unsupported", serialState: "not_needed"},
 		{name: "already exited panic", killErr: os.ErrProcessDone, serial: "Kernel panic - not syncing: fatal", want: ExitGuestKernelPanic, cgroupState: "unsupported", serialState: "panic_marker"},
@@ -52,6 +53,7 @@ func TestVMMExitClassification(t *testing.T) {
 		{name: "cgroup read error with independent panic", killErr: os.ErrProcessDone, cgroup: &fakeExitCgroup{err: errors.New("read failed")}, serial: "Kernel panic - not syncing", want: ExitGuestKernelPanic, cgroupState: "read_error", serialState: "panic_marker"},
 		{name: "cgroup zero", killErr: os.ErrProcessDone, cgroup: &fakeExitCgroup{}, want: ExitUnclassified, cgroupState: "no_oom_kill", serialState: "no_panic_marker"},
 		{name: "failed host kill", killErr: errors.New("permission denied"), want: ExitUnclassified, cgroupState: "unsupported", serialState: "no_panic_marker"},
+		{name: "failed process liveness read", processErr: errors.New("waitid refused"), want: ExitUnclassified, cgroupState: "unsupported", serialState: "no_panic_marker"},
 		{name: "host kill ignores panic marker", serial: "Kernel panic - not syncing", want: ExitHostRequested, cgroupState: "unsupported", serialState: "not_needed"},
 		{name: "panic outside bounded tail", killErr: os.ErrProcessDone, serial: "Kernel panic - not syncing" + strings.Repeat("x", serialTailBytes), want: ExitUnclassified, cgroupState: "unsupported", serialState: "no_panic_marker"},
 	} {
@@ -66,10 +68,11 @@ func TestVMMExitClassification(t *testing.T) {
 			var calls, waits, releases int
 			p := &execProcess{
 				vmID: "host-vm", workload: "host-workload", serialPath: path,
-				logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
-				killProcess: func() error { return tc.killErr },
-				waitProcess: func() error { waits++; return nil },
-				releaseID:   func() { releases++ },
+				logger:       slog.New(slog.NewJSONHandler(&logs, nil)),
+				killProcess:  func() error { return tc.killErr },
+				waitProcess:  func() error { waits++; return nil },
+				checkRunning: func() (bool, error) { return true, tc.processErr },
+				releaseID:    func() { releases++ },
 				onExit: func(reason ExitReason) {
 					calls++
 					if reason != tc.want {
@@ -109,10 +112,11 @@ func TestVMMExitWatcherReportsBeforeRelease(t *testing.T) {
 	observed := make(chan ExitReason, 1)
 	var waits atomic.Int32
 	p := &execProcess{
-		waitProcess: func() error { waits.Add(1); <-done; return errors.New("unexpected wait error") },
-		killProcess: func() error { return os.ErrProcessDone },
-		logger:      slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
-		onExit:      func(reason ExitReason) { observed <- reason },
+		waitProcess:  func() error { waits.Add(1); <-done; return errors.New("unexpected wait error") },
+		killProcess:  func() error { return os.ErrProcessDone },
+		checkRunning: func() (bool, error) { return false, nil },
+		logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		onExit:       func(reason ExitReason) { observed <- reason },
 	}
 	go func() { _ = p.Wait() }()
 	close(done)
@@ -136,10 +140,11 @@ func TestVMMExitConcurrentKillAndWaitReapOnce(t *testing.T) {
 	var killOnce sync.Once
 	var waits, events atomic.Int32
 	p := &execProcess{
-		waitProcess: func() error { waits.Add(1); <-done; return nil },
-		killProcess: func() error { killOnce.Do(func() { close(done) }); return nil },
-		logger:      slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
-		onExit:      func(ExitReason) { events.Add(1) },
+		waitProcess:  func() error { waits.Add(1); <-done; return nil },
+		killProcess:  func() error { killOnce.Do(func() { close(done) }); return nil },
+		checkRunning: func() (bool, error) { return true, nil },
+		logger:       slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+		onExit:       func(ExitReason) { events.Add(1) },
 	}
 	var workers sync.WaitGroup
 	for range 10 {

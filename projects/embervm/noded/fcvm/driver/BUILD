@@ -15,6 +15,8 @@ go_library(
         "logtag.go",
         "mountns_linux.go",
         "mountns_other.go",
+        "process_linux.go",
+        "process_other.go",
         "provisioner.go",
         "reflink_linux.go",
         "reflink_other.go",
