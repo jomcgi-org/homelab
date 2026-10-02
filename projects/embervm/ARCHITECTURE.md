@@ -1096,19 +1096,29 @@ change can arm it.
 
 **Why.** Host memory usage cannot say whether a guest is reclaiming hard or has
 already killed its application: a guest OOM leaves the Firecracker process
-alive, a host cgroup OOM kills the VMM. Today noded classifies only the second
-(`cgroup.OOMKilled()` at process cleanup); everything else is an unclassified
-VMM exit and a guest application death is invisible until the workload's own
-health signal notices. Host-observed capacity stays authoritative: a guest
-report can never raise capacity, bypass a quota, or relax idle-only banking, and
-a missing or stale report is neither healthy nor proof of OOM. A guest feedback
-channel (available memory, PSI where the kernel has it, OOM evidence, freshness
-tied to the current VM activation rather than a snapshot-cloned flag) is
-**Planned** (#5805) behind a named diagnostic gap, because it means a new
-command on the frozen guest-agent contract and a rootfs rebake for every
-runtime. The first slice when the gate fires is exit classification alone (host
-cgroup OOM, guest kernel panic from the serial marker, unclassified) surfaced as
-a structured lifecycle event, which needs no guest change.
+alive, a host cgroup OOM kills the VMM. Exit classification is shipped as
+observation only (#5805), with four reasons: positive per-VM cgroup OOM evidence
+first (`host_cgroup_oom`), observed VMM liveness plus a SIGKILL outcome for
+`host_requested`, a panic marker in the bounded serial tail for
+`guest_kernel_panic`, otherwise `unclassified`. Guest feedback is
+**Shipped-but-suspended** behind default-off
+`EMBERVM_NODED_GUEST_MEMORY_FEEDBACK_ENABLED` and
+`noded.guestMemoryFeedback.enabled`. After a rootfs rebake, k3s guests serve the
+additive `memory_status` command with available memory, supported PSI and OOM
+evidence; other runtimes report unsupported. The host handle owns each
+activation and every request carries a fresh host nonce. A bank cancels and
+joins its in-flight request before pausing. Restore starts pending with a new
+counter baseline and discards pre-restore observations. Only a positive
+within-activation `oom_kill` delta is `guest_oom`; evidence becomes stale after
+three poll intervals. Missing or stale data is neither healthy nor proof of
+OOM. Host-observed capacity stays authoritative: a guest report can never raise
+capacity, bypass a quota, or relax idle-only banking, in-flight protection,
+backoff or hysteresis (#5521). This change adds no admission or banking input.
+Any future automatic action needs its own flag and issue, gated separately
+from telemetry rollout. The control plane reports fixed-cardinality instance
+diagnostics and logs positive counter deltas. Exit and guest OOM counters are
+cumulative since daemon start; new instances, boots and backwards counters
+establish fresh baselines.
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
@@ -1924,7 +1934,7 @@ this table when the work ships or the issue closes without it.
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, hub dev 4gi bound-1 canary staged; live acceptance pending |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | CP-to-noded mTLS built default off on both sides (#5757, #5758), rest not started |
 | A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
-| A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | gated on a diagnostic gap |
+| A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | exit observations shipped; guest feedback Shipped-but-suspended, default-off pending rootfs rebake and live checks; automatic action needs a separate flag and issue |
 | Brick scratch survives Spot replacement | section 11 | #5773 | gated on a measured recovery gap |
 | Per-VM host resource gauges on an interval | section 7 | #4773 | gated on a named sizing decision |
 | Isolated per-request lane on the shared task library | section 3 | #3864 | gated on #6132 library plus a named workload |
