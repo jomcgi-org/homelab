@@ -4192,9 +4192,11 @@ def _insert_handoff_round(
         return False
 
     try:
-        if deviation.get("code") != "node_failed" or not isinstance(
-            failed_key, str
-        ) or not failed_key.startswith("implement_"):
+        if (
+            deviation.get("code") != "node_failed"
+            or not isinstance(failed_key, str)
+            or not failed_key.startswith("implement_")
+        ):
             return skip("ineligible_deviation")
         if _handoff_rounds_used(task["id"]) >= MAX_HANDOFF_ROUNDS:
             return skip("handoff_bound_exhausted")
@@ -4224,6 +4226,7 @@ def _insert_handoff_round(
             + quote(f"{owner}:{branch}", safe="")
             + "&per_page=20&page=1",
         )
+
         # Validate every returned identity before trusting the filtered query.
         def owned(pull: dict) -> bool:
             return (
@@ -4321,21 +4324,33 @@ def _insert_handoff_round(
                 "turn_timeout_seconds": sized(dependents[0] if dependents else {}),
             },
         ]
-        if _envelope_refusal(
-            task["id"], policy, _projected_nodes(edits, nodes),
-            review_rounds_remaining=0, fan_ins_remaining=0,
-        ) is not None:
+        if (
+            _envelope_refusal(
+                task["id"],
+                policy,
+                _projected_nodes(edits, nodes),
+                review_rounds_remaining=0,
+                fan_ins_remaining=0,
+            )
+            is not None
+        ):
             return skip("envelope_refused")
         result = graph.apply_edits(
-            task["id"], author_kind="engine", author=ACTOR,
-            cause_kind=HANDOFF_CAUSE_KIND, cause_ref=cause,
-            expected_version=expected_version, edits=edits,
+            task["id"],
+            author_kind="engine",
+            author=ACTOR,
+            cause_kind=HANDOFF_CAUSE_KIND,
+            cause_ref=cause,
+            expected_version=expected_version,
+            edits=edits,
         )
         if not result.ok:
             return skip(f"graph_refused:{result.refusal_code}")
         _record_allowance(task["id"], policy, cause)
         _audit_once(
-            task["id"], cause, "handoff_opened",
+            task["id"],
+            cause,
+            "handoff_opened",
             {"failed_node": failed_key, "pr_number": number, "head_sha": head},
         )
         return True
@@ -6006,7 +6021,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             loop_refusal=loop_refusal,
             integration_refusal=integration_refusal,
         )
-        if _insert_handoff_round(task, policy, nodes, runs, deviation, insertion_revision):
+        if _insert_handoff_round(
+            task, policy, nodes, runs, deviation, insertion_revision
+        ):
             return
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
