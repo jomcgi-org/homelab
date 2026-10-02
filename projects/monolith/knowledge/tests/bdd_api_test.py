@@ -85,7 +85,8 @@ async def test_mcp_search_history_preserves_other_filters(
                     {
                         "index": 0,
                         "section_header": "",
-                        "text": "A long enough history test note body for vector ranking. " * 3,
+                        "text": "A long enough history test note body for vector ranking. "
+                        * 3,
                     }
                 ],
                 vectors=[vector],
