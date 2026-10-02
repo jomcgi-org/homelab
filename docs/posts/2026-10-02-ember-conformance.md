@@ -2,7 +2,7 @@
 title: Checking a deploy against its spec
 date: 2026-10-02
 tags: embervm, tla, conformance, gitops, homelab
-public: false
+public: true
 summary: How I check every EmberVM chart against its TLA+ invariants on a live cluster before it can promote, and the bugs it found in itself.
 ---
 
