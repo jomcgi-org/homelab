@@ -111,6 +111,35 @@ is 1 minus a weighted mean of those penalties (weights in `WEIGHTS`); a signal t
 cannot support is dropped and the rest renormalised. The leaderboard shows the mean
 over passed cells as the `norms` column.
 
+## Pairwise judge (quality above the pass floor)
+
+`python -m bench judge` ranks what the verifier and the deterministic norms cannot:
+given two passing changes for the same task, which would a careful reviewer of this
+repo rather merge? Passing agentic cells store their change as a capped unified diff
+(`ResultCell.diff`), so judging runs any time after the bench run.
+
+- Blind and position-debiased: the judge sees changes A and B, never model ids, and
+  every pair is judged in both orders. Only a verdict that agrees across both orders
+  counts; a flip is a tie.
+- No self-judging: the default judge is Opus 5.5 (`claude -p`, free under Max). A
+  pair containing Opus output goes to Sonnet 5.5, and a pair containing both is
+  skipped.
+- The rubric (`bench/pairwise.py` `RUBRIC`) covers scope, minimal diff, matching the
+  surrounding code, tests, repo invariants and safety. When a task has a
+  `source_commit`, the real fix's diff is shown as a reference.
+- Verdicts are cached under `<results>/judge/verdicts`, keyed by both diffs, the rubric
+  version and the judge, so reruns only pay for new pairs.
+- Ratings are a Bradley-Terry fit (ties count half) on an Elo-like scale centred on 0,
+  with 90% bootstrap intervals, written to `<results>/judge/ratings.json`.
+  `bench report` adds them as a `judge` column and as `judge_rating` / `judge_ci` in the
+  JSON.
+
+```bash
+python3 -m bench judge                       # all tasks, all pairs
+python3 -m bench judge --task chunker-mutation-01 --pairs 20
+python3 -m bench report
+```
+
 ## Setup
 
 Two interpreters are involved:

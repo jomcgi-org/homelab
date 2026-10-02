@@ -147,6 +147,9 @@ class ResultCell(BaseModel):
     # Deterministic norms signals (bench/norms.py), computed only for a passing
     # agentic cell. None for failures, single-shot cells and older cached cells.
     norms: dict | None = None
+    # The passing cell's change as a capped unified diff, kept for the pairwise
+    # judge (bench/pairwise.py). None for failures and older cached cells.
+    diff: str | None = None
 
     @property
     def total_latency_ms(self) -> int:

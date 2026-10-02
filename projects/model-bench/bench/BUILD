@@ -18,6 +18,7 @@ py_library(
         "judge.py",
         "norms.py",
         "openrouter.py",
+        "pairwise.py",
         "pareto.py",
         "registry.py",
         "report.py",
@@ -88,6 +89,16 @@ py_test(
 py_test(
     name = "norms_test",
     srcs = ["norms_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "pairwise_test",
+    srcs = ["pairwise_test.py"],
     imports = [".."],
     deps = [
         ":bench",

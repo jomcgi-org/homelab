@@ -32,6 +32,7 @@ from bench.cache import (
     fixture_hash,
     is_cached,
 )
+from bench import pairwise
 from bench.judge import JudgeConfig, judge_free_text
 from bench.openrouter import OpenRouterClient
 from bench.pareto import aggregate_by_class, coarse_tier, pareto_frontier, qualifies
@@ -237,6 +238,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cal.add_argument(
         "--write", action="store_true", help="Record the result in task.yaml"
+    )
+
+    # judge
+    p_judge = sub.add_parser(
+        "judge",
+        help="Pairwise-judge passing cells and fit Bradley-Terry ratings (#6700)",
+    )
+    p_judge.add_argument("--results", default=_DEFAULT_RESULTS)
+    p_judge.add_argument("--tasks", default="tasks", help="Path to tasks directory")
+    p_judge.add_argument("--task", help="Only judge this task id")
+    p_judge.add_argument(
+        "--models", help="Comma-separated model ids to include (default: all)"
+    )
+    p_judge.add_argument(
+        "--pairs", type=int, default=None, help="Max pairs per task (sampled)"
+    )
+    p_judge.add_argument("--judge-model", default=pairwise.DEFAULT_JUDGE)
+    p_judge.add_argument("--fallback-judge", default=pairwise.FALLBACK_JUDGE)
+    p_judge.add_argument(
+        "--repo",
+        default=str(Path(__file__).resolve().parents[3]),
+        help="Git repo for gold diffs (source_commit); default: this checkout",
     )
 
     p_snap = sub.add_parser(
@@ -731,15 +754,8 @@ def _aggregate_agentic_group(
     }
 
 
-def _report(args) -> None:
-    """Generate the leaderboard markdown from cached result JSON files."""
-    tasks = load_tasks(Path(args.tasks))
-    task_class_of = {t.id: t.task_class.value for t in tasks}
-
-    reg = load_registry(Path(args.models))
-    anchor_ids = {m.id for m in anchors(reg)}
-
-    results_root = Path(args.results)
+def _load_newest_cells(results_root: Path) -> tuple[list[ResultCell], int, int]:
+    """Current-harness cells, newest per (model, task), plus stale/superseded counts."""
     cells: list[ResultCell] = []
     stale = 0
     superseded = 0
@@ -773,7 +789,85 @@ def _report(args) -> None:
                 newest[key] = (mtime, cell)
             else:
                 superseded += 1
-    cells = [c for _, c in newest.values()]
+    return [c for _, c in newest.values()], stale, superseded
+
+
+def _gold_diff(repo: str, commit: str | None) -> str | None:
+    """The real fix commit's diff, as the judge's reference; None if unavailable."""
+    if not commit:
+        return None
+    import subprocess
+
+    res = subprocess.run(
+        ["git", "-C", repo, "show", "--format=", commit],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return res.stdout[: pairwise.DIFF_CAP] if res.returncode == 0 else None
+
+
+def _judge(args) -> None:
+    """Judge passing agentic cells pairwise and write Bradley-Terry ratings."""
+    tasks = {t.id: t for t in load_tasks(Path(args.tasks))}
+    results_root = Path(args.results)
+    cells, _, _ = _load_newest_cells(results_root)
+    wanted = set(args.models.split(",")) if args.models else None
+    candidates = [
+        pairwise.Candidate(c.model_id, c.task_id, c.diff)
+        for c in cells
+        if c.turns is not None
+        and c.first_attempt_passed
+        and c.diff
+        and c.task_id in tasks
+        and (args.task is None or c.task_id == args.task)
+        and (wanted is None or c.model_id in wanted)
+    ]
+    prompts = {tid: t.prompt for tid, t in tasks.items()}
+    golds = {
+        tid: g
+        for tid, t in tasks.items()
+        if (g := _gold_diff(args.repo, t.source_commit))
+    }
+    verdicts, skipped = pairwise.judge_all(
+        candidates,
+        prompts=prompts,
+        golds=golds,
+        caller=claude_code.complete_text,
+        cache=pairwise.VerdictCache(results_root / "judge" / "verdicts"),
+        judge=args.judge_model,
+        fallback=args.fallback_judge,
+        max_pairs_per_task=args.pairs,
+    )
+    ratings = pairwise.ratings_with_ci(verdicts)
+    out = results_root / "judge" / "ratings.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(ratings, indent=2, sort_keys=True))
+    decided = sum(1 for v in verdicts if v.winner)
+    print(
+        f"{len(verdicts)} pair(s) judged ({decided} decided, "
+        f"{len(verdicts) - decided} tie or order flip), {skipped} skipped "
+        "(no independent judge)"
+    )
+    for model_id, r in sorted(ratings.items(), key=lambda kv: -kv[1]["judge_rating"]):
+        lo, hi = r["judge_ci"]
+        print(
+            f"{r['judge_rating']:>7.1f}  [{lo:.1f}, {hi:.1f}]  "
+            f"n={r['judge_games']}  {model_id}"
+        )
+    print(f"Ratings written to {out}; `bench report` picks them up.")
+
+
+def _report(args) -> None:
+    """Generate the leaderboard markdown from cached result JSON files."""
+    tasks = load_tasks(Path(args.tasks))
+    task_class_of = {t.id: t.task_class.value for t in tasks}
+
+    reg = load_registry(Path(args.models))
+    anchor_ids = {m.id for m in anchors(reg)}
+
+    results_root = Path(args.results)
+    cells, stale, superseded = _load_newest_cells(results_root)
     # Models with a fixed rate are repriced from their recorded tokens, so a rate
     # added after the run (or a cell recorded at $0 by a local endpoint) still
     # reports at that rate.
@@ -938,6 +1032,12 @@ def _report(args) -> None:
         }
         for tid, group in sorted(scored_cells.items())
     ]
+
+    ratings_path = results_root / "judge" / "ratings.json"
+    if ratings_path.exists():
+        for model_id, rating in json.loads(ratings_path.read_text()).items():
+            if model_id in agentic:
+                agentic[model_id].update(rating)
 
     md = render_leaderboard(
         per_class=per_class,
@@ -1121,6 +1221,9 @@ def _write_leaderboard_json(
             "mean_norms": (
                 round(s["mean_norms"], 4) if s.get("mean_norms") is not None else None
             ),
+            # Pairwise judge (bench/pairwise.py): Bradley-Terry rating and 90% CI.
+            "judge_rating": s.get("judge_rating"),
+            "judge_ci": s.get("judge_ci"),
             # Per-task breakdown, ordered by task id so it lines up with tasks_json.
             "tasks": [
                 per_model_tasks[mid][tid]
@@ -1470,5 +1573,7 @@ def main(argv=None) -> None:
         _snapshot(args)
     elif args.command == "calibrate":
         _calibrate(args)
+    elif args.command == "judge":
+        _judge(args)
     else:
         parser.print_help()

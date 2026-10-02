@@ -84,7 +84,7 @@ def test_agentic_gate_splits_qualified_and_disqualified():
     # The flunker sits in the disqualified section with its failed floor task.
     assert md.index("flunker") > dq
     assert "slo-budget-breach-01" in md
-    assert "| cost ($) | $/solve | tool-use ok | norms | errored |" in md
+    assert "| cost ($) | $/solve | tool-use ok | norms | judge | errored |" in md
     assert "| Model | floor | failed floor tasks | tool-use ok | errored |" in md
     assert "## Excluded: harness errors" in md
     assert "provider error, context overflow, or harness bug" in md
@@ -152,7 +152,7 @@ def test_score_column_in_candidate_and_anchor_tables(mean_score, scored_n, rende
     )
     qualified = md.split("## Agentic leaderboard: qualified\n", 1)[1].split("## ", 1)[0]
     ceiling = md.split("## Frontier ceiling (agentic)\n", 1)[1].split("## ", 1)[0]
-    for table, model, columns in ((qualified, "candidate", 12), (ceiling, "anchor", 8)):
+    for table, model, columns in ((qualified, "candidate", 13), (ceiling, "anchor", 8)):
         assert "| Model | hard | score | frontier |" in table
         assert f"| {model} | 2/2 | {rendered} | n/a |" in table
         table_lines = [line for line in table.splitlines() if line.startswith("|")]
