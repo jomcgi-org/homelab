@@ -118,11 +118,14 @@ MAX_PLAN_EDITS = graph.MAX_PLAN_EDITS
 LOOP_CAUSE = "factory-loop"
 LANDING_RECOVERY_CAUSE = f"{LOOP_CAUSE}:landing-recovery"
 FANIN_CAUSE = "factory-fanin"
+HANDOFF_CAUSE_KIND = "factory_handoff"
+MAX_HANDOFF_ROUNDS = 1
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 # correct_<n>, review_<n> and integrate_<n> are the engine's own inserted
 # rounds. A planner that could mint one could replenish a server-owned bound,
 # or claim a fan-in key, by renaming a node.
 _ROUND_KEY = re.compile(r"^(?:correct|review|integrate)_[0-9]+$")
+_HANDOFF_KEY = re.compile(r"^(?:implement|review)_handoff_[0-9]+$")
 _CORRECT_KEY = re.compile(r"^correct_[0-9]+$")
 # The pair one engine review round owns, with the round number.
 _ENGINE_ROUND_KEY = re.compile(r"^(?:correct|review)_([0-9]+)$")
@@ -2285,6 +2288,15 @@ class DeliveryRefused(ValueError):
         self.reason = reason
 
 
+def _required_checks_passed(checks: dict) -> bool:
+    """The required context and every non-advisory context pass at this head."""
+    contexts = {s["context"]: s["state"] for s in checks.get("statuses", [])}
+    return contexts.get("pr-checks") == "success" and all(
+        state == "success" or context in ADVISORY_CHECK_CONTEXTS
+        for context, state in contexts.items()
+    )
+
+
 def verify_delivery(
     task: dict,
     number: int,
@@ -2361,13 +2373,7 @@ def verify_delivery(
     ):
         raise ValueError("independent exact-head review evidence is missing")
     checks = github_get(task["repo"], f"commits/{head}/status")
-    contexts = {s["context"]: s["state"] for s in checks.get("statuses", [])}
-    failed = {
-        context: state
-        for context, state in contexts.items()
-        if state != "success" and context not in ADVISORY_CHECK_CONTEXTS
-    }
-    if contexts.get("pr-checks") != "success" or failed:
+    if not _required_checks_passed(checks):
         raise ValueError("integrated PR checks have not passed")
     # Last, so a delivery that is unready for a bigger reason reports that
     # reason. A missing closing keyword is a defect in an otherwise finished
@@ -3185,6 +3191,11 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         raise _EditRefused(
             "engine_loop_key_reserved",
             "correct_<n> and review_<n> name engine-owned review rounds",
+        )
+    if _HANDOFF_KEY.fullmatch(key):
+        raise _EditRefused(
+            "engine_handoff_key_reserved",
+            "implement_handoff_<n> and review_handoff_<n> are engine-owned",
         )
     stated_reason = source["reason"]
     # The head of the reviewer pool is the planner's stated reviewer. Which
@@ -4146,6 +4157,196 @@ def _review_recovery_evidence(
     except (httpx.HTTPError, ValueError):
         return {**evidence, "state": "waiting", "reason": "github_unavailable"}
     return {**evidence, "state": "ready", "reason": "reviewed_head_ci_passed"}
+
+
+def _handoff_rounds_used(task_id: str) -> int:
+    """Retiring a handoff node never refunds its task-wide round."""
+    with Session(get_engine()) as db:
+        causes = db.exec(
+            select(SwarmPlanVersion.cause_ref).where(
+                SwarmPlanVersion.task_id == task_id,
+                SwarmPlanVersion.cause_kind == HANDOFF_CAUSE_KIND,
+            )
+        ).all()
+    return len(set(causes))
+
+
+def _insert_handoff_round(
+    task: dict,
+    policy: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    deviation: dict,
+    expected_version: int,
+) -> bool:
+    """Fail closed to the planner unless a bounded verification pair opens."""
+    failed_key = deviation.get("node_key")
+
+    def skip(reason: str) -> bool:
+        _audit_once(
+            task["id"],
+            f"factory-handoff:{failed_key}:skip:{reason}",
+            "handoff_skipped",
+            {"failed_node": failed_key, "reason": reason},
+        )
+        return False
+
+    try:
+        if deviation.get("code") != "node_failed" or not isinstance(
+            failed_key, str
+        ) or not failed_key.startswith("implement_"):
+            return skip("ineligible_deviation")
+        if _handoff_rounds_used(task["id"]) >= MAX_HANDOFF_ROUNDS:
+            return skip("handoff_bound_exhausted")
+        by_key = {node["node_key"]: node for node in nodes}
+        failed = by_key[failed_key]
+        dependents = [node for node in nodes if failed_key in node["deps"]]
+        for node in dependents:
+            key = node["node_key"]
+            if (
+                not key.startswith("review_")
+                or node.get("armed_at") is not None
+                or any(run["node_key"] == key for run in runs)
+                or any(key in other["deps"] for other in nodes)
+            ):
+                return skip("dependent_not_unrun_review_leaf")
+        implement_pool = pool_for("implement", policy)
+        reviewer_pool = pool_for("reviewer", policy)
+        if not implement_pool or implement_pool[0] not in policy["allowed_models"]:
+            return skip("implementer_model_not_allowed")
+        if not reviewer_pool or reviewer_pool[0] not in policy["allowed_models"]:
+            return skip("reviewer_model_not_allowed")
+        branch = delivery_branch(task)
+        owner = task["repo"].split("/", 1)[0]
+        pulls = github_list(
+            task["repo"],
+            "pulls?state=open&head="
+            + quote(f"{owner}:{branch}", safe="")
+            + "&per_page=20&page=1",
+        )
+        # Validate every returned identity before trusting the filtered query.
+        def owned(pull: dict) -> bool:
+            return (
+                pull["state"] == "open"
+                and pull["head"]["ref"] == branch
+                and pull["head"]["repo"]["full_name"] == task["repo"]
+                and pull["base"]["ref"] == task["base_branch"]
+            )
+
+        if not isinstance(pulls, list):
+            return skip("unexpected_github_shape")
+        matches = [pull for pull in pulls if owned(pull)]
+        if len(matches) != 1:
+            return skip("owned_open_pr_not_unique")
+        number = matches[0]["number"]
+        if type(number) is not int or number <= 0:
+            return skip("unexpected_github_shape")
+        granted = delivery_pr_number(task)
+        if granted is not None and granted != number:
+            return skip("granted_pr_mismatch")
+        pull = github_get(task["repo"], f"pulls/{number}")
+        if pull["number"] != number or not owned(pull):
+            return skip("pr_identity_changed")
+        if pull_has_merge_conflict(pull):
+            return skip("pr_merge_conflict")
+        head = pull["head"]["sha"]
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            return skip("unexpected_github_shape")
+        checks = github_get(task["repo"], f"commits/{head}/status")
+        if not _required_checks_passed(checks):
+            return skip("required_checks_not_passed")
+
+        def sized(node: dict) -> int:
+            value = node.get("turn_timeout_seconds")
+            ceiling = policy["turn_timeout_seconds"]
+            return min(value, ceiling) if type(value) is int and value > 0 else ceiling
+
+        closing = _closing_instruction(task)
+        cause = f"factory-handoff:{failed_key}"
+        implement_key, review_key = "implement_handoff_1", "review_handoff_1"
+        brief = (
+            f"Verify, do not rewrite. Check out PR #{number} at head {head} "
+            f"on the task branch {branch}. Confirm the diff delivers the issue "
+            "acceptance and required checks still pass at that exact head. "
+            "Make NO source commits. If the PR body lacks the closing line "
+            "specified below, edit only the body to add it. If the PR is a "
+            "draft and satisfies acceptance, mark it ready with gh pr ready. "
+            "Report status succeeded with pr_number and the exact head_sha "
+            "verified, or status failed with what is missing. Write the "
+            "declared JSON artifact using status complete for success or "
+            "needs_work for failure. " + closing
+        )
+        edits = [
+            {
+                "op": "discard_node",
+                "node_key": node["node_key"],
+                "stated_reason": "Unrun review leaf superseded by verification handoff",
+            }
+            for node in dependents
+        ] + [
+            {
+                "op": "discard_node",
+                "node_key": failed_key,
+                "stated_reason": "Settled failed implementation handed to verification",
+            },
+            {
+                "op": "add_node",
+                "node_key": implement_key,
+                "kind": "work",
+                "prompt": _boundary(task) + brief,
+                "model": implement_pool[0],
+                "deps": [],
+                "side_effects": True,
+                "stated_reason": "Engine-owned verification of exhausted implementation",
+                "max_attempts": 1,
+                "max_cost_usd": policy["turn_budget_usd"],
+                "turn_timeout_seconds": sized(failed),
+            },
+            {
+                "op": "add_node",
+                "node_key": review_key,
+                "kind": "gate",
+                "prompt": _boundary(task, review=True)
+                + f"Independently review PR #{number} at its exact current head "
+                "after the verification handoff. Report the exact head SHA "
+                "you inspected and your verdict.",
+                "model": reviewer_pool[0],
+                "deps": [implement_key],
+                "side_effects": False,
+                "stated_reason": "Independent exact-head review after verification handoff",
+                "max_attempts": 1,
+                "max_cost_usd": _review_reservation_usd(
+                    task, policy, reviewer_pool[0], pr_number=number
+                ),
+                "turn_timeout_seconds": sized(dependents[0] if dependents else {}),
+            },
+        ]
+        if _envelope_refusal(
+            task["id"], policy, _projected_nodes(edits, nodes),
+            review_rounds_remaining=0, fan_ins_remaining=0,
+        ) is not None:
+            return skip("envelope_refused")
+        result = graph.apply_edits(
+            task["id"], author_kind="engine", author=ACTOR,
+            cause_kind=HANDOFF_CAUSE_KIND, cause_ref=cause,
+            expected_version=expected_version, edits=edits,
+        )
+        if not result.ok:
+            return skip(f"graph_refused:{result.refusal_code}")
+        _record_allowance(task["id"], policy, cause)
+        _audit_once(
+            task["id"], cause, "handoff_opened",
+            {"failed_node": failed_key, "pr_number": number, "head_sha": head},
+        )
+        return True
+    except Exception as exc:
+        # Optional recovery must never prevent the existing planner path.
+        logger.warning("Factory handoff skipped for %s: %s", task["id"], exc)
+        try:
+            return skip(f"handoff_error:{type(exc).__name__}")
+        except Exception:
+            logger.exception("Factory handoff skip audit failed for %s", task["id"])
+            return False
 
 
 def _insert_review_round(
@@ -5805,6 +6006,8 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             loop_refusal=loop_refusal,
             integration_refusal=integration_refusal,
         )
+        if _insert_handoff_round(task, policy, nodes, runs, deviation, insertion_revision):
+            return
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
         # The operator's answer is carried until a planner round has actually
