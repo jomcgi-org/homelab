@@ -185,15 +185,16 @@ class Rows:
         at=START,
         session_id=None,
         finished=None,
+        pin=None,
     ):
         dispatch = f"{node}:{attempt}"
         self.session.execute(
             text("""
                 INSERT INTO swarm.swarm_node_run
                     (task_id, node_key, attempt, dispatch_key, model, status,
-                     session_id, created_at, finished_at)
+                     session_id, created_at, finished_at, pin_json)
                 VALUES (:task, :node, :attempt, :dispatch, :model, :status,
-                        :session, :at, :finished)
+                        :session, :at, :finished, :pin)
             """),
             {
                 "task": task,
@@ -207,6 +208,7 @@ class Rows:
                 "finished": finished
                 if finished is not None
                 else at + timedelta(hours=1),
+                "pin": json.dumps(pin) if pin is not None else None,
             },
         )
         return dispatch
@@ -223,14 +225,15 @@ class Rows:
         model="model-a",
         at=START,
         updated=START,
+        basis=None,
     ):
         self.session.execute(
             text("""
                 INSERT INTO swarm.factory_start
                     (task_id, start_key, actor, model, max_cost_usd, status, cost_usd,
-                     session_id, created_at, updated_at)
+                     session_id, created_at, updated_at, accounting_basis)
                 VALUES (:task, :key, 'test', :model, :maximum, :status, :cost,
-                        :session, :at, :updated)
+                        :session, :at, :updated, :basis)
             """),
             {
                 "task": task,
@@ -242,6 +245,7 @@ class Rows:
                 "session": session_id,
                 "at": at,
                 "updated": updated,
+                "basis": basis,
             },
         )
 
@@ -466,7 +470,19 @@ def test_retries_models_corrections_and_review_are_accounted(session, rows):
     task = rows.task()
     rows.merge(task)
     rows.run(task, status="failed")
-    rows.run(task, attempt=2, model="model-b", at=START + timedelta(hours=2))
+    # Attempt 2 stepped up pools: the stored pin marker is what counts as
+    # escalation, not the model switch alone.
+    rows.run(
+        task,
+        attempt=2,
+        model="model-b",
+        at=START + timedelta(hours=2),
+        pin={
+            "model": "model-b",
+            "escalated_from": "model-a",
+            "escalation_reason": "fixture",
+        },
+    )
     rows.run(task, node="correct_1", model="model-b")
     rows.run(task, node="correct_1", attempt=2, model="model-b")
     rows.run(task, node="review_1", model="reviewer")
@@ -506,7 +522,16 @@ def test_retries_models_corrections_and_review_are_accounted(session, rows):
 
 @pytest.mark.parametrize(
     "signal",
-    ["none", "run", "receipt", "nonwork_switch", "unknown_model", "late_receipt"],
+    [
+        "none",
+        "run",
+        "receipt",
+        "nonwork_switch",
+        "reviewer_fallback",
+        "planned_split",
+        "unknown_model",
+        "late_receipt",
+    ],
 )
 def test_documented_escalation_signals_and_denominator(session, rows, signal):
     task = rows.task(
@@ -524,6 +549,14 @@ def test_documented_escalation_signals_and_denominator(session, rows, signal):
         for node in ("planner", "conductor", "conductor_funding"):
             rows.run(task, node=node)
             rows.run(task, node=node, attempt=2, model="model-b")
+    if signal == "reviewer_fallback":
+        # Quota-driven reviewer substitution without a pool-escalation marker.
+        rows.run(task, node="review_1", model="reviewer-a")
+        rows.run(task, node="review_2", model="reviewer-b")
+    if signal == "planned_split":
+        # Planner-chosen per-node models without a pool-escalation marker.
+        rows.run(task, node="implement_api", model="model-a")
+        rows.run(task, node="implement_docs", model="model-b")
     row = _single(_report(session))
     observed = int(signal in ("run", "receipt"))
     unknown = int(signal in ("unknown_model", "late_receipt"))
@@ -712,7 +745,10 @@ def test_unpriced_turns_and_reservations_are_separate_cost_bounds(session, rows)
     rows.start(task, key="settled", status="failed", cost=3)
     rows.start(task, key="uncertain", status="uncertain", cost=None, maximum=5)
     rows.start(task, key="future_settlement", cost=100, maximum=7, updated=AS_OF)
+    # Unknown usage on a terminal start keeps its reservation in the bound.
     rows.start(task, key="missing_cost", cost=None)
+    # A proven-free basis commits nothing and is not a missing cost.
+    rows.start(task, key="free_denial", status="failed", cost=None, basis="capacity_denied")
     report = _report(session)
     row = _state(report, "positives")
     assert (
@@ -721,22 +757,22 @@ def test_unpriced_turns_and_reservations_are_separate_cost_bounds(session, rows)
         row["settled_usd"],
         row["exposure_usd"],
         row["ledger_upper_usd"],
-    ) == (2, 1, 3, 22, 25)
+    ) == (2, 1, 3, 32, 35)
     assert row["usd_per_positive_lower"] == 2
-    assert row["usd_per_positive_upper"] == 25
+    assert row["usd_per_positive_upper"] == 35
     coverage = _single(report, 3)
     assert (
         coverage["unpriced_turns"],
         coverage["unsettled_reservations"],
         coverage["exposure_usd"],
         coverage["missing_settled_costs"],
-    ) == (1, 3, 22, 1)
+    ) == (1, 3, 32, 1)
     for key, expected in [
         ("list_usd", 2),
         ("unpriced_turns", 1),
         ("settled_usd", 3),
-        ("exposure_usd", 22),
-        ("ledger_upper_usd", 25),
+        ("exposure_usd", 32),
+        ("ledger_upper_usd", 35),
     ]:
         assert sum(r[key] for r in report[SECTIONS[1]]) == expected
         if key != "settled_usd":  # Difficulty rows expose the combined ledger bound.

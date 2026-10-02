@@ -45,6 +45,7 @@ runs AS (
            CASE WHEN starts_with(r.node_key, 'conductor_funding') THEN 'funding'
                 ELSE split_part(r.node_key, '_', 1) END AS role,
            COALESCE(NULLIF(r.model, ''), NULLIF(j.pin ->> 'model', ''), 'unknown') AS model,
+           (NULLIF(j.pin ->> 'escalated_from', '') IS NOT NULL) AS pool_escalated,
            j.outcome
     FROM swarm.swarm_node_run r
     JOIN cohort c ON c.task_id = r.task_id
@@ -62,11 +63,22 @@ starts AS (
            CASE WHEN s.updated_at < p.as_of
                      AND s.status IN ('succeeded', 'failed', 'cancelled')
                 THEN COALESCE(s.cost_usd, 0) ELSE 0 END AS settled_usd,
-           CASE WHEN s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')
+           CASE WHEN s.status IN ('reserved', 'uncertain')
+                THEN GREATEST(s.max_cost_usd, COALESCE(s.cost_usd, 0))
+                WHEN s.updated_at >= p.as_of
+                THEN s.max_cost_usd
+                WHEN s.updated_at < p.as_of
+                     AND s.status IN ('succeeded', 'failed', 'cancelled')
+                     AND s.cost_usd IS NULL
+                     AND COALESCE(s.accounting_basis, '') NOT IN (
+                         'no_model_post', 'capacity_denied', 'no_session_created')
                 THEN s.max_cost_usd ELSE 0 END AS exposure_usd,
            (s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')) AS unsettled,
            (s.updated_at < p.as_of AND s.status IN ('succeeded', 'failed', 'cancelled')
-                AND s.cost_usd IS NULL) AS missing_settled_cost
+                AND s.cost_usd IS NULL
+                AND COALESCE(s.accounting_basis, '') NOT IN (
+                    'no_model_post', 'capacity_denied', 'no_session_created')
+                ) AS missing_settled_cost
     FROM swarm.factory_start s
     JOIN cohort c ON c.task_id = s.task_id
     CROSS JOIN params p
@@ -212,15 +224,11 @@ initiators AS (
     FROM runs WHERE role = 'implement'
     ORDER BY task_id, created_at, id
 ),
-role_models AS (
-    SELECT task_id, role, COUNT(DISTINCT model) FILTER (WHERE model <> 'unknown') AS models
-    FROM runs WHERE role NOT IN ('conductor', 'funding', 'planner')
-    GROUP BY task_id, role
-),
 run_evidence AS (
     SELECT task_id, COUNT(DISTINCT node_key) FILTER (WHERE starts_with(node_key, 'correct_'))
                AS fixup_rounds,
            BOOL_OR(status = 'escalated') AS escalated,
+           BOOL_OR(pool_escalated) AS pool_escalated,
            BOOL_OR(model = 'unknown') AS unknown_model
     FROM runs GROUP BY task_id
 ),
@@ -238,7 +246,7 @@ task_evidence AS (
            COALESCE(tl.missing_settled_costs, 0) AS missing_settled_costs,
            COALESCE(re.fixup_rounds, 0) AS fixup_rounds,
            (COALESCE(re.escalated, false)
-            OR EXISTS (SELECT 1 FROM role_models rm WHERE rm.task_id = c.task_id AND rm.models > 1)
+            OR COALESCE(re.pool_escalated, false)
             OR (c.updated_at < p.as_of AND pg_input_is_valid(c.escalation_json, 'jsonb')
                 AND CASE WHEN pg_input_is_valid(c.escalation_json, 'jsonb')
                          THEN c.escalation_json::jsonb ELSE '{}'::jsonb END
@@ -349,6 +357,7 @@ runs AS (
            CASE WHEN starts_with(r.node_key, 'conductor_funding') THEN 'funding'
                 ELSE split_part(r.node_key, '_', 1) END AS role,
            COALESCE(NULLIF(r.model, ''), NULLIF(j.pin ->> 'model', ''), 'unknown') AS model,
+           (NULLIF(j.pin ->> 'escalated_from', '') IS NOT NULL) AS pool_escalated,
            j.outcome
     FROM swarm.swarm_node_run r
     JOIN cohort c ON c.task_id = r.task_id
@@ -366,11 +375,22 @@ starts AS (
            CASE WHEN s.updated_at < p.as_of
                      AND s.status IN ('succeeded', 'failed', 'cancelled')
                 THEN COALESCE(s.cost_usd, 0) ELSE 0 END AS settled_usd,
-           CASE WHEN s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')
+           CASE WHEN s.status IN ('reserved', 'uncertain')
+                THEN GREATEST(s.max_cost_usd, COALESCE(s.cost_usd, 0))
+                WHEN s.updated_at >= p.as_of
+                THEN s.max_cost_usd
+                WHEN s.updated_at < p.as_of
+                     AND s.status IN ('succeeded', 'failed', 'cancelled')
+                     AND s.cost_usd IS NULL
+                     AND COALESCE(s.accounting_basis, '') NOT IN (
+                         'no_model_post', 'capacity_denied', 'no_session_created')
                 THEN s.max_cost_usd ELSE 0 END AS exposure_usd,
            (s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')) AS unsettled,
            (s.updated_at < p.as_of AND s.status IN ('succeeded', 'failed', 'cancelled')
-                AND s.cost_usd IS NULL) AS missing_settled_cost
+                AND s.cost_usd IS NULL
+                AND COALESCE(s.accounting_basis, '') NOT IN (
+                    'no_model_post', 'capacity_denied', 'no_session_created')
+                ) AS missing_settled_cost
     FROM swarm.factory_start s
     JOIN cohort c ON c.task_id = s.task_id
     CROSS JOIN params p
@@ -516,15 +536,11 @@ initiators AS (
     FROM runs WHERE role = 'implement'
     ORDER BY task_id, created_at, id
 ),
-role_models AS (
-    SELECT task_id, role, COUNT(DISTINCT model) FILTER (WHERE model <> 'unknown') AS models
-    FROM runs WHERE role NOT IN ('conductor', 'funding', 'planner')
-    GROUP BY task_id, role
-),
 run_evidence AS (
     SELECT task_id, COUNT(DISTINCT node_key) FILTER (WHERE starts_with(node_key, 'correct_'))
                AS fixup_rounds,
            BOOL_OR(status = 'escalated') AS escalated,
+           BOOL_OR(pool_escalated) AS pool_escalated,
            BOOL_OR(model = 'unknown') AS unknown_model
     FROM runs GROUP BY task_id
 ),
@@ -542,7 +558,7 @@ task_evidence AS (
            COALESCE(tl.missing_settled_costs, 0) AS missing_settled_costs,
            COALESCE(re.fixup_rounds, 0) AS fixup_rounds,
            (COALESCE(re.escalated, false)
-            OR EXISTS (SELECT 1 FROM role_models rm WHERE rm.task_id = c.task_id AND rm.models > 1)
+            OR COALESCE(re.pool_escalated, false)
             OR (c.updated_at < p.as_of AND pg_input_is_valid(c.escalation_json, 'jsonb')
                 AND CASE WHEN pg_input_is_valid(c.escalation_json, 'jsonb')
                          THEN c.escalation_json::jsonb ELSE '{}'::jsonb END
@@ -637,6 +653,7 @@ runs AS (
            CASE WHEN starts_with(r.node_key, 'conductor_funding') THEN 'funding'
                 ELSE split_part(r.node_key, '_', 1) END AS role,
            COALESCE(NULLIF(r.model, ''), NULLIF(j.pin ->> 'model', ''), 'unknown') AS model,
+           (NULLIF(j.pin ->> 'escalated_from', '') IS NOT NULL) AS pool_escalated,
            j.outcome
     FROM swarm.swarm_node_run r
     JOIN cohort c ON c.task_id = r.task_id
@@ -654,11 +671,22 @@ starts AS (
            CASE WHEN s.updated_at < p.as_of
                      AND s.status IN ('succeeded', 'failed', 'cancelled')
                 THEN COALESCE(s.cost_usd, 0) ELSE 0 END AS settled_usd,
-           CASE WHEN s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')
+           CASE WHEN s.status IN ('reserved', 'uncertain')
+                THEN GREATEST(s.max_cost_usd, COALESCE(s.cost_usd, 0))
+                WHEN s.updated_at >= p.as_of
+                THEN s.max_cost_usd
+                WHEN s.updated_at < p.as_of
+                     AND s.status IN ('succeeded', 'failed', 'cancelled')
+                     AND s.cost_usd IS NULL
+                     AND COALESCE(s.accounting_basis, '') NOT IN (
+                         'no_model_post', 'capacity_denied', 'no_session_created')
                 THEN s.max_cost_usd ELSE 0 END AS exposure_usd,
            (s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')) AS unsettled,
            (s.updated_at < p.as_of AND s.status IN ('succeeded', 'failed', 'cancelled')
-                AND s.cost_usd IS NULL) AS missing_settled_cost
+                AND s.cost_usd IS NULL
+                AND COALESCE(s.accounting_basis, '') NOT IN (
+                    'no_model_post', 'capacity_denied', 'no_session_created')
+                ) AS missing_settled_cost
     FROM swarm.factory_start s
     JOIN cohort c ON c.task_id = s.task_id
     CROSS JOIN params p
@@ -804,15 +832,11 @@ initiators AS (
     FROM runs WHERE role = 'implement'
     ORDER BY task_id, created_at, id
 ),
-role_models AS (
-    SELECT task_id, role, COUNT(DISTINCT model) FILTER (WHERE model <> 'unknown') AS models
-    FROM runs WHERE role NOT IN ('conductor', 'funding', 'planner')
-    GROUP BY task_id, role
-),
 run_evidence AS (
     SELECT task_id, COUNT(DISTINCT node_key) FILTER (WHERE starts_with(node_key, 'correct_'))
                AS fixup_rounds,
            BOOL_OR(status = 'escalated') AS escalated,
+           BOOL_OR(pool_escalated) AS pool_escalated,
            BOOL_OR(model = 'unknown') AS unknown_model
     FROM runs GROUP BY task_id
 ),
@@ -830,7 +854,7 @@ task_evidence AS (
            COALESCE(tl.missing_settled_costs, 0) AS missing_settled_costs,
            COALESCE(re.fixup_rounds, 0) AS fixup_rounds,
            (COALESCE(re.escalated, false)
-            OR EXISTS (SELECT 1 FROM role_models rm WHERE rm.task_id = c.task_id AND rm.models > 1)
+            OR COALESCE(re.pool_escalated, false)
             OR (c.updated_at < p.as_of AND pg_input_is_valid(c.escalation_json, 'jsonb')
                 AND CASE WHEN pg_input_is_valid(c.escalation_json, 'jsonb')
                          THEN c.escalation_json::jsonb ELSE '{}'::jsonb END
@@ -926,6 +950,7 @@ runs AS (
            CASE WHEN starts_with(r.node_key, 'conductor_funding') THEN 'funding'
                 ELSE split_part(r.node_key, '_', 1) END AS role,
            COALESCE(NULLIF(r.model, ''), NULLIF(j.pin ->> 'model', ''), 'unknown') AS model,
+           (NULLIF(j.pin ->> 'escalated_from', '') IS NOT NULL) AS pool_escalated,
            j.outcome
     FROM swarm.swarm_node_run r
     JOIN cohort c ON c.task_id = r.task_id
@@ -943,11 +968,22 @@ starts AS (
            CASE WHEN s.updated_at < p.as_of
                      AND s.status IN ('succeeded', 'failed', 'cancelled')
                 THEN COALESCE(s.cost_usd, 0) ELSE 0 END AS settled_usd,
-           CASE WHEN s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')
+           CASE WHEN s.status IN ('reserved', 'uncertain')
+                THEN GREATEST(s.max_cost_usd, COALESCE(s.cost_usd, 0))
+                WHEN s.updated_at >= p.as_of
+                THEN s.max_cost_usd
+                WHEN s.updated_at < p.as_of
+                     AND s.status IN ('succeeded', 'failed', 'cancelled')
+                     AND s.cost_usd IS NULL
+                     AND COALESCE(s.accounting_basis, '') NOT IN (
+                         'no_model_post', 'capacity_denied', 'no_session_created')
                 THEN s.max_cost_usd ELSE 0 END AS exposure_usd,
            (s.updated_at >= p.as_of OR s.status IN ('reserved', 'uncertain')) AS unsettled,
            (s.updated_at < p.as_of AND s.status IN ('succeeded', 'failed', 'cancelled')
-                AND s.cost_usd IS NULL) AS missing_settled_cost
+                AND s.cost_usd IS NULL
+                AND COALESCE(s.accounting_basis, '') NOT IN (
+                    'no_model_post', 'capacity_denied', 'no_session_created')
+                ) AS missing_settled_cost
     FROM swarm.factory_start s
     JOIN cohort c ON c.task_id = s.task_id
     CROSS JOIN params p
@@ -1093,15 +1129,11 @@ initiators AS (
     FROM runs WHERE role = 'implement'
     ORDER BY task_id, created_at, id
 ),
-role_models AS (
-    SELECT task_id, role, COUNT(DISTINCT model) FILTER (WHERE model <> 'unknown') AS models
-    FROM runs WHERE role NOT IN ('conductor', 'funding', 'planner')
-    GROUP BY task_id, role
-),
 run_evidence AS (
     SELECT task_id, COUNT(DISTINCT node_key) FILTER (WHERE starts_with(node_key, 'correct_'))
                AS fixup_rounds,
            BOOL_OR(status = 'escalated') AS escalated,
+           BOOL_OR(pool_escalated) AS pool_escalated,
            BOOL_OR(model = 'unknown') AS unknown_model
     FROM runs GROUP BY task_id
 ),
@@ -1119,7 +1151,7 @@ task_evidence AS (
            COALESCE(tl.missing_settled_costs, 0) AS missing_settled_costs,
            COALESCE(re.fixup_rounds, 0) AS fixup_rounds,
            (COALESCE(re.escalated, false)
-            OR EXISTS (SELECT 1 FROM role_models rm WHERE rm.task_id = c.task_id AND rm.models > 1)
+            OR COALESCE(re.pool_escalated, false)
             OR (c.updated_at < p.as_of AND pg_input_is_valid(c.escalation_json, 'jsonb')
                 AND CASE WHEN pg_input_is_valid(c.escalation_json, 'jsonb')
                          THEN c.escalation_json::jsonb ELSE '{}'::jsonb END

@@ -8673,10 +8673,15 @@ bdd_test(
 )
 
 # Execute the manual report itself against migrated PostgreSQL fixtures.
+py_library(
+    name = "outcomes_report_test_data",
+    data = ["factory/outcomes_report.sql"],
+)
+
 bdd_test(
     name = "outcomes_report_test",
     srcs = ["factory/outcomes_report_test.py"],
-    data = ["factory/outcomes_report.sql"],
+    deps = [":outcomes_report_test_data"],
 )
 
 # Real-Postgres test: the public factory snapshot WRITER. Covers the empty
