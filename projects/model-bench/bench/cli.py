@@ -791,6 +791,9 @@ def _load_newest_cells(results_root: Path) -> tuple[list[ResultCell], int, int]:
     newest: dict[tuple[str, str], tuple[float, ResultCell]] = {}
     if results_root.exists():
         for json_path in results_root.rglob("*.json"):
+            # The judge keeps verdicts and ratings beside the cells; not cells.
+            if json_path.relative_to(results_root).parts[0] == "judge":
+                continue
             try:
                 cell = ResultCell.model_validate_json(json_path.read_text())
             except Exception as exc:
@@ -1388,6 +1391,9 @@ def _prune_stale(args) -> None:
     removed = 0
     if results_root.exists():
         for json_path in results_root.rglob("*.json"):
+            # The judge keeps verdicts and ratings beside the cells; not cells.
+            if json_path.relative_to(results_root).parts[0] == "judge":
+                continue
             try:
                 cell = ResultCell.model_validate_json(json_path.read_text())
             except Exception as exc:
