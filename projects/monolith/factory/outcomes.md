@@ -87,8 +87,9 @@ All priced and unpriced turns created before `as_of` are included.
 - `settled_usd` sums `factory_start.cost_usd` for terminal statuses
   `succeeded`, `failed`, and `cancelled` whose `updated_at` precedes `as_of`.
 - `exposure_usd` sums `GREATEST(max_cost_usd, COALESCE(cost_usd, 0))` for
-  `reserved` and `uncertain` starts, matching the factory ledger's committed
-  cost for unresolved reservations. Starts updated at or after the cutoff
+  `reserved` and `uncertain` starts, a conservative bound on the factory
+  ledger's committed cost for unresolved reservations (the ledger counts zero
+  for free accounting bases, which this bound still reserves). Starts updated at or after the cutoff
   conservatively retain their whole reservation. A pre-cutoff terminal start
   with null cost keeps its `max_cost_usd` as exposure, because the ledger
   books the ceiling for unknown usage (stranded guests settle with null cost
@@ -151,7 +152,9 @@ while retaining turns and reservations without a corresponding run.
 
 ## Difficulty bands
 
-Merged PR metadata comes from `observability.merged_prs`:
+Merged PR metadata comes from `observability.merged_prs`, which is keyed by PR
+number only and filled from `jomcgi-org/homelab`, so it is joined only for
+receipts whose repo is `jomcgi-org/homelab`; other repos stay `unknown`:
 
 | Dimension | Bands |
 | --- | --- |
