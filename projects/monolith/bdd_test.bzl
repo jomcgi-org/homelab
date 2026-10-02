@@ -26,7 +26,7 @@ def bdd_test(name, srcs, future = False, size = "large", timeout = "moderate", *
     data = [
         "//projects/monolith/chart:migrations",
         "@postgres_test//:postgres",
-    ] + kwargs.pop("data", [])
+    ]
     tags = ["bdd"]
 
     if future:

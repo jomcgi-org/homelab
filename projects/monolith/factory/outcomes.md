@@ -86,14 +86,22 @@ All priced and unpriced turns created before `as_of` are included.
   `unpriced_turns` counts null list prices, including error turns with no usage.
 - `settled_usd` sums `factory_start.cost_usd` for terminal statuses
   `succeeded`, `failed`, and `cancelled` whose `updated_at` precedes `as_of`.
-- `exposure_usd` sums `max_cost_usd` for `reserved` and `uncertain` starts.
-  Starts updated at or after the cutoff conservatively retain their whole
-  reservation. Exposure is a reservation ceiling, not measured spend.
+- `exposure_usd` sums `GREATEST(max_cost_usd, COALESCE(cost_usd, 0))` for
+  `reserved` and `uncertain` starts, matching the factory ledger's committed
+  cost for unresolved reservations. Starts updated at or after the cutoff
+  conservatively retain their whole reservation. A pre-cutoff terminal start
+  with null cost keeps its `max_cost_usd` as exposure, because the ledger
+  books the ceiling for unknown usage (stranded guests settle with null cost
+  deliberately: unknown, not zero). Starts whose `accounting_basis` proves the
+  attempt never reached a model (`no_model_post`, `capacity_denied`,
+  `no_session_created`) commit nothing and contribute zero. Exposure is a
+  reservation ceiling, not measured spend.
 - `ledger_upper_usd = settled_usd + exposure_usd`. Coverage separately reports
-  terminal starts with missing settled costs; their null costs contribute zero,
-  so the upper-bound interpretation needs reconciliation when this count is
-  nonzero. The ledger and list-price measures have different accounting bases;
-  the report does not force one to exceed the other.
+  terminal starts with missing settled costs, excluding the proven-free bases;
+  unreconciled null costs keep their reservation inside the upper bound, so a
+  nonzero missing count means unknown usage is bounded rather than absent. The
+  ledger and list-price measures have different accounting bases; the report
+  does not force one to exceed the other.
 
 `usd_per_positive_lower` and `usd_per_positive_upper` divide cohort totals by
 positives. Failed and other nonpositive tasks remain in both numerators.
@@ -180,10 +188,12 @@ and unknown-count column. Zero denominators return SQL `NULL`.
   attempts. Report their total, task-count denominator, zero unknown count,
   and mean. Retrying one correction node adds attempts, not another round.
 - **Escalation:** a task is observed escalated if any pre-cutoff run has
-  status `escalated`, any work role uses more than one known model, or the
+  status `escalated`, any pre-cutoff run pin carries a nonempty
+  `escalated_from` pool-escalation marker, or the
   receipt has nonempty valid `escalation_json` with `updated_at < as_of`.
-  Work roles exclude `conductor`, `funding`, and `planner`. This measures
-  observed escalations and model switches, without assigning model strength.
+  Quota-driven reviewer substitution and planner-chosen per-node models carry
+  no marker and do not count. This measures
+  observed escalations, without assigning model strength.
   Divide escalated tasks by escalated tasks plus tasks with observable absence.
   Absence is unknown when run model evidence is missing or the receipt's latest
   update is at or after `as_of`; a positive signal still counts as observed.

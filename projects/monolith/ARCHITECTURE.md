@@ -1731,7 +1731,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; fixture tests and standby accounting, CI, revert, metadata, and query-cost checks remain |
+| Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
 | Proposed graph envelopes are preflighted inside the planner turn | section 4, planner preview | #6650 | implemented in repository behind `swarm.factoryPlannerPreviewEnabled=false`, with no production planner binding or serving route; binding provisioning, enablement and the 72-hour rejected-run/cost comparison remain live checks |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789; #5786 closed 2026-09-14) | not started |
