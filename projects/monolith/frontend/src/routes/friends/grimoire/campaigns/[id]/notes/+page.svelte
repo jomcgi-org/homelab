@@ -2,6 +2,9 @@
   import NotesPanel from "$lib/grimoire/NotesPanel.svelte";
 
   let { data, form } = $props();
+  const filters = $derived(
+    new URLSearchParams({ kind: data.kind, q: data.q }).toString(),
+  );
 </script>
 
 <svelte:head><title>{data.campaign.name} notes · Grimoire</title></svelte:head>
@@ -20,6 +23,9 @@
         !!data.campaign.player_character_id}
       error={form?.error}
       saved={form?.ok}
+      createAction={`?${filters}&/create`}
+      updateAction={`?${filters}&/update`}
+      deleteAction={`?${filters}&/delete`}
     />
   {/key}
 </main>

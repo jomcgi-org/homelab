@@ -97,7 +97,12 @@
           {#if kind === "character"}
             <label
               >DM sharing
-              <select bind:value={shareChoice}>
+              <select
+                value={shareChoice}
+                onchange={(event) => {
+                  shareChoice = event.currentTarget.value;
+                }}
+              >
                 <option value="default">Campaign default</option>
                 <option value="false">Private</option>
                 <option value="true">Share with DM</option>

@@ -134,9 +134,19 @@ Entity links are checked against the author's grant overlay at write time and
 resolved again for each viewer at read time. Chips expose only id, name and
 type, dropping invisible entities entirely. Event ids are opaque UUID strings,
 stored without a foreign key or event lookup. Author and character ids go only
-to the author and DM; the sharing flag goes only to the author. There is no
-`public_reader` grant on notes. Feed pinning and session-screen mounting remain
-separate follow-up work under #6606.
+to the author and DM; the sharing flag goes only to the author. A viewer-computed
+`can_edit` flag exposes edit capability without adding author identity to another
+player's projection. There is no `public_reader` grant on notes.
+
+The friends campaign notes route loads and writes through the server's dedicated
+Grimoire token, validates campaign and form UUIDs, and disables caching. Failed
+reads reject the load rather than returning an empty list. `NotesPanel` takes
+notes, viewer capabilities, filters and form actions as props, with no client
+API calls. Mine and Party tabs forward `kind` and `q`. Quick-add offers Campaign
+default (omits `dm_readable`), Private and Share with DM. DMs see Shared with you
+and can only add party notes. Markdown uses the existing text-node renderer;
+entity chips come only from resolved viewer-visible objects. Feed pinning and
+session-screen mounting remain in #6689, blocked by #6610 and #6612.
 
 **Why.** Notes are player-owned records. DM access to generic play rows does not
 authorize access to a private character note. Read-time chip resolution retains
