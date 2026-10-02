@@ -2,7 +2,7 @@ import argparse
 import json
 import shutil
 
-import pytest  # noqa: F401
+import pytest
 
 from bench.cache import HARNESS_VERSION
 from bench.cli import (
@@ -141,6 +141,7 @@ def _agentic_cell(
     feedback="",
     cost=0.01,
     latency_ms=1,
+    score=None,
 ):
     return ResultCell(
         task_id=task_id,
@@ -151,6 +152,7 @@ def _agentic_cell(
         attempts=[
             Attempt(
                 passed=passed,
+                score=score,
                 feedback=feedback,
                 latency_ms=latency_ms,
                 prompt_tokens=tokens,
@@ -251,6 +253,91 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     # No cell carries norms in this fixture, so the norms fields stay empty.
     assert mt["norms_score"] is None and t["mean_norms"] is None
     assert data["models"][0]["mean_norms"] is None
+    assert data["models"][0]["mean_score"] is None
+    assert data["models"][0]["scored_n"] == 0
+
+
+def test_write_leaderboard_json_rounds_model_score(tmp_path):
+    task = TaskSpec(
+        id="scored",
+        version="v1",
+        task_class="code-fix",
+        mode="agentic",
+        tier="hard",
+        prompt="Fix the task.",
+        verifier=VerifierSpec(kind="pytest"),
+    )
+    cell = _agentic_cell("scored", "m", False, 1, 100, True, score=0.876543)
+    stats = _aggregate_agentic_group(
+        [cell], {"scored": "hard"}, scored_ids=frozenset({"scored"})
+    )
+    out = tmp_path / "leaderboard.json"
+    _write_leaderboard_json(
+        out,
+        agentic={"m": stats},
+        cells=[cell],
+        tasks=[task],
+        anchor_ids=set(),
+        generated_at="2026-10-02",
+    )
+    data = json.loads(out.read_text())
+    assert data["models"][0]["scored_n"] == 1
+    assert data["models"][0]["mean_score"] == 0.8765
+    assert data["tasks"][0]["mean_score"] == 0.877
+
+
+def test_aggregate_agentic_group_means_scored_tasks_without_dropping_failures():
+    cells = [
+        _agentic_cell("scored", "m", True, 1, 100, True, score=0.8),
+        _agentic_cell("ungraded-fail", "m", False, 1, 100, False),
+        _agentic_cell("binary", "m", True, 1, 100, True),
+        _agentic_cell(
+            "scored-error",
+            "m",
+            False,
+            1,
+            100,
+            False,
+            score=1.0,
+            feedback="[harness error] provider failure",
+        ),
+    ]
+    stats = _aggregate_agentic_group(
+        cells,
+        {cell.task_id: "hard" for cell in cells},
+        scored_ids=frozenset({"scored", "ungraded-fail", "scored-error"}),
+    )
+    assert stats["scored_n"] == 2
+    assert stats["mean_score"] == pytest.approx(0.4)
+    assert stats["hard_n"] == 3
+    assert stats["hard_pass"] == 2
+    assert stats["errored"] == 1
+
+
+@pytest.mark.parametrize("scored_ids", [frozenset(), frozenset({"other"})])
+def test_aggregate_agentic_group_without_scored_tasks(scored_ids):
+    cell = _agentic_cell("binary", "m", True, 1, 100, True)
+    stats = _aggregate_agentic_group([cell], {"binary": "hard"}, scored_ids=scored_ids)
+    assert stats["scored_n"] == 0
+    assert stats["mean_score"] is None
+
+
+def test_aggregate_agentic_group_with_only_scored_harness_errors():
+    cell = _agentic_cell(
+        "scored",
+        "m",
+        False,
+        1,
+        100,
+        False,
+        score=1.0,
+        feedback="[harness error] provider failure",
+    )
+    stats = _aggregate_agentic_group(
+        [cell], {"scored": "hard"}, scored_ids=frozenset({"scored"})
+    )
+    assert stats["scored_n"] == 0
+    assert stats["mean_score"] is None
 
 
 def test_aggregate_agentic_group_excludes_harness_errors_from_all_metrics():
@@ -315,6 +402,8 @@ def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
         "hard_pass": 0,
         "frontier_n": 0,
         "frontier_score": None,
+        "scored_n": 0,
+        "mean_score": None,
         "mean_tokens": 0.0,
         "mean_turns": 0.0,
         "mean_latency_ms": 0.0,
@@ -382,6 +471,51 @@ def test_report_reprices_cells_for_models_with_a_fixed_rate(tmp_path):
     assert row["cost_usd"] == pytest.approx(0.2)
     assert row["tasks"][0]["cost_usd"] == pytest.approx(0.2)
     assert row["self_hosted"] is True
+
+
+def test_report_discovers_scored_tasks_across_models(tmp_path):
+    (tmp_path / "models.yaml").write_text(
+        "models:\n"
+        "  - {id: scored-model, status: experimental}\n"
+        "  - {id: failed-model, status: experimental}\n"
+    )
+    for task_id in ("scored", "binary"):
+        task_dir = tmp_path / "tasks" / task_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "task.yaml").write_text(
+            f"id: {task_id}\nversion: v1\nclass: code-fix\nmode: agentic\ntier: hard\n"
+            'prompt: p\nverifier: {kind: command, args: {cmd: ["true"]}}\n'
+        )
+    cells = [
+        _agentic_cell("scored", "scored-model", True, 1, 100, True, score=0.8),
+        _agentic_cell("scored", "failed-model", False, 1, 100, False),
+        _agentic_cell("binary", "scored-model", True, 1, 100, True),
+        _agentic_cell("binary", "failed-model", True, 1, 100, True),
+    ]
+    results = tmp_path / "results"
+    results.mkdir()
+    for i, cell in enumerate(cells):
+        (results / f"{i}.json").write_text(cell.model_dump_json())
+    _report(
+        argparse.Namespace(
+            results=str(results),
+            models=str(tmp_path / "models.yaml"),
+            tasks=str(tmp_path / "tasks"),
+            out=str(tmp_path / "lb.md"),
+            json_out=str(tmp_path / "lb.json"),
+            generated_at="2026-10-02",
+        )
+    )
+    data = json.loads((tmp_path / "lb.json").read_text())
+    models = {row["id"]: row for row in data["models"]}
+    assert models["scored-model"]["scored_n"] == 1
+    assert models["scored-model"]["mean_score"] == 0.8
+    assert models["failed-model"]["scored_n"] == 1
+    assert models["failed-model"]["mean_score"] == 0.0
+    markdown = (tmp_path / "lb.md").read_text()
+    assert "## Scored tasks" in markdown
+    assert "| scored | hard | 1/2 | 0.80 |" in markdown
+    assert "| binary |" not in markdown
 
 
 def test_aggregate_agentic_group_scores_frontier_tasks():

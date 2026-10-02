@@ -1,4 +1,4 @@
-import pytest  # noqa: F401
+import pytest
 
 from bench.report import render_leaderboard
 
@@ -103,6 +103,8 @@ def test_agentic_section_present_when_empty():
     assert "No anchor ceiling results yet." in md
     assert "## Excluded: harness errors" in md
     assert "None." in md
+    assert "## Scored tasks" in md
+    assert "No scored tasks yet." in md
 
 
 def test_anchors_go_to_ceiling_not_candidate_tables():
@@ -130,6 +132,69 @@ def test_anchors_go_to_ceiling_not_candidate_tables():
     assert md.index("cheap/strong") < ceiling
     # Wall-time shown for the ceiling row (42000ms -> 42.0s); no cost column.
     assert "42.0" in md
+
+
+@pytest.mark.parametrize(
+    ("mean_score", "scored_n", "rendered"),
+    [(0.83456, 5, "0.83 (5)"), (0.0, 2, "0.00 (2)"), (None, 0, "n/a")],
+)
+def test_score_column_in_candidate_and_anchor_tables(mean_score, scored_n, rendered):
+    md = render_leaderboard(
+        per_class={},
+        anchors={},
+        frontier={},
+        retired=[],
+        agentic={
+            model: _agentic_stats(mean_score=mean_score, scored_n=scored_n)
+            for model in ("candidate", "anchor")
+        },
+        agentic_anchor_ids={"anchor"},
+    )
+    qualified = md.split("## Agentic leaderboard: qualified\n", 1)[1].split("## ", 1)[0]
+    ceiling = md.split("## Frontier ceiling (agentic)\n", 1)[1].split("## ", 1)[0]
+    for table, model, columns in ((qualified, "candidate", 12), (ceiling, "anchor", 8)):
+        assert "| Model | hard | score | frontier |" in table
+        assert f"| {model} | 2/2 | {rendered} | n/a |" in table
+        table_lines = [line for line in table.splitlines() if line.startswith("|")]
+        assert len(table_lines) == 3
+        assert all(line.count("|") == columns + 1 for line in table_lines)
+
+
+def test_scored_tasks_section_lists_tier_counts_and_mean():
+    md = render_leaderboard(
+        per_class={},
+        anchors={},
+        frontier={},
+        retired=[],
+        scored_tasks=[
+            {
+                "id": "mutation",
+                "tier": "hard",
+                "passed": 3,
+                "n": 5,
+                "mean_score": 0.834,
+            },
+            {
+                "id": "ungraded",
+                "tier": "frontier",
+                "passed": 0,
+                "n": 1,
+                "mean_score": None,
+            },
+        ],
+    )
+    section = md.split("## Scored tasks\n", 1)[1].split("## ", 1)[0]
+    assert "| Task | tier | passed/n | mean score |" in section
+    assert "| mutation | hard | 3/5 | 0.83 |" in section
+    assert "| ungraded | frontier | 0/1 | n/a |" in section
+    assert "No scored tasks yet." not in section
+
+
+def test_scored_tasks_section_empty_list():
+    md = render_leaderboard(
+        per_class={}, anchors={}, frontier={}, retired=[], scored_tasks=[]
+    )
+    assert "## Scored tasks\n\nNo scored tasks yet." in md
 
 
 def test_all_results_shows_non_qualifiers():

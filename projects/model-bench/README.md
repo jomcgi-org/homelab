@@ -48,6 +48,9 @@ attempt, so a partial answer shows up as partial rather than as a plain fail. Th
 A mutant's `find` text must occur exactly once in the module, so bumping the fixture
 commit fails loudly instead of silently grading a no-op.
 
+The leaderboard shows the mean graded score over scored tasks next to the hard
+pass count. Failed cells without a score count as 0; harness errors are excluded.
+
 ## Performance (speedup) tasks
 
 The `speedup` verifier grades a performance change. task.yaml carries the original
