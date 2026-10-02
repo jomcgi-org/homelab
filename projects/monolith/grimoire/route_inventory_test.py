@@ -182,7 +182,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 35
+    assert len(enumerated) == 34
 
 
 def test_route_inventory(harness):

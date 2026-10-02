@@ -117,6 +117,7 @@ def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
             original_exec = session.exec
 
             def paused_exec(statement, *args, **kwargs):
+                result = original_exec(statement, *args, **kwargs)
                 sql = str(statement.compile(dialect=postgresql.dialect()))
                 # Pause only after the locking read: the earlier membership
                 # lookup touches the same table without holding the row.
@@ -129,7 +130,7 @@ def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
                     assert dm_campaign_locked.wait(WAIT_SECONDS), (
                         "DM assign never took the campaign lock"
                     )
-                return original_exec(statement, *args, **kwargs)
+                return result
 
             session.exec = paused_exec
             try:
@@ -150,10 +151,11 @@ def test_interleaved_assign_and_self_create_serialize_without_deadlock(lane):
             original_exec = session.exec
 
             def signal_exec(statement, *args, **kwargs):
+                result = original_exec(statement, *args, **kwargs)
                 sql = str(statement.compile(dialect=postgresql.dialect()))
                 if _is_campaign_lock(sql) and not dm_campaign_locked.is_set():
                     dm_campaign_locked.set()
-                return original_exec(statement, *args, **kwargs)
+                return result
 
             session.exec = signal_exec
             try:
