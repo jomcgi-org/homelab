@@ -7,7 +7,8 @@ This module moves that work to a scheduled job
 (``home.cluster_snapshot_refresh``) that upserts a single
 ``home.cluster_snapshot`` row, so the dashboard read path (see
 ``home.dashboard``) becomes a one-row lookup. The retained alerts column is
-written as an empty object for schema compatibility.
+written as an empty object for schema compatibility. The same scan supplies a
+bounded, read-only agent summary in ``agent_view.cluster_snapshot``.
 """
 
 from __future__ import annotations
@@ -33,26 +34,93 @@ _HEALTH_KINDS = ("deployments", "statefulsets", "daemonsets", "pods", "applicati
 _STALE_FALLBACK_SECS = 600
 
 
-async def scan_health_live() -> dict:
-    """Run the live cluster health rollup (the expensive path).
+def _scan_error(exc: Exception) -> str:
+    """Bound the diagnostic stored in the agent summary."""
+    return f"{type(exc).__name__}: {exc}"[:200]
 
-    Fail-soft per kind: a listing error for one kind logs and yields an empty
-    list for it rather than aborting the whole scan.
-    """
-    from cluster.api import KubernetesClient, build_health
+
+async def scan_cluster_resources_live() -> tuple[dict, dict[str, str]]:
+    """List each curated kind once, retaining listing failures separately."""
+    from cluster.api import KubernetesClient
 
     k8s = KubernetesClient()
     try:
         resources: dict[str, list[dict]] = {}
+        errors: dict[str, str] = {}
         for kind in _HEALTH_KINDS:
             try:
                 resources[kind] = await k8s.list_resources(kind)
-            except Exception:
+            except Exception as exc:
                 logger.exception("cluster snapshot: listing %s failed", kind)
                 resources[kind] = []
-        return build_health(resources)
+                errors[kind] = _scan_error(exc)
+        return resources, errors
     finally:
         await k8s.close()
+
+
+async def scan_health_live() -> dict:
+    """Keep the dashboard's fail-soft live fallback semantics."""
+    from cluster.api import build_health
+
+    resources, _ = await scan_cluster_resources_live()
+    return build_health(resources)
+
+
+def _application_revisions(application: dict) -> tuple[str | None, str | None]:
+    """Separate actually deployed status from the desired source revision."""
+    sync = (application.get("status") or {}).get("sync") or {}
+    revisions = sync.get("revisions") or []
+    revision = sync.get("revision") or (revisions[0] if revisions else None)
+    spec = application.get("spec") or {}
+    sources = spec.get("sources") or []
+    target = (spec.get("source") or {}).get("targetRevision") or (
+        sources[0].get("targetRevision") if sources else None
+    )
+    return revision or None, target or None
+
+
+def build_agent_cluster_summary(resources: dict, errors: dict[str, str]) -> dict:
+    """Project successful listings onto bounded resource rows, never manifests."""
+    from cluster.api import build_health, resource_row
+
+    successful = {
+        kind: resources[kind]
+        for kind in _HEALTH_KINDS
+        if kind in resources and kind not in errors
+    }
+    applications = []
+    for application in successful.get("applications", []):
+        row = resource_row("applications", application)
+        revision, target = _application_revisions(application)
+        applications.append(
+            {
+                "name": row.get("name"),
+                "namespace": row.get("namespace"),
+                "sync": row.get("sync"),
+                "health": row.get("health"),
+                "revision": revision,
+                "target_revision": target,
+            }
+        )
+    applications.sort(key=lambda row: (row["name"] or "", row["namespace"] or ""))
+    unhealthy = build_health(successful)["unhealthy"]
+    payload = {
+        "schema_version": 1,
+        "complete": not errors and len(successful) == len(_HEALTH_KINDS),
+        "errors": {kind: message[:200] for kind, message in errors.items()},
+        "scanned": {kind: len(objects) for kind, objects in successful.items()},
+        "applications": applications[:500],
+        "unhealthy": {kind: rows[:100] for kind, rows in unhealthy.items()},
+    }
+    if len(applications) > 500:
+        payload["applications_truncated"] = len(applications) - 500
+    truncated = {
+        kind: len(rows) - 100 for kind, rows in unhealthy.items() if len(rows) > 100
+    }
+    if truncated:
+        payload["unhealthy_truncated"] = truncated
+    return payload
 
 
 def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
@@ -77,18 +145,51 @@ def _write_cluster_snapshot(health: dict, alerts: dict) -> None:
         session.commit()
 
 
+def _write_agent_cluster_snapshot(payload: dict) -> None:
+    """Upsert the agent snapshot in a fresh worker-thread session."""
+    from core.db import get_engine
+
+    with Session(get_engine()) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO agent_view.cluster_snapshot (id, payload, snapshot_at)
+                VALUES (1, :payload, now())
+                ON CONFLICT (id) DO UPDATE
+                    SET payload = EXCLUDED.payload,
+                        snapshot_at = EXCLUDED.snapshot_at
+                """
+            ),
+            {"payload": json.dumps(payload)},
+        )
+        session.commit()
+
+
 async def refresh_cluster_snapshot() -> None:
-    """Scan health and upsert the snapshot row with an empty alerts object.
+    """Scan once and independently persist dashboard and agent projections.
 
     If the health scan fails, persist an error marker so the scheduled job
     remains fail-soft and the read path can report the failure.
     """
+    from cluster.api import build_health
+
     try:
-        health = await scan_health_live()
+        resources, errors = await scan_cluster_resources_live()
     except Exception as exc:
-        logger.warning("cluster snapshot: health scan failed: %s", exc)
+        logger.exception("cluster snapshot: health scan failed")
         health = {"error": str(exc)}
-    await asyncio.to_thread(_write_cluster_snapshot, health, {})
+        resources, errors = {}, {"scan": _scan_error(exc)}
+    else:
+        health = build_health(resources)
+    payload = build_agent_cluster_summary(resources, errors)
+    try:
+        await asyncio.to_thread(_write_cluster_snapshot, health, {})
+    except Exception:
+        logger.exception("cluster snapshot: dashboard write failed")
+    try:
+        await asyncio.to_thread(_write_agent_cluster_snapshot, payload)
+    except Exception:
+        logger.exception("cluster snapshot: agent write failed")
     logger.info("cluster snapshot refreshed (scanned=%s)", health.get("scanned"))
 
 

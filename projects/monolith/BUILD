@@ -46,6 +46,7 @@
 # Hand-written bdd_test targets (need the real-Postgres harness), so keep gazelle
 # from generating conflicting py_tests for them.
 # gazelle:exclude public_reader_grants_test.py
+# gazelle:exclude agent_view_grants_test.py
 # gazelle:exclude observability_snapshot_grants_test.py
 # gazelle:exclude public_knowledge_views_test.py
 # gazelle:exclude chat_public_grants_test.py
@@ -8588,6 +8589,12 @@ bdd_test(
 bdd_test(
     name = "public_reader_grants_test",
     srcs = ["public_reader_grants_test.py"],
+)
+
+# Real-Postgres test: agents_writer can only read the agent cluster snapshot.
+bdd_test(
+    name = "agent_view_grants_test",
+    srcs = ["agent_view_grants_test.py"],
 )
 
 # Real-Postgres test: the observability rollup writer upserts a snapshot and
