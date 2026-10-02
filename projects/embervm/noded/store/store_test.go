@@ -21,7 +21,204 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestFilesFingerprint(t *testing.T) {
+	a := map[string]FileMeta{
+		"b": {Size: 12, Sha256: "BB"},
+		"a": {Size: 3, Sha256: "aa"},
+	}
+	b := map[string]FileMeta{
+		"a": {Size: 3, Sha256: "aa", Compression: "zstd", Encryption: "aes-256-gcm-v1", Nonce: "random"},
+		"b": {Size: 12, Sha256: "bb"},
+	}
+	sum := sha256.Sum256([]byte("a\x003\x00aa\nb\x0012\x00bb\n"))
+	want := hex.EncodeToString(sum[:])
+	if got := FilesFingerprint(a); got != want {
+		t.Fatalf("fingerprint = %q, want exact encoding %q", got, want)
+	}
+	if got := FilesFingerprint(b); got != want {
+		t.Fatalf("order/transport/case changed fingerprint: %q, want %q", got, want)
+	}
+	for _, name := range []string{"a", "b"} {
+		for _, field := range []string{"size", "sha256"} {
+			t.Run(name+"/"+field, func(t *testing.T) {
+				changed := map[string]FileMeta{"a": a["a"], "b": a["b"]}
+				fm := changed[name]
+				if field == "size" {
+					fm.Size++
+				} else {
+					fm.Sha256 = "cc"
+				}
+				changed[name] = fm
+				if FilesFingerprint(changed) == want {
+					t.Fatal("changed plaintext metadata retained fingerprint")
+				}
+			})
+		}
+	}
+	if FilesFingerprint(map[string]FileMeta{"renamed": a["a"], "b": a["b"]}) == want || FilesFingerprint(map[string]FileMeta{"a": a["a"]}) == want {
+		t.Fatal("changed file set retained fingerprint")
+	}
+}
+
+func TestExportRestoreFingerprint(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		t.Run(strconv.FormatBool(encrypted), func(t *testing.T) {
+			key := bytes.Repeat([]byte{7}, 32)
+			var storeOptions []Option
+			if encrypted {
+				storeOptions = append(storeOptions, WithDataKeys(&staticDataKeys{key: key, envelope: []byte("envelope")}))
+			}
+			s, fake := newTestStoreWithOptions(t, true, storeOptions...)
+			local := t.TempDir()
+			files := []string{"workspace.img"}
+			if err := os.WriteFile(filepath.Join(local, files[0]), []byte("parked plaintext"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			want, err := LocalFilesFingerprint(local, files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var exported string
+			opts := ExportOptions{ContentFingerprint: &exported}
+			if encrypted {
+				opts.Kind, opts.Workload, opts.Ref = "session-workspace", "sbx", "lineage"
+			}
+			prefix := "session-workspace/sbx/lineage"
+			for _, skip := range []bool{false, true} {
+				exported = ""
+				_, skipped, err := s.Export(context.Background(), prefix, local, files, 0, 1, "", "", opts)
+				if err != nil || skipped != skip || exported != want {
+					t.Fatalf("export: skipped=%v, fingerprint=%q, err=%v; want %v, %q", skipped, exported, err, skip, want)
+				}
+			}
+			dest := filepath.Join(t.TempDir(), "not-created")
+			var restored string
+			_, _, err = s.Restore(context.Background(), prefix, dest, key, RestoreOptions{ExpectedFingerprint: "wrong", ContentFingerprint: &restored})
+			if !errors.Is(err, ErrFingerprintMismatch) || restored != "" {
+				t.Fatalf("wrong expectation: fingerprint=%q, err=%v", restored, err)
+			}
+			if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("mismatch created restore directory: %v", err)
+			}
+			for _, name := range fake.getOrderCopy() {
+				if strings.HasSuffix(name, "/workspace.img") {
+					t.Fatalf("mismatch downloaded file %q", name)
+				}
+			}
+			_, _, err = s.Restore(context.Background(), prefix, dest, key, RestoreOptions{ExpectedFingerprint: want, ContentFingerprint: &restored})
+			if err != nil || restored != want {
+				t.Fatalf("matching restore: fingerprint=%q, err=%v, want %q", restored, err, want)
+			}
+			got, err := LocalFilesFingerprint(dest, files)
+			if err != nil || got != want {
+				t.Fatalf("restored local fingerprint=%q, err=%v, want %q", got, err, want)
+			}
+		})
+	}
+}
+
+func TestRestoreFingerprintKeepsCheckedMetadata(t *testing.T) {
+	fake := newFakeObjectStore()
+	handler := fake.handler()
+	prefix := "session-workspace/sbx/lineage"
+	fileKey := "/embervm/" + prefix + "/workspace.img"
+	metaKey := "/embervm/" + prefix + "/meta.json"
+	// Model a different node overwriting both payload and marker after this
+	// restore has accepted the original marker but before downloading the file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == fileKey {
+			newContent := []byte("overwritten workspace")
+			sum := sha256.Sum256(newContent)
+			newMeta, err := json.Marshal(Meta{Files: map[string]FileMeta{"workspace.img": {Size: int64(len(newContent)), Sha256: hex.EncodeToString(sum[:])}}})
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			fake.mu.Lock()
+			fake.objects[fileKey], fake.objects[metaKey] = newContent, newMeta
+			fake.mu.Unlock()
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	s := New(srv.URL, "embervm", false)
+	local := t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, "workspace.img"), []byte("original workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var expected string
+	if _, _, err := s.Export(context.Background(), prefix, local, []string{"workspace.img"}, 0, 1, "", "", ExportOptions{ContentFingerprint: &expected}); err != nil {
+		t.Fatal(err)
+	}
+	readsBeforeRestore := len(fake.getOrderCopy())
+	dest := t.TempDir()
+	var fingerprint string
+	_, _, err := s.Restore(context.Background(), prefix, dest, nil, RestoreOptions{ExpectedFingerprint: expected, ContentFingerprint: &fingerprint})
+	if err == nil || fingerprint != "" {
+		t.Fatalf("concurrent overwrite accepted: fingerprint=%q, err=%v", fingerprint, err)
+	}
+	if files, err := os.ReadDir(dest); err != nil || len(files) != 0 {
+		t.Fatalf("corrupt restore left files: %v, err=%v", files, err)
+	}
+	var markerReads int
+	for _, key := range fake.getOrderCopy()[readsBeforeRestore:] {
+		if key == metaKey {
+			markerReads++
+		}
+	}
+	if markerReads != 1 {
+		t.Fatalf("restore marker reads=%d, want one immutable snapshot", markerReads)
+	}
+}
+
+func TestExportSerializesSamePrefix(t *testing.T) {
+	s, fake := newTestStoreWithOptions(t, false, WithDataKeys(&staticDataKeys{key: bytes.Repeat([]byte{7}, 32), envelope: []byte("envelope")}))
+	local := t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, "workspace.img"), []byte("parked workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prefix := "session-workspace/sbx/lineage"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := s.Export(context.Background(), prefix, local, []string{"workspace.img"}, 0, 1, "", "", ExportOptions{
+			Kind: "session-workspace", Workload: "sbx", Ref: "lineage",
+			DataKeySucceededFn: func() { close(entered); <-release },
+		})
+		firstDone <- err
+	}()
+	<-entered
+	secondDone := make(chan error, 1)
+	var skipped bool
+	go func() {
+		_, skip, err := s.Export(context.Background(), prefix, local, []string{"workspace.img"}, 0, 1, "", "")
+		skipped = skip
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second writer passed an active same-prefix export: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil || !skipped {
+		t.Fatalf("second export err=%v, skipped=%v, want checksum-equal skip", err, skipped)
+	}
+	if got := len(fake.putOrderCopy()); got != 2 {
+		t.Fatalf("PUT count=%d, want file plus final marker from one writer", got)
+	}
+}
 
 // fakeObjectStore is an in-memory S3-API stand-in: a map from object path
 // (/<bucket>/<key>) to bytes, served over an httptest.Server. It honours PUT /

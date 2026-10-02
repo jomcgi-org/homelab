@@ -41,7 +41,7 @@ import (
 // contracts without performing object-store I/O.
 type artifactStore interface {
 	Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...store.ExportOptions) (bytesMoved int64, skipped bool, err error)
-	Restore(ctx context.Context, prefix, localDir string, key []byte) (bytesMoved int64, generation uint64, err error)
+	Restore(ctx context.Context, prefix, localDir string, key []byte, options ...store.RestoreOptions) (bytesMoved int64, generation uint64, err error)
 	DeleteArtifact(ctx context.Context, prefix string) error
 	Present(ctx context.Context, prefix string) (present bool, generation uint64, cpuVendor, cpuTemplate string, err error)
 	Reachable(ctx context.Context) bool
@@ -601,6 +601,9 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 			return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: true, Generation: 0}, nil
 		}
 	}
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE && s.lineageAttached(ref.GetWorkload(), ref.GetRef()) {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: cannot export attached workspace lineage %q", ref.GetRef())
+	}
 	files, err := enumerateArtifactFiles(localDir)
 	if err != nil || len(files) == 0 {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: local artifact %q absent or empty (nothing to export)", prefix)
@@ -615,7 +618,12 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 		return &nodev1.ExportArtifactResponse{BytesMoved: 0, Skipped: false, Generation: 0}, nil
 	}
 	generation := s.artifactGeneration(ref)
-	moved, skipped, err := s.exportWithKeys(ctx, ref, prefix, localDir, files, generation)
+	var fingerprint string
+	var fingerprintOut *string
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		fingerprintOut = &fingerprint
+	}
+	moved, skipped, err := s.exportWithKeys(ctx, ref, prefix, localDir, files, generation, fingerprintOut)
 	// A refused export is an ANOMALY, not a transport failure: this node holds an
 	// older copy than the store does. Returning Unavailable would make the control
 	// plane retry it on every reconcile forever, so ack it as skipped and say so
@@ -640,7 +648,7 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 	if skipped {
 		s.rewrapEnvelopeAfterAccess(ref, prefix)
 	}
-	return &nodev1.ExportArtifactResponse{BytesMoved: uint64(moved), Skipped: skipped, Generation: generation}, nil
+	return &nodev1.ExportArtifactResponse{BytesMoved: uint64(moved), Skipped: skipped, Generation: generation, ContentFingerprint: fingerprint}, nil
 }
 
 // RestoreArtifact fetches an artifact from the store back onto local disk into
@@ -665,10 +673,13 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // with accepted=true. The caller polls NodeStatus for the base to appear READY.
 // Every other (small) kind still restores inline.
 func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
+	ref := req.GetArtifact()
+	if req.GetExpectedFingerprint() != "" && ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		return nil, status.Error(codes.InvalidArgument, "noded: expected_fingerprint is valid only for SESSION_WORKSPACE")
+	}
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
 	}
-	ref := req.GetArtifact()
 	if err := s.waitForRetirementExport(ctx, ref); err != nil {
 		return nil, err
 	}
@@ -723,8 +734,22 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// BASE identity gate because no runtime image lookup is needed to keep bytes
 	// already held locally. Enveloped artifacts have already passed capability
 	// validation above, so a local copy cannot bypass download authorization.
-	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
+	local, localErr := enumerateArtifactFiles(localDir)
+	if req.GetExpectedFingerprint() != "" && localErr != nil && !errors.Is(localErr, os.ErrNotExist) {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: enumerate local workspace %q: %v", prefix, localErr)
+	}
+	if localErr == nil && len(local) > 0 {
 		if ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_BASE || isCompleteBase(localDir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
+			var fingerprint string
+			if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE && req.GetExpectedFingerprint() != "" {
+				fingerprint, err = store.LocalFilesFingerprint(localDir, local)
+				if err != nil {
+					return nil, status.Errorf(codes.FailedPrecondition, "noded: fingerprint local workspace %q: %v", prefix, err)
+				}
+				if fingerprint != req.GetExpectedFingerprint() {
+					return nil, status.Errorf(codes.FailedPrecondition, "noded: local workspace %q fingerprint mismatch: expected %s, local %s", prefix, req.GetExpectedFingerprint(), fingerprint)
+				}
+			}
 			if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
 				localDevices, derr := snapshotmeta.ReadDeviceSet(localDir)
 				if derr != nil {
@@ -749,7 +774,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 			if len(envelope) > 0 {
 				s.rewrapEnvelopeAfterAccess(ref, prefix)
 			}
-			return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
+			return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen, ContentFingerprint: fingerprint}, nil
 		}
 	}
 
@@ -800,7 +825,18 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// Every other (small) kind restores inline: the download is quick enough that
 	// the idle-flow-reap risk does not apply, and the caller's existing inline
 	// restore-on-miss semantics are unchanged.
-	moved, generation, err := s.store.Restore(ctx, prefix, localDir, dataKey)
+	var fingerprint string
+	var options []store.RestoreOptions
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
+		options = append(options, store.RestoreOptions{ExpectedFingerprint: req.GetExpectedFingerprint(), ContentFingerprint: &fingerprint})
+	}
+	moved, generation, err := s.store.Restore(ctx, prefix, localDir, dataKey, options...)
+	if errors.Is(err, store.ErrFingerprintMismatch) {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore workspace %q: %v", prefix, err)
+	}
+	if req.GetExpectedFingerprint() != "" && errors.Is(err, store.ErrNotPresent) {
+		return nil, status.Errorf(codes.NotFound, "noded: restore workspace %q: not present in store", prefix)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: restore artifact %q download failed: %v", prefix, err)
 	}
@@ -810,7 +846,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	if len(envelope) > 0 {
 		s.rewrapEnvelopeAfterAccess(ref, prefix)
 	}
-	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation}, nil
+	return &nodev1.RestoreArtifactResponse{BytesMoved: uint64(moved), Generation: generation, ContentFingerprint: fingerprint}, nil
 }
 
 // waitForRetirementExport prevents a restore from racing the asynchronous
@@ -881,8 +917,11 @@ func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation 
 	return nil, status.Errorf(codes.FailedPrecondition, "noded: %v: restore capability check failed: %v", store.ErrKeyRequired, err)
 }
 
-func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, prefix, localDir string, files []string, generation uint64) (int64, bool, error) {
+func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, prefix, localDir string, files []string, generation uint64, fingerprintOut ...*string) (int64, bool, error) {
 	opts := store.ExportOptions{}
+	if len(fingerprintOut) > 0 {
+		opts.ContentFingerprint = fingerprintOut[0]
+	}
 	if s.cfg.StoreEncrypt && isPrincipalKind(ref.GetKind()) {
 		opts.Kind = artifactKindStr(ref.GetKind())
 		opts.Workload = ref.GetWorkload()
@@ -900,7 +939,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 		}
 	}
 	var options []store.ExportOptions
-	if opts.Kind != "" || opts.Overwrite || opts.EnforceDeviceShape {
+	if opts.Kind != "" || opts.Overwrite || opts.EnforceDeviceShape || opts.ContentFingerprint != nil {
 		options = append(options, opts)
 	}
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)

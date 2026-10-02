@@ -716,6 +716,49 @@ defmodule Embervm.NodeRoundtripTest do
     assert ns.snapshot_disk_used_bytes == 1_000_000_000
   end
 
+  test "workspace fingerprints round-trip across the wire", %{channel: ch} do
+    workspace = %ArtifactRef{
+      kind: :ARTIFACT_KIND_SESSION_WORKSPACE,
+      workload: "sandbox-session",
+      ref: "fingerprinted-lineage"
+    }
+
+    {:ok, exported} =
+      NodeService.Stub.export_artifact(ch, %ExportArtifactRequest{artifact: workspace})
+
+    assert exported.content_fingerprint =~ ~r/^[0-9a-f]{64}$/
+
+    {:ok, skipped} =
+      NodeService.Stub.export_artifact(ch, %ExportArtifactRequest{artifact: workspace})
+
+    assert skipped.skipped
+    assert skipped.content_fingerprint == exported.content_fingerprint
+
+    {:ok, restored} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{
+        artifact: workspace,
+        expected_fingerprint: exported.content_fingerprint
+      })
+
+    assert restored.content_fingerprint == exported.content_fingerprint
+
+    {:error, mismatch} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{
+        artifact: workspace,
+        expected_fingerprint: "wrong"
+      })
+
+    assert mismatch.status == GRPC.Status.failed_precondition()
+
+    {:error, invalid} =
+      NodeService.Stub.restore_artifact(ch, %RestoreArtifactRequest{
+        artifact: %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: "scratch-postgres"},
+        expected_fingerprint: exported.content_fingerprint
+      })
+
+    assert invalid.status == GRPC.Status.invalid_argument()
+  end
+
   test "continuity verbs round-trip across the wire (R6 additive contract)", %{channel: ch} do
     # ExportArtifact: first export of a stateful bundle records the store key and
     # reports bytes moved (derived from workload+ref length), not skipped.
