@@ -170,6 +170,26 @@ def test_crash_after_reservation_never_recreates(engine, monkeypatch):
     assert writes == []
 
 
+def test_closed_issue_reconciles_lost_create_response(engine, monkeypatch):
+    _seed(engine)
+    calls = []
+    created = []
+
+    def request(method, _path, **kwargs):
+        calls.append(method)
+        if method == "POST":
+            created.append(
+                {"number": 76, "state": "closed", "body": kwargs["payload"]["body"]}
+            )
+            raise TimeoutError("response lost, then issue closed")
+        return {"items": [] if "is:open" in kwargs["params"].get("q", "") else created}
+
+    monkeypatch.setattr(feedback, "github_request", request)
+    assert feedback.file_process_issues(engine=engine, now=NOW) == 0
+    assert feedback.file_process_issues(engine=engine, now=NOW) == 1
+    assert calls.count("POST") == 1
+
+
 def test_existing_marker_adopted_without_create(engine, monkeypatch):
     _seed(engine)
     monkeypatch.setattr(

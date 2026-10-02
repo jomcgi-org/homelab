@@ -439,6 +439,44 @@ def test_expansion_bill_counts_towards_root_ceiling(session):
     )
 
 
+def test_late_expansion_overrun_not_hidden_by_newer_root(session):
+    session.add_all(
+        [
+            AuditRun(
+                job_name="kg-audit",
+                prompt_version="test",
+                status="complete",
+                cost_usd=1.5,
+            ),
+            AuditRun(
+                job_name="kg-audit",
+                prompt_version="test",
+                status="complete",
+                cost_usd=0.25,
+            ),
+        ]
+    )
+    session.commit()
+    older, newer = session.exec(select(AuditRun).order_by(AuditRun.id)).all()
+    session.add_all(
+        [
+            AuditRun(
+                job_name=f"kg-audit-x:{older.id}:1",
+                root_run_id=older.id,
+                stream="expansion",
+                prompt_version="test",
+                cost_usd=1.0,
+            )
+        ]
+    )
+    session.commit()
+    summary = audit.defer_audit_if_over_budget(
+        session, "kg-audit", PAYLOAD, "after-late-expansion"
+    )
+    assert summary and f"root {older.id}" in summary and "2.50" in summary
+    assert newer.cost_usd == 0.25
+
+
 def test_metrics_emit_uniform_intervals_and_actual_resolver_outcomes(
     session, monkeypatch
 ):
@@ -612,6 +650,20 @@ def test_job_is_recurring_ordinary_kg_and_idempotent(session):
     assert row.routine_kind == "kg-drain"
     assert row.interval_secs == 86400
     assert json.loads(row.payload) == {"mode": "audit", "stream": "scheduled"}
+
+
+def test_job_interval_reconciles_without_replacing_invocation(session, monkeypatch):
+    audit.ensure_audit_job(session)
+    session.execute(
+        text("UPDATE routine_jobs SET last_status = :state"),
+        {"state": UNKNOWN_INVOCATION},
+    )
+    before = session.execute(text("SELECT * FROM routine_jobs")).one()._asdict()
+    monkeypatch.setenv("KG_AUDIT_INTERVAL_SECONDS", "172800")
+    assert audit.ensure_audit_job(session)
+    after = session.execute(text("SELECT * FROM routine_jobs")).one()._asdict()
+    assert after == {**before, "interval_secs": 172800}
+    assert not audit.ensure_audit_job(session)
 
 
 @pytest.mark.parametrize(

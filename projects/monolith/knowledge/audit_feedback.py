@@ -69,7 +69,7 @@ def _find_issue(repo: str, marker: str, cause: str) -> int | None:
             "GET",
             "/search/issues",
             params={
-                "q": f'repo:{repo} is:issue is:open in:body "kg-audit-cause" "{cause}"',
+                "q": f'repo:{repo} is:issue in:body "kg-audit-cause" "{cause}"',
                 "per_page": 100,
                 "page": page,
             },

@@ -78,6 +78,10 @@ embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
 
 knowledge:
   defaultRepoScope: "repo:jomcgi-org/homelab"
+  audit:
+    # Mirror the monolith audit kill switch for agents-tier retrieval counting.
+    # Activate the same key on both deployments; this tier starts no audit jobs.
+    enabled: false
 
 # Staged coordination board (#5704). The server catalogue is present while
 # storage access stays inert. Enabling this alone is insufficient: scoped
