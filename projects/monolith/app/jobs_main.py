@@ -461,15 +461,21 @@ def knowledge_merge_clones(
         False, "--apply", help="Persist merges; default is dry-run."
     ),
     scope: str | None = typer.Option(None, help="Limit to one exact knowledge scope."),
+    max_merges: int | None = typer.Option(
+        None, min=1, help="Maximum clone clusters per run; default is unbounded."
+    ),
 ) -> None:
     """Merge semantic fact clones, preserving provenance and invalidated rows."""
     from core.db import get_engine
     from knowledge.gardener import merge_clones
     from sqlmodel import Session
 
+    counts: dict[str, int] = {}
     with Session(get_engine()) as session:
-        plans = merge_clones(session, apply=apply, scope=scope)
-    typer.echo(json.dumps({"dry_run": not apply, "merges": plans}))
+        plans = merge_clones(
+            session, apply=apply, scope=scope, max_merges=max_merges, counts=counts
+        )
+    typer.echo(json.dumps({"dry_run": not apply, "merges": plans, **counts}))
 
 
 # Entity spine rollout is manual after deployment. The supported path is the
