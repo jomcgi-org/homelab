@@ -116,6 +116,50 @@ def has_unknown_outcome(session: Session, session_id: int) -> bool:
     return session.exec(select(_unknown_outcome_exists(session_id))).one()
 
 
+def turn_wait_terminal(session: Session, session_id: int, after_seq: int) -> bool:
+    """No future turn is possible, without mistaking queued/recovering work for idle."""
+    row = session.get(AgentSession, session_id)
+    if row is None:
+        return True
+    if (
+        session.exec(
+            select(PendingMessage.id).where(
+                PendingMessage.session_id == session_id, PendingMessage.seq > after_seq
+            )
+        ).first()
+        is not None
+    ):
+        return False
+    if (
+        session.exec(
+            select(AgentTurn.id).where(
+                AgentTurn.session_id == session_id,
+                AgentTurn.seq > after_seq,
+                AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
+            )
+        ).first()
+        is not None
+    ):
+        return False
+    # These are the execution lifecycle's terminal statuses, also used by
+    # settled_guest_cleanup_conditions. A completed first turn is not an
+    # invitation to wait for a follow-up that nobody queued.
+    if row.status in {"completed", "failed", "warn", "cancelled"}:
+        return True
+    permits = session.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.session_id == session_id
+        )
+    ).all()
+    if any(permit.state != "settled" for permit in permits):
+        return False
+    return (
+        row.ember_session_id is None
+        or admission.cleanup_pending(session, row)
+        or bool(permits)
+    )
+
+
 def _assert_guest_reusable(
     session: Session, row: AgentSession, guest_id: str | None = None
 ) -> None:
@@ -2261,6 +2305,7 @@ def create_pending_message(
     model: str | None = None,
     *,
     recall_message_text: str | object = _RECALL_UNSET,
+    require_live_session: bool = False,
 ) -> PendingMessage:
     """Enqueue a message durably and return its per-session turn sequence.
 
@@ -2282,6 +2327,19 @@ def create_pending_message(
     max_attempts = 5
     for attempt in range(max_attempts):
         try:
+            if require_live_session:
+                # The settled-binding reaper takes this same pool/session lock.
+                # Recheck after a collision too: rollback releases the lock.
+                # If we win, the pending row blocks settled guest cleanup.
+                if admission.cleanup_pending(session, session_row):
+                    raise PendingClaimLost("Workflow cleanup owns the correction guest")
+                if session_row.status in {"failed", "cancelled"}:
+                    raise PendingClaimLost("Cannot send to a terminal agent session")
+                if (
+                    session_row.status in {"completed", "warn"}
+                    and not session_row.ember_session_id
+                ):
+                    raise PendingClaimLost("Correction guest is no longer bound")
             text = message_text
             if session_row.recall_pending and recall_message_text is not _RECALL_UNSET:
                 # Re-check under the lock: a concurrent sender may have won.

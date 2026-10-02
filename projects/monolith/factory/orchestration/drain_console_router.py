@@ -382,6 +382,7 @@ def drain_console_view() -> dict:
         "settings": {
             "max_jobs_per_cycle": settings["max_jobs_per_cycle"],
             "turn_timeout_seconds": settings["turn_timeout_seconds"],
+            "kg_turn_timeout_seconds": settings.get("kg_turn_timeout_seconds", 900),
         },
         "lane": lane,
         "recent_cycles": drain_console.compose_recent_cycles(cycles, step_stats),

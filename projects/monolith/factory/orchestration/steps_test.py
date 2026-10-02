@@ -6,6 +6,215 @@ import pytest
 import factory.orchestration.steps as steps
 
 
+@pytest.fixture
+def turn_wait_database(tmp_path, monkeypatch):
+    from sqlmodel import SQLModel, create_engine
+    from factory.execution.models import (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'turn-wait.db'}",
+        execution_options={"schema_translate_map": {"agent_sessions": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            model.__table__
+            for model in (
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentSession,
+                AgentTurn,
+                PendingMessage,
+            )
+        ],
+    )
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    yield engine
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "status,after_seq", [("failed", 0), ("cancelled", 0), ("completed", 1), ("warn", 1)]
+)
+def test_terminal_session_wait_returns_none_in_two_polls(
+    turn_wait_database, monkeypatch, status, after_seq
+):
+    from sqlmodel import Session
+    from factory.execution.models import AgentSession, AgentTurn
+    from factory.orchestration import workflows
+
+    with Session(turn_wait_database) as db:
+        row = AgentSession(
+            local_session_id="terminal", workspace="guest", branch="main", status=status
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        sid = row.id
+        if after_seq:
+            db.add(
+                AgentTurn(
+                    session_id=sid,
+                    seq=1,
+                    prompt="first",
+                    result_text="done",
+                    terminal_reason="completed",
+                )
+            )
+            db.commit()
+    polls = []
+
+    def poll(*args):
+        polls.append(args)
+        return steps.poll_turn.__wrapped__(*args)
+
+    monkeypatch.setattr(workflows, "poll_turn", poll)
+    monkeypatch.setattr(
+        workflows,
+        "session_turn_wait_terminal",
+        steps.session_turn_wait_terminal.__wrapped__,
+    )
+    monkeypatch.setattr(workflows, "observe_clock", lambda: "2026-10-02T00:00:00+00:00")
+    monkeypatch.setattr(workflows.DBOS, "patch", lambda _name: True)
+    monkeypatch.setattr(
+        workflows.DBOS, "sleep", lambda *_args: pytest.fail("terminal wait slept")
+    )
+    assert workflows._await_turn(sid, after_seq, 43800) is None
+    assert polls == [(sid, after_seq)] * 2
+
+
+@pytest.mark.parametrize(
+    "status,claimed",
+    [("running", False), ("running", True), ("completed", False), ("failed", False)],
+)
+def test_terminal_read_preserves_pending_turns(turn_wait_database, status, claimed):
+    from sqlmodel import Session
+    from factory.execution.models import AgentSession, PendingMessage
+
+    with Session(turn_wait_database) as db:
+        row = AgentSession(
+            local_session_id="pending", workspace="guest", branch="main", status=status
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        sid = row.id
+        db.add(
+            PendingMessage(
+                session_id=sid,
+                seq=2,
+                message_text="correction",
+                claimed_by_replica="worker" if claimed else None,
+            )
+        )
+        db.commit()
+    assert steps.session_turn_wait_terminal.__wrapped__(sid, 1) is False
+
+
+def test_running_pending_session_waits_until_deadline(turn_wait_database, monkeypatch):
+    from sqlmodel import Session
+    from factory.execution.models import AgentSession, PendingMessage
+    from factory.orchestration import workflows
+
+    with Session(turn_wait_database) as db:
+        row = AgentSession(local_session_id="waiting", workspace="guest", branch="main")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        sid = row.id
+        db.add(PendingMessage(session_id=sid, seq=1, message_text="work"))
+        db.commit()
+    clock = iter(
+        [
+            "2026-10-02T00:00:00+00:00",
+            "2026-10-02T00:00:01+00:00",
+            "2026-10-02T00:00:05+00:00",
+        ]
+    )
+    sleeps = []
+    monkeypatch.setattr(workflows, "poll_turn", steps.poll_turn.__wrapped__)
+    monkeypatch.setattr(
+        workflows,
+        "session_turn_wait_terminal",
+        steps.session_turn_wait_terminal.__wrapped__,
+    )
+    monkeypatch.setattr(workflows, "observe_clock", clock.__next__)
+    monkeypatch.setattr(workflows.DBOS, "patch", lambda _name: True)
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+    assert workflows._await_turn(sid, 0, 5) is None
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS]
+
+
+@pytest.mark.parametrize("reason", sorted(steps.INTERRUPTED_TERMINAL_REASONS))
+def test_terminal_read_preserves_interrupted_replacements(turn_wait_database, reason):
+    from sqlmodel import Session
+    from factory.execution.models import AgentSession, AgentTurn
+
+    with Session(turn_wait_database) as db:
+        row = AgentSession(
+            local_session_id="interrupted",
+            workspace="guest",
+            branch="main",
+            status="recovering",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        sid = row.id
+        db.add(
+            AgentTurn(
+                session_id=sid,
+                seq=2,
+                prompt="correction",
+                result_text="partial",
+                terminal_reason=reason,
+            )
+        )
+        db.commit()
+    assert steps.session_turn_wait_terminal.__wrapped__(sid, 1) is False
+
+
+def test_terminal_read_detects_missing_session(turn_wait_database):
+    assert steps.session_turn_wait_terminal.__wrapped__(999, 0) is True
+
+
+def test_terminal_read_detects_settled_binding_despite_running_status(
+    turn_wait_database,
+):
+    from sqlmodel import Session
+    from factory.execution.models import AgentSession, AgentCapacityReservation
+
+    with Session(turn_wait_database) as db:
+        row = AgentSession(
+            local_session_id="settled",
+            workspace="guest",
+            branch="main",
+            ember_session_id="guest",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        sid = row.id
+        db.add(
+            AgentCapacityReservation(
+                local_session_id="settled",
+                session_id=sid,
+                pending_seq=1,
+                tier="kg",
+                model="luna",
+                state="settled",
+            )
+        )
+        db.commit()
+    assert steps.session_turn_wait_terminal.__wrapped__(sid, 1) is True
+
+
 class FakeClient:
     response = None
 

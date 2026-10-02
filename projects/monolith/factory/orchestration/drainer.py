@@ -131,6 +131,7 @@ def pin_drainer_settings() -> dict:
                     "docfix_review_enabled", False
                 ),
                 "drain.turn_timeout_seconds": settings["turn_timeout_seconds"],
+                "drain.kg_turn_timeout_seconds": settings["kg_turn_timeout_seconds"],
                 "drain.reasoning": settings["reasoning"],
             },
         )
@@ -1482,7 +1483,16 @@ def drain_cycle() -> dict:
         )
         processed = 0
         succeeded = 0
-        ttl_secs = settings["turn_timeout_seconds"] + CLAIM_TTL_MARGIN_SECONDS
+        # Keep the mixed-kind claim lease at the project backstop. A KG job
+        # also includes capacity/start backoff, extraction, up to TWO bounded
+        # turns, and confirmed cleanup. Expiring its lease at one turn's 900s
+        # could admit a second owner while this workflow still owns the job.
+        lease_timeout = settings["turn_timeout_seconds"]
+        if KG_JOB_KIND in enabled_kinds:
+            lease_timeout = max(
+                lease_timeout, 2 * settings.get("kg_turn_timeout_seconds", 900)
+            )
+        ttl_secs = lease_timeout + CLAIM_TTL_MARGIN_SECONDS
         claim_kinds = list(enabled_kinds)
         idle_rotation = False
 
@@ -1595,11 +1605,17 @@ def drain_cycle() -> dict:
                         admission_tier="kg" if job_kind == KG_JOB_KIND else "project",
                     )
                     set_attributes(job_span, {"drain.session_id": session_id})
-                    turn = _await_turn(session_id, 0, settings["turn_timeout_seconds"])
+                    # Recovered cycles can replay settings pinned before this
+                    # key existed. Never reread live config in the workflow.
+                    turn_timeout = (
+                        settings.get("kg_turn_timeout_seconds", 900)
+                        if job_kind == KG_JOB_KIND
+                        else settings["turn_timeout_seconds"]
+                    )
+                    turn = _await_turn(session_id, 0, turn_timeout)
                     if turn is None:
                         raise TimeoutError(
-                            "turn timed out after "
-                            f"{settings['turn_timeout_seconds']} seconds"
+                            f"turn timed out after {turn_timeout} seconds"
                         )
                     output = _completed_output(turn, session_id)
                     if job_kind == KG_JOB_KIND:
@@ -1626,12 +1642,12 @@ def drain_cycle() -> dict:
                                 correction_turn = _await_turn(
                                     session_id,
                                     first_seq,
-                                    settings["turn_timeout_seconds"],
+                                    turn_timeout,
                                 )
                                 if correction_turn is None:
                                     raise TimeoutError(
                                         "correction turn timed out after "
-                                        f"{settings['turn_timeout_seconds']} seconds"
+                                        f"{turn_timeout} seconds"
                                     )
                                 _completed_output(correction_turn, session_id)
                                 correction_result = apply_kg_extraction(

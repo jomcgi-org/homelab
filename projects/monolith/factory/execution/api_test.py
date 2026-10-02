@@ -13,6 +13,40 @@ from factory.execution.models import AgentSession
 from factory.execution.transport import EmberSessionGone, Turn
 
 
+def test_swarm_correction_requires_live_session_before_status_or_dispatch(monkeypatch):
+    from factory.execution.store import PendingClaimLost
+
+    row = AgentSession(
+        id=41,
+        local_session_id="kg-correction",
+        workspace="guest",
+        branch="main",
+        model="luna",
+        status="completed",
+    )
+    calls = []
+
+    def guarded_pending(session_id, message, model, *, require_live_session=False):
+        calls.append((session_id, message, model, require_live_session))
+        raise PendingClaimLost("Workflow cleanup owns the correction guest")
+
+    monkeypatch.setattr(api, "_load_session_row", lambda _sid: row)
+    monkeypatch.setattr(api, "_persist_pending_message", guarded_pending)
+    monkeypatch.setattr(
+        api,
+        "_set_session_status",
+        lambda *_args: pytest.fail("failed send reset status"),
+    )
+    monkeypatch.setattr(
+        api,
+        "_schedule_next_message",
+        lambda *_args: pytest.fail("failed send scheduled work"),
+    )
+    with pytest.raises(PendingClaimLost, match="cleanup owns"):
+        api.send_to_swarm_session(41, "correct")
+    assert calls == [(41, "correct", "luna", True)]
+
+
 def _completed_synthetic_turn() -> Turn:
     return Turn(
         result="synthetic ok",

@@ -560,7 +560,9 @@ def send_to_swarm_session(session_id: int, message: str) -> int:
         raise ValueError(f"Unknown agent session {session_id}")
     model = normalize_model(row.model)
     model_family(model)
-    turn = _persist_pending_message(session_id, message, model)
+    turn = _persist_pending_message(
+        session_id, message, model, require_live_session=True
+    )
     _set_session_status(session_id, "running")
     try:
         _schedule_next_message(session_id)

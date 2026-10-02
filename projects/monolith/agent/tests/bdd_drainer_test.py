@@ -54,6 +54,7 @@ def _drainer_settings(**overrides) -> DrainerSettings:
         "enabled": True,
         "max_jobs_per_cycle": 3,
         "turn_timeout_seconds": 1800,
+        "kg_turn_timeout_seconds": 900,
         "stall_threshold_seconds": 2700,
         "job_kinds": ("qwen-drain", "kg-drain"),
         "kg_max_jobs_per_day": 40,

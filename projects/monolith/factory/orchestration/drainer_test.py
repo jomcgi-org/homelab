@@ -34,6 +34,7 @@ SETTINGS = {
     "enabled": True,
     "max_jobs_per_cycle": 3,
     "turn_timeout_seconds": 1800,
+    "kg_turn_timeout_seconds": 900,
     "job_kinds": ("qwen-drain", "kg-drain"),
     "kg_max_jobs_per_day": 40,
     "repo": "jomcgi-org/homelab",
@@ -206,7 +207,7 @@ def test_kg_rejection_gets_exactly_one_correction_turn(monkeypatch):
     )
 
     assert sends == [(101, "correct 1")]
-    assert awaits == [(101, 0, 1800), (101, 1, 1800)]
+    assert awaits == [(101, 0, 900), (101, 1, 900)]
     assert [call[3] for call in applied] == [False, True]
     assert completions == [
         (
@@ -739,7 +740,7 @@ def test_kg_cap_defers_once_then_drains_qwen_jobs(monkeypatch):
     assert all(kinds == ("qwen-drain",) for kinds in claims[1:])
 
 
-def _run_transient_kg_failure(monkeypatch, attempts):
+def _run_transient_kg_failure(monkeypatch, attempts, *, terminal=False):
     job = {
         "name": "kg:raw-1",
         "routine_kind": "kg-drain",
@@ -749,6 +750,7 @@ def _run_transient_kg_failure(monkeypatch, attempts):
     deferrals = []
     completions = []
     failures = []
+    destroys = []
     monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: SETTINGS.copy())
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
     monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_args: next(queue))
@@ -758,7 +760,11 @@ def _run_transient_kg_failure(monkeypatch, attempts):
     monkeypatch.setattr(
         drainer,
         "_await_turn",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("ember unavailable")),
+        lambda *_args: (
+            None
+            if terminal
+            else (_ for _ in ()).throw(RuntimeError("ember unavailable"))
+        ),
     )
     monkeypatch.setattr(drainer, "increment_kg_job_attempt", lambda _name: attempts + 1)
     monkeypatch.setattr(
@@ -777,26 +783,132 @@ def _run_transient_kg_failure(monkeypatch, attempts):
         lambda raw_id, error, attempt: failures.append((raw_id, error, attempt)),
     )
     monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
-    monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
+    monkeypatch.setattr(
+        drainer, "destroy_drainer_session", lambda *args: destroys.append(args) or True
+    )
 
     drainer.drain_cycle.__wrapped__()
-    return deferrals, completions, failures
+    return deferrals, completions, failures, destroys
 
 
 def test_transient_kg_failure_defers_with_incremented_attempt(monkeypatch):
-    deferrals, completions, failures = _run_transient_kg_failure(monkeypatch, 0)
+    deferrals, completions, failures, destroys = _run_transient_kg_failure(
+        monkeypatch, 0
+    )
 
     assert deferrals == [("kg:raw-1", 900)]
     assert completions == []
     assert failures == []
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
 
 def test_transient_kg_failure_gives_up_after_retry_ceiling(monkeypatch):
-    deferrals, completions, failures = _run_transient_kg_failure(monkeypatch, 2)
+    deferrals, completions, failures, destroys = _run_transient_kg_failure(
+        monkeypatch, 2
+    )
 
     assert deferrals == []
     assert completions == [("kg:raw-1", "error", "ember unavailable", True)]
     assert failures == [("raw-1", "ember unavailable", 3)]
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
+
+
+@pytest.mark.parametrize("attempts", [0, drainer.MAX_GARDENER_RETRIES - 1])
+def test_terminal_kg_session_retries_or_dead_letters_and_releases(
+    monkeypatch, attempts
+):
+    deferrals, completions, failures, destroys = _run_transient_kg_failure(
+        monkeypatch, attempts, terminal=True
+    )
+    error = "turn timed out after 900 seconds"
+    if attempts + 1 < drainer.MAX_GARDENER_RETRIES:
+        assert deferrals == [("kg:raw-1", 900)]
+        assert completions == failures == []
+    else:
+        assert deferrals == []
+        assert completions == [("kg:raw-1", "error", error, True)]
+        assert failures == [("raw-1", error, drainer.MAX_GARDENER_RETRIES)]
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
+
+
+def test_correction_send_failure_retries_without_waiting_and_destroys(monkeypatch):
+    from factory.execution.store import PendingClaimLost
+
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda *_args: "kg prompt")
+    monkeypatch.setattr(drainer, "build_kg_correction_prompt", lambda *_args: "correct")
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda *_args: {
+            "atoms": [],
+            "rejected": [{"reason": "bare value"}],
+            "replayed": False,
+        },
+    )
+    deferrals = []
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda *args, **_kwargs: deferrals.append(args) or True,
+    )
+    waits = []
+
+    def first_turn(*args):
+        waits.append(args)
+        assert len(waits) == 1, "failed correction must not enter another wait"
+        return {"seq": 1, "result_text": "first", "terminal_reason": "completed"}
+
+    def failed_send(*_args):
+        raise PendingClaimLost("Workflow cleanup owns the correction guest")
+
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+    _, _, _, completions, notifications, destroys = _run(
+        monkeypatch, [job], await_turn=first_turn, send_message=failed_send
+    )
+    assert waits == [(101, 0, 900)]
+    assert deferrals == [("kg:raw-1", 900)]
+    assert completions == []
+    assert notifications == [("kg:raw-1", "Workflow cleanup owns the correction guest")]
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
+
+
+@pytest.mark.parametrize("kg_timeout", [None, 45, 3600])
+def test_kg_timeout_uses_pinned_override_or_legacy_fallback(monkeypatch, kg_timeout):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    settings = SETTINGS.copy()
+    if kg_timeout is None:
+        settings.pop("kg_turn_timeout_seconds")
+    else:
+        settings["kg_turn_timeout_seconds"] = kg_timeout
+    waits = []
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda *_args: "kg prompt")
+    monkeypatch.setattr(drainer, "defer_drainer_job", lambda *_args, **_kwargs: True)
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+    _, claims, _, _, notifications, _ = _run(
+        monkeypatch,
+        [job],
+        settings=settings,
+        await_turn=lambda *args: waits.append(args),
+    )
+    timeout = 900 if kg_timeout is None else kg_timeout
+    assert waits == [(101, 0, timeout)]
+    assert notifications == [("kg:raw-1", f"turn timed out after {timeout} seconds")]
+    # The larger mixed-kind lease also covers start backoff, two KG turns,
+    # applying output and confirmed cleanup, without a second job owner.
+    assert (
+        claims[0][0]
+        == max(settings["turn_timeout_seconds"], 2 * timeout)
+        + drainer.CLAIM_TTL_MARGIN_SECONDS
+    )
 
 
 @pytest.mark.parametrize(

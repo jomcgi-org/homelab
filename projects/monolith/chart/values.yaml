@@ -215,6 +215,8 @@ agents:
     maxJobsPerCycle: 15
     # Observation bound, outside the twelve-hour invoke and transport result wait.
     turnTimeoutSeconds: 43800
+    # KG extraction and its one correction turn use a shorter observation bound.
+    kgTurnTimeoutSeconds: 900
     # A deliberately deep backlog (a queued overnight wave) exceeds this from
     # the moment it is registered, so the advisory reads stalled while the
     # drainer works as designed. Accepted for an advisory signal: it clears as
