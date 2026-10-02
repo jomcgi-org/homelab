@@ -109,7 +109,7 @@ _REFUSAL = re.compile(
     r"(?:was|were|is|has been|have been)\s+(?:not|never)\s+"
     r"(?:modified|changed|bumped|updated|edited|touched)\b"
     # "Chart.yaml remains / stays unchanged"
-    + r"|\b(?:chart\.yaml|(?:chart\s+)?version|the\s+chart)\s+"
+     + r"|\b(?:chart\.yaml|(?:chart\s+)?version|the\s+chart)\s+"
     r"(?:remains?|stays?|is left)\s+(?:unchanged|untouched|at\s+\d+\.\d+)\b",
     re.IGNORECASE,
 )
@@ -165,7 +165,9 @@ _WRITEBACK_VERB = re.compile(
 )
 # Any merge-family word (merge, merges, merged, merging, post-merge) counts as
 # merge timing; the actor, verb and version must still co-occur in the sentence.
-_WRITEBACK_TIMING = re.compile(r"\bmerg(?:e|es|ed|ing)\b|\bpost[\s-]?merge\b", re.IGNORECASE)
+_WRITEBACK_TIMING = re.compile(
+    r"\bmerg(?:e|es|ed|ing)\b|\bpost[\s-]?merge\b", re.IGNORECASE
+)
 _WRITEBACK_VERSION = re.compile(r"\bversions?\b", re.IGNORECASE)
 
 
