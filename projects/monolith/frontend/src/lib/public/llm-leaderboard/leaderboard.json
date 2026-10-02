@@ -209,8 +209,8 @@
       "mean_tokens": 141817,
       "mean_turns": 11.44,
       "mean_latency_ms": 301300,
-      "cost_usd": 0.0,
-      "cost_per_solve_usd": 0.0,
+      "cost_usd": 0.015011,
+      "cost_per_solve_usd": 0.015011,
       "tool_use_ok": 1.0,
       "tasks": [
         {
@@ -219,7 +219,7 @@
           "tokens": 169405,
           "turns": 21,
           "latency_ms": 400886,
-          "cost_usd": 0.0
+          "cost_usd": 0.018118
         },
         {
           "id": "docs-public-markers-01",
@@ -227,7 +227,7 @@
           "tokens": 708072,
           "turns": 23,
           "latency_ms": 986290,
-          "cost_usd": 0.0
+          "cost_usd": 0.074227
         },
         {
           "id": "embervm-capability-generation-01",
@@ -235,7 +235,7 @@
           "tokens": 32792,
           "turns": 8,
           "latency_ms": 127672,
-          "cost_usd": 0.0
+          "cost_usd": 0.003625
         },
         {
           "id": "embervm-pi-tools-01",
@@ -243,7 +243,7 @@
           "tokens": 275362,
           "turns": 8,
           "latency_ms": 375407,
-          "cost_usd": 0.0
+          "cost_usd": 0.02919
         },
         {
           "id": "fc-warmpool-daemonset-01",
@@ -251,7 +251,7 @@
           "tokens": 149687,
           "turns": 15,
           "latency_ms": 161638,
-          "cost_usd": 0.0
+          "cost_usd": 0.015293
         },
         {
           "id": "flights-module-01",
@@ -259,7 +259,7 @@
           "tokens": 89092,
           "turns": 10,
           "latency_ms": 230453,
-          "cost_usd": 0.0
+          "cost_usd": 0.009514
         },
         {
           "id": "frontend-moving-legtags-01",
@@ -267,7 +267,7 @@
           "tokens": 128984,
           "turns": 10,
           "latency_ms": 438608,
-          "cost_usd": 0.0
+          "cost_usd": 0.014003
         },
         {
           "id": "go-vsock-frame-01",
@@ -275,7 +275,7 @@
           "tokens": 91365,
           "turns": 10,
           "latency_ms": 307828,
-          "cost_usd": 0.0
+          "cost_usd": 0.009911
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -283,7 +283,7 @@
           "tokens": 63119,
           "turns": 8,
           "latency_ms": 377142,
-          "cost_usd": 0.0
+          "cost_usd": 0.007142
         },
         {
           "id": "hikes-walkhighlands-duration-01",
@@ -291,7 +291,7 @@
           "tokens": 89722,
           "turns": 9,
           "latency_ms": 392782,
-          "cost_usd": 0.0
+          "cost_usd": 0.009877
         },
         {
           "id": "inference-appledouble-01",
@@ -299,7 +299,7 @@
           "tokens": 21105,
           "turns": 5,
           "latency_ms": 97255,
-          "cost_usd": 0.0
+          "cost_usd": 0.002273
         },
         {
           "id": "null-content-fix-01",
@@ -307,7 +307,7 @@
           "tokens": 16867,
           "turns": 6,
           "latency_ms": 105748,
-          "cost_usd": 0.0
+          "cost_usd": 0.001881
         },
         {
           "id": "research-adr-writeback-01",
@@ -315,7 +315,7 @@
           "tokens": 125445,
           "turns": 16,
           "latency_ms": 175327,
-          "cost_usd": 0.0
+          "cost_usd": 0.01288
         },
         {
           "id": "slo-budget-breach-01",
@@ -323,7 +323,7 @@
           "tokens": 8548,
           "turns": 3,
           "latency_ms": 71258,
-          "cost_usd": 0.0
+          "cost_usd": 0.00106
         },
         {
           "id": "stars-climatology-months-01",
@@ -331,7 +331,7 @@
           "tokens": 198558,
           "turns": 16,
           "latency_ms": 329053,
-          "cost_usd": 0.0
+          "cost_usd": 0.020767
         },
         {
           "id": "worldcup-fixtures-guard-01",
@@ -339,7 +339,7 @@
           "tokens": 37210,
           "turns": 7,
           "latency_ms": 116410,
-          "cost_usd": 0.0
+          "cost_usd": 0.00405
         },
         {
           "id": "worldcup-swing-settled-01",
@@ -347,7 +347,7 @@
           "tokens": 339101,
           "turns": 16,
           "latency_ms": 502463,
-          "cost_usd": 0.0
+          "cost_usd": 0.03556
         }
       ]
     },
@@ -1041,8 +1041,8 @@
       "mean_tokens": 113975,
       "mean_turns": 10.18,
       "mean_latency_ms": 228809,
-      "cost_usd": 0.0,
-      "cost_per_solve_usd": 0.0,
+      "cost_usd": 0.012103,
+      "cost_per_solve_usd": 0.013313,
       "tool_use_ok": 1.0,
       "tasks": [
         {
@@ -1051,7 +1051,7 @@
           "tokens": 163700,
           "turns": 15,
           "latency_ms": 248289,
-          "cost_usd": 0.0
+          "cost_usd": 0.017383
         },
         {
           "id": "fc-warmpool-daemonset-01",
@@ -1059,7 +1059,7 @@
           "tokens": 191321,
           "turns": 12,
           "latency_ms": 279672,
-          "cost_usd": 0.0
+          "cost_usd": 0.020316
         },
         {
           "id": "flights-module-01",
@@ -1067,7 +1067,7 @@
           "tokens": 180831,
           "turns": 15,
           "latency_ms": 226176,
-          "cost_usd": 0.0
+          "cost_usd": 0.019202
         },
         {
           "id": "go-vsock-frame-01",
@@ -1075,7 +1075,7 @@
           "tokens": 22603,
           "turns": 3,
           "latency_ms": 356178,
-          "cost_usd": 0.0
+          "cost_usd": 0.0024
         },
         {
           "id": "hikes-walkhighlands-dom-01",
@@ -1083,7 +1083,7 @@
           "tokens": 71805,
           "turns": 9,
           "latency_ms": 250536,
-          "cost_usd": 0.0
+          "cost_usd": 0.007625
         },
         {
           "id": "hikes-walkhighlands-duration-01",
@@ -1091,7 +1091,7 @@
           "tokens": 133869,
           "turns": 9,
           "latency_ms": 427140,
-          "cost_usd": 0.0
+          "cost_usd": 0.014215
         },
         {
           "id": "null-content-fix-01",
@@ -1099,7 +1099,7 @@
           "tokens": 34716,
           "turns": 7,
           "latency_ms": 89242,
-          "cost_usd": 0.0
+          "cost_usd": 0.003686
         },
         {
           "id": "slo-budget-breach-01",
@@ -1107,7 +1107,7 @@
           "tokens": 37275,
           "turns": 7,
           "latency_ms": 102325,
-          "cost_usd": 0.0
+          "cost_usd": 0.003958
         },
         {
           "id": "stars-climatology-months-01",
@@ -1115,7 +1115,7 @@
           "tokens": 237840,
           "turns": 16,
           "latency_ms": 268662,
-          "cost_usd": 0.0
+          "cost_usd": 0.025256
         },
         {
           "id": "worldcup-fixtures-guard-01",
@@ -1123,7 +1123,7 @@
           "tokens": 42595,
           "turns": 8,
           "latency_ms": 85509,
-          "cost_usd": 0.0
+          "cost_usd": 0.004523
         },
         {
           "id": "worldcup-swing-settled-01",
@@ -1131,9 +1131,10 @@
           "tokens": 137171,
           "turns": 11,
           "latency_ms": 183171,
-          "cost_usd": 0.0
+          "cost_usd": 0.014566
         }
-      ]
+      ],
+      "cost_estimated": true
     },
     {
       "id": "google/gemma-4-31b-it",

@@ -8,6 +8,7 @@ from bench.cli import (
     _aggregate_agentic_group,
     _parse_headers,
     _prune_stale,
+    _report,
     _resolve_snapshot_preset,
     _write_leaderboard_json,
     build_parser,
@@ -313,3 +314,60 @@ def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
         "errored": 1,
         "errored_tasks": ["floor-error"],
     }
+
+
+def test_report_reprices_cells_for_models_with_a_fixed_rate(tmp_path):
+    """A self-hosted cell recorded at $0 reports at the registry's rate."""
+    (tmp_path / "models.yaml").write_text(
+        "models:\n"
+        "  - id: local/m\n"
+        "    status: experimental\n"
+        "    self_hosted: true\n"
+        "    price: {input_per_million: 0.10, output_per_million: 0.20}\n"
+    )
+    task_dir = tmp_path / "tasks" / "t1"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        "id: t1\nversion: v1\nclass: code-fix\nmode: agentic\ntier: hard\n"
+        'prompt: p\nverifier: {kind: command, args: {cmd: ["true"]}}\n'
+    )
+    cell = ResultCell(
+        task_id="t1",
+        task_version="v1",
+        model_id="local/m",
+        content_hash="h",
+        outcome="pass@1",
+        attempts=[
+            Attempt(
+                passed=True,
+                feedback="",
+                latency_ms=1,
+                prompt_tokens=1_000_000,
+                completion_tokens=500_000,
+            )
+        ],
+        cost_usd=0.0,
+        harness_version=HARNESS_VERSION,
+        prompt_template_hash="agent",
+        turns=3,
+        tool_use_ok=True,
+    )
+    cell_dir = tmp_path / "results" / "local__m" / "t1"
+    cell_dir.mkdir(parents=True)
+    (cell_dir / "h.json").write_text(cell.model_dump_json())
+    out = tmp_path / "lb.json"
+    _report(
+        argparse.Namespace(
+            results=str(tmp_path / "results"),
+            models=str(tmp_path / "models.yaml"),
+            tasks=str(tmp_path / "tasks"),
+            out=str(tmp_path / "lb.md"),
+            json_out=str(out),
+            generated_at="2026-10-02",
+        )
+    )
+    row = json.loads(out.read_text())["models"][0]
+    # 1M input at $0.10 plus 0.5M output at $0.20.
+    assert row["cost_usd"] == pytest.approx(0.2)
+    assert row["tasks"][0]["cost_usd"] == pytest.approx(0.2)
+    assert row["self_hosted"] is True

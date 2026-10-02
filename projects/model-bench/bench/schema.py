@@ -39,6 +39,17 @@ class ModelParams(BaseModel):
     max_tokens: int = 8192
 
 
+class ModelPrice(BaseModel):
+    input_per_million: float
+    output_per_million: float
+
+    def cost(self, prompt_tokens: int, completion_tokens: int) -> float:
+        return (
+            prompt_tokens * self.input_per_million
+            + completion_tokens * self.output_per_million
+        ) / 1_000_000
+
+
 class ModelSpec(BaseModel):
     id: str
     status: Literal["active", "experimental", "retired"] = "active"
@@ -66,6 +77,12 @@ class ModelSpec(BaseModel):
     # self-hosted preset from this flag; cost alone cannot tell a local model from
     # a free OpenRouter tier.
     self_hosted: bool = False
+    # A fixed $/1M-token rate that overrides OpenRouter pricing. Self-hosted rows
+    # use the rate the factory already charges for the local qwen lane
+    # (projects/monolith/shared/pricing.py), so a local model is compared at the
+    # same rate as everything else instead of plotting as free. The report
+    # reprices existing cells from their token counts, so no rerun is needed.
+    price: ModelPrice | None = None
 
 
 class TaskSpec(BaseModel):

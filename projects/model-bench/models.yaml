@@ -18,11 +18,15 @@ models:
   # `--base-url http://127.0.0.1:18080/v1`. The served alias is still
   # qwen3.6-27b so existing callers do not have to change. xhigh is the
   # highest reasoning_effort Qwen 3.8's template accepts. experimental so a
-  # bare `bench run` does not send this slug to OpenRouter. Cost is $0.
+  # bare `bench run` does not send this slug to OpenRouter.
   - id: qwen/qwen3.8-27b
     display_name: qwen3.8-27b
     status: experimental
     self_hosted: true
+    # Factory rate for the local qwen lane (shared/pricing.py, qwen alias).
+    price:
+      input_per_million: 0.10
+      output_per_million: 0.20
     api_model: qwen3.6-27b
     extra_body:
       chat_template_kwargs:
@@ -32,11 +36,15 @@ models:
   # Bare-metal FreeToken Qwen3.8-Flash-Next (125B-A6B, expert-granular tier) on
   # node-4, reached over the tailnet on the private port. Served alias remains
   # qwen3.6-27b. experimental so bare `bench run` never sends this slug to
-  # OpenRouter. Cost is $0.
+  # OpenRouter.
   - id: qwen/qwen3.8-flash-next
     display_name: qwen3.8-flash-next-local
     status: experimental
     self_hosted: true
+    # Factory rate for the local qwen lane (shared/pricing.py, qwen alias).
+    price:
+      input_per_million: 0.10
+      output_per_million: 0.20
     api_model: qwen3.6-27b
     extra_body:
       chat_template_kwargs:

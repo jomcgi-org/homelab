@@ -193,7 +193,7 @@
       for (const t of tries) {
         const box = { x1: t.b[0], x2: t.b[1], y1: t.b[2], y2: t.b[3] };
         if (
-          box.x1 < M.l - 30 ||
+          box.x1 < M.l + 2 ||
           box.x2 > W ||
           box.y1 < 0 ||
           box.y2 > H - M.b + 14
