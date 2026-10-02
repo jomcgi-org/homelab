@@ -263,6 +263,7 @@ async def search_knowledge(
         if scope is None:
             results = KnowledgeStore(session).search_notes_with_context(
                 query_embedding=vector,
+                query_text=query,
                 limit=min(limit, 100),
                 type_filter=type,
                 scope_filters=authorization.scopes,
@@ -272,6 +273,7 @@ async def search_knowledge(
         else:
             results = KnowledgeStore(session).search_notes_with_context(
                 query_embedding=vector,
+                query_text=query,
                 limit=min(limit, 100),
                 type_filter=type,
                 scope_filter=scope,

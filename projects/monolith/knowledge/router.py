@@ -404,6 +404,7 @@ async def search_knowledge(
     # agent and extraction callers keep the store's default legacy exclusion.
     results = KnowledgeStore(session).search_notes_with_context(
         query_embedding=vector,
+        query_text=q,
         limit=limit,
         type_filter=type,
         scope_filters=authorization.scopes,

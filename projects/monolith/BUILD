@@ -5214,6 +5214,11 @@ bdd_test(
     srcs = ["knowledge/extraction_provenance_postgres_test.py"],
 )
 
+bdd_test(
+    name = "knowledge_exact_search_postgres_test",
+    srcs = ["knowledge/exact_search_postgres_test.py"],
+)
+
 py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],

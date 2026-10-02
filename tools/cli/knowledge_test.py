@@ -300,6 +300,7 @@ class TestSearch:
                 )
                 MockStore.return_value.search_notes_with_context.assert_called_once_with(
                     query_embedding=_FAKE_EMBEDDING,
+                    query_text="attention",
                     limit=10,
                     type_filter="paper",
                     scope_filters=(
@@ -324,6 +325,7 @@ class TestSearch:
                 runner.invoke(app, ["knowledge", "search", "--limit", "5", "attention"])
                 MockStore.return_value.search_notes_with_context.assert_called_once_with(
                     query_embedding=_FAKE_EMBEDDING,
+                    query_text="attention",
                     limit=5,
                     type_filter=None,
                     scope_filters=(

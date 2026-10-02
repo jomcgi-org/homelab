@@ -168,6 +168,7 @@ class TestSearchEndpoint:
 
             MockStore.return_value.search_notes_with_context.assert_called_once_with(
                 query_embedding=FAKE_EMBEDDING,
+                query_text="attention",
                 limit=20,
                 type_filter="paper",
                 scope_filters=DEFAULT_SCOPES,
@@ -183,12 +184,27 @@ class TestSearchEndpoint:
 
             MockStore.return_value.search_notes_with_context.assert_called_once_with(
                 query_embedding=FAKE_EMBEDDING,
+                query_text="attention",
                 limit=5,
                 type_filter=None,
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
             )
+
+    def test_raw_exact_query_is_forwarded(self, client, fake_embed_client):
+        query = "Status of #12 at `projects/a_b/store.py`?"
+        with patch("knowledge.router.KnowledgeStore") as MockStore:
+            MockStore.return_value.search_notes_with_context.return_value = []
+            response = client.get("/api/knowledge/search", params={"q": query})
+        assert response.status_code == 200
+        fake_embed_client.embed.assert_awaited_once_with(query)
+        assert (
+            MockStore.return_value.search_notes_with_context.call_args.kwargs[
+                "query_text"
+            ]
+            == query
+        )
 
     def test_embedding_failure_returns_503(self, fake_session):
         """Embedding client exception produces HTTP 503."""
@@ -247,6 +263,7 @@ class TestSearchEndpoint:
         assert audit["entrypoint"] == "http"
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=20,
             type_filter=None,
             scope_filters=(*DEFAULT_SCOPES, "personal:browser@example.com"),
@@ -317,6 +334,7 @@ class TestSearchEndpoint:
 
             MockStore.return_value.search_notes_with_context.assert_called_once_with(
                 query_embedding=FAKE_EMBEDDING,
+                query_text="attention",
                 limit=20,
                 type_filter=None,
                 scope_filters=DEFAULT_SCOPES,

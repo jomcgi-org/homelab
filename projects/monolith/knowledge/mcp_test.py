@@ -173,6 +173,7 @@ class TestSearchKnowledge:
         mock_embed.embed.assert_awaited_once_with("attention")
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=20,
             type_filter=None,
             scope_filters=DEFAULT_SCOPES,
@@ -196,11 +197,33 @@ class TestSearchKnowledge:
 
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=20,
             type_filter=None,
             scope_filters=DEFAULT_SCOPES,
             include_unscoped=False,
             include_deployment_observations=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_raw_exact_query_is_forwarded(self):
+        query = "Status of #12 at `projects/a_b/store.py`?"
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        with (
+            patch("knowledge.mcp.Session", return_value=MagicMock()),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            await search_knowledge(query)
+        mock_embed.embed.assert_awaited_once_with(query)
+        assert (
+            MockStore.return_value.search_notes_with_context.call_args.kwargs[
+                "query_text"
+            ]
+            == query
         )
 
     @pytest.mark.asyncio
@@ -230,6 +253,7 @@ class TestSearchKnowledge:
 
             MockStore.return_value.search_notes_with_context.assert_called_once_with(
                 query_embedding=FAKE_EMBEDDING,
+                query_text="attention",
                 limit=5,
                 type_filter="paper",
                 scope_filters=DEFAULT_SCOPES,
@@ -320,6 +344,7 @@ class TestSearchKnowledge:
         assert result == {"results": []}
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=20,
             type_filter=None,
             scope_filters=DEFAULT_SCOPES,
@@ -350,6 +375,7 @@ class TestSearchKnowledge:
         audit.assert_called_once()
         MockStore.return_value.search_notes_with_context.assert_called_once_with(
             query_embedding=FAKE_EMBEDDING,
+            query_text="attention",
             limit=20,
             type_filter=None,
             scope_filters=(*DEFAULT_SCOPES, "personal:agent@example.com"),
