@@ -46,7 +46,8 @@ func TestExecProcessAlreadyExitedBeforeKill(t *testing.T) {
 			}
 			var output lockedBuffer
 			var got ExitReason
-			p := &execProcess{cmd: cmd, serialPath: path,
+			p := &execProcess{
+				cmd: cmd, serialPath: path,
 				logger: slog.New(slog.NewJSONHandler(&output, nil)),
 				onExit: func(reason ExitReason) { got = reason },
 			}
