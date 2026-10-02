@@ -264,6 +264,17 @@ security/004).
 
 ## 4. Agents
 
+**Why.** Factory outcome comparisons use receipt cohorts and count every attempt
+through an explicit as-of bound. A positive requires successful delivery CI and
+a completed seven-day clean revert scan. Missing evidence stays unknown or
+pending. Priced turns and settled-plus-reserved ledger costs remain separate
+bounds, and elapsed-time ratios include failed terminal tasks. Initiating-model
+cohorts preserve one task per row; role/model contributions expose switches
+without adding task counts across models. The report is manually invoked on a
+read-only connection. Model-bench (#6702) covers cheaper-model counterfactuals;
+rating remains later work (#6700).
+(see: /projects/monolith/factory/outcomes.md)
+
 `agent_sessions` persists sessions, turns, pending messages, progress, model
 selection, workflow ownership, and EmberVM lineage in Postgres. Pending turns
 are claimed in sequence by one replica, refreshed by heartbeat, and reclaimed
@@ -1720,6 +1731,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; fixture tests and standby accounting, CI, revert, metadata, and query-cost checks remain |
 | Proposed graph envelopes are preflighted inside the planner turn | section 4, planner preview | #6650 | implemented in repository behind `swarm.factoryPlannerPreviewEnabled=false`, with no production planner binding or serving route; binding provisioning, enablement and the 72-hour rejected-run/cost comparison remain live checks |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
 | One operator-facing Conductor above every per-task Planner selects and coordinates work, acting on Joe's behalf | The factory conductor | #5784 (children #5785, #5787, #5788, #5789; #5786 closed 2026-09-14) | not started |
