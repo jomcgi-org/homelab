@@ -216,6 +216,7 @@ async def run_cell(
         a1 = Attempt(
             passed=r1.passed,
             feedback=r1.feedback,
+            score=r1.score,
             latency_ms=c1.latency_ms,
             prompt_tokens=c1.prompt_tokens,
             completion_tokens=c1.completion_tokens,
@@ -258,6 +259,7 @@ async def run_cell(
             a2 = Attempt(
                 passed=r2.passed,
                 feedback=r2.feedback,
+                score=r2.score,
                 latency_ms=c2.latency_ms,
                 prompt_tokens=c2.prompt_tokens,
                 completion_tokens=c2.completion_tokens,

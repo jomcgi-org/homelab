@@ -197,3 +197,34 @@ def test_run_agent_cell_flags_malformed_tool_arguments(tmp_path):
     # It drove the loop but a call was malformed -> reliability miss recorded.
     assert cell.tool_use_ok is False
     assert "malformed tool-call arguments" in cell.attempts[0].feedback
+
+
+def test_run_agent_cell_records_graded_score(tmp_path):
+    async def fake_chat(**kwargs):
+        return ChatResult(
+            message={
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "done", "arguments": "{}"}}
+                ]
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=1,
+        )
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=fake_chat,
+            verify=lambda w, a: VerifyResult(False, "killed 1/4 mutants", 0.25),
+            verifier_args={},
+            cost_fn=lambda p, c: 0.0,
+        )
+    )
+    assert cell.outcome == "fail"
+    assert cell.attempts[0].score == 0.25

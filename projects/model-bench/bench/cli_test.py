@@ -243,6 +243,8 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     assert t["id"] == "worldcup-fixtures-guard-01"
     assert t["real_test"] is True and t["passed"] == 2 and t["n"] == 2
     assert t["blurb"] and "Second sentence." not in t["blurb"]
+    # Binary verifiers carry no partial credit.
+    assert mt["score"] is None and t["mean_score"] is None
 
 
 def test_aggregate_agentic_group_excludes_harness_errors_from_all_metrics():
