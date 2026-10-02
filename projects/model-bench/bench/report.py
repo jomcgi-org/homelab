@@ -72,6 +72,11 @@ def render_leaderboard(
         nm = r.get("mean_norms")
         return f"{nm:.2f}" if nm is not None else "n/a"
 
+    def _judge(r) -> str:
+        # Pairwise-judge Bradley-Terry rating (bench/pairwise.py); n/a until judged.
+        jr = r.get("judge_rating")
+        return f"{jr:+.0f}" if jr is not None else "n/a"
+
     lines.append("## Agentic leaderboard: qualified")
     lines.append("")
     lines.append(
@@ -91,9 +96,10 @@ def render_leaderboard(
         )
         lines.append(
             "| Model | hard | score | frontier | mean tokens | mean turns "
-            "| wall-time (s) | cost ($) | $/solve | tool-use ok | norms | errored |"
+            "| wall-time (s) | cost ($) | $/solve | tool-use ok | norms | judge "
+            "| errored |"
         )
-        lines.append("| --- " * 12 + "|")
+        lines.append("| --- " * 13 + "|")
         for r in qualified:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
@@ -102,7 +108,7 @@ def render_leaderboard(
                 f"| {r.get('mean_tokens', 0):.0f} | {r.get('mean_turns', 0):.1f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
                 f"| {r.get('cost', 0.0):.4f} | {_cps(r)} "
-                f"| {r.get('tool_ok_rate', 0.0):.2f} | {_norms(r)} "
+                f"| {r.get('tool_ok_rate', 0.0):.2f} | {_norms(r)} | {_judge(r)} "
                 f"| {r.get('errored', 0)} |"
             )
     else:

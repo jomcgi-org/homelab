@@ -112,3 +112,18 @@ def test_safe_norms_swallows_errors(tmp_path, monkeypatch):
 
     monkeypatch.setattr(norms, "compute_norms", boom)
     assert safe_norms(tmp_path, tmp_path, None) is None
+
+
+def test_unified_diff_covers_edits_and_new_files(tmp_path):
+    from bench.norms import unified_diff
+
+    before, after = tmp_path / "a", tmp_path / "b"
+    before.mkdir()
+    after.mkdir()
+    (before / "m.py").write_text("x = 1\n")
+    (after / "m.py").write_text("x = 2\n")
+    (after / "new.py").write_text("y = 1\n")
+    diff = unified_diff(before, after)
+    assert "-x = 1" in diff and "+x = 2" in diff
+    assert "--- /dev/null" in diff and "+++ b/new.py" in diff
+    assert unified_diff(before, after, cap=10).endswith("[diff truncated]")

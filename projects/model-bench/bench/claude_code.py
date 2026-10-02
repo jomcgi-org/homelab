@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
-from bench.norms import safe_norms
+from bench.norms import safe_diff, safe_norms
 from bench.schema import Attempt, ResultCell
 
 # Override for tests / non-standard installs. Default resolves `claude` on PATH.
@@ -125,6 +125,11 @@ def judge_caller(prompt: str) -> str:
     return _invoke(prompt).text
 
 
+def complete_text(prompt: str, model: str) -> str:
+    """One `claude -p` text completion pinned to model (the pairwise judge)."""
+    return _invoke(prompt, model=model).text
+
+
 @dataclass
 class AnchorCompletion:
     """OpenRouter ChatResult-shaped object for run_cell's single-shot `complete`."""
@@ -201,6 +206,7 @@ def run_anchor_agent_cell(
     wall_ms = 0
     score: float | None = None
     norms: dict | None = None
+    diff: str | None = None
     rental_cost = 0.0
     try:
         res = _invoke(
@@ -220,6 +226,7 @@ def run_anchor_agent_cell(
             passed, feedback, score = r.passed, r.feedback, r.score
             if passed:
                 norms = safe_norms(fixture_dir, workdir, norms_opts)
+                diff = safe_diff(fixture_dir, workdir)
     except Exception as exc:  # noqa: BLE001 - a subprocess/verify error becomes a fail cell
         passed, feedback = False, f"[anchor harness error] {type(exc).__name__}: {exc}"
     finally:
@@ -248,4 +255,5 @@ def run_anchor_agent_cell(
         turns=turns,
         tool_use_ok=True,
         norms=norms,
+        diff=diff,
     )

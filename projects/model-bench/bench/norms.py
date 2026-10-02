@@ -219,6 +219,42 @@ def compute_norms(
     }
 
 
+DIFF_CAP = 60_000
+
+
+def unified_diff(fixture_dir: Path, workdir: Path, cap: int = DIFF_CAP) -> str:
+    """The cell's change as one unified diff (text files only), capped at cap chars.
+
+    Stored on a passing cell so the pairwise judge (bench/pairwise.py) can compare
+    changes after the workdir is gone.
+    """
+    before, after = _files(fixture_dir), _files(workdir)
+    chunks: list[str] = []
+    for rel in sorted(set(before) | set(after)):
+        old, new = _read(before.get(rel)), _read(after.get(rel))
+        if old is None or new is None or old == new:
+            continue
+        chunks.extend(
+            difflib.unified_diff(
+                old.splitlines(),
+                new.splitlines(),
+                fromfile=f"a/{rel}" if rel in before else "/dev/null",
+                tofile=f"b/{rel}" if rel in after else "/dev/null",
+                lineterm="",
+            )
+        )
+    text = "\n".join(chunks)
+    return text if len(text) <= cap else text[:cap] + "\n[diff truncated]"
+
+
+def safe_diff(fixture_dir: Path, workdir: Path) -> str | None:
+    """unified_diff for the cell runners; advisory like norms, so never raises."""
+    try:
+        return unified_diff(fixture_dir, workdir)
+    except Exception:  # noqa: BLE001 - the diff is advisory; the pass stands
+        return None
+
+
 def safe_norms(fixture_dir: Path, workdir: Path, opts: dict | None) -> dict | None:
     """compute_norms for the cell runners: a norms failure must never fail a cell
     the verifier passed, so any error records no norms rather than raising."""

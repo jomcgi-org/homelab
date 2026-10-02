@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 from bench.cache import HARNESS_VERSION
-from bench.norms import safe_norms
+from bench.norms import safe_diff, safe_norms
 from bench.schema import Attempt, ResultCell
 
 MAX_READ_BYTES = 100_000
@@ -200,6 +200,7 @@ async def run_agent_cell(
     saw_bad_args = False  # did any tool call carry unparseable arguments?
     score: float | None = None
     norms: dict | None = None
+    diff: str | None = None
     try:
         for turns in range(1, max_turns + 1):
             res = await chat(
@@ -245,6 +246,7 @@ async def run_agent_cell(
         passed, feedback, score = r.passed, r.feedback, r.score
         if passed:
             norms = safe_norms(fixture_dir, workdir, norms_opts)
+            diff = safe_diff(fixture_dir, workdir)
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
         passed, feedback = False, f"[harness error] {type(exc).__name__}: {exc}"
     finally:
@@ -282,4 +284,5 @@ async def run_agent_cell(
         turns=turns,
         tool_use_ok=tool_use_ok,
         norms=norms,
+        diff=diff,
     )
