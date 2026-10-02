@@ -179,6 +179,7 @@ class TestSearchKnowledge:
             scope_filters=DEFAULT_SCOPES,
             include_unscoped=False,
             include_deployment_observations=False,
+            exclude_invalidated=True,
         )
 
     @pytest.mark.asyncio
@@ -203,6 +204,7 @@ class TestSearchKnowledge:
             scope_filters=DEFAULT_SCOPES,
             include_unscoped=False,
             include_deployment_observations=True,
+            exclude_invalidated=True,
         )
 
     @pytest.mark.asyncio
@@ -225,6 +227,60 @@ class TestSearchKnowledge:
             ]
             == query
         )
+
+    @pytest.mark.parametrize("include_personal", [False, True])
+    @pytest.mark.parametrize("include_deployment_observations", [False, True])
+    @pytest.mark.parametrize("scope", [None, "repo:jomcgi-org/homelab"])
+    async def test_history_opt_in_preserves_other_filters(
+        self, include_personal, include_deployment_observations, scope
+    ):
+        mock_embed = AsyncMock()
+        mock_embed.embed.return_value = FAKE_EMBEDDING
+        with (
+            patch(
+                "knowledge.mcp.current_principal",
+                return_value=_principal(personal=include_personal),
+            ),
+            patch("knowledge.mcp.Session", return_value=MagicMock()),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=mock_embed),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.search_notes_with_context.return_value = []
+            await search_knowledge(
+                "attention",
+                include_history=True,
+                include_personal=include_personal,
+                include_deployment_observations=include_deployment_observations,
+                scope=scope,
+            )
+
+        if scope is None:
+            MockStore.return_value.search_notes_with_context.assert_called_once_with(
+                query_embedding=FAKE_EMBEDDING,
+                query_text="attention",
+                limit=20,
+                type_filter=None,
+                scope_filters=(
+                    (*DEFAULT_SCOPES, "personal:agent@example.com")
+                    if include_personal
+                    else DEFAULT_SCOPES
+                ),
+                include_unscoped=include_personal,
+                include_deployment_observations=include_deployment_observations,
+                exclude_invalidated=False,
+            )
+        else:
+            MockStore.return_value.search_notes_with_context.assert_called_once_with(
+                query_embedding=FAKE_EMBEDDING,
+                query_text="attention",
+                limit=20,
+                type_filter=None,
+                scope_filter=scope,
+                include_unscoped=False,
+                include_deployment_observations=include_deployment_observations,
+                exclude_invalidated=False,
+            )
 
     @pytest.mark.asyncio
     async def test_short_query_returns_empty(self):
@@ -259,6 +315,7 @@ class TestSearchKnowledge:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_deployment_observations=False,
+                exclude_invalidated=True,
             )
 
     @pytest.mark.asyncio
@@ -350,6 +407,7 @@ class TestSearchKnowledge:
             scope_filters=DEFAULT_SCOPES,
             include_unscoped=False,
             include_deployment_observations=False,
+            exclude_invalidated=True,
         )
 
     @pytest.mark.asyncio
@@ -381,6 +439,7 @@ class TestSearchKnowledge:
             scope_filters=(*DEFAULT_SCOPES, "personal:agent@example.com"),
             include_unscoped=True,
             include_deployment_observations=False,
+            exclude_invalidated=True,
         )
 
     @pytest.mark.asyncio
@@ -465,6 +524,7 @@ class TestSearchKnowledge:
             scope_filter="repo:jomcgi-org/homelab",
             include_unscoped=False,
             include_deployment_observations=True,
+            exclude_invalidated=True,
         )
 
     @pytest.mark.asyncio
@@ -504,6 +564,7 @@ class TestSearchKnowledge:
             scope_filter=scope,
             include_unscoped=False,
             include_deployment_observations=False,
+            exclude_invalidated=True,
         )
 
     @pytest.mark.asyncio

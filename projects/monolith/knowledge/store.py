@@ -362,7 +362,7 @@ def _rank_search_chunks(
         notes_stmt = notes_stmt.where(_not_deployment_observation())
     if exclude_invalidated:
         notes_stmt = notes_stmt.where(
-            Note.valid_until.is_(None),
+            or_(Note.valid_until.is_(None), Note.valid_until > func.now()),
             or_(
                 Note.verification_state.is_(None),
                 Note.verification_state != "invalidated",

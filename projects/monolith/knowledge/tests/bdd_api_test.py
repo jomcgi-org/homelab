@@ -1,8 +1,119 @@
 """BDD tests for knowledge domain API routes."""
 
-import httpx
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
-from shared.testing.markers import covers_route
+import httpx
+import pytest
+from auth.api import Authority, Principal, PrincipalKind
+from sqlmodel import Session, select
+
+from knowledge.frontmatter import ParsedFrontmatter
+from knowledge.mcp import search_knowledge
+from knowledge.models import Note
+from knowledge.store import KnowledgeStore
+from shared.testing.markers import covers_public, covers_route
+
+
+@covers_public("knowledge.mcp.search_knowledge")
+@pytest.mark.asyncio
+async def test_mcp_search_history_preserves_other_filters(knowledge_mcp_engine):
+    scope = "repo:history-test/homelab"
+    principal = Principal(
+        subject="history-test@example.com",
+        actor=(),
+        scope=(scope,),
+        groups=(),
+        email="history-test@example.com",
+        kind=PrincipalKind.HUMAN,
+        authority=Authority.STANDING,
+    )
+    now = datetime.now(timezone.utc)
+    vector = [1.0] + [0.0] * 1023
+    with Session(knowledge_mcp_engine) as setup:
+        store = KnowledgeStore(setup)
+        for note_id in (
+            "current",
+            "future-expiry",
+            "expired",
+            "invalidated",
+            "legacy",
+            "other-scope",
+            "unscoped",
+            "deployment-observation",
+            "deleted",
+        ):
+            store.upsert_note(
+                note_id=f"bdd-history-{note_id}",
+                path=f"bdd-history-{note_id}.md",
+                content_hash=note_id,
+                title=note_id,
+                metadata=ParsedFrontmatter(
+                    title=note_id,
+                    type="fact",
+                    scope=(
+                        None
+                        if note_id == "unscoped"
+                        else (
+                            "repo:other/project" if note_id == "other-scope" else scope
+                        )
+                    ),
+                    verification_state=(
+                        note_id if note_id in ("legacy", "invalidated") else "verified"
+                    ),
+                    valid_until=(
+                        now - timedelta(days=30)
+                        if note_id == "expired"
+                        else (
+                            now + timedelta(days=365)
+                            if note_id == "future-expiry"
+                            else None
+                        )
+                    ),
+                    source=(
+                        "deployment-observation"
+                        if note_id == "deployment-observation"
+                        else None
+                    ),
+                ),
+                chunks=[
+                    {
+                        "index": 0,
+                        "section_header": "",
+                        "text": "A long enough history test note body for vector ranking. " * 3,
+                    }
+                ],
+                vectors=[vector],
+                links=[],
+            )
+        deleted = setup.exec(
+            select(Note).where(
+                Note.note_id == "bdd-history-deleted", Note.deleted_at.is_(None)
+            )
+        ).one()
+        deleted.deleted_at = now
+        setup.add(deleted)
+        setup.commit()
+
+    embedding = AsyncMock()
+    embedding.embed.return_value = vector
+    with (
+        patch("knowledge.mcp.current_principal", return_value=principal),
+        patch("knowledge.mcp.EmbeddingClient", return_value=embedding),
+    ):
+        current = await search_knowledge("history test")
+        history = await search_knowledge("history test", include_history=True)
+
+    assert {row["note_id"] for row in current["results"]} == {
+        "bdd-history-current",
+        "bdd-history-future-expiry",
+    }
+    assert {row["note_id"] for row in history["results"]} == {
+        "bdd-history-current",
+        "bdd-history-future-expiry",
+        "bdd-history-expired",
+        "bdd-history-invalidated",
+    }
 
 
 class TestKnowledgeSearch:

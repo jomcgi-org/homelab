@@ -202,6 +202,7 @@ async def search_knowledge(
     type: str | None = None,
     include_personal: bool = False,
     include_deployment_observations: bool = False,
+    include_history: bool = False,
     scope: str | None = None,
 ) -> dict:
     """Semantic search over the knowledge graph.
@@ -220,6 +221,8 @@ async def search_knowledge(
         include_deployment_observations: Include server-projected deployment
             observation facts (one per app per cd poll). Hidden by default so
             they cannot crowd ordinary knowledge out of the top results.
+        include_history: Include invalidated and expired notes for investigations.
+            Hidden by default. Other retrieval filters still apply.
         scope: Optionally narrow to one scope the caller is already authorized
             for, e.g. "repo:jomcgi-org/homelab". Exact membership only. A value
             outside the caller's authorized scopes returns no results.
@@ -269,6 +272,7 @@ async def search_knowledge(
                 scope_filters=authorization.scopes,
                 include_unscoped=authorization.include_unscoped,
                 include_deployment_observations=include_deployment_observations,
+                exclude_invalidated=not include_history,
             )
         else:
             results = KnowledgeStore(session).search_notes_with_context(
@@ -279,6 +283,7 @@ async def search_knowledge(
                 scope_filter=scope,
                 include_unscoped=False,
                 include_deployment_observations=include_deployment_observations,
+                exclude_invalidated=not include_history,
             )
     return {"results": results}
 

@@ -1,6 +1,6 @@
 """Tests for KnowledgeStore."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 
 import pytest
@@ -690,7 +690,7 @@ class TestSearchNotesWithContext:
 
     def test_can_exclude_invalidated_notes_for_dedupe(self):
         content = "A sufficiently long behavioral note body for stable vector ranking."
-        for note_id in ("current", "expired", "invalidated"):
+        for note_id in ("current", "expired", "invalidated", "future-expiry"):
             self.store.upsert_note(
                 note_id=note_id,
                 path=f"{note_id}.md",
@@ -707,10 +707,14 @@ class TestSearchNotesWithContext:
         invalidated = self.session.exec(
             select(Note).where(Note.note_id == "invalidated")
         ).one()
-        expired.valid_until = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        future_expiry = self.session.exec(
+            select(Note).where(Note.note_id == "future-expiry")
+        ).one()
+        now = datetime.now(timezone.utc)
+        expired.valid_until = now - timedelta(days=30)
+        future_expiry.valid_until = now + timedelta(days=365)
         invalidated.verification_state = "invalidated"
-        self.session.add(expired)
-        self.session.add(invalidated)
+        self.session.add_all([expired, invalidated, future_expiry])
         self.session.commit()
 
         public_results = self.store.search_notes_with_context([0.0] * 1024)
@@ -722,8 +726,56 @@ class TestSearchNotesWithContext:
             "current",
             "expired",
             "invalidated",
+            "future-expiry",
         }
-        assert [row["note_id"] for row in dedupe_results] == ["current"]
+        assert {row["note_id"] for row in dedupe_results} == {
+            "current",
+            "future-expiry",
+        }
+
+    @pytest.mark.parametrize("excluded", ["invalidated", "expired"])
+    def test_validity_filter_runs_before_limit(self, excluded):
+        content = (
+            "A long enough note body to avoid the short chunk ranking penalty. " * 2
+        )
+        query = [1.0] + [0.0] * 1023
+        for note_id, vector in (
+            ("excluded-top", query),
+            ("disputed-lower", [0.8, 0.6] + [0.0] * 1022),
+        ):
+            self.store.upsert_note(
+                note_id=note_id,
+                path=f"{note_id}.md",
+                content_hash=note_id,
+                title=note_id,
+                metadata=_meta(
+                    title=note_id,
+                    type="fact",
+                    verification_state=(
+                        "disputed" if note_id == "disputed-lower" else "verified"
+                    ),
+                ),
+                chunks=[{"index": 0, "section_header": "", "text": content}],
+                vectors=[vector],
+                links=[],
+            )
+        top = self.session.exec(
+            select(Note).where(Note.note_id == "excluded-top")
+        ).one()
+        if excluded == "invalidated":
+            top.verification_state = "invalidated"
+        else:
+            top.valid_until = datetime.now(timezone.utc) - timedelta(days=30)
+        self.session.add(top)
+        self.session.commit()
+
+        filtered = self.store.search_notes_with_context(
+            query, limit=1, exclude_invalidated=True
+        )
+        unfiltered = self.store.search_notes_with_context(query, limit=1)
+
+        assert [row["note_id"] for row in filtered] == ["disputed-lower"]
+        assert [row["note_id"] for row in unfiltered] == ["excluded-top"]
 
     def test_legacy_filter_runs_before_limit_and_can_be_opted_out(self):
         content = (
