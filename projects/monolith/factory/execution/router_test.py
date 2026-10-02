@@ -2217,6 +2217,7 @@ def test_stop_control_rejects_observed_turn_after_successor_starts(
         ("user_interrupt", True, True, "active", 409),
         ("user_interrupt", True, True, "settled", 409),
         ("user_interrupt", True, True, "queued", 202),
+        ("user_interrupt", True, True, "retry", 409),
     ],
 )
 def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
@@ -2270,6 +2271,24 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
         records.append(
             AgentTurn(session_id=row.id, seq=2, prompt="next", result_text="done")
         )
+    elif successor == "retry":
+        records[-1].superseded_at = now
+        records.append(
+            AgentResultReceipt(
+                id="b" * 32,
+                token_sha256="c" * 64,
+                session_id=row.id,
+                local_session_id=row.local_session_id,
+                seq=1,
+                dispatch_count=2,
+                claim_owner="replica-2",
+                guest_id="ember-stop-1",
+                request_sha256="d" * 64,
+                created_at=now,
+                accept_until=now + timedelta(hours=1),
+                retain_until=now + timedelta(days=1),
+            )
+        )
     session.add_all(records)
     # Receipt identity uses the original guest, not the current binding.
     row.ember_session_id = "ember-successor-binding"
@@ -2292,6 +2311,22 @@ def test_stop_control_settled_replay_requires_receipt_identity_and_no_successor(
         json=identity,
     )
     assert response.status_code == status
+    if successor == "retry":
+        current = {
+            "turn_seq": 1,
+            "dispatch_id": exact_dispatch_id(row.id, "ember-stop-1", 1, "replica-2", 2),
+        }
+        replay = client.post(
+            f"/api/agents/sessions/{row.id}/stop",
+            headers={"X-Auth-Email": "owner@example.com"},
+            json=current,
+        )
+        assert replay.status_code == 202
+        assert replay.json() == {
+            "outcome": "requested",
+            **current,
+            "relay": {"terminal_reason": "user_interrupt"},
+        }
     if status == 202:
         assert response.json() == {
             "outcome": "requested",
