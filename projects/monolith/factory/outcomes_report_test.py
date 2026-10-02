@@ -93,26 +93,35 @@ class Rows:
         self.session = session
         self.ids = itertools.count(100000)
 
-    def task(self, *, created=START, settled=None, task_class="bug-fix", **receipt):
+    def task(
+        self,
+        *,
+        created=START,
+        settled=None,
+        task_class="bug-fix",
+        repo="jomcgi-org/homelab",
+        **receipt,
+    ):
         number = next(self.ids)
         task = f"outcomes-{number}"
         self.session.execute(
             text("""
                 INSERT INTO swarm.swarm_task
                     (id, created_at, task_text, repo, conductor_model, settled_at)
-                VALUES (:id, :created, 'fixture', 'jomcgi-org/homelab', 'conductor', :settled)
+                VALUES (:id, :created, 'fixture', :repo, 'conductor', :settled)
             """),
-            {"id": task, "created": created, "settled": settled},
+            {"id": task, "created": created, "settled": settled, "repo": repo},
         )
         self.session.execute(
             text("""
                 INSERT INTO swarm.factory_receipt
                     (repo, issue_number, title, body, url, actor, task_id,
                      task_class, state, created_at, updated_at, escalation_json)
-                VALUES ('jomcgi-org/homelab', :number, 'fixture', '', '', 'test',
+                VALUES (:repo, :number, 'fixture', '', '', 'test',
                         :task, :class, 'admitted', :created, :updated, :escalation)
             """),
             {
+                "repo": repo,
                 "number": number,
                 "task": task,
                 "class": task_class,
@@ -678,6 +687,21 @@ def test_missing_metadata_and_unmerged_tasks_have_unknown_bands(session, rows):
         == coverage["missing_label_metadata"]
         == 2
     )
+
+
+def test_metadata_is_scoped_to_the_homelab_repository(session, rows):
+    # merged_prs is keyed by number only and filled from homelab, so a receipt
+    # for another repo whose merge audit names a colliding PR number is unknown.
+    rows.merge(rows.task(repo="jomcgi-org/other"), pr=123)
+    rows.metadata(pr=123, lines=400, files=8)
+    report = _report(session)
+    bands = {(r["dimension"], r["band"]): r["tasks"] for r in report[SECTIONS[2]]}
+    assert bands[("diff_size", "unknown")] == 1
+    assert bands[("changed_files", "unknown")] == 1
+    assert ("diff_size", "L") not in bands
+    assert ("changed_files", "L") not in bands
+    coverage = _single(report, 3)
+    assert coverage["missing_size_metadata"] == coverage["missing_file_metadata"] == 1
 
 
 @pytest.mark.parametrize(

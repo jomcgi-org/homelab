@@ -264,7 +264,8 @@ task_evidence AS (
     LEFT JOIN task_cost tc ON tc.task_id = c.task_id
     LEFT JOIN task_ledger tl ON tl.task_id = c.task_id
     LEFT JOIN run_evidence re ON re.task_id = c.task_id
-    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND mp.merged_at < p.as_of
+    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND c.repo = 'jomcgi-org/homelab'
+         AND mp.merged_at < p.as_of
 ),
 tasks AS (
     SELECT e.*,
@@ -576,7 +577,8 @@ task_evidence AS (
     LEFT JOIN task_cost tc ON tc.task_id = c.task_id
     LEFT JOIN task_ledger tl ON tl.task_id = c.task_id
     LEFT JOIN run_evidence re ON re.task_id = c.task_id
-    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND mp.merged_at < p.as_of
+    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND c.repo = 'jomcgi-org/homelab'
+         AND mp.merged_at < p.as_of
 ),
 tasks AS (
     SELECT e.*,
@@ -872,7 +874,8 @@ task_evidence AS (
     LEFT JOIN task_cost tc ON tc.task_id = c.task_id
     LEFT JOIN task_ledger tl ON tl.task_id = c.task_id
     LEFT JOIN run_evidence re ON re.task_id = c.task_id
-    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND mp.merged_at < p.as_of
+    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND c.repo = 'jomcgi-org/homelab'
+         AND mp.merged_at < p.as_of
 ),
 tasks AS (
     SELECT e.*,
@@ -1169,7 +1172,8 @@ task_evidence AS (
     LEFT JOIN task_cost tc ON tc.task_id = c.task_id
     LEFT JOIN task_ledger tl ON tl.task_id = c.task_id
     LEFT JOIN run_evidence re ON re.task_id = c.task_id
-    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND mp.merged_at < p.as_of
+    LEFT JOIN observability.merged_prs mp ON mp.number::text = m.pr AND c.repo = 'jomcgi-org/homelab'
+         AND mp.merged_at < p.as_of
 ),
 tasks AS (
     SELECT e.*,
