@@ -25,8 +25,9 @@ type Clock interface {
 // transport-agnostic (the vsock listener is supplied by the caller) so tests
 // drive it over an in-memory or loopback listener without a microVM.
 type Agent struct {
-	clock  Clock
-	logger *slog.Logger
+	clock    Clock
+	logger   *slog.Logger
+	readProc ProcReader
 }
 
 // New returns an Agent backed by clock. A nil logger is replaced with the
@@ -35,7 +36,7 @@ func New(clock Clock, logger *slog.Logger) *Agent {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Agent{clock: clock, logger: logger}
+	return &Agent{clock: clock, logger: logger, readProc: readProcFile}
 }
 
 // Serve accepts connections on ln until ln is closed, handling each in its own
@@ -92,6 +93,16 @@ func (a *Agent) handle(body []byte) response {
 	var req request
 	if err := json.Unmarshal(body, &req); err != nil {
 		return response{Err: fmt.Sprintf("decode request: %v", err)}
+	}
+	if req.Cmd == "memory_status" {
+		if req.Nonce == "" || len(req.Nonce) > 128 {
+			return response{Err: "memory_status requires a nonce of 1 to 128 bytes"}
+		}
+		memory, err := ReadMemoryStatus(a.readProc, req.Nonce)
+		if err != nil {
+			return response{Err: fmt.Sprintf("memory_status: %v", err)}
+		}
+		return response{MemoryStatus: &memory}
 	}
 	if req.Cmd != syncClockCmd {
 		return response{Err: fmt.Sprintf("unknown command %q", req.Cmd)}

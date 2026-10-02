@@ -54,6 +54,7 @@ const syncClockCmd = "sync_clock"
 type request struct {
 	Cmd     string `json:"cmd"`
 	EpochNs int64  `json:"epoch_ns"`
+	Nonce   string `json:"nonce,omitempty"`
 }
 
 // response is the outbound frame body. clock_realtime_ns is the guest's
@@ -61,8 +62,9 @@ type request struct {
 // rather than trusting the value it sent. On any handling error err carries a
 // short message and clock_realtime_ns is zero.
 type response struct {
-	ClockRealtimeNs int64  `json:"clock_realtime_ns"`
-	Err             string `json:"err,omitempty"`
+	ClockRealtimeNs int64         `json:"clock_realtime_ns"`
+	Err             string        `json:"err,omitempty"`
+	MemoryStatus    *MemoryStatus `json:"memory_status,omitempty"`
 }
 
 // writeFrame writes a single length-prefixed frame: a 4-byte big-endian length
