@@ -27,7 +27,7 @@ POLL_SECS = 30
 # only proves a merge is live once it reconciled this long after the merge.
 GIT_CACHE_GRACE = timedelta(minutes=5)
 
-_WRITEBACK_BUMP = re.compile(r"^(\S+): (\S+) -> (\S+)$", re.MULTILINE)
+_PUBLISHED_TRAILER = re.compile(r"^Chart-Published: (\S+) (\S+)$", re.MULTILINE)
 _SOURCE_TRAILER = re.compile(r"^Chart-Source-Commit: ([0-9a-f]{40})$", re.MULTILINE)
 
 _QUEUE_QUERY = """
@@ -218,11 +218,10 @@ def _descends_from(repo: str, base: str, head: str) -> bool:
 def find_writeback(
     repo: str, merge_commit: str, merged_at: str
 ) -> dict[str, str] | None:
-    """Chart bumps (``chart dir -> new version``) from the write-back covering a merge.
+    """Published chart versions from the completed write-back covering a merge.
 
     Returns None while no chart-version-bot commit has a ``Chart-Source-Commit``
-    at or after ``merge_commit``. An empty dict means one landed and bumped
-    nothing this merge could have changed.
+    at or after ``merge_commit``. An empty dict means a completed receipt has no published charts.
     """
     commits = _gh_json(
         "api",
@@ -232,9 +231,13 @@ def find_writeback(
     for commit in reversed(commits):
         message = commit["commit"]["message"]
         source = _SOURCE_TRAILER.search(message)
-        if not source or not _descends_from(repo, merge_commit, source.group(1)):
+        if (
+            not source
+            or "Chart-Publication-Complete: true" not in message.splitlines()
+            or not _descends_from(repo, merge_commit, source.group(1))
+        ):
             continue
-        return {m.group(1): m.group(3) for m in _WRITEBACK_BUMP.finditer(message)}
+        return {m.group(1): m.group(2) for m in _PUBLISHED_TRAILER.finditer(message)}
     return None
 
 
@@ -340,8 +343,13 @@ def land(
 
         for name in apps:
             expected = bumps.get(f"projects/{name}/chart")
-            target = f"chart {expected}" if expected else "git HEAD"
-            typer.echo(f"{name}: verifying {target}")
+            if expected is None:
+                raise LandError(
+                    f"{name}: missing chart publication metadata; cannot verify "
+                    "this application automatically. Use --no-verify and check "
+                    "its deployment manually."
+                )
+            typer.echo(f"{name}: verifying chart {expected}")
             wait_for_rollout(name, expected, merged_at, deadline)
         typer.echo(f"#{number}: landed and live in {', '.join(apps)}.")
     except LandError as exc:
