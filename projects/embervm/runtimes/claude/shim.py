@@ -6565,6 +6565,7 @@ class ProcessManager:
         )
         turn_base = _capture_turn_base(checkout_dir)
         dispatch_bound = False
+        interrupted_record = None
         if dispatch_id is not None:
             with self._dispatch_lock:
                 if self._active_dispatch_id is not None:
@@ -6572,6 +6573,7 @@ class ProcessManager:
                 self._active_dispatch_id = dispatch_id
                 self._active_dispatch_adapter = adapter
                 self._active_provider_done = threading.Event()
+                self._active_interrupt_record = (threading.Event(), {})
                 self._interrupt_reason = None
                 adapter._partial_turn = {}
                 adapter._drain_requested = False
@@ -6641,12 +6643,14 @@ class ProcessManager:
                 os.makedirs(directory, exist_ok=True)
                 name = hashlib.sha256(dispatch_id.encode()).hexdigest() + ".json"
                 target = os.path.join(directory, name)
+                record["transcript_path"] = target
+                saved["transcript_path"] = target
                 with open(target + ".tmp", "w") as stream:
                     json.dump(saved, stream)
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(target + ".tmp", target)
-                record["transcript_path"] = target
+                interrupted_record = record
             if isinstance(record, dict) and dispatch_bound:
                 record["dispatch_id"] = dispatch_id
                 record["turn_seq"] = turn_seq
@@ -6680,6 +6684,10 @@ class ProcessManager:
             if dispatch_bound:
                 with self._dispatch_lock:
                     if self._active_dispatch_id == dispatch_id:
+                        if interrupted_record is not None:
+                            ready, persisted = self._active_interrupt_record
+                            persisted.update(interrupted_record)
+                            ready.set()
                         self._active_dispatch_id = None
                         self._active_dispatch_adapter = None
             _emit_elapsed("total", total_start)
@@ -6690,57 +6698,93 @@ class ProcessManager:
                 self._last_interrupt_id == dispatch_id
                 and self._last_interrupt_result is not None
             ):
-                return dict(self._last_interrupt_result)
-            if (
+                result = dict(self._last_interrupt_result)
+                if (
+                    result["terminal_reason"] != "interrupted_for_drain"
+                    or self._last_interrupt_finalized
+                ):
+                    return result
+                completion = self._last_interrupt_record
+                deadline = self._last_interrupt_deadline
+            elif (
                 not dispatch_id
                 or self._active_dispatch_id != dispatch_id
                 or self._active_dispatch_adapter is None
             ):
                 raise SessionConflictError("dispatch is no longer active")
-            # Keep the identity lock until the signal is sent and the adapter's
-            # bounded wait returns. A successor cannot bind during this window.
-            self._interrupt_reason = reason
-            self._active_dispatch_adapter._interrupt_requested = True
-            self._active_dispatch_adapter._drain_requested = (
-                reason == "interrupted_for_drain"
-            )
-            # Reserve time for transcript sync and the optional receipt callback.
-            # Re-signal when the first signal raced provider startup. The completion
-            # event is set without this lock, before publishing the terminal record.
-            timeout = INTERRUPT_TIMEOUT
-            if timeout_ms is not None:
-                timeout = max(1.0, timeout_ms / 1000.0 - DRAIN_FLUSH_RESERVE_SECONDS)
-                if reason != "interrupted_for_drain":
-                    timeout = min(timeout, INTERRUPT_TIMEOUT)
-            deadline = time.monotonic() + timeout
-            done = getattr(self, "_active_provider_done", None)
-            adapter = self._active_dispatch_adapter
-            if timeout_ms is None and done is None:
-                result = adapter.interrupt()
             else:
-                result = adapter.interrupt(timeout=timeout)
-            if done is not None:
+                result, deadline = self._interrupt_active_dispatch(reason, timeout_ms)
+                completion = getattr(self, "_active_interrupt_record", None)
+                self._last_interrupt_id = dispatch_id
+                self._last_interrupt_result = dict(result)
+                self._last_interrupt_record = completion
+                self._last_interrupt_deadline = deadline
+                self._last_interrupt_finalized = False
+
+        # Provider completion precedes record construction, which takes the
+        # identity lock above. Wait outside it, using this dispatch's own event
+        # and record so a successor cannot supply another turn's evidence.
+        if result["terminal_reason"] == "interrupted_for_drain" and completion:
+            ready, persisted = completion
+            if ready.wait(max(0.0, deadline - time.monotonic())):
+                if (
+                    persisted.get("dispatch_id") == dispatch_id
+                    and persisted.get("session_id")
+                    and persisted.get("transcript_path")
+                ):
+                    result.update(
+                        dispatch_id=dispatch_id,
+                        cli_session_id=persisted["session_id"],
+                        transcript_path=persisted["transcript_path"],
+                    )
+        with self._dispatch_lock:
+            if self._last_interrupt_id == dispatch_id:
+                if self._last_interrupt_finalized:
+                    return dict(self._last_interrupt_result)
+                self._last_interrupt_result = dict(result)
+                self._last_interrupt_finalized = True
+        return result
+
+    def _interrupt_active_dispatch(self, reason, timeout_ms):
+        # Called with _dispatch_lock held. Retain the existing provider signal
+        # and bounded-wait semantics for both user and drain interrupts.
+        self._interrupt_reason = reason
+        self._active_dispatch_adapter._interrupt_requested = True
+        self._active_dispatch_adapter._drain_requested = (
+            reason == "interrupted_for_drain"
+        )
+        # Reserve time for transcript sync and the optional receipt callback.
+        # Re-signal when the first signal raced provider startup. The completion
+        # event is set without this lock, before publishing the terminal record.
+        timeout = INTERRUPT_TIMEOUT
+        if timeout_ms is not None:
+            timeout = max(1.0, timeout_ms / 1000.0 - DRAIN_FLUSH_RESERVE_SECONDS)
+            if reason != "interrupted_for_drain":
+                timeout = min(timeout, INTERRUPT_TIMEOUT)
+        deadline = time.monotonic() + timeout
+        done = getattr(self, "_active_provider_done", None)
+        adapter = self._active_dispatch_adapter
+        if timeout_ms is None and done is None:
+            result = adapter.interrupt()
+        else:
+            result = adapter.interrupt(timeout=timeout)
+        if done is not None:
+            remaining = max(0.0, deadline - time.monotonic())
+            if not done.wait(min(INTERRUPT_STARTUP_GRACE_SECONDS, remaining)):
                 remaining = max(0.0, deadline - time.monotonic())
-                if not done.wait(min(INTERRUPT_STARTUP_GRACE_SECONDS, remaining)):
-                    remaining = max(0.0, deadline - time.monotonic())
-                    if remaining > 0:
-                        # One retry covers a signal that raced provider startup.
-                        # Keep any killed/timeout flag the first signal observed.
-                        second = adapter.interrupt(timeout=remaining)
-                        result = dict(
-                            second,
-                            killed=bool(result.get("killed"))
-                            or bool(second.get("killed")),
-                            timeout=bool(result.get("timeout"))
-                            or bool(second.get("timeout")),
-                        )
-                    remaining = max(0.0, deadline - time.monotonic())
-                    if not done.wait(remaining):
-                        adapter._close_process(kill=True)
-            result = dict(result, terminal_reason=reason)
-            self._last_interrupt_id = dispatch_id
-            self._last_interrupt_result = dict(result)
-            return result
+                if remaining > 0:
+                    # One retry covers a signal that raced provider startup.
+                    # Keep any killed/timeout flag the first signal observed.
+                    second = adapter.interrupt(timeout=remaining)
+                    result = dict(
+                        second,
+                        killed=bool(result.get("killed")) or bool(second.get("killed")),
+                        timeout=bool(result.get("timeout")) or bool(second.get("timeout")),
+                    )
+                remaining = max(0.0, deadline - time.monotonic())
+                if not done.wait(remaining):
+                    adapter._close_process(kill=True)
+        return dict(result, terminal_reason=reason), deadline
 
     def _close_process(self, kill=False):
         self.claude._close_process(kill=kill)

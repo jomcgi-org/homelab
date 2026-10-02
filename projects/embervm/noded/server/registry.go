@@ -205,9 +205,10 @@ type sessionEntry struct {
 	// travels with the VM across that registry move.
 	egressCancel func()
 
-	mu             sync.Mutex // guards inFlight and activeDispatch
-	inFlight       bool
-	activeDispatch string
+	mu                sync.Mutex // guards inFlight and dispatch identities
+	inFlight          bool
+	activeDispatch    string
+	abandonedDispatch string
 }
 
 // sessionRegistry is the daemon's inventory of LIVE session microVMs, keyed by the
@@ -248,6 +249,7 @@ func (r *sessionRegistry) beginInFlight(id string) (*sessionEntry, bool) {
 		return nil, false
 	}
 	e.inFlight = true
+	e.abandonedDispatch = ""
 	return e, true
 }
 
@@ -269,6 +271,7 @@ func (r *sessionRegistry) beginSessionAssign(id, sessionID, dispatchID string) (
 	}
 	e.inFlight = true
 	e.activeDispatch = dispatchID
+	e.abandonedDispatch = ""
 	return e, true
 }
 
@@ -284,7 +287,10 @@ func (r *sessionRegistry) interruptTarget(id, sessionID, dispatchID string) (sub
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.inFlight || e.teardown.started.Load() || e.sessionID != sessionID || e.activeDispatch != dispatchID {
+	if e.teardown.started.Load() || e.sessionID != sessionID {
+		return substrate.Handle{}, false
+	}
+	if !(e.inFlight && e.activeDispatch == dispatchID) && !(!e.inFlight && e.abandonedDispatch == dispatchID) {
 		return substrate.Handle{}, false
 	}
 	return e.handle, true
@@ -294,9 +300,26 @@ func (r *sessionRegistry) interruptTarget(id, sessionID, dispatchID string) (sub
 // (after a SessionAssign returns). A Bank instead remove()s the entry, so it never
 // calls this.
 func (e *sessionEntry) endInFlight() {
+	e.endSessionAssign("", false)
+}
+
+// endSessionAssign retains a caller-cancelled dispatch atomically with releasing
+// the guard. Only the guest can establish whether that dispatch still runs.
+func (e *sessionEntry) endSessionAssign(dispatchID string, abandoned bool) {
 	e.mu.Lock()
 	e.inFlight = false
 	e.activeDispatch = ""
+	e.abandonedDispatch = ""
+	if abandoned && !e.teardown.started.Load() {
+		e.abandonedDispatch = dispatchID
+	}
+	e.mu.Unlock()
+}
+
+func (e *sessionEntry) beginTeardown() {
+	e.mu.Lock()
+	e.teardown.started.Store(true)
+	e.abandonedDispatch = ""
 	e.mu.Unlock()
 }
 
@@ -307,6 +330,11 @@ func (r *sessionRegistry) remove(id string) *sessionEntry {
 	defer r.mu.Unlock()
 	e := r.vms[id]
 	delete(r.vms, id)
+	if e != nil {
+		e.mu.Lock()
+		e.abandonedDispatch = ""
+		e.mu.Unlock()
+	}
 	return e
 }
 
@@ -344,7 +372,7 @@ func (r *sessionRegistry) forTeardown(id string) *sessionEntry {
 	defer r.mu.Unlock()
 	e := r.vms[id]
 	if e != nil {
-		e.teardown.started.Store(true)
+		e.beginTeardown()
 	}
 	return e
 }

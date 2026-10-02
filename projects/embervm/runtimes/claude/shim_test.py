@@ -8711,8 +8711,8 @@ def _run_server(manager):
     return server
 
 
-def _request(server, method, path, body=None):
-    connection = HTTPConnection("127.0.0.1", server.server_port)
+def _request(server, method, path, body=None, timeout=None):
+    connection = HTTPConnection("127.0.0.1", server.server_port, timeout=timeout)
     connection.request(method, path, body=body)
     response = connection.getresponse()
     return response.status, json.loads(response.read())
@@ -10354,10 +10354,92 @@ def test_muse_1_4_1_echo_fixture_matches_adapter_contract():
         assert isinstance(record["payload"].get("event"), dict)
 
 
+def test_disconnected_http_turn_remains_interruptible(tmp_path, monkeypatch):
+    manager = _new_process_manager()
+    manager.workspace = str(tmp_path)
+    manager._dispatch_lock = threading.Lock()
+    manager._active_dispatch_id = None
+    manager._active_dispatch_adapter = None
+    manager._last_interrupt_id = None
+    manager._last_interrupt_result = None
+    manager._interrupt_reason = None
+    started, stopped, flushed = threading.Event(), threading.Event(), threading.Event()
+
+    class Adapter:
+        workspace = str(tmp_path)
+
+        def turn(self, *args, **kwargs):
+            started.set()
+            assert stopped.wait(3), "disconnected turn was never interrupted"
+            self._partial_turn = {
+                "session_id": "disconnected-cli",
+                "result": "partial output",
+            }
+            raise RuntimeError("provider stopped")
+
+        def interrupt(self, timeout):
+            stopped.set()
+            return {"killed": False, "timeout": False}
+
+    manager.claude = Adapter()
+    manager.codex = manager.pi = manager.muse = object()
+    monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
+    monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
+    monkeypatch.setattr(shim, "_ensure_cli_dir", lambda path: None)
+    monkeypatch.setattr(shim, "_capture_turn_base", lambda path: None)
+    monkeypatch.setattr(shim, "_sync_session_volume", flushed.set)
+    server = _run_server(manager)
+    socket_errors = []
+    server.handle_error = lambda *args: socket_errors.append(sys.exc_info()[1])
+    connection = HTTPConnection("127.0.0.1", server.server_port)
+    try:
+        connection.request(
+            "POST", shim.TURN_PATH,
+            body=json.dumps({"message": "work", "dispatch_id": "disconnected"}),
+        )
+        assert started.wait(1)
+        connection.sock.shutdown(socket.SHUT_RDWR)
+        connection.close()
+        assert manager._active_dispatch_id == "disconnected"
+        assert not stopped.is_set()
+        status, outcome = _request(
+            server, "POST", shim.INTERRUPT_PATH,
+            json.dumps({
+                "dispatch_id": "disconnected",
+                "reason": "interrupted_for_drain",
+                "timeout_ms": 3000,
+            }).encode(),
+            timeout=2,
+        )
+        assert status == 200
+        assert outcome["terminal_reason"] == "interrupted_for_drain"
+        persisted = json.loads(open(outcome["transcript_path"]).read())
+        assert outcome["dispatch_id"] == persisted["dispatch_id"] == "disconnected"
+        assert outcome["cli_session_id"] == persisted["session_id"] == "disconnected-cli"
+        assert outcome["transcript_path"] == persisted["transcript_path"]
+        assert _request(
+            server, "POST", shim.INTERRUPT_PATH,
+            json.dumps({"dispatch_id": "disconnected"}).encode(),
+        ) == (200, outcome)
+        assert stopped.is_set()
+        assert flushed.wait(1)
+        assert _request(server, "GET", shim.HEALTHZ_PATH)[0] == 200
+    finally:
+        stopped.set()
+        connection.close()
+        server.shutdown()
+        server.server_close()
+    assert socket_errors and all(isinstance(exc, OSError) for exc in socket_errors)
+
+
 @pytest.mark.parametrize("during_startup", [False, True])
 @pytest.mark.parametrize("reason", ["interrupted_for_drain", "user_interrupt"])
+@pytest.mark.parametrize(
+    ("family", "model"),
+    [("claude", None), ("codex", "luna"), ("pi", "pi-spark"), ("muse", "spark")],
+)
 def test_interrupt_flushes_partial_transcript_before_turn_safe_point(
-    tmp_path, monkeypatch, reason, during_startup
+    tmp_path, monkeypatch, reason, during_startup, family, model
 ):
     manager = _new_process_manager()
     manager.workspace = str(tmp_path)
@@ -10398,6 +10480,7 @@ def test_interrupt_flushes_partial_transcript_before_turn_safe_point(
 
     manager.claude = Adapter()
     manager.codex = manager.pi = manager.muse = object()
+    setattr(manager, family, manager.claude)
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     monkeypatch.setattr(shim, "apply_egress_ca_trust", lambda: None)
     monkeypatch.setattr(shim, "_ensure_cli_dir", lambda path: None)
@@ -10421,18 +10504,78 @@ def test_interrupt_flushes_partial_transcript_before_turn_safe_point(
     monkeypatch.setattr(shim, "_sync_session_volume", sync)
     thread = threading.Thread(
         target=lambda: outcomes.append(
-            manager.turn("work", dispatch_id="dispatch-7", turn_seq=7)
-        )
+            manager.turn("work", dispatch_id="dispatch-7", turn_seq=7, model=model)
+        ),
+        daemon=True,
     )
     thread.start()
     assert entered.wait(1)
-    manager.interrupt("dispatch-7", reason=reason, timeout_ms=5000)
+    interrupt_outcomes = []
+    interrupt_thread = threading.Thread(
+        target=lambda: interrupt_outcomes.append(
+            manager.interrupt("dispatch-7", reason=reason, timeout_ms=5000)
+        ),
+        daemon=True,
+    )
+    interrupt_thread.start()
+    interrupt_thread.join(2)
+    assert not interrupt_thread.is_alive(), "interrupt deadlocked with turn persistence"
+    interrupt_outcome = interrupt_outcomes[0]
     thread.join(2)
     assert not thread.is_alive()
     assert flushed.is_set()
     assert outcomes[0]["terminal_reason"] == reason
     assert outcomes[0]["session_id"] == "cli-preserved"
     assert manager._active_dispatch_id is None
+    if reason == "interrupted_for_drain":
+        persisted = json.loads(open(interrupt_outcome["transcript_path"]).read())
+        assert interrupt_outcome["dispatch_id"] == persisted["dispatch_id"] == "dispatch-7"
+        assert interrupt_outcome["cli_session_id"] == persisted["session_id"]
+        assert interrupt_outcome["transcript_path"] == persisted["transcript_path"]
+    else:
+        assert interrupt_outcome == {
+            "terminal_reason": "user_interrupt", "killed": False, "timeout": False,
+        }
+    assert manager.interrupt("dispatch-7", reason=reason, timeout_ms=5000) == interrupt_outcome
+
+
+@pytest.mark.parametrize("record_state", ["late", "wrong-dispatch", "missing-cli", "missing-path"])
+def test_drain_interrupt_record_deadline_and_duplicate(monkeypatch, record_state):
+    manager = _new_process_manager()
+    manager._dispatch_lock = threading.Lock()
+    manager._last_interrupt_id = None
+    manager._last_interrupt_result = None
+    manager._active_dispatch_id = "slow-record"
+    ready, persisted = threading.Event(), {}
+    manager._active_interrupt_record = (ready, persisted)
+    if record_state != "late":
+        persisted.update(dispatch_id="slow-record", session_id="cli", transcript_path="/saved.json")
+        if record_state == "wrong-dispatch":
+            persisted["dispatch_id"] = "successor"
+        elif record_state == "missing-cli":
+            persisted["session_id"] = ""
+        elif record_state == "missing-path":
+            persisted["transcript_path"] = ""
+        ready.set()
+    manager._active_provider_done = threading.Event()
+    manager._active_provider_done.set()
+    now = [0.0]
+    monkeypatch.setattr(shim.time, "monotonic", lambda: now[0])
+
+    class Adapter:
+        def interrupt(self, timeout):
+            now[0] += timeout
+            return {"killed": False, "timeout": False}
+
+    manager._active_dispatch_adapter = Adapter()
+    outcome = manager.interrupt("slow-record", reason="interrupted_for_drain", timeout_ms=3000)
+    assert outcome == {
+        "terminal_reason": "interrupted_for_drain", "killed": False, "timeout": False,
+    }
+    # Late persistence must not change the already returned interrupt result.
+    persisted.update(dispatch_id="slow-record", session_id="cli", transcript_path="/saved.json")
+    ready.set()
+    assert manager.interrupt("slow-record", reason="interrupted_for_drain") == outcome
 
 
 def test_drain_receipt_does_not_spend_flush_window_on_callback(

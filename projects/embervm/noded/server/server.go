@@ -1850,7 +1850,8 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 		e = adopted
 	}
 	// The VM SURVIVES: clear the in-flight guard on return, never reap.
-	defer e.endInFlight()
+	abandoned := false
+	defer func() { e.endSessionAssign(req.GetDispatchId(), abandoned) }()
 
 	gr := req.GetRequest()
 	method := gr.GetMethod()
@@ -1886,6 +1887,7 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 		if errors.Is(err, context.DeadlineExceeded) || rtCtx.Err() == context.DeadlineExceeded {
 			return nil, status.Errorf(codes.DeadlineExceeded, "noded: session guest did not respond within %s (vm left alive, suspect)", timeout)
 		}
+		abandoned = ctx.Err() == context.Canceled
 		return &nodev1.SessionAssignResponse{
 			Response: &nodev1.GuestResponse{StatusCode: uint32(http.StatusBadGateway)},
 			Usage:    &nodev1.UsageStats{WallMs: time.Since(t0).Milliseconds()},
@@ -1895,6 +1897,7 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGuestResponseBytes))
 	if err != nil {
+		abandoned = ctx.Err() == context.Canceled
 		return nil, status.Errorf(codes.Unavailable, "noded: read session guest response: %v", err)
 	}
 	wallMs := time.Since(t0).Milliseconds()
@@ -1917,7 +1920,8 @@ func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignReq
 	}, nil
 }
 
-// SessionInterrupt relays one exact active session dispatch to the guest shim.
+// SessionInterrupt relays one exact active or caller-abandoned dispatch to the
+// guest shim, which remains the authority on whether that dispatch is active.
 // It never changes VM lifecycle or releases the SessionAssign guard. The
 // original SessionAssign response remains the sole terminal outcome and usage
 // carrier, while this response reports only whether signaling completed.
@@ -1974,6 +1978,9 @@ func (s *Server) SessionInterrupt(ctx context.Context, req *nodev1.SessionInterr
 		TerminalReason string `json:"terminal_reason"`
 		Killed         bool   `json:"killed"`
 		Timeout        bool   `json:"timeout"`
+		DispatchID     string `json:"dispatch_id"`
+		CLISessionID   string `json:"cli_session_id"`
+		TranscriptPath string `json:"transcript_path"`
 	}
 	if err := json.Unmarshal(responseBody, &outcome); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: invalid guest interrupt response: %v", err)
@@ -1982,6 +1989,9 @@ func (s *Server) SessionInterrupt(ctx context.Context, req *nodev1.SessionInterr
 		TerminalReason: outcome.TerminalReason,
 		Killed:         outcome.Killed,
 		Timeout:        outcome.Timeout,
+		DispatchId:     outcome.DispatchID,
+		CliSessionId:   outcome.CLISessionID,
+		TranscriptPath: outcome.TranscriptPath,
 	}, nil
 }
 
@@ -2015,7 +2025,7 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	}
 	// Hold the retained teardown entry across the destructive snapshot, including
 	// its internal failure cleanup. Destroy must not race that hidden Release.
-	e.teardown.started.Store(true)
+	e.beginTeardown()
 	var ref substrate.SnapshotRef
 	var snapshotErr error
 	snapshotStarted := false
