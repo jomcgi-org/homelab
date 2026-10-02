@@ -2556,7 +2556,11 @@ def test_interrupt_session_sends_exact_identity_with_session_capability(monkeypa
     expected = {
         "outcome": "requested",
         "dispatch_id": "dispatch-exact",
-        "relay": {"terminal_reason": "user_interrupt", "killed": False, "timeout": False},
+        "relay": {
+            "terminal_reason": "user_interrupt",
+            "killed": False,
+            "timeout": False,
+        },
     }
 
     async def handler(request):
@@ -2575,9 +2579,11 @@ def test_interrupt_session_sends_exact_identity_with_session_capability(monkeypa
     )
 
     assert result == expected
-    replay = asyncio.run(transport.EmberVmShimTransport().interrupt_session(
-        "s-1", "session-token", "dispatch-exact"
-    ))
+    replay = asyncio.run(
+        transport.EmberVmShimTransport().interrupt_session(
+            "s-1", "session-token", "dispatch-exact"
+        )
+    )
     assert replay == result
     assert len(requests) == 2
     assert requests[0].method == "POST"

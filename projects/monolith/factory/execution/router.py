@@ -30,7 +30,12 @@ from factory.execution.constants import (
     SYNTHETIC_SESSION_PREFIX,
     exact_dispatch_id,
 )
-from factory.execution.models import AgentResultReceipt, AgentSession, AgentTurn, PendingMessage
+from factory.execution.models import (
+    AgentResultReceipt,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
 from factory.execution.mcp import (
     _append_rationale_trailer,
     _activate_session_after_enqueue,
@@ -1520,17 +1525,21 @@ def _stop_dispatch(
     if pending is None:
         turn = store.get_turn(session, session_id, stop_request.turn_seq)
         successor_pending = session.exec(
-            select(PendingMessage.id).where(
+            select(PendingMessage.id)
+            .where(
                 PendingMessage.session_id == session_id,
                 PendingMessage.seq > stop_request.turn_seq,
                 PendingMessage.dispatch_count > 0,
-            ).limit(1)
+            )
+            .limit(1)
         ).first()
         successor_turn = session.exec(
-            select(AgentTurn.id).where(
+            select(AgentTurn.id)
+            .where(
                 AgentTurn.session_id == session_id,
                 AgentTurn.seq > stop_request.turn_seq,
-            ).limit(1)
+            )
+            .limit(1)
         ).first()
         if (
             turn is not None
