@@ -7286,6 +7286,22 @@ py_test(
     ],
 )
 
+# Hand-registered (chat_public is gazelle-excluded): a fork reads its snapshot
+# on the primary, so a takedown not yet replicated (or committed during the
+# Turnstile await) cannot be forked back into a live session (#6764).
+py_test(
+    name = "chat_public_fork_replica_lag_test",
+    srcs = ["chat_public/fork_replica_lag_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 # Hand-registered (chat_public is gazelle-excluded): Phase 2 admission + abuse
 # controls (Turnstile siteverify failure -> 403, global circuit-breaker shed via
 # the busy SSE event, salted ip_hash storage).
