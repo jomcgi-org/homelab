@@ -478,6 +478,7 @@ def test_report_discovers_scored_tasks_across_models(tmp_path):
         "models:\n"
         "  - {id: scored-model, status: experimental}\n"
         "  - {id: failed-model, status: experimental}\n"
+        "  - {id: error-model, status: experimental}\n"
     )
     for task_id in ("scored", "binary"):
         task_dir = tmp_path / "tasks" / task_id
@@ -489,6 +490,15 @@ def test_report_discovers_scored_tasks_across_models(tmp_path):
     cells = [
         _agentic_cell("scored", "scored-model", True, 1, 100, True, score=0.8),
         _agentic_cell("scored", "failed-model", False, 1, 100, False),
+        _agentic_cell(
+            "scored",
+            "error-model",
+            False,
+            1,
+            100,
+            False,
+            feedback="[harness error] provider failure",
+        ),
         _agentic_cell("binary", "scored-model", True, 1, 100, True),
         _agentic_cell("binary", "failed-model", True, 1, 100, True),
     ]
@@ -512,9 +522,14 @@ def test_report_discovers_scored_tasks_across_models(tmp_path):
     assert models["scored-model"]["mean_score"] == 0.8
     assert models["failed-model"]["scored_n"] == 1
     assert models["failed-model"]["mean_score"] == 0.0
+    # The harness-error cell is excluded, not scored as a miss.
+    assert models["error-model"]["scored_n"] == 0
+    assert models["error-model"]["mean_score"] is None
     markdown = (tmp_path / "lb.md").read_text()
     assert "## Scored tasks" in markdown
-    assert "| scored | hard | 1/2 | 0.80 |" in markdown
+    # Failed unscored cells count as 0 ((0.8 + 0.0) / 2); the harness-error
+    # cell is excluded from n, so it stays 1/2 with three cells on the task.
+    assert "| scored | hard | 1/2 | 0.40 |" in markdown
     assert "| binary |" not in markdown
 
 
