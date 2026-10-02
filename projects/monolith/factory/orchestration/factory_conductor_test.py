@@ -10885,6 +10885,35 @@ def test_handoff_review_changes_use_existing_correction_loop(feedback_db, monkey
     assert conductor._review_rounds_used(task["id"]) == 1
 
 
+def test_handoff_post_commit_bookkeeping_failure_keeps_handoff(
+    feedback_db, monkeypatch
+):
+    from factory.orchestration.factory_models import FactoryAudit
+
+    task, policy, _pull, _checks = handoff_task(monkeypatch)
+    original = conductor._record_allowance
+
+    def failing_allowance(task_id, policy, cause):
+        if isinstance(cause, str) and cause.startswith("factory-handoff:"):
+            raise RuntimeError("allowance store unavailable")
+        return original(task_id, policy, cause)
+
+    monkeypatch.setattr(conductor, "_record_allowance", failing_allowance)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert set(nodes) == {"implement_handoff_1", "review_handoff_1"}
+    assert not any(key.startswith("conductor_") for key in nodes)
+    with Session(feedback_db) as db:
+        actions = {
+            audit.action
+            for audit in db.exec(
+                select(FactoryAudit).where(FactoryAudit.task_id == task["id"])
+            ).all()
+        }
+    assert "pause_task" not in actions
+    assert "handoff_skipped" not in actions
+
+
 def test_a_reopened_round_is_briefed_at_the_live_task_branch_head(
     feedback_db, monkeypatch
 ):
