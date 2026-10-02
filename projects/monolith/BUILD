@@ -8672,6 +8672,13 @@ bdd_test(
     deps = ["@pip//typer"],
 )
 
+# Execute the manual report itself against migrated PostgreSQL fixtures.
+bdd_test(
+    name = "outcomes_report_test",
+    srcs = ["factory/outcomes_report_test.py"],
+    data = ["factory/outcomes_report.sql"],
+)
+
 # Real-Postgres test: the public factory snapshot WRITER. Covers the empty
 # board (both prune keep-lists empty, which is the untyped-bindparam case),
 # the seeded board's task and session rows, identity never reaching a payload,
