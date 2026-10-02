@@ -2562,6 +2562,12 @@ def _delivered_pause(**gate):
         "gate": {
             "kind": "repository_delivered",
             "classification": "reversible",
+            "effects": {
+                "spends_money": False,
+                "deletes_data": False,
+                "touches_external_account": False,
+                "uses_credentials": False,
+            },
             "reason": "PR #6334 merged the repository scope default-off.",
             "live_checks": ["Enable the proof on the hub", "Watch one settlement"],
             "delivered_prs": [6334],

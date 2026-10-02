@@ -16981,6 +16981,12 @@ def live_gate():
     return {
         "kind": "live_validation",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "reason": "Runner has no KVM",
         "scope": "Repository quickstart and regression coverage",
         "live_checks": ["Run clean-host KVM bank and relight drill"],
@@ -17306,6 +17312,12 @@ def test_investigation_default_is_decided_before_next_planner(feedback_db, monke
     gate = {
         "kind": "parameter",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "value": "threshold=5",
         "reason": "A reversible alert default",
     }

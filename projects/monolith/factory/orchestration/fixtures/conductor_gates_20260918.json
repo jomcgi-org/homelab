@@ -7,6 +7,12 @@
     "gate": {
       "kind": "parameter",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "A documented default can be revised before activation; creation, deletion and external account changes are not authorized.",
       "value": "Proposed non-prod bucket embervm-validation, lifecycle age 7 days, budget alert $50/month (documentation only)"
     }
@@ -19,6 +25,12 @@
     "gate": {
       "kind": "parameter",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "A documented default can be revised before activation; creation, deletion and external account changes are not authorized.",
       "value": "Retention cap N=3, dry-run only"
     }
@@ -31,6 +43,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": [
@@ -46,6 +64,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": [
@@ -61,6 +85,12 @@
     "gate": {
       "kind": "delivery_target",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance."
     }
   },
@@ -72,6 +102,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": [
@@ -87,6 +123,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": [
@@ -102,6 +144,12 @@
     "gate": {
       "kind": "delivery_target",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance."
     }
   },
@@ -113,6 +161,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": [
@@ -128,6 +182,12 @@
     "gate": {
       "kind": "delivery_target",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance."
     }
   },
@@ -139,6 +199,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": [
@@ -154,6 +220,12 @@
     "gate": {
       "kind": "live_validation",
       "classification": "reversible",
+      "effects": {
+          "spends_money": false,
+          "deletes_data": false,
+          "touches_external_account": false,
+          "uses_credentials": false
+      },
       "reason": "Deliver the reversible repository portion and retain operational acceptance.",
       "scope": "Repository implementation and hermetic regression coverage, staged until live validation",
       "live_checks": ["Run the live cluster-serving acceptance drills."]

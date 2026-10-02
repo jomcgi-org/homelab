@@ -18,12 +18,19 @@ HUMAN_GATE_BACKSTOP = re.compile(
     r"(\$|\busd\b|budget|spend|cost|delete|purge|\bprod\b|bucket|create|credential|token|secret|account)",
     re.IGNORECASE,
 )
-"""Heuristic backstop for the proposed parameter value, not its rationale."""
+"""Backstop for the proposed value; declared effects carry the operational claim."""
+
+GATE_EFFECTS = (
+    "spends_money",
+    "deletes_data",
+    "touches_external_account",
+    "uses_credentials",
+)
 
 GATE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["kind", "classification", "reason"],
+    "required": ["kind", "classification", "reason", "effects"],
     "properties": {
         "kind": {
             "enum": [
@@ -37,6 +44,12 @@ GATE_SCHEMA = {
             "enum": ["reversible", "spending", "prod_deletion", "external_account"]
         },
         "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "effects": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(GATE_EFFECTS),
+            "properties": {effect: {"type": "boolean"} for effect in GATE_EFFECTS},
+        },
         "value": {"type": "string", "minLength": 1, "maxLength": 1000},
         "scope": {"type": "string", "minLength": 1, "maxLength": 2000},
         "live_checks": {
@@ -78,7 +91,12 @@ GATE_PROMPT = (
     "Use classification `spending`, `prod_deletion`, or `external_account` only "
     "when choosing the value itself spends money, deletes production data, or "
     "touches an external account. Separate safe repository defaults from those "
-    "operations. For acceptance requiring live validation this runner cannot "
+    "operations. Every gate carries `effects` with booleans `spends_money`, "
+    "`deletes_data`, `touches_external_account`, and `uses_credentials`. Set "
+    "each true whenever choosing the value or acting on the gate would spend "
+    "money, delete data, touch an external account, or use or change credentials, "
+    "respectively. Any true effect sends the gate to a person. `reason` is free "
+    "prose and may explain safety. For acceptance requiring live validation this runner cannot "
     "perform, use kind `live_validation`, classification `reversible`, a "
     "repository-only default-off or staged `scope`, and `live_checks` naming "
     "the outstanding operational acceptance. The server appends that checklist "
@@ -147,6 +165,26 @@ def validate_gate(gate: object) -> dict:
     return gate
 
 
+def restricted(gate: dict) -> bool:
+    """Fail closed on undeclared effects, and never infer authority from reason."""
+    effects = gate.get("effects")
+    if (
+        not isinstance(effects, dict)
+        or set(effects) != set(GATE_EFFECTS)
+        or any(type(effects[effect]) is not bool for effect in GATE_EFFECTS)
+    ):
+        return True
+    value = gate.get("value")
+    return (
+        gate.get("classification") != "reversible"
+        or any(effects.values())
+        or (
+            value is not None
+            and (not isinstance(value, str) or bool(HUMAN_GATE_BACKSTOP.search(value)))
+        )
+    )
+
+
 def resolve(task: dict, artifact: dict, cause: str) -> bool:
     """True only after a typed reversible gate has been durably decided."""
     from factory.orchestration import factory_conductor as conductor
@@ -157,7 +195,10 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         # Legacy artifacts and unrelated human questions retain their path.
         return False
     gate = validate_gate(raw)
-    if gate["classification"] != "reversible":
+    # Declared operational effects restrict every kind before adoption or handoff.
+    # The unchanged value backstop also covers optional values on other kinds.
+    # Reasons can explain safety without requesting operational authority.
+    if restricted(gate):
         return False
     if gate["kind"] == "repository_delivered":
         # Delivery tasks only. A refine that resolves a gate goes on to apply
@@ -182,13 +223,6 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
                 {"cause": cause, "gate": gate},
             )
         return adopted
-    # A rationale often explains that the decision does not spend money or
-    # touch an account. It is explanatory text, not the selected operation.
-    # Retain the conservative check on the actual parameter value. A live
-    # validation gate only records staged scope and outstanding checks; it
-    # does not authorize executing those checks or external operations.
-    if gate["kind"] == "parameter" and HUMAN_GATE_BACKSTOP.search(gate["value"]):
-        return False
     number, repo = task["issue_number"], task["repo"]
     identity = hashlib.sha256(json.dumps(gate, sort_keys=True).encode()).hexdigest()[
         :20

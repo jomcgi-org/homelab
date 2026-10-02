@@ -1497,6 +1497,12 @@ def test_model_labelled_reversible_restricted_value_still_escalates(
     gate = {
         "kind": "parameter",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "value": value,
         "reason": "A reversible default",
     }
@@ -1520,6 +1526,12 @@ def test_reversible_gate_rationale_does_not_request_operational_authority(
     gate = {
         "kind": kind,
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "reason": (
             "The proposed configuration is repository-only and default-off; "
             "it neither provisions an external account nor deletes production "
@@ -1564,6 +1576,12 @@ def test_plain_retention_count_resolves(db, github, notices):
     gate = {
         "kind": "parameter",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "value": "Retention count N=3",
         "reason": "Keep three fallback generations",
     }
@@ -1571,6 +1589,96 @@ def test_plain_retention_count_resolves(db, github, notices):
     assert task_of(task_id)["conductor_gates"] == [gate]
     assert "Decided by the conductor: Retention count N=3" in github.bodies()
     assert not notices
+
+
+@pytest.mark.parametrize(
+    "effect",
+    ["spends_money", "deletes_data", "touches_external_account", "uses_credentials"],
+)
+@pytest.mark.parametrize(
+    "kind", ["parameter", "live_validation", "delivery_target", "repository_delivered"]
+)
+def test_declared_effect_escalates_every_gate_kind(
+    db, github, notices, monkeypatch, effect, kind
+):
+    from factory.orchestration import factory_gates as gates
+    from factory.orchestration import factory_operational_handoff as handoff
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": kind,
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "reason": "budget alert 50 USD per month",
+    }
+    gate["effects"][effect] = True
+    if kind == "parameter":
+        gate["value"] = "3 concurrent admissions"
+    elif kind == "live_validation":
+        gate.update(
+            scope="Repository-only, default-off", live_checks=["Verify live flows"]
+        )
+    elif kind == "repository_delivered":
+        gate.update(delivered_prs=[6070], live_checks=["Verify live flows"])
+
+    # Both branch operations would succeed if the shared restriction were bypassed.
+    operations = []
+    monkeypatch.setattr(
+        gates, "adopt_delivery", lambda *a, **kw: operations.append("adopt") or True
+    )
+    monkeypatch.setattr(
+        handoff, "handoff", lambda *a, **kw: operations.append("handoff") or True
+    )
+    conductor._escalate_task(
+        task_of(task_id), pause(pause_options(), gate=gate), "effects", []
+    )
+    assert receipt_of(db, task_id).state == "escalated"
+    assert "## Decision needed" in github.bodies()
+    assert "Decided by the conductor:" not in github.bodies()
+    assert not operations
+    assert len(notices) == 1
+
+
+def test_receipt_570_disclaimer_resolves(db, github, notices):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "effects": dict.fromkeys(gates.GATE_EFFECTS, False),
+        "value": "3 concurrent admissions",
+        "reason": "Bounds admission cost; choosing it neither spends money, deletes production data, nor touches an external account.",
+    }
+    conductor._escalate_task(
+        task_of(task_id), pause(pause_options(), gate=gate), "receipt-570", []
+    )
+    assert receipt_of(db, task_id).state == "admitted"
+    assert task_of(task_id)["conductor_gates"] == [gate]
+    assert "Decided by the conductor: 3 concurrent admissions" in github.bodies()
+    assert "## Decision needed" not in github.bodies()
+    assert not notices
+
+
+@pytest.mark.parametrize("effects", [None, {"spends_money": "false"}])
+def test_invalid_effects_are_rejected_and_never_resolve(db, effects):
+    from factory.orchestration import factory_gates as gates
+
+    task_id, _policy = admitted(ISSUE)
+    gate = {
+        "kind": "parameter",
+        "classification": "reversible",
+        "value": "3 concurrent admissions",
+        "reason": "Reversible default",
+    }
+    if effects is not None:
+        gate["effects"] = {**dict.fromkeys(gates.GATE_EFFECTS, False), **effects}
+    assert gates.restricted(gate)
+    with pytest.raises(ValueError, match="invalid gate"):
+        gates.validate_gate(gate)
+    with pytest.raises(ValueError, match="invalid gate"):
+        gates.resolve(task_of(task_id), {"gate": gate}, "invalid-effects")
+    assert task_of(task_id)["conductor_gates"] == []
 
 
 def test_adoption_at_first_step_pins_existing_branch(db, github, monkeypatch):
@@ -1649,6 +1757,12 @@ def test_delivery_gate_without_open_pr_escalates(db, github, notices):
     gate = {
         "kind": "delivery_target",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "reason": "Continue the earlier delivery",
     }
     assert not gates.resolve(task_of(task_id), {"gate": gate}, "no-open-pr")
@@ -1664,7 +1778,7 @@ def test_delivery_gate_without_open_pr_escalates(db, github, notices):
 @pytest.mark.parametrize(
     "classification", ["reversible", "spending", "external_account", "prod_deletion"]
 )
-def test_delivery_adoption_uses_ownership_checks_not_proposal_keywords(
+def test_delivery_adoption_requires_unrestricted_proposal(
     db, github, monkeypatch, classification
 ):
     from factory.orchestration import factory_gates as gates
@@ -1676,7 +1790,13 @@ def test_delivery_adoption_uses_ownership_checks_not_proposal_keywords(
     gate = {
         "kind": "delivery_target",
         "classification": classification,
-        "value": "Adopt the existing PR; do not create a duplicate.",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
+        "value": "Adopt the existing PR",
         "reason": "Preserve unknown-cost accounting and the existing review requirements.",
     }
     assert gates.resolve(task, {"gate": gate}, "existing-delivery") is (

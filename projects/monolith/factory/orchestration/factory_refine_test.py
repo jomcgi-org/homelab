@@ -1782,6 +1782,12 @@ def test_reversible_refine_default_posts_comment_and_continues(
     gate = {
         "kind": "parameter",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "value": "N=3, dry-run only",
         "reason": "Keeps fallback generations without enabling production deletion",
     }
@@ -1833,6 +1839,12 @@ def test_refine_rejects_irreversible_gate_claimed_ready(db, monkeypatch):
             "gate": {
                 "kind": "parameter",
                 "classification": "prod_deletion",
+                "effects": {
+                    "spends_money": False,
+                    "deletes_data": False,
+                    "touches_external_account": False,
+                    "uses_credentials": False,
+                },
                 "value": "N=1",
                 "reason": "Delete older production objects",
             },
@@ -1842,7 +1854,10 @@ def test_refine_rejects_irreversible_gate_claimed_ready(db, monkeypatch):
     assert controls.task_snapshot(task["id"])["state"] == "failed"
 
 
-def test_refine_backstop_rejects_spend_shaped_reversible_gate(db, monkeypatch):
+@pytest.mark.parametrize("declared_spend", [False, True])
+def test_refine_backstop_rejects_spend_shaped_reversible_gate(
+    db, monkeypatch, declared_spend
+):
     """#6208: a model label of reversible on a spend-shaped value still needs a human."""
     task, policy = make_task()
     add_refine_node(task, policy)
@@ -1856,13 +1871,25 @@ def test_refine_backstop_rejects_spend_shaped_reversible_gate(db, monkeypatch):
             "gate": {
                 "kind": "parameter",
                 "classification": "reversible",
-                "value": "budget alert $50/month",
-                "reason": "A threshold the operator can change later",
+                "effects": {
+                    "spends_money": declared_spend,
+                    "deletes_data": False,
+                    "touches_external_account": False,
+                    "uses_credentials": False,
+                },
+                "value": "3 concurrent admissions"
+                if declared_spend
+                else "budget alert $50/month",
+                "reason": "budget alert 50 USD per month",
             },
         },
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     assert controls.task_snapshot(task["id"])["state"] == "failed"
+    assert (
+        "irreversible gate requires needs-human"
+        in controls.task_snapshot(task["id"])["evidence"]["reason"]
+    )
 
 
 def test_reversible_refine_retries_after_label_write_and_deferred_settlement(
@@ -1889,6 +1916,12 @@ def test_reversible_refine_retries_after_label_write_and_deferred_settlement(
     gate = {
         "kind": "parameter",
         "classification": "reversible",
+        "effects": {
+            "spends_money": False,
+            "deletes_data": False,
+            "touches_external_account": False,
+            "uses_credentials": False,
+        },
         "value": "N=3",
         "reason": "Dry-run default",
     }

@@ -6251,7 +6251,14 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         artifact = _artifact(run)
         cause = f"investigate-gate:{run['node_key']}:{run['attempt']}"
         if artifact.get("gate") and not _decision_processed(task_id, cause):
-            if factory_gates.resolve(task, artifact, cause):
+            try:
+                resolved = factory_gates.resolve(task, artifact, cause)
+            except ValueError:
+                # In-flight artifacts can predate the required effects contract.
+                # Leave their question for the planner without wedging this tick.
+                logger.warning("invalid investigate gate for %s: %s", task_id, cause)
+                resolved = False
+            if resolved:
                 return
     # Guard the graph snapshot, including the planner's own insertion, against
     # graph edits that race with reading nodes or constructing the prompt.
