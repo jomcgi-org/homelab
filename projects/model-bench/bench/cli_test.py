@@ -1,5 +1,6 @@
 import argparse
 import json
+import shutil
 
 import pytest  # noqa: F401
 
@@ -391,3 +392,43 @@ def test_aggregate_agentic_group_scores_frontier_tasks():
     assert stats["frontier_n"] == 2
     assert stats["frontier_score"] == 0.75
     assert stats["hard_n"] == 1 and stats["hard_pass"] == 1
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_snapshot_overlays_layer_a_second_commit(tmp_path):
+    import subprocess
+
+    from bench.cli import _snapshot
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+
+    git("init", "-q")
+    (repo / "p").mkdir()
+    (repo / "p" / "chart.yaml").write_text("old\n")
+    (repo / "p" / "app.go").write_text("old\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one")
+    (repo / "p" / "chart.yaml").write_text("new\n")
+    (repo / "p" / "app.go").write_text("new\n")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "two")
+
+    tasks = tmp_path / "tasks"
+    (tasks / "t").mkdir(parents=True)
+    (tasks / "t" / "task.yaml").write_text(
+        "id: t\n"
+        "snapshot:\n"
+        "  commit: HEAD~1\n"
+        "  paths: [p/chart.yaml]\n"
+        "  strip_components: 1\n"
+        "  overlays:\n"
+        "    - commit: HEAD\n"
+        "      paths: [p/app.go]\n"
+    )
+    _snapshot(argparse.Namespace(repo=str(repo), tasks=str(tasks), task="t"))
+    fixture = tasks / "t" / "fixture"
+    assert (fixture / "chart.yaml").read_text() == "old\n"
+    assert (fixture / "app.go").read_text() == "new\n"

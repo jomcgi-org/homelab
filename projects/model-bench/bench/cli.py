@@ -1209,6 +1209,19 @@ def _snapshot(args) -> None:
         if strip:
             tar_cmd.append(f"--strip-components={strip}")
         subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
+        # Overlays lay files from other commits on top, with the same strip, so a
+        # fixture can pair one layer at the fix's parent with another layer that
+        # already ships the contract the model must wire to (e.g. the app's env
+        # vars from the fix commit, the chart from its parent).
+        for overlay in snap.get("overlays", []):
+            archive = subprocess.run(
+                ["git", "-C", str(repo), "archive", overlay["commit"], "--"]
+                + overlay["paths"],
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+            subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
         # Prune excludes (default: the parent's own *_test.py). The model never needs
         # them (the gold test is injected by the verifier), they bloat the fixture, and
         # committing real test files trips the repo's pre-commit semgrep hook.

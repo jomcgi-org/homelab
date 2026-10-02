@@ -42,6 +42,7 @@ def verifier_source_hash(kind: str) -> str:
 
 # import submodules so their @register runs
 from . import (  # noqa: E402,F401
+    checks,
     command,
     compile,
     helm,

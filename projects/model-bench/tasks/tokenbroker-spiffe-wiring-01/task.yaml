@@ -1,0 +1,204 @@
+id: tokenbroker-spiffe-wiring-01
+version: v1
+class: config-plumbing
+# hard: real cross-layer change from 4e3d39b00 ("serve /token only over SPIFFE mTLS
+# on a second port"). The chart is at the fix's PARENT; main.go is overlaid from the
+# fix itself, so the app already speaks the contract and the model must read it to
+# learn the env var names (BROKER_TLS_LISTEN_ADDR, BROKER_SPIFFE_CLIENT_IDS) and know
+# that go-spiffe's default X509Source dials $SPIFFE_ENDPOINT_SOCKET. The change has
+# to land consistently in values, Deployment (env, port, CSI volume), Service and
+# CiliumNetworkPolicy. Graded per check (#6697), so a values-only or env-only edit
+# lands partway.
+tier: hard
+mode: agentic
+source_commit: 4e3d39b00763315e26b1e5677eeae2ad8f098b57
+snapshot:
+  commit: a939802603b96c63f3101606e34783869f228829
+  paths:
+    - projects/embervm/chart
+  overlays:
+    - commit: 4e3d39b00763315e26b1e5677eeae2ad8f098b57
+      paths:
+        - projects/embervm/tokenbroker/cmd/tokenbroker/main.go
+  strip_components: 2
+  exclude:
+    - BUILD
+    - "*_test.py"
+agent:
+  max_turns: 40
+  exec: true
+prompt: |
+  This checkout has the embervm Helm chart (chart/) and the token broker's
+  entrypoint (tokenbroker/cmd/tokenbroker/main.go). The broker binary already
+  supports serving grant tokens on a second, SPIFFE mTLS listener: read main.go for
+  its configuration contract. Wire that listener through the chart, behind a new
+  `tokenBroker.spiffe` values block that is off by default:
+
+  - `enabled` (default false), `tlsPort` (default 8443), `trustDomain` (default
+    embervm.jomcgi.dev) and `clientSpiffeIds` (default empty list).
+  - When enabled, the broker starts its mTLS listener on tlsPort, reachable through
+    the broker's Service as a port named `https`. It gets its X.509 SVID from the
+    SPIRE Workload API, which the SPIRE CSI driver (`csi.spiffe.io`) mounts into
+    the pod as a socket named `spire-agent.sock`.
+  - The allowed clients are `clientSpiffeIds`. When that list is empty, allow the
+    noded ServiceAccount's SPIFFE ID
+    (spiffe://<trustDomain>/ns/<release namespace>/sa/<noded service account>),
+    because the noded pods are the ones that fetch tokens.
+  - When `tokenBroker.networkPolicy.enabled` is also true, the broker's
+    CiliumNetworkPolicy admits the TLS port only from the noded and noded-brick
+    pods.
+  - With `enabled: false` the rendered manifests must not change.
+
+  `helm template` must keep rendering. Edit only files under chart/.
+target_files:
+  - chart/values.yaml
+  - chart/templates/tokenbroker-deployment.yaml
+  - chart/templates/tokenbroker-service.yaml
+  - chart/templates/tokenbroker-networkpolicy.yaml
+verifier:
+  kind: checks
+  args:
+    pass_threshold: 1.0
+    script: |
+      import hashlib, json, os, subprocess
+      from pathlib import Path
+
+      import yaml
+
+      NS = "broker-test"
+      # sha256 of the parsed default render of the untouched fixture (comments and
+      # formatting do not count, only the manifests).
+      OFF_SHA = "4f2741bb8b369df3da876143b4677fef9a5b04d2150e52f9a276089654c1260d"
+      checks = {}
+
+
+      def render(*sets):
+          argv = [os.environ["HELM"], "template", NS, "chart", "--namespace", NS]
+          for s in sets:
+              argv += ["--set", s]
+          out = subprocess.run(argv, capture_output=True, text=True)
+          if out.returncode != 0:
+              return []
+          return [d for d in yaml.safe_load_all(out.stdout) if d]
+
+
+      def find(docs, kind, name_part):
+          for d in docs:
+              if d.get("kind") == kind and name_part in d["metadata"]["name"]:
+                  return d
+          return None
+
+
+      def broker(docs):
+          dep = find(docs, "Deployment", "tokenbroker") or {}
+          spec = dep.get("spec", {}).get("template", {}).get("spec", {})
+          for c in spec.get("containers", []):
+              if c.get("name") == "tokenbroker":
+                  return spec, c
+          return spec, {}
+
+
+      def env(c):
+          return {e["name"]: e.get("value") for e in c.get("env", [])}
+
+
+      def ports(c):
+          return {p.get("name"): p.get("containerPort") for p in c.get("ports", [])}
+
+
+      def svc_port(docs, name):
+          svc = find(docs, "Service", "tokenbroker") or {}
+          for p in svc.get("spec", {}).get("ports", []):
+              if p.get("name") == name:
+                  return p
+          return {}
+
+
+      def tls_rules(docs, port):
+          pol = find(docs, "CiliumNetworkPolicy", "tokenbroker") or {}
+          rules = []
+          for r in pol.get("spec", {}).get("ingress", []):
+              for tp in r.get("toPorts", []):
+                  if any(str(p.get("port")) == str(port) for p in tp.get("ports", [])):
+                      rules.append(r)
+          return rules
+
+
+      values = yaml.safe_load(Path("chart/values.yaml").read_text())
+      sp = (values.get("tokenBroker") or {}).get("spiffe") or {}
+      checks["values_defaults"] = (
+          sp.get("enabled") is False
+          and sp.get("tlsPort") == 8443
+          and sp.get("trustDomain") == "embervm.jomcgi.dev"
+          and sp.get("clientSpiffeIds") == []
+      )
+
+      on = render("tokenBroker.spiffe.enabled=true")
+      spec, c = broker(on)
+      e = env(c)
+      checks["tls_listen_addr"] = e.get("BROKER_TLS_LISTEN_ADDR") == ":8443"
+
+      noded_sa = None
+      for d in on:
+          if d.get("kind") == "ServiceAccount" and d["metadata"]["name"].endswith("noded"):
+              noded_sa = d["metadata"]["name"]
+      checks["client_ids_default"] = noded_sa is not None and e.get(
+          "BROKER_SPIFFE_CLIENT_IDS"
+      ) == f"spiffe://embervm.jomcgi.dev/ns/{NS}/sa/{noded_sa}"
+
+      _, c_list = broker(
+          render("tokenBroker.spiffe.enabled=true", "tokenBroker.spiffe.clientSpiffeIds={a,b}")
+      )
+      checks["client_ids_list"] = env(c_list).get("BROKER_SPIFFE_CLIENT_IDS") == "a,b"
+
+      csi_vols = {
+          v["name"]
+          for v in spec.get("volumes", [])
+          if (v.get("csi") or {}).get("driver") == "csi.spiffe.io"
+      }
+      mounts = {
+          m["mountPath"].rstrip("/")
+          for m in c.get("volumeMounts", [])
+          if m.get("name") in csi_vols
+      }
+      sock = (e.get("SPIFFE_ENDPOINT_SOCKET") or "").removeprefix("unix://")
+      checks["workload_api_socket"] = bool(mounts) and any(
+          sock == f"{m}/spire-agent.sock" for m in mounts
+      )
+
+      sp_https = svc_port(on, "https")
+      checks["https_port"] = ports(c).get("https") == 8443 and sp_https.get(
+          "port"
+      ) == 8443 and str(sp_https.get("targetPort")) in ("https", "8443")
+
+      pol_on = render("tokenBroker.spiffe.enabled=true", "tokenBroker.networkPolicy.enabled=true")
+      rules = tls_rules(pol_on, 8443)
+      comps = set()
+      only_endpoints = bool(rules)
+      for r in rules:
+          if set(r) - {"fromEndpoints", "toPorts"}:
+              only_endpoints = False
+          for sel in r.get("fromEndpoints", []):
+              comps.add((sel.get("matchLabels") or {}).get("app.kubernetes.io/component"))
+      checks["netpol_tls_scoped"] = only_endpoints and comps == {"noded", "noded-brick"}
+
+      custom = render(
+          "tokenBroker.spiffe.enabled=true",
+          "tokenBroker.networkPolicy.enabled=true",
+          "tokenBroker.spiffe.tlsPort=9443",
+      )
+      _, c9 = broker(custom)
+      checks["custom_port_consistent"] = (
+          env(c9).get("BROKER_TLS_LISTEN_ADDR") == ":9443"
+          and ports(c9).get("https") == 9443
+          and svc_port(custom, "https").get("port") == 9443
+          and bool(tls_rules(custom, 9443))
+          and not tls_rules(custom, 8443)
+      )
+
+      # Only meaningful once the listener exists: an untouched chart trivially
+      # renders the same.
+      off = render()
+      off_sha = hashlib.sha256(json.dumps(off, sort_keys=True).encode()).hexdigest()
+      checks["off_unchanged"] = checks["tls_listen_addr"] and off_sha == OFF_SHA
+      print(json.dumps({"checks": checks}))
