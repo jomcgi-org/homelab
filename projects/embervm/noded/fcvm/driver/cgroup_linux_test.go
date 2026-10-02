@@ -3,11 +3,48 @@
 package driver
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestVMMExitCgroupEvidenceReadFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		events  string
+		missing bool
+		want    ExitReason
+	}{
+		{name: "missing", missing: true, want: ExitUnclassified},
+		{name: "missing counter", events: "oom 1\n", want: ExitUnclassified},
+		{name: "malformed counter", events: "oom_kill unknown\n", want: ExitUnclassified},
+		{name: "overflow", events: "oom_kill 18446744073709551616\n", want: ExitUnclassified},
+		{name: "unchanged counter", events: "oom_kill 5\n", want: ExitUnclassified},
+		{name: "increased counter", events: "oom_kill 6\n", want: ExitHostCgroupOOM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if !tc.missing {
+				if err := os.WriteFile(filepath.Join(dir, "memory.events"), []byte(tc.events), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := &execProcess{
+				cgroup: &vmCgroup{dir: dir, oomKillStart: 5},
+				logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+				onExit: func(reason ExitReason) {
+					if reason != tc.want {
+						t.Fatalf("reason = %q, want %q", reason, tc.want)
+					}
+				},
+			}
+			p.observeExit()
+		})
+	}
+}
 
 func TestReadOOMKillCount(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory.events")

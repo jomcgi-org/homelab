@@ -2494,6 +2494,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		CpuSku:                s.cpuSku(),
 		LocalBases:            s.localBasesStatus(),
 		ScratchGeneration:     scratchGeneration,
+		VmmExitCounts:         s.vmmExitCounts(),
 	}
 	s.activatorMu.RLock()
 	activatorEnabled := s.activatorEnabled
@@ -2512,6 +2513,15 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		ns.ActivatorIp = s.cfg.PodIP
 	}
 	return ns
+}
+
+// vmmExitCounts is optional for older/non-Firecracker drivers. Missing telemetry
+// stays absent; it must not look like observed zero exits or healthy guests.
+func (s *Server) vmmExitCounts() map[string]uint64 {
+	if observer, ok := s.driver.(interface{ VMMExitCounts() map[string]uint64 }); ok {
+		return observer.VMMExitCounts()
+	}
+	return nil
 }
 
 // localBasesStatus projects the daemon's FULL on-disk base inventory into the

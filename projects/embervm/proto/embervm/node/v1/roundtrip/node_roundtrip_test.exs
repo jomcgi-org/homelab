@@ -104,6 +104,12 @@ defmodule Embervm.NodeRoundtripTest do
     {:ok, ns} = NodeService.Stub.get_node_status(ch, %GetNodeStatusRequest{node_id: "node-4"})
     assert ns.node_id == "node-4"
     assert ns.max_live_vms == 10
+    assert ns.vmm_exit_counts == %{
+             "host_requested" => 11,
+             "host_cgroup_oom" => 2,
+             "guest_kernel_panic" => 3,
+             "unclassified" => 4
+           }
     assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512}] = ns.session_volumes
   end
 
@@ -860,6 +866,13 @@ defmodule Embervm.NodeRoundtripTest do
     assert length(statuses) == 3
     assert Enum.map(statuses, & &1.live_vms) == [0, 1, 2]
     assert Enum.all?(statuses, &(&1.node_id == "node-4"))
+    assert Enum.map(statuses, & &1.vmm_exit_counts["host_requested"]) == [0, 1, 2]
+    assert Enum.all?(statuses, fn s ->
+             s.vmm_exit_counts["host_cgroup_oom"] == 2 and
+               s.vmm_exit_counts["guest_kernel_panic"] == 3 and
+               s.vmm_exit_counts["unclassified"] == 4 and
+               map_size(s.vmm_exit_counts) == 4
+           end)
   end
 
   # Read the "PORT=<n>" line the fake server prints once it is listening.

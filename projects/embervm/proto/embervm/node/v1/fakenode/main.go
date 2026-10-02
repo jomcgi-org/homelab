@@ -414,6 +414,10 @@ func (s *fakeServer) GetNodeStatus(_ context.Context, req *nodev1.GetNodeStatusR
 		NodeId:     req.GetNodeId(),
 		LiveVms:    1,
 		MaxLiveVms: 10,
+		VmmExitCounts: map[string]uint64{
+			"host_requested": 11, "host_cgroup_oom": 2,
+			"guest_kernel_panic": 3, "unclassified": 4,
+		},
 		// Continuity facts (R6): a fixed drain deadline and store reachability so
 		// the client can assert the new node-level fields round-trip. The bundle,
 		// volume, and set exported flags below prove the per-artifact fields cross.
@@ -618,7 +622,13 @@ func (s *fakeServer) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerS
 				Workload: workload, FreePrimedSlots: uint32(len(vmIDs)), PrimedVmIds: vmIDs,
 			})
 		}
-		if err := stream.Send(&nodev1.NodeStatus{NodeId: req.GetNodeId(), LiveVms: i, Workloads: workloads}); err != nil {
+		if err := stream.Send(&nodev1.NodeStatus{
+			NodeId: req.GetNodeId(), LiveVms: i, Workloads: workloads,
+			VmmExitCounts: map[string]uint64{
+				"host_requested": uint64(i), "host_cgroup_oom": 2,
+				"guest_kernel_panic": 3, "unclassified": 4,
+			},
+		}); err != nil {
 			return err
 		}
 		if closeStream || i+1 == watchNodeHeartbeats {
