@@ -420,7 +420,8 @@ const TOOLS: ToolSpec[] = [
     parameters: Type.Object({
       application: Type.Optional(
         Type.String({
-          description: "ArgoCD Application name to keep in the applications list",
+          description:
+            "ArgoCD Application name to keep in the applications list",
           minLength: 1,
           maxLength: 253,
         }),
