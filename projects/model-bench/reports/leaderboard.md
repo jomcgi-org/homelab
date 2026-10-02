@@ -6,6 +6,7 @@ Cleared the easy+standard viability floor (at most one miss). Ranked by hard-tas
 
 | Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok | errored |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| openai/gpt-6-luna | 9/9 | 56747 | 7.1 | 94.7 | 0.0077 | 0.0082 | 1.00 | 0 |
 | qwen/qwen3.8-flash-next | 9/9 | 141817 | 11.4 | 301.3 | 0.0150 | 0.0150 | 1.00 | 1 |
 | qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 | 0 |
 | qwen/qwen3-coder-next | 7/7 | 217279 | 17.3 | 44.9 | 0.0279 | 0.0279 | 1.00 | 0 |
@@ -71,6 +72,7 @@ No qualifying budget candidates yet.
 | deepseek/deepseek-v4-flash | config-plumbing | 0.50 | 0.0027 | can't | no |
 | google/gemma-4-26b-a4b-it | config-plumbing | 0.50 | 0.0035 | can't | no |
 | google/gemma-4-31b-it | config-plumbing | 0.50 | 0.0047 | can't | no |
+| openai/gpt-6-luna | config-plumbing | 0.50 | 0.0054 | can't | no |
 | qwen/qwen3-coder-next | config-plumbing | 0.50 | 0.0080 | can't | no |
 | qwen/qwen3.6-35b-a3b | config-plumbing | 0.50 | 0.0103 | can't | no |
 | deepseek/deepseek-v4-pro | config-plumbing | 0.50 | 0.0129 | can't | no |
@@ -88,6 +90,7 @@ No qualifying budget candidates yet.
 | google/gemma-4-31b-it | free-text | 1.00 | 0.0000 | one-shots | no |
 | qwen/qwen3-coder-next | free-text | 1.00 | 0.0001 | one-shots | no |
 | deepseek/deepseek-v4-flash | free-text | 1.00 | 0.0001 | one-shots | no |
+| openai/gpt-6-luna | free-text | 1.00 | 0.0001 | one-shots | no |
 | mistralai/devstral-2512 | free-text | 1.00 | 0.0002 | one-shots | no |
 | deepseek/deepseek-v4-pro | free-text | 1.00 | 0.0007 | one-shots | no |
 | z-ai/glm-4.7 | free-text | 1.00 | 0.0019 | one-shots | no |
