@@ -9,6 +9,7 @@ py_library(
     name = "verifiers",
     srcs = [
         "__init__.py",
+        "checks.py",
         "command.py",
         "compile.py",
         "helm.py",
@@ -23,6 +24,16 @@ py_library(
     imports = ["../.."],
     visibility = ["//projects/model-bench:__subpackages__"],
     deps = ["@pip//pyyaml"],
+)
+
+py_test(
+    name = "checks_test",
+    srcs = ["checks_test.py"],
+    imports = ["../.."],
+    deps = [
+        ":verifiers",
+        "@pip//pytest",
+    ],
 )
 
 py_test(

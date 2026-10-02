@@ -26,7 +26,7 @@ An agentic task graded by the repo's own tests works like SWE-bench:
 
 For example, `hikes-walkhighlands-dom-01` and `hikes-walkhighlands-duration-01` are both
 agentic tasks against the hikes doability model (DOM scraping and duration-aware doability,
-respectively). The pack currently has 19 agentic and 3 single-shot tasks in total; `tasks/`
+respectively). The pack currently has 21 agentic and 3 single-shot tasks in total; `tasks/`
 is the source of truth for the full, current list.
 
 ## Graded (mutation-testing) tasks
@@ -59,6 +59,15 @@ so the score is bucketed (`buckets: [[min_speedup, score], ...]`) with gaps wide
 enough that run-to-run noise does not flip a bucket. `stars-grid-speedup-01` asks
 for a faster point-in-polygon grid generator: micro-optimisation stays in the bottom
 bucket, a per-row scanline reaches 0.75, and an edge-bucket scanline reaches 1.0.
+
+
+The `checks` verifier is the general form: a hidden task-authored script runs with
+the workdir as cwd and prints `{"checks": {name: bool | 0..1}}`, and the score is
+the weighted mean (`weights`, default 1 each). Scripts that render charts get the
+Helm binary as `$HELM`, resolved from `args.helm`, then `$MODEL_BENCH_HELM`, then
+`helm` on PATH. A snapshot can add `overlays: [{commit, paths}]` to lay files from a
+second commit over the first (same strip), e.g. a chart at a fix's parent with the
+app entrypoint from the fix itself.
 
 ## Setup
 
