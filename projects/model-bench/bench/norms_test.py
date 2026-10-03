@@ -177,6 +177,17 @@ def test_unified_diff_covers_edits_and_new_files(tmp_path):
             {0},
         ),
         (".ts", "const x = `a ${ {b: 1} /* c */ }`;\n", {0}),
+        (".js", "const re = /x/;\n", set()),
+        (".ts", "const re = /[//]/;\n", set()),
+        (".js", "const re = /[//]/;\n", set()),
+        (".ts", "const re = /[/*]/;\n", set()),
+        (".js", "const re = /[/*]/;\n", set()),
+        (".js", "const re = /a\\/\\/b/g; // real\n", {0}),
+        (".ts", "const re = /['\"`]/; // real\n", {0}),
+        (".js", "const m = x.match(/\\/*/);\nreturn /[/*]/.test(s);\n", set()),
+        (".ts", "const a = b / c; // d / e\nconst f = (g) / 2 /* h */;\n", {0, 1}),
+        (".js", "const q = a / 2; const s = '/*';\n", set()),
+        (".ts", "const x = `${/[//]/.test(y)} // literal`;\n", set()),
     ],
 )
 def test_comment_scanner_ignores_literals(suffix, text, expected):
