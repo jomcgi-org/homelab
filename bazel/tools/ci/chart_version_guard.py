@@ -142,6 +142,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("head", nargs="?", default="HEAD")
     args = parser.parse_args(argv)
 
+    # Only changes introduced by this branch belong to the author. The bot
+    # may have published newer versions on main since the branch diverged.
+    args.base = _git_lines("merge-base", args.base, args.head)[0]
     changed = _git_lines("diff", "--name-only", args.base, args.head)
     if not changed:
         return 0

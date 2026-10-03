@@ -139,3 +139,20 @@ def test_changed_binary_dependency_is_never_read():
         return trees[ref].get(path)
 
     assert guard.findings([archive], {CHART_DIR}, read, "base", "head") == []
+
+
+def test_main_compares_against_branch_point(monkeypatch):
+    trees = {"fork": _tree(), "head": _tree(), "main": _tree(chart=CHART_V2)}
+
+    def lines(*args):
+        if args == ("merge-base", "main", "head"):
+            return ["fork"]
+        if args == ("diff", "--name-only", "fork", "head"):
+            return [CHART]
+        if args[0] == "ls-tree":
+            return list(trees[args[-1]])
+        raise AssertionError(args)
+
+    monkeypatch.setattr(guard, "_git_lines", lines)
+    monkeypatch.setattr(guard, "_git_read", lambda ref, path: trees[ref].get(path))
+    assert guard.main(["main", "head"]) == 0
