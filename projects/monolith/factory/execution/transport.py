@@ -372,7 +372,6 @@ class EmberSessionGone(EmberVMTransportError):
     pass
 
 
-
 class EmberInterruptFailure(EmberVMTransportError):
     """A Stop request that was rejected or whose final relay state is unknown."""
 
