@@ -1400,12 +1400,15 @@ class BulkGrantRequest(BaseModel):
 
     @model_validator(mode="after")
     def shared_axis_and_unique_pairs(self):
-        pairs = {(item.entity_id, item.player_character_id) for item in self.grants}
+        pairs = {
+            (item.entity_id.casefold(), item.player_character_id.casefold())
+            for item in self.grants
+        }
         if len(pairs) != len(self.grants):
             raise ValueError("duplicate entity and character pair")
         if (
-            len({item.entity_id for item in self.grants}) != 1
-            and len({item.player_character_id for item in self.grants}) != 1
+            len({item.entity_id.casefold() for item in self.grants}) != 1
+            and len({item.player_character_id.casefold() for item in self.grants}) != 1
         ):
             raise ValueError("grants must share an entity or a player character")
         return self
@@ -1423,9 +1426,10 @@ class GrantView(BaseModel):
 
 
 def _validate_reveal_id(value: str, detail: str) -> None:
-    """Keep malformed new identifiers out of PostgreSQL UUID-column lookups."""
+    """Accept dashed UUIDs in either case, preserving SQLite fixture spelling."""
     try:
-        UUID(value)
+        if value.casefold() != str(UUID(value)):
+            raise ValueError("identifier must use dashed UUID spelling")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=detail) from exc
 
@@ -1507,7 +1511,9 @@ def create_grant(
     session: Session = Depends(get_session),
 ) -> KnowledgeGrant:
     member = _require_dm(session, campaign_id, email)
-    _get_character_in_campaign_or_404(session, campaign_id, body.player_character_id)
+    character = _get_character_in_campaign_or_404(
+        session, campaign_id, body.player_character_id
+    )
     # Validate the entity exists before insert: knowledge_grant.entity_id is a
     # FK, so on Postgres a missing entity raises IntegrityError and surfaces as
     # an unhandled 500. (SQLite fixtures do not enforce FKs, so this guard is
@@ -1538,7 +1544,9 @@ def create_grant(
     grant = KnowledgeGrant(
         campaign_id=campaign_id,
         entity_id=body.entity_id,
-        player_character_id=body.player_character_id,
+        player_character_id=(
+            body.player_character_id if current is None else character.id
+        ),
         grant_scope=body.grant_scope,
         revealed_details=body.revealed_details,
         granted_in_session=(
@@ -1580,12 +1588,13 @@ def create_bulk_grants(
         explicit = session.get(GameSession, body.granted_in_session)
         if explicit is None or explicit.campaign_id != campaign_id:
             raise HTTPException(status_code=404, detail="session not found")
+    validated: list[tuple[BulkGrantItem, str, str]] = []
     for item in body.grants:
         _validate_reveal_id(
             item.player_character_id, "player character not found in this campaign"
         )
         _validate_reveal_id(item.entity_id, "entity not found")
-        _get_character_in_campaign_or_404(
+        character = _get_character_in_campaign_or_404(
             session, campaign_id, item.player_character_id
         )
         entity = session.get(Entity, item.entity_id)
@@ -1595,8 +1604,8 @@ def create_bulk_grants(
             raise HTTPException(status_code=404, detail="entity not found")
         existing = session.exec(
             select(KnowledgeGrant.id).where(
-                KnowledgeGrant.entity_id == item.entity_id,
-                KnowledgeGrant.player_character_id == item.player_character_id,
+                KnowledgeGrant.entity_id == entity.id,
+                KnowledgeGrant.player_character_id == character.id,
             )
         ).first()
         if existing is not None:
@@ -1604,19 +1613,23 @@ def create_bulk_grants(
                 status_code=409,
                 detail="grant already exists for this entity and character",
             )
+        validated.append((item, entity.id, character.id))
 
     current = _current_reveal_session(session, campaign_id)
     grants = [
         KnowledgeGrant(
             campaign_id=campaign_id,
-            **item.model_dump(),
+            entity_id=entity_id,
+            player_character_id=pc_id,
+            grant_scope=item.grant_scope,
+            revealed_details=item.revealed_details,
             granted_in_session=(
                 body.granted_in_session
                 if body.granted_in_session is not None or current is None
                 else current.id
             ),
         )
-        for item in body.grants
+        for item, entity_id, pc_id in validated
     ]
     session.add_all(grants)
     session.flush()
