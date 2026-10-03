@@ -70,7 +70,7 @@ export async function captureTiming(base, build, output, options = {}) {
         messages: [{ role: "user", content: prompt }],
         stream: true,
         stream_options: { include_usage: true },
-        max_tokens: 256,
+        max_tokens: options.maxTokens ?? 512,
         chat_template_kwargs: { enable_thinking: false },
       }),
       signal: AbortSignal.timeout(120000),
