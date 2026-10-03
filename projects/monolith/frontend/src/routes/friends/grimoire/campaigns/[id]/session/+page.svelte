@@ -319,7 +319,7 @@
               class="secondary"
               disabled={busy}
               onclick={() => pin(event)}
-              aria-label={`Pin ${event.body?.name || event.body?.text || event.kind} to notes`}
+              aria-label={`Pin ${event.body?.name || event.body?.reveals?.map((item) => item.name).join(", ") || event.body?.text || event.kind} to notes`}
               >Pin to notes</button
             >{/if}
         </article>

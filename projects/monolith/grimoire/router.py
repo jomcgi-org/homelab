@@ -634,7 +634,13 @@ def create_note(
         if not projection or projection.get("retracted"):
             raise HTTPException(404, detail="event not found")
         body.markdown = _event_note_markdown(projection)
-        body.title = projection.get("name") or body.title or "Session note"
+        items = reveal_items(projection)
+        body.title = (
+            projection.get("name")
+            or ", ".join(item["name"] for item in items)
+            or body.title
+            or "Session note"
+        )
         body.links = NoteLinks(
             entity_ids=[item["entity_id"] for item in reveal_items(projection)],
             event_ids=[event.id],
