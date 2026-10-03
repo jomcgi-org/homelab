@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("monolith.framework")
 
+# Native rollout handoff spends at most 15 seconds draining. Leave five more
+# for module cleanup, within the chart's 30-second process termination grace.
+LEADER_SHUTDOWN_TIMEOUT_SECONDS = 20.0
+
 # Sentinel: the private tier may hold any secret the deployment injects. The
 # real control is runtime injection (ADR 010: the runtime capability set, not
 # artifact contents, is the boundary); this set exists so a PUBLIC profile can
@@ -546,6 +550,8 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         app.state.singleton_tasks = []
         app.state.leader_singleton_failures = set()
         app.state.leader_singletons_dbos_launched = False
+        app.state.leader_singletons_shutting_down = False
+        app.state.leader_shutdown_exit = None
 
         # Per-module startup hooks run on every replica (best-effort priming;
         # scheduled Argo CronWorkflows own the refresh cadence thereafter).
@@ -612,8 +618,15 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             logger.info("Monolith started")
         yield
 
-        if elector_task is not None:
-            elector_task.cancel()
+        app.state.leader_singletons_shutting_down = True
+        exit_process = app.state.leader_shutdown_exit
+        close_shutdown_guard = None
+        if exit_process is not None:
+            close_shutdown_guard = app.state.elector.guard_shutdown(
+                exit_process, LEADER_SHUTDOWN_TIMEOUT_SECONDS
+            )
+        # Keep election renewing throughout drain. Cancellation releases the
+        # lease, so it must never precede cessation of DBOS workflow threads.
         await stop_leader_singletons(app, modules)
 
         # Per-module teardown runs on every replica, after the singletons stop
@@ -623,8 +636,15 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             if m.shutdown is not None:
                 try:
                     await m.shutdown(app)
-                except Exception:  # noqa: BLE001 - shutdown is best effort
+                except Exception:
                     logger.exception("Module %s failed to shut down", m.name)
+        if exit_process is not None:
+            exit_process(0)
+        if close_shutdown_guard is not None:
+            close_shutdown_guard()
+        if elector_task is not None:
+            elector_task.cancel()
+            await asyncio.gather(elector_task, return_exceptions=True)
         backfill_task = getattr(app.state, "backfill_task", None)
         if backfill_task and not backfill_task.done():
             backfill_task.cancel()

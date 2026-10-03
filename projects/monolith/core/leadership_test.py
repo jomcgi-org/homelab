@@ -9,11 +9,68 @@ shutdown - not the SQL itself.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from unittest import mock
 
 import pytest
 
-import core.leadership as leadership
+from core import leadership
+
+
+def test_shutdown_guard_renews_independently_of_event_loop(monkeypatch):
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.01)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.05)
+    calls = []
+    released = mock.Mock()
+    monkeypatch.setattr(leadership, "_release", released)
+    monkeypatch.setattr(
+        leadership,
+        "_acquire_or_renew",
+        lambda *_args: calls.append(time.monotonic()) or True,
+    )
+    exits = []
+    close = leadership.LeaderElector().guard_shutdown(exits.append, timeout=1)
+    try:
+        # No asyncio loop runs while this thread is blocked.
+        time.sleep(leadership.LEASE_TTL * 3)
+        assert len(calls) >= 5
+        assert exits == []
+        released.assert_not_called()
+    finally:
+        close()
+
+
+@pytest.mark.parametrize("failure", ["lost", "error", "hung"])
+def test_shutdown_guard_ceases_on_failed_or_hung_renewal(monkeypatch, failure):
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.01)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.05)
+    unblock = threading.Event()
+    ceased = threading.Event()
+    exits = []
+    released = mock.Mock()
+    monkeypatch.setattr(leadership, "_release", released)
+
+    def renew(*_args):
+        if failure == "error":
+            raise RuntimeError("database unavailable")
+        if failure == "hung":
+            unblock.wait(timeout=1)
+        return False
+
+    def exit_process(status):
+        exits.append(status)
+        ceased.set()
+
+    monkeypatch.setattr(leadership, "_acquire_or_renew", renew)
+    close = leadership.LeaderElector().guard_shutdown(exit_process, timeout=1)
+    try:
+        assert ceased.wait(timeout=0.2)
+        assert exits == [1]
+        released.assert_not_called()
+    finally:
+        unblock.set()
+        close()
 
 
 def _seq(values):

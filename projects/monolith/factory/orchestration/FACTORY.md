@@ -1,5 +1,44 @@
 # Bounded issue delivery lane
 
+## DBOS recovery needs process cessation
+
+Issue #6798's accepted investigation reproduced a DBOS 2.29.0 duplicate-step
+conflict with two processes sharing a workflow identity. The recovered executor
+abandons its workflow body and waits for the terminal result. If the original
+executor then exits, native session completion cannot resume that waiter. A
+third process recovery resumes the original workflow. The SQLite reproduction
+confirms this mechanism; the October 3, 2026 production incident's conflicting
+checkpoint and original executor were not observed, so historical attribution
+remains inconclusive.
+
+**Why.** DBOS `destroy()` shuts down its synchronous executor with `wait=False`.
+Running workflow threads can survive destruction and race recovery after an
+in-process relaunch. Teardown reordering alone also leaves the five-second lease
+shorter than the native executor's fifteen-second rollout drain. A launched
+factory therefore exits the process after orderly shutdown instead of destroying
+and relaunching DBOS in that process. The framework leaves election running and
+adds an independent shutdown renewal thread. A renewal watchdog fails closed
+before the lease can become stale, and a twenty-second absolute watchdog bounds
+cleanup within the thirty-second termination grace. The lease expires after
+process cessation; it is never explicitly released while DBOS threads survive.
+
+Loss of leadership or failed singleton startup with launched DBOS exits promptly
+without draining under assumed ownership. Other binaries retain normal election
+and release behavior. Normal rollout still fences admission on SIGTERM, drains
+native executor handoffs under #5938, and runs module shutdown hooks. Unknown
+native invocation outcomes and operator pauses remain fenced. Node workflow
+member sources and the derived application version are unchanged.
+
+The CI-wired `leader_recovery_test.py` uses real DBOS processes and the unchanged
+`execute_node` workflow. It covers the duplicate-result race, persisted polling
+sleep recovery followed by a late native result and an existing plan artifact,
+one dispatch per original attempt/session, live waiting, unknown invocation,
+and an operator pause retained across recovery. Native I/O uses isolated file
+seams. Live acceptance still requires a future GitOps rollout with node and drain
+checkpoints continuing past their recorded sleep wake times. The original
+sessions 17053 and 17055 settled SUCCESS on October 3 at 05:10 UTC and must never
+be retried or recreated.
+
 ## Domain ownership
 
 Factory is one domain inside the monolith. It owns private interactions and

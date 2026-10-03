@@ -4910,6 +4910,18 @@ py_test(
 )
 
 py_test(
+    name = "factory_leader_recovery_test",
+    srcs = ["factory/orchestration/leader_recovery_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//dbos",
+        "@pip//fastapi",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_runtime_test",
     srcs = ["factory/orchestration/runtime_test.py"],
     imports = ["."],

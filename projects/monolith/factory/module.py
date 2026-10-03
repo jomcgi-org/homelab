@@ -53,12 +53,16 @@ def _register_mcp() -> None:
 
 
 async def _leader_start(app):
-    from factory.orchestration import runtime
+    from factory.orchestration import (
+        node_workflows,  # noqa: F401 - register before DBOS launch
+        runtime,
+    )
     from factory.orchestration.factory_conductor import start_loop
-    from factory.orchestration import node_workflows  # noqa: F401 - register before DBOS launch
 
     runtime.launch()
     app.state.leader_singletons_dbos_launched = runtime.is_launched()
+    if runtime.is_launched():
+        app.state.leader_shutdown_exit = runtime.exit_process
     tasks = start_loop() if runtime.is_launched() else []
     register_leader_tasks(app, tasks)
     # Track each task before starting the next component: partial startup must
@@ -69,13 +73,34 @@ async def _leader_start(app):
 
 async def _leader_stop(app):
     from factory.orchestration import runtime
-    from factory.orchestration.factory_conductor import disarm_watchdog
+
+    if runtime.is_launched():
+        elector = getattr(app.state, "elector", None)
+        if not (
+            getattr(app.state, "leader_singletons_shutting_down", False)
+            and elector is not None
+            and elector.is_leader
+        ):
+            # Lease loss and failed startup cannot drain under assumed ownership
+            # or relaunch DBOS over surviving synchronous workflow threads.
+            runtime.exit_process(1)
+            return
+
     from factory.execution.mcp import (
         drain_inflight_executors,
         rollout_shutdown_in_progress,
     )
+    from factory.orchestration.factory_conductor import disarm_watchdog
 
     disarm_watchdog()
+    if runtime.is_launched():
+        if not getattr(app.state, "factory_leader_drained", False):
+            app.state.factory_leader_drained = True
+            if rollout_shutdown_in_progress():
+                await drain_inflight_executors()
+        # The framework still renews the lease and runs every module's shutdown
+        # hook. Process exit, rather than destroy(), then stops these executors.
+        return
     try:
         if rollout_shutdown_in_progress():
             await drain_inflight_executors()
