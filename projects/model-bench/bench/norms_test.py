@@ -243,6 +243,7 @@ def _mock_linter(monkeypatch, language, baseline, current, *, error=None):
         if error:
             raise error
         if language == "go":
+            assert "--show-stats=false" in cmd
             env = kwargs["env"]
             assert env["GOPROXY"] == "off" and env["GONOPROXY"] == "none"
             assert env["GOFLAGS"] == "-mod=readonly" and env["GOTOOLCHAIN"] == "local"
