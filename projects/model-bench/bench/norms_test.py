@@ -161,45 +161,6 @@ def test_unified_diff_covers_edits_and_new_files(tmp_path):
             'var x = "// literal"\nvar y = `/* literal */`\n/* block\n * body\n */\n// line\n',
             {2, 3, 4, 5},
         ),
-        (
-            ".js",
-            "const x = \"// literal\";\nconst y = '/* literal */';\nconst z = `// literal`;\n/* block */\n",
-            {3},
-        ),
-        (".ts", "const x = `escaped \\` // literal`;\n// real\n", {1}),
-        (".js", "const x = `outer ${`/* literal */`}`;\n", set()),
-        (".ts", "const x = `outer ${`/* literal */`}`;\n", set()),
-        (".js", "const x = `outer ${ /* real comment */ 1}`;\n", {0}),
-        (".ts", "const x = `outer ${ /* real comment */ 1}`;\n", {0}),
-        (
-            ".js",
-            "const x = `outer ${`inner ${1 /* deep */}`}`;\n",
-            {0},
-        ),
-        (".ts", "const x = `a ${ {b: 1} /* c */ }`;\n", {0}),
-        (".js", "const re = /x/;\n", set()),
-        (".ts", "const re = /[//]/;\n", set()),
-        (".js", "const re = /[//]/;\n", set()),
-        (".ts", "const re = /[/*]/;\n", set()),
-        (".js", "const re = /[/*]/;\n", set()),
-        (".js", "const re = /a\\/\\/b/g; // real\n", {0}),
-        (".ts", "const re = /['\"`]/; // real\n", {0}),
-        (".js", "const m = x.match(/\\/*/);\nreturn /[/*]/.test(s);\n", set()),
-        (".ts", "const a = b / c; // d / e\nconst f = g[0] / 2 /* h */;\n", {0, 1}),
-        (".js", "function f() { return typeof /[/*]/; }\n", set()),
-        (".ts", "function f() { return typeof /[/*]/; }\n", set()),
-        (".js", "const r = x\n  ? /[//]/ : /a/; // real\n", {1}),
-        (".js", "const q = a / 2; const s = '/*';\n", set()),
-        (".js", "const value = obj.return / 2; // real comment\n", {0}),
-        (".ts", "const value = obj.return / 2; // real comment\n", {0}),
-        (".js", "const value = obj.return / /[//]/.source.length;\n", set()),
-        (".ts", "const value = obj.return / /[//]/.source.length;\n", set()),
-        (".js", "const value = obj?.typeof / 2; // real\n", {0}),
-        (".ts", "const value = 1. / /[//]/.source.length;\n", set()),
-        (".js", "const value = 1. / /[//]/.source.length;\n", set()),
-        (".js", "const value = 1.5 / 2; // real\n", {0}),
-        (".ts", "const value = 1..toFixed / 2; // real\n", {0}),
-        (".ts", "const x = `${/[//]/.test(y)} // literal`;\n", set()),
     ],
 )
 def test_comment_scanner_ignores_literals(suffix, text, expected):
@@ -207,34 +168,22 @@ def test_comment_scanner_ignores_literals(suffix, text, expected):
 
 
 @pytest.mark.parametrize("suffix", [".js", ".ts"])
-@pytest.mark.parametrize(
-    "text",
-    [
-        "if (ok) /[//]/.test(value);\n",
-        "if (ok) /[/*]/.test(value);\n",
-        "const value = n++ / 2; // real comment\n",
-        "const value = (a + b) / 2;\n",
-        "const value = n-- / 2;\n",
-        "if (ok) {}\n/x/.test(value);\n",
-        "const value = a / 2 / b / /unterminated;\n",
-    ],
-)
-def test_comment_scanner_rejects_ambiguous_slash(suffix, text):
+def test_comment_scanner_rejects_js_ts(suffix):
     with pytest.raises(ValueError):
-        norms._comment_lines(text, suffix)
+        norms._comment_lines("const x = 1; // real\n", suffix)
 
 
-@pytest.mark.parametrize("rel", ["a.js", "a.ts"])
-@pytest.mark.parametrize(
-    "text",
-    [
-        "if (ok) /[//]/.test(value);\n",
-        "if (ok) /[/*]/.test(value);\n",
-        "const value = n++ / 2; // real comment\n",
-    ],
-)
-def test_comment_density_is_unmeasured_for_ambiguous_slash(tmp_path, rel, text):
-    fx, wd = _pair(tmp_path, {rel: "let y = 1;\n"}, {rel: "let y = 1;\n" + text})
+@pytest.mark.parametrize("js", ["a.js", "a.ts"])
+@pytest.mark.parametrize("other", [None, "b.py", "b.go"])
+def test_comment_density_is_unmeasured_for_js_ts(tmp_path, js, other):
+    old = {js: "let y = 1;\n"}
+    new = {js: "let y = 1;\nlet z = 2; // real comment\n"}
+    if other:
+        old[other] = "x = 1\n"
+        new[other] = "x = 2\n# new\n" if other.endswith(".py") else "x := 2\n// new\n"
+    changes = [(rel, old[rel], new[rel]) for rel in old]
+    assert norms._comment_density(changes) == (None, None, None)
+    fx, wd = _pair(tmp_path, old, new)
     n = compute_norms(fx, wd, lint=False)
     assert n["comment_density_added"] is None
     assert n["comment_density_baseline"] is None
@@ -244,10 +193,10 @@ def test_comment_density_is_unmeasured_for_ambiguous_slash(tmp_path, rel, text):
 def test_comment_density_pools_added_lines_and_baselines(tmp_path):
     fx, wd = _pair(
         tmp_path,
-        {"a.py": "# old\nx = 1\n", "b.ts": "let y = 1;\n"},
+        {"a.py": "# old\nx = 1\n", "b.go": "y := 1\n"},
         {
             "a.py": "# old\nx = 2\n# new\n",
-            "b.ts": "let y = 2;\n// new\n",
+            "b.go": "y := 2\n// new\n",
             "test_m.py": "# ignored\n",
         },
     )

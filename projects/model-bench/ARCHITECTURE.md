@@ -13,15 +13,17 @@ comment density. `norms_score` is on a 0..1 scale. Available penalties use
 `WEIGHTS`, renormalised over measured signals. Reports include the mean and
 `norms_n` coverage; sorting and qualification remain unchanged.
 
-Python comment tokens and a Go/JavaScript/TypeScript literal scanner measure
+Python comment tokens and a Go literal scanner measure
 comment lines over added non-blank code lines against the changed files'
 baseline. An absolute density difference up to 0.10 is free; 0.40 saturates.
 Pinned, already-installed ruff and golangci-lint compare per-file multisets of
 rule and message, ignoring diagnostic line shifts. Go lint uses temporary module
-copies, read-only module resolution and disabled downloads. Unavailable lint or
-comment measurements remain N/A. `gold-size` projects source-commit numstats
-through snapshot paths, stripping and excludes after checking the pre-fix tree.
-It stores only an integer and refuses ambiguous snapshots.
+copies, read-only module resolution and disabled downloads. JS/TS comment
+density is not measured (N/A) because a lexer without a parser cannot classify
+regex literals soundly. Unavailable lint or comment measurements remain N/A.
+`gold-size` projects source-commit numstats through snapshot paths, stripping
+and excludes after checking the pre-fix tree. It stores only an integer and
+refuses ambiguous snapshots.
 
 **Why.** Deterministic, judge-free signals compare how models reach the pass
 floor without another billed call. Weighted penalties retain the merged design

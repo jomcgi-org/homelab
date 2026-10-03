@@ -109,8 +109,8 @@ leftover debug lines (`print(` outside tests, `breakpoint(`, `console.log(`, TOD
 FIXME / XXX), new ruff or golangci-lint findings (installed tools at pinned versions),
 diff size against `gold_diff_lines`, whether code changed without a test, and added
 comment density compared with the original changed files. Comment density covers
-Python, Go, JavaScript and TypeScript code, excludes tests and string literals,
-and tolerates an absolute density change of 0.10 before penalising it.
+Python and Go code (JavaScript and TypeScript read as N/A), excludes tests and
+string literals, and tolerates an absolute density change of 0.10 before penalising it.
 `python -m bench gold-size --repo ../.. --write` derives `gold_diff_lines` from
 the real `source_commit`, restricted to the snapshot's paths, stripping and
 exclusions. It leaves the size unset when the pre-fix tree cannot be projected
