@@ -167,6 +167,16 @@ def test_unified_diff_covers_edits_and_new_files(tmp_path):
             {3},
         ),
         (".ts", "const x = `escaped \\` // literal`;\n// real\n", {1}),
+        (".js", "const x = `outer ${`/* literal */`}`;\n", set()),
+        (".ts", "const x = `outer ${`/* literal */`}`;\n", set()),
+        (".js", "const x = `outer ${ /* real comment */ 1}`;\n", {0}),
+        (".ts", "const x = `outer ${ /* real comment */ 1}`;\n", {0}),
+        (
+            ".js",
+            "const x = `outer ${`inner ${1 /* deep */}`}`;\n",
+            {0},
+        ),
+        (".ts", "const x = `a ${ {b: 1} /* c */ }`;\n", {0}),
     ],
 )
 def test_comment_scanner_ignores_literals(suffix, text, expected):

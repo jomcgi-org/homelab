@@ -188,7 +188,6 @@ async def run_agent_cell(
     allow_exec: expose the sandboxed `run` shell tool (task.agent.exec).
     """
     workdir = Path(tempfile.mkdtemp())
-    shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
     tools = TOOLS + [RUN_TOOL] if allow_exec else TOOLS
     messages: list[dict] = [
         {"role": "system", "content": AGENT_SYSTEM},
@@ -202,6 +201,7 @@ async def run_agent_cell(
     norms: dict | None = None
     diff: str | None = None
     try:
+        shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
         for turns in range(1, max_turns + 1):
             res = await chat(
                 model=model_id,
