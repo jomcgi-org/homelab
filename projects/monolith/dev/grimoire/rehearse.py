@@ -67,6 +67,10 @@ def main():
             if dm.get_by_role("button", name="Start session", exact=True).count():
                 dm.get_by_role("button", name="Start session", exact=True).click()
             expect(dm.get_by_label("Set the scene", exact=True)).to_be_visible()
+            for viewer in (a, b):
+                expect(viewer.get_by_text("active", exact=True)).to_be_visible(
+                    timeout=6000
+                )
             expect(
                 a.get_by_role("heading", name="The story begins here.", exact=True)
             ).to_be_visible()

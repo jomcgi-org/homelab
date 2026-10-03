@@ -222,13 +222,19 @@
     <section aria-label="Session feed" class="feed">
       {#if !state.events.length}
         <div class="empty">
-          <h2>The story begins here.</h2>
+          <h2>
+            {state.session?.status === "ended"
+              ? "No messages were recorded."
+              : "The story begins here."}
+          </h2>
           <p>
-            {dm
-              ? state.session?.status === "active"
-                ? "Set the scene for your players."
-                : "Start the session, then set the scene for your players."
-              : "Take your seat. Your DM will set the scene shortly."}
+            {state.session?.status === "ended"
+              ? "This session has no story entries."
+              : dm
+                ? state.session?.status === "active"
+                  ? "Set the scene for your players."
+                  : "Start the session, then set the scene for your players."
+                : "Take your seat. Your DM will set the scene shortly."}
           </p>
         </div>
       {/if}

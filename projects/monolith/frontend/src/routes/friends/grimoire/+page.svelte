@@ -249,6 +249,11 @@
 </main>
 
 <style>
+  article > a {
+    display: inline-block;
+    margin: 8px 16px 8px 0;
+  }
+
   .lobby {
     max-width: 860px;
     margin: auto;

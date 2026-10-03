@@ -11,9 +11,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 # Chromium resolves localhost subdomains itself, but Playwright API requests
 # use Node's system resolver. Keep both on the same synthetic loopback host.
-if ! getent ahostsv4 friends.localhost >/dev/null; then
+if ! grep -Eq '^127\.0\.0\.1[[:space:]]+friends\.localhost([[:space:]]|$)' /etc/hosts; then
 	printf '127.0.0.1 friends.localhost\n' | "${root_command[@]}" tee -a /etc/hosts >/dev/null
 fi
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first"
 "${root_command[@]}" apt-get update -qq
 "${root_command[@]}" apt-get install -y -qq postgresql-16 postgresql-16-pgvector python3-venv
 
