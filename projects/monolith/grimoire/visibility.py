@@ -13,6 +13,7 @@ code in later tasks composes this module.
 
 from typing import Any, Literal
 
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, SQLModel, and_, or_, select
 
 from grimoire.models import Entity, GameSession, KnowledgeGrant
@@ -37,7 +38,9 @@ _SPINE_FIELDS = (
 )
 
 
-def visible_entities_query(campaign_id: str, viewer: Viewer):
+def visible_entities_query(
+    campaign_id: str, viewer: Viewer, *, not_granted_to: str | None = None
+):
     """Builds the grant-overlay predicate query for a campaign.
 
     Player view (viewer is a player_character_id): LEFT JOIN knowledge_grant
@@ -50,6 +53,9 @@ def visible_entities_query(campaign_id: str, viewer: Viewer):
     Grants reach the caller as annotations. The campaign-scoped outer join can
     yield one row per grant; callers that need one row per entity aggregate it.
 
+    ``not_granted_to`` hides entities that PC already knows: global entities
+    or any grant scope. The correlated alias is separate from the DM join.
+    Callers must authorize this DM-only filter before building the query.
     Returns a select() yielding (Entity, KnowledgeGrant | None) row tuples.
     """
     if viewer == "dm":
@@ -58,7 +64,7 @@ def visible_entities_query(campaign_id: str, viewer: Viewer):
         campaign_session_ids = select(GameSession.id).where(
             GameSession.campaign_id == campaign_id
         )
-        return (
+        query = (
             select(Entity, KnowledgeGrant)
             .join(
                 KnowledgeGrant,
@@ -73,6 +79,20 @@ def visible_entities_query(campaign_id: str, viewer: Viewer):
                 )
             )
         )
+        if not_granted_to is not None:
+            known_grant = aliased(KnowledgeGrant)
+            known = (
+                select(known_grant.id)
+                .where(
+                    known_grant.entity_id == Entity.id,
+                    known_grant.campaign_id == campaign_id,
+                    known_grant.player_character_id == not_granted_to,
+                )
+                .correlate(Entity)
+                .exists()
+            )
+            query = query.where(Entity.is_global.is_(False), ~known)
+        return query
 
     join_condition = and_(
         KnowledgeGrant.entity_id == Entity.id,

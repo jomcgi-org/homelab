@@ -125,6 +125,18 @@ CASES = {
         }
     ),
     ("GET", PREFIX + "/grants"): Case(),
+    ("POST", PREFIX + "/grants/bulk"): Case(
+        body={
+            "grants": [
+                {
+                    "entity_id": "$private.id",
+                    "player_character_id": "$character.id",
+                    "grant_scope": "name_only",
+                }
+            ]
+        },
+        state="play",
+    ),
     ("PATCH", PREFIX + "/grants/{grant_id}"): Case(
         params={"grant_id": "$grant.id"},
         body={"grant_scope": "partial"},
@@ -229,6 +241,8 @@ def test_campaign_routes_match_renamed_path_param():
 
 
 def resolve(h, value):
+    if isinstance(value, list):
+        return [resolve(h, item) for item in value]
     if isinstance(value, dict):
         return {key: resolve(h, item) for key, item in value.items()}
     if isinstance(value, str) and value.startswith("$"):

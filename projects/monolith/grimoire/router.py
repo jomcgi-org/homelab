@@ -22,6 +22,7 @@ from uuid import UUID
 from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -65,6 +66,7 @@ from grimoire.session_events import (
     InvalidEventAudienceError,
     SessionEndedError,
     append_event,
+    play_enabled,
     require_play_enabled,
 )
 from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
@@ -1381,6 +1383,34 @@ class GrantUpdateRequest(BaseModel):
     revealed_details: dict | None = None
 
 
+class BulkGrantItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str
+    player_character_id: str
+    grant_scope: GrantScope
+    revealed_details: dict | None = None
+
+
+class BulkGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    grants: list[BulkGrantItem] = Field(min_length=1, max_length=50)
+    granted_in_session: str | None = None
+
+    @model_validator(mode="after")
+    def shared_axis_and_unique_pairs(self):
+        pairs = {(item.entity_id, item.player_character_id) for item in self.grants}
+        if len(pairs) != len(self.grants):
+            raise ValueError("duplicate entity and character pair")
+        if (
+            len({item.entity_id for item in self.grants}) != 1
+            and len({item.player_character_id for item in self.grants}) != 1
+        ):
+            raise ValueError("grants must share an entity or a player character")
+        return self
+
+
 class GrantView(BaseModel):
     id: str
     campaign_id: str
@@ -1404,6 +1434,63 @@ def _get_character_in_campaign_or_404(
     return character
 
 
+def _current_reveal_session(session: Session, campaign_id: str) -> GameSession | None:
+    if not play_enabled():
+        return None
+    return session.exec(
+        select(GameSession).where(
+            GameSession.campaign_id == campaign_id,
+            GameSession.status.in_(("active", "paused")),
+        )
+    ).first()
+
+
+def _reveal_identity(entity: Entity, grant: KnowledgeGrant) -> dict[str, Any]:
+    return {
+        "entity_id": entity.id,
+        "name": entity.name,
+        "entity_type": entity.entity_type,
+        "grant_scope": grant.grant_scope,
+    }
+
+
+def _reveal_body(session: Session, grant: KnowledgeGrant) -> dict[str, Any]:
+    """Snapshot only the persisted grant's grantee projection, JSON-safe."""
+    entity = session.get(Entity, grant.entity_id)
+    body = _reveal_identity(entity, grant)
+    if grant.grant_scope != "name_only":
+        detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
+        detail = session.get(detail_model, entity.id) if detail_model else None
+        body["entity"] = project_entity(
+            entity, detail, grant, grant.player_character_id, context="lookup"
+        )
+    return jsonable_encoder(body)
+
+
+def _append_reveal(
+    session: Session,
+    game_session: GameSession,
+    member: CampaignMember,
+    pc_id: str,
+    body: dict[str, Any],
+) -> None:
+    try:
+        append_event(
+            session,
+            game_session=game_session,
+            kind="reveal",
+            audience=Audience("pcs", {pc_id}),
+            author_member_id=member.id,
+            body=body,
+        )
+    except SessionEndedError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        session.rollback()
+        raise
+
+
 @router.post("/campaigns/{campaign_id}/grants", response_model=GrantView)
 def create_grant(
     campaign_id: str,
@@ -1411,7 +1498,7 @@ def create_grant(
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> KnowledgeGrant:
-    _require_dm(session, campaign_id, email)
+    member = _require_dm(session, campaign_id, email)
     _get_character_in_campaign_or_404(session, campaign_id, body.player_character_id)
     # Validate the entity exists before insert: knowledge_grant.entity_id is a
     # FK, so on Postgres a missing entity raises IntegrityError and surfaces as
@@ -1439,18 +1526,99 @@ def create_grant(
             detail="grant already exists for this entity and character",
         )
 
+    current = _current_reveal_session(session, campaign_id)
     grant = KnowledgeGrant(
         campaign_id=campaign_id,
         entity_id=body.entity_id,
         player_character_id=body.player_character_id,
         grant_scope=body.grant_scope,
         revealed_details=body.revealed_details,
-        granted_in_session=body.granted_in_session,
+        granted_in_session=(
+            body.granted_in_session
+            if body.granted_in_session is not None or current is None
+            else current.id
+        ),
     )
     session.add(grant)
+    if current is not None:
+        session.flush()
+        _append_reveal(
+            session,
+            current,
+            member,
+            grant.player_character_id,
+            _reveal_body(session, grant),
+        )
     session.commit()
     session.refresh(grant)
     return grant
+
+
+@router.post(
+    "/campaigns/{campaign_id}/grants/bulk",
+    response_model=list[GrantView],
+    dependencies=[Depends(require_play_enabled)],
+)
+def create_bulk_grants(
+    campaign_id: str,
+    body: BulkGrantRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[KnowledgeGrant]:
+    """Validate the entire batch, then commit grants and per-PC reveals once."""
+    member = _require_dm(session, campaign_id, email)
+    if body.granted_in_session is not None:
+        explicit = session.get(GameSession, body.granted_in_session)
+        if explicit is None or explicit.campaign_id != campaign_id:
+            raise HTTPException(status_code=404, detail="session not found")
+    for item in body.grants:
+        _get_character_in_campaign_or_404(
+            session, campaign_id, item.player_character_id
+        )
+        entity = session.get(Entity, item.entity_id)
+        if entity is None or not entity_belongs_to_campaign(
+            session, campaign_id, entity
+        ):
+            raise HTTPException(status_code=404, detail="entity not found")
+        existing = session.exec(
+            select(KnowledgeGrant.id).where(
+                KnowledgeGrant.entity_id == item.entity_id,
+                KnowledgeGrant.player_character_id == item.player_character_id,
+            )
+        ).first()
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="grant already exists for this entity and character",
+            )
+
+    current = _current_reveal_session(session, campaign_id)
+    grants = [
+        KnowledgeGrant(
+            campaign_id=campaign_id,
+            **item.model_dump(),
+            granted_in_session=(
+                body.granted_in_session
+                if body.granted_in_session is not None or current is None
+                else current.id
+            ),
+        )
+        for item in body.grants
+    ]
+    session.add_all(grants)
+    session.flush()
+    if current is not None:
+        reveals: dict[str, list[dict[str, Any]]] = {}
+        for grant in grants:
+            reveals.setdefault(grant.player_character_id, []).append(
+                _reveal_body(session, grant)
+            )
+        for pc_id, bodies in reveals.items():
+            _append_reveal(session, current, member, pc_id, {"reveals": bodies})
+    session.commit()
+    for grant in grants:
+        session.refresh(grant)
+    return grants
 
 
 @router.get("/campaigns/{campaign_id}/grants", response_model=list[GrantView])
@@ -1478,17 +1646,30 @@ def update_grant(
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> KnowledgeGrant:
-    _require_dm(session, campaign_id, email)
+    member = _require_dm(session, campaign_id, email)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
 
+    previous_scope = grant.grant_scope
     if body.grant_scope is not None:
         grant.grant_scope = body.grant_scope
     if body.revealed_details is not None:
         grant.revealed_details = body.revealed_details
 
     session.add(grant)
+    ranks = {"name_only": 0, "partial": 1, "full": 2}
+    if ranks[grant.grant_scope] > ranks[previous_scope]:
+        current = _current_reveal_session(session, campaign_id)
+        if current is not None:
+            session.flush()
+            _append_reveal(
+                session,
+                current,
+                member,
+                grant.player_character_id,
+                _reveal_body(session, grant),
+            )
     session.commit()
     session.refresh(grant)
     return grant
@@ -1498,6 +1679,7 @@ def update_grant(
 def delete_grant(
     campaign_id: str,
     grant_id: str,
+    silent: bool = Query(default=False),
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> None:
@@ -1505,10 +1687,16 @@ def delete_grant(
     missing grant is a 404, matching update_grant's not-found semantics. Removing
     a grant on a non-global entity returns it to invisible for that character;
     on a global entity it drops the character back to the default full view."""
-    _require_dm(session, campaign_id, email)
+    member = _require_dm(session, campaign_id, email)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
+    current = _current_reveal_session(session, campaign_id)
+    if current is not None:
+        body = {"retracted": True, "silent": silent}
+        if not silent:
+            body.update(_reveal_identity(session.get(Entity, grant.entity_id), grant))
+        _append_reveal(session, current, member, grant.player_character_id, body)
     session.delete(grant)
     session.commit()
 
@@ -1584,6 +1772,20 @@ def _parse_offset(cursor: str | None) -> int:
         return 0
 
 
+def _authorize_reveal_filter(
+    session: Session,
+    campaign_id: str,
+    member: CampaignMember,
+    not_granted_to: str | None,
+) -> None:
+    if not_granted_to is None:
+        return
+    require_play_enabled()
+    if member.role != "dm":
+        raise HTTPException(status_code=403, detail="campaign DM role required")
+    _get_character_in_campaign_or_404(session, campaign_id, not_granted_to)
+
+
 @router.get("/campaigns/{campaign_id}/entities")
 def list_entities(
     campaign_id: str,
@@ -1591,6 +1793,7 @@ def list_entities(
     q: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     cursor: str | None = Query(default=None),
+    not_granted_to: str | None = Query(default=None),
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
@@ -1602,6 +1805,9 @@ def list_entities(
     response_model, matching the heterogeneous-payload pattern used by
     knowledge/router.py.
 
+    DM-only ``not_granted_to`` means "hide entities that PC already knows",
+    including global entities and grants of any scope, behind the play flag.
+
     The projection (DM grant-aggregation, player grant-filtering, name_only
     suppression) has to run in Python before the page is known, so the full
     visible set is materialised and then sliced by ``cursor``/``limit``. At v1
@@ -1610,9 +1816,12 @@ def list_entities(
     worth it yet.
     """
     member = _get_member_or_404(session, campaign_id, email)
+    _authorize_reveal_filter(session, campaign_id, member, not_granted_to)
     viewer = _viewer_for_member(session, campaign_id, member)
 
-    query = visible_entities_query(campaign_id, viewer).order_by(Entity.name)
+    query = visible_entities_query(
+        campaign_id, viewer, not_granted_to=not_granted_to
+    ).order_by(Entity.name)
     if entity_type is not None:
         query = query.where(Entity.entity_type == entity_type)
     if q:
@@ -1940,6 +2149,7 @@ async def search_campaign_route(
     campaign_id: str,
     q: str = Query(min_length=1),
     k: int = Query(default=10, ge=1, le=50),
+    not_granted_to: str | None = Query(default=None),
     email: str = Depends(get_authenticated_email),
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
@@ -1949,10 +2159,23 @@ async def search_campaign_route(
     All visibility filtering happens in search.search_campaign, which builds
     on the same visible_entities_query()/project_entity() helpers as the
     entity read paths above.
+
+    DM-only ``not_granted_to`` means "hide entities that PC already knows",
+    including global entities and any grant scope. Chunk hits are unaffected;
+    fewer than k hits are acceptable. The filter requires the play flag.
     """
     member = _get_member_or_404(session, campaign_id, email)
+    _authorize_reveal_filter(session, campaign_id, member, not_granted_to)
     viewer = _viewer_for_member(session, campaign_id, member)
-    return await search_campaign(session, embed_client, campaign_id, viewer, q, k=k)
+    return await search_campaign(
+        session,
+        embed_client,
+        campaign_id,
+        viewer,
+        q,
+        k=k,
+        not_granted_to=not_granted_to,
+    )
 
 
 # --- Game sessions ---------------------------------------------------
