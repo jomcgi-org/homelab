@@ -2024,5 +2024,9 @@ def test_human_handoff_waits_for_positive_dequeue_observation(db, monkeypatch):
     monkeypatch.setattr(landing, "_queued_ids", lambda _: {"PR_12"})
     landing.landing_tick(POLICY)
     assert receipt_state(db, "t-human") == "landing"
-    assert controls.task_snapshot("t-human")["cancellation_requested"] is True
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-human")
+        ).one()
+        assert row.cancellation_requested is True
     assert audits(db, "landing_error", "t-human")[-1]["stage"] == "human_ownership"
