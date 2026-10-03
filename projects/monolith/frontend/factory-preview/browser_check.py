@@ -50,7 +50,9 @@ def matrix():
             yield width, height, scheme, "live", view, 2
     # The overview switches from document flow to a constrained desktop frame
     # at 901px. Exercise both edges rather than only a generous desktop width.
-    for width, scheme, scenario in itertools.product((901, 1024), ("light", "dark"), ("live", "error")):
+    for width, scheme, scenario in itertools.product(
+        (901, 1024), ("light", "dark"), ("live", "error")
+    ):
         yield width, 900, scheme, scenario, "overview", 1
 
 
@@ -92,17 +94,23 @@ def layout_checks(page, view, scenario, width, scale):
     require(overflow["page"] <= 1, f"horizontal page overflow: {overflow}")
     require(overflow["factory"] <= 1, f"horizontal factory overflow: {overflow}")
 
-    targets = page.locator(".view-tabs a, .pager button, .mast-actions .scheme").evaluate_all("""nodes => nodes.map(node => {
+    targets = page.locator(
+        ".view-tabs a, .pager button, .mast-actions .scheme"
+    ).evaluate_all("""nodes => nodes.map(node => {
       const box = node.getBoundingClientRect();
       return {text: node.textContent.trim() || node.getAttribute('aria-label'), width: box.width, height: box.height};
     })""")
     for target in targets:
         if width <= 430:
-            require(target["width"] >= 43.9 and target["height"] >= 43.9,
-                    f"mobile target below 44px: {target}")
+            require(
+                target["width"] >= 43.9 and target["height"] >= 43.9,
+                f"mobile target below 44px: {target}",
+            )
 
     if width <= 430 and scenario == "live":
-        titles = page.locator(".lane-list .t, .prs li:not(.hd) a, .activity-page .rows .t, .doc summary > span, .results li > span:nth-child(2)")
+        titles = page.locator(
+            ".lane-list .t, .prs li:not(.hd) a, .activity-page .rows .t, .doc summary > span, .results li > span:nth-child(2)"
+        )
         for title in titles.evaluate_all("""nodes => nodes.map(node => {
           const style = getComputedStyle(node), box = node.getBoundingClientRect();
           return {text: node.textContent.slice(0, 70), width: box.width,
@@ -110,9 +118,13 @@ def layout_checks(page, view, scenario, width, scale):
             excess: node.scrollWidth - node.clientWidth,
             fontSize: parseFloat(style.fontSize)};
         })"""):
-            require(title["width"] > 0 and title["height"] > 0, f"hidden title: {title}")
-            require(title["whiteSpace"] != "nowrap" and title["overflow"] != "ellipsis",
-                    f"mobile title is truncated: {title}")
+            require(
+                title["width"] > 0 and title["height"] > 0, f"hidden title: {title}"
+            )
+            require(
+                title["whiteSpace"] != "nowrap" and title["overflow"] != "ellipsis",
+                f"mobile title is truncated: {title}",
+            )
             # Inline spans have a zero clientWidth, so page containment handles
             # those. Block/grid title cells must contain the unbroken token.
             require(title["excess"] <= 1, f"title overflows its cell: {title}")
@@ -120,38 +132,54 @@ def layout_checks(page, view, scenario, width, scale):
 
     if view == "overview":
         for legend in page.locator(".charts .legend span").all():
-            require(legend.is_visible(), f"hidden chart legend: {legend.text_content()}")
+            require(
+                legend.is_visible(), f"hidden chart legend: {legend.text_content()}"
+            )
         if scenario != "error":
             charts = page.locator(".charts .chart > svg").all()
             require(len(charts) == 3, "expected three production charts")
             for chart in charts:
                 box = chart.bounding_box()
                 if width <= 430:
-                    require(bool(box and box["height"] >= 119), f"mobile chart too short to read: {box}")
+                    require(
+                        bool(box and box["height"] >= 119),
+                        f"mobile chart too short to read: {box}",
+                    )
                 labels = chart.locator("text").evaluate_all("""nodes => nodes
                   .filter(node => /^\\d{2}·\\d{2}$/.test(node.textContent))
                   .map(node => { const box = node.getBoundingClientRect();
                     return {text: node.textContent, left: box.left, right: box.right};
                   }).sort((a, b) => a.left - b.left)""")
                 for previous, current in zip(labels, labels[1:]):
-                    require(previous["right"] <= current["left"] + 0.1,
-                            f"chart dates overlap: {previous} and {current}")
+                    require(
+                        previous["right"] <= current["left"] + 0.1,
+                        f"chart dates overlap: {previous} and {current}",
+                    )
         if scenario == "live":
             current = page.locator(".lane-list li").first
             require(current.is_visible(), "current task missing")
-            require("review" in current.inner_text() and "47m ago" in current.inner_text(),
-                    "current task phase or elapsed time missing")
+            require(
+                "review" in current.inner_text() and "47m ago" in current.inner_text(),
+                "current task phase or elapsed time missing",
+            )
             require(current.locator(".m").is_visible(), "current task metadata hidden")
         elif scenario == "empty":
-            require(page.get_by_text("Nothing in the lane.", exact=True).is_visible(),
-                    "empty lane missing")
+            require(
+                page.get_by_text("Nothing in the lane.", exact=True).is_visible(),
+                "empty lane missing",
+            )
     elif view == "activity" and scenario == "live":
         current = page.locator('.rows a[aria-label="Open task 900001"]')
         require(current.is_visible(), "current activity task missing")
-        require("review" in current.inner_text() and "47m ago" in current.inner_text(),
-                "activity phase or elapsed time hidden")
+        require(
+            "review" in current.inner_text() and "47m ago" in current.inner_text(),
+            "activity phase or elapsed time hidden",
+        )
     if scenario == "error":
-        require(page.locator(".unavailable").is_visible(), "error is not distinguished from empty")
+        require(
+            page.locator(".unavailable").is_visible(),
+            "error is not distinguished from empty",
+        )
 
     animated = page.locator(".factory-page *").evaluate_all("""nodes => nodes.filter(node => {
       const style = getComputedStyle(node);
@@ -166,8 +194,12 @@ def interact(page, view):
     links = nav.get_by_role("link")
     links.nth(0).focus()
     page.keyboard.press("Tab")
-    assert links.nth(1).evaluate("node => node === document.activeElement"), "keyboard tab skips activity"
-    assert links.nth(1).evaluate("node => getComputedStyle(node).outlineStyle !== 'none'"), "focus is not visible"
+    assert links.nth(1).evaluate("node => node === document.activeElement"), (
+        "keyboard tab skips activity"
+    )
+    assert links.nth(1).evaluate(
+        "node => getComputedStyle(node).outlineStyle !== 'none'"
+    ), "focus is not visible"
     page.keyboard.press("Shift+Tab")
     assert links.nth(0).evaluate("node => node === document.activeElement")
 
@@ -175,7 +207,9 @@ def interact(page, view):
     before = toggle.get_attribute("aria-label")
     toggle.focus()
     page.keyboard.press("Enter")
-    assert toggle.get_attribute("aria-label") != before, "scheme switch did not respond to keyboard"
+    assert toggle.get_attribute("aria-label") != before, (
+        "scheme switch did not respond to keyboard"
+    )
     page.keyboard.press("Enter")
 
     next_button = page.locator(".pager button").filter(has_text="next").first
@@ -183,7 +217,10 @@ def interact(page, view):
         before = page.locator(".pager").first.inner_text()
         next_button.focus()
         page.keyboard.press("Enter")
-        page.wait_for_function("before => document.querySelector('.pager').innerText !== before", arg=before)
+        page.wait_for_function(
+            "before => document.querySelector('.pager').innerText !== before",
+            arg=before,
+        )
         prev = page.locator(".pager button").filter(has_text="prev").first
         assert prev.is_enabled(), "pager did not advance"
         prev.focus()
@@ -199,16 +236,22 @@ def interact(page, view):
         summary = page.locator(".doc details > summary").first
         summary.focus()
         page.keyboard.press("Enter")
-        assert summary.locator("..").get_attribute("open") is not None, "keyboard cannot expand context record"
+        assert summary.locator("..").get_attribute("open") is not None, (
+            "keyboard cannot expand context record"
+        )
         page.keyboard.press("Enter")
     if view in ("context", "chapter", "search"):
         search = page.get_by_role("combobox", name="Search the record")
         search.fill("Synthetic")
         page.get_by_role("listbox").wait_for()
         search.press("ArrowDown")
-        assert search.get_attribute("aria-activedescendant") == "factory-search-option-0"
+        assert (
+            search.get_attribute("aria-activedescendant") == "factory-search-option-0"
+        )
         search.press("Escape")
-        assert not page.get_by_role("listbox").count(), "Escape did not close instant search"
+        assert not page.get_by_role("listbox").count(), (
+            "Escape did not close instant search"
+        )
         search.fill("")
 
     # The controls above are unmodified production controls. Only routing to
@@ -226,19 +269,38 @@ def check(root, output, expected_sha):
     before = digest_tree(root)
     build = json.loads((root / "build.json").read_text())
     assert build["commit"] == expected_sha, "artifact is not from the requested commit"
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=str(root)))
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(Handler, directory=str(root))
+    )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}{PREFIX}"
-    evidence = {"commit": expected_sha, "playwright": importlib.metadata.version("playwright"), "cases": []}
+    evidence = {
+        "commit": expected_sha,
+        "playwright": importlib.metadata.version("playwright"),
+        "cases": [],
+    }
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             evidence["chromium"] = browser.version
             for width, height, scheme, scenario, view, scale in matrix():
                 name = f"{view}-{scenario}-{width}x{height}-{scheme}-{scale * 100}pct"
-                record = {"name": name, "view": view, "scenario": scenario, "width": width, "scheme": scheme, "text_scale": scale, "issues": []}
+                record = {
+                    "name": name,
+                    "view": view,
+                    "scenario": scenario,
+                    "width": width,
+                    "scheme": scheme,
+                    "text_scale": scale,
+                    "issues": [],
+                }
                 evidence["cases"].append(record)
-                context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme, reduced_motion="reduce", service_workers="block")
+                context = browser.new_context(
+                    viewport={"width": width, "height": height},
+                    color_scheme=scheme,
+                    reduced_motion="reduce",
+                    service_workers="block",
+                )
                 context.add_init_script("""
                     window.__fixtureCspViolations = [];
                     addEventListener('securitypolicyviolation', event => window.__fixtureCspViolations.push(event.violatedDirective + ':' + event.blockedURI));
@@ -260,33 +322,63 @@ def check(root, output, expected_sha):
                 page.on("requestfailed", lambda request: failures.append(request.url))
                 context.tracing.start(screenshots=True, snapshots=True, sources=False)
                 try:
-                    page.goto(base + "?" + urlencode({"view": view, "scenario": scenario}), wait_until="load")
+                    page.goto(
+                        base + "?" + urlencode({"view": view, "scenario": scenario}),
+                        wait_until="load",
+                    )
                     page.wait_for_function("window.__factoryFixtureReady === true")
                     page.evaluate("document.fonts.ready")
-                    assert page.evaluate("document.fonts.check('16px \"Schibsted Grotesk\"')"), "local production font failed to load"
+                    assert page.evaluate(
+                        "document.fonts.check('16px \"Schibsted Grotesk\"')"
+                    ), "local production font failed to load"
                     if scale == 2:
                         record["text_resize"] = resize_text(page)
                         if not record["text_resize"]["verified"]:
-                            record["issues"].append(f"computed text did not double: {record['text_resize']['mismatches']}")
-                    page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                            record["issues"].append(
+                                f"computed text did not double: {record['text_resize']['mismatches']}"
+                            )
+                    page.evaluate(
+                        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+                    )
                     issues, metrics = layout_checks(page, view, scenario, width, scale)
                     record["issues"].extend(issues)
                     record.update(metrics)
-                    if record["issues"] or (scenario == "live" and width in (390, 901, 1440)) or (scenario == "live" and view == "overview" and width == 320 and scale == 2):
-                        page.screenshot(path=str(output / f"{name}-full.png"), full_page=True)
+                    if (
+                        record["issues"]
+                        or (scenario == "live" and width in (390, 901, 1440))
+                        or (
+                            scenario == "live"
+                            and view == "overview"
+                            and width == 320
+                            and scale == 2
+                        )
+                    ):
+                        page.screenshot(
+                            path=str(output / f"{name}-full.png"), full_page=True
+                        )
                     if scenario == "live" and scale == 1 and width in (390, 901, 1440):
-                        page.screenshot(path=str(output / f"{name}-opening.png"), full_page=False)
+                        page.screenshot(
+                            path=str(output / f"{name}-opening.png"), full_page=False
+                        )
                     if scenario == "live" and scale == 1:
                         interact(page, view)
-                        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "interaction introduced page overflow"
-                    assert not page.evaluate("window.__fixtureUnexpectedFetches"), "unexpected fetch escaped fixture mapping"
-                    assert not page.evaluate("window.__fixtureCspViolations"), "CSP blocked a request"
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= innerWidth + 1"
+                        ), "interaction introduced page overflow"
+                    assert not page.evaluate("window.__fixtureUnexpectedFetches"), (
+                        "unexpected fetch escaped fixture mapping"
+                    )
+                    assert not page.evaluate("window.__fixtureCspViolations"), (
+                        "CSP blocked a request"
+                    )
                     assert not forbidden, f"external request: {forbidden}"
                     assert not failures, f"asset request failed: {failures}"
                     assert not errors, f"browser error: {errors}"
                 except Exception as error:
                     record["issues"].append(str(error))
-                    page.screenshot(path=str(output / f"{name}-failure.png"), full_page=True)
+                    page.screenshot(
+                        path=str(output / f"{name}-failure.png"), full_page=True
+                    )
                 finally:
                     record["status"] = "failed" if record["issues"] else "passed"
                     # The successful screenshots are enough for visual review;
@@ -310,7 +402,9 @@ def check(root, output, expected_sha):
     failed = [case for case in evidence["cases"] if case["status"] != "passed"]
     expected_cases = len(list(matrix()))
     assert len(evidence["cases"]) == expected_cases, "browser matrix was incomplete"
-    assert not failed, f"{len(failed)} of {expected_cases} browser cases failed; see result.json and screenshots"
+    assert not failed, (
+        f"{len(failed)} of {expected_cases} browser cases failed; see result.json and screenshots"
+    )
 
 
 if __name__ == "__main__":

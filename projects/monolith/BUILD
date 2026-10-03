@@ -9640,4 +9640,3 @@ py_test(
         "@pip//sqlmodel",
     ],
 )
-
