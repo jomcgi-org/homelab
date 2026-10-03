@@ -25,6 +25,7 @@
   });
   let position = $state(0);
   let playing = $state(false);
+  let speed = $state(1);
   let highlighted = $state(null);
   let answer = $derived(
     turn.events
@@ -99,21 +100,42 @@
     if (position >= turn.durationMs) position = 0;
     playing = !playing;
   }
+  function seek(at) {
+    playing = false;
+    position = at;
+  }
   $effect(() => {
     if (!playing) return;
-    const duration = turn.durationMs;
-    let previous = performance.now();
-    const timer = setInterval(() => {
-      const now = performance.now();
-      position = Math.min(duration, position + now - previous);
+    const rate = speed;
+    let previous;
+    let frame;
+    function tick(now) {
+      if (previous !== undefined) {
+        position = Math.min(
+          turn.durationMs,
+          position + (now - previous) * rate,
+        );
+      }
       previous = now;
-      if (position >= duration) playing = false;
-    }, 50);
-    return () => clearInterval(timer);
+      if (position >= turn.durationMs) playing = false;
+      else frame = requestAnimationFrame(tick);
+    }
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   });
 </script>
 
 <section class="replay" aria-label="Recorded inference on the RTX 4090">
+  <div class="transport-heading">
+    <span>Recorded session</span>
+    <button
+      type="button"
+      class="speed-control"
+      aria-label={"Playback speed " + speed + " times. Click to change."}
+      onclick={() => (speed = speed === 8 ? 1 : speed * 2)}
+      >{speed}× speed</button
+    >
+  </div>
   <div class="controls">
     <button
       type="button"
@@ -140,186 +162,266 @@
     >
     <span class="time">{seconds(position)}</span>
   </div>
-  <div class="instrument">
-    <header class="instrument-heading">
-      <span
-        >{phase === "Prefill"
-          ? "Processing the prompt."
-          : phase === "Decode"
-            ? "Generating one token at a time."
-            : "Session complete."}</span
-      >
-      <span class="phase" data-phase={phase} role="status"><i></i>{phase}</span>
-    </header>
-    <dl
-      class="measurements"
-      aria-label="Recorded service throughput and memory"
+  <nav class="phase-navigation" aria-label="Jump to request phase">
+    <button
+      type="button"
+      aria-pressed={phase === "Prefill"}
+      onclick={() => seek(0)}>01 / Prefill</button
     >
-      <div>
-        <dt>First token</dt>
-        <dd>
-          {(turn.metrics.ttftMs / 1000).toFixed(1)}
-          <small>s</small>
-        </dd>
-      </div>
-      <div>
-        <dt>Decode</dt>
-        <dd>
-          {stats?.decodeTps == null ? "--" : stats.decodeTps.toFixed(1)}
-          <small>tok/s</small>
-        </dd>
-      </div>
-      <div>
-        <dt>KV pages</dt>
-        <dd>
-          {count(stats?.kvUsedPages)}
-          <small>/ {count(stats?.kvTotalPages)}</small>
-        </dd>
-      </div>
-    </dl>
-
-    <section class="telemetry" aria-label="Expert activity">
-      <header class="routing-heading">
-        <strong>Expert routing</strong>
+    <button
+      type="button"
+      aria-pressed={phase === "Decode"}
+      onclick={() => seek(decodeAt)}>02 / First token</button
+    >
+    <button
+      type="button"
+      aria-pressed={phase === "Complete"}
+      onclick={() => seek(turn.durationMs)}>03 / Complete</button
+    >
+  </nav>
+  <div class="replay-stage">
+    <div class="instrument">
+      <header class="instrument-heading">
         <span
-          >{initial
-            ? "Initial placement"
-            : activity
-              ? count(activity.totalHits) + " activations"
-              : "Awaiting sample"}</span
+          >{phase === "Prefill"
+            ? "Processing the prompt."
+            : phase === "Decode"
+              ? "Generating one token at a time."
+              : "Session complete."}</span
+        >
+        <span class="phase" data-phase={phase} role="status"
+          ><i></i>{phase}</span
         >
       </header>
-      <div
-        class="activity-bar"
-        role="img"
-        aria-label={(initial
-          ? "Initial expert placement: "
-          : "Expert routing: ") +
-          tiers
-            .map(
-              (tier) =>
-                tier.name +
-                " " +
-                percent(activity?.[tier.hits], activity?.totalHits),
-            )
-            .join(", ")}
+      <dl
+        class="measurements"
+        aria-label="Recorded service throughput and memory"
       >
-        {#each tiers as tier}
+        <div>
+          <dt>First token</dt>
+          <dd>
+            {(turn.metrics.ttftMs / 1000).toFixed(1)}
+            <small>s</small>
+          </dd>
+        </div>
+        <div>
+          <dt>Decode</dt>
+          <dd>
+            {stats?.decodeTps == null ? "--" : stats.decodeTps.toFixed(1)}
+            <small>tok/s</small>
+          </dd>
+        </div>
+        <div>
+          <dt>KV pages</dt>
+          <dd>
+            {count(stats?.kvUsedPages)}
+            <small>/ {count(stats?.kvTotalPages)}</small>
+          </dd>
+        </div>
+      </dl>
+
+      <section class="telemetry" aria-label="Expert activity">
+        <header class="routing-heading">
+          <strong>Expert routing</strong>
           <span
-            class={tier.key}
-            class:dimmed={highlighted && highlighted !== tier.key}
-            style:width={share(activity?.[tier.hits], activity?.totalHits) +
+            >{initial
+              ? "Initial placement"
+              : activity
+                ? count(activity.totalHits) + " activations"
+                : "Awaiting sample"}</span
+          >
+        </header>
+        <div
+          class="activity-bar"
+          role="img"
+          aria-label={(initial
+            ? "Initial expert placement: "
+            : "Expert routing: ") +
+            tiers
+              .map(
+                (tier) =>
+                  tier.name +
+                  " " +
+                  percent(activity?.[tier.hits], activity?.totalHits),
+              )
+              .join(", ")}
+        >
+          {#each tiers as tier}
+            <span
+              class={tier.key}
+              class:dimmed={highlighted && highlighted !== tier.key}
+              style:width={share(activity?.[tier.hits], activity?.totalHits) +
+                "%"}
+            ></span>
+          {/each}
+          <span
+            class="unknown"
+            style:width={share(activity?.unknownHits, activity?.totalHits) +
               "%"}
           ></span>
-        {/each}
-        <span
-          class="unknown"
-          style:width={share(activity?.unknownHits, activity?.totalHits) + "%"}
-        ></span>
-      </div>
-      <div class="tiers">
-        {#each tiers as tier}
-          <button
-            type="button"
-            class={"tier " + tier.key}
-            aria-pressed={highlighted === tier.key}
-            aria-label={tier.name + ": " + tier.description}
-            onclick={() =>
-              (highlighted = highlighted === tier.key ? null : tier.key)}
-          >
-            <span class="tier-label"><i></i>{tier.name}</span>
-            <span class="tier-location">{tier.location}</span>
-            <strong
-              >{percent(activity?.[tier.hits], activity?.totalHits)}
-              <small>{initial ? "of experts" : "of routes"}</small></strong
+        </div>
+        <div class="tiers">
+          {#each tiers as tier}
+            <button
+              type="button"
+              class={"tier " + tier.key}
+              aria-pressed={highlighted === tier.key}
+              aria-label={tier.name + ": " + tier.description}
+              onclick={() =>
+                (highlighted = highlighted === tier.key ? null : tier.key)}
             >
-            <span class="capacity">{gb(placement?.[tier.bytes])} capacity</span>
-          </button>
-        {/each}
-      </div>
-      {#if highlighted}<p class="caption tier-description">
-          {tiers.find((tier) => tier.key === highlighted).description}
-        </p>{/if}
-      {#if activity?.unknownHits > 0}<p class="caption">
-          {percent(activity.unknownHits, activity.totalHits)} unclassified
-        </p>{/if}
+              <span class="tier-label"><i></i>{tier.name}</span>
+              <span class="tier-location">{tier.location}</span>
+              <strong
+                >{percent(activity?.[tier.hits], activity?.totalHits)}
+                <small>{initial ? "of experts" : "of routes"}</small></strong
+              >
+              <span class="capacity"
+                >{gb(placement?.[tier.bytes])} capacity</span
+              >
+            </button>
+          {/each}
+        </div>
+        {#if highlighted}<p class="caption tier-description">
+            {tiers.find((tier) => tier.key === highlighted).description}
+          </p>{/if}
+        {#if activity?.unknownHits > 0}<p class="caption">
+            {percent(activity.unknownHits, activity.totalHits)} unclassified
+          </p>{/if}
 
-      <div class="phase-charts">
-        <div class="routing-history">
-          <header>Experts <small>decode routing</small></header>
-          <svg
-            viewBox="0 0 700 100"
-            preserveAspectRatio="none"
-            role="img"
-            aria-label="Expert routing from fully decoded sample intervals only"
-          >
-            <title>Routing mix over recorded time</title>
-            {#each history as item, index}
-              {@const start = item.at}
-              {@const end = Math.min(
-                position,
-                history[index + 1]?.at ?? turn.durationMs,
-              )}
-              {#if item.at <= position}
-                {#if item.unavailable || !item.activity?.totalHits}
-                  <rect
-                    class="unknown"
-                    x={(700 * (start - routingAt)) / routingDuration}
-                    y="0"
-                    width={(700 * (end - start)) / routingDuration}
-                    height="100"
-                    opacity="0.25"
-                  />
-                {:else}
-                  {#each bands(item.activity) as band}
-                    <rect
-                      class={band.key}
-                      class:dimmed={highlighted && highlighted !== band.key}
-                      x={(700 * (start - routingAt)) / routingDuration}
-                      y={band.y}
-                      width={(700 * (end - start)) / routingDuration}
-                      height={band.height}
-                    />
-                  {/each}
-                {/if}
-              {/if}
-            {/each}
-            <line
-              x1={(700 * Math.max(0, position - routingAt)) / routingDuration}
-              x2={(700 * Math.max(0, position - routingAt)) / routingDuration}
-              y1="0"
-              y2="100"
-              stroke="var(--ink)"
-              stroke-width="3"
-            />
-          </svg>
-          <div class="history-labels">
-            <span>{seconds(routingAt)}</span><span
-              >{seconds(turn.durationMs)}</span
+        <div class="phase-charts">
+          <div class="routing-history">
+            <header>Experts <small>decode routing</small></header>
+            <svg
+              viewBox="0 0 700 100"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label="Expert routing from fully decoded sample intervals only"
             >
+              <title>Routing mix over recorded time</title>
+              {#each history as item, index}
+                {@const start = item.at}
+                {@const end = Math.min(
+                  position,
+                  history[index + 1]?.at ?? turn.durationMs,
+                )}
+                {#if item.at <= position}
+                  {#if item.unavailable || !item.activity?.totalHits}
+                    <rect
+                      class="unknown"
+                      x={(700 * (start - routingAt)) / routingDuration}
+                      y="0"
+                      width={(700 * (end - start)) / routingDuration}
+                      height="100"
+                      opacity="0.25"
+                    />
+                  {:else}
+                    {#each bands(item.activity) as band}
+                      <rect
+                        class={band.key}
+                        class:dimmed={highlighted && highlighted !== band.key}
+                        x={(700 * (start - routingAt)) / routingDuration}
+                        y={band.y}
+                        width={(700 * (end - start)) / routingDuration}
+                        height={band.height}
+                      />
+                    {/each}
+                  {/if}
+                {/if}
+              {/each}
+              <line
+                x1={(700 * Math.max(0, position - routingAt)) / routingDuration}
+                x2={(700 * Math.max(0, position - routingAt)) / routingDuration}
+                y1="0"
+                y2="100"
+                stroke="var(--ink)"
+                stroke-width="3"
+              />
+            </svg>
+            <div class="history-labels">
+              <span>{seconds(routingAt)}</span><span
+                >{seconds(turn.durationMs)}</span
+              >
+            </div>
           </div>
         </div>
-      </div>
-    </section>
-  </div>
-
-  <div class="conversation">
-    <details class="prompt">
-      <summary>Prompt</summary>
-      <pre>{turn.prompt}</pre>
-    </details>
-    <!-- Keyboard users need to focus this region to scroll a long answer. -->
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <div class="answer" tabindex="0" role="region" aria-label="Recorded answer">
-      <p>{answer || "Waiting for the first token..."}</p>
+      </section>
     </div>
-    {#if turn.note && position >= turn.durationMs}<p class="caption">
-        {turn.note}
-      </p>{/if}
+
+    <div class="conversation">
+      <details class="prompt">
+        <summary>Prompt</summary>
+        <pre>{turn.prompt}</pre>
+      </details>
+      <!-- Keyboard users need to focus this region to scroll a long answer. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div
+        class="answer"
+        tabindex="0"
+        role="region"
+        aria-label="Recorded answer"
+      >
+        <p>{answer || "Waiting for the first token..."}</p>
+      </div>
+      {#if turn.note && position >= turn.durationMs}<p class="caption">
+          {turn.note}
+        </p>{/if}
+    </div>
   </div>
 </section>
 
 <style>
+  .transport-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font: 0.7rem var(--font-code);
+    gap: 1rem;
+  }
+  .phase-navigation {
+    display: flex;
+    margin-bottom: 1rem;
+  }
+  .phase-navigation button {
+    flex: 1;
+    border-radius: 0;
+    font: 0.7rem var(--font-code);
+  }
+  .phase-navigation button + button {
+    border-left: 0;
+  }
+  .replay-stage {
+    display: grid;
+    gap: 1rem;
+  }
+  @media (min-width: 900px) {
+    .replay-stage {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    }
+    .replay-stage .instrument {
+      margin-inline: 0;
+      border: 1px solid var(--stroke);
+    }
+    .replay-stage .conversation {
+      margin-inline: 0;
+      padding: 0;
+      min-width: 0;
+    }
+    .replay-stage .answer {
+      max-height: 36rem;
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .activity-bar > span {
+      transition: opacity 180ms ease-out;
+    }
+    .routing-history rect {
+      transition: opacity 180ms ease-out;
+    }
+    .tier {
+      transition: background 180ms ease-out;
+    }
+  }
   .replay {
     min-width: 0;
     color: var(--ink);

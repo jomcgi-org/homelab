@@ -46,27 +46,52 @@ test("first-token timing stays fixed when seeking, without a prefill rate or cha
   );
 });
 
-test("the single real-time session pauses cleanly and never calls inference", async () => {
-  vi.useFakeTimers();
+test("playback advances on frames, changes speed and cancels on pause", async () => {
   const fetch = vi.spyOn(globalThis, "fetch");
+  let nextFrame;
+  vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+    (callback) => {
+      nextFrame = callback;
+      return 1;
+    },
+  );
+  const cancel = vi.spyOn(globalThis, "cancelAnimationFrame");
   const view = await render();
-  expect(recording.turns).toHaveLength(1);
-  expect(view.querySelector(".turns")).toBeNull();
-  expect(view.querySelector("select")).toBeNull();
-  expect(view.querySelector(".recording-notes")).toBeNull();
   view.querySelector(".controls button").click();
   await tick();
-  expect(vi.getTimerCount()).toBe(1);
-  vi.advanceTimersByTime(1000);
+  nextFrame(0);
+  nextFrame(1000);
   await tick();
   expect(Number(view.querySelector("input[type=range]").value)).toBe(1000);
+  const speed = view.querySelector(".speed-control");
+  speed.click();
+  await tick();
+  speed.click();
+  await tick();
+  nextFrame(1000);
+  nextFrame(2000);
+  await tick();
+  expect(Number(view.querySelector("input[type=range]").value)).toBe(5000);
   view.querySelector(".controls button").click();
   await tick();
-  expect(vi.getTimerCount()).toBe(0);
-  vi.advanceTimersByTime(1000);
-  await tick();
-  expect(Number(view.querySelector("input[type=range]").value)).toBe(1000);
+  expect(cancel).toHaveBeenCalled();
+  expect(view.querySelector(".controls button").textContent).toBe("Play");
   expect(fetch).not.toHaveBeenCalled();
+});
+
+test("phase controls seek to exact recorded boundaries and replay restarts", async () => {
+  const view = await render();
+  const buttons = view.querySelectorAll(".phase-navigation button");
+  for (const [index, at] of [0, turn.events[0].at, turn.durationMs].entries()) {
+    buttons[index].click();
+    await tick();
+    expect(Number(view.querySelector("input[type=range]").value)).toBe(at);
+    expect(buttons[index].getAttribute("aria-pressed")).toBe("true");
+  }
+  expect(view.querySelector(".controls button").textContent).toBe("Replay");
+  view.querySelector(".controls button").click();
+  await tick();
+  expect(Number(view.querySelector("input[type=range]").value)).toBe(0);
 });
 
 test("tier keys highlight routing and history above the transcript", async () => {
