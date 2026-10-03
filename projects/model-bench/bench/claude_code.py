@@ -226,11 +226,12 @@ def run_anchor_agent_cell(
         if res.is_error:
             passed, feedback = False, "[claude CLI reported is_error] " + res.text[:500]
         else:
+            authored_norms = safe_norms(fixture_dir, workdir, norms_opts)
+            authored_diff = safe_diff(fixture_dir, workdir)
             r = verify(workdir, verifier_args)
             passed, feedback, score = r.passed, r.feedback, r.score
             if passed:
-                norms = safe_norms(fixture_dir, workdir, norms_opts)
-                diff = safe_diff(fixture_dir, workdir)
+                norms, diff = authored_norms, authored_diff
     except Exception as exc:  # noqa: BLE001 - a subprocess/verify error becomes a fail cell
         passed, feedback = False, f"[anchor harness error] {type(exc).__name__}: {exc}"
     finally:

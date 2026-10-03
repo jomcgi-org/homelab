@@ -13,6 +13,7 @@ mode: agentic
 # application.yaml, kustomization.yaml, Chart.lock and BUILD are deploy plumbing
 # the edit never touches.
 source_commit: 2f58fba4e828279ca585d541443347dfb6fca218
+gold_diff_lines: 2
 snapshot:
   commit: 30e60f63fc81a7a642f91cc62f26dee38fc465a8
   paths:

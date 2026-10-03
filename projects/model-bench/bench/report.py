@@ -70,7 +70,10 @@ def render_leaderboard(
     def _norms(r) -> str:
         # Mean norms score over passed cells (bench/norms.py); n/a until scored.
         nm = r.get("mean_norms")
-        return f"{nm:.2f}" if nm is not None else "n/a"
+        if nm is None:
+            return "n/a"
+        coverage = f" (n={r['norms_n']})" if "norms_n" in r else ""
+        return f"{nm:.2f}{coverage}"
 
     def _judge(r) -> str:
         # Pairwise-judge Bradley-Terry rating (bench/pairwise.py); n/a until judged.

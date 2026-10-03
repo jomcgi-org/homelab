@@ -10,9 +10,54 @@ import asyncio
 import json
 from dataclasses import dataclass
 
-import pytest  # noqa: F401 - keeps gazelle's @pip//pytest dep on the py_test target
+import pytest
 
 from bench import claude_code
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_anchor_norms_capture_precedes_hidden_verifier_writes(
+    tmp_path, monkeypatch, passed
+):
+    from bench.verifiers import VerifyResult
+
+    (tmp_path / "m.go").write_text("package m\nvar X = 1\n")
+    dirs = []
+
+    def invoke(*args, **kwargs):
+        (kwargs["cwd"] / "m.go").write_text("package m\nvar X = 2\n")
+        return claude_code.ClaudeResult("done", 1, False, 1)
+
+    def verify(workdir, args):
+        dirs.append(workdir)
+        (workdir / "hidden_test.go").write_text("package m\n// SECRET GRADER\n")
+        (workdir / "m.go").write_text("// overwritten by verifier\n")
+        return VerifyResult(passed, "")
+
+    monkeypatch.setattr(claude_code, "_invoke", invoke)
+    cell = claude_code.run_anchor_agent_cell(
+        task_id="t",
+        task_version="v1",
+        model_id="m",
+        content_hash="h",
+        fixture_dir=tmp_path,
+        task_prompt="fix",
+        verify=verify,
+        verifier_args={},
+        norms_opts={"lint": False, "target_files": ["m.go"]},
+    )
+    assert cell.first_attempt_passed is passed
+    assert not dirs[0].exists()
+    if passed:
+        assert cell.norms["test_added"] is False
+        assert cell.norms["files_changed"] == 1
+        assert cell.norms["files_outside_targets"] == 0
+        assert cell.norms["lines_added"] == cell.norms["lines_removed"] == 1
+        assert "+var X = 2" in cell.diff
+        assert "hidden" not in cell.diff and "GRADER" not in cell.diff
+        assert "verifier" not in cell.diff
+    else:
+        assert cell.norms is None and cell.diff is None
 
 
 @dataclass
