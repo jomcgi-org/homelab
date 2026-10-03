@@ -63,7 +63,8 @@ grimoire.venv/bin/python projects/monolith/dev/grimoire/rehearse.py
 grimoire.venv/bin/playwright show-trace /tmp/grimoire-rehearsal/dm-trace.zip
 ```
 
-Inspect `report.json`, `dm.png`, `elowen.png`, `bram.png`, and
+Inspect `report.md` for linked screenshots and traces, and `report.json` for
+machine-readable checks and timings. Inspect `dm.png`, `elowen.png`, `bram.png`, and
 `player-reconnecting.png`. The rehearsal checks message audiences in rendered
 pages and response payloads, denied player mutations, phone overflow,
 polling recovery with an unsent draft, and the session lifecycle.
@@ -72,10 +73,12 @@ guidance remain, and retries without duplicating the stored event. Message
 request IDs are scoped to their author and session; changing a message starts
 a new request. The rehearsal repeats pause, resume and narration on a DM phone
 viewport. Inspect `player-send-error.png` and `dm-phone-controls.png`.
-Timing gates require foreground catchup and reveal delivery within three
+Timing gates require normal visible-tab delivery, foreground catchup and reveal delivery within three
 seconds, and the automated reveal interaction within fifteen seconds. These
 measure simulated local interactions, rather than human task completion time.
-It also verifies private reply resolution, server-generated dice totals, and
+It checks that incoming events preserve composer focus and that incoming
+knowledge preserves the position and keyboard focus of a reader viewing older
+events. It also verifies private reply resolution, server-generated dice totals, and
 quick rolls using the approved character sheet's persisted bonuses.
 Grant creation and scope upgrades append audience-filtered knowledge reveals
 during play. The rehearsal creates a partial NPC grant and checks the recipient's
