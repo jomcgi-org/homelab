@@ -108,6 +108,13 @@ def main():
             # Keep A visible while the DM sends through the real composer.
             # Measure regular polling separately from foreground recovery.
             a.get_by_label("What do you do?", exact=True).focus()
+            a.keyboard.press("Tab")
+            expect(a.get_by_label("Send to", exact=True)).to_be_focused()
+            a.keyboard.press("Shift+Tab")
+            expect(a.get_by_label("What do you do?", exact=True)).to_be_focused()
+            report["checks"].append(
+                "Keyboard Tab and Shift+Tab move between the composer and audience selector"
+            )
             assert a.evaluate("document.visibilityState") == "visible"
             live_scene = f"The lantern flickers twice. ({stamp})"
             dm.get_by_label("Set the scene", exact=True).fill(live_scene)
