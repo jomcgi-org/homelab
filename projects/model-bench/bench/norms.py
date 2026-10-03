@@ -228,12 +228,15 @@ _JS_REGEX_KEYWORDS = frozenset(
 _JS_WORD = re.compile(r"[\w$]")
 
 
-def _js_slash_kind(last: str) -> str:
+def _js_slash_kind(last: str, prop: bool = False) -> str:
     """Classify a ``/`` after token ``last`` as "regex", "division" or "ambiguous".
 
-    ``)``, ``}``, ``++`` and ``--`` are ambiguous without a real parser (``if (x)
+    A word that follows ``.`` (``obj.return``) is a property name, not a keyword,
+    so ``prop`` makes it divide. ``)``, ``}``, ``++`` and ``--`` are ambiguous without a real parser (``if (x)
     /re/`` versus ``(a + b) / 2``), so they are reported rather than guessed.
     """
+    if prop:
+        return "division"
     if last in _JS_REGEX_KEYWORDS or not last:
         return "regex"
     if last in (")", "}", "++", "--"):
@@ -292,6 +295,7 @@ def _js_comment_lines(text: str) -> set[int]:
     block = False
     last = ""  # previous code token: a word, punctuation, "++"/"--" or "\0" (literal)
     word_open = False  # whether ``last`` is a word still being extended
+    prop = False  # whether the word ``last`` is a property name (after ``.``)
     i = line = 0
     while i < len(text):
         char = text[i]
@@ -341,13 +345,13 @@ def _js_comment_lines(text: str) -> set[int]:
             lines.add(line)
             i += 2
             continue
-        elif char == "/" and (kind := _js_slash_kind(last)) != "division":
+        elif char == "/" and (kind := _js_slash_kind(last, prop)) != "division":
             end = _js_regex_end(text, i) if kind == "regex" else None
             if end is None:
                 raise ValueError("ambiguous regex or division")
             i = end
             last = "\0"
-            word_open = False
+            word_open = prop = False
             continue
         elif char == "{" and top is not None and top[0] == "expr":
             stack[-1] = ("expr", top[1] + 1)
@@ -358,16 +362,24 @@ def _js_comment_lines(text: str) -> set[int]:
                 stack[-1] = ("expr", top[1] - 1)
         if not block and (not stack or stack[-1][0] == "expr"):
             if _JS_WORD.match(char):
+                if not word_open:
+                    j = len(text[:i].rstrip()) - 1
+                    prop = j >= 0 and text[j] == "." and text[j - 2 : j] != ".."
                 last = last + char if word_open else char
                 word_open = True
+            elif char == "." and word_open and last[0].isdigit():
+                # trailing-dot number (``1.``) stays a number, not punctuation
+                word_open = False
             else:
                 word_open = False
                 if char in "+-" and last == char and text[i - 1] == char:
                     last = char * 2
+                    prop = False
                 elif char.strip() and char not in "\"'`":
                     last = char
+                    prop = False
         else:
-            word_open = False
+            word_open = prop = False
         if char == "\n":
             line += 1
         i += 1
