@@ -68,3 +68,28 @@ test("other posts keep their title, summary and sections alongside navigation", 
   expect(target.querySelector(".post-frame #inference-demo")).not.toBeNull();
   expect(target.querySelector(".journal .spine")).not.toBeNull();
 });
+
+test("posts without an index retain their inline breadcrumb and conformance recording", async () => {
+  await render({
+    ...data,
+    slug: "ember-conformance",
+    toc: [],
+    sections: [],
+    preamble: "<p>Conformance post introduction.</p>",
+  });
+  await vi.waitFor(() =>
+    expect(
+      target.querySelector(
+        '[aria-label="Trace conformance test, one recorded run"]',
+      ),
+    ).not.toBeNull(),
+  );
+  expect(target.querySelector(".journal.single .trail-inline")).not.toBeNull();
+  expect(target.querySelector(".spine")).toBeNull();
+  expect(target.querySelector(".post-frame").textContent).toContain(
+    "Conformance post introduction.",
+  );
+  expect(
+    target.querySelector(".post-frame .ed-lead").textContent,
+  ).not.toContain(data.summary);
+});
