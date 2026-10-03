@@ -242,11 +242,12 @@ async def run_agent_cell(
                     finished = True
             if finished:
                 break
+        authored_norms = safe_norms(fixture_dir, workdir, norms_opts)
+        authored_diff = safe_diff(fixture_dir, workdir)
         r = verify(workdir, verifier_args)
         passed, feedback, score = r.passed, r.feedback, r.score
         if passed:
-            norms = safe_norms(fixture_dir, workdir, norms_opts)
-            diff = safe_diff(fixture_dir, workdir)
+            norms, diff = authored_norms, authored_diff
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
         passed, feedback = False, f"[harness error] {type(exc).__name__}: {exc}"
     finally:

@@ -12,6 +12,7 @@ mode: agentic
 # the capability now means "any". The snapshot pins the fix's PARENT and keeps only
 # capability.go, which is stdlib-only and self-contained.
 source_commit: f50b711b9b4d592457b3c09bf046395ec477896f
+gold_diff_lines: 8
 snapshot:
   commit: 2b70e6c8e3e48727a91c0389491c6fadbe6294e0
   paths:

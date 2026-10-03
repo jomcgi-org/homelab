@@ -103,13 +103,26 @@ cross-referencing plants and four decoys.
 ## Norms score (quality above the pass floor)
 
 A passing agentic cell also gets a deterministic `norms` record (`bench/norms.py`),
-computed from the fixture and the final workdir: files changed outside `target_files`,
+computed from the fixture and the authored tree before the verifier writes hidden
+tests or runner artifacts: files changed outside `target_files`,
 leftover debug lines (`print(` outside tests, `breakpoint(`, `console.log(`, TODO /
-FIXME / XXX), new ruff findings (pinned ruff, default rules), diff size against the
-task's optional `gold_diff_lines`, and whether code changed without a test. `norms_score`
+FIXME / XXX), new ruff or golangci-lint findings (installed tools at pinned versions),
+diff size against `gold_diff_lines`, whether code changed without a test, and added
+comment density compared with the original changed files. Comment density covers
+Python, Go, JavaScript and TypeScript code, excludes tests and string literals,
+and tolerates an absolute density change of 0.10 before penalising it.
+`python -m bench gold-size --repo ../.. --write` derives `gold_diff_lines` from
+the real `source_commit`, restricted to the snapshot's paths, stripping and
+exclusions. It leaves the size unset when the pre-fix tree cannot be projected
+or the source commit has no text fix in those paths. Only the integer is stored.
+`norms_score`
 is 1 minus a weighted mean of those penalties (weights in `WEIGHTS`); a signal the task
-cannot support is dropped and the rest renormalised. The leaderboard shows the mean
-over passed cells as the `norms` column.
+cannot measure is N/A and the rest are renormalised. Lint runs without downloads
+on isolated copies or stdin; missing tools, version mismatches and analysis errors
+are N/A. Version 2 records include `norms_version`; older records remain readable
+without rerunning billed cells. The leaderboard shows the mean over scored passing
+cells with its `norms_n` coverage as the `norms` column. These signals do not change
+leaderboard ordering or pass qualification.
 
 ## Pairwise judge (quality above the pass floor)
 

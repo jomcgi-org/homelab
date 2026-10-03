@@ -34,6 +34,7 @@ from bench.cache import (
     is_cached,
 )
 from bench.judge import JudgeConfig, judge_free_text
+from bench.norms import gold_diff_size
 from bench.openrouter import OpenRouterClient
 from bench.pareto import aggregate_by_class, coarse_tier, pareto_frontier, qualifies
 from bench.registry import (
@@ -236,7 +237,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="List models and their status")
     p_list.add_argument("--models", default="models.yaml")
 
-    # snapshot
+    # gold-size
+    p_gold = sub.add_parser(
+        "gold-size", help="Project source commits into gold diff line counts"
+    )
+    p_gold.add_argument("--tasks", default="tasks")
+    p_gold.add_argument("--task", help="Only this task id")
+    p_gold.add_argument("--repo", default="../..")
+    p_gold.add_argument(
+        "--write", action="store_true", help="Write only gold_diff_lines metadata"
+    )
     # calibrate
     p_cal = sub.add_parser(
         "calibrate",
@@ -709,6 +719,7 @@ def _aggregate_agentic_group(
             "cost_per_solve": None,
             "tool_ok_rate": 0.0,
             "mean_norms": None,
+            "norms_n": 0,
             "errored": len(errored),
             "errored_tasks": errored_tasks,
         }
@@ -770,6 +781,7 @@ def _aggregate_agentic_group(
         # Quality above the pass floor: mean norms score (bench/norms.py) over the
         # passed cells that carry one. None until a passing cell has been scored.
         "mean_norms": float(mean(norms)) if norms else None,
+        "norms_n": len(norms),
         # Excluded, not hidden: a model with errored cells is under-measured rather
         # than bad, and the leaderboard says so rather than scoring it as a failure.
         "errored": len(errored),
@@ -1332,6 +1344,7 @@ def _write_leaderboard_json(
             "mean_norms": (
                 round(s["mean_norms"], 4) if s.get("mean_norms") is not None else None
             ),
+            "norms_n": s.get("norms_n", 0),
             # Pairwise judge (bench/pairwise.py): Bradley-Terry rating and 90% CI.
             "judge_rating": s.get("judge_rating"),
             "judge_ci": s.get("judge_ci"),
@@ -1466,6 +1479,41 @@ def _resolve_snapshot_preset(snap: dict) -> dict:
         **_SNAPSHOT_PRESETS[preset_name],
         **{k: v for k, v in snap.items() if k != "preset"},
     }
+
+
+def _gold_sizes(args) -> None:
+    """Write only integer provenance metadata, preserving task YAML formatting."""
+    import re
+
+    for task_file in sorted(Path(args.tasks).glob("*/task.yaml")):
+        mapping = _load_yaml_mapping(task_file)
+        if not mapping.get("source_commit") or (
+            args.task and mapping.get("id") != args.task
+        ):
+            continue
+        snap = _resolve_snapshot_preset(mapping.get("snapshot") or {})
+        size, reason = gold_diff_size(Path(args.repo), mapping["source_commit"], snap)
+        print(f"{mapping['id']}: {size if size is not None else reason}")
+        if args.write:
+            text = task_file.read_text()
+            if size is None:
+                text = re.sub(r"^gold_diff_lines:.*\n?", "", text, flags=re.MULTILINE)
+            elif "gold_diff_lines" in mapping:
+                text = re.sub(
+                    r"^gold_diff_lines:.*$",
+                    f"gold_diff_lines: {size}",
+                    text,
+                    flags=re.MULTILINE,
+                )
+            else:
+                text = re.sub(
+                    r"^(source_commit:.*)$",
+                    rf"\1\ngold_diff_lines: {size}",
+                    text,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+            task_file.write_text(text)
 
 
 def _snapshot(args) -> None:
@@ -1689,6 +1737,8 @@ def main(argv=None) -> None:
         _index(args)
     elif args.command == "snapshot":
         _snapshot(args)
+    elif args.command == "gold-size":
+        _gold_sizes(args)
     elif args.command == "calibrate":
         _calibrate(args)
     elif args.command == "judge":

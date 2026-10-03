@@ -8,6 +8,7 @@ from bench.cache import HARNESS_VERSION
 from bench.cli import (
     _aggregate_agentic_group,
     _apply_snapshot_patches,
+    _gold_sizes,
     _parse_headers,
     _prune_stale,
     _report,
@@ -236,6 +237,7 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     assert data["models"][0]["cost_per_solve_usd"] == 0.001
     assert data["models"][0]["errored"] == 0
     assert data["models"][0]["errored_tasks"] == []
+    assert data["models"][0]["norms_n"] == 0
     # Per-task breakdown is embedded for the deep-dive: one entry per graded task,
     # carrying pass/fail plus the per-task tokens and turns.
     (mt,) = data["models"][0]["tasks"]
@@ -411,6 +413,7 @@ def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
         "cost_per_solve": None,
         "tool_ok_rate": 0.0,
         "mean_norms": None,
+        "norms_n": 0,
         "errored": 1,
         "errored_tasks": ["floor-error"],
     }
@@ -661,9 +664,91 @@ def test_aggregate_agentic_group_means_norms_over_passed_cells():
     passed2.norms = {"norms_score": 1.0}
     unscored = _agentic_cell("c", "m", True, 2, 100, True)
     failed = _agentic_cell("d", "m", False, 2, 100, True)
+    failed.norms = {"norms_version": 2, "norms_score": 0.1}
     stats = _aggregate_agentic_group([passed, passed2, unscored, failed], {})
     assert stats["mean_norms"] == 0.75
+    assert stats["norms_n"] == 2
     assert _aggregate_agentic_group([failed], {})["mean_norms"] is None
+    assert _aggregate_agentic_group([failed], {})["norms_n"] == 0
+
+
+@pytest.mark.parametrize("norms", [None, {"norms_score": 0.83}])
+def test_old_cell_json_loads_and_renders_with_coverage(tmp_path, norms):
+    from bench.report import render_leaderboard
+
+    old = {
+        "task_id": "old",
+        "task_version": "v1",
+        "model_id": "m",
+        "content_hash": "h",
+        "outcome": "pass@1",
+        "attempts": [
+            {
+                "passed": True,
+                "feedback": "",
+                "latency_ms": 1,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+            }
+        ],
+        "cost_usd": 0.0,
+        "harness_version": "0.1.4",
+        "prompt_template_hash": "agent",
+    }
+    if norms:
+        old["norms"] = norms
+    cell = ResultCell.model_validate_json(json.dumps(old))
+    stats = _aggregate_agentic_group([cell], {"old": "easy"})
+    assert stats["norms_n"] == (1 if norms else 0)
+    markdown = render_leaderboard(
+        per_class={}, anchors={}, frontier={}, retired=[], agentic={"m": stats}
+    )
+    assert ("0.83 (n=1)" if norms else "n/a") in markdown
+    out = tmp_path / "leaderboard.json"
+    _write_leaderboard_json(
+        out,
+        agentic={"m": stats},
+        cells=[cell],
+        tasks=[],
+        anchor_ids=set(),
+        generated_at="2026-10-03",
+    )
+    model = json.loads(out.read_text())["models"][0]
+    assert model["norms_n"] == stats["norms_n"]
+    assert cell.norms == norms
+
+
+def test_gold_size_cli_writes_only_metadata(tmp_path, monkeypatch, capsys):
+    from bench import cli
+
+    task_file = tmp_path / "t" / "task.yaml"
+    task_file.parent.mkdir()
+    original = "# keep this comment\nid: t\nsource_commit: fix\nsnapshot:\n  preset: monolith-backend\n  commit: parent\n"
+    task_file.write_text(original)
+    observed = []
+
+    def size(repo, source, snap):
+        observed.append(snap)
+        return 12, None
+
+    monkeypatch.setattr(cli, "gold_diff_size", size)
+    args = build_parser().parse_args(
+        ["gold-size", "--tasks", str(tmp_path), "--repo", str(tmp_path)]
+    )
+    _gold_sizes(args)
+    assert task_file.read_text() == original
+    args.write = True
+    _gold_sizes(args)
+    assert task_file.read_text().replace("gold_diff_lines: 12\n", "") == original
+    assert observed[0]["paths"] == ["projects/monolith"]
+    _gold_sizes(args)
+    assert task_file.read_text().count("gold_diff_lines:") == 1
+    assert "t: 12" in capsys.readouterr().out
+    monkeypatch.setattr(
+        cli, "gold_diff_size", lambda *args: (None, "not a pre-fix snapshot")
+    )
+    _gold_sizes(args)
+    assert task_file.read_text() == original
 
 
 def test_write_leaderboard_json_embeds_index_block(tmp_path):

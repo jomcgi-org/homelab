@@ -8,6 +8,7 @@ mode: agentic
 # `content` field to None instead of "". Snapshot the model-bench harness source at the
 # fix's PARENT (buggy state); the model must find and fix the real extraction.
 source_commit: bc6f81dfb
+gold_diff_lines: 110
 snapshot:
   commit: ea95507be96cab02c547b4915529e1b11fa0dc33
   paths:

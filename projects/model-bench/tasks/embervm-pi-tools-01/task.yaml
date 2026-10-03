@@ -11,6 +11,7 @@ mode: agentic
 # snapshot pins the fix's PARENT (buggy state) and keeps only shim.py; the tests
 # are the hidden grader and BUILD/apko packaging is irrelevant to the edit.
 source_commit: 46a0966f35cab26c4c4ee262cd4051341ac64bd9
+gold_diff_lines: 9
 snapshot:
   commit: 1ec19160f44e63d773fc60759e0a45c8a2896679
   paths:
