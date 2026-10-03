@@ -14,6 +14,9 @@ already used elsewhere (e.g. knowledge/router.py's `-> dict` handlers).
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -39,6 +42,7 @@ from grimoire.access import (
 )
 from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
+from grimoire.journal import Journal, journal, narration_entity_ids, visible_rows
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
@@ -2420,6 +2424,215 @@ def _require_roll_scope(
     """
     _get_member_or_404(session, campaign_id, email)
     _session_in_campaign(session, campaign_id, session_id)
+
+
+def _require_journal_campaign_scope(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _validate_reveal_id(campaign_id, "campaign not found")
+    _get_member_or_404(session, campaign_id, email)
+
+
+def _require_journal_session_scope(
+    campaign_id: str,
+    session_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _require_journal_campaign_scope(campaign_id, email, session)
+    _validate_reveal_id(session_id, "game session not found")
+    _session_in_campaign(session, campaign_id, session_id)
+
+
+def _journal_context(session, campaign_id, viewer, member, events, view):
+    rows = visible_rows(viewer, member, events, view)
+    candidates = narration_entity_ids(rows)
+    entities = {}
+    if candidates:
+        for entity, grant in session.exec(
+            visible_entities_query(campaign_id, viewer).where(
+                Entity.id.in_(candidates | {value.upper() for value in candidates})
+            )
+        ).all():
+            projection = project_entity(
+                entity, None, grant, viewer, context="relationship"
+            )
+            if projection is not None:
+                entities[str(UUID(entity.id))] = {
+                    key: projection[key] for key in ("id", "name", "entity_type")
+                }
+    # Only pairs referenced by reveal rows are needed for silent revocation.
+    reveal_ids = set()
+    for row in rows:
+        if row.kind != "reveal":
+            continue
+        bodies = row.body.get("reveals", [row.body])
+        if isinstance(bodies, list):
+            for body in bodies:
+                if isinstance(body, dict) and isinstance(body.get("entity_id"), str):
+                    try:
+                        reveal_ids.add(str(UUID(body["entity_id"])))
+                    except ValueError:
+                        continue
+    grants = set()
+    if reveal_ids:
+        query = select(
+            KnowledgeGrant.player_character_id, KnowledgeGrant.entity_id
+        ).where(
+            KnowledgeGrant.campaign_id == campaign_id,
+            KnowledgeGrant.entity_id.in_(
+                reveal_ids | {value.upper() for value in reveal_ids}
+            ),
+        )
+        if viewer != "dm":
+            query = query.where(KnowledgeGrant.player_character_id == viewer)
+        grants = set(session.exec(query).all())
+    return grants, entities
+
+
+def _journal_events(session, campaign_id, session_ids, viewer, member):
+    return session.exec(
+        select(SessionEvent)
+        .where(
+            SessionEvent.campaign_id == campaign_id,
+            SessionEvent.session_id.in_(session_ids),
+            audience_predicate(SessionEvent, viewer, member),
+        )
+        .order_by(SessionEvent.seq, SessionEvent.id)
+    ).all()
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/{session_id}/journal",
+    response_model=Journal,
+    dependencies=[
+        Depends(require_play_enabled),
+        Depends(_require_journal_session_scope),
+    ],
+)
+def get_session_journal(
+    campaign_id: str,
+    session_id: str,
+    view: Literal["mine", "party"] = "mine",
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> Journal:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    events = _journal_events(session, campaign_id, [session_id], viewer, member)
+    grants, entities = _journal_context(
+        session, campaign_id, viewer, member, events, view
+    )
+    return journal(
+        viewer,
+        member,
+        events,
+        current_grants=grants,
+        visible_entities=entities,
+        view=view,
+    )
+
+
+class SessionJournalView(BaseModel):
+    session_id: str
+    started_at: datetime
+    journal: Journal
+
+
+class CampaignJournalView(BaseModel):
+    sessions: list[SessionJournalView]
+    next_cursor: str | None
+
+
+def _journal_cursor(row: GameSession) -> str:
+    timestamp = row.started_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    value = json.dumps([timestamp.isoformat(), row.id]).encode()
+    return base64.urlsafe_b64encode(value).decode()
+
+
+def _read_journal_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        timestamp, session_id = json.loads(
+            base64.b64decode(cursor, altchars=b"-_", validate=True)
+        )
+        if not isinstance(timestamp, str) or not isinstance(session_id, str):
+            raise TypeError("invalid journal cursor")
+        timestamp = datetime.fromisoformat(timestamp)
+        if timestamp.tzinfo is None or session_id.casefold() != str(UUID(session_id)):
+            raise ValueError("invalid journal cursor")
+        return timestamp, session_id
+    except (ValueError, TypeError, binascii.Error, UnicodeError) as exc:
+        raise HTTPException(422, detail="invalid journal cursor") from exc
+
+
+@router.get(
+    "/campaigns/{campaign_id}/journal",
+    response_model=CampaignJournalView,
+    dependencies=[
+        Depends(require_play_enabled),
+        Depends(_require_journal_campaign_scope),
+    ],
+)
+def get_campaign_journal(
+    campaign_id: str,
+    view: Literal["mine", "party"] = "mine",
+    limit: int = Query(default=10, ge=1, le=50),
+    cursor: str | None = Query(default=None, max_length=256),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CampaignJournalView:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    query = select(GameSession).where(GameSession.campaign_id == campaign_id)
+    if cursor is not None:
+        timestamp, session_id = _read_journal_cursor(cursor)
+        query = query.where(
+            or_(
+                GameSession.started_at < timestamp,
+                (GameSession.started_at == timestamp) & (GameSession.id < session_id),
+            )
+        )
+    sessions = session.exec(
+        query.order_by(GameSession.started_at.desc(), GameSession.id.desc()).limit(
+            limit + 1
+        )
+    ).all()
+    page = sessions[:limit]
+    events = (
+        _journal_events(session, campaign_id, [row.id for row in page], viewer, member)
+        if page
+        else []
+    )
+    grants, entities = _journal_context(
+        session, campaign_id, viewer, member, events, view
+    )
+    by_session = {row.id: [] for row in page}
+    for event in events:
+        by_session[event.session_id].append(event)
+    return CampaignJournalView(
+        sessions=[
+            SessionJournalView(
+                session_id=row.id,
+                started_at=row.started_at.replace(tzinfo=timezone.utc)
+                if row.started_at.tzinfo is None
+                else row.started_at,
+                journal=journal(
+                    viewer,
+                    member,
+                    by_session[row.id],
+                    current_grants=grants,
+                    visible_entities=entities,
+                    view=view,
+                ),
+            )
+            for row in page
+        ],
+        next_cursor=_journal_cursor(page[-1]) if len(sessions) > limit else None,
+    )
 
 
 @router.post(

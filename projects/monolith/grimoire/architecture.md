@@ -126,7 +126,7 @@ hidden roll. Self visibility uses `pcs` containing the player's character
 with the same author provenance. A DM choosing self uses the dm audience.
 Characterless players may roll only table; restricted visibility returns 422
 because their audience contract would hide even their own restricted roll.
-These rules leave `audience_predicate` unchanged. There are 42 campaign routes
+These rules leave `audience_predicate` unchanged. There are 44 campaign routes
 in the route inventory, including the roller and bulk grants.
 
 **Why.** Server-side `secrets.SystemRandom` prevents clients from supplying
@@ -137,6 +137,59 @@ players' table-only rule keeps every accepted roll visible to its roller.
 Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
 and live audience checks after the #6612 play surface is ready. Deployment
 values remain off. No operational flag flip belongs to this change.
+
+## Journal
+
+Both journal routes are play-gated and computed on read. The session route
+returns `learned`, `received`, `people_and_places`, `rolls`, and `open_threads`.
+The campaign route returns `{sessions: [{session_id, started_at, journal}],
+next_cursor}`. Sessions are newest first with a start-time/ID keyset cursor,
+10 sessions by default and at most 50. One audience-filtered event query
+loads each page. `view=mine` is the default; `view=party` includes table events
+only, leaves Learned and Open threads empty, and includes everyone's table
+rolls. Characterless campaign members can use both views.
+
+**Why.** A projection over session events avoids a stored journal copy and a
+second retention policy. Membership and UUID/session scope run as dependencies
+before query validation. SQL uses the feed's campaign, session and
+`audience_predicate` filters; the pure projection applies `can_see` again and
+discards every retracted row, including for the DM.
+
+Learned folds single and bulk reveal bodies by target PC and entity in sequence
+order. The latest visible live reveal supplies the identity, scope and snapshot.
+DM entries include `player_character_id`; player entries never carry other PC
+or member attribution IDs. Non-silent revocation keeps an identity-only entry
+marked `retracted`. Silent revocation drops entries whose current
+`KnowledgeGrant` pair no longer exists. A later re-grant restores the entry.
+Downgrades emit no event: Learned records what the player saw, including a
+historical snapshot that can be broader than today's grant.
+
+**Why.** Silent revocation events deliberately contain no entity identity.
+Current grant pairs remove the earlier live snapshot without adding identity
+to the revocation event. Retraction entries exclude all entity details.
+
+Narration may carry `body.entity_ids`, a list of dashed UUID strings. Malformed
+items are ignored. People and places deduplicates surviving Learned identities
+and those explicit narration references. Narration identities come only from
+`visible_entities_query` and `project_entity` in relationship context, restricted
+to referenced IDs, so name-only recognition can contribute a name stub. It
+never matches narration text against names or reads names from raw entity rows.
+
+**Why.** Learned identities preserve the reveal the viewer actually saw.
+Narration references pass today's visibility overlay before yielding a name.
+Private IDs cannot turn a table narration into an entity lookup bypass.
+
+A reply may carry `body.reply_to`, the exact ID of an earlier event in the same
+session. A later visible, unretracted reply closes an authored non-table action
+in Open threads. Received carries visible handout bodies; Rolls carries the
+member's own rolls in mine view. Event entries expose author and audience PC IDs
+under the feed's DM-or-self rules.
+
+**Why.** A hidden or retracted reply cannot change a player's journal state.
+Reply ordering uses the session sequence, so an earlier reference cannot close
+a later action. Live enablement and audience checks remain owned by #6610.
+
+## Grant changes
 
 Grant changes emit `reveal` events only when play is enabled and the campaign
 has an active or paused session. Creation defaults an omitted

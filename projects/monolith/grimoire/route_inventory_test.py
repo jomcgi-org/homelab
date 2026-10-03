@@ -170,6 +170,10 @@ CASES = {
     ("GET", PREFIX + "/sessions/{session_id}/events"): Case(
         params={"session_id": "$campaign_session.id"},
     ),
+    ("GET", PREFIX + "/sessions/{session_id}/journal"): Case(
+        params={"session_id": "$campaign_session.id"},
+    ),
+    ("GET", PREFIX + "/journal"): Case(),
     ("POST", PREFIX + "/sessions/{session_id}/rolls"): Case(
         params={"session_id": "$campaign_session.id"},
         body={"formula": "2d6", "visibility": "table"},
@@ -219,7 +223,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 42
+    assert len(enumerated) == 44
 
 
 def test_route_inventory(harness):
