@@ -53,6 +53,10 @@ def _register_mcp() -> None:
 
 
 async def _leader_start(app):
+    if getattr(app.state, "leader_singletons_shutting_down", False):
+        # The framework fences late acquisition, but a direct call must also
+        # refuse to launch DBOS once shutdown has begun.
+        return []
     from factory.orchestration import (
         node_workflows,  # noqa: F401 - register before DBOS launch
         runtime,

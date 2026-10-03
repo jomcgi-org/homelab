@@ -73,6 +73,72 @@ def test_shutdown_guard_ceases_on_failed_or_hung_renewal(monkeypatch, failure):
         close()
 
 
+def test_shutdown_guard_arms_remaining_lifetime_not_fresh_interval(monkeypatch):
+    # One successful renewal, then renewals block on the database: the
+    # watchdog must cease the process before the last heartbeat goes stale,
+    # not one fresh interval after shutdown began.
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.05)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.5)
+    unblock = threading.Event()
+    monkeypatch.setattr(
+        leadership, "_acquire_or_renew", lambda *_args: unblock.wait(timeout=5)
+    )
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    started_at = time.monotonic()
+    ceased = threading.Event()
+    exits = []
+
+    def exit_process(status):
+        exits.append((status, time.monotonic() - started_at))
+        ceased.set()
+
+    elector = leadership.LeaderElector()
+    # The last heartbeat landed 0.2s ago: 0.3s of lifetime remain, and the
+    # watchdog margin leaves 0.25s. The lease itself expires at 0.3s.
+    elector._last_success_monotonic = started_at - 0.2
+    close = elector.guard_shutdown(exit_process, timeout=5)
+    try:
+        assert ceased.wait(timeout=2)
+    finally:
+        unblock.set()
+        close()
+    assert [status for status, _ in exits] == [1]
+    assert exits[0][1] < 0.3
+
+
+def test_shutdown_guard_fails_closed_when_heartbeat_already_stale(monkeypatch):
+    # The last known heartbeat is older than the watchdog margin while
+    # renewal blocks: the process must cease at once, not after a fresh
+    # interval that would leave an unguarded handoff window.
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.05)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.5)
+    unblock = threading.Event()
+    monkeypatch.setattr(
+        leadership, "_acquire_or_renew", lambda *_args: unblock.wait(timeout=5)
+    )
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    started_at = time.monotonic()
+    ceased = threading.Event()
+    exits = []
+
+    def exit_process(status):
+        exits.append((status, time.monotonic() - started_at))
+        ceased.set()
+
+    elector = leadership.LeaderElector()
+    elector._last_success_monotonic = started_at - 1.0
+    close = elector.guard_shutdown(exit_process, timeout=5)
+    try:
+        assert ceased.wait(timeout=2)
+    finally:
+        unblock.set()
+        close()
+    assert [status for status, _ in exits] == [1]
+    # A fresh TTL minus interval arming would take 0.45s; fail-closed fires
+    # without waiting out any interval.
+    assert exits[0][1] < 0.3
+
+
 def _seq(values):
     """A fake _acquire_or_renew that yields `values` then stays a follower."""
     it = iter(values)
