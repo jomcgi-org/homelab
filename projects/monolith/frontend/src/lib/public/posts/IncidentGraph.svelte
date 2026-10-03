@@ -27,22 +27,54 @@
     const from = layout.nodes.find((n) => n.id === edge.from);
     const to = layout.nodes.find((n) => n.id === edge.to);
     if (!from || !to) return "";
+    const down = to.y > from.y;
     if (from.x === to.x) {
       const x = from.x + 105;
-      const down = to.y > from.y;
-      return `M${x},${from.y + (down ? 62 : 0)} C${x + 50},${from.y + 100} ${x + 50},${to.y - 40} ${x},${to.y + (down ? 0 : 62)}`;
+      return `M${x},${from.y + (down ? 62 : 0)} L${x},${to.y + (down ? 0 : 62)}`;
     }
     const right = to.x > from.x;
-    const x1 = from.x + (right ? 210 : 0),
-      x2 = to.x + (right ? 0 : 210);
-    const y1 = from.y + 25 + (index % 3) * 6,
-      y2 = to.y + 25 + (index % 3) * 6;
-    if (Math.abs(to.x - from.x) > 280) {
-      const lane = 43 - (index % 3) * 5;
-      return `M${x1},${y1} C${x1 + 35},${y1} ${x1 + 35},${lane} ${x1 + 60},${lane} L${x2 - 50},${lane} C${x2 - 20},${lane} ${x2 - 20},${y2} ${x2},${y2}`;
+    const x1 = from.x + (right ? 210 : 0);
+    const x2 = to.x + (right ? 0 : 210);
+    const y1 = from.y + 31;
+    const y2 = to.y + 31;
+    const direction = right ? 1 : -1;
+    if (y1 === y2 && Math.abs(to.x - from.x) === 280) {
+      return `M${x1},${y1} L${x2},${y2}`;
     }
-    const bend = Math.max(40, Math.abs(x2 - x1) / 2);
-    return `M${x1},${y1} C${x1 + (right ? bend : -bend)},${y1} ${x2 + (right ? -bend : bend)},${y2} ${x2},${y2}`;
+    const points =
+      Math.abs(to.x - from.x) > 280
+        ? [
+            [x1, y1],
+            [x1 + direction * 24, y1],
+            [x1 + direction * 24, 43 - (index % 3) * 8],
+            [x2 - direction * 24, 43 - (index % 3) * 8],
+            [x2 - direction * 24, y2],
+            [x2, y2],
+          ]
+        : [
+            [x1, y1],
+            [(x1 + x2) / 2 + direction * 12, y1],
+            [(x1 + x2) / 2 + direction * 12, y2],
+            [x2, y2],
+          ];
+    let result = `M${points[0].join(",")}`;
+    for (let i = 1; i < points.length - 1; i++) {
+      const previous = points[i - 1],
+        current = points[i],
+        next = points[i + 1];
+      const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+      const before = distance(previous, current),
+        after = distance(current, next);
+      const radius = Math.min(7, before / 2, after / 2);
+      const entry = current.map(
+        (v, axis) => v + ((previous[axis] - v) * radius) / before,
+      );
+      const exit = current.map(
+        (v, axis) => v + ((next[axis] - v) * radius) / after,
+      );
+      result += ` L${entry.join(",")} Q${current.join(",")} ${exit.join(",")}`;
+    }
+    return `${result} L${points.at(-1).join(",")}`;
   }
   const tone = (item) =>
     item.kind === "failure"
@@ -125,6 +157,7 @@
           </button>
         {/if}
       {/each}
+      <p class="interaction-hint">↗ Click a node or arrow to explore</p>
     </div>
   </div>
   <div class="graph-detail" aria-live="polite">
@@ -179,6 +212,14 @@
     max-width: 840px;
     min-width: 638px;
   }
+  .interaction-hint {
+    position: absolute;
+    bottom: 10px;
+    left: 30px;
+    margin: 0;
+    color: var(--tone-gpu);
+    font: 0.7rem var(--font-code);
+  }
   .boundaries {
     position: absolute;
     inset: 0;
@@ -223,6 +264,8 @@
     stroke-width: 4;
     outline: none;
   }
+  .connection:has(.edge-hit:hover) .edge,
+  .connection:focus-within .edge,
   .connection.chosen .edge {
     stroke-width: 3;
     opacity: 1;
@@ -242,6 +285,7 @@
     cursor: pointer;
     animation: arrive 0.3s ease-out;
   }
+  .graph-node:hover,
   .graph-node.chosen {
     background: color-mix(in srgb, var(--node-tone) 12%, var(--sheet));
     border-width: 2px;
