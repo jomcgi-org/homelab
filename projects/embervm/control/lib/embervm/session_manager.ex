@@ -505,6 +505,7 @@ defmodule Embervm.SessionManager do
         Keyword.get(opts, :release_session_vm_fun, release_default),
       id_fun: Keyword.get(opts, :id_fun),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
+      invalidate_channel_fun: Keyword.get(opts, :invalidate_channel_fun, &Embervm.NodeChannel.invalidate/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
       # Daemon session verb seams (Bank/Relight/EvictSnapshot). Injected for tests;
       # production dials the real NodeService stub over the shared NodeChannel.
@@ -2006,6 +2007,13 @@ defmodule Embervm.SessionManager do
             {:ok, vm_id}
 
           other ->
+            # A closed shared transport must not poison later creates. Drop
+            # only that channel identity; do not retry this uncertain Prime.
+            # Server refusals such as memory pressure keep the healthy channel.
+            if Embervm.NodeChannel.transport_dead?(other) do
+              _ = safe(fn -> state.invalidate_channel_fun.(node_id, channel) end)
+            end
+
             Logger.warning("embervm prime failed",
               node_id: node_id,
               snapshot_ref: snapshot_ref,
