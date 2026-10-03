@@ -124,15 +124,10 @@ class CSPParser(HTMLParser):
             )
             if equivalent == "content-security-policy":
                 require(self.charset, "UTF-8 declaration must precede CSP")
-                parsed = [
-                    part.strip()
-                    for part in attrs.get("content", "").split(";")
-                    if part.strip()
-                ]
-                require(len(parsed) == len(set(parsed)), "duplicate CSP directives")
+                # Compare the exact supported policy, rather than normalizing
+                # Unicode whitespace differently from a browser's CSP parser.
                 require(
-                    set(parsed) == set(CSP.split("; ")),
-                    "missing or weakened fixture CSP",
+                    attrs.get("content", "") == CSP, "missing or weakened fixture CSP"
                 )
                 self.policy = True
 
@@ -360,6 +355,15 @@ def reconcile(state, files, current_prs, now):
     return state, files
 
 
+def trusted_html_head(title):
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        f'<meta http-equiv="Content-Security-Policy" content="{CSP}">'
+        '<meta name="robots" content="noindex,nofollow">'
+        f"<title>{title}</title>"
+    )
+
+
 def add_preview(state, files, number, sha, assets, now, run_id):
     require(
         NUMBER.fullmatch(str(number)) is not None and SHA.fullmatch(sha) is not None,
@@ -385,9 +389,9 @@ def add_preview(state, files, number, sha, assets, now, run_id):
         files[f"{prefix}{sha}/{static_path(path)}"] = data
     target = f"./{sha}/"
     files[prefix + "index.html"] = (
-        "<!doctype html><meta charset=utf-8><meta name=robots content=noindex>"
-        f'<meta http-equiv=refresh content="0;url={target}">'
-        f'<title>Fixture preview #{number}</title><a href="{target}">Open synthetic fixture preview</a>'
+        trusted_html_head(f"Fixture preview #{number}")
+        + f'<meta http-equiv=refresh content="0;url={target}"></head><body>'
+        + f'<a href="{target}">Open synthetic fixture preview</a></body></html>'
     ).encode()
     state["previews"][str(number)] = {"sha": sha, "updated_at": now, "run_id": run_id}
 
@@ -400,9 +404,10 @@ def finish_site(state, files):
         )
     )
     files["site/index.html"] = (
-        "<!doctype html><meta charset=utf-8><meta name=robots content=noindex><title>Synthetic fixture previews</title>"
-        "<h1>Synthetic fixture previews</h1><p>Public, untrusted PR code. Never enter credentials or personal data.</p>"
-        f"<ul>{links}</ul>"
+        trusted_html_head("Synthetic fixture previews")
+        + "</head><body><h1>Synthetic fixture previews</h1>"
+        + "<p>Public, untrusted PR code. Never enter credentials or personal data.</p>"
+        + f"<ul>{links}</ul></body></html>"
     ).encode()
     files["site/.nojekyll"] = b""
     files["state.json"] = (json.dumps(state, sort_keys=True, indent=2) + "\n").encode()
