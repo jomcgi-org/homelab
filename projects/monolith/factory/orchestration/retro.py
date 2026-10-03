@@ -457,11 +457,68 @@ def _reviews(data: dict, cite: Citer) -> list[str]:
         + (", ".join(f"{k} {v}" for k, v in verdicts.most_common()) or "none")
         + f"; plus {infra_blocked} recorded as blocked that were infra deaths"
     ]
+    from factory.orchestration.factory_feedback import (
+        _classified_verdict,
+        review_scorecard,
+    )
+
+    def score_line(label, values):
+        score = review_scorecard(values)
+        return (
+            f"- {label}: operational approvals "
+            f"{score['approval_count']}/{score['operational_denominator']}; "
+            f"quality approvals {score['approval_count']}/{score['quality_denominator']}; "
+            f"blocked {score['blocked_count']}; unknown {score['unknown_count']} "
+            "(zero denominator is UNKNOWN)"
+        )
+
+    # First-pass rows are immutable and one per task. Do not substitute a
+    # later successful retry or mix advisory samples into delivery quality.
+    first = {}
+    for row in data.get("verdicts", []):
+        key = row.get("task_id") or row.get("review_run_id")
+        first.setdefault((row.get("sample_kind", "unknown"), key), row)
+    groups = defaultdict(list)
+    for (sample, _key), row in first.items():
+        run = runs_by_id.get(row.get("review_run_id")) or {}
+        group = (
+            sample,
+            row.get("task_class", "unknown"),
+            run.get("model") or "unknown",
+        )
+        groups[group].append(str(row.get("verdict")))
+    lines.append(
+        score_line(
+            "first-pass scorecard", [str(row.get("verdict")) for row in first.values()]
+        )
+    )
+    for group, values in sorted(groups.items())[:TOP]:
+        lines.append(score_line("first-pass " + "/".join(group), values))
+    reviews = [
+        run
+        for run in data.get("runs", [])
+        if str(run.get("node_key") or "").startswith("review_")
+        and run.get("status") in ("succeeded", "failed", "escalated", "cancelled")
+    ]
+    lines.append(
+        score_line(
+            "all terminal review attempts",
+            [_classified_verdict(run)[0] for run in reviews],
+        )
+    )
     lines.extend(f"  - {example}" for example in examples)
-    rounds = Counter(
-        run["task_id"]
+    corrections = {
+        (run["task_id"], run["node_key"])
         for run in data.get("runs", [])
         if _CORRECTION_NODE.fullmatch(str(run.get("node_key") or ""))
+    }
+    rounds = Counter(task_id for task_id, _node in corrections)
+    correction_attempts = sum(
+        _CORRECTION_NODE.fullmatch(str(run.get("node_key") or "")) is not None
+        for run in data.get("runs", [])
+    )
+    lines.append(
+        f"- correction rounds {len(corrections)}; attempts {correction_attempts}; retry attempts {correction_attempts - len(corrections)}"
     )
     if rounds:
         lines.append(
@@ -656,7 +713,7 @@ WHERE action IN ('delivery_ready', 'merged', 'finish_task') AND created_at >= :s
 ORDER BY id
 """
 _VERDICTS = """
-SELECT task_id, review_run_id, verdict, sample_kind, left(summary, 400) AS summary
+SELECT task_id, review_run_id, verdict, sample_kind, task_class, left(summary, 400) AS summary
 FROM swarm.factory_review_verdict
 WHERE reviewed_at >= :since
 """

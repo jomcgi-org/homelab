@@ -507,3 +507,17 @@ def test_full_advisory_window_restores_delivery_with_no_inflight_delivery(db):
         assert session.exec(
             select(FactoryAudit).where(FactoryAudit.action == "class_tier_restored")
         ).one()
+
+
+def test_review_scorecard_exposes_quality_and_operational_denominators():
+    score = feedback.review_scorecard(
+        ["approve", "changes_requested", "blocked", "unparseable"]
+    )
+    assert score["operational_approval_rate"] == 0.25
+    assert score["quality_approval_rate"] == 0.5
+    assert score["operational_denominator"] == 4
+    assert score["quality_denominator"] == 2
+    assert score["blocked_count"] == 1
+    assert score["unknown_count"] == 1
+    assert feedback.review_scorecard([])["quality_approval_rate"] is None
+    assert feedback.review_scorecard(["blocked"])["quality_approval_rate"] is None
