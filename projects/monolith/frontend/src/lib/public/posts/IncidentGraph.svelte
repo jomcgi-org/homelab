@@ -8,6 +8,7 @@
     sourceUrl = "",
     review = {},
     outputOpen = $bindable(true),
+    landing = false,
   } = $props();
   let output = $state();
   let followOutput = $state(true);
@@ -110,7 +111,7 @@
   const choose = (item) => (selected = selected === item.id ? null : item.id);
 </script>
 
-<div class="incident-graph">
+<div class="incident-graph" class:landing>
   <div class="graph-scroll">
     <div class="graph-canvas" style={`aspect-ratio:840 / ${layout.height}`}>
       <div class="boundaries" aria-hidden="true">
@@ -188,48 +189,102 @@
       <p class="interaction-hint">↗ Click a node or arrow to explore</p>
     </div>
   </div>
-  <div class="graph-detail" aria-live="polite">
-    <div class="detail-copy">
-      <p class:takeaway={active?.type === "summary"}>
-        {active?.detail ?? "Building the control graph…"}
-      </p>
-      <div class="detail-reserve" aria-hidden="true">
-        {#each detailStatements as item (item.id)}<p>{item.detail}</p>{/each}
+  <div class="inspector">
+    <div class="graph-detail" aria-live="polite">
+      <div class="detail-copy">
+        <p class:takeaway={active?.type === "summary"}>
+          {active?.detail ?? "Building the control graph…"}
+        </p>
+        <div class="detail-reserve" aria-hidden="true">
+          {#each detailStatements as item (item.id)}<p>{item.detail}</p>{/each}
+        </div>
+      </div>
+      <div class="detail-source">
+        {#if active}<a
+            href={`${sourceUrl}#page=${active.pages[0]}`}
+            target="_blank"
+            rel="noreferrer"
+            >{active.basis === "inferred" ? "Analysis · " : ""}Report p. {active.pages.join(
+              ", ",
+            )}</a
+          >{/if}
       </div>
     </div>
-    <div class="detail-source">
-      {#if active}<a
-          href={`${sourceUrl}#page=${active.pages[0]}`}
-          target="_blank"
-          rel="noreferrer"
-          >{active.basis === "inferred" ? "Analysis · " : ""}Report p. {active.pages.join(
-            ", ",
-          )}</a
-        >{/if}
-    </div>
-  </div>
 
-  <DemoDisclosure
-    class="model-output"
-    label="Model output"
-    bind:open={outputOpen}
-  >
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the output.) -->
-    <pre
-      bind:this={output}
-      onscroll={trackOutputScroll}
-      tabindex="0"
-      role="region"
-      aria-label="Streaming model output"><code
-        >{answer}{#if !complete}<span class="stream-cursor" aria-hidden="true"
-          ></span>{/if}</code
-      ></pre>
-  </DemoDisclosure>
+    <DemoDisclosure
+      class="model-output"
+      label="Model output"
+      bind:open={outputOpen}
+    >
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the output.) -->
+      <pre
+        bind:this={output}
+        onscroll={trackOutputScroll}
+        tabindex="0"
+        role="region"
+        aria-label="Streaming model output"><code
+          >{answer}{#if !complete}<span class="stream-cursor" aria-hidden="true"
+            ></span>{/if}</code
+        ></pre>
+    </DemoDisclosure>
+  </div>
 </div>
 
 <style>
   .incident-graph {
     min-width: 0;
+  }
+  .inspector {
+    min-width: 0;
+  }
+  @media (min-width: 901px) {
+    .landing {
+      display: grid;
+      grid-template-columns: minmax(0, 1.8fr) minmax(16rem, 1fr);
+      gap: 1.5rem;
+      align-items: start;
+    }
+    .landing .graph-canvas {
+      min-width: 560px;
+    }
+    .landing .graph-detail {
+      border-top: 0;
+      padding-top: 1rem;
+    }
+    .landing pre {
+      height: 10rem;
+    }
+  }
+  @media (max-width: 900px) {
+    .landing .graph-canvas {
+      min-width: 560px;
+    }
+    .landing .boundaries span {
+      padding: 12px 16px;
+      font-size: 0.6rem;
+    }
+    .landing .role {
+      display: none;
+    }
+    .landing pre {
+      height: 3.5rem;
+    }
+    .landing .graph-detail {
+      padding-block: 0.5rem;
+    }
+    .landing .graph-detail p {
+      font-size: 0.85rem;
+      line-height: 1.4;
+    }
+  }
+  @container (max-width: 640px) {
+    .landing .role {
+      display: none;
+    }
+    .landing .boundaries span {
+      padding: 12px 16px;
+      font-size: 0.6rem;
+    }
   }
   .graph-scroll {
     overflow-x: auto;

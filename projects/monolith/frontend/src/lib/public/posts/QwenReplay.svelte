@@ -3,6 +3,7 @@
   import DemoDisclosure from "./DemoDisclosure.svelte";
   import IncidentGraph from "./IncidentGraph.svelte";
   import recording from "./qwen-replay.json";
+  let { landing = false } = $props();
   const turn = recording.turns[0];
   let element;
   let position = $state(0);
@@ -93,6 +94,7 @@
 <section
   bind:this={element}
   class="replay"
+  class:landing
   aria-label="Inference on the RTX 4090"
 >
   <p class="question">
@@ -146,6 +148,7 @@
       >
         <IncidentGraph
           {answer}
+          {landing}
           {finalAnswer}
           bind:outputOpen
           sourceUrl={recording.source.url}
@@ -208,6 +211,25 @@
     min-width: 0;
     color: var(--ink);
     font-family: var(--font-ui);
+  }
+  .landing {
+    container-type: inline-size;
+  }
+  .landing .question {
+    margin-bottom: 0.75rem;
+    font-size: 1rem;
+  }
+  /* Reserve the final graph: 391 / 840 high, using 1.8 / 2.8 of the width. */
+  .landing .demo-body,
+  .landing .demo-body.output-expanded {
+    min-height: max(20.5rem, calc((100cqw - 1.5rem) * 0.29923));
+  }
+  .landing .measurements {
+    margin-top: 0.5rem;
+    padding-block: 0.6rem;
+  }
+  .landing .controls {
+    padding-block: 0.3rem;
   }
   .question {
     margin: 0.2rem 0 1.2rem;
@@ -395,6 +417,12 @@
   @media (prefers-reduced-motion: reduce) {
     .demo-body {
       transition: none;
+    }
+  }
+  @media (max-width: 900px) {
+    .landing .demo-body,
+    .landing .demo-body.output-expanded {
+      min-height: max(28.25rem, calc(100cqw * 0.46548 + 12rem));
     }
   }
   @media (max-width: 600px) {
