@@ -606,10 +606,18 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
                         "leader startup incomplete: " + ", ".join(sorted(failures))
                     )
 
+            async def resign_singletons() -> None:
+                exit_process = app.state.leader_shutdown_exit
+                if exit_process is not None:
+                    # A DBOS process which lost ownership must cease before
+                    # another domain's slow stop hook can delay factory stop.
+                    exit_process(1)
+                await stop_leader_singletons(app, modules)
+
             elector_task = asyncio.create_task(
                 elector.run(
                     on_acquire=acquire_singletons,
-                    on_resign=lambda: stop_leader_singletons(app, modules),
+                    on_resign=resign_singletons,
                 )
             )
             elector_task.add_done_callback(log_task_exception)
@@ -644,7 +652,6 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             close_shutdown_guard()
         if elector_task is not None:
             elector_task.cancel()
-            await asyncio.gather(elector_task, return_exceptions=True)
         backfill_task = getattr(app.state, "backfill_task", None)
         if backfill_task and not backfill_task.done():
             backfill_task.cancel()

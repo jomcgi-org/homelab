@@ -95,7 +95,55 @@ async def test_shutdown_renews_past_lease_ttl_and_exits_before_release(monkeypat
     assert shutdowns == [True]
     # The fake exit returns only in this test. Real os._exit cannot reach the
     # later cancellation and release callback.
+    await asyncio.sleep(0.01)
     released.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("startup_failure", [False, True])
+async def test_process_bound_resignation_exits_before_other_domains(
+    monkeypatch, startup_failure
+):
+    class ProcessCeased(BaseException):
+        pass
+
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    lease = mock.Mock(side_effect=[True, False])
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lease)
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    exits = []
+    stops = []
+
+    def exit_process(status):
+        exits.append(status)
+        raise ProcessCeased()
+
+    async def start(app):
+        app.state.leader_shutdown_exit = exit_process
+        if startup_failure:
+            raise RuntimeError("partial singleton startup")
+        return []
+
+    async def stop(_app):
+        stops.append(True)
+
+    app = FastAPI()
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE,
+        [Module(name="before-factory", leader_start=start, leader_stop=stop)],
+    )(app):
+        elector_task = next(
+            task
+            for task in asyncio.all_tasks()
+            if task.get_coro().__qualname__ == "LeaderElector.run"
+        )
+        with pytest.raises(ProcessCeased):
+            await elector_task
+        assert exits == [1]
+        assert stops == []
+        assert lease.call_count == (1 if startup_failure else 2)
+        # Real exit never returns. Clear the fake callback for test cleanup.
+        app.state.leader_shutdown_exit = None
 
 
 @pytest.mark.asyncio
