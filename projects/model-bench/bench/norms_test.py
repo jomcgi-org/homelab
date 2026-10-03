@@ -316,7 +316,7 @@ def test_go_only_without_linter_is_unavailable(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("language", ["go", "python"])
-@pytest.mark.parametrize("failure", ["version", "exit", "json"])
+@pytest.mark.parametrize("failure", ["version", "exit", "json", "empty-findings"])
 def test_lint_failures_are_unavailable(tmp_path, monkeypatch, language, failure):
     fx, wd = _lint_pair(tmp_path, language)
     monkeypatch.setattr(norms.shutil, "which", lambda name: name)
@@ -331,9 +331,16 @@ def test_lint_failures_are_unavailable(tmp_path, monkeypatch, language, failure)
                 stdout="0.0.0" if failure == "version" else version,
                 stderr="",
             )
+        stdout = "broken-json"
+        if failure == "empty-findings":
+            stdout = json.dumps({"Issues": []} if language == "go" else [])
         return SimpleNamespace(
-            returncode=2 if failure == "exit" else 0,
-            stdout="broken-json",
+            returncode=2
+            if failure == "exit"
+            else 1
+            if failure == "empty-findings"
+            else 0,
+            stdout=stdout,
             stderr="analysis failed",
         )
 
