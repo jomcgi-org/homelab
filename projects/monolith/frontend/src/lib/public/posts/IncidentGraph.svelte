@@ -11,26 +11,17 @@
   let captured = $derived(incidentGraph(answer, complete));
   // Keep the captured response intact; use verified page links and relationship types in the view.
   let graph = $derived({
+    summary: captured.summary,
     nodes: captured.nodes.map((item) => ({ ...item, ...review[item.id] })),
     edges: captured.edges.map((item) => ({ ...item, ...review[item.id] })),
   });
   let layout = $derived(layoutIncidentGraph(incidentGraph(finalAnswer, true)));
-  let canvasElement;
-  let scale = $state(1);
-  $effect(() => {
-    if (!canvasElement || typeof ResizeObserver === "undefined") return;
-    const resize = new ResizeObserver(
-      ([entry]) =>
-        (scale = Math.min(1, Math.max(0.76, entry.contentRect.width / 840))),
-    );
-    resize.observe(canvasElement);
-    return () => resize.disconnect();
-  });
   let selected = $state(null);
   let active = $derived(
     [...graph.nodes, ...graph.edges].find((item) => item.id === selected) ??
-      graph.edges.at(-1) ??
-      graph.nodes.at(-1),
+      graph.summary ??
+      graph.edges.find((edge) => edge.kind === "failure") ??
+      graph.nodes[0],
   );
   function path(edge, index) {
     const from = layout.nodes.find((n) => n.id === edge.from);
@@ -59,12 +50,12 @@
       : item.kind === "feedback" || item.role === "monitor"
         ? "ram"
         : "gpu";
-  const choose = (item) => (selected = item.id);
+  const choose = (item) => (selected = selected === item.id ? null : item.id);
 </script>
 
 <div class="incident-graph">
-  <div class="graph-scroll" bind:this={canvasElement}>
-    <div class="graph-canvas" style={`height:${layout.height}px;zoom:${scale}`}>
+  <div class="graph-scroll">
+    <div class="graph-canvas" style={`aspect-ratio:840 / ${layout.height}`}>
       <div class="boundaries" aria-hidden="true">
         <span>Evaluation</span><span>Shared infrastructure</span><span
           >External systems</span
@@ -90,10 +81,11 @@
               /></marker
             >{/each}</defs
         >
-        {#each graph.edges as edge, i}
+        {#each graph.edges as edge, i (edge.id)}
           <g
             class="connection"
-            class:chosen={active?.id === edge.id}
+            class:chosen={active?.id === edge.id ||
+              (active?.type === "summary" && edge.kind === "failure")}
             style={`--edge-tone:var(--tone-${tone(edge)})`}
           >
             <path
@@ -117,22 +109,15 @@
                 }
               }}
             />
-            <circle r="3" fill={`var(--tone-${tone(edge)})`} class="flow-dot"
-              ><animateMotion
-                dur={`${2.4 + i * 0.15}s`}
-                repeatCount="indefinite"
-                path={path(edge, i)}
-              /></circle
-            >
           </g>
         {/each}
       </svg>
-      {#each layout.nodes as node}
+      {#each layout.nodes as node (node.id)}
         {#if graph.nodes.some((n) => n.id === node.id)}
           <button
             class="graph-node"
             class:chosen={active?.id === node.id}
-            style={`left:${node.x}px;top:${node.y}px;--node-tone:var(--tone-${tone(node)})`}
+            style={`left:${(node.x / 840) * 100}%;top:${(node.y / layout.height) * 100}%;height:${(62 / layout.height) * 100}%;--node-tone:var(--tone-${tone(node)})`}
             onclick={() => choose(node)}
             aria-pressed={active?.id === node.id}
           >
@@ -143,7 +128,15 @@
     </div>
   </div>
   <div class="graph-detail" aria-live="polite">
-    {#if active}<div class="detail-top">
+    {#if active?.type === "summary"}
+      <p class="takeaway">{active.detail}</p>
+      <a
+        class="summary-source"
+        href={`${sourceUrl}#page=${active.pages[0]}`}
+        target="_blank"
+        rel="noreferrer">Analysis · Report p. {active.pages.join(", ")}</a
+      >
+    {:else if active}<div class="detail-top">
         <strong>{active.label}</strong><a
           href={`${sourceUrl}#page=${active.pages[0]}`}
           target="_blank"
@@ -182,8 +175,9 @@
   }
   .graph-canvas {
     position: relative;
-    width: 840px;
-    transform-origin: top left;
+    width: 100%;
+    max-width: 840px;
+    min-width: 638px;
   }
   .boundaries {
     position: absolute;
@@ -213,7 +207,7 @@
     stroke: var(--edge-tone);
     stroke-width: 2;
     opacity: 0.7;
-    animation: arrive 0.6s ease;
+    animation: connect 0.4s ease-out;
   }
   .feedback {
     stroke-dasharray: 5 5;
@@ -235,9 +229,9 @@
   }
   .graph-node {
     position: absolute;
-    width: 210px;
-    min-height: 62px;
-    padding: 9px 12px;
+    width: 25%;
+    box-sizing: border-box;
+    padding: 6px 10px;
     display: flex;
     flex-direction: column;
     gap: 3px;
@@ -246,7 +240,7 @@
     color: var(--ink);
     border: 1px solid var(--node-tone);
     cursor: pointer;
-    animation: arrive 0.4s ease;
+    animation: arrive 0.3s ease-out;
   }
   .graph-node.chosen {
     background: color-mix(in srgb, var(--node-tone) 12%, var(--sheet));
@@ -259,7 +253,8 @@
     letter-spacing: 0.07em;
   }
   .graph-node strong {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    line-height: 1.2;
     font-weight: 500;
   }
   button:focus-visible {
@@ -278,7 +273,8 @@
     gap: 1rem;
   }
   .detail-top strong {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    line-height: 1.2;
     font-weight: 500;
   }
   .detail-top a {
@@ -288,6 +284,15 @@
   .graph-detail p {
     margin: 0.35rem 0 0;
     font-size: 0.85rem;
+  }
+  .graph-detail .takeaway {
+    font-size: 1rem;
+    line-height: 1.5;
+    margin: 0 0 0.35rem;
+  }
+  .summary-source {
+    font: 0.65rem var(--font-code);
+    color: var(--ink-2);
   }
   .waiting {
     color: var(--ink-2);
@@ -307,18 +312,25 @@
   @keyframes arrive {
     from {
       opacity: 0;
+      transform: translateY(4px);
     }
     to {
       opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes connect {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 0.7;
     }
   }
   @media (prefers-reduced-motion: reduce) {
     .edge,
     .graph-node {
       animation: none;
-    }
-    .flow-dot {
-      display: none;
     }
   }
   @media (max-width: 600px) {

@@ -200,9 +200,13 @@
     line-height: 1.4;
   }
   .demo-body {
-    min-height: 17rem;
+    min-height: 27.5rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
   }
   .input-scan {
+    margin-block: auto;
     padding: 1rem;
     border-left: 3px solid var(--tone-ram);
     background: color-mix(in srgb, var(--tone-ram) 9%, var(--sheet));
@@ -373,7 +377,7 @@
   }
   @media (max-width: 600px) {
     .demo-body {
-      min-height: 15rem;
+      min-height: 27.5rem;
     }
     .question {
       font-size: 1.05rem;

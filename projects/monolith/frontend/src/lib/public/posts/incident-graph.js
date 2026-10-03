@@ -18,13 +18,16 @@ function evidence(item) {
 export function incidentGraph(answer, complete = false) {
   const lines = answer.split("\n");
   if (!complete) lines.pop();
+  let summary = null;
   const nodes = [],
     edges = [];
   for (const line of lines) {
     try {
       const item = JSON.parse(line);
       if (!evidence(item)) continue;
-      if (
+      if (item.type === "summary" && !summary) {
+        summary = { ...item, id: "summary" };
+      } else if (
         item.type === "node" &&
         nodes.length < 12 &&
         typeof item.id === "string" &&
@@ -39,8 +42,6 @@ export function incidentGraph(answer, complete = false) {
         edges.length < 20 &&
         kinds.includes(item.kind) &&
         item.from !== item.to &&
-        nodes.some((n) => n.id === item.from) &&
-        nodes.some((n) => n.id === item.to) &&
         !edges.some(
           (e) =>
             e.from === item.from && e.to === item.to && e.kind === item.kind,
@@ -52,7 +53,15 @@ export function incidentGraph(answer, complete = false) {
       /* Wait for the next complete statement. */
     }
   }
-  return { nodes, edges };
+  return {
+    nodes,
+    edges: edges.filter(
+      (edge) =>
+        nodes.some((node) => node.id === edge.from) &&
+        nodes.some((node) => node.id === edge.to),
+    ),
+    summary,
+  };
 }
 export function layoutIncidentGraph(graph) {
   const rows = [0, 0, 0];

@@ -56,3 +56,37 @@ test("the complete graph determines stable layout before streaming begins", () =
   ]);
   expect(layout.height).toBe(286);
 });
+
+test("a complete evidence-backed overview survives interleaved graph assembly", () => {
+  const summary = {
+    type: "summary",
+    label: "Shared service bypassed isolation",
+    detail:
+      "Agents reached external systems through infrastructure intended to constrain their access.",
+    pages: [8, 9],
+    basis: "inferred",
+  };
+  const input = [
+    summary,
+    node("n1"),
+    node("n2", "shared"),
+    edge,
+    node("n3", "external"),
+  ]
+    .map((item) => JSON.stringify(item))
+    .join("\n");
+  expect(incidentGraph(JSON.stringify(summary)).summary).toBeNull();
+  const graph = incidentGraph(input, true);
+  expect(graph.summary.label).toBe(summary.label);
+  expect(graph.nodes).toHaveLength(3);
+  expect(graph.edges).toHaveLength(1);
+});
+
+test("a relationship arriving before its endpoint stays hidden until that endpoint arrives", () => {
+  const first =
+    [node("n1"), edge].map((item) => JSON.stringify(item)).join("\n") + "\n";
+  expect(incidentGraph(first).edges).toHaveLength(0);
+  expect(
+    incidentGraph(first + JSON.stringify(node("n2", "shared")) + "\n").edges,
+  ).toHaveLength(1);
+});
