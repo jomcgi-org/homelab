@@ -23,6 +23,11 @@ class Journal:
     people_and_places: list[dict[str, Any]] = field(default_factory=list)
     rolls: list[dict[str, Any]] = field(default_factory=list)
     open_threads: list[dict[str, Any]] = field(default_factory=list)
+    # True when the session's visible event stream exceeded the router's
+    # per-session read budget, so this journal folds only the earliest
+    # budgeted events. Never silently truncated: readers must treat a True
+    # value as partial.
+    truncated: bool = False
 
 
 def narration_entity_ids(events: Iterable[SessionEvent]) -> set[str]:

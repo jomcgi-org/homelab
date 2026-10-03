@@ -145,7 +145,10 @@ returns `learned`, `received`, `people_and_places`, `rolls`, and `open_threads`.
 The campaign route returns `{sessions: [{session_id, started_at, journal}],
 next_cursor}`. Sessions are newest first with a start-time/ID keyset cursor,
 10 sessions by default and at most 50. One audience-filtered event query
-loads each page. `view=mine` is the default; `view=party` includes table events
+loads each page, capped at the earliest 500 visible events per session
+(`JOURNAL_EVENTS_PER_SESSION`); a journal folded over a capped stream
+reports `truncated: true` instead of silently dropping the tail.
+`view=mine` is the default; `view=party` includes table events
 only, leaves Learned and Open threads empty, and includes everyone's table
 rolls. Characterless campaign members can use both views.
 

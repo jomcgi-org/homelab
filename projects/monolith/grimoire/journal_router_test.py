@@ -11,6 +11,7 @@ from sqlalchemy import event as sql_event
 from sqlmodel import select
 
 from grimoire.models import GameSession, SessionEvent
+from grimoire.router import JOURNAL_EVENTS_PER_SESSION
 from grimoire.testing.leak_harness import MEMBERS, ROLES, sqlite_harness
 
 
@@ -276,3 +277,80 @@ def test_campaign_pagination_ties_and_one_filtered_event_query(harness):
         assert seen == expected
     finally:
         sql_event.remove(h.session.get_bind(), "before_cursor_execute", record)
+
+
+def test_journal_event_read_is_bounded_with_explicit_truncation(harness):
+    h, client = harness
+    session_id = h.rows["campaign_session"].id
+    campaign_id = h.rows["campaign"].id
+    headers = h.headers("player_a")
+
+    def read_session():
+        response = client.get(url(h, True), headers=headers)
+        assert response.status_code == 200, response.text
+        h.assert_no_leak(response, "player_a")
+        return response.json()
+
+    # A small stream folds completely with no overflow flag.
+    assert read_session()["truncated"] is False
+
+    existing = h.session.exec(
+        select(SessionEvent).where(SessionEvent.session_id == session_id)
+    ).all()
+    start = max(row.seq for row in existing) + 1
+    overflow = 10
+    bulk = [
+        SessionEvent(
+            campaign_id=campaign_id,
+            session_id=session_id,
+            seq=start + index,
+            kind="handout",
+            audience="table",
+            audience_pc_ids=[],
+            author_member_id=h.rows["member_dm"].id,
+            body={"index": index},
+        )
+        for index in range(JOURNAL_EVENTS_PER_SESSION + overflow)
+    ]
+    h.session.add_all(bulk)
+    h.session.commit()
+    total = h.session.exec(
+        select(SessionEvent).where(SessionEvent.session_id == session_id)
+    ).all()
+    assert len(total) > JOURNAL_EVENTS_PER_SESSION
+
+    statements = []
+
+    def record(connection, cursor, statement, parameters, context, executemany):
+        if (
+            statement.lstrip().startswith("SELECT")
+            and "FROM session_event" in statement
+        ):
+            statements.append(statement)
+
+    sql_event.listen(h.session.get_bind(), "before_cursor_execute", record)
+    try:
+        data = read_session()
+    finally:
+        sql_event.remove(h.session.get_bind(), "before_cursor_execute", record)
+
+    # The event read stays bounded and says so: earliest budgeted rows fold,
+    # the probe tail is dropped, and the flag is explicit.
+    assert data["truncated"] is True
+    assert len(data["received"]) <= JOURNAL_EVENTS_PER_SESSION
+    assert statements, "expected the session journal to read session_event rows"
+    assert all("LIMIT" in statement.upper() for statement in statements)
+    received_ids = {entry["id"] for entry in data["received"]}
+    assert bulk[0].id in received_ids
+    assert all(row.id not in received_ids for row in bulk[-overflow:])
+
+    response = client.get(url(h), params={"limit": 50}, headers=headers)
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, "player_a")
+    entry = next(
+        row
+        for row in response.json()["sessions"]
+        if row["session_id"] == session_id
+    )
+    assert entry["journal"]["truncated"] is True
+    assert len(entry["journal"]["received"]) <= JOURNAL_EVENTS_PER_SESSION
