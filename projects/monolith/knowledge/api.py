@@ -18,7 +18,9 @@ from knowledge.extraction import (
     ExtractionOutputInvalid,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
+from knowledge.freshness import VOLATILE as VOLATILE_REVIEW_POLICY
 from knowledge.freshness import result_current
+from knowledge.freshness import state as freshness_state
 from knowledge.recall import (
     append_message_recall,
     attach_recall,
@@ -39,6 +41,7 @@ __all__ = [
     "EXTRACTION_VERSION",
     "KG_JOB_KIND",
     "MAX_GARDENER_RETRIES",
+    "VOLATILE_REVIEW_POLICY",
     "ExtractionOutputInvalid",
     "KnowledgeStore",
     "active_blocker_topics_for_poll",
@@ -57,6 +60,7 @@ __all__ = [
     "defer_recall",
     "enqueue_extraction",
     "expire_recall",
+    "freshness_state",
     "get_embedding_client",
     "get_store",
     "ingest_raw",

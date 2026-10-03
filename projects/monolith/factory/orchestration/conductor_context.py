@@ -117,12 +117,12 @@ def _projected_note(row: dict) -> dict:
     review deadline and the volatile-action warning must travel with the
     note. Without them a later turn cannot re-evaluate expiry.
     """
-    from knowledge.freshness import VOLATILE, state
+    from knowledge.api import VOLATILE_REVIEW_POLICY, freshness_state
 
     freshness = row.get("freshness")
     if not isinstance(freshness, str):
         try:
-            freshness = state(
+            freshness = freshness_state(
                 review_after=row.get("review_after"),
                 observed_at=row.get("observed_at"),
                 last_reviewed_at=row.get("last_reviewed_at"),
@@ -132,7 +132,7 @@ def _projected_note(row: dict) -> dict:
             freshness = "unknown"
     authoritative = row.get("requires_authoritative_observation")
     if not isinstance(authoritative, bool):
-        authoritative = row.get("review_policy") == VOLATILE
+        authoritative = row.get("review_policy") == VOLATILE_REVIEW_POLICY
     return {
         "review_after": row.get("review_after"),
         "review_policy": row.get("review_policy"),
