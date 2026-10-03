@@ -2492,16 +2492,62 @@ def _journal_context(session, campaign_id, viewer, member, events, view):
     return grants, entities
 
 
+# Bound on audience-visible events folded into one session journal. A single
+# long-running session must not make a journal read materialize unbounded
+# rows, so reads stop at the earliest budgeted events per session and say so
+# via Journal.truncated instead of silently folding a truncated stream.
+JOURNAL_EVENTS_PER_SESSION = 500
+
+
 def _journal_events(session, campaign_id, session_ids, viewer, member):
-    return session.exec(
-        select(SessionEvent)
+    """Load at most JOURNAL_EVENTS_PER_SESSION visible events per session.
+
+    Returns (events, truncated_by_session): events holds the earliest
+    budgeted rows per session in (session_id, seq, id) order, and the map
+    flags the sessions whose visible stream exceeded the budget. The probe
+    row per session is read but never folded, so overflow is explicit.
+    """
+    if not session_ids:
+        return [], {}
+    ranked = (
+        select(
+            SessionEvent.id,
+            func.row_number()
+            .over(
+                partition_by=SessionEvent.session_id,
+                order_by=[SessionEvent.seq, SessionEvent.id],
+            )
+            .label("rn"),
+        )
         .where(
             SessionEvent.campaign_id == campaign_id,
             SessionEvent.session_id.in_(session_ids),
             audience_predicate(SessionEvent, viewer, member),
         )
-        .order_by(SessionEvent.seq, SessionEvent.id)
+        .subquery("journal_ranked")
+    )
+    rows = session.exec(
+        select(SessionEvent)
+        .where(
+            SessionEvent.id.in_(
+                select(ranked.c.id).where(
+                    ranked.c.rn <= JOURNAL_EVENTS_PER_SESSION + 1
+                )
+            )
+        )
+        .order_by(SessionEvent.session_id, SessionEvent.seq, SessionEvent.id)
     ).all()
+    events: list[SessionEvent] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.session_id] = counts.get(row.session_id, 0) + 1
+        if counts[row.session_id] <= JOURNAL_EVENTS_PER_SESSION:
+            events.append(row)
+    truncated = {
+        session_id: counts.get(session_id, 0) > JOURNAL_EVENTS_PER_SESSION
+        for session_id in session_ids
+    }
+    return events, truncated
 
 
 @router.get(
@@ -2521,11 +2567,13 @@ def get_session_journal(
 ) -> Journal:
     member = _get_member_or_404(session, campaign_id, email)
     viewer = _viewer_for_member(session, campaign_id, member)
-    events = _journal_events(session, campaign_id, [session_id], viewer, member)
+    events, truncated = _journal_events(
+        session, campaign_id, [session_id], viewer, member
+    )
     grants, entities = _journal_context(
         session, campaign_id, viewer, member, events, view
     )
-    return journal(
+    result = journal(
         viewer,
         member,
         events,
@@ -2533,6 +2581,8 @@ def get_session_journal(
         visible_entities=entities,
         view=view,
     )
+    result.truncated = truncated.get(session_id, False)
+    return result
 
 
 class SessionJournalView(BaseModel):
@@ -2602,10 +2652,10 @@ def get_campaign_journal(
         )
     ).all()
     page = sessions[:limit]
-    events = (
+    events, truncated = (
         _journal_events(session, campaign_id, [row.id for row in page], viewer, member)
         if page
-        else []
+        else ([], {})
     )
     grants, entities = _journal_context(
         session, campaign_id, viewer, member, events, view
@@ -2613,24 +2663,28 @@ def get_campaign_journal(
     by_session = {row.id: [] for row in page}
     for event in events:
         by_session[event.session_id].append(event)
-    return CampaignJournalView(
-        sessions=[
+    views = []
+    for row in page:
+        entry = journal(
+            viewer,
+            member,
+            by_session[row.id],
+            current_grants=grants,
+            visible_entities=entities,
+            view=view,
+        )
+        entry.truncated = truncated.get(row.id, False)
+        views.append(
             SessionJournalView(
                 session_id=row.id,
                 started_at=row.started_at.replace(tzinfo=timezone.utc)
                 if row.started_at.tzinfo is None
                 else row.started_at,
-                journal=journal(
-                    viewer,
-                    member,
-                    by_session[row.id],
-                    current_grants=grants,
-                    visible_entities=entities,
-                    view=view,
-                ),
+                journal=entry,
             )
-            for row in page
-        ],
+        )
+    return CampaignJournalView(
+        sessions=views,
         next_cursor=_journal_cursor(page[-1]) if len(sessions) > limit else None,
     )
 
