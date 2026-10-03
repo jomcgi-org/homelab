@@ -2157,10 +2157,25 @@ class RollRequest(BaseModel):
         return value
 
 
+def _require_roll_scope(
+    campaign_id: str,
+    session_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    """Authorize membership and session scope before roll body validation.
+
+    Runs as a route dependency so nonmembers receive 404 before FastAPI
+    validates the RollRequest body schema.
+    """
+    _get_member_or_404(session, campaign_id, email)
+    _session_in_campaign(session, campaign_id, session_id)
+
+
 @router.post(
     "/campaigns/{campaign_id}/sessions/{session_id}/rolls",
     response_model=SessionEventView,
-    dependencies=[Depends(require_play_enabled)],
+    dependencies=[Depends(require_play_enabled), Depends(_require_roll_scope)],
 )
 def create_roll(
     campaign_id: str,
