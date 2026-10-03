@@ -69,6 +69,22 @@ def test_public_surface_has_no_private_hooks_or_mutations():
 
 
 @pytest.mark.asyncio
+async def test_leader_start_refuses_to_launch_during_shutdown(monkeypatch):
+    # The framework fences late acquisition, but a direct call must also
+    # refuse to launch DBOS once shutdown has begun. The early return precedes
+    # the runtime imports, so no launch is attempted.
+    from factory.orchestration import runtime
+
+    monkeypatch.setattr(
+        runtime, "launch", lambda: pytest.fail("must not launch during shutdown")
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(leader_singletons_shutting_down=True)
+    )
+    assert await module._leader_start(app) == []
+
+
+@pytest.mark.asyncio
 async def test_partial_factory_start_is_tracked_and_stopped(monkeypatch):
     from factory.orchestration import factory_conductor, runtime
 
