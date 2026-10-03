@@ -7,6 +7,7 @@ from uuid import UUID
 
 from grimoire.audience import Member, Viewer, can_see
 from grimoire.models import SessionEvent
+from grimoire.reveals import reveal_items
 
 
 def _identity(value: str) -> str:
@@ -107,10 +108,14 @@ def journal(
     replies = {}
     for row in rows:
         reply_to = row.body.get("reply_to")
-        if isinstance(reply_to, str):
+        if isinstance(reply_to, str) and row.body.get("resolved", True):
             replies[reply_to] = row.seq
         if row.kind == "reveal" and view == "mine" and row.audience == "pcs":
-            bodies = row.body.get("reveals", [row.body])
+            bodies = (
+                row.body.get("reveals", [row.body])
+                if viewer == "dm"
+                else reveal_items(row.body)
+            )
             if not isinstance(bodies, list):
                 continue
             for body in bodies:

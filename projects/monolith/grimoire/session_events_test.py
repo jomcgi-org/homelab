@@ -15,7 +15,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from grimoire.audience import Audience
-from grimoire.journal import JournalViewer, journal
+from dataclasses import asdict
+from grimoire.journal import journal
 from grimoire.models import (
     Campaign,
     EventKind,
@@ -347,7 +348,7 @@ def test_partial_grant_edit_and_downgrade_replace_visible_history(http_harness):
     assert h.rows["private_detail"].description not in events.text
     current = client.get(_url(h, "/journal"), headers=h.headers("player_a")).json()
     assert len(current["learned"]) == 1
-    assert current["learned"][0]["projection"]["revealed_details"] == {
+    assert current["learned"][0]["entity"]["revealed_details"] == {
         "clue": "NEW_SHARED_CLUE"
     }
 
@@ -384,8 +385,9 @@ def test_bulk_grants_roll_back_every_grant_and_reveal(http_harness):
 
 
 @pytest.mark.parametrize("change", ("retract", "downgrade", "edit"))
+@pytest.mark.parametrize("ended", (False, True))
 def test_grouped_reveal_preserves_other_items_and_scrubs_changed_projection(
-    http_harness, change
+    http_harness, change, ended
 ):
     h, client = http_harness
     base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
@@ -457,6 +459,15 @@ def test_grouped_reveal_preserves_other_items_and_scrubs_changed_projection(
         private_id,
         second_id,
     }
+    if ended:
+        assert (
+            client.patch(
+                _url(h) + f"/{h.rows['campaign_session'].id}",
+                headers=h.headers("dm"),
+                json={"status": "ended"},
+            ).status_code
+            == 200
+        )
     target = base + f"/grants/{grants[0]['id']}"
     if change == "retract":
         changed = client.delete(target, headers=h.headers("dm"))
@@ -478,6 +489,9 @@ def test_grouped_reveal_preserves_other_items_and_scrubs_changed_projection(
     assert events("player_b") == b_before
     current = client.get(_url(h, "/journal"), headers=h.headers("player_a")).json()
     assert "OLD_BATCH_CLUE" not in str(current)
+    campaign_journal = client.get(base + "/journal", headers=h.headers("player_a"))
+    assert campaign_journal.status_code == 200
+    assert "OLD_BATCH_CLUE" not in campaign_journal.text
     assert any(entry["entity_id"] == second_id for entry in current["learned"])
     again = client.post(
         base + "/notes",
@@ -722,7 +736,7 @@ def test_journal_projection_random_audiences_never_include_hidden_canaries(
     seeded = [row for key, row in h.rows.items() if key.startswith("event_")]
     for role in ("dm", "player_a", "player_b", "no_character"):
         member = h.rows["member" if role == "player_b" else f"member_{role}"]
-        viewer = JournalViewer(member.id, member.player_character_id, role == "dm")
+        viewer = "dm" if role == "dm" else member.player_character_id
         for _ in range(30):
             events = []
             for index in range(50):
@@ -744,7 +758,20 @@ def test_journal_projection_random_audiences_never_include_hidden_canaries(
                         },
                     }
                 )
-            result = json.dumps(journal(viewer, events))
+            result = json.dumps(
+                asdict(
+                    journal(
+                        viewer,
+                        member,
+                        [
+                            SessionEvent(**event, seq=index)
+                            for index, event in enumerate(events)
+                        ],
+                        current_grants=set(),
+                        visible_entities={},
+                    )
+                )
+            )
             for token, (allowed, _) in h.canaries.items():
                 if role not in allowed:
                     assert token not in result
@@ -791,16 +818,33 @@ def test_journal_latest_reveal_retraction_own_rolls_and_open_threads(http_harnes
     current = client.get(_url(h, "/journal"), headers=h.headers("player_a")).json()
     assert len(current["learned"]) == 1
     assert current["learned"][0]["grant_scope"] == "partial"
-    assert current["rolls"][0]["label"] == "MY_PRIVATE_ROLL"
-    assert current["open_threads"][0]["text"] == "OPEN_THREAD"
+    assert current["rolls"][0]["body"]["label"] == "MY_PRIVATE_ROLL"
+    assert current["open_threads"][0]["body"]["text"] == "OPEN_THREAD"
     party = client.get(
-        _url(h, "/journal?party=true"), headers=h.headers("player_a")
+        _url(h, "/journal?view=party"), headers=h.headers("player_a")
     ).text
     assert (
         "JOURNAL_CLUE" not in party
         and "OPEN_THREAD" not in party
         and "MY_PRIVATE_ROLL" not in party
     )
+    assert (
+        _post(
+            h,
+            client,
+            kind="narration",
+            audience="pcs",
+            audience_pc_ids=[member.player_character_id],
+            body={
+                "text": "Still investigating",
+                "reply_to": own_action["id"],
+                "resolved": False,
+            },
+        ).status_code
+        == 200
+    )
+    unresolved = client.get(_url(h, "/journal"), headers=h.headers("player_a")).json()
+    assert any(entry["id"] == own_action["id"] for entry in unresolved["open_threads"])
     assert (
         _post(
             h,
@@ -822,10 +866,10 @@ def test_journal_latest_reveal_retraction_own_rolls_and_open_threads(http_harnes
     assert current["open_threads"] == []
     assert current["learned"][0]["retracted"] is True
     assert "JOURNAL_CLUE" not in str(current)
-    assert current["people_places"] == []
+    assert current["people_and_places"] == []
     campaign = client.get(base + "/journal?limit=1", headers=h.headers("player_a"))
     assert campaign.status_code == 200
-    assert campaign.json()["items"][0]["journal"] == current
+    assert campaign.json()["sessions"][0]["journal"] == current
     older = GameSession(
         campaign_id=h.rows["campaign"].id,
         status="ended",
@@ -835,11 +879,12 @@ def test_journal_latest_reveal_retraction_own_rolls_and_open_threads(http_harnes
     h.session.add(older)
     h.session.commit()
     first = client.get(base + "/journal?limit=1", headers=h.headers("player_a")).json()
-    assert first["next_cursor"] == "1"
+    assert first["next_cursor"] is not None
     second = client.get(
-        base + "/journal?limit=1&cursor=1", headers=h.headers("player_a")
+        base + "/journal?limit=1&cursor=" + first["next_cursor"],
+        headers=h.headers("player_a"),
     ).json()
-    assert second["items"][0]["session_id"] == older.id
+    assert second["sessions"][0]["session_id"] == older.id
     assert second["next_cursor"] is None
 
 

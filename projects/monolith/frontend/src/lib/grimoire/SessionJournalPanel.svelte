@@ -25,6 +25,9 @@
       ? "Only events shared with everyone at the table."
       : "What you learned, received and did in this session."}
   </p>
+  {#if current?.truncated}<p role="status">
+      This journal is incomplete: only the earliest session events are shown.
+    </p>{/if}
   {#each sections as [key, title]}
     <section aria-label={title}>
       <h2>{title}</h2>

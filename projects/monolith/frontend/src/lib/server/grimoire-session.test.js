@@ -31,13 +31,29 @@ describe("sessionState", () => {
       if (url.endsWith("/characters")) return response([{ id: "own-pc" }]);
       if (url.endsWith("/sheets")) return response({ versions: [] });
       if (url.endsWith("/sessions")) return response([{ id: "session" }]);
-      if (url.includes("/journal")) return response({ learned: [] });
+      if (url.includes("/journal"))
+        return response({
+          learned: [{ entity_id: "entity", entity: { name: "Visible" } }],
+          people_and_places: [{ id: "entity", name: "Visible" }],
+          rolls: [{ id: "roll", body: { total: 17 } }],
+          truncated: true,
+        });
       if (url.includes("after=0")) return response(first);
       if (url.includes("after=999"))
         return response([{ id: "last", seq: 1003 }]);
       throw new Error(`Unexpected request ${url}`);
     });
     const state = await sessionState(fetch, cookies, "campaign");
+    expect(state.journal.mine.learned[0].projection.name).toBe("Visible");
+    expect(state.journal.mine.people_places[0].entity_id).toBe("entity");
+    expect(state.journal.mine.rolls[0]).toEqual({
+      event_id: "roll",
+      total: 17,
+    });
+    expect(state.journal.mine.truncated).toBe(true);
+    expect(
+      fetch.mock.calls.some(([url]) => url.endsWith("/journal?view=party")),
+    ).toBe(true);
     expect(state.events).toHaveLength(501);
     expect(state.events.at(-1).seq).toBe(1003);
     expect(state).not.toHaveProperty("members");

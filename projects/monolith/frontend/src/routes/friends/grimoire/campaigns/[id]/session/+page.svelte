@@ -75,7 +75,11 @@
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error);
-      if (input.operation === "post") {
+      if (
+        input.operation === "post" &&
+        draft === input.text &&
+        replyTo?.id === input.replyTo
+      ) {
         draft = "";
         replyTo = null;
         pendingMessage = null;
@@ -323,13 +327,13 @@
               {/if}
             </div>
           {/if}
-          {#if !event.retracted_at && !event.body?.retracted}<button
-              class="secondary"
-              disabled={busy}
-              onclick={() => pin(event)}
-              aria-label={`Pin ${event.body?.name || event.body?.reveals?.map((item) => item.name).join(", ") || event.body?.text || event.kind} to notes`}
-              >Pin to notes</button
-            >{/if}
+          {#if !event.retracted_at && !event.body?.retracted}{#if !dm}<button
+                class="secondary"
+                disabled={busy}
+                onclick={() => pin(event)}
+                aria-label={`Pin ${event.body?.name || event.body?.reveals?.map((item) => item.name).join(", ") || event.body?.text || event.kind} to notes`}
+                >Pin to notes</button
+              >{/if}{/if}
         </article>
       {/each}
       {#if failure}<p role="alert" class="failure">{failure}</p>{/if}
