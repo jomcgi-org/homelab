@@ -655,8 +655,7 @@ def test_final_read_move_invalidates_generation(setup, monkeypatch):
     def honoring_approval(*_args):
         if any(action == "dependency_approval_invalidated" for action, _ in audits):
             raise ValueError(
-                "dependency approval invalidated; "
-                "fresh authorized generation required"
+                "dependency approval invalidated; fresh authorized generation required"
             )
         return approved
 
