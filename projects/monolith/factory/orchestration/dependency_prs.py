@@ -122,6 +122,10 @@ def _pages(repo: str, endpoint: str, read=None) -> list:
     raise ValueError("dependency evidence is truncated")
 
 
+class EvidenceChanged(ValueError):
+    """Positive evidence of an unsafe dependency or a changed PR identity."""
+
+
 def snapshot(
     repo: str, pull: dict, *, read_get=None, read_list=None, comparison=None
 ) -> dict:
@@ -176,7 +180,7 @@ def snapshot(
         ):
             raise ValueError("dependency graph evidence is malformed")
         if change["change_type"] == "added" and change["vulnerabilities"]:
-            raise ValueError("dependency PR introduces a known vulnerable version")
+            raise EvidenceChanged("dependency PR introduces a known vulnerable version")
     alerts = _pages(repo, "dependabot/alerts?state=open", read_list)
     if any(
         type(alert.get("number")) is not int
@@ -231,7 +235,7 @@ def snapshot(
         or current.get("user", {}).get("id") != pull["user"]["id"]
         or current.get("changed_files") != pull.get("changed_files")
     ):
-        raise ValueError("dependency PR changed while collecting evidence")
+        raise EvidenceChanged("dependency PR changed while collecting evidence")
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
     if len(encoded) > MAX_EVIDENCE_CHARS:
         raise ValueError("dependency evidence exceeds review bound")

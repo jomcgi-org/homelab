@@ -23,6 +23,7 @@ from factory.orchestration.models import SwarmNodeRun, SwarmTask
 REPO = "owner/repo"
 HEAD, BASE, QUEUE_BASE, QUEUE_HEAD = (letter * 40 for letter in "abcd")
 POLICY = {"repo": REPO, "base_branch": "main"}
+APP_ID = 456
 
 
 def pull(*, kind="Bot", ref="dependabot/pip/example-2", number=91):
@@ -72,10 +73,24 @@ class FakeGitHub:
         self.comparison = None
         self.error = None
         self.reads = []
+        self.check_runs = []
+        self.check_error = None
 
     def get(self, repo, endpoint):
         assert repo == REPO
         self.reads.append(endpoint)
+        if "/check-runs?" in endpoint:
+            if self.check_error:
+                raise self.check_error
+            rows = [
+                run
+                for run in self.check_runs
+                if run["head_sha"] == endpoint.split("/")[1]
+            ]
+            return {
+                "total_count": len(rows),
+                "check_runs": deepcopy(rows),
+            }
         if endpoint.startswith("pulls/"):
             return deepcopy(self.pull)
         assert endpoint == f"compare/{QUEUE_BASE}...{QUEUE_HEAD}"
@@ -165,32 +180,37 @@ def setup(monkeypatch):
     monkeypatch.setattr(
         gate, "audit", lambda action, **detail: audits.append((action, detail))
     )
-    monkeypatch.setattr(
-        gate,
-        "_github_post",
-        lambda repo, endpoint, payload, token: (
-            publications.append((repo, endpoint, payload, token))
-            or {"id": len(publications)}
-        ),
-    )
+
+    def post(repo, endpoint, payload, token):
+        publications.append((repo, endpoint, payload, token))
+        body = {"id": len(publications), "app": {"id": APP_ID}, **payload}
+        github.check_runs.append(body)
+        return body
+
+    monkeypatch.setattr(gate, "_github_post", post)
     monkeypatch.setenv(gate.ENABLED_ENV, "true")
     monkeypatch.setenv(gate.TOKEN_ENV, "dedicated-app-token")
+    monkeypatch.setenv("FACTORY_DEPENDENCY_GATE_APP_ID", str(APP_ID))
     monkeypatch.setenv("GITHUB_API_TOKEN", "must-never-be-used")
     monkeypatch.setattr(gate, "GitHub", lambda token: github)
     return github, approved, audits, publications
 
 
 @pytest.mark.parametrize("flag", [None, "false", "1", "yes"])
-def test_disabled_publisher_audits_without_reads_or_writes(setup, monkeypatch, flag):
+def test_disabled_publisher_is_a_pure_noop(setup, monkeypatch, flag):
     github, _, audits, publications = setup
     github.reads.clear()
     if flag is None:
         monkeypatch.delenv(gate.ENABLED_ENV)
     else:
         monkeypatch.setenv(gate.ENABLED_ENV, flag)
+    for name in ("_read_session", "_locked_session"):
+        monkeypatch.setattr(
+            gate, name, lambda: pytest.fail("disabled gate opened a session")
+        )
     assert gate.tick(POLICY) == {"action": "skipped", "reason": "publisher_disabled"}
     assert not github.reads and not publications
-    assert audits[-1][1]["reason"] == "publisher_disabled"
+    assert not audits
 
 
 def test_missing_token_does_not_fall_back_to_api_token(setup, monkeypatch):
@@ -198,8 +218,155 @@ def test_missing_token_does_not_fall_back_to_api_token(setup, monkeypatch):
     github.reads.clear()
     monkeypatch.delenv(gate.TOKEN_ENV)
     assert gate.tick(POLICY)["reason"] == "publisher_token_missing"
+    assert gate.tick(POLICY)["reason"] == "publisher_token_missing"
     assert not github.reads and not publications
-    assert audits[-1][1]["reason"] == "publisher_token_missing"
+    assert not audits
+
+
+def test_unchanged_tick_revalidates_without_republishing(setup):
+    github, _, _, publications = setup
+    assert gate.tick(POLICY)["action"] == "checked"
+    github.reads.clear()
+    assert gate.tick(POLICY)["action"] == "checked"
+    assert len(publications) == 2
+    assert f"dependency-graph/compare/{QUEUE_BASE}...{QUEUE_HEAD}" in github.reads
+
+
+def test_changed_evidence_revokes_published_success(setup):
+    github, _, audits, publications = setup
+    gate.tick(POLICY)
+    github.changes[0]["version"] = "3.0"
+    gate.tick(POLICY)
+    assert [item[2]["conclusion"] for item in publications] == [
+        "success",
+        "success",
+        "failure",
+        "failure",
+    ]
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+def test_existing_check_read_failure_publishes(setup):
+    github, _, _, publications = setup
+    gate.tick(POLICY)
+    github.check_error = httpx.ConnectError("check read unavailable")
+    gate.tick(POLICY)
+    assert len(publications) == 4
+
+
+def test_other_app_run_does_not_suppress_publication(setup):
+    github, _, _, publications = setup
+    gate.tick(POLICY)
+    for run in github.check_runs:
+        run["app"]["id"] = APP_ID + 1
+    gate.tick(POLICY)
+    assert len(publications) == 4
+
+
+@pytest.mark.parametrize("app_id", [None, "", "0", "invalid"])
+def test_unknown_app_identity_always_publishes(setup, monkeypatch, app_id):
+    _, _, _, publications = setup
+    if app_id is None:
+        monkeypatch.delenv("FACTORY_DEPENDENCY_GATE_APP_ID")
+    else:
+        monkeypatch.setenv("FACTORY_DEPENDENCY_GATE_APP_ID", app_id)
+    gate.tick(POLICY)
+    gate.tick(POLICY)
+    assert len(publications) == 4
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "missing",
+        "not_list",
+        "incomplete",
+        "bad_id",
+        "bad_app",
+        "bad_head",
+        "bad_name",
+        "bad_status",
+        "bad_conclusion",
+        "duplicate",
+    ],
+)
+def test_malformed_check_inventory_always_publishes(setup, monkeypatch, malformed):
+    github, _, _, publications = setup
+    gate.tick(POLICY)
+    run = deepcopy(github.check_runs[0])
+    body = {"total_count": 1, "check_runs": [run]}
+    if malformed == "missing":
+        del body["total_count"]
+    elif malformed == "not_list":
+        body["check_runs"] = None
+    elif malformed == "incomplete":
+        body["total_count"] = 101
+    elif malformed == "duplicate":
+        body["check_runs"].append(run)
+        body["total_count"] = 2
+    else:
+        key = {
+            "bad_id": "id",
+            "bad_app": "app",
+            "bad_head": "head_sha",
+            "bad_name": "name",
+            "bad_status": "status",
+            "bad_conclusion": "conclusion",
+        }[malformed]
+        run[key] = None
+    monkeypatch.setattr(github, "get", lambda *_: body)
+    gate.publish(REPO, HEAD, "success", "safe", "token")
+    assert len(publications) == 3
+
+
+def test_latest_owned_run_controls_deduplication(setup):
+    github, _, _, publications = setup
+    gate.publish(REPO, HEAD, "success", "safe", "token")
+    gate.publish(REPO, HEAD, "failure", "unavailable", "token")
+    gate.publish(REPO, HEAD, "success", "restored", "token")
+    # A newer foreign refusal cannot hide this App's latest success.
+    github.check_runs.append(
+        {
+            **deepcopy(github.check_runs[-1]),
+            "id": 999,
+            "app": {"id": APP_ID + 1},
+            "conclusion": "failure",
+        }
+    )
+    github.check_runs.reverse()
+    gate.publish(REPO, HEAD, "success", "still safe", "token")
+    assert len(publications) == 3
+
+
+def test_pending_owned_run_does_not_suppress_publication(setup):
+    github, _, _, publications = setup
+    gate.publish(REPO, HEAD, "success", "safe", "token")
+    github.check_runs[-1].update(status="in_progress", conclusion=None)
+    gate.publish(REPO, HEAD, "success", "safe", "token")
+    assert len(publications) == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectError("unavailable"),
+        httpx.ReadTimeout("timeout"),
+        httpx.HTTPStatusError(
+            "5xx",
+            request=httpx.Request("GET", "https://api.github.com"),
+            response=httpx.Response(503),
+        ),
+    ],
+)
+def test_unavailable_evidence_refuses_without_invalidating(setup, error):
+    github, _, audits, publications = setup
+    github.error = error
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "failure"
+    assert not any(action == "dependency_approval_invalidated" for action, _ in audits)
+    github.error = None
+    gate.check(REPO, "main", github.pull, POLICY, github, "token", [queue_entry()])
+    assert publications[-1][2]["conclusion"] == "success"
 
 
 @pytest.mark.parametrize("ref", ["human-fix", "factory/t-issue"])
@@ -228,7 +395,6 @@ def test_approved_dependency_passes_pr_and_queue_with_matching_content(setup):
 @pytest.mark.parametrize(
     "failure",
     [
-        "unavailable",
         "malformed_graph",
         "empty_graph",
         "truncated_graph",
@@ -261,13 +427,13 @@ def test_approved_dependency_passes_pr_and_queue_with_matching_content(setup):
         "old_receipt_files",
     ],
 )
-def test_dependency_failure_refuses_and_invalidates_approved_generation(setup, failure):
+def test_dependency_failure_refuses_with_invalidation_only_on_positive_evidence(
+    setup, failure
+):
     github, approved, audits, publications = setup
     original = deepcopy(github.pull)
     entry = queue_entry()
-    if failure == "unavailable":
-        github.error = httpx.ConnectError("unavailable")
-    elif failure == "malformed_graph":
+    if failure == "malformed_graph":
         github.changes = [{"name": "example"}]
     elif failure == "empty_graph":
         github.changes = []
@@ -362,7 +528,21 @@ def test_dependency_failure_refuses_and_invalidates_approved_generation(setup, f
     gate.check(REPO, "main", original, POLICY, github, "token", [entry])
     assert publications[-1][2]["conclusion"] == "failure"
     assert any(action == "dependency_gate_refused" for action, _ in audits)
-    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+    unavailable = failure in {
+        "malformed_graph",
+        "empty_graph",
+        "truncated_graph",
+        "truncated_files",
+        "malformed_files",
+        "malformed_alert",
+        "truncated_alerts",
+        "truncated_compare",
+        "wrong_merge_base",
+    }
+    assert (
+        any(action == "dependency_approval_invalidated" for action, _ in audits)
+        is not unavailable
+    )
 
 
 @pytest.mark.parametrize(
@@ -568,6 +748,30 @@ def test_github_reads_only_use_dedicated_token(monkeypatch):
     )
     assert gate.GitHub("app-token").get(REPO, "pulls/91") == {}
     assert seen == ["Bearer app-token"]
+
+
+def test_check_inventory_and_publication_use_only_dedicated_token(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "never-use")
+    monkeypatch.setenv(gate.APP_ID_ENV, str(APP_ID))
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.headers["Authorization"]))
+        if request.method == "GET":
+            assert request.url.params["check_name"] == gate.CHECK_NAME
+            assert request.url.path == f"/repos/{REPO}/commits/{HEAD}/check-runs"
+            return httpx.Response(200, json={"total_count": 0, "check_runs": []})
+        return httpx.Response(201, json={"id": 1})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(gate, "audit", lambda *_args, **_kwargs: None)
+    gate.publish(REPO, HEAD, "success", "safe", "app-token")
+    assert seen == [("GET", "Bearer app-token"), ("POST", "Bearer app-token")]
 
 
 def test_bad_publication_response_is_not_a_success(setup, monkeypatch):
