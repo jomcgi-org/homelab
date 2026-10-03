@@ -37,7 +37,7 @@ if [[ ! -x "$runner_cache/bootstrap/bin/uv" ]]; then
 	"$runner_cache/bootstrap/bin/pip" install uv==0.12.7
 fi
 export PATH="$runner_cache/bootstrap/bin:$PATH"
-uv venv --python 3.13 "$runner_cache/browser-installer"
+uv venv --clear --python 3.13 "$runner_cache/browser-installer"
 uv pip install --python "$runner_cache/browser-installer/bin/python" playwright==1.63.0
 "${root_command[@]}" "$runner_cache/browser-installer/bin/playwright" install-deps chromium
 export GRIMOIRE_EVIDENCE_DIR="${BUILDBUDDY_ARTIFACTS_DIRECTORY:?BuildBuddy artifacts directory is required}/grimoire"
