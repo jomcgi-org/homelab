@@ -206,6 +206,17 @@ imgproxySigning:
 # "web" component consumed by the homelab-library deployment/service helpers.
 web:
   enabled: true
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  minReadySeconds: 10
+  terminationGracePeriodSeconds: 45
+  lifecycle:
+    preStop:
+      sleep:
+        seconds: 10
   replicas: 1
   # Disruption budget: maxUnavailable (not minAvailable) so a node drain can
   # evict-and-reschedule at the 1-replica floor; caps disruption to 1 at a time
@@ -279,23 +290,6 @@ web:
       value: "/var/run/secrets/embervm-public-faas/token"
     # Demo-postgres DSN (ember_public router, /api/ember/postgres): the SAME
     # serving Service, port, and password the private monolith chart uses for
-    # scratchPostgres.demoListenPort (5401), so both tiers wake the ONE demo
-    # VM. Host/port are an in-cluster literal (this chart's values.yaml is not
-    # Helm-templated); the password comes from the demoPostgres-synced Secret
-    # via DEMO_PG_PASSWORD, substituted by the kubelet at container start so
-    # the secret never appears inline.
-    - name: DEMO_PG_PASSWORD
-      valueFrom:
-        secretKeyRef:
-          name: monolith-public-demo-postgres
-          key: POSTGRES_PASSWORD
-    - name: DEMO_POSTGRES_DSN
-      value: "postgresql://postgres:$(DEMO_PG_PASSWORD)@embervm-embervm-serving.embervm.svc:5401/scratch"
-    # Global semaphore around the demo-postgres query roundtrip
-    # (ember_public/core.py try_acquire_query_slot), same value as intended
-    # for the private tier's env (unset there, falls back to this default).
-    - name: EMBER_DEMO_MAX_CONCURRENT
-      value: "4"
     - name: CHAT_PUBLIC_CHAR_CAP
       value: "8000"
     - name: CHAT_PUBLIC_MAX_TURNS
@@ -446,7 +440,18 @@ web:
 # server-side so the secret never reaches the browser.
 frontend:
   enabled: true
-  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  minReadySeconds: 10
+  terminationGracePeriodSeconds: 45
+  lifecycle:
+    preStop:
+      sleep:
+        seconds: 10
+  replicas: 2
   # Disruption budget (see web.pdb): maxUnavailable so drains work at 1 replica.
   pdb:
     enabled: true
@@ -475,6 +480,8 @@ frontend:
   # $env/dynamic/private to sign /img URLs server-side and they never reach the
   # browser ($lib/server is never client-bundled).
   env:
+    - name: SHUTDOWN_TIMEOUT
+      value: "20"
     - name: API_BASE
       value: "http://monolith-public-web:8000"
     # CHAT_API_BASE is the same backend Service; the public chat SSR proxy

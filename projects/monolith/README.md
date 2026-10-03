@@ -95,3 +95,5 @@ for the current pipeline.
 Database schema changes go through Atlas migrations checked in under
 `chart/migrations/`, applied by an in-cluster Atlas operator rather than at
 application startup.
+
+Public Ember exhibits use the recorded Firecracker restore replay. The live Postgres and Bazel demo front doors and their combined synthetic schedule are retired. Public notes provide graph browsing; the homepage points visitors to the factory activity visuals. Production agent lane probes remain on the private tier.

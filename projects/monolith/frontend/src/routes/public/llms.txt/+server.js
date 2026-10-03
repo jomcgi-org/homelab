@@ -18,7 +18,7 @@ const INTRO = `# Joe McGinley
 ## Pages
 
 - [CV](${PUBLIC_BASE}/cv): full work history and project case studies
-- [Notes](${PUBLIC_BASE}/app/notes): chat with my public knowledge graph, or switch to the graph view to browse it
+- [Notes](${PUBLIC_BASE}/app/notes): browse my public knowledge graph
 - [Home](${PUBLIC_BASE}/): overview and homelab status
 `;
 

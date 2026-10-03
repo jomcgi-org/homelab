@@ -1,37 +1,37 @@
 <script>
   import { browser } from "$app/environment";
-  import NotesApp from "./NotesApp.svelte";
-
-  let { data } = $props();
+  import { page } from "$app/state";
+  import GraphView from "$lib/public/chat/GraphView.svelte";
 </script>
 
 <svelte:head>
-  <title>Notes · jomcgi.dev</title>
+  <title>Public notes · jomcgi.dev</title>
   <meta
     name="description"
-    content="A neo-brutalist chat box wired to my public knowledge graph. Ask a question and switch to the graph to deep-dive into the notes the conversation touched."
+    content="Browse my public knowledge graph and the notes behind the factory."
   />
 </svelte:head>
 
-<h1 class="sr-only">Chat with my knowledge graph</h1>
-<p class="sr-only">
-  Ask questions of my public notes; every answer cites the notes it came from.
-</p>
-
-{#if browser}
-  <NotesApp {data} />
-{/if}
+<main>
+  <h1>Public notes</h1>
+  <a href="/slop/factory">Watch the factory</a>
+  {#if browser}
+    <div class="graph">
+      <GraphView focusId={page.url.searchParams.get("focus")} />
+    </div>
+  {/if}
+</main>
 
 <style>
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
+  main {
+    padding: 24px;
+  }
+  h1 {
+    margin: 0 0 8px;
+  }
+  .graph {
+    height: 80dvh;
+    min-height: 480px;
+    margin-top: 24px;
   }
 </style>

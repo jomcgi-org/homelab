@@ -54,7 +54,7 @@ Discord agent, agent console, Grimoire, and public applications.
 The deployed service has three audience tiers, plus the agents tier of sections
 2 and 7: the private monolith carries the full route and MCP surface, the public
 deployment is a pruned composition on a read-only database role with a
-separately scoped writer for the two public chat domains, and the friends tier
+separately scoped writer for Grimoire chat, and the friends tier
 exposes only the moving planner, its browser API, and the SvelteKit bundle. The
 friends hostname has no Cloudflare Access application in front of it, only an
 authentik `SecurityPolicy` that is a separate object from its route, so verify
@@ -1612,11 +1612,11 @@ by trust in the guest.
 - `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
 - `/app/campsites`: cached recreation-area search with weather-enriched snapshots. (see: /projects/monolith/campsites/router.py)
 - `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
-- `/app/notes`: Turnstile-gated, rate-limited public chat over the public knowledge graph, with a lazy graph view. (see: /projects/monolith/chat_public/router.py)
+- `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
 - `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
 - `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
 - `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
-- `/ember/{bazel,postgres,agents,firecracker}`: the EmberVM demo pages the synthetic probes in section 9 exercise, which say when a brick was preempted and recovery is under way. (see: /projects/monolith/ember_public/bazel_router.py)
+- `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
 - `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
@@ -1648,13 +1648,12 @@ when the backend is unhealthy or unreachable.
 (see: /projects/monolith/framework/core.py)
 (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
-Current fatal components are stars health plus the EmberVM synthetic latches
-for Bazel, pages, Postgres, and the Codex session. Continuous-delivery
-health and the drainer's stall signal are advisory latches computed by a
-private leader and read by both tiers. The combined demo probes run one hourly
-CronWorkflow and the Codex lane probe runs its own hourly CronWorkflow, each
-with a 2.5x staleness allowance. Codex is the one automatically scheduled
-agent probe; the Spark session probe is manual-only with no health component.
+The public tier checks its database and stars data. The private tier retains the
+Codex session probe and configured Ember durability check for production agent
+execution. The live public demo latches and combined hourly demo CronWorkflow
+are retired. **Why.** Recorded Firecracker replays explain the VM lifecycle
+without coupling public-site health to an exhibit workload. Codex remains the
+one automatically scheduled agent probe; Spark is manual-only.
 The CD latch writer defaults to a 300-second interval, while its public reader
 uses an independent 750-second constant. That is currently the same 2.5x
 allowance, and changes to either value must keep the pair consistent.

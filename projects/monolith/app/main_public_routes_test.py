@@ -67,7 +67,6 @@ REQUIRED_PATHS = [
     "/api/home/observability/stats",
     "/api/agents/public/merges",
     "/api/agents/public/factory/goals",
-    "/api/ember/postgres/status",
 ]
 
 # Prefixes for the wholly-public domains; at least one route per prefix must
@@ -139,12 +138,6 @@ ALLOWED_PREFIXES = (
     # Grimoire public tier (public-readonly design):
     # no campaign/grant params, whole corpus is a single global read view.
     "/api/grimoire",
-    # Internal-only public chat API. It is mounted on the public binary but is
-    # deliberately kept off the public HTTPRoute (see
-    # projects/monolith-public/chart/httproute_public_test.py): it is reachable
-    # only in-cluster from the SSR front door (Cilium datapath), never directly
-    # from the internet.
-    "/internal/chat",
     # Internal-only grimoire D&D chat API (mirrors /internal/chat, ADR 005):
     # mounted on the public binary, reachable only in-cluster from the SSR front
     # door (Cilium datapath), kept off the public HTTPRoute.
@@ -161,10 +154,6 @@ ALLOWED_PREFIXES = (
     # register_public). The router filters visibility=public, so a private
     # function 404s here (faas/invoke_router_public_test.py asserts it).
     "/functions",
-    # Ember public tier (public pages design): the
-    # scale-to-zero demo-postgres exhibit, Turnstile-gated when public,
-    # mounted identically on the private tier's demos panel.
-    "/api/ember",
     "/healthz",
     # Deep health probe (DB reachable + public_reader can query). Reached via the
     # frontend /health same-origin proxy; not a private surface.
@@ -265,3 +254,16 @@ def test_specific_private_knowledge_paths_absent():
         assert path not in paths, (
             f"private knowledge path {path!r} must not be in the public app"
         )
+
+
+def test_retired_public_demo_and_notes_chat_routes_are_absent():
+    paths = _paths()
+    assert not any(p.startswith(("/api/ember", "/internal/chat")) for p in paths)
+    from app.modules_public import PUBLIC_MODULES
+
+    health_checks = {
+        name for module in PUBLIC_MODULES for name in (module.register_health or {})
+    }
+    assert not health_checks.intersection(
+        {"ember_postgres", "ember_bazel", "ember_pages", "ember_codex", "inference"}
+    )

@@ -30,6 +30,7 @@ spec:
     matchLabels:
       {{- include "monolith.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: app
+  minReadySeconds: {{ .Values.backend.minReadySeconds }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -48,6 +49,10 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: backend
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.backend.preStopDelaySeconds }}
           image: "{{ .Values.backend.image.repository }}@{{ .Values.backend.image.digest }}"
           imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
           ports:
@@ -923,6 +928,10 @@ spec:
             - name: progress-ingest-tmp
               mountPath: /tmp
         - name: frontend
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.backend.preStopDelaySeconds }}
           image: "{{ .Values.frontend.image.repository }}@{{ .Values.frontend.image.digest }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
           ports:
@@ -930,6 +939,8 @@ spec:
               containerPort: 3000
               protocol: TCP
           env:
+            - name: SHUTDOWN_TIMEOUT
+              value: "20"
             - name: API_BASE
               value: "http://localhost:8000"
             {{- if .Values.frontend.qwenApiBase }}

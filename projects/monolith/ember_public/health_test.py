@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.pool import StaticPool
 from sqlmodel import create_engine
 
 import ember_public.health as health
@@ -16,14 +15,8 @@ from ember_public.synthetic_models import EmberSyntheticProbe
 from framework import PUBLIC_PROFILE, build_app
 
 
-def test_module_registers_synthetic_postgres_health_hook():
-    assert "ember_postgres" in MODULE.register_health
-    assert set(MODULE.register_health) == {
-        "ember_bazel",
-        "ember_pages",
-        "ember_postgres",
-        "ember_codex",
-    }
+def test_module_retains_only_production_agent_probe():
+    assert set(MODULE.register_health) == {"ember_codex"}
 
 
 def test_module_has_no_advisory_health_components():
@@ -45,44 +38,25 @@ async def test_probe_postgres_unconfigured_is_not_ok(monkeypatch):
     }
 
 
-def test_public_app_api_health_surfaces_synthetic_probe_failure(monkeypatch):
-    """The public health component reports the probe latch, not a passive DB check."""
-    monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)
-
-    row = EmberSyntheticProbe(
-        demo="postgres",
-        ok=False,
-        detail="DEMO_POSTGRES_DSN not configured",
-        checked_at=datetime.now(timezone.utc),
-    )
-
-    async def read_probe(_):
-        return row
-
-    async def live_status():
-        return {
-            "state": "failed",
-            "anchor": {"health": "down", "draining": False},
-            "recovery": "restoring",
-        }
+def test_retired_demo_latch_cannot_fail_health(monkeypatch, tmp_path):
+    async def read_probe(demo):
+        if demo == "postgres":
+            return EmberSyntheticProbe(
+                demo=demo,
+                ok=False,
+                detail="demo retired",
+                checked_at=datetime.now(timezone.utc),
+            )
+        return None
 
     monkeypatch.setattr(health, "read_probe", read_probe)
-    monkeypatch.setattr(health.core, "EMBERVM_URL", "http://embervm")
-    monkeypatch.setattr(health.core, "cached_demo_pg_status", live_status)
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        f"sqlite:///{tmp_path / 'health.db'}", connect_args={"check_same_thread": False}
     )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
-
-    app = build_app(PUBLIC_PROFILE, [MODULE])
-    resp = TestClient(app).get("/api/health")
-
-    assert resp.status_code == 503
-    body = resp.json()
-    assert body["components"]["ember_postgres"]["ok"] is False
-    assert body["components"]["ember_postgres"]["cause"] == "preemption"
-    assert body["causes"] == {"ember_postgres": "preemption"}
-    assert "demo_postgres" not in body["components"]
+    response = TestClient(build_app(PUBLIC_PROFILE, [MODULE])).get("/api/health")
+    assert response.status_code == 200
+    assert "ember_postgres" not in response.json()["components"]
 
 
 def test_public_app_api_health_surfaces_codex_probe(monkeypatch, tmp_path):

@@ -571,7 +571,7 @@
   </div>
 
   <!-- ==================== REPLAY ==================== -->
-  <section class="replay">
+  <section class="replay" id="replay">
     <h2>Feel it. Restore one now.</h2>
     <p>
       This button replays one of the {restores.length} recorded runs at its true speed.

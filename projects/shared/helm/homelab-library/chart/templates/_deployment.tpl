@@ -14,7 +14,8 @@ Required values under .<component>:
 
 Optional values (with defaults):
   enabled (true), replicas (1), containerPort (8080), portName ("http"),
-  args ([]),
+  args ([]), strategy (Kubernetes default), minReadySeconds (0),
+  terminationGracePeriodSeconds (30), lifecycle ({}),
   probes.liveness.path ("/health"), probes.readiness.path ("/health"),
   probes.liveness.exec ([]) — if set, uses exec probe instead of httpGet,
   probes.readiness.exec ([]) — same for readiness,
@@ -46,6 +47,13 @@ metadata:
     {{- include "homelab.componentLabels" (dict "context" $ctx "component" $name) | nindent 4 }}
 spec:
   replicas: {{ $vals.replicas | default 1 }}
+  {{- with $vals.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $vals.minReadySeconds }}
+  minReadySeconds: {{ . }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "homelab.componentSelectorLabels" (dict "context" $ctx "component" $name) | nindent 6 }}
@@ -58,6 +66,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      {{- with $vals.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       {{- if $ctx.Values.imagePullSecret.enabled }}
       imagePullSecrets:
         - name: ghcr-imagepull-secret
@@ -78,6 +89,10 @@ spec:
             {{- toYaml $sec | nindent 12 }}
           {{- with $vals.args }}
           args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $vals.lifecycle }}
+          lifecycle:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:

@@ -959,17 +959,10 @@ def test_postgres_status_omits_total_saved_mib_s_when_none(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_public_app_serves_ember_postgres_status():
-    """The public app mounts ember_public: /api/ember/postgres/status responds."""
+def test_public_app_does_not_serve_retired_ember_postgres():
     from app.main_public import app as public_app
 
-    client = TestClient(public_app)
-    resp = client.get("/api/ember/postgres/status")
-    # DEMO_POSTGRES_DSN/EMBERVM_URL are unset in the test environment, so this
-    # is the in-band "unconfigured" shape, not a 404: proves the route is
-    # mounted, not that the demo is live.
-    assert resp.status_code == 200
-    assert resp.json() == {"configured": False}
+    assert TestClient(public_app).get("/api/ember/postgres/status").status_code == 404
 
 
 def test_public_app_serves_no_legacy_demos_route():

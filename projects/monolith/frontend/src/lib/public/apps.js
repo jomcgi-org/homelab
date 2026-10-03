@@ -45,7 +45,7 @@ export const apps = [
   {
     slug: "notes",
     label: "Notes",
-    desc: "Ask my knowledge graph",
+    desc: "Browse my public notes",
     href: "/app/notes",
   },
 ];

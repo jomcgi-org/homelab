@@ -121,7 +121,7 @@
         <a href="#homelab" class="btn btn-primary"
           >SEE MY HOMELAB <span class="btn-arr">→</span></a
         >
-        <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
+        <a href="/slop/factory" class="btn btn-secondary">WATCH THE FACTORY</a>
       </div>
       <Sticker color="var(--coral)" rotate={-5} class="sticker-hero"
         >← BUILT THIS SITE TOO</Sticker
