@@ -357,3 +357,62 @@ def test_journal_event_read_is_bounded_with_explicit_truncation(harness):
     )
     assert entry["journal"]["truncated"] is True
     assert len(entry["journal"]["received"]) <= JOURNAL_EVENTS_PER_SESSION
+
+
+@pytest.mark.parametrize("session_route", [False, True])
+@pytest.mark.parametrize("viewer", ["dm", "player_a"])
+def test_party_budget_ignores_private_and_retracted_events(
+    harness, session_route, viewer
+):
+    h, client = harness
+    session_id = h.rows["campaign_session"].id
+    campaign_id = h.rows["campaign"].id
+    existing = h.session.exec(
+        select(SessionEvent).where(SessionEvent.session_id == session_id)
+    ).all()
+    start = max(row.seq for row in existing) + 1
+    retracted_at = datetime.now(timezone.utc)
+
+    def event(index, audience, **extra):
+        return SessionEvent(
+            campaign_id=campaign_id,
+            session_id=session_id,
+            seq=start + index,
+            kind="handout",
+            audience=audience,
+            audience_pc_ids=[],
+            author_member_id=h.rows["member_dm"].id,
+            body={"index": index},
+            **extra,
+        )
+
+    # Enough DM-only and retracted table rows ahead of one live table handout
+    # to exhaust the budget if the Party view ranked them.
+    noise = JOURNAL_EVENTS_PER_SESSION + 5
+    rows = [event(i, "dm") for i in range(noise)]
+    rows += [
+        event(noise + i, "table", retracted_at=retracted_at) for i in range(noise)
+    ]
+    live = event(2 * noise, "table")
+    rows.append(live)
+    h.session.add_all(rows)
+    h.session.commit()
+
+    response = client.get(
+        url(h, session_route), params={"view": "party"}, headers=h.headers(viewer)
+    )
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, viewer)
+    data = (
+        response.json()
+        if session_route
+        else next(
+            row["journal"]
+            for row in response.json()["sessions"]
+            if row["session_id"] == session_id
+        )
+    )
+    assert data["truncated"] is False
+    received_ids = {entry["id"] for entry in data["received"]}
+    assert live.id in received_ids
+    assert all(entry["audience"] == "table" for entry in data["received"])
