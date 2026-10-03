@@ -9,6 +9,7 @@
 
   let { data } = $props();
   let activeId = $state("");
+  let hasLanding = $derived(data.slug === "125b-on-a-4090");
 
   // "5.1 Prefill was copying whole layers" -> ["5.1", "Prefill was ..."] so
   // the number sits in its own fixed column and the titles align.
@@ -76,7 +77,7 @@
 
   $effect(() => {
     const headings = document.querySelectorAll(
-      ".post-frame h2[id], .post-frame h3[id]",
+      ".post-page h2[id], .post-page h3[id]",
     );
     if (!headings.length) return;
     first = headings[0].id;
@@ -159,21 +160,47 @@
   type="article"
 />
 
-<main class="td post-page">
+<main class="td post-page" class:with-landing={hasLanding}>
   <div class="frame">
-    <div class="journal">
+    {#if hasLanding}
+      <section class="demo-landing" aria-labelledby="landing-title">
+        <header class="landing-header">
+          <div class="landing-topline">
+            <Trail /><time datetime={data.date}>{formatDate(data.date)}</time>
+          </div>
+          <h1 id="landing-title">{data.title}</h1>
+        </header>
+        <section class="landing-demo" aria-labelledby="inference-demo">
+          <h2 id="inference-demo">Inference Demo</h2>
+          {#await import("$lib/public/posts/QwenReplay.svelte")}
+            <p>Loading the inference demo…</p>
+          {:then replay}
+            <replay.default landing />
+          {:catch}
+            <p>
+              The inference demo could not load. Refresh the page to try again.
+            </p>
+          {/await}
+        </section>
+        <a class="read-post" href="#post-body" onclick={onIndexClick}
+          >Read the post ↓</a
+        >
+      </section>
+    {/if}
+    <div class="journal" id={hasLanding ? "post-body" : undefined}>
       <aside class="spine">
         <div class="trail-dock">
           <Trail post={data.title} />
         </div>
         {#if data.toc.length}
-          <nav class="toc" aria-label="Sections" onclick={onIndexClick}>
+          <nav class="toc" aria-label="Sections">
             <p class="sec-label">/ Index</p>
             <ol>
               {#each data.toc as section}
                 <li>
                   <a
                     href={`#${section.id}`}
+                    onclick={onIndexClick}
                     class:active={activeId === section.id}
                     aria-current={activeId === section.id
                       ? "location"
@@ -188,6 +215,7 @@
                         <li>
                           <a
                             href={`#${sub.id}`}
+                            onclick={onIndexClick}
                             class:active={activeId === sub.id}
                             aria-current={activeId === sub.id
                               ? "location"
@@ -209,14 +237,16 @@
 
       <div class="post-frame">
         <article class="edition">
-          <p class="ed-head">
-            <time datetime={data.date}>{formatDate(data.date)}</time>
-          </p>
+          {#if !hasLanding}<p class="ed-head">
+              <time datetime={data.date}>{formatDate(data.date)}</time>
+            </p>
 
-          <header class="ed-lead">
-            <h1>{data.title}</h1>
-            <p>{data.summary}</p>
-          </header>
+            <header class="ed-lead">
+              <h1>{data.title}</h1>
+              <p>{data.summary}</p>
+            </header>{:else}<header class="ed-lead">
+              <p>{data.summary}</p>
+            </header>{/if}
 
           {#if data.preamble}
             <!-- Server-rendered, constrained first-party markdown. -->
@@ -226,34 +256,20 @@
 
         <!-- One panel per numbered section: a page flip between them. -->
         {#each data.sections as section}
-          {@const showReplay =
-            data.slug === "125b-on-a-4090" &&
-            section.startsWith('<h2 id="inference-demo"')}
-          <section class="edition post-body">
-            {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: section }] as part}
-              {#if part.diagram}
-                <SystemDiagram
-                  mode={part.diagram}
-                  title={part.title}
-                  notes={part.notes}
-                />
-              {:else}
-                {@html part.html}
-              {/if}
-            {/each}
-            {#if showReplay}
-              {#await import("$lib/public/posts/QwenReplay.svelte")}
-                <p>Loading the recorded conversation...</p>
-              {:then replay}
-                <replay.default />
-              {:catch}
-                <p>
-                  The recorded conversation could not load. Refresh the page to
-                  try again.
-                </p>
-              {/await}
-            {/if}
-          </section>
+          {#if !hasLanding || !section.startsWith('<h2 id="inference-demo"')}
+            <section class="edition post-body">
+              {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: section }] as part}
+                {#if part.diagram}
+                  <SystemDiagram
+                    mode={part.diagram}
+                    title={part.title}
+                    notes={part.notes}
+                  />
+                {:else}
+                  {@html part.html}
+                {/if}
+              {/each}
+            </section>{/if}
         {/each}
       </div>
     </div>
@@ -271,6 +287,53 @@
     font-size: 1rem;
   }
 
+  .demo-landing {
+    min-height: calc(100svh - 1.5rem);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding-bottom: 0.75rem;
+  }
+  .landing-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-right: 2.5rem;
+    margin-bottom: 0.8rem;
+  }
+  .landing-topline time {
+    color: var(--ink-2);
+    font: 0.7rem var(--font-code);
+  }
+  .landing-header h1 {
+    margin: 0;
+    font-size: clamp(1.4rem, 2.8vw, 2rem);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+  }
+  .landing-demo {
+    min-width: 0;
+  }
+  .landing-demo h2 {
+    margin: 0 0 0.6rem;
+    color: var(--ink-2);
+    font: 0.75rem var(--font-code);
+    /* Keep the landing title in view when reloading its navigation fragment. */
+    scroll-margin-top: 12rem;
+  }
+  .read-post {
+    align-self: flex-start;
+    margin-top: auto;
+    color: var(--accent-ink);
+    font: 0.75rem var(--font-code);
+    text-underline-offset: 0.2em;
+  }
+  .with-landing .journal {
+    padding-top: 2rem;
+    scroll-margin-top: 1.5rem;
+    border-top: 1px solid var(--stroke);
+  }
   .post-page a:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
@@ -405,6 +468,9 @@
     line-height: 1.55;
   }
 
+  .with-landing .ed-lead p {
+    margin-top: 0;
+  }
   .post-body {
     padding: 0 1rem 1rem;
     counter-reset: fig;
