@@ -339,7 +339,12 @@ def test_journal_event_read_is_bounded_with_explicit_truncation(harness):
     assert data["truncated"] is True
     assert len(data["received"]) <= JOURNAL_EVENTS_PER_SESSION
     assert statements, "expected the session journal to read session_event rows"
+    # One bounded read: an explicit LIMIT plus the per-session row_number
+    # cap, so neither the statement count nor the row count can grow with
+    # the session length.
+    assert len(statements) == 1
     assert all("LIMIT" in statement.upper() for statement in statements)
+    assert all("ROW_NUMBER" in statement.upper() for statement in statements)
     received_ids = {entry["id"] for entry in data["received"]}
     assert bulk[0].id in received_ids
     assert all(row.id not in received_ids for row in bulk[-overflow:])

@@ -2526,6 +2526,11 @@ def _journal_events(session, campaign_id, session_ids, viewer, member):
         )
         .subquery("journal_ranked")
     )
+    # Belt and braces: the per-session rn filter already caps rows at
+    # len(session_ids) * (budget + 1), so this outer LIMIT never engages.
+    # It keeps an explicit LIMIT in the journal event SQL even if the
+    # window predicate is ever altered.
+    outer_limit = len(session_ids) * (JOURNAL_EVENTS_PER_SESSION + 1) + 1
     rows = session.exec(
         select(SessionEvent)
         .where(
@@ -2536,6 +2541,7 @@ def _journal_events(session, campaign_id, session_ids, viewer, member):
             )
         )
         .order_by(SessionEvent.session_id, SessionEvent.seq, SessionEvent.id)
+        .limit(outer_limit)
     ).all()
     events: list[SessionEvent] = []
     counts: dict[str, int] = {}
