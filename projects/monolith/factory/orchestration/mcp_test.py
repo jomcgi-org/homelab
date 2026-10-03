@@ -26,6 +26,22 @@ from factory.orchestration.factory_models import (
 from factory.orchestration.models import SwarmTask
 
 
+def test_planner_derived_context_marks_due_and_unknown_stale():
+    from datetime import datetime, timedelta, timezone
+    from factory.orchestration.conductor_context import _is_stale
+
+    now = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
+    current = {
+        "observed_at": (now - timedelta(days=1)).isoformat(),
+        "review_after": (now + timedelta(seconds=1)).isoformat(),
+        "verification_state": "verified",
+    }
+    assert not _is_stale(current, now=now)
+    assert _is_stale(current, now=now + timedelta(seconds=1))
+    assert _is_stale({**current, "review_after": None}, now=now)
+    assert _is_stale({**current, "verification_state": "invalidated"}, now=now)
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     engine = create_engine(

@@ -384,17 +384,3 @@ def test_current_context_callers_exclude_due_during_hydration(
     assert {row["note_id"] for row in history} == {"current", "due"}
     store._now = NOW + timedelta(seconds=1)
     assert store.search_notes_with_context(vector) == []
-
-
-def test_planner_derived_context_marks_due_and_unknown_stale():
-    from factory.orchestration.conductor_context import _is_stale
-
-    current = {
-        "observed_at": (NOW - timedelta(days=1)).isoformat(),
-        "review_after": (NOW + timedelta(seconds=1)).isoformat(),
-        "verification_state": "verified",
-    }
-    assert not _is_stale(current, now=NOW)
-    assert _is_stale(current, now=NOW + timedelta(seconds=1))
-    assert _is_stale({**current, "review_after": None}, now=NOW)
-    assert _is_stale({**current, "verification_state": "invalidated"}, now=NOW)
