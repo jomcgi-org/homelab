@@ -13,7 +13,14 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("/tmp/grimoire-rehearsal"))
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    report = {"simulated": True, "checks": [], "errors": [], "timings": {}}
+    report = {
+        "simulated": True,
+        "checks": [],
+        "errors": [],
+        "timings": {},
+        "console_errors": [],
+        "network_failures": [],
+    }
     contexts = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -27,6 +34,24 @@ def main():
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
                 page.on("pageerror", lambda error: report["errors"].append(str(error)))
+                page.on(
+                    "console",
+                    lambda message: (
+                        report["console_errors"].append(message.text)
+                        if message.type == "error"
+                        else None
+                    ),
+                )
+                page.on(
+                    "requestfailed",
+                    lambda request: report["network_failures"].append(
+                        {
+                            "url": request.url,
+                            "method": request.method,
+                            "failure": request.failure,
+                        }
+                    ),
+                )
                 page.goto(f"http://friends.localhost:8177/__local/login/{role}")
                 page.get_by_role("link", name="Open session", exact=True).click()
                 # Wait for the mounted UI's first poll before interacting with
@@ -42,11 +67,38 @@ def main():
             if dm.get_by_role("button", name="Start session", exact=True).count():
                 dm.get_by_role("button", name="Start session", exact=True).click()
             expect(dm.get_by_label("Set the scene", exact=True)).to_be_visible()
+            expect(
+                a.get_by_role("heading", name="The story begins here.", exact=True)
+            ).to_be_visible()
+            for role, viewer in (("dm", dm), ("a", a), ("b", b)):
+                viewer.screenshot(
+                    path=str(args.output / f"{role}-empty-feed.png"), full_page=True
+                )
             stamp = str(time.time_ns())
             scene = f"A stranger leaves a sealed letter at your table. ({stamp})"
             dm.get_by_label("Set the scene", exact=True).fill(scene)
             dm.get_by_label("Send to").select_option("table")
+            held_write = []
+
+            def hold_first_write(route):
+                if route.request.method == "POST":
+                    held_write.append(route)
+                else:
+                    route.continue_()
+
+            dm.route("**/session/state", hold_first_write)
             dm.get_by_role("button", name="Send", exact=True).click()
+            expect(
+                dm.get_by_role("button", name="Sending…", exact=True)
+            ).to_be_disabled()
+            dm.screenshot(path=str(args.output / "dm-sending.png"), full_page=True)
+            assert len(held_write) == 1
+            held_write[0].continue_()
+            dm.unroute("**/session/state", hold_first_write)
+            expect(dm.get_by_role("button", name="Send", exact=True)).to_be_visible()
+            report["checks"].append(
+                "Empty feeds explain the next step; an in-flight write shows a disabled Sending control"
+            )
             a.bring_to_front()
             start = time.monotonic()
             expect(a.get_by_text(scene, exact=True)).to_be_visible(timeout=5000)
@@ -292,6 +344,32 @@ def main():
             a.bring_to_front()
             a.get_by_label("What do you do?", exact=True).fill(
                 "A draft I have not sent yet"
+            )
+            delayed_polls = []
+
+            def delay_poll(route):
+                if route.request.method == "GET" and not delayed_polls:
+                    response = route.fetch()
+                    time.sleep(1)
+                    delayed_polls.append(route.request.url)
+                    route.fulfill(response=response)
+                else:
+                    route.continue_()
+
+            a.route("**/session/state", delay_poll)
+            # A locator expectation waits while Playwright services the delayed route.
+            expect(a.get_by_label("What do you do?", exact=True)).to_have_value(
+                "A draft I have not sent yet"
+            )
+            a.wait_for_timeout(3500)
+            assert len(delayed_polls) == 1
+            expect(a.get_by_role("status")).to_have_text("Live")
+            expect(a.get_by_label("What do you do?", exact=True)).to_have_value(
+                "A draft I have not sent yet"
+            )
+            a.unroute("**/session/state", delay_poll)
+            report["checks"].append(
+                "A delayed successful poll preserves the unsent draft and returns to a live feed"
             )
             a.route("**/session/state", lambda route: route.abort())
             expect(a.get_by_role("status")).to_have_text("Reconnecting", timeout=6000)

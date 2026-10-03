@@ -225,7 +225,9 @@
           <h2>The story begins here.</h2>
           <p>
             {dm
-              ? "Start the session, then set the scene for your players."
+              ? state.session?.status === "active"
+                ? "Set the scene for your players."
+                : "Start the session, then set the scene for your players."
               : "Take your seat. Your DM will set the scene shortly."}
           </p>
         </div>
@@ -613,6 +615,11 @@
     flex-wrap: wrap;
     color: var(--grim-ink-soft);
   }
+  aside > a {
+    display: block;
+    margin: 12px 0;
+  }
+
   .empty {
     padding: 32px 0 50px;
   }
