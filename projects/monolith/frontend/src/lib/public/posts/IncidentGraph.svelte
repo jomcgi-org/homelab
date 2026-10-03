@@ -148,7 +148,9 @@
         {#if graph.nodes.some((n) => n.id === node.id)}
           <button
             class="graph-node"
-            class:chosen={active?.id === node.id}
+            class:chosen={active?.id === node.id ||
+              active?.from === node.id ||
+              active?.to === node.id}
             style={`left:${(node.x / 840) * 100}%;top:${(node.y / layout.height) * 100}%;height:${(62 / layout.height) * 100}%;--node-tone:var(--tone-${tone(node)})`}
             onclick={() => choose(node)}
             aria-pressed={active?.id === node.id}
@@ -267,7 +269,7 @@
   .connection:has(.edge-hit:hover) .edge,
   .connection:focus-within .edge,
   .connection.chosen .edge {
-    stroke-width: 3;
+    stroke-width: 4;
     opacity: 1;
   }
   .graph-node {
@@ -287,12 +289,20 @@
   }
   .graph-node:hover,
   .graph-node.chosen {
-    background: color-mix(in srgb, var(--node-tone) 12%, var(--sheet));
-    border-width: 2px;
+    background: var(--sheet);
+    outline: 2px solid var(--node-tone);
+    outline-offset: -2px;
+  }
+  .graph-node:hover .role,
+  .graph-node.chosen .role {
+    color: var(--ink);
+  }
+  .graph-node.chosen strong {
+    font-weight: 700;
   }
   .role {
-    font: 0.6rem var(--font-code);
-    color: var(--node-tone);
+    font: 0.65rem var(--font-code);
+    color: var(--ink-2);
     text-transform: uppercase;
     letter-spacing: 0.07em;
   }
@@ -317,9 +327,9 @@
     gap: 1rem;
   }
   .detail-top strong {
-    font-size: 0.8rem;
-    line-height: 1.2;
-    font-weight: 500;
+    font-size: 0.9rem;
+    line-height: 1.3;
+    font-weight: 700;
   }
   .detail-top a {
     font: 0.65rem var(--font-code);
