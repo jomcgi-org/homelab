@@ -10,6 +10,13 @@
   let { data } = $props();
   let activeId = $state("");
   let hasLanding = $derived(data.slug === "125b-on-a-4090");
+  const replays = {
+    "ember-conformance": {
+      load: () => import("$lib/public/posts/ConformanceReplay.svelte"),
+    },
+  };
+  let replay = $derived(replays[data.slug]);
+  let single = $derived(!data.toc.length && !hasLanding);
 
   // "5.1 Prefill was copying whole layers" -> ["5.1", "Prefill was ..."] so
   // the number sits in its own fixed column and the titles align.
@@ -187,53 +194,55 @@
         >
       </section>
     {/if}
-    <div class="journal" id={hasLanding ? "post-body" : undefined}>
-      <aside class="spine">
-        <div class="trail-dock">
-          <Trail post={data.title} />
-        </div>
-        {#if data.toc.length}
-          <nav class="toc" aria-label="Sections">
-            <p class="sec-label">/ Index</p>
-            <ol>
-              {#each data.toc as section}
-                <li>
-                  <a
-                    href={`#${section.id}`}
-                    onclick={onIndexClick}
-                    class:active={activeId === section.id}
-                    aria-current={activeId === section.id
-                      ? "location"
-                      : undefined}
-                    ><span class="num">{split(section.text)[0]}</span><span
-                      >{split(section.text)[1]}</span
-                    ></a
-                  >
-                  {#if section.children.length}
-                    <ol>
-                      {#each section.children as sub}
-                        <li>
-                          <a
-                            href={`#${sub.id}`}
-                            onclick={onIndexClick}
-                            class:active={activeId === sub.id}
-                            aria-current={activeId === sub.id
-                              ? "location"
-                              : undefined}
-                            ><span class="num">{split(sub.text)[0]}</span><span
-                              >{split(sub.text)[1]}</span
-                            ></a
-                          >
-                        </li>
-                      {/each}
-                    </ol>
-                  {/if}
-                </li>
-              {/each}
-            </ol>
-          </nav>
-        {/if}
-      </aside>
+    <div class="journal" class:single id={hasLanding ? "post-body" : undefined}>
+      {#if single}
+        <div class="trail-inline"><Trail post={data.title} /></div>
+      {:else}
+        <aside class="spine">
+          <div class="trail-dock">
+            <Trail post={data.title} />
+          </div>
+          {#if data.toc.length}
+            <nav class="toc" aria-label="Sections">
+              <p class="sec-label">/ Index</p>
+              <ol>
+                {#each data.toc as section}
+                  <li>
+                    <a
+                      href={`#${section.id}`}
+                      onclick={onIndexClick}
+                      class:active={activeId === section.id}
+                      aria-current={activeId === section.id
+                        ? "location"
+                        : undefined}
+                      ><span class="num">{split(section.text)[0]}</span><span
+                        >{split(section.text)[1]}</span
+                      ></a
+                    >
+                    {#if section.children.length}
+                      <ol>
+                        {#each section.children as sub}
+                          <li>
+                            <a
+                              href={`#${sub.id}`}
+                              onclick={onIndexClick}
+                              class:active={activeId === sub.id}
+                              aria-current={activeId === sub.id
+                                ? "location"
+                                : undefined}
+                              ><span class="num">{split(sub.text)[0]}</span
+                              ><span>{split(sub.text)[1]}</span></a
+                            >
+                          </li>
+                        {/each}
+                      </ol>
+                    {/if}
+                  </li>
+                {/each}
+              </ol>
+            </nav>
+          {/if}
+        </aside>{/if}
 
       <div class="post-frame">
         <article class="edition">
@@ -243,7 +252,7 @@
 
             <header class="ed-lead">
               <h1>{data.title}</h1>
-              <p>{data.summary}</p>
+              {#if !single}<p>{data.summary}</p>{/if}
             </header>{:else}<header class="ed-lead">
               <p>{data.summary}</p>
             </header>{/if}
@@ -252,13 +261,33 @@
             <!-- Server-rendered, constrained first-party markdown. -->
             <div class="post-body">{@html data.preamble}</div>
           {/if}
+          {#if replay && !replay.within}
+            <div class="post-body">
+              {#await replay.load()}
+                <p>Loading the recording...</p>
+              {:then module}
+                <module.default />
+              {:catch}
+                <p>
+                  The recording could not load. Refresh the page to try again.
+                </p>
+              {/await}
+            </div>
+          {/if}
         </article>
 
         <!-- One panel per numbered section: a page flip between them. -->
         {#each data.sections as section}
+          {@const replayBoundary = replay?.within
+            ? section.indexOf(replay.before)
+            : -1}
+          {@const showReplay =
+            replay?.within &&
+            section.includes(replay.within) &&
+            replayBoundary >= 0}
           {#if !hasLanding || !section.startsWith('<h2 id="inference-demo"')}
             <section class="edition post-body">
-              {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: section }] as part}
+              {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: showReplay ? section.slice(0, replayBoundary) : section }] as part}
                 {#if part.diagram}
                   <SystemDiagram
                     mode={part.diagram}
@@ -269,6 +298,18 @@
                   {@html part.html}
                 {/if}
               {/each}
+              {#if showReplay}
+                {#await replay.load()}
+                  <p>Loading the recording...</p>
+                {:then module}
+                  <module.default />
+                {:catch}
+                  <p>
+                    The recording could not load. Refresh the page to try again.
+                  </p>
+                {/await}
+                {@html section.slice(replayBoundary)}
+              {/if}
             </section>{/if}
         {/each}
       </div>
@@ -350,6 +391,14 @@
     gap: clamp(2em, 4vw, 4em);
   }
 
+  .journal.single {
+    grid-template-columns: minmax(0, 54em);
+    justify-content: center;
+  }
+  .trail-inline {
+    grid-column: 1;
+    margin-bottom: 1.25rem;
+  }
   .spine {
     position: sticky;
     top: 1.5rem;
@@ -815,6 +864,7 @@
     }
 
     .trail-dock,
+    .trail-inline,
     .sec-label {
       display: none;
     }
