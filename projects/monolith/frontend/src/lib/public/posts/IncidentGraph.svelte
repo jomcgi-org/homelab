@@ -16,6 +16,14 @@
     edges: captured.edges.map((item) => ({ ...item, ...review[item.id] })),
   });
   let layout = $derived(layoutIncidentGraph(incidentGraph(finalAnswer, true)));
+  let detailStatements = $derived(
+    (() => {
+      const final = incidentGraph(finalAnswer, true);
+      return [final.summary, ...final.nodes, ...final.edges]
+        .filter(Boolean)
+        .map((item) => ({ ...item, ...review[item.id] }));
+    })(),
+  );
   let selected = $state(null);
   let active = $derived(
     [...graph.nodes, ...graph.edges].find((item) => item.id === selected) ??
@@ -104,8 +112,9 @@
               viewBox="0 0 10 10"
               refX="9"
               refY="5"
-              markerWidth="6"
-              markerHeight="6"
+              markerUnits="userSpaceOnUse"
+              markerWidth="10"
+              markerHeight="10"
               orient="auto"
               ><path
                 d="M0 0 L10 5 L0 10 z"
@@ -163,27 +172,24 @@
     </div>
   </div>
   <div class="graph-detail" aria-live="polite">
-    {#if active?.type === "summary"}
-      <p class="takeaway">{active.detail}</p>
-      <a
-        class="summary-source"
-        href={`${sourceUrl}#page=${active.pages[0]}`}
-        target="_blank"
-        rel="noreferrer">Analysis · Report p. {active.pages.join(", ")}</a
-      >
-    {:else if active}<div class="detail-top">
-        <strong>{active.label}</strong><a
+    <div class="detail-copy">
+      <p class:takeaway={active?.type === "summary"}>
+        {active?.detail ?? "Building the control graph…"}
+      </p>
+      <div class="detail-reserve" aria-hidden="true">
+        {#each detailStatements as item (item.id)}<p>{item.detail}</p>{/each}
+      </div>
+    </div>
+    <div class="detail-source">
+      {#if active}<a
           href={`${sourceUrl}#page=${active.pages[0]}`}
           target="_blank"
           rel="noreferrer"
           >{active.basis === "inferred" ? "Analysis · " : ""}Report p. {active.pages.join(
             ", ",
           )}</a
-        >
-      </div>
-      <p>{active.detail}</p>{:else}<p class="waiting">
-        Building the control graph…
-      </p>{/if}
+        >{/if}
+    </div>
   </div>
 
   <details>
@@ -213,6 +219,7 @@
     width: 100%;
     max-width: 840px;
     min-width: 638px;
+    container-type: inline-size;
   }
   .interaction-hint {
     position: absolute;
@@ -249,7 +256,8 @@
     fill: none;
     stroke: var(--edge-tone);
     stroke-width: 2;
-    opacity: 0.7;
+    opacity: 0.6;
+    transition: opacity 150ms ease;
     animation: connect 0.4s ease-out;
   }
   .feedback {
@@ -260,54 +268,45 @@
     stroke: transparent;
     stroke-width: 16;
     cursor: pointer;
-  }
-  .edge-hit:focus-visible {
-    stroke: var(--edge-tone);
-    stroke-width: 4;
     outline: none;
+  }
+  .connection:has(.edge-hit:focus-visible) .edge {
+    stroke: var(--ink);
   }
   .connection:has(.edge-hit:hover) .edge,
   .connection:focus-within .edge,
   .connection.chosen .edge {
-    stroke-width: 4;
     opacity: 1;
   }
   .graph-node {
     position: absolute;
     width: 25%;
     box-sizing: border-box;
-    padding: 6px 10px;
+    padding: 3px 8px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 1px;
+    font-size: clamp(0.75rem, 1.85cqw, 0.8rem);
     text-align: left;
     background: var(--sheet);
     color: var(--ink);
     border: 1px solid var(--node-tone);
     cursor: pointer;
+    transition: background-color 150ms ease;
     animation: arrive 0.3s ease-out;
   }
   .graph-node:hover,
   .graph-node.chosen {
-    background: var(--sheet);
-    outline: 2px solid var(--node-tone);
-    outline-offset: -2px;
-  }
-  .graph-node:hover .role,
-  .graph-node.chosen .role {
-    color: var(--ink);
-  }
-  .graph-node.chosen strong {
-    font-weight: 700;
+    background: color-mix(in srgb, var(--node-tone) 5%, var(--sheet));
   }
   .role {
-    font: 0.65rem var(--font-code);
+    font: 0.7em/1.1 var(--font-code);
     color: var(--ink-2);
     text-transform: uppercase;
     letter-spacing: 0.07em;
   }
   .graph-node strong {
-    font-size: 0.8rem;
+    font-size: inherit;
     line-height: 1.2;
     font-weight: 500;
   }
@@ -316,39 +315,33 @@
     outline-offset: 3px;
   }
   .graph-detail {
-    min-height: 3.5rem;
     border-top: 1px solid var(--line);
     padding: 0.75rem 0;
   }
-  .detail-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 1rem;
+  .detail-copy,
+  .detail-reserve {
+    display: grid;
   }
-  .detail-top strong {
-    font-size: 0.9rem;
-    line-height: 1.3;
-    font-weight: 700;
+  .detail-copy > p,
+  .detail-reserve,
+  .detail-reserve p {
+    grid-area: 1 / 1;
   }
-  .detail-top a {
-    font: 0.65rem var(--font-code);
-    color: var(--ink-2);
+  .detail-reserve {
+    visibility: hidden;
+    pointer-events: none;
   }
   .graph-detail p {
-    margin: 0.35rem 0 0;
-    font-size: 0.85rem;
-  }
-  .graph-detail .takeaway {
-    font-size: 1rem;
+    margin: 0;
+    font-size: 0.95rem;
     line-height: 1.5;
-    margin: 0 0 0.35rem;
   }
-  .summary-source {
+  .detail-source {
+    min-height: 1rem;
+    margin-top: 0.35rem;
+  }
+  .detail-source a {
     font: 0.65rem var(--font-code);
-    color: var(--ink-2);
-  }
-  .waiting {
     color: var(--ink-2);
   }
   details {
@@ -377,21 +370,15 @@
     from {
       opacity: 0;
     }
-    to {
-      opacity: 0.7;
-    }
   }
   @media (prefers-reduced-motion: reduce) {
     .edge,
     .graph-node {
-      animation: none;
+      transition: none;
     }
-  }
-  @media (max-width: 600px) {
-    .detail-top {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 0.3rem;
+    .edge,
+    .graph-node {
+      animation: none;
     }
   }
 </style>
