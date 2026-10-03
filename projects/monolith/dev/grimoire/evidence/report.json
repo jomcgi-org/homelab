@@ -1,0 +1,56 @@
+{
+  "simulated": true,
+  "checks": [
+    "Empty feeds explain the next step; an in-flight write shows a disabled Sending control",
+    "Table narration reaches player A",
+    "Keyboard Tab and Shift+Tab move between the composer and audience selector",
+    "Visible-tab polling delivers narration within three seconds without duplicate entries or stealing composer focus",
+    "Partial grant reveal reaches only its recipient without the DM canary",
+    "Field preview and knowledge drawer enforce partial A/full B scopes and preserve the session draft",
+    "Targeted message appears for A and is absent from B's page and payload",
+    "Private player action reaches DM and sender, never B after reload",
+    "DM replies privately to the sender and resolves the waiting action",
+    "Backend rejects player attempts to end the session or narrate as DM",
+    "Quick saving throws use the approved sheet bonus and advantage",
+    "Server dice supports advantage, modifiers, public rolls and private rolls",
+    "A delayed successful poll preserves the unsent draft and returns to a live feed",
+    "Polling recovers and preserves the unsent draft",
+    "Lost send response retains an actionable error and draft; retry creates exactly one event",
+    "DM phone controls pause, resume and narrate without horizontal overflow",
+    "DM desktop and player phone views have no horizontal overflow",
+    "DM editor retracts old knowledge and atomically shares with both players",
+    "Pin to notes copies visible knowledge, stays private, and links back to its event",
+    "Notes editor enforces private default, DM opt-in, party sharing, deletion and draft retention",
+    "Journal uses latest visible knowledge, own rolls and resolved threads; party journal excludes private events",
+    "DM grants matrix edits partial details, reduces scope and retracts; players cannot open it",
+    "Incoming grouped knowledge preserves the reader's scroll position and keyboard focus",
+    "Grouped reveal renders and pins both items; retracting one hides its projection while preserving the other",
+    "DM can pause, resume and end; ended story remains readable",
+    "Invited players accept into a new campaign; player creates Nyx and DM creates and assigns Wren",
+    "Both invited players submit sheets, DM approves them, and the new table enters a session with approved-sheet rolls"
+  ],
+  "errors": [],
+  "timings": {
+    "foreground_catchup_seconds": 1.7871603170060553,
+    "visible_tab_propagation_seconds": 1.8127119570272043,
+    "reveal_interaction_seconds": 0.22239398397505283,
+    "reveal_propagation_seconds": 1.8728763340041041
+  },
+  "console_errors": [
+    "Failed to load resource: net::ERR_FAILED",
+    "Failed to load resource: net::ERR_FAILED"
+  ],
+  "network_failures": [
+    {
+      "url": "http://friends.localhost:4177/grimoire/campaigns/229b6628-33d9-49f7-8bdc-b5e4e1e753c5/session/state",
+      "method": "GET",
+      "failure": "net::ERR_FAILED"
+    },
+    {
+      "url": "http://friends.localhost:4177/grimoire/campaigns/229b6628-33d9-49f7-8bdc-b5e4e1e753c5/session/state",
+      "method": "POST",
+      "failure": "net::ERR_FAILED"
+    }
+  ],
+  "passed": true
+}
