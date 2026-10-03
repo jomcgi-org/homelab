@@ -506,6 +506,15 @@ actions:
             echo "No pnpm inputs changed; skipping frozen-lockfile validation"
           fi
 
+          # Browser evidence runs after Bazel, since pnpm materializes node_modules.
+          # Uploads include failure reports through BuildBuddy's artifacts directory.
+          if git diff --name-only "$base_ref" HEAD -- \
+            projects/monolith/grimoire/ projects/monolith/frontend/ \
+            projects/monolith/dev/grimoire/ bazel/requirements/ pnpm-lock.yaml \
+            buildbuddy.yaml | grep -q .; then
+            projects/monolith/dev/grimoire/ci-runner.sh
+          fi
+
           echo "DISK pr-checks end:"; df -h /
           workspace_breakdown "pr-checks end"
 
