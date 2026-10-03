@@ -1730,7 +1730,7 @@
   /* A task's state and elapsed time are essential on a phone. Give them
      their own line instead of hiding them to preserve the desktop columns. */
   .factory-page .lane-list a {
-    grid-template-columns: 0.6rem minmax(0, 1fr);
+    grid-template-columns: max-content minmax(0, 1fr);
     gap: 0.2rem 0.45rem;
     align-items: start;
     padding: 0.65rem 0.25rem;
