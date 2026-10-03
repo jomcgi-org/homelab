@@ -240,7 +240,7 @@ pygments==2.20.0
     #   --override bazel/requirements/overrides.txt
     #   copier
     #   rich
-pyjwt==2.13.0
+pyjwt==2.15.0
     # via
     #   -c bazel/requirements/runtime.txt
     #   --override bazel/requirements/overrides.txt
@@ -304,10 +304,6 @@ tomli==2.4.1
 typing-extensions==4.15.0
     # via
     #   -c bazel/requirements/runtime.txt
-    #   anyio
-    #   copier
-    #   cryptography
-    #   exceptiongroup
     #   mcp
     #   opentelemetry-api
     #   opentelemetry-exporter-otlp-proto-http
@@ -315,19 +311,15 @@ typing-extensions==4.15.0
     #   opentelemetry-semantic-conventions
     #   pydantic
     #   pydantic-core
-    #   pyjwt
-    #   referencing
     #   semgrep
-    #   starlette
     #   typing-inspection
-    #   uvicorn
 typing-inspection==0.4.2
     # via
     #   -c bazel/requirements/runtime.txt
     #   mcp
     #   pydantic
     #   pydantic-settings
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -c bazel/requirements/runtime.txt
     #   --override bazel/requirements/overrides.txt
