@@ -7,8 +7,9 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import yaml
@@ -45,6 +46,76 @@ ROLLOUT_PINS = {
     ),
 }
 ROLLOUT_TASKS = Path(__file__).resolve().parents[1] / "tasks"
+
+
+@pytest.mark.parametrize(
+    "declaration, expression",
+    [
+        ("HTTP_DRAIN_SECONDS = 10", "HTTP_DRAIN_SECONDS"),
+        ("def http_drain_seconds():\n    return 3", "http_drain_seconds()"),
+    ],
+)
+def test_http_drain_gold_accepts_module_level_repairs(
+    tmp_path, monkeypatch, declaration, expression
+):
+    """Run the actual hidden grader on an offline bootstrap with top-level helpers."""
+    mapping = yaml.safe_load(
+        (ROLLOUT_TASKS / "rollout-http-drain-logs-01" / "task.yaml").read_text()
+    )
+    source = mapping["verifier"]["args"]["tests"][
+        "factory/execution/rollout_http_drain_gold_test.py"
+    ]
+
+    class Config:
+        def __init__(self, app, **kwargs):
+            self.app = app
+            self.timeout_graceful_shutdown = None
+            self.__dict__.update(kwargs)
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            raise AssertionError("serving must be intercepted")
+
+    def legacy_run(*args, **kwargs):
+        raise AssertionError("serving must be intercepted")
+
+    framework = ModuleType("framework")
+    framework.build_app = lambda *args: None
+    framework.build_private_lifespan = lambda *args: None
+    monkeypatch.setitem(sys.modules, "framework", framework)
+    monkeypatch.setitem(
+        sys.modules, "uvicorn", SimpleNamespace(Config=Config, run=legacy_run)
+    )
+    monkeypatch.setitem(
+        sys.modules, "factory.module", SimpleNamespace(RolloutHandoffServer=Server)
+    )
+    entrypoint = tmp_path / "app" / "main.py"
+    entrypoint.parent.mkdir()
+    entrypoint.write_text(
+        "import os\n"
+        "from framework import build_app\n"
+        f"{declaration}\n"
+        "app = build_app(None, [])\n"
+        "if __name__ == '__main__':\n"
+        "    import uvicorn\n"
+        "    from factory.module import RolloutHandoffServer\n"
+        "    if os.environ['AGENT_ROLLOUT_HANDOFF_ENABLED'] == 'true':\n"
+        "        RolloutHandoffServer(uvicorn.Config(app, host='0.0.0.0', "
+        f"port=8000, log_level='warning', timeout_graceful_shutdown={expression})).run()\n"
+        "    else:\n"
+        "        uvicorn.run(app, host='0.0.0.0', port=8000, log_level='warning')\n"
+    )
+    namespace = {
+        "__file__": str(tmp_path / "factory/execution/rollout_http_drain_gold_test.py")
+    }
+    exec(compile(source, namespace["__file__"], "exec"), namespace)
+    for enabled in (True, False):
+        namespace["test_http_drain_leaves_executor_handoff_budget"](
+            monkeypatch, enabled
+        )
 
 
 @pytest.mark.parametrize("task_id", ROLLOUT_PINS)
