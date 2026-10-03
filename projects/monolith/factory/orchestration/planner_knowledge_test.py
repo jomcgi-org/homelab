@@ -948,3 +948,141 @@ def test_server_derives_receipt_identity_and_fails_closed(planner_db):
         "ok": False,
         "reason": "invalid_receipt_authorization",
     }
+
+
+def _followup_note(note_id, **overrides):
+    note = {
+        "note_id": note_id,
+        "title": "Persisted evidence",
+        "snippet": "The bounded fact.",
+        "scope": "session:factory-receipt:1",
+        "verification_state": "verified",
+        "disputed": False,
+        "confidence": 0.7,
+        "valid_from": "2025-12-01T00:00:00+00:00",
+        "valid_until": None,
+        "observed_at": "2025-12-01T00:00:00+00:00",
+        "evidence_raw_ids": [],
+    }
+    note.update(overrides)
+    return note
+
+
+def _persist_followup(engine, task_id, notes):
+    with Session(engine) as db:
+        db.add(
+            FactoryAudit(
+                actor="factory",
+                action="planner_context_result",
+                task_id=task_id,
+                detail_json=json.dumps(
+                    {
+                        "request_id": "factory-decision:conductor_1:1",
+                        "request_audit_id": 1,
+                        "query": "Which correction is current?",
+                        "requested_at": "2025-12-01T00:00:00+00:00",
+                        "completed_at": "2025-12-01T00:00:01+00:00",
+                        "bounds": {"queries": 1, "results": 5},
+                        "knowledge": {
+                            "status": "available",
+                            "notes": notes,
+                            "omitted": {"unauthorized_candidates": 0},
+                        },
+                    },
+                    sort_keys=True,
+                ),
+            )
+        )
+        db.commit()
+
+
+def test_persisted_followup_notes_expire_on_replay(planner_db):
+    """A note stored stale=false must replay stale once its deadline passes."""
+    from datetime import datetime, timedelta, timezone
+
+    engine, task_id, _policy = planner_db
+    deadline = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    _persist_followup(
+        engine,
+        task_id,
+        [
+            _followup_note(
+                "due-note",
+                review_after=deadline.isoformat(),
+                review_policy="standard-90d/v1",
+                last_reviewed_at=None,
+                requires_authoritative_observation=False,
+                freshness="current",
+                stale=False,
+            ),
+            _followup_note(
+                "volatile-note",
+                review_after=datetime(2099, 1, 1, tzinfo=timezone.utc).isoformat(),
+                review_policy="volatile-24h/v1",
+                last_reviewed_at=None,
+                requires_authoritative_observation=True,
+                freshness="current",
+                stale=False,
+            ),
+            _followup_note("legacy-note", stale=False),
+        ],
+    )
+
+    before = conductor_context._refresh_followup_notes(
+        [
+            {
+                "knowledge": {
+                    "notes": [
+                        _followup_note(
+                            "due-note",
+                            review_after=deadline.isoformat(),
+                            review_policy="standard-90d/v1",
+                            stale=False,
+                        )
+                    ]
+                }
+            }
+        ],
+        now=deadline - timedelta(seconds=1),
+    )
+    assert before[0]["knowledge"]["notes"][0]["stale"] is False
+
+    current = conductor_context._planner_factory_context(task_id)
+    assert current["ok"] is True
+    notes = {
+        note["note_id"]: note
+        for note in current["followups"][0]["knowledge"]["notes"]
+    }
+    assert notes["due-note"]["stale"] is True
+    assert notes["due-note"]["review_after"] == deadline.isoformat()
+    assert notes["due-note"]["freshness"] == "due"
+    assert notes["volatile-note"]["stale"] is False
+    assert notes["volatile-note"]["requires_authoritative_observation"] is True
+    assert notes["volatile-note"]["review_after"] is not None
+    assert notes["legacy-note"]["stale"] is True
+    assert notes["legacy-note"]["freshness"] == "unknown"
+
+
+def test_followup_refresh_fails_closed_at_equality():
+    from datetime import datetime, timezone
+
+    from factory.orchestration.conductor_context import _refresh_followup_notes
+
+    deadline = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    followups = [
+        {
+            "knowledge": {
+                "notes": [
+                    _followup_note(
+                        "equality-note",
+                        review_after=deadline.isoformat(),
+                        review_policy="standard-90d/v1",
+                        stale=False,
+                    )
+                ]
+            }
+        }
+    ]
+    assert _refresh_followup_notes(followups, now=deadline)[0]["knowledge"][
+        "notes"
+    ][0]["stale"] is True
