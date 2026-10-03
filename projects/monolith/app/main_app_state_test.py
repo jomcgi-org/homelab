@@ -31,6 +31,14 @@ class _AwaitableTask(MagicMock):
         return iter(())
 
 
+@pytest.fixture(autouse=True)
+def _reset_leader_shutdown_state():
+    """Lifespan teardown leaves the shared app fenced; startup tests need it open."""
+    app.state.leader_singletons_shutting_down = False
+    yield
+    app.state.leader_singletons_shutting_down = False
+
+
 # ---------------------------------------------------------------------------
 # Helpers (mirrors main_sidecar_test.py helper style)
 # ---------------------------------------------------------------------------

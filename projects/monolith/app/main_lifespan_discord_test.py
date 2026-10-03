@@ -25,6 +25,14 @@ class _AwaitableTask(MagicMock):
         return iter(())
 
 
+@pytest.fixture(autouse=True)
+def _reset_leader_shutdown_state():
+    """Lifespan teardown leaves the shared app fenced; startup tests need it open."""
+    app.state.leader_singletons_shutting_down = False
+    yield
+    app.state.leader_singletons_shutting_down = False
+
+
 def _singleton_patches_no_discord():
     """Patches for _start_singletons without a discord token."""
     mock_session = MagicMock()

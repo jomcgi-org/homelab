@@ -28,6 +28,14 @@ class _AwaitableTask(MagicMock):
         return iter(())
 
 
+@pytest.fixture(autouse=True)
+def _reset_leader_shutdown_state():
+    """Lifespan teardown leaves the shared app fenced; startup tests need it open."""
+    app.state.leader_singletons_shutting_down = False
+    yield
+    app.state.leader_singletons_shutting_down = False
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -440,7 +448,7 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
 
-    bot_task_mock = MagicMock()
+    bot_task_mock = _AwaitableTask()
     task_counter = [0]
 
     def capture_create_task(coro, **kwargs):
