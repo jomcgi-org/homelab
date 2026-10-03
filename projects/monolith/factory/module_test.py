@@ -77,8 +77,8 @@ async def test_partial_factory_start_is_tracked_and_stopped(monkeypatch):
     )
     monkeypatch.setattr(runtime, "launch", lambda: None)
     monkeypatch.setattr(runtime, "is_launched", lambda: True)
-    shutdowns = []
-    monkeypatch.setattr(runtime, "shutdown", lambda: shutdowns.append(True))
+    exits = []
+    monkeypatch.setattr(runtime, "exit_process", lambda status: exits.append(status))
     task = asyncio.create_task(asyncio.Event().wait())
     monkeypatch.setattr(factory_conductor, "start_loop", lambda: [task])
 
@@ -94,11 +94,74 @@ async def test_partial_factory_start_is_tracked_and_stopped(monkeypatch):
         await stop_leader_singletons(app, [module.MODULE])
         await asyncio.gather(task, return_exceptions=True)
         assert task.cancelled()
-        assert shutdowns == [True]
-        assert not app.state.leader_singletons_dbos_launched
+        assert exits == [1]
+        # Only process cessation stops DBOS. The fake exit returns in this test.
+        assert app.state.leader_singletons_dbos_launched
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "owns_lease,shutting_down", [(False, True), (False, False), (True, False)]
+)
+async def test_launched_factory_resignation_ceases_without_destroy_or_drain(
+    monkeypatch, owns_lease, shutting_down
+):
+    from unittest import mock
+
+    from factory.execution import mcp
+    from factory.orchestration import factory_conductor, runtime
+
+    exits = []
+    monkeypatch.setattr(runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(runtime, "exit_process", lambda status: exits.append(status))
+    destroy = mock.Mock()
+    drain = mock.AsyncMock()
+    monkeypatch.setattr(runtime, "shutdown", destroy)
+    monkeypatch.setattr(mcp, "drain_inflight_executors", drain)
+    monkeypatch.setattr(mcp, "rollout_shutdown_in_progress", lambda: True)
+    monkeypatch.setattr(factory_conductor, "disarm_watchdog", lambda: None)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            elector=SimpleNamespace(is_leader=owns_lease),
+            leader_singletons_shutting_down=shutting_down,
+        )
+    )
+    await module._leader_stop(app)
+    assert exits == [1]
+    destroy.assert_not_called()
+    drain.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rollout_drains_once_while_retaining_launched_dbos(monkeypatch):
+    from unittest import mock
+
+    from factory.execution import mcp
+    from factory.orchestration import factory_conductor, runtime
+
+    monkeypatch.setattr(runtime, "is_launched", lambda: True)
+    destroy = mock.Mock()
+    exit_process = mock.Mock()
+    drain = mock.AsyncMock()
+    monkeypatch.setattr(runtime, "shutdown", destroy)
+    monkeypatch.setattr(runtime, "exit_process", exit_process)
+    monkeypatch.setattr(mcp, "drain_inflight_executors", drain)
+    monkeypatch.setattr(mcp, "rollout_shutdown_in_progress", lambda: True)
+    monkeypatch.setattr(factory_conductor, "disarm_watchdog", lambda: None)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            elector=SimpleNamespace(is_leader=True),
+            leader_singletons_shutting_down=True,
+        )
+    )
+    await module._leader_stop(app)
+    await module._leader_stop(app)
+    drain.assert_awaited_once()
+    destroy.assert_not_called()
+    exit_process.assert_not_called()
 
 
 @pytest.mark.asyncio

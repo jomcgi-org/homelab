@@ -19,6 +19,7 @@ import asyncio
 import logging
 import platform
 import random
+import threading
 from collections.abc import Awaitable, Callable
 
 from sqlmodel import Session, text
@@ -119,6 +120,69 @@ class LeaderElector:
             1.0 + ACQUIRE_BACKOFF_JITTER,
         )
         return min(jittered, ACQUIRE_BACKOFF_MAX)
+
+    def guard_shutdown(
+        self, exit_process: Callable[[int], None], timeout: float
+    ) -> Callable[[], None]:
+        """Renew until process cessation, even if asyncio cleanup blocks.
+
+        An independent watchdog ceases the process before the last heartbeat
+        can go stale if renewal hangs. Successful renewal extends that watchdog;
+        an absolute deadline bounds the entire drain. Neither thread releases
+        the lease. The returned cleanup exists for tests whose fake exit returns.
+        """
+        stopped = threading.Event()
+        lock = threading.Lock()
+        lease_timer: threading.Timer | None = None
+
+        def cease() -> None:
+            stopped.set()
+            exit_process(1)
+
+        def arm_lease_watchdog() -> None:
+            nonlocal lease_timer
+            with lock:
+                if stopped.is_set():
+                    return
+                if lease_timer is not None:
+                    lease_timer.cancel()
+                # At entry the elector's last heartbeat may already be one
+                # renewal interval old. Keep that margin on every renewal.
+                lease_timer = threading.Timer(LEASE_TTL - RENEW_INTERVAL, cease)
+                lease_timer.daemon = True
+                lease_timer.start()
+
+        def renew() -> None:
+            while not stopped.is_set():
+                try:
+                    if not _acquire_or_renew(self._lease_key):
+                        cease()
+                        return
+                except Exception:
+                    logger.exception("shutdown lease renewal failed; ceasing executors")
+                    cease()
+                    return
+                arm_lease_watchdog()
+                stopped.wait(RENEW_INTERVAL)
+
+        deadline = threading.Timer(timeout, cease)
+        deadline.daemon = True
+        deadline.start()
+        arm_lease_watchdog()
+        thread = threading.Thread(
+            target=renew, name="leader-shutdown-renewal", daemon=True
+        )
+        thread.start()
+
+        def close() -> None:
+            stopped.set()
+            deadline.cancel()
+            with lock:
+                if lease_timer is not None:
+                    lease_timer.cancel()
+            thread.join(timeout=RENEW_INTERVAL)
+
+        return close
 
     async def run(
         self,

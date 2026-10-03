@@ -52,6 +52,84 @@ _OTEL_PRIVATE = dataclasses.replace(
 _WHOAMI_CORE_TEST_REGISTERED = False
 
 
+@pytest.mark.asyncio
+async def test_shutdown_renews_past_lease_ttl_and_exits_before_release(monkeypatch):
+    # Scale heartbeat and TTL together. Drain outlasts a complete ownership
+    # window without making the unit suite sleep five seconds.
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.02)
+    renewals = []
+    released = mock.Mock()
+    monkeypatch.setattr(
+        leadership, "_acquire_or_renew", lambda *_args: renewals.append(True) or True
+    )
+    monkeypatch.setattr(leadership, "_release", released)
+    acquired = asyncio.Event()
+    exits = []
+    shutdowns = []
+
+    async def start(app):
+        app.state.leader_shutdown_exit = lambda status: exits.append(
+            (status, released.call_count)
+        )
+        acquired.set()
+        return []
+
+    async def stop(app):
+        before = len(renewals)
+        assert app.state.elector.is_leader
+        await asyncio.sleep(leadership.LEASE_TTL * 3)
+        assert len(renewals) > before + 2
+        released.assert_not_called()
+
+    async def shutdown(_app):
+        shutdowns.append(True)
+
+    app = FastAPI()
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE,
+        [Module(name="owned", leader_start=start, leader_stop=stop, shutdown=shutdown)],
+    )(app):
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+    assert exits == [(0, 0)]
+    assert shutdowns == [True]
+    # The fake exit returns only in this test. Real os._exit cannot reach the
+    # later cancellation and release callback.
+    released.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_ceases_hung_cleanup(monkeypatch):
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_args: True)
+    monkeypatch.setattr(leadership, "_release", lambda *_args: None)
+    assert framework_core.LEADER_SHUTDOWN_TIMEOUT_SECONDS == 20
+    assert 15 < framework_core.LEADER_SHUTDOWN_TIMEOUT_SECONDS < 30
+    monkeypatch.setattr(framework_core, "LEADER_SHUTDOWN_TIMEOUT_SECONDS", 0.03)
+    acquired = asyncio.Event()
+    ceased = asyncio.Event()
+    exits = []
+    loop = asyncio.get_running_loop()
+
+    async def start(app):
+        def exit_process(status):
+            exits.append(status)
+            loop.call_soon_threadsafe(ceased.set)
+
+        app.state.leader_shutdown_exit = exit_process
+        acquired.set()
+        return []
+
+    async def stop(_app):
+        await asyncio.wait_for(ceased.wait(), timeout=1)
+
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE, [Module(name="hung", leader_start=start, leader_stop=stop)]
+    )(FastAPI()):
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+    assert exits == [1, 0]
+
+
 def _register_whoami_core_test() -> None:
     global _WHOAMI_CORE_TEST_REGISTERED
     if _WHOAMI_CORE_TEST_REGISTERED:

@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
-from factory.orchestration import config
 from factory.durable_identity import durable_source
+from factory.orchestration import config
 
 if TYPE_CHECKING:
     from dbos import DBOSConfig
@@ -233,6 +233,17 @@ def launch() -> None:
         get_queues()
         instance.launch()
         _launched = True
+
+
+def exit_process(status: int) -> NoReturn:
+    """Cease every DBOS executor before another process recovers its workflows.
+
+    DBOS.destroy() does not join running synchronous workflow threads. They
+    can race recovery, then strand the recovered executor in a duplicate-result
+    waiter. Leave the lease to expire after process cessation, never release it
+    while those threads can still write checkpoints.
+    """
+    os._exit(status)
 
 
 def shutdown() -> None:
