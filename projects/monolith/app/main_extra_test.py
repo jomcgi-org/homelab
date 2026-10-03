@@ -16,6 +16,13 @@ from app.main import (  # noqa: E402
 )
 
 
+class _AwaitableTask(MagicMock):
+    """Task double: lifespan awaits the cancelled elector task at shutdown."""
+
+    def __await__(self):
+        return iter(())
+
+
 # ---------------------------------------------------------------------------
 # Helper: create_task capture that drains coroutines without running them
 # ---------------------------------------------------------------------------
@@ -28,7 +35,7 @@ def _make_task_capturer():
     def capture(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()  # avoid "coroutine was never awaited" warnings
-        t = MagicMock()
+        t = _AwaitableTask()
         tasks.append(t)
         return t
 
