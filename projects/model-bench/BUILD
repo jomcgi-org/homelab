@@ -21,9 +21,9 @@
 filegroup(
     name = "stars_climatology_perf_data",
     srcs = [
-        "tasks/stars-climatology-perf-01/task.yaml",
         "tasks/stars-climatology-perf-01/reference/algorithmic.py",
         "tasks/stars-climatology-perf-01/reference/micro.py",
+        "tasks/stars-climatology-perf-01/task.yaml",
     ],
     visibility = ["//projects/model-bench/bench:__pkg__"],
 )

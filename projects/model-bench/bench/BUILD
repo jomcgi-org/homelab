@@ -26,10 +26,10 @@ py_library(
         "runner.py",
         "schema.py",
     ],
-    imports = [".."],
-    visibility = ["//projects/model-bench:__subpackages__"],
     # The smoke test reads the actual task YAML and model-hidden references.
     data = ["//projects/model-bench:stars_climatology_perf_data"],  # keep
+    imports = [".."],
+    visibility = ["//projects/model-bench:__subpackages__"],
     deps = [
         "//projects/model-bench/bench/verifiers",
         "@pip//httpx",
@@ -82,7 +82,7 @@ py_test(
 py_test(
     name = "cli_test",
     # Bootstrap reachability before CI runs Gazelle, which splits the new target.
-    srcs = ["cli_test.py", "stars_climatology_perf_test.py"],
+    srcs = ["cli_test.py"],
     imports = [".."],
     deps = [
         ":bench",
@@ -191,5 +191,17 @@ py_test(
         ":bench",
         "//projects/model-bench/bench/verifiers",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "stars_climatology_perf_test",
+    srcs = ["stars_climatology_perf_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "//projects/model-bench/bench/verifiers",
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
