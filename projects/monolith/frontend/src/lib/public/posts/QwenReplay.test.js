@@ -2,8 +2,17 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import QwenReplay from "./QwenReplay.svelte";
+import { splitGeneratedAnswer } from "./generated-answer.js";
 import recording from "./qwen-replay.json";
 
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    render: vi.fn(async () => ({
+      svg: "<svg><text>Generated diagram</text></svg>",
+    })),
+  },
+}));
 const turn = recording.turns[0];
 let component;
 let target;
@@ -41,9 +50,16 @@ test("first-token timing stays fixed when seeking, without a prefill rate or cha
     expect(view.querySelector(".prefill-segment")).toBeNull();
   }
   await seek(turn.durationMs);
-  expect(view.querySelector(".answer").textContent.trim()).toBe(
+  const output = splitGeneratedAnswer(
     turn.events.map((e) => e.content).join(""),
   );
+  expect(view.querySelector(".answer > p").textContent.trim()).toBe(
+    output.prose.trim(),
+  );
+  if (output.code)
+    expect(view.querySelector(".diagram-source pre").textContent).toBe(
+      output.code,
+    );
 });
 
 test("playback advances in real time and cancels on pause", async () => {
@@ -74,14 +90,16 @@ test("playback advances in real time and cancels on pause", async () => {
   expect(fetch).not.toHaveBeenCalled();
 });
 
-test("phase controls seek to exact recorded boundaries and replay restarts", async () => {
+test("the scrubber seeks across request phases and replay restarts", async () => {
   const view = await render();
-  const buttons = view.querySelectorAll(".phase-navigation button");
-  for (const [index, at] of [0, turn.events[0].at, turn.durationMs].entries()) {
-    buttons[index].click();
-    await tick();
+  for (const [at, phase] of [
+    [0, "Prefill"],
+    [turn.events[0].at, "Decode"],
+    [turn.durationMs, "Complete"],
+  ]) {
+    await seek(at);
     expect(Number(view.querySelector("input[type=range]").value)).toBe(at);
-    expect(buttons[index].getAttribute("aria-pressed")).toBe("true");
+    expect(view.querySelector('[role="status"]').textContent).toBe(phase);
   }
   expect(view.querySelector(".controls button").textContent).toBe("Replay");
   view.querySelector(".controls button").click();
@@ -89,17 +107,14 @@ test("phase controls seek to exact recorded boundaries and replay restarts", asy
   expect(Number(view.querySelector("input[type=range]").value)).toBe(0);
 });
 
-test("current replay uses captured timings and memory without fabricated routing", async () => {
+test("current replay uses captured timings without fabricated routing", async () => {
   const view = await render();
   expect(recording.telemetry.routing).toBe(false);
   expect(view.querySelector(".telemetry")).toBeNull();
   const rate = view.querySelectorAll(".measurements dd")[1];
   expect(rate.textContent).toContain(turn.metrics.tokensPerSecond.toFixed(1));
   await seek(turn.durationMs);
-  const lastStats = turn.statsSamples.findLast((sample) => !sample.unavailable);
-  expect(view.querySelectorAll(".measurements dd")[3].textContent).toContain(
-    (lastStats.vramBytes / 1e9).toFixed(1),
-  );
+  expect(view.querySelectorAll(".measurements dd")).toHaveLength(3);
   expect(rate.textContent).toContain(turn.metrics.tokensPerSecond.toFixed(1));
 });
 
