@@ -679,6 +679,17 @@ create, which fails the turn rather than making it wait.
 
 ### Autonomous intake and refine
 
+The `human` issue label declares human ownership and takes precedence over
+`agent-ready`, task class and allowlisting. It excludes both intake lanes and
+queued admission. Observing it on admitted work durably fences further starts;
+existing invocations drain through normal accounting before the receipt settles
+`cancelled` with `human_handoff` evidence. Unknown invocation costs remain held.
+Refine settlement checks the live label before readiness-label verification.
+Landing disarms pending auto-merge and leaves the issue and PR to the human;
+PR lifecycle does not draft or retire handed-off work. The handoff survives
+label removal and requires explicit re-admission to restart the receipt.
+`needs-human` remains the separate decision-request label.
+
 `FACTORY_AGENT_BOARD_POLL_ENABLED` stages one board consumer at the
 between-job boundary, before autonomous intake lists or claims another receipt.
 It is false by default and independent of `AGENT_BOARD_ENABLED`. When enabled,

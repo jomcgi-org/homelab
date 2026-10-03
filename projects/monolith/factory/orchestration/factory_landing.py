@@ -91,6 +91,13 @@ query FactoryQueueEntries($ids: [ID!]!) {
   }
 }
 """
+_DEQUEUE_PULL_REQUEST = """
+mutation HumanHandoffDequeue($pullRequestId: ID!) {
+  dequeuePullRequest(input: {id: $pullRequestId}) {
+    mergeQueueEntry { id }
+  }
+}
+"""
 _DISARM_AUTO_MERGE = """
 mutation DisarmAutoMerge($pullRequestId: ID!) {
   disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
@@ -765,6 +772,8 @@ def _recover_refused(policy: dict) -> None:
             "ejected_from_merge_queue",
         ):
             continue
+        if _handoff_human_delivery(policy["repo"], item):
+            continue
         try:
             pr = github_get(policy["repo"], f"pulls/{item['pr_number']}")
             if pr.get("merged"):
@@ -1071,6 +1080,48 @@ def _publish_review_gate(item: dict) -> bool:
     return False
 
 
+def _handoff_human_delivery(repo: str, item: dict) -> bool:
+    """Fence landing, disarm any pending merge and leave the PR with its owner.
+
+    An unreadable ownership or unsuccessful disarm also blocks this tick.
+    """
+    from factory.orchestration.factory_controls import (
+        HUMAN_HANDOFF_EVIDENCE,
+        human_handoff,
+    )
+    from factory.orchestration.factory_intake_loop import _label_names
+
+    repo = item.get("repo", repo)
+    try:
+        owned = human_handoff(item["task_id"], ACTOR)
+        if not owned:
+            issue = github_get(repo, f"issues/{item['issue_number']}")
+            owned = "human" in _label_names(issue)
+            if owned:
+                human_handoff(item["task_id"], ACTOR, observed=True)
+        if not owned:
+            return False
+        pull = github_get(repo, f"pulls/{item['pr_number']}")
+        if not pull.get("merged"):
+            node_id = pull.get("node_id")
+            if not isinstance(node_id, str) or not node_id:
+                raise ValueError("human handoff pull request has no node id")
+            if pull.get("auto_merge") and not _disarm(repo, pull):
+                return True
+            # Queue membership remains possible with auto_merge=None.
+            if node_id in _queued_ids([node_id]):
+                github_graphql(_DEQUEUE_PULL_REQUEST, {"pullRequestId": node_id})
+                if node_id in _queued_ids([node_id]):
+                    raise ValueError("human handoff pull request remains queued")
+        finish_task(
+            item["task_id"], "cancelled", ACTOR, evidence=HUMAN_HANDOFF_EVIDENCE
+        )
+        return True
+    except (httpx.HTTPError, ValueError) as exc:
+        _error(item["task_id"], "human_ownership", exc)
+        return True
+
+
 def landing_tick(policy: dict) -> None:
     """Advance every settled delivery one landing step, arming at most one.
 
@@ -1090,6 +1141,9 @@ def landing_tick(policy: dict) -> None:
         if merge_enabled:
             _recover_refused(policy)
         deliveries = _deliveries(policy)
+        deliveries = [
+            item for item in deliveries if not _handoff_human_delivery(repo, item)
+        ]
         for item in deliveries:
             item["refused"] = False
         if publish_enabled:

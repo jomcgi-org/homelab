@@ -2016,3 +2016,132 @@ def test_reversible_refine_retries_after_label_write_and_deferred_settlement(
     assert (
         controls.task_snapshot(task["id"])["evidence"]["state"] == "refine_agent_ready"
     )
+
+
+@pytest.mark.parametrize("task_class", ["refine", "bug-fix"])
+def test_human_handoff_fences_both_lanes_and_is_sticky(db, monkeypatch, task_class):
+    task, policy = make_task(task_class)
+    assert controls.human_handoff(task["id"], "operator", observed=True)
+    assert controls.can_start(task["id"])["reason"] == "cancellation_pending"
+    assert controls.human_handoff(task["id"], "operator")
+    monkeypatch.setattr(
+        conductor, "_consume_intervention_notifications", lambda _: None
+    )
+    conductor.reconcile_task(task["id"], policy, None, human_owned=True)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "cancelled"
+    assert snapshot["evidence"] == controls.HUMAN_HANDOFF_EVIDENCE
+    assert graph.load_graph(task["id"]) == []
+    assert audit_actions(db).count("human_handoff") == 1
+
+
+def test_human_label_at_refine_settlement_overrides_missing_ready_label(
+    db, monkeypatch
+):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "HuMaN")
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {"outcome": "agent-ready", "comment_url": comment["html_url"]},
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "cancelled"
+    assert snapshot["evidence"] == controls.HUMAN_HANDOFF_EVIDENCE
+    assert "refine_unverified" not in audit_actions(db)
+    assert "refine_escalated" not in audit_actions(db)
+
+
+def test_human_handoff_keeps_unresolved_attempt_charged_and_never_retries(
+    db, monkeypatch
+):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    settle_attempt(task, "uncertain", cost_usd=None)
+    controls.human_handoff(task["id"], "operator", observed=True)
+    monkeypatch.setattr(
+        conductor, "_consume_intervention_notifications", lambda _: None
+    )
+    calls = []
+    monkeypatch.setattr(
+        conductor, "_submit_or_reconcile", lambda _task, run, _: calls.append(run)
+    )
+    conductor.reconcile_task(task["id"], policy, None, human_owned=True)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "uncertain"
+    assert snapshot["cancellation_requested"] is True
+    assert snapshot["unresolved_starts"] == 1
+    assert len(calls) == 1
+    assert len(graph.node_runs(task["id"])) == 1
+    assert (
+        controls.finish_task(
+            task["id"],
+            "cancelled",
+            "operator",
+            evidence=controls.HUMAN_HANDOFF_EVIDENCE,
+        )["reason"]
+        == "unresolved_starts"
+    )
+
+
+def test_live_human_ownership_is_recorded_once_and_survives_label_removal(
+    db, monkeypatch
+):
+    task, _ = make_task()
+    calls = []
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda *args: calls.append(args) or {"labels": [{"name": "human"}]},
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    assert conductor._observe_human_ownership(snapshot)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: pytest.fail("handoff is durable")
+    )
+    assert conductor._observe_human_ownership(snapshot)
+    assert len(calls) == 1
+
+
+def test_queued_human_work_is_cancelled_before_task_admission(db):
+    task, _ = make_task()
+    # A second queued receipt in the same repository carries live synchronized
+    # ownership. It must not start even after the first task frees capacity.
+    receive_issue(
+        "owner/repo",
+        7,
+        "Human work",
+        "body",
+        "https://github.com/owner/repo/issues/7",
+        "factory:intake",
+        task_class="bug-fix",
+    )
+    with Session(db) as session:
+        item = WorkItem(
+            title="Human work",
+            state="ready",
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            labels=["human"],
+            github_repo="owner/repo",
+            github_issue_number=7,
+        )
+        session.add(item)
+        session.flush()
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_class == "bug-fix")
+        ).one()
+        row.work_item_id = item.id
+        session.add(row)
+        session.commit()
+    controls.finish_task(task["id"], "cancelled", "operator")
+    assert admit_next("scheduler")["ok"] is False
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_class == "bug-fix")
+        ).one()
+        assert row.state == "cancelled"
+        assert row.task_id is None

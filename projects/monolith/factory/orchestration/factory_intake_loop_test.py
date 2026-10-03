@@ -2446,3 +2446,15 @@ def test_unavailable_dependency_evidence_never_creates_an_intake_receipt(
     )
     assert audits(db, "intake_admitted") == []
     assert audits(db, "dependency_pr_held")
+
+
+@pytest.mark.parametrize("labels", [["human"], ["HuMaN", "agent-ready"]])
+def test_human_ownership_excludes_both_intake_lanes_without_policy_exclusion(
+    db, monkeypatch, labels
+):
+    fake_pages(monkeypatch, [issue(1, labels)])
+    assert intake_loop.intake_tick(policy(refine_enabled=True), generation=0) == []
+    with Session(db) as session:
+        assert session.exec(select(FactoryReceipt)).all() == []
+    detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
+    assert detail["excluded"]["human"] == 1

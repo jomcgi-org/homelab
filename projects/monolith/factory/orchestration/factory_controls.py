@@ -3307,6 +3307,51 @@ def landing_recovery_barrier(task_id: str, *, session=None) -> dict | None:
         }
 
 
+def human_handoff(task_id: str, actor: str, *, observed: bool = False) -> bool:
+    """Persist an observed human ownership fence, or recover it on replay.
+
+    Work-item labels are synchronized by the webhook and intake sweep. Once
+    observed, ownership is sticky for this receipt even if the label changes.
+    finish_task still requires every start to be accounted before cancellation.
+    """
+    with _locked_session() as (db, _control):
+        row = _receipt(db, task_id)
+        if row is None or row.state not in ("admitted", "uncertain", "landing"):
+            return False
+        prior = db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "human_handoff",
+            )
+        ).first()
+        if prior is not None:
+            return True
+        item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+        labelled = item is not None and "human" in {
+            label.lower() for label in item.labels
+        }
+        if not observed and not labelled:
+            return False
+        row.cancellation_requested = True
+        row.updated_at = _now()
+        db.add(row)
+        _audit(
+            db,
+            actor,
+            "human_handoff",
+            task_id=task_id,
+            issue_number=row.issue_number,
+            label="human",
+        )
+        return True
+
+
+HUMAN_HANDOFF_EVIDENCE = {
+    "state": "human_handoff",
+    "reason": "Issue labelled human; ownership handed to a person, factory delivery not claimed.",
+}
+
+
 def finish_task(
     task_id: str,
     outcome: str,
@@ -3357,7 +3402,19 @@ def finish_task(
                 and json.loads(last.detail_json).get("evidence") == evidence
             )
             return {"ok": same, "reason": None if same else "conflicting_outcome"}
-        if row.state == "landing":
+        handed_off = (
+            outcome == "cancelled"
+            and evidence == HUMAN_HANDOFF_EVIDENCE
+            and row.cancellation_requested
+            and db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "human_handoff",
+                )
+            ).first()
+            is not None
+        )
+        if row.state == "landing" and not handed_off:
             ready = db.exec(
                 select(FactoryAudit)
                 .where(

@@ -1779,6 +1779,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
 | Proposed graph envelopes are preflighted inside the planner turn | section 4, planner preview | #6650 | implemented in repository behind `swarm.factoryPlannerPreviewEnabled=false`, with no production planner binding or serving route; binding provisioning, enablement and the 72-hour rejected-run/cost comparison remain live checks |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
@@ -1932,6 +1933,16 @@ capacity to finish and verify what it started. The monolith owns the durable
 state and the deterministic enforcement; planning and execution stay in EmberVM
 guests. Tracked by #5784 and the six sub-issues in the table below; the full
 design text is on #5784.
+
+**Why.** The `human` issue label declares human ownership independently of
+assignment and readiness. Both intake lanes exclude it, queued receipts check
+the synchronized work item at admission, and the reconciler reads live ownership
+before further starts. An observed handoff durably fences the receipt and drains
+existing attempts through normal accounting before cancellation with
+`human_handoff` provenance. It does not manufacture a delivery success or a
+missing-label escalation, release unknown reservations, close issues or PRs,
+or resume a receipt when the label is removed. Refinement also checks the live
+label at settlement to cover a handoff during briefing.
 
 | Aspect | Decision | Owner |
 | --- | --- | --- |
