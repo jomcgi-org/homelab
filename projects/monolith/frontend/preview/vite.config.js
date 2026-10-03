@@ -53,6 +53,8 @@ export default defineConfig({
     ],
   },
   build: {
+    // Match the production app target for the pinned Svelte/esbuild toolchain.
+    target: "es2022",
     outDir: here("../fixture-preview"),
     emptyOutDir: true,
     sourcemap: false,
