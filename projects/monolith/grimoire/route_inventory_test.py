@@ -162,6 +162,7 @@ CASES = {
         params={"session_id": "$campaign_session.id"},
         body={"formula": "2d6", "visibility": "table"},
         state="play",
+        denied_writers=(),
     ),
     ("POST", PREFIX + "/sessions/{session_id}/events/{event_id}/retract"): Case(
         params={"session_id": "$campaign_session.id", "event_id": "$event_table.id"},
