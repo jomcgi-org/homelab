@@ -48,10 +48,6 @@ ROLLOUT_TASKS = Path(__file__).resolve().parents[1] / "tasks"
 
 
 @pytest.mark.parametrize("task_id", ROLLOUT_PINS)
-@pytest.mark.skipif(
-    not (ROLLOUT_TASKS / "rollout-handoff-logs-01" / "task.yaml").exists(),
-    reason="bootstrap CI-generated task-spec runfiles, removed before delivery",
-)
 def test_rollout_task_loads_with_exact_contract(task_id):
     mapping = yaml.safe_load((ROLLOUT_TASKS / task_id / "task.yaml").read_text())
     task = TaskSpec.model_validate(mapping)
@@ -80,10 +76,6 @@ def test_rollout_task_loads_with_exact_contract(task_id):
 
 
 @pytest.mark.parametrize("task_id", ROLLOUT_PINS)
-@pytest.mark.skipif(
-    not (ROLLOUT_TASKS / "rollout-handoff-logs-01" / "task.yaml").exists(),
-    reason="bootstrap CI-generated task-spec runfiles, removed before delivery",
-)
 def test_rollout_prompt_has_no_repair_or_hidden_grader_pointers(task_id):
     mapping = yaml.safe_load((ROLLOUT_TASKS / task_id / "task.yaml").read_text())
     prompt = mapping["prompt"]
@@ -127,10 +119,6 @@ def test_rollout_prompt_has_no_repair_or_hidden_grader_pointers(task_id):
 
 
 @pytest.mark.parametrize("task_id", ROLLOUT_PINS)
-@pytest.mark.skipif(
-    not (ROLLOUT_TASKS / "rollout-handoff-logs-01" / "task.yaml").exists(),
-    reason="bootstrap CI-generated task-spec runfiles, removed before delivery",
-)
 def test_rollout_snapshot_reproducible_and_gold_hidden(tmp_path, monkeypatch, task_id):
     """Exercise the real extractor using a controlled archive, with no git or network."""
     task_dir = tmp_path / "tasks" / task_id
