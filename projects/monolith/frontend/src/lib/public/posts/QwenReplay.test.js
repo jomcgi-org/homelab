@@ -46,7 +46,7 @@ test("first-token timing stays fixed when seeking, without a prefill rate or cha
   );
 });
 
-test("playback advances on frames, changes speed and cancels on pause", async () => {
+test("playback advances in real time and cancels on pause", async () => {
   const fetch = vi.spyOn(globalThis, "fetch");
   let nextFrame;
   vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
@@ -63,15 +63,10 @@ test("playback advances on frames, changes speed and cancels on pause", async ()
   nextFrame(500);
   await tick();
   expect(Number(view.querySelector("input[type=range]").value)).toBe(500);
-  const speed = view.querySelector(".speed-control");
-  speed.click();
-  await tick();
-  speed.click();
-  await tick();
-  nextFrame(500);
   nextFrame(1000);
   await tick();
-  expect(Number(view.querySelector("input[type=range]").value)).toBe(2500);
+  expect(Number(view.querySelector("input[type=range]").value)).toBe(1000);
+  expect(view.querySelector(".speed-control")).toBeNull();
   view.querySelector(".controls button").click();
   await tick();
   expect(cancel).toHaveBeenCalled();
@@ -102,8 +97,35 @@ test("current replay uses captured timings and memory without fabricated routing
   expect(rate.textContent).toContain(turn.metrics.tokensPerSecond.toFixed(1));
   await seek(turn.durationMs);
   const lastStats = turn.statsSamples.findLast((sample) => !sample.unavailable);
-  expect(view.querySelectorAll(".measurements dd")[2].textContent).toContain(
+  expect(view.querySelectorAll(".measurements dd")[3].textContent).toContain(
     (lastStats.vramBytes / 1e9).toFixed(1),
   );
   expect(rate.textContent).toContain(turn.metrics.tokensPerSecond.toFixed(1));
+});
+
+test("shows effective uncached prefill throughput without speed or arrival-count clutter", async () => {
+  const view = await render();
+  const rate = Math.round(
+    ((turn.usage.prompt_tokens - turn.usage.cached_tokens) * 1000) /
+      turn.metrics.ttftMs,
+  );
+  expect(view.querySelectorAll(".measurements dd")[2].textContent).toContain(
+    rate.toLocaleString("en-US"),
+  );
+  expect(view.querySelector(".speed-control")).toBeNull();
+  expect(view.querySelector(".arrival-count")).toBeNull();
+});
+
+test("the input scan follows seeking while thinking stays explicitly disabled", async () => {
+  const view = await render();
+  expect(recording.thinking).toBe(false);
+  expect(turn.events.every((event) => !event.reasoning)).toBe(true);
+  const initial = view.querySelector(".scan-window").textContent;
+  await seek(turn.metrics.ttftMs / 2);
+  expect(view.querySelector(".scan-window").textContent).not.toBe(initial);
+  expect(view.querySelector(".scan-heading").textContent).toContain(
+    "Thinking off",
+  );
+  await seek(0);
+  expect(view.querySelector(".scan-window").textContent).toBe(initial);
 });

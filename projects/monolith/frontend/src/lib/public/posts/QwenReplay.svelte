@@ -5,7 +5,6 @@
   let element;
   let position = $state(0);
   let playing = $state(false);
-  let speed = $state(1);
   let answer = $derived(
     turn.events
       .filter((event) => event.at <= position)
@@ -17,14 +16,24 @@
       turn.statsSamples[0],
   );
   let stats = $derived(statsSample?.unavailable ? null : statsSample);
-  let emitted = $derived(
-    turn.events.filter((event) => event.at <= position).length,
+  const uncachedTokens =
+    turn.usage.prompt_tokens - (turn.usage.cached_tokens ?? 0);
+  const inputText = turn.prompt.replace(/\s+/g, " ");
+  const prefillStart =
+    turn.progress?.find((event) => event.stage === "prefill")?.at ?? 0;
+  // The server supplies start/end only. This scans the input over that interval,
+  // without claiming an observed per-token processing position.
+  let scanOffset = $derived(
+    Math.max(
+      0,
+      Math.min(
+        1,
+        (position - prefillStart) / (turn.metrics.ttftMs - prefillStart),
+      ),
+    ) * Math.max(0, inputText.length - 900),
   );
-  let progress = $derived(
-    turn.progress?.findLast(
-      (item) => item.at <= position && item.stage === "prefill",
-    ),
-  );
+  let scanStart = $derived(Math.floor(scanOffset / 100) * 100);
+  const prefillRate = (uncachedTokens * 1000) / turn.metrics.ttftMs;
   let phase = $derived(
     position >= turn.durationMs
       ? "Complete"
@@ -63,15 +72,11 @@
   });
   $effect(() => {
     if (!playing) return;
-    const rate = speed;
     let previous;
     let frame;
     function tick(now) {
       if (previous !== undefined) {
-        position = Math.min(
-          turn.durationMs,
-          position + (now - previous) * rate,
-        );
+        position = Math.min(turn.durationMs, position + (now - previous));
       }
       previous = now;
       if (position >= turn.durationMs) playing = false;
@@ -87,15 +92,6 @@
   class="replay"
   aria-label="Inference on the RTX 4090"
 >
-  <div class="transport-heading">
-    <button
-      type="button"
-      class="speed-control"
-      aria-label={"Playback speed " + speed + " times. Click to change."}
-      onclick={() => (speed = speed === 8 ? 1 : speed * 2)}
-      >{speed}× speed</button
-    >
-  </div>
   <div class="controls">
     <button
       type="button"
@@ -161,6 +157,20 @@
           </dd>
         </div>
         <div>
+          <dt
+            title="Uncached prompt tokens divided by client time to first token, including request overhead"
+          >
+            Prefill
+          </dt>
+          <dd>
+            {Math.round(prefillRate).toLocaleString("en-US")}
+            <small>tok/s</small>
+          </dd>
+          <span class="prompt-size"
+            >{uncachedTokens.toLocaleString("en-US")} tokens</span
+          >
+        </div>
+        <div>
           <dt>GPU memory</dt>
           <dd>
             {gb(stats?.vramBytes)}
@@ -200,12 +210,28 @@
           y="70">Decode</text
         >
       </svg>
-      <div class="arrival-count">
-        {phase === "Prefill"
-          ? progress?.total
-            ? `${progress.done} / ${progress.total} prompt tokens`
-            : `${turn.usage.prompt_tokens} prompt tokens`
-          : `${emitted} / ${turn.events.length} text arrivals`}
+    </div>
+    <div
+      class="input-scan"
+      class:finished={phase !== "Prefill"}
+      aria-label="Input text scan over the measured prefill interval"
+    >
+      <div class="scan-heading">
+        <span>{uncachedTokens.toLocaleString("en-US")} input tokens</span><span
+          >Thinking off</span
+        >
+      </div>
+      <div class="scan-window" aria-hidden="true">
+        {#each [0, 1, 2] as row}
+          <div class="scan-row">
+            <span style={`transform:translateX(-${scanOffset % 100}ch)`}
+              >{inputText.slice(
+                scanStart + row * 300,
+                scanStart + row * 300 + 300,
+              )}</span
+            >
+          </div>
+        {/each}
       </div>
     </div>
     <div class="conversation">
@@ -260,10 +286,6 @@
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
   }
-  .transport-heading {
-    display: flex;
-    justify-content: flex-end;
-  }
   .controls {
     display: flex;
     gap: 0.6rem;
@@ -306,7 +328,7 @@
   }
   .measurements {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     margin: 0;
     border-block: 1px solid var(--line);
   }
@@ -338,7 +360,7 @@
     overflow: visible;
   }
   .prefill-span {
-    fill: color-mix(in srgb, var(--tone-ram) 14%, var(--sheet));
+    fill: color-mix(in srgb, var(--tone-ram) 38%, var(--sheet));
   }
   .arrival-strip line {
     stroke: var(--tone-gpu);
@@ -356,12 +378,6 @@
   .arrival-strip text {
     fill: var(--ink-2);
     font: 10px var(--font-code);
-  }
-  .arrival-count {
-    text-align: right;
-    color: var(--ink-2);
-    font: 0.65rem var(--font-code);
-    margin-top: 0.5rem;
   }
   .cursor {
     display: inline-block;
@@ -381,6 +397,53 @@
     .cursor {
       animation: none;
     }
+  }
+  .measurements > div:nth-child(3) dd {
+    color: var(--tone-ram);
+  }
+  .prompt-size {
+    display: block;
+    color: var(--ink-2);
+    font: 0.65rem var(--font-code);
+    margin-top: 0.35rem;
+  }
+  @media (max-width: 600px) {
+    .measurements {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .measurements > div:nth-child(3) {
+      border-left: 0;
+    }
+  }
+  .input-scan {
+    margin: 1rem 0;
+    padding: 0.8rem;
+    border-left: 3px solid var(--tone-ram);
+    background: color-mix(in srgb, var(--tone-ram) 10%, var(--sheet));
+  }
+  .scan-heading {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    color: var(--tone-ram);
+    font: 0.65rem var(--font-code);
+    margin-bottom: 0.65rem;
+  }
+  .scan-window {
+    overflow: hidden;
+    font: 0.7rem/1.8 var(--font-code);
+    color: var(--ink-2);
+  }
+  .scan-row {
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .scan-row span {
+    display: inline-block;
+    will-change: transform;
+  }
+  .input-scan.finished {
+    border-color: var(--line);
   }
   .prompt {
     padding-block: 0.75rem;

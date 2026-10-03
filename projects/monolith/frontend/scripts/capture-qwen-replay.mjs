@@ -1,7 +1,7 @@
 // Capture through a local tunnel to the demo's upstream. No service credentials
 // or raw server profiles are written into the public recording.
 // QWEN_REPLAY_API=http://127.0.0.1:18090 QWEN_REPLAY_BUILD=<sha> node scripts/capture-qwen-replay.mjs
-import { writeFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import {
   attributeExpertActivity,
@@ -18,10 +18,14 @@ if (!base || !/^[a-f0-9]{40}$/.test(build ?? "")) {
 }
 if (process.env.QWEN_REPLAY_TIMING_ONLY === "1") {
   const { captureWarmTiming } = await import("./capture-qwen-timing.mjs");
+  const prompt = process.env.QWEN_REPLAY_PROMPT_FILE
+    ? await readFile(process.env.QWEN_REPLAY_PROMPT_FILE, "utf8")
+    : undefined;
   await captureWarmTiming(
     base,
     build,
     new URL("../src/lib/public/posts/qwen-replay.json", import.meta.url),
+    { prompt },
   );
   process.exit(0);
 }

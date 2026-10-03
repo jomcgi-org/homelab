@@ -161,14 +161,14 @@ export async function captureTiming(base, build, output, options = {}) {
 }
 
 // Fresh prefixes defeat KV reuse while repeated content warms expert working sets.
-export async function captureWarmTiming(base, build, output) {
+export async function captureWarmTiming(base, build, output, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "qwen-warm-"));
   const records = [];
   try {
     for (let run = 0; run < 4; run++) {
       const file = join(directory, `${run}.json`);
       await captureTiming(base, build, file, {
-        prompt: `Request ${randomUUID()}.\n${DEFAULT_PROMPT}`,
+        prompt: `Request ${randomUUID()}.\n${options.prompt ?? DEFAULT_PROMPT}`,
         conditions:
           "One warm-up followed by three fresh-prefix requests. Cache reporting must be enabled on the verified server. Zero cached prompt tokens and zero reused progress tokens required. Median-TTFT recording selected. Normal serving configuration; client timings include transport.",
       });
