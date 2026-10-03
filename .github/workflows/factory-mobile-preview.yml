@@ -1,0 +1,72 @@
+name: Factory mobile preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - projects/monolith/frontend/**
+      - projects/design-system/tokens/**
+      - .github/workflows/factory-mobile-preview.yml
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - bazel/patches/**
+
+# Untrusted PR code gets a fresh hosted runner, no secrets, deployment
+# credentials, remote cache, or repository write token.
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-mobile-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      FACTORY_PREVIEW_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Install frozen workspace dependencies
+        run: |
+          npm install --global pnpm@10.34.5
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Generate same-commit loader fixtures and build real factory views
+        working-directory: projects/monolith/frontend
+        run: |
+          pnpm exec vitest run --config factory-preview/vitest.config.js
+          pnpm exec vite build --config factory-preview/vite.config.js
+      - name: Install Chromium test runner
+        run: |
+          python3 -m venv /tmp/factory-browser
+          /tmp/factory-browser/bin/pip install playwright==1.63.0
+          /tmp/factory-browser/bin/playwright install --with-deps chromium
+      - name: Check synthetic phone, text-resize, and desktop breakpoints
+        run: |
+          /tmp/factory-browser/bin/python projects/monolith/frontend/factory-preview/browser_check.py \
+            --artifact projects/monolith/frontend/factory-fixture-preview \
+            --output factory-preview-evidence \
+            --expected-sha "$FACTORY_PREVIEW_SHA"
+      - name: Upload exact-commit screenshots, traces, and failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: factory-preview-evidence-${{ github.event.pull_request.head.sha }}
+          path: factory-preview-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload tested synthetic artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: factory-preview-${{ github.event.pull_request.head.sha }}
+          path: projects/monolith/frontend/factory-fixture-preview/
+          if-no-files-found: error
+          retention-days: 14

@@ -1492,7 +1492,28 @@
 
 @media (max-width: 760px) {
   .factory-page.activity-page {
-    padding: 1rem 1em 4em;
+    padding: 0.5rem 0.75rem 2rem;
+  }
+
+  /* The line state is text, so it needs a wider cell than an overview count.
+     Let enlarged text reduce the column count rather than overlap its peers. */
+  .factory-page.activity-page .stats {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
+    gap: 1px;
+    margin-bottom: 1rem;
+    background: var(--stroke);
+  }
+
+  .factory-page.activity-page .stats > div {
+    padding: 0.5rem 0.65rem;
+    border: 0;
+    background: var(--sheet);
+  }
+
+  .factory-page.activity-page .stats .v {
+    font-size: 1.2rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   /* The trail wraps rather than pushing the page wide: a session crumb

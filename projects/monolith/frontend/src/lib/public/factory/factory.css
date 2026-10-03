@@ -332,14 +332,15 @@
 }
 
 .factory-page .charts {
-  /* charts.js draws a 600 wide viewBox with LEFT = 48 reserved for the
-     y-axis, so the plot area starts 48/600 in. The legend matches it. */
-  --plot-gutter: 8%;
+  /* Match the 44/360 y-axis gutter in charts.js. */
+  --plot-gutter: 12.222%;
 
   display: grid;
   flex: none;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2rem;
+  /* A narrow desktop gets two columns before labels become phone-sized
+     again. The inner SVG stays wide enough for its 15-unit axis text. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18.5rem), 1fr));
+  gap: 1rem;
 }
 
 .factory-page .chart svg {
@@ -795,12 +796,6 @@
   text-overflow: ellipsis;
 }
 
-@media (max-width: 540px) {
-  .factory-page .lane-list .m {
-    display: none;
-  }
-}
-
 .factory-page .goals .stale-note {
   color: var(--accent-ink);
   font-family: var(--font-code);
@@ -883,71 +878,6 @@
   .factory-page .lower > * + * {
     border-top: 1px solid var(--stroke);
     border-left: 0;
-  }
-}
-
-@media (max-width: 760px) {
-  .factory-page {
-    padding: 1rem 1em 4em;
-  }
-
-  /* The masthead stacks rather than competing for one line: the trail and the
-     control strip each get a row, and the strip hugs its content at the right
-     edge. Stretching it to the full width pushed the tabs and the toggle off
-     the side of a phone screen. */
-  .factory-page .masthead {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.5rem;
-  }
-
-  .factory-page .mast-actions {
-    align-self: flex-end;
-    margin-left: 0;
-  }
-
-  /* The trail hugs its cells rather than stretching: the stacked masthead
-     stretches its children by default, which pulled the first crumb wide. */
-  .factory-page .masthead > .trail {
-    align-self: flex-start;
-  }
-}
-
-@media (max-width: 540px) {
-  .factory-page .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .factory-page .stats > div {
-    border-bottom: 1px solid var(--stroke);
-  }
-
-  .factory-page .stats > div:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .factory-page .stats > div:nth-last-child(-n + 2) {
-    border-bottom: 0;
-  }
-
-  .factory-page .breakdown {
-    grid-template-columns: 1fr;
-    gap: 1rem;
-  }
-
-  /* Rows and the header must agree on their columns or the header labels sit
-     over the wrong cells. Both drop the area and the line counts here, so both
-     are three columns; the .hd rule further down is repeated inside this query
-     because it is later in source and would otherwise win. */
-  .factory-page .prs > li,
-  .factory-page .prs > li.hd {
-    grid-template-columns: 3.2em minmax(0, 1fr) 3.2em;
-  }
-
-  .factory-page .prs .ch,
-  .factory-page .prs > li > .sc,
-  .factory-page .prs .hd button:nth-child(3) {
-    display: none;
   }
 }
 
@@ -1514,11 +1444,9 @@
 }
 
 @media (max-width: 900px) {
-  /* The overview stacks in a deliberate order too. Side by side the charts sit
-     beside the numbers; stacked, they are the least legible thing on a phone
-     and the slowest to read, so they go last. What the reader wants first is
-     the headline numbers, then what the factory is working towards, then what
-     actually landed. */
+  /* The colorful trends are the overview's primary reading surface. Keep
+     them immediately after the compact numbers, including on a phone, rather
+     than burying them below every task and merged change. */
   .factory-page .home {
     display: flex;
     flex-direction: column;
@@ -1533,11 +1461,11 @@
   }
 
   .factory-page .lower {
-    order: 2;
+    order: 3;
   }
 
   .factory-page .charts {
-    order: 3;
+    order: 2;
   }
 
   .factory-page .goals {
@@ -1557,27 +1485,6 @@
 
   .factory-page .lower .outcomes {
     border-top: 1px solid var(--stroke);
-  }
-}
-
-@media (max-width: 620px) {
-  /* Six tiles across three columns leaves each one too narrow to read at this
-     width, so they pair up. */
-  .factory-page .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .factory-page .stats > div {
-    border-right: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--stroke);
-  }
-
-  .factory-page .stats > div:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .factory-page .stats > div:nth-last-child(-n + 2) {
-    border-bottom: 0;
   }
 }
 
@@ -1647,5 +1554,314 @@
     display: grid;
     gap: 0.5rem;
     padding: 0.9rem 1rem;
+  }
+}
+
+/* Headline numbers are a compact instrument strip. The small sparklines stay
+   available, but the full-color, labelled charts get the visual weight. */
+.factory-page .home > .stats {
+  margin: 0;
+}
+
+.factory-page .home > .stats > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem;
+  align-items: end;
+  padding: 0.5rem 0.65rem;
+}
+
+.factory-page .home > .stats .k {
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  letter-spacing: 0.025em;
+}
+
+.factory-page .home > .stats .v {
+  margin: 0;
+  font-size: 1.2rem;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.factory-page .home > .stats .sp {
+  height: 0.5rem;
+  margin: 0.1rem 0 0;
+}
+
+.factory-page .chart {
+  min-width: 0;
+  padding: 0.7rem 0.65rem 0.8rem;
+  border: 1px solid var(--stroke);
+}
+
+.factory-page .chart .sec-label {
+  margin-bottom: 0.6rem;
+}
+
+.factory-page .chart .legend {
+  font-size: 0.72rem;
+}
+
+.factory-page .chart .legend > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .factory-page .home {
+    gap: 1rem;
+  }
+
+  .factory-page .charts {
+    gap: 1rem;
+  }
+
+  .factory-page .home > .stats {
+    /* Three columns at ordinary phone text size; fewer when the reader
+       enlarges text. There is no fixed-height clipping or sideways strip. */
+    grid-template-columns: repeat(
+      auto-fit,
+      minmax(min(100%, max(5.5rem, 30%)), 1fr)
+    );
+    gap: 1px;
+    background: var(--stroke);
+  }
+
+  .factory-page .home > .stats > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.15rem;
+    padding: 0.4rem 0.55rem;
+    border: 0;
+    background: var(--sheet);
+  }
+
+  .factory-page .home > .stats .v {
+    font-size: 1.12rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .factory-page .home > .stats .sp {
+    grid-column: 1;
+    width: 100%;
+    height: 0.5rem;
+    margin: 0.1rem 0 0;
+  }
+
+  .factory-page .lower > * {
+    padding: 0.75rem;
+  }
+
+  /* A task's state and elapsed time are essential on a phone. Give them
+     their own line instead of hiding them to preserve the desktop columns. */
+  .factory-page .lane-list a {
+    grid-template-columns: 0.6rem auto minmax(0, 1fr);
+    gap: 0.2rem 0.45rem;
+    align-items: start;
+    padding: 0.65rem 0.25rem;
+    min-height: 44px;
+    overflow: visible;
+  }
+
+  .factory-page .lane-list .mark {
+    margin-top: 0.35rem;
+  }
+
+  .factory-page .lane-list .t {
+    min-width: 0;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    text-overflow: clip;
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  .factory-page .lane-list .m {
+    grid-column: 3;
+    max-width: none;
+    overflow: visible;
+    white-space: normal;
+    text-align: left;
+    font-size: 0.72rem;
+    overflow-wrap: anywhere;
+  }
+
+  .factory-page .lane-list .n {
+    padding-top: 0.1rem;
+  }
+
+  .factory-page .goals .sec-label {
+    flex-wrap: wrap;
+  }
+
+  .factory-page .goal-head {
+    grid-template-columns: 1.5em minmax(0, 1fr) auto;
+  }
+
+  .factory-page .goal-head .bar {
+    grid-column: 2;
+  }
+
+  .factory-page .goal-head .merge-count {
+    white-space: normal;
+  }
+
+  .factory-page .goal-meta,
+  .factory-page .goal-name {
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 760px) {
+  .factory-page {
+    padding: 0.5rem 0.75rem 2rem;
+  }
+
+  /* One joined header: the trail and scheme share a row, then the three
+     equal-width tabs. Forty-four pixel targets stay easy to tap without the
+     old floating boxes and gap between two competing navigation strips. */
+  .factory-page .masthead {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 0;
+    align-items: stretch;
+    margin-bottom: 0.75rem;
+  }
+
+  .factory-page .masthead > .trail {
+    min-width: 0;
+    align-self: stretch;
+    border: 0;
+  }
+
+  .factory-page .masthead .trail-row {
+    flex-wrap: wrap;
+  }
+
+  .factory-page .masthead .crumb {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0.2rem 0.4rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .factory-page .masthead .trail-row .crumb:first-child {
+    flex: 0 1 auto;
+    padding-left: 0;
+  }
+
+  .factory-page .masthead .trail-row .crumb + .crumb {
+    border-left: 0;
+  }
+
+  .factory-page .masthead .crumb + .crumb::before {
+    content: "/";
+    margin-right: 0.65rem;
+    color: var(--ink-2);
+  }
+
+  .factory-page .mast-actions {
+    display: contents;
+  }
+
+  .factory-page .mast-actions .scheme {
+    grid-column: 2;
+    grid-row: 1;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    border: 1px solid var(--stroke);
+  }
+
+  .factory-page .mast-actions .view-tabs {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-bottom: 1px solid var(--stroke);
+    font-size: 0.75rem;
+  }
+
+  .factory-page .view-tabs a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0.3rem;
+    border-bottom: 2px solid transparent;
+    overflow-wrap: anywhere;
+  }
+
+  .factory-page .view-tabs a + a {
+    border-left: 0;
+  }
+
+  .factory-page .view-tabs .here {
+    border-bottom-color: var(--accent-ink);
+    color: var(--accent-ink);
+  }
+
+  .factory-page .pager {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .factory-page .pager button,
+  .factory-page .search > button,
+  .factory-page .search input[type="search"] {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .factory-page .breakdown {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+
+  .factory-page .prs > li.hd {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.25rem;
+  }
+
+  .factory-page .prs .hd button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.25rem 0;
+    font-size: 0.65rem;
+    letter-spacing: 0;
+    text-align: left;
+  }
+
+  /* The title gets the whole first line; type, area, changes and day stay
+     together below it. Nothing disappears when the table becomes a list. */
+  .factory-page .prs > li:not(.hd) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 4rem), 1fr));
+    gap: 0.25rem 0.5rem;
+    padding: 0.6rem 0;
+    overflow: visible;
+  }
+
+  .factory-page .prs > li:not(.hd) > span:nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .factory-page .prs > li > .sc,
+  .factory-page .prs .ch,
+  .factory-page .prs .dt {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }
