@@ -1,5 +1,5 @@
 <script>
-  import RescueMap from "./RescueMap.svelte";
+  import IncidentGraph from "./IncidentGraph.svelte";
   import recording from "./qwen-replay.json";
   const turn = recording.turns[0];
   let element;
@@ -13,23 +13,24 @@
   );
   const uncachedTokens =
     turn.usage.prompt_tokens - (turn.usage.cached_tokens ?? 0);
-  const inputText = turn.prompt
-    .replace(/^Request [^\n]+\n/, "")
-    .replace(/\s+/g, " ");
+  const finalAnswer = turn.events.map((event) => event.content).join("");
+  const reportSections = recording.document?.sections ?? [];
   const prefillStart =
     turn.progress?.find((event) => event.stage === "prefill")?.at ?? 0;
   // The server supplies start/end only. This scans the input over that interval,
   // without claiming an observed per-token processing position.
-  let scanOffset = $derived(
+  let scanFraction = $derived(
     Math.max(
       0,
       Math.min(
         1,
         (position - prefillStart) / (turn.metrics.ttftMs - prefillStart),
       ),
-    ) * Math.max(0, inputText.length - 900),
+    ),
   );
-  let scanStart = $derived(Math.floor(scanOffset / 100) * 100);
+  let pageOffset = $derived(
+    scanFraction * Math.max(0, (recording.document?.pages ?? 1) - 4),
+  );
   const prefillRate = (uncachedTokens * 1000) / turn.metrics.ttftMs;
   let phase = $derived(
     position >= turn.durationMs
@@ -84,34 +85,56 @@
   class="replay"
   aria-label="Inference on the RTX 4090"
 >
-  <p class="question">Apollo 13 mission report → the rescue, at a glance.</p>
+  <p class="question">
+    Map the controls and failures from the <a
+      href={recording.source.url}
+      target="_blank"
+      rel="noreferrer">OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
+    >.
+  </p>
   <div class="demo-body">
     <span class="sr-only" role="status">{phase}</span>
     {#if phase === "Prefill"}
       <div
         class="input-scan"
-        aria-label="Input text scan over the measured prefill interval"
+        aria-label="Report pages across the measured prefill interval"
       >
         <div class="scan-heading">
           <span>{uncachedTokens.toLocaleString("en-US")} input tokens</span
           ><span>Thinking off</span>
         </div>
-        <div class="scan-window" aria-hidden="true">
-          {#each [0, 1, 2, 3, 4, 5] as row}
-            <div class="scan-row">
-              <span style={`transform:translateX(-${scanOffset % 100}ch)`}
-                >{inputText.slice(
-                  scanStart + row * 300,
-                  scanStart + row * 300 + 300,
-                )}</span
-              >
-            </div>
-          {/each}
+        <div class="scan-window document-strip" aria-hidden="true">
+          <div
+            class="document-pages"
+            style={`transform:translateX(-${pageOffset * 150}px)`}
+          >
+            {#each Array.from({ length: recording.document.pages }, (_, i) => i + 1) as page}
+              <div class="document-page">
+                <span class="page-heading"
+                  >{reportSections
+                    .filter((section) => section.from <= page)
+                    .at(-1)?.label}</span
+                >
+                <div class="page-lines">
+                  {#each Array.from({ length: 12 }, (_, i) => i) as line}<i
+                      style={`width:${45 + ((page * 17 + line * 23) % 50)}%`}
+                    ></i>{/each}
+                </div>
+                <span class="page-number">{page}</span>
+              </div>
+            {/each}
+          </div>
         </div>
       </div>
     {:else}
       <div class="answer" role="region" aria-label="Recorded answer">
-        <RescueMap {answer} complete={phase === "Complete"} />
+        <IncidentGraph
+          {answer}
+          {finalAnswer}
+          sourceUrl={recording.source.url}
+          review={recording.review}
+          complete={phase === "Complete"}
+        />
       </div>
     {/if}
   </div>
@@ -159,7 +182,7 @@
     <span class="time">{seconds(position)}</span>
   </div>
   <details class="prompt">
-    <summary>Full prompt</summary>
+    <summary>Prompt</summary>
     <pre>{turn.prompt}</pre>
   </details>
 </section>
@@ -197,13 +220,52 @@
     font: 0.75rem/2 var(--font-code);
     color: var(--ink-2);
   }
-  .scan-row {
-    overflow: hidden;
-    white-space: nowrap;
+  .question a {
+    color: inherit;
+    text-decoration-color: var(--tone-ram);
+    text-underline-offset: 0.2em;
   }
-  .scan-row span {
-    display: inline-block;
+  .document-strip {
+    overflow: hidden;
+    height: 230px;
+  }
+  .document-pages {
+    display: flex;
+    gap: 14px;
+    width: max-content;
     will-change: transform;
+  }
+  .document-page {
+    width: 136px;
+    height: 218px;
+    padding: 14px 12px;
+    background: var(--sheet);
+    border: 1px solid var(--tone-ram);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+  }
+  .page-heading {
+    color: var(--ink);
+    font: 0.65rem/1.4 var(--font-code);
+    min-height: 3rem;
+  }
+  .page-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    flex: 1;
+  }
+  .page-lines i {
+    display: block;
+    height: 2px;
+    background: var(--ink-3);
+    opacity: 0.5;
+  }
+  .page-number {
+    font: 0.6rem var(--font-code);
+    color: var(--ink-2);
+    align-self: flex-end;
   }
   .answer {
     font-size: 0.9rem;
