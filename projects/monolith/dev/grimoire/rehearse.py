@@ -32,6 +32,17 @@ def use_loopback_requests(context):
         setattr(request, method, send)
 
 
+def fetch_loopback_route(route):
+    """Replay the real intercepted request without relying on runner DNS."""
+    address = urlsplit(route.request.url)
+    if address.hostname == "friends.localhost":
+        return route.fetch(
+            url=urlunsplit(address._replace(netloc=f"127.0.0.1:{address.port}")),
+            headers={**route.request.all_headers(), "host": address.netloc},
+        )
+    return route.fetch()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("/tmp/grimoire-rehearsal"))
@@ -385,7 +396,7 @@ def main():
 
             def delay_poll(route):
                 if route.request.method == "GET" and not delayed_polls:
-                    response = route.fetch()
+                    response = fetch_loopback_route(route)
                     time.sleep(1)
                     delayed_polls.append(route.request.url)
                     route.fulfill(response=response)
@@ -424,7 +435,9 @@ def main():
 
             def lose_write_response(route):
                 if route.request.method == "POST":
-                    route.fetch()  # Commit normally, then lose the response.
+                    fetch_loopback_route(
+                        route
+                    )  # Commit normally, then lose the response.
                     route.abort()
                 else:
                     route.continue_()
@@ -980,15 +993,27 @@ def main():
             report["failure"] = str(error) or repr(error)
             raise
         finally:
+            report["capture_errors"] = []
             for role, context in contexts:
                 for index, page in enumerate(context.pages):
-                    page.screenshot(
-                        path=str(args.output / f"{role}-final-{index}.png"),
-                        full_page=True,
-                    )
-                context.tracing.stop(path=str(args.output / f"{role}-trace.zip"))
-                context.close()
-            browser.close()
+                    try:
+                        page.screenshot(
+                            path=str(args.output / f"{role}-final-{index}.png"),
+                            full_page=True,
+                        )
+                    except Exception as error:
+                        report["capture_errors"].append(f"{role} screenshot: {error}")
+                try:
+                    context.tracing.stop(path=str(args.output / f"{role}-trace.zip"))
+                    context.close()
+                except Exception as error:
+                    report["capture_errors"].append(f"{role} trace/close: {error}")
+            try:
+                browser.close()
+            except Exception as error:
+                report["capture_errors"].append(f"browser close: {error}")
+            if report["capture_errors"]:
+                report["passed"] = False
             (args.output / "report.json").write_text(
                 json.dumps(report, indent=2) + "\n"
             )
@@ -1024,6 +1049,10 @@ def main():
             )
             (args.output / "report.md").write_text("\n".join(lines))
             print(json.dumps(report, indent=2))
+            if report["capture_errors"]:
+                raise RuntimeError(
+                    "Rehearsal evidence capture failed; inspect report.json"
+                )
 
 
 if __name__ == "__main__":
