@@ -152,6 +152,23 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: {{ include "monolith-public.fullname" . }}-public
+  # Retry only failures where the request was not delivered to the backend.
+  # Application 5xx, read timeouts, and resets after sending are excluded so
+  # writes and streaming responses cannot be replayed after work has started.
+  retry:
+    numRetries: 2
+    retryOn:
+      triggers:
+        - connect-failure
+        - reset-before-request
+        - refused-stream
+    perRetry:
+      backOff:
+        baseInterval: 50ms
+        maxInterval: 250ms
+  timeout:
+    tcp:
+      connectTimeout: 1s
   rateLimit:
     type: Local
     local:
