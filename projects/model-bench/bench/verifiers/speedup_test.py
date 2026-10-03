@@ -3,7 +3,13 @@ import sys
 import pytest  # noqa: F401
 
 from bench.verifiers import get_verifier
-from bench.verifiers.speedup import SUPPORTED_IMPORTS, _bucket_score, _grade_samples
+from bench.verifiers.speedup import (
+    BANNED_IMPORTS,
+    BANNED_NAMES,
+    SUPPORTED_IMPORTS,
+    _bucket_score,
+    _grade_samples,
+)
 
 BASELINE = "def total(xs):\n    return sum(xs)\n"
 
@@ -387,6 +393,22 @@ def total(xs):
     result = get_verifier("speedup")(tmp_path, _paired_args())
     assert result.performance.correctness is True
     assert len(result.performance.samples) == 7
+
+
+@pytest.mark.parametrize("name", sorted(BANNED_NAMES))
+def test_every_forbidden_builtin_name_is_rejected(tmp_path, name):
+    (tmp_path / "mod.py").write_text(f"alias = {name}\n" + BASELINE)
+    result = get_verifier("speedup")(tmp_path, _paired_args())
+    assert result.performance.correctness is False and result.score == 0
+    assert "rejected candidate source" in result.feedback
+
+
+@pytest.mark.parametrize("name", sorted(BANNED_IMPORTS))
+def test_every_forbidden_module_is_excluded_by_default(tmp_path, name):
+    (tmp_path / "mod.py").write_text(f"import {name}\n" + BASELINE)
+    result = get_verifier("speedup")(tmp_path, _paired_args())
+    assert result.performance.correctness is False and result.score == 0
+    assert "rejected candidate source" in result.feedback
 
 
 def test_unchanged_baseline_at_one_x_is_correct_but_scores_zero():

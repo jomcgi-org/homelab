@@ -108,6 +108,53 @@ def test_snapshot_seeded_files_without_git_and_idempotent(tmp_path):
     ).read_text() == "def answer(): return 42"
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_seeded_files_overlay_pinned_snapshot_without_changing_originals(tmp_path):
+    import subprocess
+
+    import yaml
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, check=True
+        )
+
+    git("init", "-q")
+    (repo / "code").mkdir()
+    (repo / "code" / "keep.py").write_text("PINNED = True\n")
+    (repo / "code" / "replace.py").write_text("REAL = True\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed source")
+    commit = git("rev-parse", "HEAD").stdout.decode().strip()
+    task_dir = tmp_path / "tasks" / "t"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": "t",
+                "snapshot": {
+                    "commit": commit,
+                    "paths": ["code"],
+                    "strip_components": 1,
+                    "files": {
+                        "replace.py": "SEEDED = True\n",
+                        "nested/new.py": "NEW = True\n",
+                    },
+                },
+            }
+        )
+    )
+    _snapshot(argparse.Namespace(repo=str(repo), tasks=str(task_dir.parent), task="t"))
+    fixture = task_dir / "fixture"
+    assert (fixture / "keep.py").read_text() == "PINNED = True\n"
+    assert (fixture / "replace.py").read_text() == "SEEDED = True\n"
+    assert (fixture / "nested/new.py").read_text() == "NEW = True\n"
+    assert (repo / "code/replace.py").read_text() == "REAL = True\n"
+
+
 @pytest.mark.parametrize(
     "path", ["../escape.py", "/tmp/escape.py", "a/../../escape.py", "."]
 )
