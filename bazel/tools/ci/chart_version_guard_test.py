@@ -88,6 +88,24 @@ def test_other_edits_are_allowed():
     assert _run(_tree(), head) == []
 
 
+def test_unrelated_binary_files_are_not_read():
+    def read(ref: str, path: str) -> str | None:
+        if path.endswith(".png"):
+            raise UnicodeDecodeError("utf-8", b"\x89", 0, 1, "binary image")
+        return _tree().get(path)
+
+    assert (
+        guard.findings(
+            ["projects/svc/evidence/screen.png", CHART],
+            {CHART_DIR},
+            read,
+            "base",
+            "head",
+        )
+        == []
+    )
+
+
 def test_dependency_versions_are_not_the_chart_version():
     chart = CHART_V1 + "dependencies:\n  - name: dep\n    version: 9.9.9\n"
     assert _run(_tree(chart=chart), _tree(chart=chart.replace("9.9.9", "9.9.10"))) == []

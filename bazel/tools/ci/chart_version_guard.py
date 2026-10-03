@@ -110,7 +110,6 @@ def findings(
         before, after = read(base, path), read(head, path)
         if before is None or after is None:
             continue
-        p = PurePosixPath(path)
         if p.name == "Chart.yaml" and str(p.parent) in published:
             if chart_version(before) != chart_version(after):
                 out.append(
