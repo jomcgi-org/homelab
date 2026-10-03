@@ -1,10 +1,20 @@
 <script>
+  import { fade } from "svelte/transition";
+  import DemoDisclosure from "./DemoDisclosure.svelte";
   import IncidentGraph from "./IncidentGraph.svelte";
   import recording from "./qwen-replay.json";
   const turn = recording.turns[0];
   let element;
   let position = $state(0);
   let playing = $state(false);
+  let outputOpen = $state(true);
+  const fadeDuration = () =>
+    typeof Element === "undefined" ||
+    typeof Element.prototype.animate !== "function" ||
+    (typeof matchMedia !== "undefined" &&
+      matchMedia("(prefers-reduced-motion: reduce)").matches)
+      ? 0
+      : 180;
   let answer = $derived(
     turn.events
       .filter((event) => event.at <= position)
@@ -92,11 +102,12 @@
       rel="noreferrer">OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
     >.
   </p>
-  <div class="demo-body">
+  <div class="demo-body" class:output-expanded={outputOpen}>
     <span class="sr-only" role="status">{phase}</span>
     {#if phase === "Prefill"}
       <div
         class="input-scan"
+        transition:fade={{ duration: fadeDuration() }}
         aria-label="Report pages across the measured prefill interval"
       >
         <div class="scan-heading">
@@ -127,10 +138,16 @@
         </div>
       </div>
     {:else}
-      <div class="answer" role="region" aria-label="Recorded answer">
+      <div
+        class="answer"
+        role="region"
+        aria-label="Recorded answer"
+        transition:fade={{ duration: fadeDuration() }}
+      >
         <IncidentGraph
           {answer}
           {finalAnswer}
+          bind:outputOpen
           sourceUrl={recording.source.url}
           review={recording.review}
           complete={phase === "Complete"}
@@ -181,10 +198,9 @@
     >
     <span class="time">{seconds(position)}</span>
   </div>
-  <details class="prompt">
-    <summary>Prompt</summary>
+  <DemoDisclosure class="prompt" label="Prompt">
     <pre>{turn.prompt}</pre>
-  </details>
+  </DemoDisclosure>
 </section>
 
 <style>
@@ -200,13 +216,23 @@
     line-height: 1.4;
   }
   .demo-body {
+    min-height: 27.5rem;
+    display: grid;
+    transition: min-height 180ms ease;
+  }
+  .demo-body.output-expanded {
     min-height: 33.5rem;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
+  }
+  .answer,
+  .input-scan {
+    min-width: 0;
+    grid-area: 1 / 1;
+  }
+  .answer {
+    align-self: start;
   }
   .input-scan {
-    margin-block: auto;
+    align-self: center;
     padding: 1rem;
     border-left: 3px solid var(--tone-ram);
     background: color-mix(in srgb, var(--tone-ram) 9%, var(--sheet));
@@ -338,14 +364,6 @@
     color: var(--ink-2);
     font: 0.65rem var(--font-code);
   }
-  .prompt {
-    margin-top: 0.4rem;
-  }
-  summary {
-    color: var(--ink-2);
-    font: 0.65rem var(--font-code);
-    cursor: pointer;
-  }
   pre {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -354,8 +372,7 @@
     font: 0.75rem/1.5 var(--font-code);
   }
   button:focus-visible,
-  input:focus-visible,
-  summary:focus-visible {
+  input:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
   }
@@ -375,10 +392,12 @@
       opacity: 0;
     }
   }
-  @media (max-width: 600px) {
+  @media (prefers-reduced-motion: reduce) {
     .demo-body {
-      min-height: 33.5rem;
+      transition: none;
     }
+  }
+  @media (max-width: 600px) {
     .question {
       font-size: 1.05rem;
     }
