@@ -87,6 +87,10 @@ test("decode routes first, classifies residency, moves one chosen path, then com
   expect(view.querySelectorAll("svg .traveller")).toHaveLength(0);
   view.querySelectorAll(".steps button")[2].click();
   await tick();
+  view.querySelectorAll(".paths button")[1].click();
+  await tick();
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(2);
+  expect(view.querySelector("svg").textContent).toContain("PCIe / CPU split");
   view.querySelectorAll(".paths button")[2].click();
   await tick();
   expect(view.querySelector("svg").textContent).toContain("Page cache");
@@ -95,7 +99,7 @@ test("decode routes first, classifies residency, moves one chosen path, then com
   expect(view.querySelector("svg").textContent).toContain("NVMe read");
   view.querySelectorAll(".steps button")[3].click();
   await tick();
-  expect(view.querySelectorAll("svg .traveller")).toHaveLength(4);
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(3);
 });
 
 test("slot replacement leaves the incumbent serving until the mapping flip", async () => {

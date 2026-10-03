@@ -104,21 +104,27 @@
 
 <section class="system-diagram" aria-label={title}>
   <header><strong>{title}</strong></header>
-  {#if mode === "memory" || (mode === "decode" && step === 2)}
+  {#if mode === "memory" || mode === "decode"}
     <nav aria-label="Explore expert paths" class="paths">
       {#each paths as path}
         <button
           type="button"
           class={path.tone}
-          aria-pressed={selected === path.key}
-          onclick={() => (selected = path.key)}>{path.label}</button
+          aria-pressed={selected === path.key &&
+            (mode !== "decode" || step === 2)}
+          onclick={() => {
+            selected = path.key;
+            if (mode === "decode") step = 2;
+          }}>{path.label}</button
         >
       {/each}
       {#if selected === "cold"}<button
           type="button"
           aria-pressed={cacheMiss}
-          onclick={() => (cacheMiss = !cacheMiss)}
-          >{cacheMiss ? "Cache miss" : "Cache hit"}</button
+          onclick={() => {
+            cacheMiss = !cacheMiss;
+            if (mode === "decode") step = 2;
+          }}>{cacheMiss ? "Cache miss" : "Cache hit"}</button
         >{/if}
     </nav>
   {/if}
@@ -266,80 +272,147 @@
           </g>
         {/each}
       {:else if mode === "decode"}
-        <g class="ink" class:muted={step > 0}
-          ><circle cx="58" cy="128" r="24" /><text x="58" y="174">Token</text
-          ></g
-        >
-        <g class="hot" class:muted={step > 0}>
-          <path class="wire" d="M82 128 H164" />
-          {#if step === 0}<path class="traveller" d="M82 128 H164" />{/if}
-          <circle cx="194" cy="128" r="30" /><text x="194" y="181">Router</text>
+        <g class="ink" class:muted={step > 0}>
+          <rect x="16" y="103" width="60" height="48" rx="4" /><text
+            x="46"
+            y="131">Token</text
+          >
+          <path class="wire" d="M76 127 H108" />
+          {#if step === 0}<path class="traveller" d="M76 127 H108" />{/if}
         </g>
-        {#each ["gpu", "ram", "cache"] as tone, index}
-          {@const y = 42 + index * 86}
-          {@const active = step !== 2 || selected === paths[index].key}
-          <g class={tone} class:muted={!active}>
-            {#if step === 0}
-              <path class="wire" d={`M224 128 Q290 ${y} 342 ${y}`} />
-              <path
+        <g class="hot" class:muted={step > 0}>
+          <rect x="108" y="99" width="84" height="56" rx="4" /><text
+            x="150"
+            y="123">Router</text
+          ><text class="sub" x="150" y="143">10 of 512</text>
+        </g>
+        {#each paths as path, index}
+          {@const y = 42 + index * 84}
+          {@const active = step !== 2 || selected === path.key}
+          <g class={path.tone} class:muted={!active}>
+            <path class="wire" d={`M192 127 Q210 127 210 ${y} H234`} />
+            {#if step === 0}<path
                 class="traveller"
                 style={`--delay:${index * -0.4}s`}
-                d={`M224 128 Q290 ${y} 342 ${y}`}
-              />
-            {/if}
-            {#if step === 1}
-              <rect
-                class="residency"
-                x="314"
-                y={y - 30}
-                width="108"
-                height="60"
-                rx="5"
-              />
-            {/if}
-            {#if step === 2 && active}
-              <rect x="224" y={y - 18} width="108" height="36" rx="3" />
-              <text class="sub" x="278" y={y + 4}
-                >{index === 0
-                  ? "Resident"
-                  : index === 1
-                    ? "PCIe fetch"
-                    : cacheMiss
-                      ? "NVMe read"
-                      : "Page cache"}</text
-              >
-              <path class="wire" d={`M332 ${y} H366`} />
-              <path class="traveller" d={`M332 ${y} H366`} />
-            {/if}
-            <circle
-              class:expert={step === 3 || (step === 2 && active)}
-              class="expert-node"
-              style={`transform:translateX(${step > 1 ? 22 : 0}px)`}
-              cx="368"
-              cy={y}
-              r="24"
+                d={`M192 127 Q210 127 210 ${y} H234`}
+              />{/if}
+            <rect
+              class:residency={step === 1}
+              x="234"
+              y={y - 23}
+              width="114"
+              height="46"
+              rx="4"
             />
-            <text class="sub" x={step > 1 ? 390 : 368} y={y + 39}
-              >{step === 0
-                ? "Selected expert"
-                : ["GPU", "Pinned RAM", "CPU"][index]}</text
+            <text x="291" y={y + (step === 0 ? 4 : -2)}
+              >{["GPU weights", "Pinned RAM", "Page cache"][index]}</text
             >
-            {#if step === 3}
-              <path class="wire" d={`M414 ${y} Q466 ${y} 516 128`} />
+            {#if step > 0}<rect
+                class="row-data"
+                x="246"
+                y={y + 9}
+                width="90"
+                height="5"
+                rx="1"
+              />{/if}
+            {#if index === 0}
+              <path class="wire" d="M348 42 H371 Q384 42 384 68 V85 H396" />
+              {#if step === 2 && active}<path
+                  class="traveller"
+                  d="M348 42 H371 Q384 42 384 68 V85 H396"
+                />{/if}
+            {:else if index === 1}
+              <path class="wire" d="M348 126 H363 Q377 126 377 103 H396" />
+              {#if step === 2 && active}<path
+                  class="traveller"
+                  d="M348 126 H363 Q377 126 377 103 H396"
+                />{/if}
               <path
-                class="traveller"
-                style={`--delay:${index * -0.4}s`}
-                d={`M414 ${y} Q466 ${y} 516 128`}
+                class="wire"
+                d="M348 126 Q365 126 365 180 Q365 199 396 199"
               />
+              {#if step === 2 && active}<path
+                  class="traveller"
+                  d="M348 126 Q365 126 365 180 Q365 199 396 199"
+                />{/if}
+              <text class="sub" x="291" y="164">PCIe / CPU split</text>
+            {:else}
+              <path class="wire" d="M348 210 H396" />
+              {#if step === 2 && active}<path
+                  class="traveller"
+                  d="M348 210 H396"
+                />{/if}
+              {#if cacheMiss}
+                <g class="disk"
+                  ><rect x="234" y="237" width="114" height="19" rx="2" /><text
+                    class="sub"
+                    x="291"
+                    y="250">NVMe read</text
+                  ><path
+                    class="wire"
+                    d="M291 237 V233"
+                  />{#if step === 2 && active}<path
+                      class="traveller"
+                      d="M291 237 V233"
+                    />{/if}</g
+                >
+              {/if}
             {/if}
           </g>
         {/each}
-        <g class="gpu" class:muted={step !== 3}>
-          <circle cx="542" cy="128" r="26" /><text x="542" y="174">Combine</text
+        <g
+          class="gpu"
+          class:muted={step < 2 || (step === 2 && selected === "cold")}
+        >
+          <rect x="396" y="68" width="108" height="63" rx="5" /><text
+            x="450"
+            y="88">GPU compute</text
           >
-          <path class="wire" d="M568 128 H620" />{#if step === 3}<path
+          {#each Array(4) as _, index}<rect
+              class:batch={(step >= 2 && selected !== "cold") || step === 3}
+              x={408 + index * 23}
+              y="99"
+              width="16"
+              height="20"
+              rx="2"
+            />{/each}
+          <path class="wire" d="M504 100 Q537 100 537 128 H553" />
+          {#if step === 3}<path
               class="traveller"
-              d="M568 128 H620"
+              d="M504 100 Q537 100 537 128 H553"
+            />{/if}
+        </g>
+        <g
+          class="cache"
+          class:muted={step < 2 || (step === 2 && selected === "hot")}
+        >
+          <rect x="396" y="179" width="108" height="63" rx="5" /><text
+            x="450"
+            y="199">CPU compute</text
+          >
+          {#each Array(4) as _, index}<rect
+              class:batch={step === 3 || (step === 2 && selected !== "hot")}
+              x={408 + index * 23}
+              y="210"
+              width="16"
+              height="20"
+              rx="2"
+            />{/each}
+          <path class="wire" d="M504 210 Q537 210 537 147 H553" />
+          {#if step === 3}<path
+              class="traveller"
+              d="M504 210 Q537 210 537 147 H553"
+            />{/if}
+          <text class="sub" x="561" y="236">Output vector</text>
+        </g>
+        <g class="gpu" class:muted={step !== 3}>
+          <rect x="553" y="113" width="73" height="48" rx="4" /><text
+            x="589"
+            y="141">Combine</text
+          >
+          <path class="wire" d="M626 137 H639" />{#if step === 3}<path
+              class="traveller"
+              d="M626 137 H639"
             />{/if}
         </g>
       {:else}
@@ -417,11 +490,11 @@
           >{/if}
       {/if}
     </svg>
-    <div class="path-description">
-      {#each flow as part, index}{#if index}
-          →
-        {/if}<span class={part.tone}>{part.label}</span>{/each}
-    </div>
+    {#if mode !== "decode"}<div class="path-description">
+        {#each flow as part, index}{#if index}
+            →
+          {/if}<span class={part.tone}>{part.label}</span>{/each}
+      </div>{/if}
   </div>
   {#if mode !== "memory" && currentNote}<p
       class="explanation"
@@ -565,8 +638,15 @@
       width 0.45s ease;
   }
   svg :global(.muted) {
-    opacity: 0.15;
     transition: opacity 0.35s ease;
+  }
+  svg :global(.muted rect),
+  svg :global(.muted circle),
+  svg :global(.muted path) {
+    opacity: 0.2;
+  }
+  svg :global(.muted text) {
+    fill: var(--ink-2);
   }
   svg :global(.row-data) {
     fill: currentColor;
