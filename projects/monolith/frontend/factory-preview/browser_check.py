@@ -62,6 +62,24 @@ def resize_text(page):
     # every font and explicit line-height. No transform, zoom, viewport trick,
     # root-rem spacing change, or product stylesheet override hides overflow.
     return page.evaluate("""async () => {
+      // Native closed details skip descendant rendering, so their computed
+      // fonts are stale until opened. Measure and resize them while open,
+      // then restore every disclosure to its original state before screenshots.
+      const closed = [...document.querySelectorAll('.factory-page details:not([open])')];
+      for (const node of closed) node.open = true;
+      window.__fixtureSettleType = async () => {
+        for (let frame = 0; frame < 3; frame++) {
+          await new Promise(requestAnimationFrame);
+          document.body.getBoundingClientRect();
+          // Finishing a finite transition reaches its actual final computed
+          // style. No stylesheet override or timing guess changes the layout.
+          for (const animation of document.getAnimations()) {
+            if (animation instanceof CSSTransition &&
+                Number.isFinite(animation.effect.getComputedTiming().endTime)) animation.finish();
+          }
+        }
+      };
+      await window.__fixtureSettleType();
       const rows = [...document.querySelectorAll('.factory-page, .factory-page *')]
         .map(node => ({node, size: parseFloat(getComputedStyle(node).fontSize),
           line: getComputedStyle(node).lineHeight}))
@@ -70,17 +88,43 @@ def resize_text(page):
         node.style.setProperty('font-size', `${size * 2}px`, 'important');
         if (line !== 'normal') node.style.setProperty('line-height', `${parseFloat(line) * 2}px`, 'important');
       }
-      // global.css gives every element a 0.01ms reduced-motion transition.
-      // Same-turn getComputedStyle still sees its starting font size. Wait
-      // for that real browser transition before asserting computed doubling.
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const mismatches = rows.filter(({node, size}) => node.isConnected &&
-        !(Math.abs(parseFloat(getComputedStyle(node).fontSize) - size * 2) < 0.1))
-        .map(({node, size}) => ({tag: node.tagName,
-          className: node.getAttribute('class'), text: node.textContent.slice(0, 60),
-          expected: size * 2, actual: getComputedStyle(node).fontSize}));
-      return {count: rows.length, verified: mismatches.length === 0, mismatches};
+      await window.__fixtureSettleType();
+      window.__fixtureVerifyType = async () => {
+        await window.__fixtureSettleType();
+        const visible = rows.filter(({node}) => {
+          if (!node.isConnected) return false;
+          if (node.checkVisibility()) return true;
+          // SVG text can have painted geometry without a CSS layout box.
+          // Keep chart labels in the resize assertion, but not defs or
+          // descendants of display:none SVGs (their bounds are empty).
+          const box = node.getBoundingClientRect();
+          return node instanceof SVGGraphicsElement && node.tagName === 'text' &&
+            !node.closest('defs') && box.width > 0 && box.height > 0;
+        });
+        const mismatches = visible.filter(({node, size}) =>
+          !(Math.abs(parseFloat(getComputedStyle(node).fontSize) - size * 2) < 0.1))
+          .map(({node, size}) => ({tag: node.tagName,
+            className: node.getAttribute('class'), text: node.textContent.slice(0, 60),
+            expected: size * 2, actual: getComputedStyle(node).fontSize}));
+        return {count: rows.length, visible: visible.length,
+          svgTextCount: visible.filter(({node}) => node.tagName === 'text').length,
+          verified: mismatches.length === 0, mismatches};
+      };
+      const expanded = await window.__fixtureVerifyType();
+      for (const node of closed) node.open = false;
+      const restored = await window.__fixtureVerifyType();
+      return {...restored, expandedVerified: expanded.verified,
+        verified: expanded.verified && restored.verified,
+        mismatches: [...expanded.mismatches, ...restored.mismatches]};
     }""")
+
+
+def verify_resized_text(page):
+    result = page.evaluate("window.__fixtureVerifyType?.() ?? null")
+    if result:
+        assert result["verified"], (
+            f"expanded text did not double: {result['mismatches'][:3]}"
+        )
 
 
 def layout_checks(page, view, scenario, width, scale):
@@ -206,6 +250,12 @@ def layout_checks(page, view, scenario, width, scale):
                 "current task phase or elapsed time missing",
             )
             require(current.locator(".m").is_visible(), "current task metadata hidden")
+            marker = current.locator(".mark").bounding_box()
+            number = current.locator(".n").bounding_box()
+            require(
+                marker["x"] + marker["width"] <= number["x"] + 0.1,
+                "current task marker overlaps its issue number",
+            )
         elif scenario == "empty":
             require(
                 page.get_by_text("Nothing in the lane.", exact=True).is_visible(),
@@ -239,6 +289,7 @@ def check_mobile_totals(page, scenario, expanded_screenshot=None):
     page.keyboard.press("Enter")
     page.locator(".mobile-stat-values").wait_for(state="visible")
     assert details.get_attribute("open") is not None, "keyboard cannot expand All stats"
+    verify_resized_text(page)
     rows = page.locator(".mobile-stat-values > div").evaluate_all("""nodes => nodes.map(node => ({
       label: node.querySelector('dt').textContent.trim(), value: node.querySelector('dd').textContent.trim()
     }))""")
@@ -267,7 +318,14 @@ def check_mobile_totals(page, scenario, expanded_screenshot=None):
         "expanded totals introduce page overflow"
     )
     if expanded_screenshot:
+        page.evaluate("window.scrollTo(0, 0)")
         page.screenshot(path=str(expanded_screenshot), full_page=True)
+        page.screenshot(
+            path=str(
+                expanded_screenshot.with_stem(expanded_screenshot.stem + "-opening")
+            ),
+            full_page=False,
+        )
     summary.focus()
     page.keyboard.press("Space")
     page.locator(".mobile-stat-values").wait_for(state="hidden")
@@ -446,7 +504,10 @@ def check(root, output, expected_sha):
                         page.screenshot(
                             path=str(output / f"{name}-full.png"), full_page=True
                         )
-                    if scenario == "live" and scale == 1 and width in (390, 901, 1440):
+                    if scenario == "live" and (
+                        (scale == 1 and width in (390, 901, 1440))
+                        or (view == "overview" and width == 320 and scale == 2)
+                    ):
                         page.screenshot(
                             path=str(output / f"{name}-opening.png"), full_page=False
                         )
@@ -458,6 +519,13 @@ def check(root, output, expected_sha):
                             if width == 320 and scale == 2 and scenario == "live"
                             else None,
                         )
+                    if view == "chapter" and scale == 2:
+                        summary = page.locator(".doc details > summary").first
+                        summary.focus()
+                        page.keyboard.press("Enter")
+                        summary.locator("..").locator(".body").wait_for(state="visible")
+                        verify_resized_text(page)
+                        page.keyboard.press("Space")
                     if scenario == "live" and scale == 1:
                         interact(page, view)
                         assert page.evaluate(
