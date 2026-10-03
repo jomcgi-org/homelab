@@ -103,10 +103,15 @@
 
 <section class="notes" aria-label="Campaign notes">
   <nav aria-label="Notes audience">
-    <button aria-pressed={kind === "character"} onclick={() => tab("character")}
+    <button
+      disabled={busy}
+      aria-pressed={kind === "character"}
+      onclick={() => tab("character")}
       >{dm ? "Shared with you" : "My notes"}</button
-    ><button aria-pressed={kind === "party"} onclick={() => tab("party")}
-      >Party notes</button
+    ><button
+      disabled={busy}
+      aria-pressed={kind === "party"}
+      onclick={() => tab("party")}>Party notes</button
     >
   </nav>
   <p>
@@ -119,10 +124,16 @@
   {#if !dm || kind === "party"}<form onsubmit={save}>
       <h2>{noteId ? "Edit note" : "Add a note"}</h2>
       <label
-        >Note title<input bind:value={title} maxlength="200" required /></label
+        >Note title<input
+          disabled={busy}
+          bind:value={title}
+          maxlength="200"
+          required
+        /></label
       >
       <label
         >Note text<textarea
+          disabled={busy}
           bind:value={markdown}
           maxlength="20000"
           rows="5"
@@ -130,15 +141,20 @@
       >
       <small>Markdown works here: headings, lists, links and emphasis.</small>
       {#if kind === "character" && !dm}<label class="check"
-          ><input type="checkbox" bind:checked={dmReadable} />Share this note
-          with the DM</label
+          ><input
+            disabled={busy}
+            type="checkbox"
+            bind:checked={dmReadable}
+          />Share this note with the DM</label
         >{/if}
       <label class="check"
-        ><input type="checkbox" bind:checked={pinned} />Keep pinned</label
+        ><input disabled={busy} type="checkbox" bind:checked={pinned} />Keep
+        pinned</label
       >
       <div class="actions">
         <button disabled={busy}>Save note</button>{#if noteId}<button
             type="button"
+            disabled={busy}
             onclick={clear}>Cancel edit</button
           >{/if}
       </div>

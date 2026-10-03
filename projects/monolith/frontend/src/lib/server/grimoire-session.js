@@ -43,10 +43,10 @@ export async function sessionState(fetch, cookies, campaignId) {
       grimoireJson(
         fetch,
         cookies,
-        `${base}/sessions/${session.id}/journal?party=true`,
+        `${base}/sessions/${session.id}/journal?view=party`,
       ),
     ]);
-    journal = { mine, party };
+    journal = { mine: sessionJournal(mine), party: sessionJournal(party) };
   }
   const dmData =
     campaign.role === "dm"
@@ -60,5 +60,23 @@ export async function sessionState(fetch, cookies, campaignId) {
     journal,
     user: lobby.user,
     ...dmData,
+  };
+}
+
+function sessionJournal(view) {
+  const event = (entry) => ({ ...entry.body, event_id: entry.id });
+  return {
+    ...view,
+    learned: (view.learned || []).map((entry) => ({
+      ...entry,
+      projection: entry.entity,
+    })),
+    people_places: (view.people_and_places || []).map((entry) => ({
+      ...entry,
+      entity_id: entry.id,
+    })),
+    received: (view.received || []).map(event),
+    rolls: (view.rolls || []).map(event),
+    open_threads: (view.open_threads || []).map(event),
   };
 }

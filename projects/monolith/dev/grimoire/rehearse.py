@@ -133,11 +133,23 @@ def main():
             ).to_be_disabled()
             dm.screenshot(path=str(args.output / "dm-sending.png"), full_page=True)
             assert len(held_write) == 1
+            next_draft = "A new scene drafted while the previous message sends"
+            dm.get_by_label("Set the scene", exact=True).fill(next_draft)
             held_write[0].continue_()
             dm.unroute("**/session/state", hold_first_write)
             expect(dm.get_by_role("button", name="Send", exact=True)).to_be_visible()
             report["checks"].append(
                 "Empty feeds explain the next step; an in-flight write shows a disabled Sending control"
+            )
+            expect(dm.get_by_label("Set the scene", exact=True)).to_have_value(
+                next_draft
+            )
+            dm.get_by_label("Set the scene", exact=True).fill("")
+            expect(
+                dm.get_by_role("button", name="Pin to notes", exact=True)
+            ).to_have_count(0)
+            report["checks"].append(
+                "A successful in-flight write preserves the next draft; DM has no unsupported private pin control"
             )
             a.bring_to_front()
             start = time.monotonic()
@@ -562,7 +574,21 @@ def main():
             a.get_by_label("Note text", exact=True).fill(
                 "The inn is open to our party."
             )
+            held_write.clear()
+            a.route("**/session/state", hold_first_write)
             a.get_by_role("button", name="Save note", exact=True).click()
+            expect(a.get_by_label("Note title", exact=True)).to_be_disabled()
+            expect(a.get_by_label("Note text", exact=True)).to_be_disabled()
+            expect(
+                a.get_by_role("button", name="My notes", exact=True)
+            ).to_be_disabled()
+            assert len(held_write) == 1
+            held_write[0].continue_()
+            a.unroute("**/session/state", hold_first_write)
+            expect(a.get_by_label("Note title", exact=True)).to_be_enabled()
+            report["checks"].append(
+                "An in-flight note save locks its fields and audience until completion"
+            )
             expect(
                 a.get_by_role("heading", name=party_title, exact=True)
             ).to_be_visible()
