@@ -237,7 +237,6 @@ def _rate_view(rows: list[FactoryReviewVerdict]) -> dict:
         "rejection_count": rejections,
         "approval_rate": approvals / count if count else None,
         "rejection_rate": rejections / count if count else None,
-        "review_scorecard": review_scorecard([row.verdict for row in rows]),
     }
 
 
@@ -303,7 +302,7 @@ def feedback_for_class(task_class: str, *, session: Session | None = None) -> di
             "approval_rate": rate,
             "rejection_rate": active["rejection_rate"],
             "approval_floor": APPROVAL_FLOOR,
-            "review_scorecard": active["review_scorecard"],
+            "review_scorecard": review_scorecard([row.verdict for row in rows]),
             "recent_rejections": [
                 _verdict_dict(row) for row in rows if row.verdict != "approve"
             ][:RECENT_REJECTION_LIMIT],
