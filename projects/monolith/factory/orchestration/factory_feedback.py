@@ -53,6 +53,8 @@ def _artifact(run: dict) -> dict:
         outcome = json.loads(run.get("outcome_json") or "{}")
     except (TypeError, ValueError):
         return {}
+    if not isinstance(outcome, dict):
+        return {}
     value = outcome.get("value") or outcome.get("artifact") or {}
     return value if isinstance(value, dict) else {}
 
@@ -206,6 +208,25 @@ def _window(
     )
 
 
+def review_scorecard(verdicts: list[str]) -> dict:
+    """Separate quality among valid verdicts from approval per execution."""
+    approvals = verdicts.count("approve")
+    changes = verdicts.count("changes_requested")
+    blocked = verdicts.count("blocked")
+    total = len(verdicts)
+    valid = approvals + changes
+    return {
+        "approval_count": approvals,
+        "changes_requested_count": changes,
+        "blocked_count": blocked,
+        "unknown_count": total - valid - blocked,
+        "operational_denominator": total,
+        "quality_denominator": valid,
+        "operational_approval_rate": approvals / total if total else None,
+        "quality_approval_rate": approvals / valid if valid else None,
+    }
+
+
 def _rate_view(rows: list[FactoryReviewVerdict]) -> dict:
     approvals = sum(row.verdict == "approve" for row in rows)
     count = len(rows)
@@ -216,6 +237,7 @@ def _rate_view(rows: list[FactoryReviewVerdict]) -> dict:
         "rejection_count": rejections,
         "approval_rate": approvals / count if count else None,
         "rejection_rate": rejections / count if count else None,
+        "review_scorecard": review_scorecard([row.verdict for row in rows]),
     }
 
 
@@ -236,6 +258,7 @@ def empty_feedback(task_class: str) -> dict:
         "approval_rate": None,
         "rejection_rate": None,
         "approval_floor": APPROVAL_FLOOR,
+        "review_scorecard": review_scorecard([]),
         "recent_rejections": [],
         "delivery_window": _rate_view([]),
         "recovery_window": _rate_view([]),
@@ -280,6 +303,7 @@ def feedback_for_class(task_class: str, *, session: Session | None = None) -> di
             "approval_rate": rate,
             "rejection_rate": active["rejection_rate"],
             "approval_floor": APPROVAL_FLOOR,
+            "review_scorecard": active["review_scorecard"],
             "recent_rejections": [
                 _verdict_dict(row) for row in rows if row.verdict != "approve"
             ][:RECENT_REJECTION_LIMIT],

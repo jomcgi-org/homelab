@@ -168,3 +168,63 @@ def test_failures_show_what_the_model_said_and_group_missing_tools():
     assert (
         '2 of these said: "Could not write: `/usr/local/bin/host` is missing"' in digest
     )
+
+
+def test_review_scorecards_keep_first_pass_and_rounds_separate():
+    verdicts = [
+        {
+            "task_id": f"t-{i}",
+            "review_run_id": i,
+            "sample_kind": "delivery",
+            "task_class": "bug-fix",
+            "verdict": verdict,
+        }
+        for i, verdict in enumerate(
+            ["approve", "changes_requested", "blocked", "unparseable"], 1
+        )
+    ]
+    runs = [
+        _run("t-1", "review_1", 1, outcome={"value": {"verdict": "approve"}}, run_id=1),
+        _run(
+            "t-2",
+            "review_1",
+            1,
+            outcome={"value": {"verdict": "changes_requested"}},
+            run_id=2,
+        ),
+        _run("t-3", "review_1", 1, "failed", run_id=3),
+        _run("t-4", "review_1", 1, run_id=4),
+        _run("t-2", "review_2", 1, outcome={"value": {"verdict": "approve"}}, run_id=5),
+        _run("t-2", "correct_1", 1, "failed"),
+        _run("t-2", "correct_1", 2),
+        _run("t-2", "correct_2", 1),
+    ]
+    digest = retro.build_retro_digest(
+        _data(runs=runs, verdicts=verdicts + [verdicts[0]]), NOW
+    )
+    assert (
+        "first-pass scorecard: operational approvals 1/4; quality approvals 1/2; blocked 1; unknown 1"
+        in digest
+    )
+    assert (
+        "first-pass delivery/bug-fix/opus: operational approvals 1/4; quality approvals 1/2"
+        in digest
+    )
+    assert (
+        "all terminal review attempts: operational approvals 2/5; quality approvals 2/3"
+        in digest
+    )
+    assert "correction rounds 2; attempts 3; retry attempts 1" in digest
+
+
+def test_review_scorecard_counts_non_object_outcomes_as_unknown():
+    runs = []
+    for i, value in enumerate([[], None, 1], 1):
+        run = _run(TASK, "review_1", i, run_id=i)
+        run["outcome_json"] = json.dumps(value)
+        runs.append(run)
+    digest = retro.build_retro_digest(_data(runs=runs, verdicts=[]), NOW)
+    assert (
+        "all terminal review attempts: operational approvals 0/3; quality approvals 0/0; blocked 0; unknown 3"
+        in digest
+    )
