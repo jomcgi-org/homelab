@@ -2,7 +2,7 @@
 # The image tag is pinned by the Bazel helm_images_values pipeline at build
 # time; do not set a repository/tag/digest here.
 
-maintenanceBanner: "Infrastructure migration in progress: some features are temporarily unavailable."
+maintenanceBanner: ""
 
 otelEndpoint: "http://otel-collector.otel-collector.svc:4318/v1/traces"
 

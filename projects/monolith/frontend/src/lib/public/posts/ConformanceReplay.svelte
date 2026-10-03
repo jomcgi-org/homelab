@@ -134,9 +134,21 @@
   const slotState = (vm) =>
     vm.segments.findLast((g) => g.from <= position)?.state ?? null;
 
+  // Starting a play brings the whole figure onto the screen first, so the
+  // run is watched in one place rather than scrolled after.
+  let root;
   function toggle() {
     if (complete) position = 0;
     playing = !playing;
+    if (playing && root?.scrollIntoView) {
+      const reduce = window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)",
+      )?.matches;
+      root.scrollIntoView({
+        behavior: reduce ? "auto" : "smooth",
+        block: "start",
+      });
+    }
   }
   $effect(() => {
     if (!playing) return;
@@ -151,7 +163,11 @@
   });
 </script>
 
-<section class="replay" aria-label="Trace conformance test, one recorded run">
+<section
+  class="replay"
+  bind:this={root}
+  aria-label="Trace conformance test, one recorded run"
+>
   <div class="cap">
     <span><b>Fig. 1</b> Trace conformance test</span>
     <span class="controls">
@@ -334,9 +350,16 @@
 
 <style>
   .replay {
-    --tint-accent: color-mix(in srgb, var(--accent-ink) 14%, var(--sheet));
-    --tint-ok: color-mix(in srgb, var(--ok) 18%, var(--sheet));
-    --tint-warm: color-mix(in srgb, var(--replay-warm) 22%, var(--sheet));
+    scroll-margin-top: 1rem;
+    /* The vivid tier tones the rest of the site charts with: blue for what
+       moves, green for done and passing, amber for a destroy under way. */
+    --move: var(--tone-gpu);
+    --done: var(--tone-ram);
+    --warm: var(--replay-warm);
+    --bad: var(--tone-disk);
+    --tint-accent: color-mix(in srgb, var(--move) 16%, var(--sheet));
+    --tint-ok: color-mix(in srgb, var(--done) 18%, var(--sheet));
+    --tint-warm: color-mix(in srgb, var(--warm) 24%, var(--sheet));
     --label: 8.5rem;
     margin: 1.2rem -1rem 0;
     min-width: 0;
@@ -381,18 +404,22 @@
   .scrub input {
     width: 9rem;
     margin: 0;
-    accent-color: var(--accent-ink);
+    accent-color: var(--move);
   }
   .topo {
     padding: 1rem 1rem 0.8rem;
     border-bottom: 1px solid var(--stroke);
     overflow-x: auto;
   }
+  /* Capped by viewport height so the drawing, the trace and the rules fit
+     one screen while the run plays. */
   .topo svg {
     display: block;
     width: 100%;
     min-width: 40rem;
+    max-height: 46vh;
     height: auto;
+    margin: 0 auto;
     color: var(--ink);
   }
   .pod rect {
@@ -453,7 +480,7 @@
     stroke-width: 1;
   }
   .sc .ok {
-    fill: var(--ok);
+    fill: var(--done);
   }
   .slot rect {
     fill: var(--band);
@@ -483,18 +510,18 @@
   }
   .slot[data-state="running"] rect {
     fill: var(--tint-accent);
-    stroke: var(--accent-ink);
+    stroke: var(--move);
     stroke-width: 2;
     stroke-dasharray: none;
   }
   .slot[data-state="finished"] rect {
     fill: var(--tint-ok);
-    stroke: var(--ok);
+    stroke: var(--done);
     stroke-dasharray: none;
   }
   .slot[data-state="destroying"] rect {
     fill: var(--tint-warm);
-    stroke: var(--replay-warm);
+    stroke: var(--warm);
     stroke-width: 2;
     stroke-dasharray: none;
   }
@@ -505,7 +532,7 @@
     fill: var(--ink-3);
   }
   .dots circle {
-    fill: var(--accent-ink);
+    fill: var(--move);
   }
   .dots circle.small {
     fill: var(--ink-3);
@@ -531,10 +558,10 @@
     letter-spacing: 0;
   }
   .verdict strong[data-verdict="pass"] {
-    color: var(--ok);
+    color: var(--done);
   }
   .verdict strong[data-verdict="fail"] {
-    color: var(--replay-hot);
+    color: var(--bad);
   }
   .trace {
     border-bottom: 1px solid var(--stroke);
@@ -569,7 +596,7 @@
     bottom: 0;
     width: 4px;
     margin-left: -2px;
-    background: var(--accent-ink);
+    background: var(--move);
     opacity: 0.18;
   }
   .trow:nth-child(2) .track i {
@@ -579,7 +606,7 @@
     opacity: 1;
   }
   .trow .track i.seen.cur {
-    background: var(--accent-ink);
+    background: var(--move);
   }
   /* The playhead spans both tracks: the rows' inline padding and the label
      column are subtracted so it lines up with the marks. */
@@ -593,7 +620,7 @@
     );
     width: 2px;
     margin-left: -1px;
-    background: var(--accent-ink);
+    background: var(--move);
     pointer-events: none;
   }
   .cells {
@@ -640,7 +667,7 @@
   }
   .cell[data-verdict="pass"] .mark {
     border: 0;
-    background: var(--ok);
+    background: var(--done);
   }
   .cell[data-verdict="pass"] .mark::after {
     content: "";
@@ -654,11 +681,11 @@
     transform: rotate(45deg);
   }
   .cell[data-verdict="pass"] .v {
-    color: var(--ok);
+    color: var(--done);
   }
   .cell[data-verdict="fail"] .mark {
     border: 0;
-    background: var(--replay-hot);
+    background: var(--bad);
   }
   .sr-only {
     position: absolute;
