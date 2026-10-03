@@ -189,6 +189,8 @@ under the feed's DM-or-self rules.
 Reply ordering uses the session sequence, so an earlier reference cannot close
 a later action. Live enablement and audience checks remain owned by #6610.
 
+The UI ships a props-driven `JournalPanel` and standalone campaign journal page; mounting the session-screen Journal tab and refreshing it with each feed poll remains in #6808, blocked by #6612, per the #6616 notes precedent.
+
 ## Grant changes
 
 Grant changes emit `reveal` events only when play is enabled and the campaign

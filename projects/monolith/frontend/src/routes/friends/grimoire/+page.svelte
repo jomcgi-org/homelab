@@ -90,6 +90,7 @@
         {/if}
         <a href="/grimoire/sheets">Open character sheets</a>
         <a href={`/grimoire/campaigns/${campaign.id}/notes`}>Open notes</a>
+        <a href={`/grimoire/campaigns/${campaign.id}/journal`}>Open journal</a>
         {#if campaign.role === "dm"}
           <details>
             <summary
