@@ -24,6 +24,13 @@ from grimoire.visibility import visible_entities_query
 
 IDENTITY_KEYS = {"entity_id", "name", "entity_type", "grant_scope"}
 MISSING_UUID = "00000000-0000-4000-8000-000000000001"
+INVALID_UUIDS = [
+    None,
+    "not-a-uuid",
+    f"urn:uuid:{MISSING_UUID}",
+    "{" + MISSING_UUID + "}",
+    MISSING_UUID.replace("-", ""),
+]
 
 
 @pytest.fixture
@@ -649,11 +656,11 @@ def test_reveal_search_uses_correlated_alias():
 @pytest.mark.parametrize(
     "field", ["entity_id", "player_character_id", "granted_in_session"]
 )
-@pytest.mark.parametrize("malformed", [False, True])
-def test_bulk_missing_and_malformed_identifiers(harness, monkeypatch, field, malformed):
+@pytest.mark.parametrize("invalid", INVALID_UUIDS)
+def test_bulk_missing_and_malformed_identifiers(harness, monkeypatch, field, invalid):
     h = harness
     before = h.snapshot()
-    value = "not-a-uuid" if malformed else MISSING_UUID
+    value = MISSING_UUID if invalid is None else invalid
     body = {"grants": [item(h, "ancestry")]}
     if field == "granted_in_session":
         body[field] = value
@@ -662,7 +669,7 @@ def test_bulk_missing_and_malformed_identifiers(harness, monkeypatch, field, mal
     original_get = h.session.get
 
     def guarded_get(model, identifier, *args, **kwargs):
-        if malformed and model in (Entity, PlayerCharacter, GameSession):
+        if invalid is not None and model in (Entity, PlayerCharacter, GameSession):
             assert identifier != value, "malformed UUID reached a database lookup"
         return original_get(model, identifier, *args, **kwargs)
 
@@ -674,17 +681,17 @@ def test_bulk_missing_and_malformed_identifiers(harness, monkeypatch, field, mal
 
 
 @pytest.mark.parametrize("route", ["/entities", "/search"])
-@pytest.mark.parametrize("malformed", [False, True])
-def test_filter_invalid_pc_preserves_auth_order(harness, monkeypatch, route, malformed):
+@pytest.mark.parametrize("invalid", INVALID_UUIDS)
+def test_filter_invalid_pc_preserves_auth_order(harness, monkeypatch, route, invalid):
     h = harness
-    value = "not-a-uuid" if malformed else MISSING_UUID
+    value = MISSING_UUID if invalid is None else invalid
     params = {"not_granted_to": value}
     if route == "/search":
         params["q"] = "canary"
     original_get = h.session.get
 
     def guarded_get(model, identifier, *args, **kwargs):
-        if malformed and model is PlayerCharacter:
+        if invalid is not None and model is PlayerCharacter:
             assert identifier != value, "malformed UUID reached a database lookup"
         return original_get(model, identifier, *args, **kwargs)
 
@@ -708,3 +715,89 @@ def test_filter_invalid_pc_preserves_auth_order(harness, monkeypatch, route, mal
                         response.json()["detail"]
                         == "player character not found in this campaign"
                     )
+
+
+@pytest.mark.parametrize("field", ["entity_id", "player_character_id", "both"])
+def test_bulk_duplicate_uuid_case_is_422(harness, field):
+    h = harness
+    first = item(h, "ancestry")
+    second = dict(first)
+    for key in ("entity_id", "player_character_id"):
+        if field in (key, "both"):
+            first[key] = first[key].lower()
+            second[key] = second[key].upper()
+    before = h.snapshot()
+    with TestClient(h.app()) as client:
+        response = call(
+            client, h, "POST", "/grants/bulk", json={"grants": [first, second]}
+        )
+        assert response.status_code == 422
+        assert h.snapshot() == before
+
+
+def test_bulk_uuid_case_grouping_uses_resolved_character(harness, monkeypatch):
+    h = harness
+    h.prepare("play")
+    original_get = h.session.get
+
+    def uuid_get(model, identifier, *args, **kwargs):
+        # Simulate only PostgreSQL's case-insensitive UUID identity comparison.
+        if (
+            model is PlayerCharacter
+            and identifier.casefold() == h.rows["character_a"].id.casefold()
+        ):
+            return h.rows["character_a"]
+        return original_get(model, identifier, *args, **kwargs)
+
+    monkeypatch.setattr(h.session, "get", uuid_get)
+    first = item(h, "ancestry")
+    second = item(h, "class")
+    second["player_character_id"] = second["player_character_id"].lower()
+    with TestClient(h.app()) as client:
+        response = call(
+            client, h, "POST", "/grants/bulk", json={"grants": [first, second]}
+        )
+        assert response.status_code == 200, response.text
+        (event,) = events(h)
+        assert event.audience_pc_ids == [h.rows["character_a"].id]
+        assert [body["entity_id"] for body in event.body["reveals"]] == [
+            first["entity_id"],
+            second["entity_id"],
+        ]
+        assert all(
+            grant["player_character_id"] == h.rows["character_a"].id
+            for grant in response.json()
+        )
+        poll_all(client, h)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_create_reveal_uses_resolved_character_id(harness, monkeypatch, enabled):
+    h = harness
+    h.prepare("play")
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true" if enabled else "false")
+    original_get = h.session.get
+
+    def uuid_get(model, identifier, *args, **kwargs):
+        # Production PostgreSQL returns its canonical stored UUID spelling.
+        if (
+            model is PlayerCharacter
+            and identifier.casefold() == h.rows["character_a"].id.casefold()
+        ):
+            return h.rows["character_a"]
+        return original_get(model, identifier, *args, **kwargs)
+
+    monkeypatch.setattr(h.session, "get", uuid_get)
+    body = item(h, "ancestry")
+    body["player_character_id"] = body["player_character_id"].lower()
+    with TestClient(h.app()) as client:
+        response = call(client, h, "POST", "/grants", json=body)
+        assert response.status_code == 200
+        assert response.json()["player_character_id"] == (
+            h.rows["character_a"].id if enabled else body["player_character_id"]
+        )
+        assert len(events(h)) == int(enabled)
+        if enabled:
+            assert events(h)[0].audience_pc_ids == [h.rows["character_a"].id]
+        monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+        poll_all(client, h)
