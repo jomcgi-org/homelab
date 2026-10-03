@@ -20,13 +20,6 @@ def py_test(name, deps = [], **kwargs):
     # Make a mutable copy of deps to avoid "frozen list" error
     mutable_deps = list(deps)
 
-    # The task-contract tests read YAML in runfiles. Attach these source inputs
-    # in the macro so CI Gazelle can keep generating the BUILD unchanged.
-    if native.package_name() == "projects/model-bench/bench" and name == "cli_test":
-        kwargs["data"] = kwargs.get("data", []) + [
-            "//projects/model-bench:repo_docs",
-        ]
-
     # pytest-asyncio must be present for the `-o asyncio_mode` option below to be
     # a recognized config key. Gazelle adds it for tests that import it; add it
     # here for the rest, deduped so there is never a duplicate label.
