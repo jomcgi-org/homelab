@@ -28,6 +28,7 @@ from factory.orchestration.factory_models import (
     FactoryReceipt,
     FactoryStart,
     MAX_CAPACITY_DENIED_ATTEMPTS,
+    WorkItem,
 )
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
 

@@ -107,6 +107,118 @@ def grant(task_id, key="one", **kwargs):
     )
 
 
+@pytest.fixture
+def work_item_task(db, policy):
+    task = admitted(policy)
+    with Session(db) as session:
+        item = WorkItem(
+            title="issue",
+            state="active",
+            source_kind="github",
+            trust="trusted",
+            authority="github",
+            github_repo="owner/repo",
+            github_issue_number=1,
+        )
+        session.add(item)
+        session.flush()
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task)
+        ).one()
+        row.work_item_id = item.id
+        session.commit()
+        return task, item.id
+
+
+@pytest.mark.parametrize("state", ["admitted", "uncertain", "landing"])
+@pytest.mark.parametrize(
+    "labels,observed,expected",
+    [
+        ([], False, False),
+        (["agent-ready"], False, False),
+        (["HuMaN"], False, True),
+        ([], True, True),
+    ],
+)
+def test_human_handoff_reads_linked_work_item(
+    db, work_item_task, state, labels, observed, expected
+):
+    task, item_id = work_item_task
+    with Session(db) as session:
+        session.get(WorkItem, item_id).labels = labels
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task)
+        ).one()
+        row.state = state
+        session.commit()
+
+    assert controls.human_handoff(task, "reconciler", observed=observed) is expected
+    assert controls.task_snapshot(task)["cancellation_requested"] is expected
+    with Session(db) as session:
+        audits = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "human_handoff")
+        ).all()
+        assert len(audits) == int(expected)
+
+
+def test_human_handoff_without_work_item_leaves_normal_task_runnable(db, policy):
+    task = admitted(policy)
+    assert not controls.human_handoff(task, "reconciler")
+    assert controls.can_start(task)["ok"]
+    assert grant(task)["ok"]
+
+
+@pytest.mark.parametrize(
+    "state", ["queued", "succeeded", "failed", "cancelled", "escalated"]
+)
+def test_human_handoff_ignores_inactive_receipts(db, work_item_task, state):
+    task, item_id = work_item_task
+    with Session(db) as session:
+        session.get(WorkItem, item_id).labels = ["human"]
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task)
+        ).one()
+        row.state = state
+        session.commit()
+    assert not controls.human_handoff(task, "reconciler", observed=True)
+    assert not controls.human_handoff("unknown-task", "reconciler", observed=True)
+    assert not controls.task_snapshot(task)["cancellation_requested"]
+
+
+def test_linked_human_handoff_is_sticky_and_preserves_unresolved_start(
+    db, work_item_task
+):
+    task, item_id = work_item_task
+    assert grant(task)["ok"]
+    with Session(db) as session:
+        session.get(WorkItem, item_id).labels = ["human"]
+        session.commit()
+    assert controls.human_handoff(task, "reconciler")
+    with Session(db) as session:
+        session.get(WorkItem, item_id).labels = []
+        session.commit()
+    assert controls.human_handoff(task, "reconciler")
+    assert controls.can_start(task)["reason"] == "cancellation_pending"
+    assert (
+        controls.finish_task(
+            task, "cancelled", "reconciler", evidence=controls.HUMAN_HANDOFF_EVIDENCE
+        )["reason"]
+        == "unresolved_starts"
+    )
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["committed_cost_usd"] == 2
+    assert snapshot["unresolved_starts"] == 1
+    with Session(db) as session:
+        assert (
+            len(
+                session.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == "human_handoff")
+                ).all()
+            )
+            == 1
+        )
+
+
 def test_status_rollout_waits_are_durable_and_exclude_finished(db, policy, monkeypatch):
     from factory.orchestration import factory_landing as landing
 
