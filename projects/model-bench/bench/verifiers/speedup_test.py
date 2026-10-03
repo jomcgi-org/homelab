@@ -341,19 +341,52 @@ def test_authenticated_result_parser_ignores_trailing_forgery(tmp_path, monkeypa
 def test_helper_source_participates_in_cache_identity(monkeypatch):
     import inspect
 
-    from bench.verifiers import speedup, verifier_source_hash
+    from bench.verifiers import verifier_source_hash
 
     before = verifier_source_hash("speedup")
     original = inspect.getsource
-    monkeypatch.setattr(
-        inspect,
-        "getsource",
-        lambda module: (
-            original(module)
-            + ("\n# changed embedded helper" if module is speedup else "")
-        ),
-    )
+
+    def changed_source(module):
+        source = original(module)
+        return source + (
+            "\n# changed embedded helper" if "PROTOCOL_SOURCE =" in source else ""
+        )
+
+    monkeypatch.setattr(inspect, "getsource", changed_source)
     assert verifier_source_hash("speedup") != before
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def total(xs):\n    return sum(xs) if len(xs) < 5 else (x for x in xs)\n",
+        "from decimal import Decimal\ndef total(xs):\n    return Decimal('sNaN')\n",
+    ],
+)
+def test_uncopyable_or_incomparable_candidate_output_is_graded(tmp_path, source):
+    (tmp_path / "mod.py").write_text(source)
+    result = get_verifier("speedup")(
+        tmp_path, _paired_args(allowed_imports=["decimal"])
+    )
+    assert result.score == 0 and not result.passed
+    assert result.performance.correctness is False
+    assert "harness error]" not in result.feedback
+
+
+def test_inputs_are_fresh_retained_and_mutation_is_not_shared(tmp_path):
+    (tmp_path / "mod.py").write_text("""
+seen = set()
+def total(xs):
+    if id(xs) in seen:
+        raise RuntimeError("input identity reused")
+    seen.add(id(xs))
+    result = sum(xs)
+    xs.append(999999)
+    return result
+""")
+    result = get_verifier("speedup")(tmp_path, _paired_args())
+    assert result.performance.correctness is True
+    assert len(result.performance.samples) == 7
 
 
 def test_unchanged_baseline_at_one_x_is_correct_but_scores_zero():

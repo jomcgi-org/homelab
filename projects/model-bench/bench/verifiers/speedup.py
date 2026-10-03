@@ -58,7 +58,9 @@ def run_harness(harness_path, pair_count, seed):
         if not cases:
             raise ValueError("harness needs independent baseline oracle cases")
         for args, expected in cases:
-            if base(*deepcopy(args)) != expected:
+            base_args = deepcopy(args)
+            retained_inputs.append(base_args)
+            if base(*base_args) != expected:
                 raise ValueError("baseline failed its own oracle")
         try:
             candidate = getattr(load(candidate_path, "_speedup_candidate"), function)
@@ -66,10 +68,13 @@ def run_harness(harness_path, pair_count, seed):
             raise CandidateFailure(f"candidate import error: {type(exc).__name__}: {exc}") from exc
         for args, expected in cases:
             try:
-                actual = candidate(*deepcopy(args))
+                candidate_args = deepcopy(args)
+                retained_inputs.append(candidate_args)
+                actual = candidate(*candidate_args)
+                matches = actual == expected
             except BaseException as exc:
                 raise CandidateFailure(f"candidate exception: {type(exc).__name__}: {exc}") from exc
-            if actual != expected:
+            if not matches:
                 raise CandidateFailure("hidden oracle output mismatch")
 
         def pair(index):
@@ -93,8 +98,17 @@ def run_harness(harness_path, pair_count, seed):
                         raise CandidateFailure(f"candidate exception: {type(exc).__name__}: {exc}") from exc
                     raise
                 durations[side] = (stop - start) / 1_000_000_000
-                outputs[side] = deepcopy(output)
-            if outputs["baseline"] != outputs["candidate"]:
+                try:
+                    outputs[side] = deepcopy(output)
+                except BaseException as exc:
+                    if side == "candidate":
+                        raise CandidateFailure(f"invalid candidate output: {type(exc).__name__}: {exc}") from exc
+                    raise
+            try:
+                matches = outputs["baseline"] == outputs["candidate"]
+            except BaseException as exc:
+                raise CandidateFailure(f"candidate output comparison failed: {exc}") from exc
+            if not matches:
                 raise CandidateFailure("benchmark pair output mismatch")
             return {"baseline_s": durations["baseline"], "candidate_s": durations["candidate"],
                     "order": "baseline-first" if baseline_first else "candidate-first"}
