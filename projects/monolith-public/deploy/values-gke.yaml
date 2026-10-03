@@ -22,15 +22,6 @@ web:
     value: http://embervm-embervm.embervm.svc.cluster.local:8080
   - name: K8S_AUTH_TOKEN_FILE
     value: /var/run/secrets/embervm-public-faas/token
-  - name: DEMO_PG_PASSWORD
-    valueFrom:
-      secretKeyRef:
-        key: POSTGRES_PASSWORD
-        name: monolith-public-demo-postgres
-  - name: DEMO_POSTGRES_DSN
-    value: postgresql://postgres:$(DEMO_PG_PASSWORD)@embervm-embervm-serving.embervm.svc:5401/scratch
-  - name: EMBER_DEMO_MAX_CONCURRENT
-    value: '4'
   - name: CHAT_PUBLIC_CHAR_CAP
     value: '8000'
   - name: CHAT_PUBLIC_MAX_TURNS
@@ -120,7 +111,7 @@ web:
     minReplicas: 2
 
 frontend:
-  replicas: "1"
+  replicas: "2"
   autoscaling:
     enabled: false
 

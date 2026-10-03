@@ -1,74 +1,8 @@
 <script>
-  // /ember: the landing page for the Ember mini-site, picomq-shaped: a
-  // hero with the live status line and two CTAs, then one label-only
-  // accordion (the five classes, isolation, the moving parts). All depth
-  // sits behind the rows or in ARCHITECTURE.md. Copy voice follows the
-  // project README (blunt mechanism sentences, no rhetoric). Visual language is the shared ember token
-  // sheet (lib/public/ember/ember.css) plus landing-only tokens in
-  // ./landing.css; hex never appears in this <style> block.
-  //
-  // The status dot is read-only: SSR seeds it, a slow poll keeps it honest,
-  // and the wake action stays on /ember/postgres where its Turnstile gate
-  // and rate limits live.
   import { onMount } from "svelte";
   import { servingWakeMs } from "$lib/public/fcstory/metrics.js";
-  import { preemptionCopy } from "$lib/public/ember/preemption-copy.js";
   import "$lib/public/ember/ember.css";
   import "./landing.css";
-
-  let { data } = $props();
-
-  // Same status endpoint the Postgres exhibit polls (cached control-plane
-  // read; cannot wake the VM). Slow cadence: the landing page only needs
-  // the dot to be honest, so one read every 15s is plenty.
-  const STATUS_URL = "/ember/postgres/api/status";
-  const POLL_MS = 15_000;
-
-  // Same vocabulary as EmberStage's STATE_WORD so the landing page and the
-  // demo never disagree about what the VM is doing.
-  const STATE_WORD = {
-    banked: "asleep",
-    checkpointed: "asleep",
-    banking: "falling asleep",
-    relighting: "waking",
-    cold_booting: "waking",
-    starting: "waking",
-    serving: "awake",
-    failed: "offline",
-    evicted: "offline",
-    destroying: "offline",
-    destroyed: "offline",
-    preempted: "rehoming",
-  };
-
-  let status = $state(data.status);
-  let isPreempted = $derived(!!status?.display_preempted);
-  let stateWord = $derived(
-    STATE_WORD[isPreempted ? "preempted" : (status?.state ?? "")] ?? null,
-  );
-  let dotClass = $derived(
-    isPreempted
-      ? "preempted"
-      : stateWord === "awake"
-        ? "live"
-        : stateWord === "waking" || stateWord === "falling asleep"
-          ? "waking"
-          : "cold",
-  );
-
-  // Mirrors EmberStage.gbHours: raw MiB·s from the backend, shown as GB·h.
-  function gbHours(mibSeconds) {
-    if (typeof mibSeconds !== "number" || mibSeconds <= 0) return null;
-    const gbh = mibSeconds / 1024 / 3600;
-    if (gbh < 10) return `${gbh.toFixed(1)} GB·h`;
-    if (gbh < 1000) return `${Math.round(gbh)} GB·h`;
-    if (gbh < 1_000_000) return `${(gbh / 1000).toFixed(1)}K GB·h`;
-    return `${(gbh / 1_000_000).toFixed(1)}M GB·h`;
-  }
-
-  let savedLine = $derived(
-    gbHours(data.savings?.total_saved_mib_s ?? status?.total_saved_mib_s),
-  );
 
   // Headline numbers count up from zero on load; skipped under reduced
   // motion (which also keeps visual-regression captures deterministic).
@@ -91,17 +25,6 @@
       };
       requestAnimationFrame(tick);
     }
-
-    const poll = setInterval(async () => {
-      if (document.hidden) return;
-      try {
-        const res = await fetch(STATUS_URL);
-        if (res.ok) status = await res.json();
-      } catch {
-        // keep the last known state; the dot degrades gracefully
-      }
-    }, POLL_MS);
-    return () => clearInterval(poll);
   });
 </script>
 
@@ -109,7 +32,7 @@
   <title>Ember · a workload orchestrator on Firecracker microVMs</title>
   <meta
     name="description"
-    content="Ember gives every job its own tiny virtual machine: run once and destroyed, slept as a snapshot and woken in {servingWakeMs} ms, or paired with a disk that outlives the VM. Includes a live Postgres you can wake yourself."
+    content="Ember gives every job its own tiny virtual machine: run once and destroyed, slept as a snapshot and woken in {servingWakeMs} ms, or paired with a disk that outlives the VM. Includes recorded VM restores."
   />
 </svelte:head>
 
@@ -118,11 +41,6 @@
     <span
       ><a class="brand" href="/"><strong>jomcgi.dev</strong></a> / ember</span
     >
-    {#if savedLine}
-      <span class="saved"
-        >memory-hours not spent while asleep · <b>{savedLine}</b></span
-      >
-    {/if}
   </header>
 
   <main class="doc">
@@ -134,33 +52,14 @@
         scratch on this cluster.
       </p>
       <p class="live">
-        <span class="dot {dotClass}"></span>
-        <span class="live-text">
-          {#if isPreempted}
-            {preemptionCopy(status?.preempted?.phase)}
-            <a href="/ember/postgres">watch the automatic recovery</a>
-          {:else if stateWord === "awake"}
-            the demo Postgres is <b>awake</b> right now.
-            <a href="/ember/postgres">open the console</a>
-          {:else if stateWord === "waking" || stateWord === "falling asleep"}
-            the demo Postgres is <b>{stateWord}</b>.
-            <a href="/ember/postgres">watch it on the live demo</a>
-          {:else}
-            the demo Postgres is <b>{stateWord ?? "asleep"}</b> right now.
-            {#if stateWord == null || stateWord === "asleep"}
-              <a href="/ember/postgres">wake it yourself on the live demo</a>
-            {:else}
-              <a href="/ember/postgres">open the console</a>
-            {/if}
-          {/if}
-        </span>
+        <a href="/ember/firecracker#replay">Replay a recorded VM restore</a>
       </p>
       <p class="stats">
         <span><b>{bestWake} ms</b> best wake</span>
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
-        <span>{stateWord ?? "asleep"} now</span>
+        <span>recorded runs</span>
         <span class="sep">·</span>
         <a
           class="src"
@@ -169,7 +68,9 @@
         >
       </p>
       <p class="ctas">
-        <a class="cta cta-primary" href="/ember/postgres">wake the database</a>
+        <a class="cta cta-primary" href="/ember/firecracker#replay"
+          >watch a replay</a
+        >
         <a
           class="cta"
           href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md"
@@ -194,7 +95,8 @@
               guest reaches exactly one thing: its channel to the host daemon.
             </p>
             <p class="sigs">
-              <a class="sig" href="/ember/bazel">a frozen Bazel brain, live →</a
+              <a class="sig" href="/ember/firecracker#replay"
+                >replay a VM restore →</a
               >
             </p>
           </div>
@@ -241,7 +143,9 @@
               >, and the disk outlives the VM.
             </p>
             <p class="sigs">
-              <a class="sig" href="/ember/postgres">wake it yourself →</a>
+              <a class="sig" href="/ember/firecracker#replay"
+                >replay a VM restore →</a
+              >
             </p>
           </div>
         </details>

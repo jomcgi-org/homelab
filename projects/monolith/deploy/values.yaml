@@ -446,7 +446,7 @@ scratchPostgres:
   # the embervm side disables the demo, clear this to "" in the same change, or
   # the DSN points at a nonexistent workload and the synthetic probe latches
   # red (503 /api/health).
-  demoListenPort: 5401
+  demoListenPort: ""
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
 

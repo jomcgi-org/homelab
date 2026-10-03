@@ -458,7 +458,11 @@ scratchPostgres:
 # there in the same change, or the monolith renders a DSN to a nonexistent
 # workload and the synthetic probe latches red (503 /api/health).
 demoPostgres:
-  enabled: true
+  enabled: false
+
+# Live public demos are replaced by baked Firecracker replays.
+bazelQueryWorkload:
+  enabled: false
 
 # ~1s sweeper tick makes the idle bank visibly prompt (default is 30s, which
 # would leave the demo VM "awake" for up to half a minute after its 1s idle

@@ -63,7 +63,7 @@ if __name__ == "__main__":
     if rollout_handoff_enabled():
         RolloutHandoffServer(
             # Lifespan handoff follows HTTP drain. Bound that wait at 5s so
-            # the 15s executor budget fits inside the chart's 30s grace (#6670).
+            # the 15s executor budget fits inside the chart's 45s grace, including the 10s routing delay (#6670).
             uvicorn.Config(
                 app,
                 host="0.0.0.0",
