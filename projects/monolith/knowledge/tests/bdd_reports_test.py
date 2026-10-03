@@ -1,11 +1,13 @@
 """BDD contracts for the intentional knowledge reporting MCP tools."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlmodel import Session, select
 
 from knowledge.models import Chunk, Dispute, Note, RawInput
+from knowledge.freshness import STANDARD
 from knowledge.store import KnowledgeStore
 from shared.testing.markers import covers_public
 
@@ -40,6 +42,7 @@ async def test_dispute_fact_records_open_dispute(session, knowledge_mcp_engine):
     from knowledge.mcp import dispute_fact
 
     vector = [0.1] * 1024
+    now = datetime.now(timezone.utc)
     with Session(knowledge_mcp_engine) as setup:
         note = Note(
             note_id="bdd-disputed-fact",
@@ -49,6 +52,9 @@ async def test_dispute_fact_records_open_dispute(session, knowledge_mcp_engine):
             content="Current fact body",
             type="fact",
             verification_state="verified",
+            observed_at=now - timedelta(days=1),
+            review_after=now + timedelta(days=1),
+            review_policy=STANDARD,
         )
         setup.add(note)
         setup.flush()

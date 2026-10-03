@@ -104,31 +104,10 @@ def _now() -> str:
 
 
 def _is_stale(row: dict, *, now: datetime | None = None) -> bool:
-    from knowledge.freshness import state
+    from knowledge.api import result_current
 
     now = now if now is not None else datetime.now(timezone.utc)
-    if (
-        state(
-            review_after=row.get("review_after"),
-            observed_at=row.get("observed_at"),
-            last_reviewed_at=row.get("last_reviewed_at"),
-            now=now,
-        )
-        != "current"
-    ):
-        return True
-    if row.get("verification_state") == "invalidated":
-        return True
-    valid_until = row.get("valid_until")
-    if not isinstance(valid_until, str):
-        return False
-    try:
-        end = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
-    return end <= now
+    return not result_current(row, now=now)
 
 
 def _request_record(actor: str, item: dict, row: FactoryReceipt) -> dict:
