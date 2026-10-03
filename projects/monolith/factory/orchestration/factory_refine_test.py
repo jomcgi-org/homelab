@@ -242,6 +242,46 @@ def test_empty_refine_graph_adds_one_conductor_pool_node(db):
     assert len(graph.load_graph(task["id"])) == 1
 
 
+def test_competing_initial_insertion_does_not_pause_refine(db):
+    task, policy = make_task()
+    version = graph.current_version(task["id"])
+    # Both callers observed the empty graph at the same revision. The first
+    # wins; the second uses that same snapshot and receives stale_version.
+    refine.reconcile(task, policy, [], [], version)
+    refine.reconcile(task, policy, [], [], version)
+    assert controls.task_snapshot(task["id"])["task_paused"] is False
+    nodes = graph.load_graph(task["id"])
+    assert [node["node_key"] for node in nodes] == [refine.NODE_KEY]
+    assert [node["node_key"] for node in conductor._ready_nodes(nodes, [])] == [
+        refine.NODE_KEY
+    ]
+    with Session(db) as session:
+        calls = session.exec(select(SwarmConductorCall)).all()
+        assert [call.refusal_code for call in calls] == [None, "stale_version"]
+        version_row = session.exec(select(SwarmPlanVersion)).one()
+        assert version_row.cause_ref == f"factory-refine:{refine.NODE_KEY}"
+    refine.reconcile(task, policy, nodes, [], graph.current_version(task["id"]))
+    assert len(graph.load_graph(task["id"])) == 1
+
+
+def test_stale_initial_insertion_preserves_operator_hold(db):
+    task, policy = make_task()
+    version = graph.current_version(task["id"])
+    add_refine_node(task, policy)
+    assert controls.set_control("pause_task", "operator", task_id=task["id"])["ok"]
+    refine.reconcile(task, policy, [], [], version)
+    assert controls.task_snapshot(task["id"])["task_paused"] is True
+    assert len(graph.load_graph(task["id"])) == 1
+
+
+def test_invalid_initial_insertion_still_pauses(db, monkeypatch):
+    task, policy = make_task()
+    monkeypatch.setattr(refine, "MAX_ATTEMPTS", 0)
+    refine.reconcile(task, policy, [], [], graph.current_version(task["id"]))
+    assert controls.task_snapshot(task["id"])["task_paused"] is True
+    assert graph.load_graph(task["id"]) == []
+
+
 def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
     task, policy = make_task("advisory-diagnosis")
     conductor.reconcile_task(task["id"], policy, object())
