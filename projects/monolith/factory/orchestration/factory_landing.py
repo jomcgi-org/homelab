@@ -671,8 +671,9 @@ def _arm(repo: str, item: dict) -> None:
             return
         if item.get("dependency_review"):
             # A pre-queue assessment cannot authorize an eventual queue base.
-            # Keep this lane inspection-only until the required trusted
-            # queue-time validation gate exists (#6799).
+            # The default-off queue publisher does not authorize activation.
+            # Keep this lane inspection-only pending #6799 live acceptance,
+            # including the same-repository CI credential boundary.
             _refuse(item, "dependency_auto_merge_disabled")
             return
         head = (pr.get("head") or {}).get("sha")

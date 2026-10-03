@@ -1869,12 +1869,36 @@ operator; missing access to Dependabot alerts is never treated as no alerts.
 The GitHub read identity needs Dependabot alerts read permission in addition
 to access to the repository and dependency graph. This lane never dismisses
 alerts. Dependency auto-merge is unconditionally disabled, even with approved
-assessments and repository auto-merge enabled. A required trusted queue-time
-validation gate must bind approval to the actual queued base and current
-vulnerability evidence before this lane can arm merges (#6799). Polling after
-arming cannot guarantee that evidence is current at merge time. Existing
-Renovate platform auto-merge must also pass that gate before automation is
-activated. For separately authorized merges, landing verifies publication and managed rollout
+assessments and repository auto-merge enabled. The trusted
+`factory/dependency-evidence` publisher is staged off by default
+(`factory.dependencyGate.enabled: false`). It checks PR heads and GitHub
+merge-queue entry heads using each entry's actual base, through a dedicated
+`FACTORY_DEPENDENCY_GATE_TOKEN` App installation identity for reads and writes.
+Missing credentials publish nothing and audit a skip. The publisher never
+uses `GITHUB_API_TOKEN`.
+
+Server-fetched Bot identity, an explicit numeric ID in
+`intake.dependency_pr_author_ids`, or a `renovate/` or `dependabot/` branch forces
+dependency evidence. Numeric IDs and refs grant no intake or approval authority.
+Both author lists remain empty by default. Human and factory issue PRs receive
+a passing context after identity checks. Dependency PRs require the latest
+settled receipt generation and independent safe assessments on its exact PR
+head. Queue comparison permits different commit IDs only when the reviewed
+file inventory (including blob SHAs), dependency changes and open alerts are
+identical. Missing file SHAs in older receipts require fresh review. Combined
+queue prefixes containing a dependency PR are conservatively refused. A moved
+head, unsafe assessment or changed evidence invalidates that generation in the
+audit ledger; reverting the evidence does not restore its approval. The
+publisher never changes generation or starts a review itself.
+
+Renovate and apko lock maintenance no longer request auto-merge for any update
+type. Activation still requires the operator checklist in `FACTORY.md`, including
+App-pinned ruleset enforcement on both PR and merge-group commits and resolving
+the BuildBuddy credential boundary (#6799). Tick-time checks and revocation
+cannot guarantee atomic freshness when an advisory appears after a successful
+check and before merge. The live stale/advisory canary must establish the
+merge-time acceptance before any automated dependency merging is authorized.
+For separately authorized merges, landing verifies publication and managed rollout
 before recording repository delivery complete. It never closes a PR through
 the issue-close API. Runtime activation is a live policy update after rollout;
 shipping this code alone enables no author accounts. BuildBuddy currently
@@ -1887,8 +1911,12 @@ boundary.
 a plausible version bump and green CI. Author reputation, semver and a clean
 vulnerability feed do not establish safety. Independent adversarial judgment
 plus server-fetched, commit-bound evidence makes those claims inspectable and
-keeps merge authority outside the guest. Adopting the original PR preserves
-Dependabot's history without creating replacement dependency changes.
+keeps merge authority outside the guest. Queue commit identities can change
+without changing the reviewed dependency content; the comparison binds blob
+SHAs and advisory data as well as package versions. The default-off publisher
+and unconditional landing refusal retain the activation boundary while the
+required context and CI credential isolation are unverified. Adopting the
+original PR preserves Dependabot's history without replacement changes.
 
 ### The factory conductor
 

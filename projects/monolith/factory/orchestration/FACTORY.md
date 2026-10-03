@@ -1847,6 +1847,67 @@ issue in this task's own repository counts.
 
 ### Landing
 
+#### Dependency queue evidence
+
+`factory/dependency-evidence` is a trusted monolith check, staged off by default
+with `factory.dependencyGate.enabled: false`. The conductor tick runs it
+independently of guest execution, intake and merge landing. It publishes on
+server-fetched open PR heads and merge-queue entry heads. GraphQL supplies the
+entry's actual `baseCommit`, `headCommit` and PR `headRefOid`; the gate re-reads
+the queue and PR after collecting evidence. Bounded, unavailable or malformed
+discovery never produces a success. Every publication, refusal and skipped
+tick is audited.
+
+The publisher uses only `FACTORY_DEPENDENCY_GATE_TOKEN`, an App installation
+token supplied to monolith through the 1Password Operator and the trusted
+broker path. Both reads and check writes use that identity. No token fallback
+or chart Secret binding is included. A missing token publishes nothing and
+audits `dependency_gate_skipped`.
+
+Numeric `intake.dependency_pr_author_ids`, GitHub `user.type == Bot`, and
+`renovate/` or `dependabot/` refs force review evidence. Refs and numeric IDs
+grant no authority. Non-dependency human and factory issue PRs pass identity
+validation. For dependency PRs, the latest receipt generation must be settled,
+unpaused and uncancelled, with both safe independent assessment artifacts on
+the exact PR head. The approved digest is checked before comparing evidence.
+The queued base/head dependency comparison, file inventory with blob SHAs and
+all open alerts must equal the reviewed content. Only comparison commit IDs
+may differ. GitHub's compare file cap is a refusal, even at exactly the cap;
+an empty dependency comparison is also a refusal. Combined queue prefixes
+containing dependency PRs fail closed instead of attributing aggregated changes
+to one receipt.
+
+Changed, moved, unavailable or invalid approval evidence records
+`dependency_approval_invalidated`. That receipt cannot pass again even if the
+old evidence returns. Fresh adversarial review requires the existing authorized
+generation mechanism. This publisher neither changes policy nor starts work.
+Dependency landing still refuses `dependency_auto_merge_disabled`
+unconditionally, and `intake.dependency_pr_authors` remains empty by default.
+Renovate platform auto-merge and apko auto-merge requests are disabled.
+
+Live checks outstanding for #6799, outside this repository-only slice:
+
+1. Provision the dedicated App installation token to trusted monolith, with
+   repository, dependency graph and Dependabot alert reads plus checks write.
+   Keep the token out of guests and untrusted same-repository CI.
+2. Enable the flag separately and canary `factory/dependency-evidence` on a
+   real PR head and a merge-group commit. Verify the actual entry base and
+   complete server evidence, including a refused combined dependency group.
+3. Require this context in ruleset 9180009, pinned to the numeric App integration
+   ID, alongside Linux `pr-checks`. Audit bypass and any-App sources.
+4. Verify a stale or advisory-changed queued dependency PR is refused and needs
+   a new authorized generation. Polling cannot guarantee freshness if an advisory
+   arrives between success and merge; establish merge-time acceptance before
+   authorizing automated merges. Missing token/API failures also cannot revoke
+   a check already held by GitHub; test that boundary before activation.
+5. Verify an unapproved Renovate PR with auto-merge already armed cannot merge.
+   This repository edit stops new requests; it does not disarm existing PRs.
+6. Resolve and verify BuildBuddy's same-repository secret boundary. A merge
+   check does not isolate PR-branch workflow execution or its injected secrets.
+7. Create and verify a dedicated Renovate author identity before allowlisting
+   any author. Historical maintenance PRs use `jomcgi`; never allowlist the
+   human account to activate this lane.
+
 #### Review publisher
 
 The landing path contains a trusted `factory/review` check publisher. It is off

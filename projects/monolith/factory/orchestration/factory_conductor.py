@@ -7853,6 +7853,13 @@ def tick() -> None:
     uncertain_tasks.emit_uncertain_task_snapshot()
 
     snapshot = status()
+    # Check publication is independent of admission, guest runtime and landing.
+    try:
+        from factory import dependency_gate
+
+        dependency_gate.tick(snapshot["policy"])
+    except Exception:  # noqa: BLE001 - a check failure cannot stop reconciliation
+        logger.exception("factory dependency gate publication failed")
     if snapshot["state"] == "disabled":
         return
     dbos = runtime.init_dbos()

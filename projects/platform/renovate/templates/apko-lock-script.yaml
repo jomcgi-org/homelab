@@ -108,20 +108,6 @@ data:
       body: JSON.stringify({ labels: ["dependencies"] }),
     });
 
-    if (!pull.auto_merge) {
-      const mutation = `mutation($pullRequestId: ID!) {
-        enablePullRequestAutoMerge(input: {
-          pullRequestId: $pullRequestId,
-          mergeMethod: REBASE
-        }) { pullRequest { number } }
-      }`;
-      const graph = await request("/graphql", {
-        method: "POST",
-        body: JSON.stringify({ query: mutation, variables: { pullRequestId: pull.node_id } }),
-      });
-      if (graph.errors?.length) {
-        throw new Error(`enable auto-merge: ${JSON.stringify(graph.errors)}`);
-      }
-    }
+    // Merge authorization is separate from lock generation and PR creation.
     console.log(`apko lock PR ready: ${pull.html_url}`);
     NODE

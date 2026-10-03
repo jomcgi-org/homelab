@@ -8,6 +8,8 @@
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
   "dependencyDashboard": true,
+  "automerge": false,
+  "platformAutomerge": false,
   "dependencyDashboardTitle": "Dependency updates and lock maintenance",
   "labels": ["dependencies"],
   "timezone": "America/Vancouver",
@@ -119,17 +121,18 @@
       "enabled": false
     },
     {
-      "description": "Patch and minor updates may merge only after release-age checks and required CI pass.",
+      "description": "All dependency updates require adversarial approval before separately authorized merging.",
       "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "automerge": true,
+      "automerge": false,
       "automergeType": "pr",
-      "platformAutomerge": true
+      "platformAutomerge": false
     },
     {
       "description": "Keep major upgrades as separate, clearly labelled PRs for human review.",
       "matchUpdateTypes": ["major"],
       "addLabels": ["major-upgrade"],
-      "automerge": false
+      "automerge": false,
+      "platformAutomerge": false
     }
   ]
 }

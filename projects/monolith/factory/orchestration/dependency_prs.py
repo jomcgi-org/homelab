@@ -7,10 +7,10 @@ the existing review publisher and merge queue can accept the delivery.
 
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import json
 import re
+from copy import deepcopy
 
 from sqlmodel import select
 
@@ -105,10 +105,11 @@ def eligible(pull: object, repo: str, policy: dict) -> bool:
     )
 
 
-def _pages(repo: str, endpoint: str) -> list:
+def _pages(repo: str, endpoint: str, read=None) -> list:
+    read = read or github_list
     rows = []
     for page in range(1, MAX_ROWS // 100 + 1):
-        batch = github_list(
+        batch = read(
             repo, f"{endpoint}{'&' if '?' in endpoint else '?'}per_page=100&page={page}"
         )
         if not isinstance(batch, list) or any(
@@ -121,20 +122,42 @@ def _pages(repo: str, endpoint: str) -> list:
     raise ValueError("dependency evidence is truncated")
 
 
-def snapshot(repo: str, pull: dict) -> dict:
+def snapshot(
+    repo: str, pull: dict, *, read_get=None, read_list=None, comparison=None
+) -> dict:
     """Unavailable or incomplete vulnerability evidence is a refusal, not clean."""
+    read_get, read_list = read_get or github_get, read_list or github_list
     head, base = pull["head"]["sha"], pull["base"]["sha"]
-    files = _pages(repo, f"pulls/{pull['number']}/files")
+    if comparison is None:
+        files = _pages(repo, f"pulls/{pull['number']}/files", read_list)
+    else:
+        base, head = comparison
+        compared = read_get(repo, f"compare/{base}...{head}")
+        # GitHub's compare file inventory is capped at 300, without a file
+        # continuation. Equality at the cap cannot establish completeness.
+        files = compared.get("files")
+        if not isinstance(files, list) or len(files) >= 300:
+            raise ValueError("queued file evidence is missing or truncated")
+        if (
+            compared.get("merge_base_commit", {}).get("sha") != base
+            or compared.get("base_commit", {}).get("sha") != base
+            or compared.get("status") != "ahead"
+        ):
+            raise ValueError("queued comparison does not use the actual base")
     if (
         not files
+        or type(pull.get("changed_files")) is not int
+        or pull["changed_files"] <= 0
         or len(files) != pull.get("changed_files")
         or any(
-            not isinstance(row.get("filename"), str) or not row["filename"]
+            not isinstance(row, dict)
+            or not isinstance(row.get("filename"), str)
+            or not row["filename"]
             for row in files
         )
     ):
         raise ValueError("dependency file evidence is incomplete")
-    changes = github_list(repo, f"dependency-graph/compare/{base}...{head}")
+    changes = read_list(repo, f"dependency-graph/compare/{base}...{head}")
     if not isinstance(changes, list) or not changes or len(changes) >= MAX_ROWS:
         raise ValueError("dependency graph evidence is missing or truncated")
     for change in changes:
@@ -142,17 +165,28 @@ def snapshot(repo: str, pull: dict) -> dict:
             not isinstance(change, dict)
             or change.get("change_type") not in ("added", "removed")
             or not isinstance(change.get("vulnerabilities"), list)
-            or not change.get("name")
-            or not change.get("version")
+            or not isinstance(change.get("name"), str)
+            or not change["name"]
+            or not isinstance(change.get("version"), str)
+            or not change["version"]
+            or any(
+                not isinstance(item, dict) or not item
+                for item in change["vulnerabilities"]
+            )
         ):
             raise ValueError("dependency graph evidence is malformed")
         if change["change_type"] == "added" and change["vulnerabilities"]:
             raise ValueError("dependency PR introduces a known vulnerable version")
-    alerts = _pages(repo, "dependabot/alerts?state=open")
+    alerts = _pages(repo, "dependabot/alerts?state=open", read_list)
     if any(
-        not isinstance(alert.get("dependency"), dict)
+        type(alert.get("number")) is not int
+        or alert["number"] <= 0
+        or not isinstance(alert.get("dependency"), dict)
+        or not alert["dependency"]
         or not isinstance(alert.get("security_advisory"), dict)
+        or not alert["security_advisory"]
         or not isinstance(alert.get("security_vulnerability"), dict)
+        or not alert["security_vulnerability"]
         for alert in alerts
     ):
         raise ValueError("vulnerability alert evidence is malformed")
@@ -171,6 +205,7 @@ def snapshot(repo: str, pull: dict) -> dict:
                     "status",
                     "additions",
                     "deletions",
+                    "sha",
                 )
             }
             for row in files
@@ -189,10 +224,10 @@ def snapshot(repo: str, pull: dict) -> dict:
             for row in alerts
         ],
     }
-    current = github_get(repo, f"pulls/{pull['number']}")
+    current = read_get(repo, f"pulls/{pull['number']}")
     if (
-        current.get("head", {}).get("sha") != head
-        or current.get("base", {}).get("sha") != base
+        current.get("head", {}).get("sha") != pull["head"]["sha"]
+        or current.get("base", {}).get("sha") != pull["base"]["sha"]
         or current.get("user", {}).get("id") != pull["user"]["id"]
         or current.get("changed_files") != pull.get("changed_files")
     ):
@@ -310,9 +345,6 @@ def verify(task: dict, pull: dict, runs: list[dict]) -> None:
     evidence = task.get("dependency_review")
     if not evidence:
         return
-    from factory.orchestration.factory_conductor import _artifact, _is_implementation
-    from factory.orchestration.turn_artifact import schema_errors
-
     if (
         pull.get("number") != evidence["pr_number"]
         or pull.get("head", {}).get("sha") != evidence["head_sha"]
@@ -322,6 +354,14 @@ def verify(task: dict, pull: dict, runs: list[dict]) -> None:
         != evidence["evidence_sha256"]
     ):
         raise ValueError("dependency review evidence changed; fresh intake is required")
+    verify_assessments(evidence, runs)
+
+
+def verify_assessments(evidence: dict, runs: list[dict]) -> None:
+    """Validate the durable review independently of the comparison commit IDs."""
+    from factory.orchestration.factory_conductor import _artifact, _is_implementation
+    from factory.orchestration.turn_artifact import schema_errors
+
     workers = [run for run in runs if _is_implementation(run["node_key"])]
     reviews = [run for run in runs if run["node_key"].startswith("review_")]
     if not workers or not reviews:
