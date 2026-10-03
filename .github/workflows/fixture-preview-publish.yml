@@ -1,0 +1,134 @@
+name: Fixture preview publish
+
+on:
+  workflow_run:
+    workflows: [Fixture preview build]
+    types: [completed]
+  # Cleanup reads only the protected main branch. Never check out or run PR code.
+  pull_request_target:
+    branches: [main]
+    types: [closed]
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# Pages replaces the entire site. Hold one lock across prepare, deploy and comment.
+# Queue up to 100 events; every accepted event reconciles every stored PR.
+concurrency:
+  group: fixture-preview-pages
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    if: >-
+      vars.FIXTURE_PREVIEWS_ENABLED == 'true' &&
+      github.repository == 'jomcgi-org/homelab' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+      pages: read
+    outputs:
+      ready: ${{ steps.prepare.outputs.ready }}
+      state_commit: ${{ steps.prepare.outputs.state_commit }}
+      pages_url: ${{ steps.prepare.outputs.pages_url }}
+      pr: ${{ steps.prepare.outputs.pr }}
+      sha: ${{ steps.prepare.outputs.sha }}
+      trusted_sha: ${{ steps.trusted.outputs.sha }}
+    steps:
+      - name: Check out trusted publisher only
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+          sparse-checkout: bazel/tools/previews
+      - name: Record trusted source revision
+        id: trusted
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Test trusted archive and aggregate controls
+        run: python3 -m unittest discover -s bazel/tools/previews -p '*_test.py'
+      - name: Validate provenance and reconcile all previews
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Setting this is an explicit acknowledgement that this whole Pages
+          # site is dedicated to previews; inspect any existing site first.
+          BOOTSTRAP_OWNED_SITE: ${{ vars.FIXTURE_PREVIEWS_OWN_PAGES_SITE }}
+        run: python3 bazel/tools/previews/publish.py prepare --output "$RUNNER_TEMP/preview-site"
+      - name: Package the validated aggregate
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: ${{ runner.temp }}/preview-site
+          retention-days: 1
+
+  deploy:
+    needs: aggregate
+    if: needs.aggregate.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+      current: ${{ steps.after.outputs.ready }}
+    steps:
+      - name: Check out the same trusted publisher revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.aggregate.outputs.trusted_sha }}
+          persist-credentials: false
+          sparse-checkout: bazel/tools/previews
+      - name: Recheck open PRs and the candidate head before deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE_COMMIT: ${{ needs.aggregate.outputs.state_commit }}
+          PREVIEW_PR: ${{ needs.aggregate.outputs.pr }}
+          PREVIEW_SHA: ${{ needs.aggregate.outputs.sha }}
+        run: python3 bazel/tools/previews/publish.py guard
+      - name: Deploy aggregate Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Recheck after Pages activates the deployment
+        id: after
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE_COMMIT: ${{ needs.aggregate.outputs.state_commit }}
+          PREVIEW_PR: ${{ needs.aggregate.outputs.pr }}
+          PREVIEW_SHA: ${{ needs.aggregate.outputs.sha }}
+        run: python3 bazel/tools/previews/publish.py guard
+
+  comment:
+    needs: [aggregate, deploy]
+    if: needs.deploy.outputs.current == 'true' && needs.aggregate.outputs.pr != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      pages: read
+    steps:
+      - name: Check out the same trusted comment implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.aggregate.outputs.trusted_sha }}
+          persist-credentials: false
+          sparse-checkout: bazel/tools/previews
+      - name: Update only the verified GitHub Actions preview comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_PR: ${{ needs.aggregate.outputs.pr }}
+          PREVIEW_SHA: ${{ needs.aggregate.outputs.sha }}
+          DEPLOYED_URL: ${{ needs.deploy.outputs.page_url }}
+        run: python3 bazel/tools/previews/publish.py comment
