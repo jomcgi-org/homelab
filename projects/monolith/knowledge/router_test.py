@@ -106,6 +106,24 @@ def client(fake_session, fake_embed_client):
 
 
 class TestSearchEndpoint:
+    @pytest.mark.parametrize("history", [False, True])
+    def test_history_mode_preserves_authorization_and_disables_http_cache(
+        self, client, history
+    ):
+        with patch("knowledge.router.KnowledgeStore") as store:
+            store.return_value.search_notes_with_context.return_value = []
+            response = client.get(
+                f"/api/knowledge/search?q=evidence&include_history={str(history).lower()}"
+            )
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, no-store"
+        filters = store.return_value.search_notes_with_context.call_args.kwargs
+        assert filters["scope_filters"] == DEFAULT_SCOPES
+        assert filters["include_unscoped"] is False
+        assert filters["include_legacy"] is True
+        assert filters["include_history"] is history
+        assert filters["exclude_invalidated"] is not history
+
     """Tests for GET /api/knowledge/search."""
 
     def test_happy_path_returns_canned_results(self, client, fake_embed_client):
@@ -174,6 +192,8 @@ class TestSearchEndpoint:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
+                include_history=False,
+                exclude_invalidated=True,
             )
 
     def test_limit_forwarded_to_store(self, client):
@@ -190,6 +210,8 @@ class TestSearchEndpoint:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
+                include_history=False,
+                exclude_invalidated=True,
             )
 
     def test_raw_exact_query_is_forwarded(self, client, fake_embed_client):
@@ -269,6 +291,8 @@ class TestSearchEndpoint:
             scope_filters=(*DEFAULT_SCOPES, "personal:browser@example.com"),
             include_unscoped=True,
             include_legacy=True,
+            include_history=False,
+            exclude_invalidated=True,
         )
 
     def test_cross_subject_personal_grant_is_denied_without_audit(
@@ -340,6 +364,8 @@ class TestSearchEndpoint:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
+                include_history=False,
+                exclude_invalidated=True,
             )
 
     def test_search_results_include_edges(self, client, fake_embed_client):
