@@ -621,6 +621,341 @@ def _issues(data: dict) -> list[str]:
     return lines
 
 
+OPTIMIZER_MARKER = "<!-- factory-optimizer:experiment:v1 -->"
+OPTIMIZER_PROGRAM = 6781
+OPTIMIZER_METRICS = frozenset(
+    {
+        "dispatch_failure",
+        "pre_model_failure",
+        "funding_execution_failure",
+        "refine_stale_pause",
+    }
+)
+
+
+def _utc_time(value):
+    try:
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
+        return (
+            parsed.replace(tzinfo=timezone.utc)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone.utc)
+        )
+    except (ValueError, TypeError):
+        return None
+
+
+def _optimizer_github() -> dict:
+    """Read one experiment from the existing program, never write controls."""
+    import httpx
+
+    token = os.environ.get("GITHUB_API_TOKEN")
+    if not token:
+        return {"error": "no GITHUB_API_TOKEN"}
+    try:
+        with httpx.Client(
+            timeout=20.0,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+            },
+        ) as client:
+            response = client.get(
+                f"https://api.github.com/repos/{REPO}/issues/{OPTIMIZER_PROGRAM}/comments",
+                params={"per_page": 100, "sort": "created", "direction": "desc"},
+            )
+            response.raise_for_status()
+            comments = response.json()
+            # GitHub issue comments are ascending; refuse incomplete history
+            # rather than accidentally reviving an old experiment.
+            if len(comments) >= 100:
+                return {"error": "program comment history exceeds bounded reader"}
+            selected = [
+                comment
+                for comment in comments
+                if OPTIMIZER_MARKER in str(comment.get("body", ""))
+            ]
+            if not selected:
+                return {
+                    "error": "no structured experiment marker; manual implementation remains reserved"
+                }
+            comment = selected[-1]
+            match = re.search(r"```json\s*(.*?)\s*```", comment["body"], re.S)
+            experiment = _json(match.group(1) if match else None, {})
+            if (
+                type(experiment.get("issue")) is not int
+                or type(experiment.get("pr")) is not int
+            ):
+                return {"error": "invalid experiment identity"}
+            response = client.get(
+                f"https://api.github.com/repos/{REPO}/pulls/{experiment['pr']}"
+            )
+            response.raise_for_status()
+            pull = response.json()
+            result = {
+                "experiment": experiment,
+                "comment_url": comment["html_url"],
+                "pr_url": pull["html_url"],
+                "merged_at": pull.get("merged_at"),
+                "head_sha": (pull.get("head") or {}).get("sha"),
+                "merge_sha": pull.get("merge_commit_sha"),
+            }
+            # A recorded chart revision alone does not prove this PR is in it.
+            writeback = experiment.get("writeback_commit")
+            if (
+                pull.get("merged_at")
+                and isinstance(writeback, str)
+                and re.fullmatch(r"[0-9a-f]{40}", writeback)
+            ):
+                response = client.get(
+                    f"https://api.github.com/repos/{REPO}/compare/{pull['merge_commit_sha']}...{writeback}"
+                )
+                response.raise_for_status()
+                result["contains_merge"] = response.json().get("status") in (
+                    "ahead",
+                    "identical",
+                )
+            return result
+    except Exception as exc:  # noqa: BLE001 - unavailable evidence holds selection
+        logger.warning("factory optimizer GitHub evidence unavailable", exc_info=True)
+        return {"error": type(exc).__name__}
+
+
+_OPTIMIZER_OBSERVATIONS = """
+SELECT note_id, observed_at, status, extra
+FROM knowledge.notes
+WHERE source = 'deployment-observation' AND scope = 'environment:homelab'
+  AND verification_state = 'verified' AND deleted_at IS NULL
+  AND observed_at >= :since AND observed_at < :as_of
+  AND extra->>'app' = :app
+ORDER BY observed_at LIMIT 5000
+"""
+_OPTIMIZER_COUNTS = """
+WITH attempts AS (
+ SELECT n.*, CASE WHEN pg_input_is_valid(n.outcome_json, 'jsonb')
+                  THEN n.outcome_json::jsonb ELSE '{}'::jsonb END AS outcome
+ FROM swarm.swarm_node_run n
+ WHERE n.created_at >= :start AND n.created_at < :end
+), funding AS (
+ SELECT count(*) FILTER (WHERE detail_json::jsonb->>'failure_category'
+          IN ('pre_model_failure', 'execution_failed')) AS failures,
+        count(*) AS attempts,
+        count(*) FILTER (WHERE NOT (detail_json::jsonb ? 'failure_category')) AS unknown
+ FROM swarm.factory_audit
+ WHERE action = 'funding_review_settled' AND created_at >= :start AND created_at < :end
+   AND pg_input_is_valid(detail_json, 'jsonb')
+), admissions AS (
+ SELECT r.task_id FROM swarm.factory_receipt r
+ JOIN swarm.swarm_task t ON t.id = r.task_id
+ WHERE r.task_class = 'refine' AND t.created_at >= :start AND t.created_at < :end
+)
+SELECT count(*) AS attempts,
+ count(*) FILTER (WHERE status IN ('failed','cancelled','escalated') AND finished_at < :end) AS dispatch_failure,
+ count(*) FILTER (WHERE status NOT IN ('succeeded','failed','cancelled','escalated') OR finished_at IS NULL OR finished_at >= :end) AS unknown,
+ count(*) FILTER (WHERE CASE
+    WHEN jsonb_typeof(outcome->'invocation_phase') = 'string' THEN outcome->>'invocation_phase'
+    WHEN jsonb_typeof(outcome#>'{recovery,invocation_phase}') = 'string' THEN outcome#>>'{recovery,invocation_phase}'
+    WHEN outcome#>>'{never_dispatched,invocation_phase}' = 'never_dispatched' THEN 'never_dispatched'
+    WHEN outcome#>>'{not_invoked,invocation_phase}' = 'not_invoked' THEN 'not_invoked'
+    WHEN outcome#>>'{lost_before_guest,invocation_phase}' = 'lost_before_guest' THEN 'lost_before_guest'
+    END IN ('never_dispatched', 'not_invoked', 'lost_before_guest') AND finished_at < :end) AS pre_model_failure,
+ (SELECT failures FROM funding) AS funding_execution_failure,
+ (SELECT attempts FROM funding) AS funding_attempts,
+ (SELECT unknown FROM funding) AS funding_unknown,
+ (SELECT count(*) FROM admissions) AS refine_attempts,
+ (SELECT count(DISTINCT a.task_id) FROM swarm.factory_audit a WHERE a.action = 'pause_task'
+    AND a.actor = 'factory:refine' AND a.created_at >= :start AND a.created_at < :end
+    AND pg_input_is_valid(a.detail_json, 'jsonb') AND a.detail_json::jsonb->>'ok' = 'true'
+    AND a.task_id IN (SELECT task_id FROM admissions)
+    AND EXISTS (SELECT 1 FROM swarm.swarm_conductor_call c WHERE c.task_id = a.task_id
+      AND c.refusal_code = 'stale_version' AND c.created_at <= a.created_at
+      AND c.created_at >= a.created_at - interval '5 seconds')) AS refine_stale_pause
+FROM attempts
+"""
+_OPTIMIZER_COSTS = """
+SELECT count(*) AS starts, count(*) FILTER (WHERE cost_usd IS NULL AND accounting_basis IS NULL) AS unknown_starts,
+ coalesce(sum(cost_usd), 0) AS settled_cost_usd,
+ (SELECT coalesce(sum(t.list_cost_usd), 0) FROM agent_sessions.agent_turns t
+    JOIN agent_sessions.agent_sessions a ON a.id = t.session_id
+    WHERE a.local_session_id LIKE 'factory:%' AND t.created_at >= :start AND t.created_at < :end) AS observed_list_cost_usd,
+ coalesce(sum(CASE WHEN cost_usd IS NULL AND accounting_basis IS NULL THEN max_cost_usd ELSE 0 END), 0) AS unknown_reservation_usd
+FROM swarm.factory_start WHERE created_at >= :start AND created_at < :end
+"""
+
+
+def _verify_optimizer_rollout(app, revision):
+    # Drain execution is synchronous. Use the existing verifier with a fresh
+    # Kubernetes client on a bounded event loop; it closes its own client.
+    import asyncio
+    from cluster.mcp import verify_deployment
+
+    return asyncio.run(
+        asyncio.wait_for(verify_deployment(app, expected_revision=revision), timeout=30)
+    )
+
+
+def _load_optimizer(session, now) -> dict:
+    context = _optimizer_github()
+    experiment = context.get("experiment") or {}
+    merged = _utc_time(context.get("merged_at"))
+    if merged is None or not context.get("contains_merge"):
+        return context
+    app = experiment.get("app")
+    revision = experiment.get("expected_revision")
+    if app not in {"monolith", "embervm"} or not isinstance(revision, str):
+        return {**context, "error": "invalid deployment identity"}
+    context["rollout"] = _verify_optimizer_rollout(app, revision)
+    observations = _rows(
+        session, _OPTIMIZER_OBSERVATIONS, {"since": merged, "as_of": now, "app": app}
+    )
+    context["observations"] = observations
+    if len(observations) >= 5000:
+        return {
+            **context,
+            "error": "Deployment observation history saturated; overlap coverage unknown",
+        }
+    boundary = next(
+        (
+            row
+            for row in observations
+            if row.get("status") == "complete"
+            and row["extra"].get("newest_freight_version") == revision
+            and row["extra"].get("requested_revision") == revision
+            and row["extra"].get("deployed_revision") == revision
+            and row["extra"].get("writeback_commit")
+            == experiment.get("writeback_commit")
+        ),
+        None,
+    )
+    if boundary is None:
+        return context
+    deployed = _utc_time(boundary["observed_at"])
+    context["ledger_cost_as_of"] = now.isoformat()
+    context["deployment"] = {
+        "note_id": boundary["note_id"],
+        "observed_at": deployed.isoformat(),
+        "revision": revision,
+    }
+    context["overlapping_revisions"] = sorted(
+        {
+            row["extra"].get("deployed_revision")
+            for row in observations
+            if deployed
+            <= _utc_time(row["observed_at"])
+            < min(now, deployed + timedelta(hours=72))
+            and row["extra"].get("deployed_revision") not in (None, revision)
+        }
+    )
+    for name, start, end in (
+        ("baseline", deployed - timedelta(hours=72), deployed),
+        ("post", deployed, min(now, deployed + timedelta(hours=72))),
+    ):
+        params = {"start": start, "end": end}
+        counts = _rows(session, _OPTIMIZER_COUNTS, params)[0]
+        costs = _rows(session, _OPTIMIZER_COSTS, params)[0]
+        context[name] = {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            **counts,
+            **{key: _f(value) for key, value in costs.items()},
+        }
+    return context
+
+
+def optimizer_evidence(context: dict, now: datetime) -> dict:
+    """Conservative observational verdict; never prove causal savings."""
+    result = {
+        "status": "UNKNOWN",
+        "reason": "Missing bounded experiment evidence",
+        **context,
+    }
+    if context.get("error"):
+        result["reason"] = context["error"]
+        return result
+    if not context.get("merged_at") or not context.get("deployment"):
+        result.update(
+            status="WAIT",
+            reason="PR merge, chart provenance or verified rollout not observed",
+        )
+        return result
+    if (context.get("rollout") or {}).get("verdict") != "verified":
+        result.update(
+            status="WAIT",
+            reason="Live rollout verifier has not confirmed sync and health",
+        )
+        return result
+    if context.get("overlapping_revisions"):
+        result["reason"] = (
+            "Other deployments overlap the observation; isolate or review attribution"
+        )
+        return result
+    deployed = _utc_time(context["deployment"].get("observed_at"))
+    if deployed is None or now < deployed + timedelta(hours=72):
+        result.update(
+            status="WAIT", reason="72h strictly post-deployment observation incomplete"
+        )
+        return result
+    metric = (context.get("experiment") or {}).get("metric")
+    if metric not in OPTIMIZER_METRICS:
+        result["reason"] = "Unknown experiment metric"
+        return result
+    denominator = (
+        "funding_attempts"
+        if metric == "funding_execution_failure"
+        else "refine_attempts"
+        if metric == "refine_stale_pause"
+        else "attempts"
+    )
+    baseline, post = context.get("baseline") or {}, context.get("post") or {}
+    if not baseline.get(denominator) or not post.get(denominator):
+        result["reason"] = "No comparable traffic; zero denominator is UNKNOWN"
+        return result
+    unknown_key = (
+        "funding_unknown" if metric == "funding_execution_failure" else "unknown"
+    )
+    if baseline.get(unknown_key) or post.get(unknown_key):
+        result["reason"] = "Unresolved or unclassified attempts prevent acceptance"
+        return result
+    if metric not in baseline or metric not in post:
+        result["reason"] = "Target metric coverage is missing"
+        return result
+    before = baseline[metric] / baseline[denominator]
+    after = post.get(metric, 0) / post[denominator]
+    result["rates"] = {"baseline": before, "post": after, "denominator": denominator}
+    if after > before:
+        result.update(
+            status="REGRESSED",
+            reason="Observed target failure rate increased; request reviewed repair",
+        )
+    else:
+        # Traffic sufficiency is an explicit experiment criterion, not a
+        # hardcoded significance claim. Missing criterion holds the selection.
+        minimum = (context.get("experiment") or {}).get("minimum_attempts")
+        if type(minimum) is not int or minimum < 1 or post[denominator] < minimum:
+            result["reason"] = "Missing or unmet explicit traffic criterion"
+        else:
+            result.update(
+                status="ACCEPTED",
+                reason="Observation criterion met; descriptive association only, no causal or mature-outcome claim",
+            )
+    return result
+
+
+def _optimizer(data, now):
+    evidence = optimizer_evidence(data.get("optimizer") or {}, now)
+    # Raw observation history can be thousands of polls; cite only the matched
+    # deployment and aggregate windows, retaining the whole digest bound.
+    evidence.pop("observations", None)
+    return [
+        json.dumps(evidence, default=str, sort_keys=True)[:12000],
+        "Do not launch another experiment while status is WAIT or UNKNOWN. Costs distinguish settled observed cost from unknown reservation exposure. This section does not establish seven-day mature outcomes.",
+    ]
+
+
 def build_retro_digest(data: dict, now: datetime | None = None) -> str:
     """Render the bounded evidence digest from plain loaded rows."""
     now = now or datetime.now(timezone.utc)
@@ -655,6 +990,7 @@ def build_retro_digest(data: dict, now: datetime | None = None) -> str:
     )
     sections = [
         header,
+        _section("0. Selected optimizer experiment", _optimizer(data, now)),
         _section(
             "1. Planner decision refusals (conductor_rejected)",
             _refusals(data, cite, run_cost),
@@ -835,7 +1171,14 @@ def load_retro_data(session, now: datetime | None = None) -> dict:
         logger.warning("factory retro could not read published sessions", exc_info=True)
         session.rollback()
         published = {}
+    try:
+        optimizer = _load_optimizer(session, now)
+    except Exception as exc:  # noqa: BLE001 - optional evidence must hold safely
+        session.rollback()
+        logger.warning("factory optimizer evidence unavailable", exc_info=True)
+        optimizer = {"error": type(exc).__name__}
     return {
+        "optimizer": optimizer,
         "window_hours": WINDOW_HOURS,
         "runs": runs,
         "receipts": receipts,
