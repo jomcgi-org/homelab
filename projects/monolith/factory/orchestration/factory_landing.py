@@ -669,6 +669,12 @@ def _arm(repo: str, item: dict) -> None:
         if pr.get("state") != "open" or pr.get("draft"):
             _refuse(item, "pull request is not open and ready")
             return
+        if item.get("dependency_review"):
+            # A pre-queue assessment cannot authorize an eventual queue base.
+            # Keep this lane inspection-only until the required trusted
+            # queue-time validation gate exists (#6799).
+            _refuse(item, "dependency_auto_merge_disabled")
+            return
         head = (pr.get("head") or {}).get("sha")
         approved = item.get("approved_head_sha", item["head_sha"])
         if not isinstance(approved, str) or not re.fullmatch(r"[0-9a-f]{40}", approved):
@@ -683,13 +689,6 @@ def _arm(repo: str, item: dict) -> None:
         if item.get("recovery_pending") or pr.get("mergeable") is False:
             _recover_delivery(item, head, "delivered_pr")
             return
-        if item.get("dependency_review"):
-            from factory import review_publisher
-
-            proof = review_publisher.collect(item["task_id"])
-            if isinstance(proof, review_publisher.Refusal):
-                _refuse(item, proof.reason)
-                return
         node_id = pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")

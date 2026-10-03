@@ -1908,8 +1908,10 @@ def test_revert_tick_is_throttled_and_never_raises(monkeypatch):
     assert ran == [1]
 
 
-def test_dependency_merge_rechecks_gate_even_when_publication_is_disabled(
-    db, monkeypatch
+@pytest.mark.parametrize("publication_enabled", ["false", "true"])
+@pytest.mark.parametrize("mergeable", [False, True])
+def test_dependency_auto_merge_is_disabled_even_with_approved_delivery(
+    db, monkeypatch, publication_enabled, mergeable
 ):
     from factory import review_publisher
 
@@ -1921,16 +1923,24 @@ def test_dependency_merge_rechecks_gate_even_when_publication_is_disabled(
         receipt.direction_json = json.dumps({"dependency_review": {"head_sha": HEAD}})
         session.add(receipt)
         session.commit()
-    monkeypatch.setenv("FACTORY_REVIEW_PUBLISH_ENABLED", "false")
+    monkeypatch.setenv("FACTORY_REVIEW_PUBLISH_ENABLED", publication_enabled)
     monkeypatch.setattr(
         review_publisher,
         "collect",
-        lambda task_id: review_publisher.Refusal(task_id, "dependency_review_invalid"),
+        lambda *_: pytest.fail("publication cannot authorize dependency auto-merge"),
     )
-    calls = github(monkeypatch, pulls={3: pull(3)})
-    landing.landing_tick(POLICY)
+    monkeypatch.setattr(
+        landing, "_recover_delivery", lambda *_: pytest.fail("inspection cannot repair")
+    )
+    pr = pull(3)
+    pr["mergeable"] = mergeable
+    calls = github(monkeypatch, pulls={3: pr})
+    item = landing._deliveries(POLICY)[0]
+    landing._arm("owner/repo", item)
     assert calls["graphql"] == []
-    assert audits(db, "merge_arm_refused")[0]["reason"] == "dependency_review_invalid"
+    assert (
+        audits(db, "merge_arm_refused")[0]["reason"] == "dependency_auto_merge_disabled"
+    )
 
 
 def test_dependency_delivery_waits_for_rollout_and_never_closes_pr_as_issue(
