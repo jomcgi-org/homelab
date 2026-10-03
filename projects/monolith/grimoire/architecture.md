@@ -94,19 +94,50 @@ Locking the existing session row serializes writers within one session while
 other sessions can append independently. Allocation and insertion roll back
 together. The unique index also rejects a writer that bypasses serialization.
 
-The five new HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
+The six play HTTP routes require `GRIMOIRE_PLAY_ENABLED` to equal the lowercase
 string `true`, read on each request before identity and membership checks.
 `grimoire.play.enabled` defaults to false in the chart; deployment values stay
 off. Existing session creation and status updates are unaffected. Campaign
 members may list sessions and poll events. DMs may append every kind except
-`utterance`; players may append only `action` with `dm` or `table` audience.
-HTTP utterances are refused for every caller because #6618 owns ingest. Player
-rolls use #6611's server-side roller and call the insertion helper directly.
+`utterance` and `roll`; players may append only `action` with `dm` or `table`
+audience. HTTP utterances are refused for every caller because #6618 owns
+ingest. Generic event writes refuse `roll` for every caller with 403 because
+only the server-side roller may produce trusted roll bodies.
 DMs may retract any event; players may retract only their authored actions.
+
+`POST /campaigns/{campaign_id}/sessions/{session_id}/rolls` rolls on the server
+and appends a `roll` event with the authenticated member as author. Its body
+contains the normalized formula, total, every die in roll order, the kept dice,
+flat modifier, optional label, and requested or default visibility. The ASCII
+grammar accepts `NdM`, optional `khK`, `klK`, `adv` or `dis`, and one optional
+signed flat modifier. Raw formulas are limited to 64 characters, 1 to 100 dice,
+1 to 1000 sides, and modifier magnitude 1000. Keep counts must be positive and
+clamp to the dice count. Advantage and disadvantage require exactly one die,
+roll twice, and keep the higher or lower die. Outer whitespace and ASCII case
+are normalized; internal whitespace, line breaks, and non-ASCII input are
+rejected. Labels are stripped and limited to 200 characters. Invalid formulas
+return 400 with a reason, after membership and session scope checks; ended
+sessions return 409. Rejected requests write no event.
+
+DM rolls default to `dm`; player rolls default to `table`. Table visibility
+uses the table audience. DM visibility uses the dm audience with author
+provenance, so a player with a character and the DM both see that player's
+hidden roll. Self visibility uses `pcs` containing the player's character
+with the same author provenance. A DM choosing self uses the dm audience.
+Characterless players may roll only table; restricted visibility returns 422
+because their audience contract would hide even their own restricted roll.
+These rules leave `audience_predicate` unchanged. There are 41 campaign routes
+in the route inventory, including the roller.
+
+**Why.** Server-side `secrets.SystemRandom` prevents clients from supplying
+results or seeds. A dependency override lets tests use a seeded RNG and assert
+the exact stored body without changing production randomness. Characterless
+players' table-only rule keeps every accepted roll visible to its roller.
 
 Part of #6610. The #6612 play-surface PR owns enabling
 `grimoire.play.enabled: true` in `projects/monolith/deploy/values.yaml` and
-verifying the live routes. No operational flag flip belongs to this change.
+verifying the live routes and audiences with #6610. No operational flag flip
+belongs to this change.
 
 ## Notes
 

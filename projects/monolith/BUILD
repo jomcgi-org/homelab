@@ -6448,6 +6448,16 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_dice_test",
+    srcs = ["grimoire/dice_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "grimoire_session_events_test",
     srcs = ["grimoire/session_events_test.py"],
     imports = ["."],

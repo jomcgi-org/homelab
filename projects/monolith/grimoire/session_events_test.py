@@ -1,6 +1,7 @@
 """Storage and HTTP boundary guards, pinned independently of route policy."""
 
 from datetime import datetime, timedelta, timezone
+import random
 from typing import get_args
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from grimoire.audience import Audience
+from grimoire.dice import get_dice_rng
 from grimoire.models import (
     Campaign,
     EventKind,
@@ -107,10 +109,140 @@ def _post(h, client, viewer="dm", **changes):
     return client.post(_url(h, "/events"), headers=h.headers(viewer), json=body)
 
 
+def _roll(h, client, viewer="player_a", **changes):
+    body = {"formula": "4d6kh3+2", "label": "  Initiative  "}
+    body.update(changes)
+    return client.post(_url(h, "/rolls"), headers=h.headers(viewer), json=body)
+
+
+@pytest.mark.parametrize(
+    "viewer,visibility,audience,member_key,visible_to",
+    [
+        ("player_a", "dm", "dm", "member_player_a", {"dm", "player_a"}),
+        ("player_a", "self", "pcs", "member_player_a", {"dm", "player_a"}),
+        ("player_a", "table", "table", "member_player_a", {"dm", "player_a", "player_b", "no_character"}),
+        ("player_a", None, "table", "member_player_a", {"dm", "player_a", "player_b", "no_character"}),
+        ("dm", None, "dm", "member_dm", {"dm"}),
+        ("dm", "self", "dm", "member_dm", {"dm"}),
+        ("no_character", "table", "table", "member_no_character", {"dm", "player_a", "player_b", "no_character"}),
+        ("no_character", None, "table", "member_no_character", {"dm", "player_a", "player_b", "no_character"}),
+    ],
+)
+def test_roll_audience_and_seeded_body(
+    http_harness, viewer, visibility, audience, member_key, visible_to
+):
+    h, client = http_harness
+    client.app.dependency_overrides[get_dice_rng] = lambda: random.Random(42)
+    response = _roll(h, client, viewer, visibility=visibility)
+    assert response.status_code == 200, response.text
+    event_id = response.json()["id"]
+    row = h.session.get(SessionEvent, event_id)
+    assert row.kind == "roll"
+    assert row.seq == 9
+    assert row.author_member_id == h.rows[member_key].id
+    assert row.audience == audience
+    assert row.audience_pc_ids == ([h.rows["character_a"].id] if audience == "pcs" else [])
+    expected = {
+        "formula": "4d6kh3+2", "total": 15, "rolls": [6, 1, 1, 6],
+        "kept": [6, 6, 1], "modifier": 2, "label": "Initiative",
+        "visibility": visibility or ("dm" if viewer == "dm" else "table"),
+    }
+    assert row.body == expected
+    assert response.json()["body"] == expected
+    assert response.json()["author_member_id"] == h.rows[member_key].id
+    for poller in ("dm", "player_a", "player_b", "no_character"):
+        response = client.get(_url(h, "/events"), headers=h.headers(poller))
+        assert response.status_code == 200
+        h.assert_no_leak(response, poller)
+        assert (event_id in {event["id"] for event in response.json()}) == (poller in visible_to)
+
+
+@pytest.mark.parametrize("visibility", ("dm", "self"))
+def test_characterless_restricted_roll_is_refused_before_formula(http_harness, visibility):
+    h, client = http_harness
+    before = h.snapshot()
+    response = _roll(h, client, "no_character", visibility=visibility, formula="invalid")
+    assert response.status_code == 422
+    assert response.json()["detail"] == "players without a character may roll only table"
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize(
+    "formula,reason",
+    [("notdice", "expected NdM"), ("101d6", "dice count"), ("1d6" + " " * 62, "at most 64"), ("1d6+1001", "modifier magnitude")],
+)
+def test_invalid_roll_formula_is_400_without_writes(http_harness, formula, reason):
+    h, client = http_harness
+    before = h.snapshot()
+    response = _roll(h, client, formula=formula)
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("invalid formula: ")
+    assert reason in response.json()["detail"]
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("viewer", ("outsider", "other_campaign"))
+def test_roll_nonmember_404_before_formula_validation(http_harness, viewer):
+    h, client = http_harness
+    before = h.snapshot()
+    assert _roll(h, client, viewer, formula="notdice").status_code == 404
+    assert h.snapshot() == before
+
+
+def test_roll_session_mismatch_404_before_formula_validation(http_harness):
+    h, client = http_harness
+    before = h.snapshot()
+    response = client.post(
+        _url(h, "/rolls", game_session=h.rows["other_session"].id),
+        headers=h.headers("player_a"), json={"formula": "notdice"},
+    )
+    assert response.status_code == 404
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("changes", [{"seed": 42}, {"total": 20}, {"visibility": "pcs"}, {"label": "x" * 201}])
+def test_roll_request_validation_without_writes(http_harness, changes):
+    h, client = http_harness
+    before = h.snapshot()
+    assert _roll(h, client, **changes).status_code == 422
+    assert h.snapshot() == before
+
+
+def test_roll_label_boundary_and_optional_label(http_harness):
+    h, client = http_harness
+    response = _roll(h, client, label="  " + "x" * 200 + "  ")
+    assert response.status_code == 200
+    assert response.json()["body"]["label"] == "x" * 200
+    response = client.post(_url(h, "/rolls"), headers=h.headers("player_a"), json={"formula": "1d1"})
+    assert response.status_code == 200
+    assert response.json()["body"]["label"] is None
+
+
+def test_ended_session_cannot_accept_roll(http_harness):
+    h, client = http_harness
+    h.rows["campaign_session"].status = "ended"
+    h.session.commit()
+    before = h.snapshot()
+    response = _roll(h, client)
+    assert response.status_code == 409
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("viewer", ("dm", "player_a", "player_b", "no_character"))
+def test_generic_event_route_refuses_forged_roll(http_harness, viewer):
+    h, client = http_harness
+    before = h.snapshot()
+    response = _post(h, client, viewer, kind="roll", body={"total": 20})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "rolls require the server-side roller"}
+    assert h.snapshot() == before
+
+
 PLAY_ROUTES = (
     ("GET", "list"),
     ("GET", "current"),
     ("POST", "append"),
+    ("POST", "roll"),
     ("GET", "poll"),
     ("POST", "retract"),
 )
@@ -131,6 +263,7 @@ def test_all_play_routes_flag_off_before_auth(
         "list": _url(h),
         "current": _url(h) + "/current",
         "append": _url(h, "/events"),
+        "roll": _url(h, "/rolls"),
         "poll": _url(h, "/events"),
         "retract": _url(h, f"/events/{h.rows['event_table'].id}/retract"),
     }
@@ -251,7 +384,7 @@ def test_allowed_actions_have_authenticated_author(
 
 
 @pytest.mark.parametrize(
-    "kind", ("narration", "action", "roll", "reveal", "handout", "turn", "system")
+    "kind", ("narration", "action", "reveal", "handout", "turn", "system")
 )
 @pytest.mark.parametrize("audience", ("dm", "table", "pcs"))
 def test_dm_can_post_all_non_ingest_kinds_and_audiences(http_harness, kind, audience):
@@ -556,15 +689,9 @@ def test_retraction_allowed_after_session_ends(http_harness, viewer):
 
 def test_player_cannot_retract_own_server_side_roll(http_harness):
     h, client = http_harness
-    row = append_event(
-        h.session,
-        game_session=h.rows["campaign_session"],
-        kind="roll",
-        audience=Audience("table"),
-        author_member_id=h.rows["member_player_a"].id,
-        body={"dice": "d20"},
-    )
-    h.session.commit()
+    response = _roll(h, client)
+    assert response.status_code == 200
+    row = h.session.get(SessionEvent, response.json()["id"])
     before = h.snapshot()
     response = client.post(
         _url(h, f"/events/{row.id}/retract"), headers=h.headers("player_a")
