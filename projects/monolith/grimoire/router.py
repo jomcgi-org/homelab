@@ -2535,9 +2535,7 @@ def _journal_events(session, campaign_id, session_ids, viewer, member):
         select(SessionEvent)
         .where(
             SessionEvent.id.in_(
-                select(ranked.c.id).where(
-                    ranked.c.rn <= JOURNAL_EVENTS_PER_SESSION + 1
-                )
+                select(ranked.c.id).where(ranked.c.rn <= JOURNAL_EVENTS_PER_SESSION + 1)
             )
         )
         .order_by(SessionEvent.session_id, SessionEvent.seq, SessionEvent.id)

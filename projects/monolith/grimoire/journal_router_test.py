@@ -353,9 +353,7 @@ def test_journal_event_read_is_bounded_with_explicit_truncation(harness):
     assert response.status_code == 200, response.text
     h.assert_no_leak(response, "player_a")
     entry = next(
-        row
-        for row in response.json()["sessions"]
-        if row["session_id"] == session_id
+        row for row in response.json()["sessions"] if row["session_id"] == session_id
     )
     assert entry["journal"]["truncated"] is True
     assert len(entry["journal"]["received"]) <= JOURNAL_EVENTS_PER_SESSION
