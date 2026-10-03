@@ -4,6 +4,7 @@
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
   import { Seo } from "$lib/public/components";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
   import { formatDate } from "../blog.js";
   import Trail from "../Trail.svelte";
 
@@ -78,8 +79,10 @@
       .matches
       ? "auto"
       : "smooth";
-    if (target) target.scrollIntoView({ behavior, block: "start" });
-    else window.scrollTo({ top: 0, behavior });
+    if (target) {
+      target.scrollIntoView({ behavior, block: "start" });
+      if (id === "post-body") target.focus({ preventScroll: true });
+    } else window.scrollTo({ top: 0, behavior });
   }
 
   $effect(() => {
@@ -173,12 +176,17 @@
       <section class="demo-landing" aria-labelledby="landing-title">
         <header class="landing-header">
           <div class="landing-topline">
-            <Trail /><time datetime={data.date}>{formatDate(data.date)}</time>
+            <nav aria-label="Blog navigation">
+              <a href="/">jomcgi.dev</a><span aria-hidden="true">/</span><a
+                href="/blog">blog</a
+              >
+            </nav>
+            <SchemeToggle />
           </div>
-          <h1 id="landing-title">{data.title}</h1>
+          <h1 id="landing-title">125B on a 4090</h1>
         </header>
         <section class="landing-demo" aria-labelledby="inference-demo">
-          <h2 id="inference-demo">Inference Demo</h2>
+          <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
           {#await import("$lib/public/posts/QwenReplay.svelte")}
             <p>Loading the inference demo…</p>
           {:then replay}
@@ -194,7 +202,12 @@
         >
       </section>
     {/if}
-    <div class="journal" class:single id={hasLanding ? "post-body" : undefined}>
+    <div
+      class="journal"
+      class:single
+      id={hasLanding ? "post-body" : undefined}
+      tabindex="-1"
+    >
       {#if single}
         <div class="trail-inline"><Trail post={data.title} /></div>
       {:else}
@@ -253,7 +266,11 @@
             <header class="ed-lead">
               <h1>{data.title}</h1>
               {#if !single}<p>{data.summary}</p>{/if}
-            </header>{:else}<header class="ed-lead">
+            </header>{:else}<p class="ed-head">
+              <time datetime={data.date}>{formatDate(data.date)}</time>
+            </p>
+            <header class="ed-lead">
+              <h2>{data.title}</h2>
               <p>{data.summary}</p>
             </header>{/if}
 
@@ -340,12 +357,24 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-right: 2.5rem;
     margin-bottom: 0.8rem;
   }
-  .landing-topline time {
+  .landing-topline nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     color: var(--ink-2);
     font: 0.7rem var(--font-code);
+  }
+  .landing-topline a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.25rem;
+    color: inherit;
+    text-decoration: none;
+  }
+  .landing-topline a:hover {
+    color: var(--accent-ink);
   }
   .landing-header h1 {
     margin: 0;
@@ -356,11 +385,19 @@
   .landing-demo {
     min-width: 0;
   }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
   .landing-demo h2 {
-    margin: 0 0 0.6rem;
-    color: var(--ink-2);
-    font: 0.75rem var(--font-code);
-    /* Keep the landing title in view when reloading its navigation fragment. */
+    /* Reloaded demo fragments keep the opening header in view. */
     scroll-margin-top: 12rem;
   }
   .read-post {
@@ -369,6 +406,9 @@
     color: var(--accent-ink);
     font: 0.75rem var(--font-code);
     text-underline-offset: 0.2em;
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
   }
   .with-landing .journal {
     padding-top: 2rem;
@@ -501,7 +541,8 @@
     padding: 1rem;
   }
 
-  .ed-lead h1 {
+  .ed-lead h1,
+  .ed-lead h2 {
     max-width: 40ch;
     margin: 0;
     font-size: clamp(1.25rem, 2.5vw, 1.6rem);
@@ -517,9 +558,6 @@
     line-height: 1.55;
   }
 
-  .with-landing .ed-lead p {
-    margin-top: 0;
-  }
   .post-body {
     padding: 0 1rem 1rem;
     counter-reset: fig;
@@ -839,12 +877,34 @@
     font-weight: 600;
   }
 
+  @media (min-width: 761px) {
+    /* Keep the scheme switch reachable while reading the full article. */
+    .landing-topline :global(.scheme) {
+      position: fixed;
+      top: 1.5rem;
+      right: 1.2rem;
+      z-index: 1000;
+    }
+  }
+
   @media (max-width: 760px) {
     /* The chrome row sits at 1em; the page follows it from here down. */
     .post-page {
       padding-top: 1rem;
       padding-right: 1em;
       padding-left: 1em;
+    }
+
+    /* One quiet header leaves the recording in the first phone viewport.
+       Expanded details keep their natural height rather than clipping. */
+    .post-page.with-landing {
+      padding-top: 0.5rem;
+    }
+    .demo-landing {
+      min-height: calc(100svh - 0.5rem);
+    }
+    .landing-topline {
+      margin-bottom: 0.5rem;
     }
 
     .journal {

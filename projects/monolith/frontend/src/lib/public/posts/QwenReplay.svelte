@@ -8,7 +8,9 @@
   let element;
   let position = $state(0);
   let playing = $state(false);
-  let outputOpen = $state(true);
+  // Landing pages start with the result; the captured text remains available.
+  // svelte-ignore state_referenced_locally (This prop selects the initial state.)
+  let outputOpen = $state(!landing);
   const fadeDuration = () =>
     typeof Element === "undefined" ||
     typeof Element.prototype.animate !== "function" ||
@@ -91,6 +93,30 @@
   });
 </script>
 
+{#snippet playbackControls()}
+  <div class="controls">
+    <button type="button" onclick={toggle}
+      >{playing
+        ? "Pause"
+        : position >= turn.durationMs
+          ? "Replay"
+          : "Play"}</button
+    >
+    <label class="timeline"
+      ><span class="sr-only">Recorded time</span><input
+        type="range"
+        min="0"
+        max={turn.durationMs}
+        step="1"
+        bind:value={position}
+        oninput={() => (playing = false)}
+        aria-valuetext={seconds(position)}
+      /></label
+    >
+    <span class="time">{seconds(position)}</span>
+  </div>
+{/snippet}
+
 <section
   bind:this={element}
   class="replay"
@@ -104,6 +130,7 @@
       rel="noreferrer">OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
     >.
   </p>
+  {#if landing}{@render playbackControls()}{/if}
   <div class="demo-body" class:output-expanded={outputOpen}>
     <span class="sr-only" role="status">{phase}</span>
     {#if phase === "Prefill"}
@@ -180,27 +207,7 @@
       </dd>
     </div>
   </dl>
-  <div class="controls">
-    <button type="button" onclick={toggle}
-      >{playing
-        ? "Pause"
-        : position >= turn.durationMs
-          ? "Replay"
-          : "Play"}</button
-    >
-    <label class="timeline"
-      ><span class="sr-only">Recorded time</span><input
-        type="range"
-        min="0"
-        max={turn.durationMs}
-        step="1"
-        bind:value={position}
-        oninput={() => (playing = false)}
-        aria-valuetext={seconds(position)}
-      /></label
-    >
-    <span class="time">{seconds(position)}</span>
-  </div>
+  {#if !landing}{@render playbackControls()}{/if}
   <DemoDisclosure class="prompt" label="Prompt">
     <pre>{turn.prompt}</pre>
   </DemoDisclosure>
@@ -229,7 +236,13 @@
     padding-block: 0.6rem;
   }
   .landing .controls {
-    padding-block: 0.3rem;
+    padding-block: 0;
+  }
+  .landing .controls button,
+  .landing .timeline {
+    min-height: 2.75rem;
+    display: flex;
+    align-items: center;
   }
   .question {
     margin: 0.2rem 0 1.2rem;
@@ -426,6 +439,28 @@
     }
   }
   @media (max-width: 600px) {
+    /* Reserve only the visible scan on phones. A fixed desktop-sized graph
+       placeholder pushed both the demo and its controls below the fold. */
+    .landing .demo-body,
+    .landing .demo-body.output-expanded {
+      min-height: 0;
+    }
+    .landing .input-scan {
+      padding: 0.65rem;
+    }
+    .landing .document-strip {
+      height: 140px;
+    }
+    .landing .document-page {
+      height: 128px;
+    }
+    .landing .page-lines i:nth-child(n + 5) {
+      display: none;
+    }
+    .landing .question {
+      font-size: 0.9rem;
+      margin-bottom: 0.25rem;
+    }
     .question {
       font-size: 1.05rem;
     }

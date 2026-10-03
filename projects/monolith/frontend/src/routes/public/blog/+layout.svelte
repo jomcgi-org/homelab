@@ -11,10 +11,13 @@
   const post = $derived(page.params.slug ? page.data.title : "");
 </script>
 
-<TechnicalDrawingChrome>
-  {#snippet trail()}
-    <Trail {post} />
-  {/snippet}
-</TechnicalDrawingChrome>
+<!-- The demo landing supplies its own single, compact header. -->
+{#if page.params.slug !== "125b-on-a-4090"}
+  <TechnicalDrawingChrome>
+    {#snippet trail()}
+      <Trail {post} />
+    {/snippet}
+  </TechnicalDrawingChrome>
+{/if}
 
 {@render children()}
