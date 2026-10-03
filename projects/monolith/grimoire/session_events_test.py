@@ -238,9 +238,7 @@ def test_invalid_roll_formula_is_400_without_writes(http_harness, formula, reaso
 def test_roll_nonmember_404_before_formula_validation(http_harness, viewer, body):
     h, client = http_harness
     before = h.snapshot()
-    response = client.post(
-        _url(h, "/rolls"), headers=h.headers(viewer), json=body
-    )
+    response = client.post(_url(h, "/rolls"), headers=h.headers(viewer), json=body)
     assert response.status_code == 404
     assert h.snapshot() == before
 
