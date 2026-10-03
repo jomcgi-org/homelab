@@ -258,7 +258,10 @@ def test_prompt_uses_source_lens(session, monkeypatch, source, phrase):
     assert "Allowed project subject slugs:" in prompt
     assert '"subjects": [slug]' in prompt
     assert '"unresolved_subject": string|null' in prompt
-    assert "- [nearby] Nearby (repo:acme/repo, verified, observed unknown, freshness unknown" in prompt
+    assert (
+        "- [nearby] Nearby (repo:acme/repo, verified, observed unknown, freshness unknown"
+        in prompt
+    )
     related_match = re.search(
         r"<<<RELATED NOTE ([0-9a-f]{12})>>>known detail"
         r"<<<END RELATED NOTE \1>>>",
