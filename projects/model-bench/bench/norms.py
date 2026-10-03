@@ -222,8 +222,55 @@ def _go_findings(root: Path, changes: list[str]) -> Counter:
     return findings
 
 
+_JS_REGEX_KEYWORDS = frozenset(
+    "return typeof instanceof in of new delete void throw case do else yield await".split()
+)
+_JS_WORD = re.compile(r"[\w$]")
+
+
+def _js_regex_allowed(last: str) -> bool:
+    """Whether a ``/`` after token ``last`` starts a regex rather than dividing."""
+    if last in _JS_REGEX_KEYWORDS or not last:
+        return True
+    return last not in (")", "]", "\0") and not _JS_WORD.match(last)
+
+
+def _js_regex_end(text: str, start: int) -> int | None:
+    """End index (past flags) of the regex literal opening at ``start``, if any.
+
+    Escapes and ``[...]`` classes (where ``/`` needs no escape) are honoured. A
+    literal cannot span lines, so no closing ``/`` on the line means division.
+    """
+    j = start + 1
+    in_class = False
+    while j < len(text):
+        char = text[j]
+        if char == "\n":
+            return None
+        if char == "\\":
+            if j + 1 < len(text) and text[j + 1] == "\n":
+                return None
+            j += 2
+            continue
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        elif char == "/" and not in_class:
+            j += 1
+            while j < len(text) and _JS_WORD.match(text[j]):
+                j += 1
+            return j
+        j += 1
+    return None
+
+
 def _js_comment_lines(text: str) -> set[int]:
     """Comment lines for JS/TS, with template-interpolation awareness.
+
+    Regex literals are skipped whole, so quotes and comment markers inside them
+    are not misread. A ``/`` opens one unless the previous token is an operand
+    (identifier, number, literal, ``)`` or ``]``), which makes it division.
 
     Inside a template literal, comment markers are literal text; only ${...}
     expressions hold real code and may nest further templates. Brace depth is
@@ -232,6 +279,7 @@ def _js_comment_lines(text: str) -> set[int]:
     lines: set[int] = set()
     stack: list[tuple] = []  # ("str", quote) | ("tpl",) | ("expr", depth)
     block = False
+    last = ""  # previous code token: a word, one punctuation char, or "\0" (literal)
     i = line = 0
     while i < len(text):
         char = text[i]
@@ -251,6 +299,7 @@ def _js_comment_lines(text: str) -> set[int]:
                 continue
             if char == top[1]:
                 stack.pop()
+                last = "\0"
         elif top is not None and top[0] == "tpl":
             if char == "\\":
                 if i + 1 < len(text) and text[i + 1] == "\n":
@@ -259,10 +308,12 @@ def _js_comment_lines(text: str) -> set[int]:
                 continue
             if text.startswith("${", i):
                 stack.append(("expr", 1))
+                last = ""
                 i += 2
                 continue
             if char == "`":
                 stack.pop()
+                last = "\0"
         elif char in ('"', "'"):
             stack.append(("str", char))
         elif char == "`":
@@ -277,6 +328,14 @@ def _js_comment_lines(text: str) -> set[int]:
             lines.add(line)
             i += 2
             continue
+        elif (
+            char == "/"
+            and _js_regex_allowed(last)
+            and (end := _js_regex_end(text, i)) is not None
+        ):
+            i = end
+            last = "\0"
+            continue
         elif char == "{" and top is not None and top[0] == "expr":
             stack[-1] = ("expr", top[1] + 1)
         elif char == "}" and top is not None and top[0] == "expr":
@@ -284,6 +343,11 @@ def _js_comment_lines(text: str) -> set[int]:
                 stack.pop()
             else:
                 stack[-1] = ("expr", top[1] - 1)
+        if not block and (not stack or stack[-1][0] == "expr"):
+            if _JS_WORD.match(char):
+                last = last + char if _JS_WORD.match(last[-1:]) else char
+            elif char.strip() and char not in "\"'`":
+                last = char
         if char == "\n":
             line += 1
         i += 1
