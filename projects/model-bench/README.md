@@ -60,7 +60,11 @@ no production flags or provider budgets.
 The HTTP grader checks the real entrypoint's effective uvicorn configuration:
 the enabled bound must be positive and at most 15 seconds, preserving up to
 15 seconds for executor handoff within the 30-second pod grace. Both 3- and
-10-second alternatives pass. Disabled mode keeps the legacy unbounded path.
+10-second alternatives pass, including a module-level constant or helper. The
+complete entrypoint executes with unrelated application composition isolated,
+so repair placement does not restrict the accepted implementation. HTTP
+`version: v2` records that grader correction. Disabled mode keeps the legacy
+unbounded path.
 The fence grader checks zero physical POSTs when shutdown arrives in the final
 admission read, with shutdown, handoff and disabled-mode neighbours. Its id is
 retained from #6750; `version: v3` records the prompt and grader repair. Cached
@@ -102,8 +106,8 @@ for rollout_task in rollout-handoff-logs-01 rollout-http-drain-logs-01 factory-r
   /tmp/rollout-venv/bin/python /tmp/validate_rollouts.py "$rollout_task" --repeats 20
 done
 
-# Accept alternative budgets; reject an unbounded enabled drain or a changed disabled path.
-for rollout_variant in bound3 bound10 unbounded disabled_changed; do
+# Accept alternative budgets and module-level helpers; reject invalid paths.
+for rollout_variant in bound3 bound10 module_constant module_helper unbounded disabled_changed; do
   /tmp/rollout-venv/bin/python /tmp/validate_rollouts.py rollout-http-drain-logs-01 --variant "$rollout_variant"
 done
 /tmp/rollout-venv/bin/python /tmp/validate_rollouts.py rollout-handoff-logs-01 --variant always_on
