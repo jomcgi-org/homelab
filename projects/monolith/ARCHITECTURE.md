@@ -1861,7 +1861,7 @@ rounds are refused. The guest is instructed to inspect hostile scripts before
 execution and use isolated validation without production credentials; this
 prompt is not a new guest capability boundary.
 
-Completion, trusted review publication and merge arming recheck the dependency
+Completion and trusted review publication recheck the dependency
 evidence. Both sessions must report safe assessments for the same head, base
 and digest, and the existing exact-head approval and required Linux CI gates
 still apply. Any change invalidates approval and requires fresh review under a
@@ -1869,8 +1869,13 @@ new authorized generation. Rejected or unsupported changes stay held for an
 operator; missing access to Dependabot alerts is never treated as no alerts.
 The GitHub read identity needs Dependabot alerts read permission in addition
 to access to the repository and dependency graph. This lane never dismisses
-alerts. The existing merge queue and GitOps promotion pipeline remain the
-publication path, and landing still verifies publication and managed rollout
+alerts. Dependency auto-merge is unconditionally disabled, even with approved
+assessments and repository auto-merge enabled. A required trusted queue-time
+validation gate must bind approval to the actual queued base and current
+vulnerability evidence before this lane can arm merges (#6799). Polling after
+arming cannot guarantee that evidence is current at merge time. Existing
+Renovate platform auto-merge must also pass that gate before automation is
+activated. For separately authorized merges, landing verifies publication and managed rollout
 before recording repository delivery complete. It never closes a PR through
 the issue-close API. Runtime activation is a live policy update after rollout;
 shipping this code alone enables no author accounts. BuildBuddy currently
