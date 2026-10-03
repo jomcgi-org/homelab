@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import IncidentGraph from "./IncidentGraph.svelte";
 import recording from "./qwen-replay.json";
+import { incidentGraph } from "./incident-graph.js";
 test("clicking a connection exposes its verified source and inferred analysis", async () => {
   const target = document.createElement("div");
   document.body.append(target);
@@ -18,8 +19,21 @@ test("clicking a connection exposes its verified source and inferred analysis", 
     },
   });
   await tick();
-  const alert = target.querySelector(
-    '[aria-label="Trigger alert: Monitoring notifies team"]',
+  const graph = incidentGraph(answer, true);
+  if (graph.summary)
+    expect(target.querySelector(".takeaway").textContent).toBe(
+      graph.summary.detail,
+    );
+  const reviewedEdges = graph.edges.map((edge) => ({
+    ...edge,
+    ...recording.review?.[edge.id],
+  }));
+  const monitor = graph.nodes.find((node) => node.role === "monitor");
+  const alertEdge = reviewedEdges.find((edge) => edge.from === monitor.id);
+  const alert = [...target.querySelectorAll(".edge-hit")].find(
+    (el) =>
+      el.getAttribute("aria-label") ===
+      `${alertEdge.label}: ${alertEdge.detail}`,
   );
   alert.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await tick();
@@ -32,13 +46,20 @@ test("clicking a connection exposes its verified source and inferred analysis", 
       .querySelector(".edge")
       .classList.contains("feedback"),
   ).toBe(true);
-  target
-    .querySelector('[aria-label="Escape isolation: Sandbox controls failed"]')
+  const failure = reviewedEdges.find(
+    (edge) => edge.kind === "failure" && edge.basis === "inferred",
+  );
+  [...target.querySelectorAll(".edge-hit")]
+    .find(
+      (el) =>
+        el.getAttribute("aria-label") === `${failure.label}: ${failure.detail}`,
+    )
     .dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await tick();
   expect(target.querySelector(".graph-detail a").textContent).toContain(
     "Analysis",
   );
+  expect(target.querySelector("animateMotion")).toBeNull();
   await unmount(component);
   target.remove();
 });
