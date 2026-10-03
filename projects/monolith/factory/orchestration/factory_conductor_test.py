@@ -20,6 +20,9 @@ def factory_ceiling(monkeypatch):
     """
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     monkeypatch.setenv("FACTORY_BACKGROUND_RESERVE", "0")
+    # Tick unit tests isolate the ownership reader. Its real database and live
+    # label behavior is covered by the refine integration fixture.
+    monkeypatch.setattr(conductor, "_observe_human_ownership", lambda _task: False)
 
 
 def test_conductor_contract_rejects_missing_action_fields_and_authority_changes():
@@ -19688,3 +19691,84 @@ def test_dependency_review_dispatch_pins_investigation_evidence(monkeypatch):
     evidence = json.loads(context["retry_context"])["dependency_investigation_evidence"]
     assert evidence[0]["session_id"] == 11
     assert "install script" in evidence[0]["artifact"]["summary"]
+
+
+def test_human_label_excludes_operator_allowlisted_issue(monkeypatch):
+    import factory.orchestration.factory_intake as intake
+
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda *_: {
+            "state": "open",
+            "labels": [{"name": "human"}, {"name": "agent-ready"}],
+            "assignees": [],
+        },
+    )
+    monkeypatch.setattr(
+        intake, "receive_issue", lambda *_, **__: pytest.fail("human work admitted")
+    )
+    conductor.ingest_eligible({"repo": "owner/repo", "issue_numbers": [7]})
+
+
+def test_human_handoff_tick_keeps_cessation_supervision_without_deadline_escalation(
+    monkeypatch,
+):
+    import factory.orchestration.factory_controls as controls
+    import factory.orchestration.factory_intake as intake
+
+    policy = {"max_tasks": 1}
+    task = {"task_id": "t-human", "policy": policy}
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "enabled", "policy": policy, "active_tasks": [task]},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(conductor, "_observe_human_ownership", lambda _: True)
+    monkeypatch.setattr(
+        conductor,
+        "_watch_progress",
+        lambda _: pytest.fail("human work must not escalate"),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_expire_task_deadline",
+        lambda _: pytest.fail("human work must not expire into escalation"),
+    )
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda _: None)
+    monkeypatch.setattr(intake, "admit_next", lambda *_, **__: {"ok": False})
+    observed = []
+
+    def reconcile(_task_id, _policy, _dbos, *, human_owned):
+        assert human_owned is True
+        raise ValueError("temporary outcome reconciliation failure")
+
+    monkeypatch.setattr(conductor, "reconcile_task", reconcile)
+    monkeypatch.setattr(
+        conductor,
+        "_supervise_cessation",
+        lambda _task, _dbos, **kwargs: observed.append(kwargs),
+    )
+    conductor.tick()
+    assert observed == [{"human_owned": True}]
+
+
+def test_human_cessation_supervision_does_not_request_another_human_decision(
+    monkeypatch,
+):
+    from factory.orchestration import factory_cessation
+
+    calls = []
+    monkeypatch.setattr(
+        factory_cessation, "supervise_task", lambda task, _: calls.append(task)
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_ceased_task",
+        lambda _: pytest.fail("handoff is already decided"),
+    )
+    task = {"task_id": "t-human"}
+    conductor._supervise_cessation(task, object(), human_owned=True)
+    assert calls == [task]

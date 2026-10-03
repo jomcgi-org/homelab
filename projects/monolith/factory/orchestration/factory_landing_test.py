@@ -191,7 +191,7 @@ def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
         calls["get"].append(suffix)
         number = int(suffix.split("/")[1])
         source = pulls if suffix.startswith("pulls/") else issues
-        return dict(source[number])
+        return dict(source.get(number, {"state": "open", "labels": []}))
 
     def listing(_repo, suffix):
         calls["list"].append(suffix)
@@ -214,6 +214,9 @@ def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
         if refuse is not None:
             refuse()
         number = int(variables["pullRequestId"].removeprefix("PR_"))
+        if "dequeuePullRequest" in query:
+            pulls[number] = {**pulls[number], "queue_entry": None}
+            return {"mergeQueueEntry": {"id": f"MQ_{number}"}}
         arming = "enablePullRequestAutoMerge" in query
         pulls[number] = {
             **pulls[number],
@@ -320,7 +323,11 @@ def test_review_canary_publishes_while_merge_remains_disabled(db, monkeypatch):
     monkeypatch.setattr(
         landing,
         "github_get",
-        lambda *_args: pytest.fail("merge-disabled canary reached arming"),
+        lambda _repo, suffix: (
+            {"labels": []}
+            if suffix.startswith("issues/")
+            else pytest.fail("merge-disabled canary reached arming")
+        ),
     )
 
     landing.landing_tick({"repo": "owner/repo", "auto_merge": False})
@@ -1002,7 +1009,7 @@ def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
     reads = len(calls["get"])
     landing.landing_tick(POLICY)
     # The landed delivery is not read again; only the one still working is.
-    assert [suffix for suffix in calls["get"][reads:]] == ["pulls/4"]
+    assert [suffix for suffix in calls["get"][reads:]] == ["issues/12", "pulls/4"]
 
 
 def test_an_advisory_settlement_is_not_a_delivery(db, monkeypatch):
@@ -1071,7 +1078,7 @@ def test_a_read_outage_is_audited_by_shape_and_carries_no_response_body(
     monkeypatch.setattr(landing, "github_list", lambda *_args: [])
     landing.landing_tick(POLICY)
     assert audits(db, "landing_error", "t-1") == [
-        {"stage": "arm", "error": "HTTPStatusError", "status": 403}
+        {"stage": "human_ownership", "error": "HTTPStatusError", "status": 403}
     ]
     # The next tick retries rather than giving up, and the throttle keeps the
     # audit to one row an hour while the outage lasts.
@@ -1287,10 +1294,10 @@ def test_historical_changed_head_is_skipped_once_without_blocking_next_refusal(
         pulls={3: pull(3, head="d" * 40), 4: {**pull(4), "mergeable": False}},
     )
     landing.landing_tick(POLICY)
-    assert calls["get"] == ["pulls/3"]
+    assert calls["get"] == ["issues/11", "pulls/3"]
     assert audits(db, "landing_recovery_skipped", "t-1")[0]["reason"] == "head_moved"
     landing.landing_tick(POLICY)
-    assert calls["get"] == ["pulls/3", "pulls/4"]
+    assert calls["get"] == ["issues/11", "pulls/3", "issues/12", "pulls/4"]
     assert receipt_state(db, "t-2") == "admitted"
 
 
@@ -1959,3 +1966,63 @@ def test_dependency_delivery_waits_for_rollout_and_never_closes_pr_as_issue(
     assert calls["write"] == []
     assert item["closed"]
     assert audits(db, "repository_delivery_complete")
+
+
+@pytest.mark.parametrize(
+    "armed,queued", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_human_handoff_stops_landing_and_disarms_existing_merge(
+    db, monkeypatch, armed, queued
+):
+    delivered(db, "t-human", 7, 12, state="landing")
+    calls = github(
+        monkeypatch,
+        pulls={
+            12: {
+                **pull(12, armed=armed),
+                "queue_entry": {"id": "MQ_12"} if queued else None,
+            }
+        },
+        issues={7: {"state": "open", "labels": [{"name": "human"}]}},
+    )
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-human") == "cancelled"
+    assert calls["write"] == []
+    assert len(calls["graphql"]) == int(armed) + int(queued)
+    assert (
+        audits(db, "finish_task", "t-human")[-1]["evidence"]
+        == controls.HUMAN_HANDOFF_EVIDENCE
+    )
+
+
+def test_human_handoff_prevents_historical_refusal_from_reopening_delivery(
+    db, monkeypatch
+):
+    delivered(db, "t-human", 7, 12, state="landing")
+    landing._record(
+        "t-human", "merge_arm_refused", pr_number=12, reason="merge_conflict"
+    )
+    calls = github(
+        monkeypatch,
+        pulls={12: pull(12)},
+        issues={7: {"state": "open", "labels": [{"name": "human"}]}},
+    )
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-human") == "cancelled"
+    assert audits(db, "landing_recovery_requested", "t-human") == []
+    assert calls["graphql"] == []
+    assert calls["write"] == []
+
+
+def test_human_handoff_waits_for_positive_dequeue_observation(db, monkeypatch):
+    delivered(db, "t-human", 7, 12, state="landing")
+    github(
+        monkeypatch,
+        pulls={12: pull(12)},
+        issues={7: {"state": "open", "labels": [{"name": "human"}]}},
+    )
+    monkeypatch.setattr(landing, "_queued_ids", lambda _: {"PR_12"})
+    landing.landing_tick(POLICY)
+    assert receipt_state(db, "t-human") == "landing"
+    assert controls.task_snapshot("t-human")["cancellation_requested"] is True
+    assert audits(db, "landing_error", "t-human")[-1]["stage"] == "human_ownership"

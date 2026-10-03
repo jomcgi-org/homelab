@@ -72,6 +72,7 @@ _EXCLUSION_REASONS = (
     "pull_request",
     "not_open",
     "assigned",
+    "human",
     "excluded_label",
     "linked_pr",
     "delivered",
@@ -378,6 +379,9 @@ def _local_candidates(
             )
             continue
         labels = {label.lower() for label in work_item.labels}
+        if "human" in labels:
+            excluded["human"] += 1
+            continue
         if labels & exclude_labels:
             excluded["excluded_label"] += 1
             continue
@@ -730,6 +734,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     exclude("pull_request")
                 elif item.get("state") != "open":
                     exclude("not_open")
+                elif "human" in labels:
+                    exclude("human")
                 elif item.get("assignees"):
                     exclude("assigned")
                 elif labels & exclude_labels:

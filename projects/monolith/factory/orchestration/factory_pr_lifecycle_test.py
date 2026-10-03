@@ -645,3 +645,41 @@ def test_receive_target_never_adopts_unauthorized_or_running_branch(
     monkeypatch.setattr(conductor, "github_list", lambda *_args: [existing])
 
     assert gates.receive_delivery_target(REPO, 16) is None
+
+
+def test_human_handoff_leaves_existing_pr_for_its_owner(db, monkeypatch):
+    task_receipt(db, "t-human", 7, "cancelled", branch="factory/t-human", pr_number=12)
+    with controls._locked_session() as (session, _):
+        controls._audit(
+            session,
+            "factory:conductor",
+            "human_handoff",
+            task_id="t-human",
+            label="human",
+        )
+    monkeypatch.setattr(
+        lifecycle, "github_get", lambda *_: pytest.fail("human PR should be untouched")
+    )
+    lifecycle.draft_settled_prs(REPO)
+    with Session(db) as session:
+        event = session.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == "t-human",
+                FactoryAudit.action == "factory_pr_settlement_complete",
+            )
+        ).one()
+        assert json.loads(event.detail_json)["outcome"] == "human_handoff"
+
+
+def test_human_issue_prevents_automatic_duplicate_pr_retirement(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "github_get",
+        lambda *_: {"state": "closed", "labels": [{"name": "human"}]},
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "_successor",
+        lambda *_: pytest.fail("human ownership must be checked first"),
+    )
+    assert lifecycle._retirement_reason(REPO, pull(12, 7)) is None

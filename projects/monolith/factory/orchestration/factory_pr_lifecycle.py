@@ -280,6 +280,10 @@ def _retirement_reason(
     survivor_issue = None
     for issue_number in closing_issue_numbers(pull.get("body"), repo):
         issue = github_get(repo, f"issues/{issue_number}")
+        from factory.orchestration.factory_intake_loop import _label_names
+
+        if "human" in _label_names(issue):
+            return None
         found = _successor(repo, issue_number, number)
         if found is not None and survivor is None:
             survivor, survivor_row = found
@@ -478,6 +482,25 @@ def _settlement_successor(repo: str, row: FactoryReceipt, pull: dict) -> str | N
 
 def _draft_settled_pull(repo: str, row: FactoryReceipt) -> None:
     if not row.task_id or _settlement_done(row.task_id):
+        return
+    with _read_session() as db:
+        handed_off = (
+            db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.task_id == row.task_id,
+                    FactoryAudit.action == "human_handoff",
+                )
+            ).first()
+            is not None
+        )
+    if handed_off:
+        _record(
+            "factory_pr_settlement_complete",
+            task_id=row.task_id,
+            repo=repo,
+            receipt_id=row.id,
+            outcome="human_handoff",
+        )
         return
     number, reason = _settlement_candidate(row)
     if number is None:
