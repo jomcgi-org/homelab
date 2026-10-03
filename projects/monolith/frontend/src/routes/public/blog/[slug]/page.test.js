@@ -4,6 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import Post from "./+page.svelte";
 
 vi.mock("$lib/public/components", () => ({ Seo: () => {} }));
+vi.mock("$app/navigation", () => ({ replaceState: vi.fn() }));
 vi.stubGlobal(
   "IntersectionObserver",
   class {
@@ -31,6 +32,8 @@ let target;
 afterEach(async () => {
   if (component) await unmount(component);
   target?.remove();
+  delete document.documentElement.dataset.theme;
+  localStorage.removeItem("td-theme");
 });
 async function render(props) {
   target = document.createElement("div");
@@ -46,6 +49,14 @@ test("the 4090 demo opens before the article and its navigation, preserving auth
   expect(target.querySelector(".demo-landing .spine")).toBeNull();
   expect(target.querySelector(".journal .replay")).toBeNull();
   expect(target.querySelectorAll("h1")).toHaveLength(1);
+  expect(target.querySelector("h1").textContent).toBe("125B on a 4090");
+  expect(target.querySelectorAll(".landing-header nav")).toHaveLength(1);
+  expect(target.querySelector(".landing-header .trail")).toBeNull();
+  expect(target.querySelector(".landing-header time")).toBeNull();
+  expect(
+    target.querySelector(".post-frame time").getAttribute("datetime"),
+  ).toBe(data.date);
+  expect(target.querySelector(".post-frame h2").textContent).toBe(data.title);
   expect(target.querySelectorAll("#inference-demo")).toHaveLength(1);
   expect(target.querySelector(".post-frame").textContent).toContain(
     data.summary,
@@ -57,6 +68,29 @@ test("the 4090 demo opens before the article and its navigation, preserving auth
     "#post-body",
   );
   expect(target.querySelector("#post-body .spine")).not.toBeNull();
+});
+
+test("Read the post moves keyboard focus to the article", async () => {
+  await render(data);
+  const article = target.querySelector("#post-body");
+  article.scrollIntoView = vi.fn();
+  target.querySelector(".read-post").click();
+  expect(article.scrollIntoView).toHaveBeenCalled();
+  expect(document.activeElement).toBe(article);
+});
+
+test("the compact header retains the persistent day and night switch", async () => {
+  await render(data);
+  const toggle = target.querySelector(".landing-header .scheme");
+  toggle.click();
+  await tick();
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(localStorage.getItem("td-theme")).toBe("dark");
+  expect(toggle.getAttribute("aria-label")).toBe("Switch to day scheme");
+  toggle.click();
+  await tick();
+  expect(document.documentElement.dataset.theme).toBe("light");
+  expect(localStorage.getItem("td-theme")).toBe("light");
 });
 test("other posts keep their title, summary and sections alongside navigation", async () => {
   await render({ ...data, slug: "another-post" });

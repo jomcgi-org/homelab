@@ -8,10 +8,10 @@ import recording from "./qwen-replay.json";
 const turn = recording.turns[0];
 let component;
 let target;
-async function render() {
+async function render(props = {}) {
   target = document.createElement("div");
   document.body.append(target);
-  component = mount(QwenReplay, { target });
+  component = mount(QwenReplay, { target, props });
   await tick();
   return target;
 }
@@ -27,6 +27,45 @@ afterEach(async () => {
   target?.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+test("the landing keeps playback first and captured output secondary", async () => {
+  const view = await render({ landing: true });
+  expect(view.querySelectorAll(".controls")).toHaveLength(1);
+  expect(
+    view
+      .querySelector(".controls")
+      .compareDocumentPosition(view.querySelector(".demo-body")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  await seek(turn.durationMs);
+  const toggle = view.querySelector(".model-output button");
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  toggle.click();
+  await tick();
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(view.querySelector(".model-output code").textContent).toBe(
+    turn.events.map((event) => event.content).join(""),
+  );
+});
+
+test("reduced motion leaves the landing paused until Play is requested", async () => {
+  const observe = vi.fn();
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe = observe;
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal("matchMedia", () => ({ matches: true }));
+  const view = await render({ landing: true });
+  expect(observe).not.toHaveBeenCalled();
+  expect(view.querySelector(".controls button").textContent).toBe("Play");
+  view.querySelector(".controls button").click();
+  await tick();
+  expect(view.querySelector(".controls button").textContent).toBe("Pause");
 });
 
 test("first-token timing stays fixed when seeking, without a prefill rate or chart", async () => {
