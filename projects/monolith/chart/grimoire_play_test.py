@@ -1,4 +1,4 @@
-"""Pin the default-off play flag through actual Helm rendering."""
+"""Verify default-off, production-on and rollback play flags through Helm."""
 
 import os
 import subprocess
@@ -12,12 +12,14 @@ import yaml
     "deploy,enabled,expected",
     [
         (False, None, "false"),
-        (True, None, "false"),
+        (True, None, "true"),
         (False, True, "true"),
         (True, True, "true"),
+        (False, False, "false"),
+        (True, False, "false"),
     ],
 )
-def test_play_env_is_quoted_and_default_off(deploy, enabled, expected):
+def test_play_env_is_quoted_with_production_and_rollback(deploy, enabled, expected):
     chart = Path(__file__).resolve().parent
     command = [os.environ.get("HELM_BIN", "helm"), "template", "kg", str(chart)]
     if deploy:
@@ -30,7 +32,7 @@ def test_play_env_is_quoted_and_default_off(deploy, enabled, expected):
             ]
         )
     if enabled is not None:
-        command.extend(["--set", "grimoire.play.enabled=true"])
+        command.extend(["--set", f"grimoire.play.enabled={str(enabled).lower()}"])
     result = subprocess.run(
         command, capture_output=True, text=True, timeout=120, check=True
     )
