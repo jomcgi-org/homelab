@@ -329,3 +329,73 @@ def test_migration_accepts_every_literal_kind(lane, kind):
         session.commit()
         assert row.kind == kind
         assert row.seq == 1
+
+
+def test_journal_routes_apply_postgres_audience_predicate(lane, monkeypatch):
+    from core.db import get_session
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from grimoire.access import get_authenticated_email
+    from grimoire.router import router
+
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+    player_email = f"journal-{uuid4()}@example.test"
+    with Session(lane.engine) as session:
+        user = AppUser(email=player_email)
+        session.add(user)
+        session.flush()
+        user_id = user.id
+        player = CampaignMember(
+            campaign_id=lane.campaign_id,
+            app_user_id=user.id,
+            role="player",
+            player_character_id=lane.pc_id,
+        )
+        session.add(player)
+        game_session = session.get(GameSession, lane.session_id)
+        for audience, body in (
+            (Audience("table"), {"text": "TABLE-HANDOUT"}),
+            (Audience("pcs", frozenset([lane.pc_id])), {"text": "PLAYER-HANDOUT"}),
+            (Audience("dm"), {"text": "DM-ONLY-HANDOUT"}),
+        ):
+            append_event(
+                session,
+                game_session=game_session,
+                kind="handout",
+                audience=audience,
+                author_member_id=lane.member_id,
+                body=body,
+            )
+        session.commit()
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def database():
+        with Session(lane.engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = database
+    app.dependency_overrides[get_authenticated_email] = lambda: player_email
+    try:
+        with TestClient(app) as client:
+            for suffix in (f"/sessions/{lane.session_id}/journal", "/journal"):
+                for view, expected in (("mine", 2), ("party", 1)):
+                    response = client.get(
+                        f"/api/grimoire/campaigns/{lane.campaign_id}{suffix}",
+                        params={"view": view},
+                    )
+                    assert response.status_code == 200, response.text
+                    assert "DM-ONLY-HANDOUT" not in response.text
+                    assert lane.member_id not in response.text
+                    result = response.json()
+                    if suffix == "/journal":
+                        result = result["sessions"][0]["journal"]
+                    assert len(result["received"]) == expected
+    finally:
+        with lane.engine.begin() as connection:
+            connection.execute(
+                delete(CampaignMember).where(CampaignMember.app_user_id == user_id)
+            )
+            connection.execute(delete(AppUser).where(AppUser.id == user_id))
