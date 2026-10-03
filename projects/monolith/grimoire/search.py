@@ -89,7 +89,12 @@ def _resolve_chunk_hit(
 
 
 def _resolve_entity_hit(
-    session: Session, campaign_id: str, viewer: Viewer, entity_id: str, distance: float
+    session: Session,
+    campaign_id: str,
+    viewer: Viewer,
+    entity_id: str,
+    distance: float,
+    not_granted_to: str | None = None,
 ) -> dict[str, Any] | None:
     """Sync: apply the visibility predicate/projection to one entity hit.
 
@@ -107,7 +112,9 @@ def _resolve_entity_hit(
     module to wire the endpoint, so importing back would be circular).
     """
     rows = session.exec(
-        visible_entities_query(campaign_id, viewer).where(Entity.id == entity_id)
+        visible_entities_query(
+            campaign_id, viewer, not_granted_to=not_granted_to
+        ).where(Entity.id == entity_id)
     ).all()
     if not rows:
         return None
@@ -141,6 +148,7 @@ def _resolve_hits(
     campaign_id: str,
     viewer: Viewer,
     hits: list[tuple[Embedding, float]],
+    not_granted_to: str | None = None,
 ) -> list[dict[str, Any]]:
     """Sync: resolve raw kNN hits into scored, visibility-filtered result dicts."""
     results: list[dict[str, Any]] = []
@@ -149,7 +157,12 @@ def _resolve_hits(
             resolved = _resolve_chunk_hit(session, embedding.embeddable_id, distance)
         elif embedding.embeddable_kind == "entity":
             resolved = _resolve_entity_hit(
-                session, campaign_id, viewer, embedding.embeddable_id, distance
+                session,
+                campaign_id,
+                viewer,
+                embedding.embeddable_id,
+                distance,
+                not_granted_to,
             )
         else:
             resolved = None
@@ -165,6 +178,8 @@ async def search_campaign(
     viewer: Viewer,
     q: str,
     k: int = 10,
+    *,
+    not_granted_to: str | None = None,
 ) -> list[dict[str, Any]]:
     """Grant-filtered vector search over entities and chunks for one campaign.
 
@@ -178,6 +193,6 @@ async def search_campaign(
     hits = knn_embeddings(
         session, query_vector, ("entity", "chunk"), k * OVERFETCH_FACTOR
     )
-    results = _resolve_hits(session, campaign_id, viewer, hits)
+    results = _resolve_hits(session, campaign_id, viewer, hits, not_granted_to)
     results.sort(key=lambda item: item["score"], reverse=True)
     return results[:k]

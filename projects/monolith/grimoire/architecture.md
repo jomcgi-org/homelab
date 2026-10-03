@@ -139,6 +139,44 @@ Part of #6610. The #6612 play-surface PR owns enabling
 verifying the live routes and audiences with #6610. No operational flag flip
 belongs to this change.
 
+Grant changes emit `reveal` events only when play is enabled and the campaign
+has an active or paused session. Creation defaults an omitted
+`granted_in_session` to that session; an explicit session is preserved, while
+the event always targets the current session. Grant and event share one
+transaction. The event's author is the DM member and its audience is the
+grantee PC. Scope upgrades emit only for a strict increase in
+`name_only < partial < full`, after applying `revealed_details`. Downgrades,
+same-scope edits and details-only edits emit nothing.
+
+Each reveal body has exactly `entity_id`, `name`, `entity_type`, and
+`grant_scope`. Full and partial bodies also have `entity`, computed through
+`project_entity` for the persisted grant's grantee in lookup context. Partial
+projections contain only `id`, `entity_type`, `name`, and `revealed_details`;
+full projections include typed detail and JSON-encoded datetimes. Name-only
+bodies carry no projection. Deleting a grant writes the identity keys with
+the previous scope plus `retracted: true` and `silent: false`. A silent delete
+stores exactly `{"retracted": true, "silent": true}`. Original reveal rows
+and their retraction timestamps remain unchanged.
+
+The DM-only, play-gated bulk grant route accepts 1 to 50 unique entity/PC
+pairs sharing one entity or one PC. It validates every item before writes,
+inserts all grants, appends one event per distinct PC with
+`{"reveals": [<per-entity body>, ...]}` in request order, and commits once.
+Failures roll back both grants and events.
+
+On entities and search, DM-only `not_granted_to` means "hide entities that PC
+already knows": exclude global entities and any grant scope using a
+correlated grant alias in the shared visibility query. Search chunk hits are
+unaffected. Authorization checks membership, play flag, DM role, then PC
+campaign membership, in that order. With the flag off, the new filters and
+bulk route return 404 and existing grant and read behavior is unchanged.
+Live enablement and live audience checks remain in #6610.
+
+**Why.** The grantee projection bounds the stored feed snapshot. One
+transaction keeps knowledge and feed changes together; an identity-free
+silent retraction leaves no entity data for a read path to expose. Sharing
+the visibility predicate keeps reveal search aligned with player knowledge.
+
 ## Notes
 
 `grimoire.note` stores character and party notes, with an opt-in `dm_readable`
