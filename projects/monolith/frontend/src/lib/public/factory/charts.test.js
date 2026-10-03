@@ -135,7 +135,7 @@ describe("phone chart layout", () => {
       ["var(--tone-gpu)"],
       "Sessions per day",
     );
-    expect(svg).toContain('viewBox="0 0 360 176"');
+    expect(svg).toContain('viewBox="0 0 360 192"');
     expect(svg).toContain(
       'font-size="15" text-anchor="start" fill="currentColor">09·01',
     );
@@ -181,14 +181,14 @@ describe("date label spacing", () => {
       const svg = barChartSvg("spacing", rows, ["value"], ["var(--tone-gpu)"]);
       const labels = [
         ...svg.matchAll(
-          /<text x="([\d.]+)" y="169" font-size="15" text-anchor="(start|middle|end)" fill="currentColor">(\d\d·\d\d)<\/text>/g,
+          /<text x="([\d.]+)" y="185" font-size="15" text-anchor="(start|middle|end)" fill="currentColor">(\d\d·\d\d)<\/text>/g,
         ),
       ];
       expect(labels[0][3]).toBe("09·01");
       expect(labels.at(-1)[3]).toBe(rows.at(-1).d.slice(5).replace("-", "·"));
       let previousEnd = 0;
       for (const [, x, anchor] of labels) {
-        const width = 48.75;
+        const width = 97.5;
         const start =
           Number(x) -
           (anchor === "end" ? width : anchor === "middle" ? width / 2 : 0);
@@ -210,4 +210,17 @@ it("describes series using the same language as their visible legend", () => {
     ["verified", "unverified"],
   );
   expect(svg).toContain("verified: 3; unverified: 2.");
+});
+
+it("leaves room for enlarged numeric ticks without removing the scale", () => {
+  const svg = barChartSvg(
+    "large",
+    [{ d: "2026-09-01", n: 99999 }],
+    ["n"],
+    ["var(--tone-gpu)"],
+  );
+  expect(svg).toContain(">100K</text>");
+  expect(svg).toContain(">40K</text>");
+  expect(svg.match(/text-anchor="end" fill="currentColor">/g)).toHaveLength(3);
+  expect(svg).toContain('x="78" y="29.5" font-size="15"');
 });

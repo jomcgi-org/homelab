@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { load as overview } from "../src/routes/public/slop/factory/+page.server.js";
 import { load as activity } from "../src/routes/public/slop/factory/activity/+page.server.js";
 import { load as context } from "../src/routes/public/slop/factory/context/+page.server.js";
@@ -81,7 +83,11 @@ describe("same-commit factory server-load fixtures", () => {
 // generated locally/CI, never a hand-maintained snapshot of production data.
 afterAll(() => {
   expect(Object.keys(generated)).toHaveLength(15);
-  const directory = new URL("./.generated/", import.meta.url);
+  // Bazel test runfiles are read-only. A test never feeds a later build action:
+  // only the direct local/Actions command writes beside the Vite harness.
+  const directory = process.env.TEST_TMPDIR
+    ? join(process.env.TEST_TMPDIR, "factory-fixtures")
+    : fileURLToPath(new URL("./.generated/", import.meta.url));
   mkdirSync(directory, { recursive: true });
-  writeFileSync(new URL("pages.json", directory), JSON.stringify(generated));
+  writeFileSync(join(directory, "pages.json"), JSON.stringify(generated));
 });

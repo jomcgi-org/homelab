@@ -2,13 +2,14 @@
 // the SVG or cropping a month's data. The old 600 x 120 viewBox made 13px
 // labels render at about 6px on a phone and flattened the colored bars.
 const SVG_WIDTH = 360;
-const SVG_HEIGHT = 176;
-const LEFT = 44;
+const SVG_HEIGHT = 192;
+const LEFT = 84;
 const BOTTOM = 28;
-const TOP = 10;
+const TOP = 26;
 const TICK_SIZE = 15;
-// Five mono characters, with a conservative glyph width and a clear gap.
-const DATE_LABEL_WIDTH = TICK_SIZE * 3.25;
+// Reserve space for 200% text, not just the default mono glyph width.
+// Boundary dates matter more than a crowded intermediate weekly label.
+const DATE_LABEL_WIDTH = TICK_SIZE * 6.5;
 const LABEL_GAP = 8;
 
 function finite(value) {
@@ -121,8 +122,18 @@ export function barChartSvg(
     : "No recorded days.";
   let svg = `<svg viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" role="img" aria-label="${escapeText(label)}"><title>${escapeText(label)}</title><desc>${escapeText(range)}</desc>`;
   svg += `<defs><pattern id="${patternId}" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="currentColor" stroke-width="1" opacity="0.55"/></pattern></defs>`;
+  const middleTick = Math.floor(top / step / 2) * step;
+  const tickFormat = new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
   for (let value = 0; value <= top; value += step) {
-    svg += `<line x1="${LEFT}" y1="${y(value)}" x2="${SVG_WIDTH}" y2="${y(value)}" stroke="currentColor" stroke-width="0.5" opacity="${value === 0 ? 0.8 : 0.18}"/><text x="${LEFT - 6}" y="${y(value) + 3.5}" font-size="${TICK_SIZE}" text-anchor="end" fill="currentColor">${value}</text>`;
+    svg += `<line x1="${LEFT}" y1="${y(value)}" x2="${SVG_WIDTH}" y2="${y(value)}" stroke="currentColor" stroke-width="0.5" opacity="${value === 0 ? 0.8 : 0.18}"/>`;
+    // Keep the scale, but label only its bounds and midpoint so enlarged
+    // text cannot collide with the next gridline's number.
+    if (value === 0 || value === top || value === middleTick) {
+      svg += `<text x="${LEFT - 6}" y="${y(value) + 3.5}" font-size="${TICK_SIZE}" text-anchor="end" fill="currentColor">${tickFormat.format(value)}</text>`;
+    }
   }
   let previousLabelEnd = LEFT + DATE_LABEL_WIDTH;
   days.forEach((day, dayIndex) => {
