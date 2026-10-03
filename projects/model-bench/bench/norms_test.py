@@ -185,13 +185,51 @@ def test_unified_diff_covers_edits_and_new_files(tmp_path):
         (".js", "const re = /a\\/\\/b/g; // real\n", {0}),
         (".ts", "const re = /['\"`]/; // real\n", {0}),
         (".js", "const m = x.match(/\\/*/);\nreturn /[/*]/.test(s);\n", set()),
-        (".ts", "const a = b / c; // d / e\nconst f = (g) / 2 /* h */;\n", {0, 1}),
+        (".ts", "const a = b / c; // d / e\nconst f = g[0] / 2 /* h */;\n", {0, 1}),
+        (".js", "function f() { return typeof /[/*]/; }\n", set()),
+        (".ts", "function f() { return typeof /[/*]/; }\n", set()),
+        (".js", "const r = x\n  ? /[//]/ : /a/; // real\n", {1}),
         (".js", "const q = a / 2; const s = '/*';\n", set()),
         (".ts", "const x = `${/[//]/.test(y)} // literal`;\n", set()),
     ],
 )
 def test_comment_scanner_ignores_literals(suffix, text, expected):
     assert norms._comment_lines(text, suffix) == expected
+
+
+@pytest.mark.parametrize("suffix", [".js", ".ts"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "if (ok) /[//]/.test(value);\n",
+        "if (ok) /[/*]/.test(value);\n",
+        "const value = n++ / 2; // real comment\n",
+        "const value = (a + b) / 2;\n",
+        "const value = n-- / 2;\n",
+        "if (ok) {}\n/x/.test(value);\n",
+        "const value = a / 2 / b / /unterminated;\n",
+    ],
+)
+def test_comment_scanner_rejects_ambiguous_slash(suffix, text):
+    with pytest.raises(ValueError):
+        norms._comment_lines(text, suffix)
+
+
+@pytest.mark.parametrize("rel", ["a.js", "a.ts"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "if (ok) /[//]/.test(value);\n",
+        "if (ok) /[/*]/.test(value);\n",
+        "const value = n++ / 2; // real comment\n",
+    ],
+)
+def test_comment_density_is_unmeasured_for_ambiguous_slash(tmp_path, rel, text):
+    fx, wd = _pair(tmp_path, {rel: "let y = 1;\n"}, {rel: "let y = 1;\n" + text})
+    n = compute_norms(fx, wd, lint=False)
+    assert n["comment_density_added"] is None
+    assert n["comment_density_baseline"] is None
+    assert n["comment_density_delta"] is None
 
 
 def test_comment_density_pools_added_lines_and_baselines(tmp_path):
