@@ -4,8 +4,32 @@ import argparse
 import json
 from pathlib import Path
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import expect, sync_playwright
+
+
+def use_loopback_requests(context):
+    """Send fixture inspections to IPv4 while retaining browser host and identity."""
+    request = context.request
+    for method in ("get", "post", "patch", "delete"):
+        original = getattr(request, method)
+
+        def send(url, *, _original=original, **kwargs):
+            address = urlsplit(url)
+            if address.hostname == "friends.localhost":
+                cookies = context.cookies(url)
+                kwargs["headers"] = {
+                    **kwargs.get("headers", {}),
+                    "host": address.netloc,
+                    "cookie": "; ".join(
+                        f"{item['name']}={item['value']}" for item in cookies
+                    ),
+                }
+                url = urlunsplit(address._replace(netloc=f"127.0.0.1:{address.port}"))
+            return _original(url, **kwargs)
+
+        setattr(request, method, send)
 
 
 def main():
@@ -31,6 +55,7 @@ def main():
             for role, width in [("dm", 1280), ("a", 390), ("b", 390)]:
                 context = browser.new_context(viewport={"width": width, "height": 844})
                 contexts.append((role, context))
+                use_loopback_requests(context)
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
                 page.on("pageerror", lambda error: report["errors"].append(str(error)))
