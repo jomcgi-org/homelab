@@ -273,6 +273,9 @@ The existing `factory-retro-daily` job follows improvement program #6781.
 Direct implementation of #6782 through #6786 is reserved to the operator's
 manual PR series. Preserve ownership; do not restore agent-ready while a
 manual implementation or observation is unresolved.
+Assign manually owned issues before removing agent-ready: unassigned issues
+can still enter the separate refinement lane. Removing that label alone only
+prevents delivery admission.
 
 A selected experiment is recorded in a comment on #6781 with
 `<!-- factory-optimizer:experiment:v1 -->` followed by one fenced JSON object:
