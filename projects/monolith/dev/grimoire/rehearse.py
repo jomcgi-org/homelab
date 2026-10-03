@@ -653,7 +653,9 @@ def main():
             assert "DM_ONLY_BATCH_SECRET" not in json.dumps(grouped)
             assert "BATCH_Mapmaker Tessa" not in b.request.get(b.url + "/state").text()
             a.screenshot(path=str(args.output / "grouped-reveal.png"), full_page=True)
-            a.get_by_role("button", name="Pin reveal to notes", exact=True).click()
+            a.get_by_role(
+                "button", name="Pin Mapmaker Tessa, Ferryman Orrin to notes", exact=True
+            ).click()
             expect(
                 a.get_by_role("region", name="Campaign notes").get_by_text(
                     "BATCH_Mapmaker Tessa", exact=False
