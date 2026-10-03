@@ -369,6 +369,7 @@ def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
     for sql, params in observed:
         if sql == retro._OPTIMIZER_COUNTS:
             assert params["end"] - params["start"] == retro.timedelta(hours=72)
+            assert params["as_of"] == NOW
 
 
 def test_optimizer_merge_without_provenance_never_loads_windows(monkeypatch):

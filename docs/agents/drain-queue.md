@@ -306,7 +306,9 @@ The observation records revision provenance, not historical application health.
 The first matching revision observation is the measurement boundary; current
 sync and health must also verify. Compare the immediately preceding 72h with
 `[boundary, boundary + 72h)`, never the overlapping rolling daily digest.
-Further deployments during observation make attribution UNKNOWN. Missing
+Attempt cohorts use their creation window; terminal outcomes are read as of
+digest collection, allowing attempts near the window's end to finish before
+acceptance. Further deployments during observation make attribution UNKNOWN. Missing
 traffic, classification coverage or a traffic criterion also holds the choice.
 A worse target rate reports REGRESSED; a met observation criterion reports
 ACCEPTED as a descriptive association, without a causal savings claim.
