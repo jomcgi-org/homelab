@@ -62,7 +62,11 @@ GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/c
 
 The wrapper installs the pinned runtime and Playwright, runs the same scenario,
 and preserves the run log and evidence even on failure. It removes only its
-own temporary Python environment. Root runners give the disposable PostgreSQL
+own temporary Python environment. The BuildBuddy PR gate calls `ci-runner.sh`
+after Bazel for relevant changes. It provisions Ubuntu dependencies and uses
+the repository tools image for Node/pnpm. Reports, screenshots, traces and logs
+are uploaded from `BUILDBUDDY_ARTIFACTS_DIRECTORY/grimoire`, including on failure.
+Root runners give the disposable PostgreSQL
 directory and process to the system `postgres` account.
 
 This starts the whole table, exercises three separate browser contexts, saves
