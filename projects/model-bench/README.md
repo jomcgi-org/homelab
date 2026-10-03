@@ -29,6 +29,96 @@ agentic tasks against the hikes doability model (DOM scraping and duration-aware
 respectively). `tasks/` is the source of truth for the full, current list of agentic and
 single-shot tasks.
 
+### Rollout symptom-only tasks
+
+These three hard, code-fix, agentic tasks cover #6695. Each uses the
+`monolith-backend` preset at the fix's parent, leaves `target_files: []`, and
+retains the backend navigation context. Only `task.yaml` is committed;
+`fixture/` is gitignored and regenerated with `bench snapshot`.
+
+| Task | Historical fix (`source_commit`) | Parent (`snapshot.commit`) |
+| --- | --- | --- |
+| `rollout-handoff-logs-01` | `ff5fd6444184ff1e6dc89765a48b35d76917fb51` | `d04e1d47a38249ec45ff294c4ac50e0be64150f4` |
+| `rollout-http-drain-logs-01` | `497aaebf50c45db54463e0ff1509f744966edf27` | `ff5fd6444184ff1e6dc89765a48b35d76917fb51` |
+| `factory-rollout-fence-01` | `76244f3cd87198013ef7b50b1a24d2f2a502514c` | `497aaebf50c45db54463e0ff1509f744966edf27` |
+
+The prompts describe lost turn outcomes, HTTP drain consuming the handoff
+budget, and guest invocations starting after shutdown. Their sanitized excerpts
+are explicitly synthetic. Author comments record the historical source and
+controlled interleaving; timestamps, identities and neutral component labels
+are invented. Prompts contain no fix SHA, source pointer, faulty function name,
+module-path logger, fix-introduced symbol or repair recipe. Graders do not match
+log wording. Gold test paths and content are injected only after model edits.
+
+The handoff grader sets `AGENT_ROLLOUT_HANDOFF_ENABLED=true` as a compatibility
+default. The fix introduced that default-off flag and enabled it in production
+in the same commit. Its parent ignores the variable. The grader uses only parent
+interfaces and checks durable hold, exact dispatch identity, idempotent adoption
+and one physical POST. An always-on repair also passes. This test setup changes
+no production flags or provider budgets.
+
+The HTTP grader checks the real entrypoint's effective uvicorn configuration:
+the enabled bound must be positive and at most 15 seconds, preserving up to
+15 seconds for executor handoff within the 30-second pod grace. Both 3- and
+10-second alternatives pass. Disabled mode keeps the legacy unbounded path.
+The fence grader checks zero physical POSTs when shutdown arrives in the final
+admission read, with shutdown, handoff and disabled-mode neighbours. Its id is
+retained from #6750; `version: v3` records the prompt and grader repair. Cached
+cells also hash the prompt, fixture and verifier representation.
+
+Gold tests freeze durable/database timestamps and executor budget clocks.
+Events gate HTTP acceptance and cancellation cleanup; controlled wait callbacks
+return pending tasks to simulate drain expiry. Never use a short real drain
+timeout to decide correctness. Real `wait_for` limits only fail hung tests.
+The harness tests read all three YAML contracts from Bazel runfiles and exercise
+snapshot extraction against a controlled archive without git or network.
+
+#### Offline validation
+
+From the repository root, create the verifier venv and materialize each snapshot:
+
+```sh
+python3 -m venv /tmp/rollout-venv
+/tmp/rollout-venv/bin/pip install -r projects/model-bench/requirements-venv.txt
+for rollout_task in rollout-handoff-logs-01 rollout-http-drain-logs-01 factory-rollout-fence-01; do
+  PYTHONPATH=projects/model-bench /tmp/rollout-venv/bin/python -m bench snapshot \
+    --tasks projects/model-bench/tasks --repo "$PWD" "$rollout_task"
+done
+```
+
+Save the offline comparison driver in PR #6810 as `/tmp/validate_rollouts.py`.
+It copies each generated fixture to fresh temporary trees, injects the exact
+inline gold file, and invokes only pytest. Gold overlays contain the historical
+fix's non-test Python source changes. The unrelated control appends a comment
+to the parent's bootstrap. No provider or model cell runs.
+
+```sh
+# Individual baseline and gold runs; expected assertion failure exits the driver 0.
+/tmp/rollout-venv/bin/python /tmp/validate_rollouts.py rollout-handoff-logs-01 --variant baseline
+/tmp/rollout-venv/bin/python /tmp/validate_rollouts.py rollout-handoff-logs-01 --variant gold
+
+# Repeat baseline, gold and unrelated controls 20 times for every task.
+for rollout_task in rollout-handoff-logs-01 rollout-http-drain-logs-01 factory-rollout-fence-01; do
+  /tmp/rollout-venv/bin/python /tmp/validate_rollouts.py "$rollout_task" --repeats 20
+done
+
+# Accept alternative budgets; reject an unbounded enabled drain or a changed disabled path.
+for rollout_variant in bound3 bound10 unbounded disabled_changed; do
+  /tmp/rollout-venv/bin/python /tmp/validate_rollouts.py rollout-http-drain-logs-01 --variant "$rollout_variant"
+done
+/tmp/rollout-venv/bin/python /tmp/validate_rollouts.py rollout-handoff-logs-01 --variant always_on
+
+# Harness regressions, also executed by required Linux pr-checks.
+PYTHONPATH=projects/model-bench /tmp/rollout-venv/bin/python -m pytest -q \
+  projects/model-bench/bench/cli_test.py projects/model-bench/bench/verifiers/verifiers_test.py
+```
+
+Record counts and the failing behavioural assertion for every variant in the
+PR. An import, dependency or collection error is a setup failure. Baseline and
+gold must each produce the same verdict in at least 20 runs. Snapshot extraction
+can be repeated and compared with `bench.cache.fixture_hash`; pytest injection
+must happen in a copy, never in the model-visible `fixture/`.
+
 ## Graded (mutation-testing) tasks
 
 Most verifiers are pass/fail. A graded verifier also records a 0..1 `score` on the
