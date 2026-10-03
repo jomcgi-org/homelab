@@ -84,6 +84,7 @@ py_test(
     deps = [
         ":bench",
         "@pip//pytest",
+        "@pip//pyyaml",
     ],
 )
 
