@@ -1,12 +1,7 @@
 <script>
-  import GeneratedDiagram from "./GeneratedDiagram.svelte";
-  import { splitGeneratedAnswer } from "./generated-answer.js";
+  import RescueMap from "./RescueMap.svelte";
   import recording from "./qwen-replay.json";
-
   const turn = recording.turns[0];
-  const finalDiagram = splitGeneratedAnswer(
-    turn.events.map((event) => event.content).join(""),
-  ).renderable;
   let element;
   let position = $state(0);
   let playing = $state(false);
@@ -16,7 +11,6 @@
       .map((event) => event.content)
       .join(""),
   );
-  let generated = $derived(splitGeneratedAnswer(answer));
   const uncachedTokens =
     turn.usage.prompt_tokens - (turn.usage.cached_tokens ?? 0);
   const inputText = turn.prompt
@@ -60,7 +54,6 @@
       ([entry]) => {
         if (entry.isIntersecting) {
           playing = true;
-          void import("mermaid");
           observer.disconnect();
         }
       },
@@ -91,9 +84,7 @@
   class="replay"
   aria-label="Inference on the RTX 4090"
 >
-  <p class="question">
-    How did the Apollo 13 crew get home? Explain it, then draw it.
-  </p>
+  <p class="question">Apollo 13 mission report → the rescue, at a glance.</p>
   <div class="demo-body">
     <span class="sr-only" role="status">{phase}</span>
     {#if phase === "Prefill"}
@@ -120,18 +111,7 @@
       </div>
     {:else}
       <div class="answer" role="region" aria-label="Recorded answer">
-        <p>
-          {generated.prose}{#if position < turn.durationMs && !generated.code}<span
-              class="cursor"
-              aria-hidden="true"
-            ></span>{/if}
-        </p>
-        {#if generated.code}<GeneratedDiagram
-            code={generated.code}
-            source={generated.renderable}
-            finalSource={finalDiagram}
-            complete={phase === "Complete"}
-          />{/if}
+        <RescueMap {answer} complete={phase === "Complete"} />
       </div>
     {/if}
   </div>
@@ -228,18 +208,6 @@
   .answer {
     font-size: 0.9rem;
     line-height: 1.6;
-  }
-  .answer > p {
-    margin: 0;
-  }
-  .cursor {
-    display: inline-block;
-    width: 0.5rem;
-    height: 1em;
-    margin-left: 0.2rem;
-    background: var(--tone-gpu);
-    vertical-align: -0.15em;
-    animation: blink 1s steps(2) infinite;
   }
   .measurements {
     display: flex;
@@ -353,11 +321,6 @@
     }
     .measurements {
       gap: 0.5rem;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .cursor {
-      animation: none;
     }
   }
 </style>

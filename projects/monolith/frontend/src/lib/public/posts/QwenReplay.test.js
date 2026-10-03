@@ -2,7 +2,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import QwenReplay from "./QwenReplay.svelte";
-import { splitGeneratedAnswer } from "./generated-answer.js";
+import { rescueEvents } from "./rescue-events.js";
 import recording from "./qwen-replay.json";
 
 vi.mock("mermaid", () => ({
@@ -50,16 +50,12 @@ test("first-token timing stays fixed when seeking, without a prefill rate or cha
     expect(view.querySelector(".prefill-segment")).toBeNull();
   }
   await seek(turn.durationMs);
-  const output = splitGeneratedAnswer(
-    turn.events.map((e) => e.content).join(""),
+  const output = turn.events.map((e) => e.content).join("");
+  expect(view.querySelector(".rescue-map pre").textContent).toBe(output);
+  expect(view.querySelectorAll(".event-strip button").length).toBe(
+    rescueEvents(output, true).length,
   );
-  expect(view.querySelector(".answer > p").textContent.trim()).toBe(
-    output.prose.trim(),
-  );
-  if (output.code)
-    expect(view.querySelector(".diagram-source pre").textContent).toBe(
-      output.code,
-    );
+  expect(view.querySelector(".answer > p")).toBeNull();
 });
 
 test("playback advances in real time and cancels on pause", async () => {
