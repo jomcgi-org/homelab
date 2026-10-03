@@ -37,8 +37,12 @@ if [[ ! -x "$runner_cache/bootstrap/bin/uv" ]]; then
 	"$runner_cache/bootstrap/bin/pip" install uv==0.12.7
 fi
 export PATH="$runner_cache/bootstrap/bin:$PATH"
-uv venv --clear --python 3.13 "$runner_cache/browser-installer"
-uv pip install --python "$runner_cache/browser-installer/bin/python" playwright==1.63.0
-"${root_command[@]}" "$runner_cache/browser-installer/bin/playwright" install-deps chromium
+browser_installer="$(mktemp -d /tmp/grimoire-browser-installer-XXXXXX)"
+trap '"${root_command[@]}" rm -rf "$browser_installer"' EXIT
+uv venv --python 3.13 "$browser_installer/venv"
+uv pip install --python "$browser_installer/venv/bin/python" playwright==1.63.0
+"${root_command[@]}" env PYTHONDONTWRITEBYTECODE=1 "$browser_installer/venv/bin/playwright" install-deps chromium
+"${root_command[@]}" rm -rf "$browser_installer"
+trap - EXIT
 export GRIMOIRE_EVIDENCE_DIR="${BUILDBUDDY_ARTIFACTS_DIRECTORY:?BuildBuddy artifacts directory is required}/grimoire"
 exec projects/monolith/dev/grimoire/ci.sh
