@@ -20,6 +20,57 @@ Raw markdown is ingested, decomposed into structured facts by a remote claude.ai
 
 ## Search authorization
 
+### Temporal review policy (v1)
+
+Every ordinary write computes a server-side review policy from the persisted
+title and claim body. PR, pull request, issue, job, workflow and check claims
+with state terms (including head, SHA, open, merged, passing and outstanding)
+use `volatile-24h/v1`. Outstanding operational or acceptance gates also use
+that policy. Everything else uses `standard-90d/v1`. These are elapsed UTC
+intervals of 24 and 2160 hours. Caller-supplied deadlines can only shorten them.
+Confidence and verification state do not establish freshness.
+
+`observed_at` remains the original evidence observation. Unknown, malformed or
+future observations are freshness-unknown and excluded from current context.
+At `now >= review_after`, a fact is due. Validity windows, supersession,
+invalidation and disputes retain their separate meanings. Expiry resolves no
+acceptance gate and deletes no evidence.
+
+Upserts, indexing, extraction retellings and frontmatter round-trips preserve
+the original observation and successful review time. They can only keep or
+shorten the existing deadline. Extraction duplicate lookup explicitly includes
+due facts so a retelling cannot create a fresh copy. Prompt-building lookups
+exclude due facts. `freshness.commit_successful_review` is the sole reserved
+deadline-renewal function. Slice 2 must add authoritative predicate checks,
+durable outcomes and revision/dispute race protection before calling it from
+review admission. Unsupported or unavailable checks must leave facts due.
+
+Default search and recall apply expiry in SQL before ranking and again at
+hydration. MCP and HTTP `include_history=true` expose due and unknown facts
+without widening scope, personal, visibility, legacy or dispute access. Search
+responses use `private, no-store`. Query-embedding caches contain no facts.
+Persisted recall blocks carry their earliest deadline and are discarded by the
+transport before retransmission when due. Already sent agent transcripts are
+historical snapshots, explicitly dated and labelled with their expiry.
+Volatile facts require a new authoritative observation before action even
+inside their 24-hour interval.
+
+The existing jobs image runs `knowledge-review-backfill --apply --pending-only`
+every five minutes through an Argo CronWorkflow with `Forbid` concurrency, a
+five-minute deadline and bounded resources. It handles at most 20 batches of
+500 notes per run, ordered by stable note id, using only `observed_at` or a
+successful review. Rows waiting for backfill have null deadlines and are
+freshness-unknown and due. There is no migration-day lease. Dry run is the
+default for `knowledge-review-backfill`; its JSON reports policy/freshness
+counts and `next_after` for bounded continuation. Replays preserve identity,
+provenance, disputes and any shorter deadline. Application commits atomically
+and database errors propagate with rollback.
+
+**Why.** Evidence describes what was observed at a particular time. A bounded
+review interval limits its use as current context while keeping its historical
+value. Read-time enforcement makes that boundary independent of scheduler
+availability. Only evidence-backed review may establish a new freshness basis.
+
 The MCP `search_knowledge` tool and `GET /api/knowledge/search` share one
 caller-derived policy. Exact `org:`, `repo:`, or `environment:` grants in the
 signed principal's `scope` claim are accepted directly. The verified

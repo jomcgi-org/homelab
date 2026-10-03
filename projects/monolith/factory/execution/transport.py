@@ -12,9 +12,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar
-from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -24,21 +21,25 @@ import random
 import re
 import threading
 import zlib
-from typing import Awaitable, Callable, NamedTuple, Protocol
+from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import NamedTuple, Protocol
 
 import httpx
-from opentelemetry import trace
-
-from factory import execution as agent_sessions
-from factory.execution import model_family
-from factory.execution import create_outcome
-from factory.execution.constants import exact_dispatch_id
 from faas.embervm_client import (
+    SUBMIT_CONNECT_TIMEOUT,
     EmberVMTimeout,
     EmberVMTransportError,
-    SUBMIT_CONNECT_TIMEOUT,
 )
+from opentelemetry import trace
 from shared.k8s_auth import auth_headers
+
+from factory import execution as agent_sessions
+from factory.execution import create_outcome, model_family
+from factory.execution.constants import exact_dispatch_id
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -369,6 +370,7 @@ class EmberSessionGone(EmberVMTransportError):
     and the retry also failed. The ORIGINAL binding is dead regardless of retry failure reason."""
 
     pass
+
 
 
 class EmberInterruptFailure(EmberVMTransportError):
@@ -1579,8 +1581,11 @@ class EmberVmShimTransport:
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
         ) -> Turn:
+            from knowledge.recall import expire_recall
+
+            send_time = datetime.now(timezone.utc)
             payload = {
-                "message": message,
+                "message": expire_recall(message, now=send_time) or "",
                 "session_id": current_cli_session_id,
                 "thinking": "high" if reasoning else "off",
             }
@@ -1607,7 +1612,9 @@ class EmberVmShimTransport:
             if progress_token is not None:
                 payload["progress_token"] = progress_token
             if system_prompt is not None:
-                payload["system_prompt"] = system_prompt
+                fresh_prompt = expire_recall(system_prompt, now=send_time)
+                if fresh_prompt is not None:
+                    payload["system_prompt"] = fresh_prompt
             if effort is not None:
                 payload["effort"] = effort
             if artifact_path is not None:

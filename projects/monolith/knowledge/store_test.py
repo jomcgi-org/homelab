@@ -1,14 +1,15 @@
 """Tests for KnowledgeStore."""
 
-from datetime import datetime, timedelta, timezone
 import os
+from datetime import datetime, timedelta, timezone
+from unittest.mock import ANY
 
 import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.entities import Entity, NoteEntity
+from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
 from knowledge.models import Chunk, Note, NoteLink
 from knowledge.store import KnowledgeStore, _rank_search_chunks
@@ -431,6 +432,8 @@ def test_context_search_forwards_all_ranking_filters(
                 "exclude_invalidated": exclude_invalidated,
                 "include_legacy": include_legacy,
                 "include_deployment_observations": include_deployment_observations,
+                "include_history": False,
+                "now": ANY,
             },
         )
     ]
@@ -917,6 +920,11 @@ class TestGetNoteById:
             "valid_from": None,
             "valid_until": None,
             "observed_at": None,
+            "review_after": None,
+            "review_policy": "standard-90d/v1",
+            "last_reviewed_at": None,
+            "freshness": "unknown",
+            "requires_authoritative_observation": False,
             "disputed": False,
             "provenance": [],
             "entities": [],
