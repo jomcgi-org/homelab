@@ -2,17 +2,9 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import QwenReplay from "./QwenReplay.svelte";
-import { rescueEvents } from "./rescue-events.js";
+import { incidentGraph } from "./incident-graph.js";
 import recording from "./qwen-replay.json";
 
-vi.mock("mermaid", () => ({
-  default: {
-    initialize: vi.fn(),
-    render: vi.fn(async () => ({
-      svg: "<svg><text>Generated diagram</text></svg>",
-    })),
-  },
-}));
 const turn = recording.turns[0];
 let component;
 let target;
@@ -51,9 +43,9 @@ test("first-token timing stays fixed when seeking, without a prefill rate or cha
   }
   await seek(turn.durationMs);
   const output = turn.events.map((e) => e.content).join("");
-  expect(view.querySelector(".rescue-map pre").textContent).toBe(output);
-  expect(view.querySelectorAll(".event-strip button").length).toBe(
-    rescueEvents(output, true).length,
+  expect(view.querySelector(".incident-graph pre").textContent).toBe(output);
+  expect(view.querySelectorAll(".graph-node").length).toBe(
+    incidentGraph(output, true).nodes.length,
   );
   expect(view.querySelector(".answer > p")).toBeNull();
 });
@@ -131,12 +123,16 @@ test("the input scan follows seeking while thinking stays explicitly disabled", 
   const view = await render();
   expect(recording.thinking).toBe(false);
   expect(turn.events.every((event) => !event.reasoning)).toBe(true);
-  const initial = view.querySelector(".scan-window").textContent;
+  const initial = view.querySelector(".document-pages").getAttribute("style");
   await seek(turn.metrics.ttftMs / 2);
-  expect(view.querySelector(".scan-window").textContent).not.toBe(initial);
+  expect(view.querySelector(".document-pages").getAttribute("style")).not.toBe(
+    initial,
+  );
   expect(view.querySelector(".scan-heading").textContent).toContain(
     "Thinking off",
   );
   await seek(0);
-  expect(view.querySelector(".scan-window").textContent).toBe(initial);
+  expect(view.querySelector(".document-pages").getAttribute("style")).toBe(
+    initial,
+  );
 });
