@@ -81,7 +81,8 @@ py_test(
 
 py_test(
     name = "cli_test",
-    srcs = ["cli_test.py"],
+    # Bootstrap reachability before CI runs Gazelle, which splits the new target.
+    srcs = ["cli_test.py", "stars_climatology_perf_test.py"],
     imports = [".."],
     deps = [
         ":bench",
