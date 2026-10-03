@@ -28,46 +28,30 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-test("a cold cache hit runs through the CPU and enables disk only on a miss", async () => {
+test("a cold cache hit runs through the CPU and adds NVMe only on a miss", async () => {
   const view = await render("memory");
-  view.querySelectorAll(".diagram-controls button")[2].click();
+  view.querySelectorAll(".paths button")[2].click();
   await tick();
-  expect(view.querySelector(".node.cpu").classList.contains("active")).toBe(
-    true,
-  );
-  expect(view.querySelector(".node.disk").classList.contains("active")).toBe(
-    false,
-  );
-  expect(view.querySelector(".diagram-explanation").textContent).toContain(
-    "already in the page cache",
-  );
-  view.querySelectorAll(".diagram-controls button")[3].click();
+  expect(view.querySelector(".flow").textContent).toContain("CPU");
+  expect(view.querySelector(".flow").textContent).not.toContain("NVMe");
+  view.querySelectorAll(".paths button")[3].click();
   await tick();
-  expect(view.querySelector(".node.disk").classList.contains("active")).toBe(
-    true,
-  );
-  expect(view.querySelector(".diagram-explanation").textContent).toContain(
-    "from NVMe",
-  );
+  expect(view.querySelector(".flow").textContent).toContain("NVMe");
 });
 
-test("sequence playback reveals authored steps and stops when a step is selected", async () => {
-  vi.useFakeTimers();
+test("selecting a step reveals original prose without extra animation controls", async () => {
   const view = await render("prefill");
-  expect(view.querySelector(".diagram-explanation").textContent).toContain(
+  expect(view.querySelector(".explanation").textContent).toContain(
     "Original explanation",
   );
-  view.querySelector(".diagram-heading button").click();
+  view.querySelectorAll(".steps button")[1].click();
   await tick();
-  vi.advanceTimersByTime(2400);
-  await tick();
-  expect(view.querySelector(".diagram-explanation").textContent).toContain(
+  expect(view.querySelector(".explanation").textContent).toContain(
     "Read the selected rows",
   );
-  view.querySelector(".diagram-controls button").click();
-  await tick();
-  expect(vi.getTimerCount()).toBe(0);
-  expect(
-    view.querySelector(".diagram-heading button").getAttribute("aria-pressed"),
-  ).toBe("false");
+  expect(view.textContent).not.toContain("Animate flow");
+  expect(view.textContent).not.toContain("Illustrated execution");
+  expect(view.querySelector("details").textContent).toContain(
+    "Original explanation",
+  );
 });
