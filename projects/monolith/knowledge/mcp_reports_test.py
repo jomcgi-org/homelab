@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -201,6 +201,7 @@ async def test_dispute_fact_rejects_empty_reason():
 
 @pytest.mark.asyncio
 async def test_dispute_fact_writes_row_raw_and_marks_search_result(db, principal):
+    now = datetime.now(timezone.utc)
     with Session(db.engine) as session:
         note = Note(
             note_id="existing-fact",
@@ -210,7 +211,10 @@ async def test_dispute_fact_writes_row_raw_and_marks_search_result(db, principal
             content="Current body",
             type="fact",
             verification_state="verified",
-            created_at=datetime.now(timezone.utc),
+            created_at=now,
+            observed_at=now,
+            review_after=now + timedelta(days=1),
+            review_policy="standard-90d/v1",
         )
         session.add(note)
         session.commit()

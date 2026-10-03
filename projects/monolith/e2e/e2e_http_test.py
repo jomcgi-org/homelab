@@ -31,6 +31,8 @@ the API moved underneath it. What the run found, and what was done:
   ``None`` and the endpoint 404'd. The seed helper now sets ``content``.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 
 # ---------------------------------------------------------------------------
@@ -155,6 +157,7 @@ def _seed_knowledge_note(
     with SMSession(engine) as session:
         from knowledge.models import Chunk, Note
 
+        now = datetime.now(timezone.utc)
         note = Note(
             note_id=note_id,
             path=path,
@@ -164,6 +167,9 @@ def _seed_knowledge_note(
             type=note_type,
             tags=tags or [],
             scope=scope,
+            observed_at=now,
+            review_after=now + timedelta(days=1),
+            review_policy="standard-90d/v1",
         )
         session.add(note)
         session.flush()

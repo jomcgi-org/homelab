@@ -24,6 +24,7 @@ def ranked_session(pg):
     with engine.connect() as connection:
         transaction = connection.begin()
         with Session(bind=connection) as session:
+            session.info["now"] = datetime.now(timezone.utc)
             yield session
         transaction.rollback()
     engine.dispose()
@@ -31,6 +32,7 @@ def ranked_session(pg):
 
 def _note(session, name, score=0.9, *, chunk_text="ordinary evidence", **fields):
     identity = f"exact-{name}-{uuid4().hex}"
+    now = session.info["now"]
     defaults = dict(
         note_id=identity,
         path=f"notes/{identity}.md",
@@ -40,8 +42,8 @@ def _note(session, name, score=0.9, *, chunk_text="ordinary evidence", **fields)
         type="fact",
         scope=_SCOPE,
         verification_state="verified",
-        observed_at=datetime.now(timezone.utc) - timedelta(days=2),
-        review_after=datetime.now(timezone.utc) + timedelta(days=30),
+        observed_at=now - timedelta(days=2),
+        review_after=now + timedelta(days=30),
         review_policy=STANDARD,
     )
     defaults.update(fields)
@@ -242,7 +244,13 @@ def test_current_then_recency_then_semantic_score(ranked_session):
         observed_at=now - timedelta(days=1),
         valid_until=now + timedelta(days=1),
     )
-    undated = _note(session, "undated #12", 0.8)
+    undated = _note(
+        session,
+        "undated #12",
+        0.8,
+        observed_at=None,
+        last_reviewed_at=now - timedelta(days=2),
+    )
     semantic = _note(session, "semantic", 0.999, valid_from=now)
     assert [row[0] for row in _rank(session)] == [
         newer.id,

@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import shared.inference
-from knowledge.api import KnowledgeStore
-from knowledge.freshness import result_current
+from knowledge.api import KnowledgeStore, result_current
 from pydantic_ai import Agent, ModelSettings, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider

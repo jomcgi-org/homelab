@@ -56,6 +56,7 @@ async def test_mcp_search_history_preserves_other_filters(
                 metadata=ParsedFrontmatter(
                     title=note_id,
                     type="fact",
+                    observed_at=now - timedelta(days=1),
                     scope=(
                         None
                         if note_id == "unscoped"
