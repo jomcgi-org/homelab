@@ -47,7 +47,9 @@ def parse(formula: str) -> DiceFormula:
     normalized = formula.strip().lower()
     match = _PATTERN.fullmatch(normalized)
     if match is None:
-        raise DiceFormulaError("expected NdM, optional khK/klK/adv/dis, and optional +K/-K")
+        raise DiceFormulaError(
+            "expected NdM, optional khK/klK/adv/dis, and optional +K/-K"
+        )
     count, sides = int(match[1]), int(match[2])
     if not 1 <= count <= 100:
         raise DiceFormulaError("dice count must be between 1 and 100")

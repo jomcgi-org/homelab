@@ -120,12 +120,36 @@ def _roll(h, client, viewer="player_a", **changes):
     [
         ("player_a", "dm", "dm", "member_player_a", {"dm", "player_a"}),
         ("player_a", "self", "pcs", "member_player_a", {"dm", "player_a"}),
-        ("player_a", "table", "table", "member_player_a", {"dm", "player_a", "player_b", "no_character"}),
-        ("player_a", None, "table", "member_player_a", {"dm", "player_a", "player_b", "no_character"}),
+        (
+            "player_a",
+            "table",
+            "table",
+            "member_player_a",
+            {"dm", "player_a", "player_b", "no_character"},
+        ),
+        (
+            "player_a",
+            None,
+            "table",
+            "member_player_a",
+            {"dm", "player_a", "player_b", "no_character"},
+        ),
         ("dm", None, "dm", "member_dm", {"dm"}),
         ("dm", "self", "dm", "member_dm", {"dm"}),
-        ("no_character", "table", "table", "member_no_character", {"dm", "player_a", "player_b", "no_character"}),
-        ("no_character", None, "table", "member_no_character", {"dm", "player_a", "player_b", "no_character"}),
+        (
+            "no_character",
+            "table",
+            "table",
+            "member_no_character",
+            {"dm", "player_a", "player_b", "no_character"},
+        ),
+        (
+            "no_character",
+            None,
+            "table",
+            "member_no_character",
+            {"dm", "player_a", "player_b", "no_character"},
+        ),
     ],
 )
 def test_roll_audience_and_seeded_body(
@@ -141,10 +165,16 @@ def test_roll_audience_and_seeded_body(
     assert row.seq == 9
     assert row.author_member_id == h.rows[member_key].id
     assert row.audience == audience
-    assert row.audience_pc_ids == ([h.rows["character_a"].id] if audience == "pcs" else [])
+    assert row.audience_pc_ids == (
+        [h.rows["character_a"].id] if audience == "pcs" else []
+    )
     expected = {
-        "formula": "4d6kh3+2", "total": 15, "rolls": [6, 1, 1, 6],
-        "kept": [6, 6, 1], "modifier": 2, "label": "Initiative",
+        "formula": "4d6kh3+2",
+        "total": 15,
+        "rolls": [6, 1, 1, 6],
+        "kept": [6, 6, 1],
+        "modifier": 2,
+        "label": "Initiative",
         "visibility": visibility or ("dm" if viewer == "dm" else "table"),
     }
     assert row.body == expected
@@ -154,22 +184,35 @@ def test_roll_audience_and_seeded_body(
         response = client.get(_url(h, "/events"), headers=h.headers(poller))
         assert response.status_code == 200
         h.assert_no_leak(response, poller)
-        assert (event_id in {event["id"] for event in response.json()}) == (poller in visible_to)
+        assert (event_id in {event["id"] for event in response.json()}) == (
+            poller in visible_to
+        )
 
 
 @pytest.mark.parametrize("visibility", ("dm", "self"))
-def test_characterless_restricted_roll_is_refused_before_formula(http_harness, visibility):
+def test_characterless_restricted_roll_is_refused_before_formula(
+    http_harness, visibility
+):
     h, client = http_harness
     before = h.snapshot()
-    response = _roll(h, client, "no_character", visibility=visibility, formula="invalid")
+    response = _roll(
+        h, client, "no_character", visibility=visibility, formula="invalid"
+    )
     assert response.status_code == 422
-    assert response.json()["detail"] == "players without a character may roll only table"
+    assert (
+        response.json()["detail"] == "players without a character may roll only table"
+    )
     assert h.snapshot() == before
 
 
 @pytest.mark.parametrize(
     "formula,reason",
-    [("notdice", "expected NdM"), ("101d6", "dice count"), ("1d6" + " " * 62, "at most 64"), ("1d6+1001", "modifier magnitude")],
+    [
+        ("notdice", "expected NdM"),
+        ("101d6", "dice count"),
+        ("1d6" + " " * 62, "at most 64"),
+        ("1d6+1001", "modifier magnitude"),
+    ],
 )
 def test_invalid_roll_formula_is_400_without_writes(http_harness, formula, reason):
     h, client = http_harness
@@ -194,13 +237,17 @@ def test_roll_session_mismatch_404_before_formula_validation(http_harness):
     before = h.snapshot()
     response = client.post(
         _url(h, "/rolls", game_session=h.rows["other_session"].id),
-        headers=h.headers("player_a"), json={"formula": "notdice"},
+        headers=h.headers("player_a"),
+        json={"formula": "notdice"},
     )
     assert response.status_code == 404
     assert h.snapshot() == before
 
 
-@pytest.mark.parametrize("changes", [{"seed": 42}, {"total": 20}, {"visibility": "pcs"}, {"label": "x" * 201}])
+@pytest.mark.parametrize(
+    "changes",
+    [{"seed": 42}, {"total": 20}, {"visibility": "pcs"}, {"label": "x" * 201}],
+)
 def test_roll_request_validation_without_writes(http_harness, changes):
     h, client = http_harness
     before = h.snapshot()
@@ -213,7 +260,9 @@ def test_roll_label_boundary_and_optional_label(http_harness):
     response = _roll(h, client, label="  " + "x" * 200 + "  ")
     assert response.status_code == 200
     assert response.json()["body"]["label"] == "x" * 200
-    response = client.post(_url(h, "/rolls"), headers=h.headers("player_a"), json={"formula": "1d1"})
+    response = client.post(
+        _url(h, "/rolls"), headers=h.headers("player_a"), json={"formula": "1d1"}
+    )
     assert response.status_code == 200
     assert response.json()["body"]["label"] is None
 
