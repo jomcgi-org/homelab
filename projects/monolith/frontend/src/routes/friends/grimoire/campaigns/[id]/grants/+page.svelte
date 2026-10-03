@@ -1,5 +1,6 @@
 <script>
   import "$lib/grimoire/theme.css";
+  import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import GrantEditor from "$lib/grimoire/GrantEditor.svelte";
   let { data } = $props();
@@ -7,6 +8,10 @@
   let type = $state("");
   let session = $state("");
   let selection = $state(null);
+  let ready = $state(false);
+  onMount(() => {
+    ready = true;
+  });
   let types = $derived(
     [...new Set(data.entities.map((entity) => entity.entity_type))].sort(),
   );
@@ -81,6 +86,7 @@
             ><th>{entity.name}<small>{entity.entity_type}</small></th
             >{#each data.characters as pc}<td
                 ><button
+                  disabled={!ready}
                   aria-label={`Edit ${entity.name} for ${pc.character_name}`}
                   onclick={() => (selection = { entity, pc })}
                   >{grantFor(entity, pc)?.grant_scope?.replaceAll("_", " ") ||
