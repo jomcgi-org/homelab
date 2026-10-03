@@ -199,10 +199,19 @@ py_test(
 
 py_test(
     name = "stars_climatology_perf_test",
-    srcs = [
-        "campsites_rollup_perf_test.py",
-        "stars_climatology_perf_test.py",
+    srcs = ["stars_climatology_perf_test.py"],
+    imports = [".."],
+    deps = [
+        ":bench",
+        "//projects/model-bench/bench/verifiers",
+        "@pip//pytest",
+        "@pip//pyyaml",
     ],
+)
+
+py_test(
+    name = "campsites_rollup_perf_test",
+    srcs = ["campsites_rollup_perf_test.py"],
     imports = [".."],
     deps = [
         ":bench",
