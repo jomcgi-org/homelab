@@ -18,10 +18,12 @@ from knowledge.extraction import (
     ExtractionOutputInvalid,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
+from knowledge.freshness import result_current
 from knowledge.recall import (
     append_message_recall,
     attach_recall,
     defer_recall,
+    expire_recall,
     matches_message_recall,
     recall_prompt_ready,
 )
@@ -54,6 +56,7 @@ __all__ = [
     "defer_audit_if_over_budget",
     "defer_recall",
     "enqueue_extraction",
+    "expire_recall",
     "get_embedding_client",
     "get_store",
     "ingest_raw",
@@ -69,6 +72,7 @@ __all__ = [
     "record_audit_cost",
     "record_extraction_failure",
     "render_correction_prompt",
+    "result_current",
     "search_notes",
     "search_public_chunks",
     "sweep_unqueued_raws",

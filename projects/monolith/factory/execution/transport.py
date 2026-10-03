@@ -1581,7 +1581,7 @@ class EmberVmShimTransport:
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
         ) -> Turn:
-            from knowledge.recall import expire_recall
+            from knowledge.api import expire_recall
 
             send_time = datetime.now(timezone.utc)
             payload = {

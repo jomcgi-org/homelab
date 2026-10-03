@@ -6,6 +6,7 @@ SSE event emission -> streaming response.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,8 +32,16 @@ app = build_app(
 # Mock data — represents what KnowledgeStore / EmbeddingClient would return
 # ---------------------------------------------------------------------------
 
+_OBSERVATION = datetime.now(timezone.utc)
+_FRESHNESS = {
+    "observed_at": _OBSERVATION.isoformat(),
+    "review_after": (_OBSERVATION + timedelta(days=1)).isoformat(),
+    "review_policy": "standard-90d/v1",
+}
+
 MOCK_SEARCH_RESULTS = [
     {
+        **_FRESHNESS,
         "note_id": "note-1",
         "title": "Kubernetes Networking",
         "type": "note",
@@ -52,6 +61,7 @@ MOCK_LINKS = [
 ]
 
 MOCK_NOTE = {
+    **_FRESHNESS,
     "note_id": "note-2",
     "title": "Linkerd",
     "type": "article",
