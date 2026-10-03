@@ -162,6 +162,9 @@ def _validate_pin(pin: dict) -> dict:
             f"pin['artifact_schema'] is not a valid JSON Schema: {exc}"
         ) from exc
 
+    if "read_only" in pin and type(pin["read_only"]) is not bool:
+        raise ValueError("pin['read_only'] must be a boolean")
+
     effort = pin.get("effort")
     if "effort" in pin:
         from factory.execution import EFFORT_LEVELS
@@ -178,6 +181,7 @@ def _validate_pin(pin: dict) -> dict:
             raise ValueError("pin['task_deadline_at'] must be an aware timestamp")
 
     return {
+        **({"read_only": pin["read_only"]} if "read_only" in pin else {}),
         **({"task_deadline_at": task_deadline} if task_deadline is not None else {}),
         **({"effort": effort} if effort is not None else {}),
         "task_id": task_id,
@@ -211,8 +215,14 @@ def _node_prompt(
     branch: str = "",
 ) -> str:
     schema_json = json.dumps(schema, sort_keys=True)
+    # The server-authored dependency artifact contract selects the inspection
+    # prompt here, without changing execute_node's deployed durable body.
+    read_only = "dependency_assessment" in schema.get("required", [])
     working = (
-        f"\n\nYour working branch for this attempt is {branch}. Commit and push "
+        f"\n\nInspect branch {branch} read-only. Do not modify source, commit or push. "
+        "Write only the declared transient artifact."
+        if read_only
+        else f"\n\nYour working branch for this attempt is {branch}. Commit and push "
         "source changes to that exact branch and to no other."
         if branch
         else ""

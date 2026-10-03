@@ -415,3 +415,29 @@ def test_landing_delivery_can_publish_review_before_task_settles(db, monkeypatch
     evidence = publisher.collect(TASK_ID)
     assert isinstance(evidence, publisher.ReviewEvidence)
     assert evidence.head_sha == HEAD
+
+
+def test_dependency_publication_rechecks_adversarial_evidence(db, monkeypatch):
+    from factory.orchestration import dependency_prs
+
+    seed(db)
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == TASK_ID)
+        ).one()
+        receipt.direction_json = json.dumps({"dependency_review": {"head_sha": HEAD}})
+        session.add(receipt)
+        session.commit()
+    monkeypatch.setattr(landing, "github_get", lambda *_args: current_pull())
+    called = []
+
+    def refuse(task, pull, runs):
+        called.append((task, pull, runs))
+        raise ValueError("unsafe dependency assessment")
+
+    monkeypatch.setattr(dependency_prs, "verify", refuse)
+    result = publisher.collect(TASK_ID)
+    assert isinstance(result, publisher.Refusal)
+    assert result.reason == "dependency_review_invalid"
+    assert called[0][0]["dependency_review"]["head_sha"] == HEAD
+    assert {run["session_id"] for run in called[0][2]} == {10, 11}

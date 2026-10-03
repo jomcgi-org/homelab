@@ -8,6 +8,8 @@ are the recovery state, so losing this process cannot lose a task or its pin.
 
 from __future__ import annotations
 
+from factory.orchestration import dependency_prs
+
 import asyncio
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
@@ -468,7 +470,12 @@ def _task(task_id: str, *, session: Session | None = None) -> dict:
         granted_branch, granted_pr = granted_delivery_surface(direction)
         return {
             **task.model_dump(),
-            "issue_number": None if receipt is None else receipt.issue_number,
+            "issue_number": (
+                None
+                if receipt is None or (direction or {}).get("dependency_review")
+                else receipt.issue_number
+            ),
+            "dependency_review": (direction or {}).get("dependency_review"),
             "work_item_id": None if receipt is None else receipt.work_item_id,
             "funding_enrolled": latest(db, task_id, "funding_review_requested")
             is not None,
@@ -1190,6 +1197,7 @@ def _boundary(
         )
         + f"\nFactory task {task['id']}, repository {task.get('repo')}, "
         f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
+        + dependency_prs.guidance(task)
         # The per-repo charter fragment. Empty for homelab, so its prompt
         # stays byte-identical to today.
         + repo_charter(task.get("repo"))
@@ -1259,7 +1267,7 @@ def _add(
         model=model,
         deps=deps,
         max_cost_usd=max_cost_usd,
-        side_effects=not review,
+        side_effects=not review and not task.get("dependency_review"),
         max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
         turn_timeout_seconds=(
             policy["turn_timeout_seconds"]
@@ -1860,6 +1868,7 @@ def planner_prompt(
         f"Factory task {task['id']}, repository {task.get('repo')}, "
         f"dedicated branch {delivery_branch(task)}, base {task.get('base_branch')}. "
         + ("" if closing_at_dispatch else _closing_instruction(task))
+        + dependency_prs.guidance(task)
         + (guidance + "\n" if guidance else "")
         + funding_rule
         + (
@@ -2393,6 +2402,7 @@ def verify_delivery(
         or any(review["session_id"] == worker["session_id"] for worker in implementers)
     ):
         raise ValueError("independent exact-head review evidence is missing")
+    dependency_prs.verify(task, pr, runs)
     checks = github_get(task["repo"], f"commits/{head}/status")
     if not _required_checks_passed(checks):
         raise ValueError("integrated PR checks have not passed")
@@ -3207,6 +3217,10 @@ def _prepare_add(
     if key.startswith("conductor_"):
         raise ValueError("conductor node prefix is reserved")
     role = source["role"]
+    if task.get("dependency_review") and role == "integrate":
+        raise _EditRefused(
+            "dependency_review_read_only", "dependency review cannot integrate source"
+        )
     key = key if key.startswith(f"{role}_") else f"{role}_{key}"
     if len(key) > 64:
         raise ValueError("node key exceeds role prefix limit")
@@ -3288,7 +3302,7 @@ def _prepare_add(
         "model": model,
         "deps": list(source["deps"]),
         "max_cost_usd": bounds["max_cost_usd"],
-        "side_effects": not review,
+        "side_effects": not review and not task.get("dependency_review"),
         "max_attempts": bounds["max_attempts"],
         "turn_timeout_seconds": bounds["turn_timeout_seconds"],
         "stated_reason": stated_reason,
@@ -4782,6 +4796,9 @@ def _insert_review_round(
     """
     from factory.orchestration.factory_controls import REVIEW_ROUND_ATTEMPTS
 
+    if task.get("dependency_review"):
+        return False, "dependency_adversarial_review_requires_escalation"
+
     request_id = (merge_conflict or {}).get("request_id")
     cause = (
         f"{LANDING_RECOVERY_CAUSE}:{request_id}:review_{ordinal}"
@@ -5058,6 +5075,8 @@ def _integration_group(
     branch the fan-in merges. A planner may name that node itself; when it did
     not, the engine inserts one before any member is dispatched.
     """
+    if isinstance(task, dict) and task.get("dependency_review"):
+        return []
     task_id = task["id"] if isinstance(task, dict) else task
     target = delivery_branch(task) if isinstance(task, dict) else task_branch(task)
     wave = fan_out_wave(task_id, nodes, runs, limit, target_branch=target)
@@ -6902,13 +6921,12 @@ def _dispatch_ready(
         if dispatched >= limit:
             break
         node_key = node["node_key"]
-        branch = _dispatch_branch(
-            task_id,
-            node_key,
-            nodes,
-            runs,
-            parallel,
-            delivery_branch(task),
+        branch = (
+            delivery_branch(task)
+            if task.get("dependency_review")
+            else _dispatch_branch(
+                task_id, node_key, nodes, runs, parallel, delivery_branch(task)
+            )
         )
         if branch is None:
             continue
@@ -6933,7 +6951,12 @@ def _dispatch_ready(
             "branch": branch,
             "workflow_id": key,
             "artifact_path": f".factory/{task_id}/{node_key}-{attempt}.json",
-            "artifact_schema": _schema(node_key),
+            "artifact_schema": (
+                dependency_prs.artifact_schema(_schema(node_key))
+                if task.get("dependency_review")
+                and not node_key.startswith("conductor_")
+                else _schema(node_key)
+            ),
             "hydration_branch": branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(
                 [r for r in runs if r["node_key"] == node_key], default=str
@@ -6951,7 +6974,33 @@ def _dispatch_ready(
             ),
         }
 
-        if factory_gates.guidance(task):
+        if task.get("dependency_review"):
+            context["read_only"] = True
+            if node_key.startswith("review_"):
+                context["dependency_investigations"] = list(node["deps"])
+                context["retry_context"] = json.dumps(
+                    {
+                        "prior_attempts": context["retry_context"][-4000:],
+                        "dependency_investigation_evidence": [
+                            {
+                                "node_key": run["node_key"],
+                                "run_id": run["id"],
+                                "session_id": run["session_id"],
+                                "artifact": _artifact(run),
+                            }
+                            for run in runs
+                            if run["node_key"] in node["deps"]
+                            and _is_implementation(run["node_key"])
+                            and run["status"] == "succeeded"
+                        ],
+                    }
+                )
+                if len(context["retry_context"]) > MAX_RETRY_CONTEXT_CHARS:
+                    raise ValueError(
+                        "dependency investigation evidence exceeds review bound"
+                    )
+
+        if not task.get("dependency_review") and factory_gates.guidance(task):
             context["retry_context"] = json.dumps(
                 {
                     "prior_attempts": context["retry_context"][-4000:],

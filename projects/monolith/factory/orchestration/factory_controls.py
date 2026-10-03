@@ -194,6 +194,8 @@ DEFAULT_INTAKE = {
     "max_per_day": 5,
     "cooldown_hours": 24,
     "refine_enabled": False,
+    # Author authority permits inspection, never approval or merge.
+    "dependency_pr_authors": [],
     # Closing an issue is the one refine outcome that destroys something an
     # operator would have to undo by hand, so it is a flag of its own and the
     # rest of the refine path works without it.
@@ -736,6 +738,18 @@ def _validate_intake(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_INTAKE):
         raise ValueError("invalid intake")
     result = {}
+    authors = value.get("dependency_pr_authors", [])
+    if (
+        not isinstance(authors, list)
+        or len(authors) > 32
+        or any(
+            not isinstance(author, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?", author) is None
+            for author in authors
+        )
+    ):
+        raise ValueError("invalid dependency_pr_authors")
+    result["dependency_pr_authors"] = sorted({author.lower() for author in authors})
     for key in ("enabled", "refine_enabled", "close_enabled"):
         setting = value.get(key, DEFAULT_INTAKE[key])
         if type(setting) is not bool:

@@ -2371,3 +2371,78 @@ def test_one_delivery_check_budget_covers_every_repo_in_a_sweep(db, monkeypatch)
     assert json.loads(recorded.detail_json)["excluded"] == {
         "delivery_check_deferred": 1
     }
+
+
+@pytest.mark.parametrize("authors", [[], ["dependabot[bot]"]])
+def test_dependency_pr_selection_uses_explicit_author_allowlist(
+    db, monkeypatch, authors
+):
+    from factory.orchestration import dependency_prs
+
+    pull = {
+        "number": 91,
+        "state": "open",
+        "draft": False,
+        "created_at": "2026-09-01T00:00:00Z",
+        "title": "Bump example",
+        "user": {"login": "dependabot[bot]", "id": 49699333},
+        "head": {
+            "ref": "dependabot/pip/example-2",
+            "sha": "a" * 40,
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+    }
+    fake_pages(monkeypatch, [], [pull])
+    received = []
+
+    def receive(repo, number, posted, *, generation):
+        received.append((repo, number, generation))
+        return {"ok": True, "created": True, "receipt": {"id": 123}}
+
+    monkeypatch.setattr(dependency_prs, "receive", receive)
+    posted = {**policy(dependency_pr_authors=authors), "base_branch": "main"}
+    intake_loop.intake_tick(posted, generation=0)
+    assert received == ([("owner/repo", 91, 0)] if authors else [])
+    if authors:
+        detail = json.loads(audits(db, "intake_admitted")[-1].detail_json)
+        assert detail["source"] == "dependency_pr"
+        assert detail["task_class"] == "judgment-analysis"
+
+
+def test_unavailable_dependency_evidence_never_creates_an_intake_receipt(
+    db, monkeypatch
+):
+    from factory.orchestration import dependency_prs
+
+    pull = {
+        "number": 91,
+        "state": "open",
+        "draft": False,
+        "created_at": "2026-09-01T00:00:00Z",
+        "user": {"login": "dependabot[bot]", "id": 49699333},
+        "head": {
+            "ref": "dependabot/pip/example-2",
+            "sha": "a" * 40,
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+    }
+    fake_pages(monkeypatch, [], [pull])
+
+    def unavailable(*args, **kwargs):
+        raise ValueError("vulnerability data unavailable")
+
+    monkeypatch.setattr(dependency_prs, "receive", unavailable)
+    assert (
+        intake_loop.intake_tick(
+            {
+                **policy(dependency_pr_authors=["dependabot[bot]"]),
+                "base_branch": "main",
+            },
+            generation=0,
+        )
+        == []
+    )
+    assert audits(db, "intake_admitted") == []
+    assert audits(db, "dependency_pr_held")

@@ -19625,3 +19625,66 @@ def test_planner_and_review_prompts_carry_the_repo_charter(feedback_db):
     loom_review = conductor._boundary(loom_task, review=True)
     assert controls.LOOM_CHARTER in loom_review
     assert "buck2" not in homelab_review
+
+
+def test_dependency_reviews_cannot_open_source_correction_rounds():
+    result = conductor._insert_review_round(
+        {"dependency_review": {"head_sha": "a" * 40}}, {}, [], [], {}, 1, 1, 1
+    )
+    assert result == (False, "dependency_adversarial_review_requires_escalation")
+
+
+def test_dependency_reviews_cannot_create_integration_branches():
+    assert (
+        conductor._integration_group(
+            {"dependency_review": {"head_sha": "a" * 40}}, [], [], 4
+        )
+        == []
+    )
+
+
+def test_dependency_review_dispatch_pins_investigation_evidence(monkeypatch):
+    node = _review_node("review_security")
+    node["deps"] = ["implement_security"]
+    monkeypatch.setattr(conductor, "_ready_nodes", lambda *args, **kwargs: [node])
+    monkeypatch.setattr(conductor, "hydration_branch", lambda task: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *args: "main")
+    monkeypatch.setattr(conductor, "fan_out_wave", lambda *args: [])
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 1)
+    captured = []
+    monkeypatch.setattr(
+        conductor,
+        "reserve_node",
+        lambda task, key, workflow, context, **kwargs: captured.append(context) or True,
+    )
+    task = {
+        "id": "t-dependency",
+        "repo": "owner/repo",
+        "delivery_adoption": True,
+        "delivery_branch": "dependabot/pip/example-2",
+        "dependency_review": {"head_sha": "a" * 40},
+    }
+    runs = [
+        {
+            "id": 1,
+            "node_key": "implement_security",
+            "status": "succeeded",
+            "session_id": 11,
+            "outcome_json": json.dumps(
+                {
+                    "value": {
+                        "summary": "Inspected the package's install script and registry integrity."
+                    }
+                }
+            ),
+        }
+    ]
+    assert conductor._dispatch_ready(task, [node], runs, 1, fan_out=True, parallel=4)
+    context = captured[0]
+    assert context["read_only"] is True
+    assert context["branch"] == "dependabot/pip/example-2"
+    assert context["dependency_investigations"] == ["implement_security"]
+    assert "dependency_assessment" in context["artifact_schema"]["required"]
+    evidence = json.loads(context["retry_context"])["dependency_investigation_evidence"]
+    assert evidence[0]["session_id"] == 11
+    assert "install script" in evidence[0]["artifact"]["summary"]

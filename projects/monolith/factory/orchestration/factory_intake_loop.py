@@ -674,6 +674,39 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             exclude_labels = {
                 label.lower() for label in entries[slug]["exclude_labels"]
             }
+            from factory.orchestration import dependency_prs
+
+            if room.get("delivery") and policy.get("base_branch"):
+                for pull in pulls:
+                    if not dependency_prs.eligible(pull, slug, policy):
+                        continue
+                    number = pull["number"]
+                    with _read_session() as db:
+                        existing = db.exec(
+                            select(FactoryReceipt).where(
+                                FactoryReceipt.repo == slug,
+                                FactoryReceipt.issue_number == number,
+                                FactoryReceipt.generation == generation,
+                                FactoryReceipt.task_class == "judgment-analysis",
+                            )
+                        ).first()
+                    if existing is not None:
+                        continue
+                    candidates.append(
+                        {
+                            "issue": pull,
+                            "number": number,
+                            "source": "dependency_pr",
+                            "repo": slug,
+                            "work_item_id": None,
+                            "lane": "delivery",
+                            "task_class": "judgment-analysis",
+                            "class_reason": "adversarial dependency PR review",
+                            "rank_reason": "dependency PR",
+                            "sort": (0, len(RANK_LABELS), _created_rank(pull), number),
+                        }
+                    )
+
             linked: set[int] = set()
             for pull in pulls:
                 if not isinstance(pull, dict):
@@ -957,18 +990,38 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             delivery = candidate["lane"] == "delivery"
             repo = candidate["repo"]
             issue = candidate["issue"]
-            received = receive_issue(
-                repo,
-                candidate["number"],
-                issue.get("title"),
-                issue.get("body") or "",
-                issue.get("html_url"),
-                ACTOR,
-                generation=generation,
-                task_class=candidate["task_class"],
-                issue=issue,
-                work_item_id=candidate["work_item_id"],
-            )
+            if candidate["source"] == "dependency_pr":
+                try:
+                    received = dependency_prs.receive(
+                        repo, candidate["number"], policy, generation=generation
+                    )
+                except Exception as exc:  # noqa: BLE001 - fail closed, retry a later sweep
+                    _throttled(
+                        "dependency_pr_held",
+                        {
+                            "repo": repo,
+                            "pr_number": candidate["number"],
+                            "error": type(exc).__name__,
+                            "reason": str(exc)[:1000]
+                            if isinstance(exc, ValueError)
+                            else "GitHub dependency evidence unavailable",
+                        },
+                    )
+                    logger.warning("dependency PR evidence unavailable", exc_info=True)
+                    continue
+            else:
+                received = receive_issue(
+                    repo,
+                    candidate["number"],
+                    issue.get("title"),
+                    issue.get("body") or "",
+                    issue.get("html_url"),
+                    ACTOR,
+                    generation=generation,
+                    task_class=candidate["task_class"],
+                    issue=issue,
+                    work_item_id=candidate["work_item_id"],
+                )
             if delivery:
                 admitted_today[repo] += 1
             received_all.append(received)

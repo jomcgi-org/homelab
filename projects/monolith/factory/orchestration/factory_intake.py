@@ -698,7 +698,11 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         task_id = mint_task_id()
         task = SwarmTask(
             id=task_id,
-            task_text=f"GitHub issue {row.url}\n\n{row.title}\n\n{row.body}",
+            task_text=(
+                f"GitHub dependency pull request {row.url}\n\n{row.title}\n\n{row.body}"
+                if direction.get("dependency_review")
+                else f"GitHub issue {row.url}\n\n{row.title}\n\n{row.body}"
+            ),
             repo=row.repo,
             base_branch=policy["base_branch"],
             conductor_model=policy["conductor_model"],

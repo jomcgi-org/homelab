@@ -1906,3 +1906,46 @@ def test_revert_tick_is_throttled_and_never_raises(monkeypatch):
     reverts.revert_tick(POLICY)
     reverts.revert_tick(POLICY)
     assert ran == [1]
+
+
+def test_dependency_merge_rechecks_gate_even_when_publication_is_disabled(
+    db, monkeypatch
+):
+    from factory import review_publisher
+
+    delivered(db, "t-1", 3, 3)
+    with Session(db) as session:
+        receipt = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == "t-1")
+        ).one()
+        receipt.direction_json = json.dumps({"dependency_review": {"head_sha": HEAD}})
+        session.add(receipt)
+        session.commit()
+    monkeypatch.setenv("FACTORY_REVIEW_PUBLISH_ENABLED", "false")
+    monkeypatch.setattr(
+        review_publisher,
+        "collect",
+        lambda task_id: review_publisher.Refusal(task_id, "dependency_review_invalid"),
+    )
+    calls = github(monkeypatch, pulls={3: pull(3)})
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    assert audits(db, "merge_arm_refused")[0]["reason"] == "dependency_review_invalid"
+
+
+def test_dependency_delivery_waits_for_rollout_and_never_closes_pr_as_issue(
+    db, monkeypatch
+):
+    delivered(db, "t-1", 3, 3)
+    calls = github(monkeypatch, pulls={3: pull(3, merged=True)})
+    item = landing._deliveries(POLICY)[0]
+    item["dependency_review"] = {"head_sha": HEAD}
+    monkeypatch.setattr(landing, "_verify_rollout", lambda *args: False)
+    landing._close_issue("owner/repo", item)
+    assert calls["write"] == []
+    assert not item["closed"]
+    monkeypatch.setattr(landing, "_verify_rollout", lambda *args: True)
+    landing._close_issue("owner/repo", item)
+    assert calls["write"] == []
+    assert item["closed"]
+    assert audits(db, "repository_delivery_complete")
