@@ -78,9 +78,7 @@ async def test_leader_start_refuses_to_launch_during_shutdown(monkeypatch):
     monkeypatch.setattr(
         runtime, "launch", lambda: pytest.fail("must not launch during shutdown")
     )
-    app = SimpleNamespace(
-        state=SimpleNamespace(leader_singletons_shutting_down=True)
-    )
+    app = SimpleNamespace(state=SimpleNamespace(leader_singletons_shutting_down=True))
     assert await module._leader_start(app) == []
 
 

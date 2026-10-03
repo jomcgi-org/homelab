@@ -207,7 +207,11 @@ async def test_shutdown_fences_acquisition_granted_mid_drain(monkeypatch):
     app = FastAPI()
     async with build_private_lifespan(
         _PLAIN_PRIVATE,
-        [Module(name="fenced", leader_start=start, leader_stop=stop, shutdown=shutdown)],
+        [
+            Module(
+                name="fenced", leader_start=start, leader_stop=stop, shutdown=shutdown
+            )
+        ],
     )(app):
         await asyncio.sleep(0.02)
         assert events == []

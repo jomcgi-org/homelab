@@ -616,8 +616,7 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
                         # afterward: it owns cleanup, lease release and
                         # backoff before retry.
                         raise RuntimeError(
-                            "leader startup incomplete: "
-                            + ", ".join(sorted(failures))
+                            "leader startup incomplete: " + ", ".join(sorted(failures))
                         )
                 finally:
                     app.state.leader_acquire_active = False
