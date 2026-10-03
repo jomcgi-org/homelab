@@ -439,7 +439,9 @@ def test_rollout_handoff_flag_and_grace_render_in_hub_order(overlays, expected):
     assert re.search(
         rf'- name: AGENT_ROLLOUT_HANDOFF_ENABLED\n\s+value: "{expected}"', backend
     )
-    assert re.search(r"terminationGracePeriodSeconds: 30\b", backend)
+    assert re.search(r"terminationGracePeriodSeconds: 45\b", backend)
+    assert "minReadySeconds: 10" in backend
+    assert backend.count("seconds: 10") == 2
 
 
 def test_rollout_termination_grace_is_a_chart_value():
