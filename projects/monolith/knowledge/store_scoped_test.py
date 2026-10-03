@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from auth.api import Authority, Principal, PrincipalKind
@@ -205,6 +205,9 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session, st
         verification_state="verified",
         confidence=0.7,
         valid_from=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        review_after=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        review_policy="standard-90d/v1",
     )
     raw = RawInput(
         raw_id="raw-1",
@@ -250,10 +253,12 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session, st
         None,
         scope_filters=None,
         include_unscoped=False,
-        exclude_invalidated=False,
+        exclude_invalidated=True,
         include_legacy=False,
         include_deployment_observations=False,
         query_text=None,
+        include_history=False,
+        now=ANY,
     )
     detail = KnowledgeStore(session).get_note_by_id("scoped")
     assert detail is not None
@@ -447,6 +452,7 @@ _OBSERVATION_PREDICATE = (
 
 
 def _compiled_rank_sql(**kwargs):
+    kwargs.setdefault("now", datetime(2026, 10, 3, tzinfo=timezone.utc))
     session = MagicMock()
     session.execute.return_value.all.return_value = []
     _rank_search_chunks(

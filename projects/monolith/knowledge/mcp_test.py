@@ -180,6 +180,7 @@ class TestSearchKnowledge:
             include_unscoped=False,
             include_deployment_observations=False,
             exclude_invalidated=True,
+            include_history=False,
         )
 
     @pytest.mark.asyncio
@@ -205,6 +206,7 @@ class TestSearchKnowledge:
             include_unscoped=False,
             include_deployment_observations=True,
             exclude_invalidated=True,
+            include_history=False,
         )
 
     @pytest.mark.asyncio
@@ -228,6 +230,7 @@ class TestSearchKnowledge:
             == query
         )
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("include_personal", [False, True])
     @pytest.mark.parametrize("include_deployment_observations", [False, True])
     @pytest.mark.parametrize("scope", [None, "repo:jomcgi-org/homelab"])
@@ -269,6 +272,7 @@ class TestSearchKnowledge:
                 include_unscoped=include_personal,
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=False,
+                include_history=True,
             )
         else:
             MockStore.return_value.search_notes_with_context.assert_called_once_with(
@@ -280,6 +284,7 @@ class TestSearchKnowledge:
                 include_unscoped=False,
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=False,
+                include_history=True,
             )
 
     @pytest.mark.asyncio
@@ -316,6 +321,7 @@ class TestSearchKnowledge:
                 include_unscoped=False,
                 include_deployment_observations=False,
                 exclude_invalidated=True,
+                include_history=False,
             )
 
     @pytest.mark.asyncio
@@ -408,6 +414,7 @@ class TestSearchKnowledge:
             include_unscoped=False,
             include_deployment_observations=False,
             exclude_invalidated=True,
+            include_history=False,
         )
 
     @pytest.mark.asyncio
@@ -440,6 +447,7 @@ class TestSearchKnowledge:
             include_unscoped=True,
             include_deployment_observations=False,
             exclude_invalidated=True,
+            include_history=False,
         )
 
     @pytest.mark.asyncio
@@ -525,6 +533,7 @@ class TestSearchKnowledge:
             include_unscoped=False,
             include_deployment_observations=True,
             exclude_invalidated=True,
+            include_history=False,
         )
 
     @pytest.mark.asyncio
@@ -565,6 +574,7 @@ class TestSearchKnowledge:
             include_unscoped=False,
             include_deployment_observations=False,
             exclude_invalidated=True,
+            include_history=False,
         )
 
     @pytest.mark.asyncio

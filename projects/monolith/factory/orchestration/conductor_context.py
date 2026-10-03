@@ -12,7 +12,8 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from threading import BoundedSemaphore
 
@@ -102,7 +103,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _is_stale(row: dict) -> bool:
+def _is_stale(row: dict, *, now: datetime | None = None) -> bool:
+    from knowledge.freshness import state
+
+    now = now if now is not None else datetime.now(timezone.utc)
+    if (
+        state(
+            review_after=row.get("review_after"),
+            observed_at=row.get("observed_at"),
+            last_reviewed_at=row.get("last_reviewed_at"),
+            now=now,
+        )
+        != "current"
+    ):
+        return True
     if row.get("verification_state") == "invalidated":
         return True
     valid_until = row.get("valid_until")
@@ -114,7 +128,7 @@ def _is_stale(row: dict) -> bool:
         return True
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
-    return end <= datetime.now(timezone.utc)
+    return end <= now
 
 
 def _request_record(actor: str, item: dict, row: FactoryReceipt) -> dict:

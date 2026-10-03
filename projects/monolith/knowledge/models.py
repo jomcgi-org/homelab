@@ -277,6 +277,16 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
             "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
             name="notes_confidence_chk",
         ),
+        CheckConstraint(
+            "review_after IS NULL OR (COALESCE(last_reviewed_at, observed_at) IS NOT NULL "
+            "AND review_after <= COALESCE(last_reviewed_at, observed_at) + INTERVAL '2160 hours')",
+            name="notes_review_deadline_chk",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "review_after IS NULL OR (COALESCE(last_reviewed_at, observed_at) IS NOT NULL "
+            "AND julianday(review_after) <= julianday(COALESCE(last_reviewed_at, observed_at)) + 90)",
+            name="notes_review_deadline_chk",
+        ).ddl_if(dialect="sqlite"),
         {"schema": "knowledge", "extend_existing": True},
     )
 
@@ -320,6 +330,13 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     observed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    review_after: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    review_policy: str | None = None
+    last_reviewed_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
