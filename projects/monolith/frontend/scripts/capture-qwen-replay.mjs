@@ -16,6 +16,15 @@ if (!base || !/^[a-f0-9]{40}$/.test(build ?? "")) {
     "Set QWEN_REPLAY_API and the verified QWEN_REPLAY_BUILD commit.",
   );
 }
+if (process.env.QWEN_REPLAY_TIMING_ONLY === "1") {
+  const { captureTiming } = await import("./capture-qwen-timing.mjs");
+  await captureTiming(
+    base,
+    build,
+    new URL("../src/lib/public/posts/qwen-replay.json", import.meta.url),
+  );
+  process.exit(0);
+}
 const get = async (path) => {
   const response = await fetch(`${base}${path}`, {
     signal: AbortSignal.timeout(10000),
