@@ -1,4 +1,5 @@
 <script>
+  import DemoDisclosure from "./DemoDisclosure.svelte";
   import { incidentGraph, layoutIncidentGraph } from "./incident-graph.js";
   let {
     answer = "",
@@ -6,15 +7,18 @@
     complete = false,
     sourceUrl = "",
     review = {},
+    outputOpen = $bindable(true),
   } = $props();
   let output = $state();
   let followOutput = $state(true);
   let previousLength = 0;
   $effect(() => {
     const length = answer.length;
+    const expanded = outputOpen;
     if (length < previousLength) followOutput = true;
     previousLength = length;
-    if (output && followOutput) output.scrollTop = output.scrollHeight;
+    if (output && followOutput && expanded)
+      output.scrollTop = output.scrollHeight;
   });
   function trackOutputScroll() {
     followOutput =
@@ -205,8 +209,11 @@
     </div>
   </div>
 
-  <details class="model-output" open>
-    <summary>Model output</summary>
+  <DemoDisclosure
+    class="model-output"
+    label="Model output"
+    bind:open={outputOpen}
+  >
     <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the output.) -->
     <pre
       bind:this={output}
@@ -217,7 +224,7 @@
         >{answer}{#if !complete}<span class="stream-cursor" aria-hidden="true"
           ></span>{/if}</code
       ></pre>
-  </details>
+  </DemoDisclosure>
 </div>
 
 <style>
@@ -365,13 +372,6 @@
   .detail-source a {
     font: 0.65rem var(--font-code);
     color: var(--ink-2);
-  }
-  details {
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
-  }
-  summary {
-    cursor: pointer;
   }
   pre {
     height: 5rem;

@@ -144,7 +144,8 @@ test("model output is open during decode and contains only arrived text", async 
   ).at;
   await seek(at);
   const pane = view.querySelector(".model-output");
-  expect(pane.open).toBe(true);
+  const toggle = pane.querySelector("button");
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
   const arrived = turn.events
     .filter((event) => event.at <= at)
     .map((event) => event.content)
@@ -154,9 +155,11 @@ test("model output is open during decode and contains only arrived text", async 
     turn.events.map((event) => event.content).join("").length,
   );
   expect(pane.querySelector(".stream-cursor")).not.toBeNull();
-  pane.open = false;
+  toggle.click();
+  await tick();
   await seek(at + 500);
-  expect(pane.open).toBe(false);
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(pane.querySelector(".disclosure-panel").inert).toBe(true);
   await seek(turn.durationMs);
   expect(pane.querySelector(".stream-cursor")).toBeNull();
 });

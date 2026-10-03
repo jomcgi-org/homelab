@@ -228,7 +228,7 @@
         {#each data.sections as section}
           {@const showReplay =
             data.slug === "125b-on-a-4090" &&
-            section.startsWith('<h2 id="inference"')}
+            section.startsWith('<h2 id="inference-demo"')}
           <section class="edition post-body">
             {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: section }] as part}
               {#if part.diagram}
