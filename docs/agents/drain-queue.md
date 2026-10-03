@@ -266,3 +266,51 @@ Read knobs from the deployment, not `agent/config.py`: the code default for
 A cycle claims up to `maxJobsPerCycle` jobs, runs them serially, and chains
 into a successor when it hits that bound with at least one success, so a deep
 backlog drains continuously. Over-filling is harmless: unclaimed jobs wait.
+
+## Factory optimizer evidence
+
+The existing `factory-retro-daily` job follows improvement program #6781.
+Direct implementation of #6782 through #6786 is reserved to the operator's
+manual PR series. Preserve ownership; do not restore agent-ready while a
+manual implementation or observation is unresolved.
+
+A selected experiment is recorded in a comment on #6781 with
+`<!-- factory-optimizer:experiment:v1 -->` followed by one fenced JSON object:
+
+```json
+{
+  "issue": 6782,
+  "pr": 6788,
+  "app": "monolith",
+  "expected_revision": "<published chart version>",
+  "writeback_commit": "<40-character writeback commit SHA>",
+  "metric": "refine_stale_pause",
+  "minimum_attempts": 26
+}
+```
+
+Use actual writeback identity after publication. The example traffic criterion
+comes from the baseline's 26 refine admissions, not a significance threshold.
+Document the chosen minimum and hypothesis alongside the marker. Other supported
+metrics are `dispatch_failure`, `pre_model_failure` and
+`funding_execution_failure`. This bounded reader holds as UNKNOWN if the program
+has 100 or more comments; consolidate to a fresh explicitly reviewed reader
+before that limit rather than guessing which historical selection is current.
+
+The server checks that the writeback contains the merged PR, matches an existing
+server-projected deployment observation, and passes the live rollout verifier.
+The observation records revision provenance, not historical application health.
+The first matching revision observation is the measurement boundary; current
+sync and health must also verify. Compare the immediately preceding 72h with
+`[boundary, boundary + 72h)`, never the overlapping rolling daily digest.
+Further deployments during observation make attribution UNKNOWN. Missing
+traffic, classification coverage or a traffic criterion also holds the choice.
+A worse target rate reports REGRESSED; a met observation criterion reports
+ACCEPTED as a descriptive association, without a causal savings claim.
+
+The digest includes explicit counters and citations. Observed list cost,
+currently settled ledger cost and unknown reservation exposure are separate;
+ledger amounts are observed as of digest collection, not reconstructed historical
+balances. These operational measurements do not establish the seven-day CI and
+revert evidence required for mature outcomes. No verdict writes factory policy,
+merges a PR, bypasses review or creates a second scheduler.

@@ -228,3 +228,225 @@ def test_review_scorecard_counts_non_object_outcomes_as_unknown():
         "all terminal review attempts: operational approvals 0/3; quality approvals 0/0; blocked 0; unknown 3"
         in digest
     )
+
+
+def _experiment_context(**overrides):
+    boundary = NOW - retro.timedelta(hours=72)
+    context = {
+        "experiment": {
+            "issue": 6782,
+            "pr": 6788,
+            "app": "monolith",
+            "metric": "dispatch_failure",
+            "minimum_attempts": 10,
+        },
+        "merged_at": (boundary - retro.timedelta(hours=1)).isoformat(),
+        "deployment": {
+            "note_id": "deployment-example",
+            "observed_at": boundary.isoformat(),
+            "revision": "0.1.0",
+        },
+        "rollout": {"verdict": "verified"},
+        "baseline": {"attempts": 10, "dispatch_failure": 4, "unknown": 0},
+        "post": {"attempts": 10, "dispatch_failure": 2, "unknown": 0},
+    }
+    context.update(overrides)
+    return context
+
+
+def test_optimizer_waits_for_rollout_and_strict_post_window():
+    assert (
+        retro.optimizer_evidence(_experiment_context(deployment=None), NOW)["status"]
+        == "WAIT"
+    )
+    assert (
+        retro.optimizer_evidence(
+            _experiment_context(rollout={"verdict": "in_progress"}), NOW
+        )["status"]
+        == "WAIT"
+    )
+    deployment = {"observed_at": (NOW - retro.timedelta(hours=71)).isoformat()}
+    assert (
+        retro.optimizer_evidence(_experiment_context(deployment=deployment), NOW)[
+            "status"
+        ]
+        == "WAIT"
+    )
+
+
+def test_optimizer_keeps_missing_traffic_and_coverage_unknown():
+    assert (
+        retro.optimizer_evidence(_experiment_context(post={"attempts": 0}), NOW)[
+            "status"
+        ]
+        == "UNKNOWN"
+    )
+    assert (
+        retro.optimizer_evidence(
+            _experiment_context(post={"attempts": 10, "unknown": 1}), NOW
+        )["status"]
+        == "UNKNOWN"
+    )
+    assert (
+        retro.optimizer_evidence(
+            _experiment_context(overlapping_revisions=["0.2.0"]), NOW
+        )["status"]
+        == "UNKNOWN"
+    )
+    context = _experiment_context()
+    context["experiment"].pop("minimum_attempts")
+    assert retro.optimizer_evidence(context, NOW)["status"] == "UNKNOWN"
+
+
+def test_optimizer_reports_observed_acceptance_or_regression_with_counts():
+    accepted = retro.optimizer_evidence(_experiment_context(), NOW)
+    assert accepted["status"] == "ACCEPTED"
+    assert accepted["rates"] == {
+        "baseline": 0.4,
+        "post": 0.2,
+        "denominator": "attempts",
+    }
+    assert "no causal or mature-outcome claim" in accepted["reason"]
+    regressed = retro.optimizer_evidence(
+        _experiment_context(post={"attempts": 10, "dispatch_failure": 5, "unknown": 0}),
+        NOW,
+    )
+    assert regressed["status"] == "REGRESSED"
+
+
+def test_optimizer_loader_bounds_windows_at_proven_deployment(monkeypatch):
+    boundary = NOW - retro.timedelta(hours=72)
+    experiment = {
+        "issue": 6782,
+        "pr": 6788,
+        "app": "monolith",
+        "expected_revision": "0.1.0",
+        "writeback_commit": "a" * 40,
+    }
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": experiment,
+            "merged_at": (boundary - retro.timedelta(hours=1)).isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+    observed = []
+
+    def rows(_session, sql, params):
+        observed.append((sql, params))
+        if sql == retro._OPTIMIZER_OBSERVATIONS:
+            return [
+                {
+                    "note_id": "deployment-example",
+                    "observed_at": boundary,
+                    "status": "complete",
+                    "extra": {
+                        "status": "complete",
+                        "deployed_revision": "0.1.0",
+                        "requested_revision": "0.1.0",
+                        "newest_freight_version": "0.1.0",
+                        "writeback_commit": "a" * 40,
+                    },
+                }
+            ]
+        if sql == retro._OPTIMIZER_COUNTS:
+            return {"baseline": [{"attempts": 10}], "post": [{"attempts": 10}]}[
+                "baseline" if params["end"] == boundary else "post"
+            ]
+        return [{"unknown_reservation_usd": 12.0, "settled_cost_usd": 3.0}]
+
+    monkeypatch.setattr(retro, "_rows", rows)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert loaded["baseline"]["end"] == loaded["post"]["start"] == boundary.isoformat()
+    assert loaded["post"]["end"] == NOW.isoformat()
+    assert loaded["post"]["unknown_reservation_usd"] == 12
+    assert loaded["post"]["settled_cost_usd"] == 3
+    for sql, params in observed:
+        if sql == retro._OPTIMIZER_COUNTS:
+            assert params["end"] - params["start"] == retro.timedelta(hours=72)
+
+
+def test_optimizer_merge_without_provenance_never_loads_windows(monkeypatch):
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {"merged_at": NOW.isoformat(), "contains_merge": False},
+    )
+    monkeypatch.setattr(
+        retro,
+        "_rows",
+        lambda *_: (_ for _ in ()).throw(AssertionError("unproven window")),
+    )
+    loaded = retro._load_optimizer(object(), NOW)
+    assert retro.optimizer_evidence(loaded, NOW)["status"] == "WAIT"
+
+
+def test_optimizer_loader_holds_saturated_history(monkeypatch):
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": {"app": "monolith", "expected_revision": "0.1.0"},
+            "merged_at": NOW.isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+    monkeypatch.setattr(retro, "_rows", lambda *_: [{}] * 5000)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert retro.optimizer_evidence(loaded, NOW)["status"] == "UNKNOWN"
+    assert "saturated" in loaded["error"]
+
+
+def test_optimizer_loader_ignores_deployments_after_completed_window(monkeypatch):
+    boundary = NOW - retro.timedelta(hours=74)
+    experiment = {
+        "app": "monolith",
+        "expected_revision": "0.1.0",
+        "writeback_commit": "a" * 40,
+    }
+    monkeypatch.setattr(
+        retro,
+        "_optimizer_github",
+        lambda: {
+            "experiment": experiment,
+            "merged_at": (boundary - retro.timedelta(hours=1)).isoformat(),
+            "contains_merge": True,
+        },
+    )
+    monkeypatch.setattr(
+        retro, "_verify_optimizer_rollout", lambda *_: {"verdict": "verified"}
+    )
+
+    def rows(_session, sql, _params):
+        if sql == retro._OPTIMIZER_OBSERVATIONS:
+            return [
+                {
+                    "note_id": "deployed",
+                    "observed_at": boundary,
+                    "status": "complete",
+                    "extra": {
+                        "deployed_revision": "0.1.0",
+                        "requested_revision": "0.1.0",
+                        "newest_freight_version": "0.1.0",
+                        "writeback_commit": "a" * 40,
+                    },
+                },
+                {
+                    "observed_at": boundary + retro.timedelta(hours=73),
+                    "extra": {"deployed_revision": "0.2.0"},
+                },
+            ]
+        return [{"attempts": 10}]
+
+    monkeypatch.setattr(retro, "_rows", rows)
+    loaded = retro._load_optimizer(object(), NOW)
+    assert loaded["overlapping_revisions"] == []
+    assert loaded["post"]["end"] == (boundary + retro.timedelta(hours=72)).isoformat()
