@@ -27,7 +27,10 @@ py_library(
         "schema.py",
     ],
     # The smoke test reads the actual task YAML and model-hidden references.
-    data = ["//projects/model-bench:stars_climatology_perf_data"],  # keep
+    data = [
+        "//projects/model-bench:campsites_rollup_perf_data",
+        "//projects/model-bench:stars_climatology_perf_data",
+    ],  # keep
     imports = [".."],
     visibility = ["//projects/model-bench:__subpackages__"],
     deps = [
@@ -196,7 +199,10 @@ py_test(
 
 py_test(
     name = "stars_climatology_perf_test",
-    srcs = ["stars_climatology_perf_test.py"],
+    srcs = [
+        "campsites_rollup_perf_test.py",
+        "stars_climatology_perf_test.py",
+    ],
     imports = [".."],
     deps = [
         ":bench",

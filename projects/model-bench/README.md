@@ -258,6 +258,78 @@ dependencies available:
 PYTHONPATH=projects/model-bench python projects/model-bench/tasks/stars-climatology-perf-01/reference/calibrate.py
 ```
 
+### Campsites region rollup fixture
+
+`campsites-region-rollup-perf-01` seeds a hard-tier agentic task with shell
+execution and 40 turns. The only editable file is `rollup.py`; `test_rollup.py`
+provides visible stdlib unittest cases. This is a seeded benchmark fixture
+derived from endpoint semantics, not current production code. Provenance is main
+`a1d4b0f99b4f5e6fb5e9948dd0f2ba33df1d3cce`, the campsites `/snapshot`
+handler, models and router tests, plus the existing `campsites-region-rollup-01`
+task's regional aggregation contract. Fixture and dataset version are
+`campsites-rollup-seeded-v1`. The seeded source and verifier baseline share a
+YAML anchor; a smoke test asserts their bytes match.
+
+`summarize(campgrounds, availability, weather, today)` takes plain dictionaries
+and an explicit ISO date. It includes today minus one through today plus 13,
+inclusive. Duplicate campground/date rows use the last encountered row,
+independently for each table, matching the endpoint's per-day assignments.
+Missing availability is false; missing weather is score zero and good false.
+Unknown campgrounds and out-of-window rows contribute nothing. Campgrounds
+have unique integer ids; dates are valid `YYYY-MM-DD` strings, with the entire
+window representable. Scores are nonnegative integers. All counts and maxima
+compare by exact equality, with no floating-point aggregation or tolerance.
+Inputs must remain unchanged.
+
+The result is `{count, regions}`. Each region contains its string, all-park
+count, maximum score over available park-days, count of available good
+park-days, and count of parks with at least one such day. Regions with no
+available days have score zero. Sort by descending score and ascending Python
+region-string order. No campgrounds returns
+`{"status": 503, "detail": "campsites data unavailable"}`, a framework-free
+representation of the endpoint's HTTP 503.
+
+The deliberately naive hot path rescans all campgrounds per region and every
+availability and weather row for every campground/day. The frozen timing
+dataset has 180 campgrounds across five regions, missing rows, duplicate rows,
+unknown ids and dates on both sides of the window. Each pair gets fresh data
+from the fixed seed. The 120-second timeout bounds the whole verifier run.
+Imports and setup are excluded from timing. The grading contract is one
+warm-up and seven alternating pairs, with median-ratio buckets 2x, 10x and 50x.
+
+The protected harness repeats all 16 visible cases and adds 52 deterministic
+independent oracle cases. Checks cover empty inputs, missing rows, date-window
+boundaries across years and leap dates, unavailable good-weather days, available
+days without weather, ties, case-sensitive and Unicode ordering, duplicate
+last-row-wins behavior, large integer ids and exact scores. The real-verifier
+smoke test exercises the baseline near 1x, a wrong implementation at zero,
+and the algorithmic reference with a generous 2x floor at reduced size.
+Adversarial tests reject wrong counts, sorts, boundaries, duplicate handling,
+lossy numeric conversion, poisoned workdir grader files, forged JSON and input
+mutation. Shared tests cover old cached cells and grading-config invalidation.
+References and the calibration utility live outside `fixture/` and are never
+shown to candidates. Existing functional tasks and `stars-grid-speedup-01`
+remain unchanged.
+
+Local calibration on October 3, 2026 used a Firecracker guest with two vCPUs,
+Intel Xeon Processor at 2.80 GHz, Linux 6.18.35 x86_64 and Python 3.12.15.
+Three full-size real-verifier runs per implementation produced:
+
+| Candidate | Run 1 | Run 2 | Run 3 | Highest bucket | Score |
+| --- | --- | --- | --- | --- | --- |
+| Seeded baseline | 0.955x | 0.984x | 1.007x | none | 0 |
+| Micro-optimisation | 1.009x | 1.002x | 1.027x | none | 0 |
+| Algorithmic reference | 227.64x | 239.89x | 237.51x | 50x | 1 |
+
+All nine runs passed correctness with stable bucket classification. Baseline
+calls took 1.234 to 1.565 seconds; whole grading runs took 12.466 to 24.996
+seconds. These are frozen-fixture measurements on this machine, with no
+production-speedup or model-capability claim. Reproduce without any model API:
+
+```bash
+PYTHONPATH=projects/model-bench python projects/model-bench/tasks/campsites-region-rollup-perf-01/reference/calibrate.py
+```
+
 
 The `checks` verifier is the general form: a hidden task-authored script runs with
 the workdir as cwd and prints `{"checks": {name: bool | 0..1}}`, and the score is

@@ -15,6 +15,11 @@ of the cache identity. Legacy tasks retain their existing grading contract.
 Pure-function task harnesses opt into input-mutation checks outside timing.
 The climatology task pins a naive fixture with exact integer sums and the
 endpoint's first-valid-row stable tie order. Its references remain model-hidden.
+The campsites rollup task pins exact integer counts and scores, the inclusive
+today-minus-one through today-plus-13 window, and independent last-row-wins
+availability/weather maps. Empty campgrounds produce an explicit 503 record.
+Both packs seed visible tests while keeping the protected oracles and calibrated
+references outside candidate fixtures.
 
 **Why.** Correctness-gated buckets distinguish an algorithmic improvement from a
 fast wrong answer. A discarded warm-up and seven alternating pairs reduce order
@@ -27,4 +32,4 @@ and fixture version; they make no claim about current production algorithms.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Correctness-gated paired-median speedup buckets on frozen seeded fixtures | Performance grading | #6696 | Infrastructure and climatology fixture implemented; rollup task pack follows in part 3 |
+| Correctness-gated paired-median speedup buckets on frozen seeded fixtures | Performance grading | #6696 | Infrastructure, climatology and campsites rollup fixtures implemented; repository-only delivery |
