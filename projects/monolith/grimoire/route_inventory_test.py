@@ -28,11 +28,30 @@ class Case:
     state: str | None = None
     denials: dict[str, int] = field(default_factory=dict)
     denied_writers: tuple[str, ...] = ("dm", "player_a", "player_b", "no_character")
+    read_only: bool = False
 
 
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
+    ("GET", PREFIX + "/journal"): Case(state="play"),
+    ("GET", PREFIX + "/sessions/{session_id}/journal"): Case(
+        params={"session_id": "$campaign_session.id"}, state="play"
+    ),
+    ("POST", PREFIX + "/grants/preview"): Case(
+        state="play",
+        read_only=True,
+        body={
+            "grants": [
+                {
+                    "entity_id": "$private.id",
+                    "player_character_id": "$character.id",
+                    "grant_scope": "partial",
+                    "revealed_details": {"clue": "A preview"},
+                }
+            ]
+        },
+    ),
     ("GET", PREFIX): Case(),
     ("PATCH", PREFIX + "/settings"): Case(body={"notes_dm_readable_default": True}),
     ("GET", PREFIX + "/notes"): Case(),
@@ -223,7 +242,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 44
+    assert len(enumerated) == 45
 
 
 def test_route_inventory(harness):
@@ -396,6 +415,8 @@ def test_campaign_route_matrix(harness, method, path):
         assert response.status_code == case.success, response.text
         if method == "GET":
             assert response.json(), f"vacuous positive control: {path}"
+        elif case.read_only:
+            assert h.snapshot() == before
         else:
             assert h.snapshot() != before, f"success did not mutate {method} {path}"
 

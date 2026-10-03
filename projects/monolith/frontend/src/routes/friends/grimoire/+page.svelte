@@ -88,7 +88,14 @@
         {:else if campaign.role === "player"}
           <p>Your character: {campaign.character_name}</p>
         {/if}
-        <a href="/grimoire/sheets">Open character sheets</a>
+        {#if data.playEnabled}<a
+            href={`/grimoire/campaigns/${campaign.id}/session`}>Open session</a
+          >{/if}
+        <a
+          href={campaign.player_character_id
+            ? `/grimoire/sheets#character-${campaign.player_character_id}`
+            : "/grimoire/sheets"}>Open character sheets</a
+        >
         <a href={`/grimoire/campaigns/${campaign.id}/notes`}>Open notes</a>
         <a href={`/grimoire/campaigns/${campaign.id}/journal`}>Open journal</a>
         {#if campaign.role === "dm"}

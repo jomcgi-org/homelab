@@ -1,0 +1,60 @@
+import { describe, expect, it, vi } from "vitest";
+import { sessionState } from "./grimoire-session.js";
+
+const cookies = { get: () => "signed-grimoire-token" };
+const response = (value) => ({
+  ok: true,
+  status: 200,
+  json: async () => value,
+});
+
+describe("sessionState", () => {
+  it("refuses a non-member before requesting campaign resources", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({ campaigns: [] }));
+    await expect(
+      sessionState(fetch, cookies, "other-campaign"),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads beyond the first page using the visible event sequence", async () => {
+    const first = Array.from({ length: 500 }, (_, index) => ({
+      id: String(index),
+      seq: index * 2 + 1,
+    }));
+    const fetch = vi.fn(async (url) => {
+      if (url.endsWith("/lobby"))
+        return response({
+          user: { id: "player" },
+          campaigns: [{ id: "campaign", role: "player" }],
+        });
+      if (url.endsWith("/characters")) return response([{ id: "own-pc" }]);
+      if (url.endsWith("/sheets")) return response({ versions: [] });
+      if (url.endsWith("/sessions")) return response([{ id: "session" }]);
+      if (url.includes("/journal")) return response({ learned: [] });
+      if (url.includes("after=0")) return response(first);
+      if (url.includes("after=999"))
+        return response([{ id: "last", seq: 1003 }]);
+      throw new Error(`Unexpected request ${url}`);
+    });
+    const state = await sessionState(fetch, cookies, "campaign");
+    expect(state.events).toHaveLength(501);
+    expect(state.events.at(-1).seq).toBe(1003);
+    expect(state).not.toHaveProperty("members");
+    for (const [, options] of fetch.mock.calls) {
+      expect(options.headers["x-grimoire-token"]).toBe("signed-grimoire-token");
+    }
+  });
+
+  it("supports a campaign before its first session without requesting events", async () => {
+    const fetch = vi.fn(async (url) => {
+      if (url.endsWith("/lobby"))
+        return response({ campaigns: [{ id: "campaign", role: "dm" }] });
+      return response([]);
+    });
+    const state = await sessionState(fetch, cookies, "campaign");
+    expect(state.session).toBeNull();
+    expect(state.events).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+});
