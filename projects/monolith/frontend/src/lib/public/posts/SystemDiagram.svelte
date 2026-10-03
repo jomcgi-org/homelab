@@ -134,17 +134,206 @@
       {/each}
     </nav>
   {/if}
-  <ol class="flow" aria-label="Execution path">
-    {#each flow as part, index}
-      <li class={part.tone}>
-        {#if index > 0}<span class="connector" aria-hidden="true"><i></i></span
-          >{/if}
-        <div class="part">
-          <strong>{part.label}</strong><span>{part.detail}</span>
-        </div>
-      </li>
-    {/each}
-  </ol>
+  <div
+    class="machine"
+    class:memory={mode === "memory"}
+    class:prefill={mode === "prefill"}
+    class:decode={mode === "decode"}
+    class:swap={mode === "swap"}
+  >
+    <svg viewBox="0 0 640 260" role="img" aria-label="Execution path">
+      {#if mode === "memory"}
+        <g class="ink"
+          ><circle cx="54" cy="126" r="27" /><text x="54" y="174">Router</text
+          ></g
+        >
+        {#each paths as path, index}
+          <g class={path.tone} class:active={selected === path.key}>
+            <path
+              class="wire"
+              d={`M82 126 C130 126 116 ${44 + index * 86} 166 ${44 + index * 86} H470 C520 ${44 + index * 86} 510 126 554 126`}
+            />
+            <path
+              class="traveller"
+              style={`--delay:${index * -0.4}s`}
+              d={`M82 126 C130 126 116 ${44 + index * 86} 166 ${44 + index * 86} H470 C520 ${44 + index * 86} 510 126 554 126`}
+            />
+            <rect x="168" y={22 + index * 86} width="150" height="44" rx="5" />
+            <text x="243" y={49 + index * 86}>{path.label}</text>
+            <text class="sub" x="402" y={65 + index * 86}
+              >{index === 0
+                ? "GPU compute"
+                : index === 1
+                  ? "PCIe → GPU"
+                  : cacheMiss
+                    ? "NVMe → CPU"
+                    : "CPU compute"}</text
+            >
+          </g>
+        {/each}
+        <g class="gpu"
+          ><circle cx="582" cy="126" r="27" /><text x="582" y="174"
+            >Combine</text
+          ></g
+        >
+      {:else if mode === "prefill"}
+        <text class="heading" x="92" y="25">Prompt tokens</text>
+        <text class="heading" x="322" y="25"
+          >{step < 2 ? "Selected lookup rows" : "Grouped by expert"}</text
+        >
+        <text class="heading" x="554" y="25"
+          >{step < 2 ? "GPU buffer" : "Batched compute"}</text
+        >
+        {#each Array(12) as _, index}
+          <g class={index % 3 === 0 ? "gpu" : index % 3 === 1 ? "ram" : "disk"}>
+            <rect
+              class="token"
+              x={38 + (index % 3) * 34}
+              y={50 + Math.floor(index / 3) * 40}
+              width="25"
+              height="25"
+              rx="3"
+            />
+            <path
+              class="wire"
+              d={`M${63 + (index % 3) * 34} ${62 + Math.floor(index / 3) * 40} C205 ${62 + Math.floor(index / 3) * 40} 214 ${72 + (index % 3) * 64} 272 ${72 + (index % 3) * 64}`}
+            />
+            <path
+              class="traveller"
+              style={`--delay:${index * -0.17}s`}
+              d={`M${63 + (index % 3) * 34} ${62 + Math.floor(index / 3) * 40} C205 ${62 + Math.floor(index / 3) * 40} 214 ${72 + (index % 3) * 64} 272 ${72 + (index % 3) * 64}`}
+            />
+          </g>
+        {/each}
+        {#each ["gpu", "ram", "disk"] as tone, index}
+          <g class={tone}>
+            <rect x="272" y={50 + index * 64} width="100" height="44" rx="4" />
+            <path class="wire" d={`M372 ${72 + index * 64} H500`} />
+            <path
+              class="traveller"
+              style={`--delay:${index * -0.5}s`}
+              d={`M372 ${72 + index * 64} H500`}
+            />
+            {#each Array(5) as _, tile}<rect
+                class="batch"
+                style={`--delay:${tile * -0.13}s`}
+                x={510 + tile * 18}
+                y={52 + index * 64}
+                width="12"
+                height="40"
+                rx="2"
+              />{/each}
+          </g>
+        {/each}
+      {:else if mode === "decode"}
+        <g class="ink"
+          ><circle cx="58" cy="128" r="24" /><text x="58" y="174">Token</text
+          ></g
+        >
+        <g class="hot"
+          ><path class="wire" d="M82 128 H164" /><path
+            class="traveller"
+            d="M82 128 H164"
+          /><circle cx="194" cy="128" r="30" /><text x="194" y="181"
+            >Router</text
+          ></g
+        >
+        {#each ["gpu", "ram", "cache"] as tone, index}
+          <g class={tone}>
+            <path
+              class="wire"
+              d={`M224 128 Q290 ${42 + index * 86} 334 ${42 + index * 86} H408 Q462 ${42 + index * 86} 516 128`}
+            />
+            <path
+              class="traveller"
+              style={`--delay:${index * -0.4}s`}
+              d={`M224 128 Q290 ${42 + index * 86} 334 ${42 + index * 86} H408 Q462 ${42 + index * 86} 516 128`}
+            />
+            <circle class="expert" cx="368" cy={42 + index * 86} r="24" />
+            <text class="sub" x="368" y={78 + index * 86}
+              >{["GPU", "Pinned", "CPU"][index]}</text
+            >
+          </g>
+        {/each}
+        <g class="gpu"
+          ><circle cx="542" cy="128" r="26" /><text x="542" y="174"
+            >Combine</text
+          ><path class="wire" d="M568 128 H620" /><path
+            class="traveller"
+            d="M568 128 H620"
+          /></g
+        >
+      {:else}
+        <g class="ram"
+          ><text class="heading" x="105" y="33">Candidate</text><rect
+            x="43"
+            y="62"
+            width="124"
+            height="122"
+            rx="5"
+          />
+          {#each Array(6) as _, index}<rect
+              class="batch"
+              style={`--delay:${index * -0.15}s`}
+              x="58"
+              y={75 + index * 16}
+              width="94"
+              height="9"
+              rx="2"
+            />{/each}
+        </g>
+        <g class="hot"
+          ><path class="wire" d="M168 122 H278" /><path
+            class="traveller"
+            d="M168 122 H278"
+          /><text class="sub" x="224" y="151">Stage</text></g
+        >
+        <g class="gpu"
+          ><text class="heading" x="360" y="33">GPU slot</text><rect
+            x="280"
+            y="62"
+            width="160"
+            height="122"
+            rx="5"
+          /><rect
+            class="incumbent"
+            x="293"
+            y="75"
+            width="134"
+            height="43"
+            rx="3"
+          /><text x="360" y="102">Serving expert</text><rect
+            class="replacement"
+            x="293"
+            y="130"
+            width="134"
+            height="41"
+            rx="3"
+          /><text x="360" y="156">Replacement</text></g
+        >
+        <g class="gpu"
+          ><path class="wire" d="M440 95 H556" /><path
+            class="traveller"
+            d="M440 95 H556"
+          /><circle cx="580" cy="95" r="22" /><text x="568" y="144"
+            >Next step</text
+          ></g
+        >
+        <g class="hot"
+          ><path class="flip" d="M428 151 Q480 150 480 96" /><text
+            class="sub"
+            x="480"
+            y="215">Flip after the copy completes</text
+          ></g
+        >
+      {/if}
+    </svg>
+    <div class="path-description">
+      {#each flow as part, index}{#if index}
+          →
+        {/if}<span class={part.tone}>{part.label}</span>{/each}
+    </div>
+  </div>
   {#if mode !== "memory" && currentNote}<p
       class="explanation"
       aria-live="polite"
@@ -228,73 +417,111 @@
   .ink {
     --tone: var(--ink);
   }
-  .flow {
-    display: flex;
-    padding: 0;
-    margin: 0;
-    list-style: none;
+  .machine {
+    padding: 1rem 0;
+    overflow: hidden;
   }
-  .flow li {
-    display: flex;
-    align-items: center;
-    flex: 1;
-    min-width: 0;
-  }
-  .part {
+  svg {
+    display: block;
     width: 100%;
-    min-width: 0;
-    padding: 1rem 0.7rem 0.7rem;
-    background: color-mix(in srgb, var(--tone) 9%, var(--sheet));
-    border-top: 3px solid var(--tone);
+    height: auto;
   }
-  .part strong {
-    display: block;
-    font-size: 0.85rem;
+  svg :global(g) {
+    color: var(--tone);
   }
-  .part > span {
-    display: block;
-    min-height: 2.5em;
-    margin-top: 0.4rem;
-    font: 0.65rem/1.4 var(--font-code);
+  svg :global(rect),
+  svg :global(circle) {
+    fill: color-mix(in srgb, currentColor 12%, var(--sheet));
+    stroke: currentColor;
+    stroke-width: 1.5;
+  }
+  svg :global(text) {
+    fill: var(--ink);
+    font: 12px var(--font-code);
+    text-anchor: middle;
+  }
+  svg :global(.sub) {
+    fill: var(--ink-2);
+    font-size: 10px;
+  }
+  svg :global(.heading) {
+    font-size: 11px;
+  }
+  svg :global(.wire),
+  svg :global(.traveller),
+  svg :global(.flip) {
+    fill: none;
+    stroke: currentColor;
+  }
+  svg :global(.wire) {
+    stroke-width: 1.5;
+    opacity: 0.28;
+  }
+  svg :global(.traveller) {
+    stroke-width: 3;
+    stroke-dasharray: 9 30;
+    animation: travel 2s linear infinite;
+    animation-delay: var(--delay, 0s);
+  }
+  .memory svg :global(g:not(.active) .traveller) {
+    opacity: 0.12;
+  }
+  .memory svg :global(g.active .traveller) {
+    stroke-width: 4;
+  }
+  svg :global(.token) {
+    fill: currentColor;
+    opacity: 0.8;
+  }
+  svg :global(.batch) {
+    animation: compute 1.8s ease-in-out infinite;
+    animation-delay: var(--delay, 0s);
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  svg :global(.expert) {
+    animation: compute 1.8s ease-in-out infinite;
+  }
+  svg :global(.replacement) {
+    animation: ready 4s ease-in-out infinite;
+  }
+  svg :global(.flip) {
+    stroke-dasharray: 6 5;
+    stroke-width: 2;
+    animation: ready 4s ease-in-out infinite;
+  }
+  .path-description {
+    text-align: center;
+    font: 0.7rem var(--font-code);
     color: var(--ink-2);
   }
-  .connector {
-    position: relative;
-    width: 24px;
-    flex-shrink: 0;
-    height: 2px;
-    background: color-mix(in srgb, var(--tone) 25%, var(--sheet));
+  .path-description span {
+    color: var(--tone);
   }
-  .connector::after {
-    content: "";
-    position: absolute;
-    right: 0;
-    top: -3px;
-    width: 6px;
-    height: 6px;
-    border-right: 2px solid var(--tone);
-    border-top: 2px solid var(--tone);
-    transform: rotate(45deg);
-  }
-  .connector i {
-    position: absolute;
-    width: 7px;
-    height: 3px;
-    top: -1px;
-    background: var(--tone);
-    animation: flow 1.2s linear infinite;
-  }
-  @keyframes flow {
-    from {
-      transform: translateX(0);
-      opacity: 0;
-    }
-    20% {
-      opacity: 1;
-    }
+  @keyframes travel {
     to {
-      transform: translateX(17px);
-      opacity: 0;
+      stroke-dashoffset: -78;
+    }
+  }
+  @keyframes compute {
+    0%,
+    100% {
+      opacity: 0.45;
+      transform: scaleY(0.88);
+    }
+    50% {
+      opacity: 1;
+      transform: scaleY(1);
+    }
+  }
+  @keyframes ready {
+    0%,
+    25% {
+      opacity: 0.2;
+    }
+    65%,
+    100% {
+      opacity: 1;
     }
   }
   .explanation {
@@ -329,32 +556,17 @@
     line-height: 1.6;
   }
   @media (max-width: 600px) {
-    .flow {
-      flex-direction: column;
-      gap: 0;
-    }
-    .flow li {
-      flex-direction: column;
-      width: 100%;
-    }
-    .part {
-      box-sizing: border-box;
-      padding: 0.7rem;
-    }
-    .part > span {
-      min-height: 0;
-    }
-    .connector {
-      transform: rotate(90deg);
-      margin-block: 10px;
-    }
     dl > div {
       grid-template-columns: 1fr;
       gap: 0.3rem;
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .connector i {
+    svg :global(.traveller),
+    svg :global(.batch),
+    svg :global(.expert),
+    svg :global(.replacement),
+    svg :global(.flip) {
       animation: none;
     }
   }

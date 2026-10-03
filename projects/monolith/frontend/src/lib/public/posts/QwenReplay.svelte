@@ -2,6 +2,7 @@
   import recording from "./qwen-replay.json";
 
   const turn = recording.turns[0];
+  let element;
   let position = $state(0);
   let playing = $state(false);
   let speed = $state(1);
@@ -16,6 +17,14 @@
       turn.statsSamples[0],
   );
   let stats = $derived(statsSample?.unavailable ? null : statsSample);
+  let emitted = $derived(
+    turn.events.filter((event) => event.at <= position).length,
+  );
+  let progress = $derived(
+    turn.progress?.findLast(
+      (item) => item.at <= position && item.stage === "prefill",
+    ),
+  );
   let phase = $derived(
     position >= turn.durationMs
       ? "Complete"
@@ -33,6 +42,25 @@
     playing = false;
     position = at;
   }
+  $effect(() => {
+    if (
+      !element ||
+      typeof IntersectionObserver === "undefined" ||
+      matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          playing = true;
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.5 },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  });
   $effect(() => {
     if (!playing) return;
     const rate = speed;
@@ -54,7 +82,11 @@
   });
 </script>
 
-<section class="replay" aria-label="Inference on the RTX 4090">
+<section
+  bind:this={element}
+  class="replay"
+  aria-label="Inference on the RTX 4090"
+>
   <div class="transport-heading">
     <button
       type="button"
@@ -138,6 +170,44 @@
       </dl>
     </div>
 
+    <div class="arrival-strip">
+      <svg viewBox="0 0 640 72" role="img" aria-label="Token arrival times">
+        <rect
+          class="prefill-span"
+          x="0"
+          y="8"
+          width={(turn.events[0].at / turn.durationMs) * 640}
+          height="44"
+        />
+        {#each turn.events as event, index}
+          <line
+            class:arrived={event.at <= position}
+            x1={(event.at / turn.durationMs) * 640}
+            x2={(event.at / turn.durationMs) * 640}
+            y1={index % 3 === 0 ? 12 : 22}
+            y2="52"
+          />
+        {/each}
+        <line
+          class="playhead"
+          x1={(position / turn.durationMs) * 640}
+          x2={(position / turn.durationMs) * 640}
+          y1="0"
+          y2="60"
+        />
+        <text x="4" y="70">Prefill</text><text
+          x={Math.min(570, (turn.events[0].at / turn.durationMs) * 640 + 4)}
+          y="70">Decode</text
+        >
+      </svg>
+      <div class="arrival-count">
+        {phase === "Prefill"
+          ? progress?.total
+            ? `${progress.done} / ${progress.total} prompt tokens`
+            : `${turn.usage.prompt_tokens} prompt tokens`
+          : `${emitted} / ${turn.events.length} text arrivals`}
+      </div>
+    </div>
     <div class="conversation">
       <details class="prompt">
         <summary>Prompt</summary>
@@ -151,7 +221,12 @@
         role="region"
         aria-label="Recorded answer"
       >
-        <p>{answer || "Waiting for the first token..."}</p>
+        <p>
+          {answer}{#if position < turn.durationMs}<span
+              class="cursor"
+              aria-hidden="true"
+            ></span>{/if}
+        </p>
       </div>
       {#if turn.note && position >= turn.durationMs}<p class="caption">
           {turn.note}
@@ -253,6 +328,59 @@
   dd small {
     font-size: 0.7rem;
     color: var(--ink-2);
+  }
+  .arrival-strip {
+    margin: 1.2rem 0 0.8rem;
+  }
+  .arrival-strip svg {
+    width: 100%;
+    display: block;
+    overflow: visible;
+  }
+  .prefill-span {
+    fill: color-mix(in srgb, var(--tone-ram) 14%, var(--sheet));
+  }
+  .arrival-strip line {
+    stroke: var(--tone-gpu);
+    stroke-width: 2;
+    opacity: 0.2;
+  }
+  .arrival-strip line.arrived {
+    opacity: 1;
+  }
+  .arrival-strip line.playhead {
+    stroke: var(--ink);
+    opacity: 1;
+    stroke-width: 1;
+  }
+  .arrival-strip text {
+    fill: var(--ink-2);
+    font: 10px var(--font-code);
+  }
+  .arrival-count {
+    text-align: right;
+    color: var(--ink-2);
+    font: 0.65rem var(--font-code);
+    margin-top: 0.5rem;
+  }
+  .cursor {
+    display: inline-block;
+    width: 0.5rem;
+    height: 1em;
+    margin-left: 0.2rem;
+    background: var(--tone-gpu);
+    vertical-align: -0.15em;
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cursor {
+      animation: none;
+    }
   }
   .prompt {
     padding-block: 0.75rem;
