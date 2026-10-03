@@ -25,8 +25,13 @@
     const b = anchors[i + 1];
     return (i + (b > a ? (ms - a) / (b - a) : 0)) * STEP;
   }
-  const events = recording.events.map((e) => ({ ...e, at: stepTime(e.at) }));
+  const events = recording.events.map((e, i) => ({
+    ...e,
+    i,
+    at: stepTime(e.at),
+  }));
   const duration = (anchors.length - 1) * STEP;
+  const stateTimes = events.filter(isState).map((e) => e.at);
   // Short names for the drawing; the recording keeps the runner's own titles.
   const names = {
     S1: "clones over vsock",
@@ -94,21 +99,85 @@
       : toBrick.has(e.action)
         ? [P.cpOut, P.brickIn]
         : null;
-  const shown = recording.invariants
-    .map((inv, k) => ({ ...inv, k }))
-    .filter((inv) => events.at(-1).verdicts[inv.key][1] > 0);
+
+  // The rules this run exercises, each with the records that establish it
+  // and one sentence on why those records satisfy it.
+  const evidence = {
+    no_double_assign: {
+      actions: ["dispatch_miss"],
+      why: "Each dispatch names a different VM, so no VM was handed to two tasks.",
+    },
+    dispatch_provenance: {
+      actions: ["dispatch_miss"],
+      why: "Each dispatch says where its VM came from: a miss, freshly primed for it.",
+    },
+    prime_before_checkpoint: {
+      actions: ["prime", "checkpoint"],
+      why: "Every VM the eleven checkpoints list was primed earlier in the trace.",
+    },
+    destroy_intent_precedes_record: {
+      actions: ["begin_destroy", "confirm_destroy"],
+      why: "Both destroy intents are recorded before their confirmations arrive from the node.",
+    },
+    no_destroy_before_confirm: {
+      actions: ["begin_destroy", "confirm_destroy"],
+      why: "Both destroyed records come after the node confirmed that VM's teardown; nothing was marked gone on a guess.",
+    },
+    inventory_reconciled: {
+      actions: ["checkpoint"],
+      why: "At every checkpoint the VMs the node reports live are the VMs the control plane knows.",
+    },
+  };
+  const shown = recording.invariants.filter(
+    (inv) => events.at(-1).verdicts[inv.key][1] > 0 && evidence[inv.key],
+  );
   const traceRows = [
     ["state changes", isState],
     ["checkpoints", (e) => e.action === "checkpoint"],
   ];
   const pct = (ms) => (100 * ms) / duration + "%";
+  const describe = (e) => {
+    const v = e.vars;
+    const vm = recording.roles?.[v.vm] ?? v.vm;
+    switch (e.action) {
+      case "prime":
+        return `${vm} is booted and waiting`;
+      case "dispatch_miss":
+        return `a task is dispatched to ${vm}`;
+      case "succeed":
+        return `the task on ${vm} finishes`;
+      case "begin_destroy":
+        return `the control plane records that it intends to destroy ${vm}`;
+      case "confirm_destroy":
+        return `the node confirms ${vm} is gone`;
+      case "checkpoint":
+        return `checkpoint: the node reports ${v.live_vms} live VM${v.live_vms === 1 ? "" : "s"}, the control plane knows ${v.known}`;
+      default:
+        return "node heartbeat";
+    }
+  };
 
   let position = $state(0);
   let playing = $state(false);
+  let selected = $state(null);
   let complete = $derived(position >= duration);
   let seen = $derived(events.filter((e) => e.at <= position).length);
   let current = $derived(seen ? events[seen - 1] : null);
   let verdicts = $derived((current ?? events[0]).verdicts);
+  let chapter = $derived(
+    scenarios.findLast((s) => position >= s.from) ?? scenarios[0],
+  );
+  let focus = $derived(selected ? evidence[selected] : null);
+  let evidenceActions = $derived(new Set(focus?.actions ?? []));
+  let evidenceVms = $derived(
+    new Set(
+      focus
+        ? events
+            .filter((e) => evidenceActions.has(e.action) && e.vars.vm)
+            .map((e) => e.vars.vm)
+        : [],
+    ),
+  );
   let dots = $derived.by(() => {
     if (complete) return [];
     const out = [];
@@ -150,6 +219,43 @@
       });
     }
   }
+  function seekTo(ms) {
+    playing = false;
+    position = Math.max(0, Math.min(duration, ms));
+  }
+  // Arrow keys step between state changes, not through the 10 ms grid.
+  function onKey(event) {
+    const dir =
+      event.key === "ArrowRight" || event.key === "ArrowUp"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowDown"
+          ? -1
+          : 0;
+    if (!dir) return;
+    event.preventDefault();
+    const next =
+      dir > 0
+        ? (stateTimes.find((t) => t > position + 1) ?? duration)
+        : (stateTimes.findLast((t) => t < position - 1) ?? 0);
+    seekTo(next);
+  }
+  // The trace rows are the scrub surface: drag across them. The playhead is
+  // placed from the measured track box, so it lines up with the marks at any
+  // width.
+  let track;
+  function scrubAt(event) {
+    const box = track.getBoundingClientRect();
+    seekTo(((event.clientX - box.left) / box.width) * duration);
+  }
+  function onPointer(event) {
+    if (event.type === "pointerdown") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      scrubAt(event);
+    } else if (event.buttons & 1) scrubAt(event);
+  }
+  function pick(key) {
+    selected = selected === key ? null : key;
+  }
   $effect(() => {
     if (!playing) return;
     let previous = performance.now();
@@ -165,11 +271,20 @@
 
 <section
   class="replay"
+  class:focused={!!focus}
   bind:this={root}
   aria-label="Trace conformance test, one recorded run"
 >
   <div class="cap">
-    <span><b>Fig. 1</b> Trace conformance test</span>
+    <span class="figlabel"><b>Fig. 1</b> Trace conformance test</span>
+    <span class="chapter" aria-live="polite">
+      {#if complete}
+        {events.length} records replayed, all {shown.length} rules passed
+      {:else if seen}
+        {chapter.n}. {chapter.title}
+        <span class="count">record {seen} of {events.length}</span>
+      {/if}
+    </span>
     <span class="controls">
       <button
         type="button"
@@ -188,11 +303,17 @@
           step="10"
           bind:value={position}
           oninput={() => (playing = false)}
-          aria-valuetext={`record ${seen} of ${events.length}`}
+          onkeydown={onKey}
+          aria-valuetext={seen
+            ? `record ${seen} of ${events.length}`
+            : "before the first record"}
         /></label
       >
     </span>
   </div>
+  <p class="sr-only" aria-live="polite">
+    {current ? describe(current) : "Nothing recorded yet."}
+  </p>
 
   <div class="topo">
     <svg
@@ -212,17 +333,28 @@
           ><path d="M0,0 L8,4 L0,8 z" fill="currentColor" /></marker
         ></defs
       >
-      <g class="pod">
+      <g class="pod dim">
         <rect x="16" y="20" width="216" height="330" />
         <line x1="16" y1="46" x2="232" y2="46" />
         <text class="t" x="26" y="38">RUNNER</text>
         <text class="sub" x="86" y="38">scenario tests</text>
         {#each scenarios as s (s.id)}
           {@const y = 72 + (s.n - 1) * 58}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <g
             class="sc"
             class:on={position >= s.from && position < s.to}
             class:done={position >= s.to}
+            role="button"
+            tabindex="0"
+            aria-label={`Jump to scenario ${s.n}, ${s.title}`}
+            onclick={() => seekTo(s.from + 1)}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                seekTo(s.from + 1);
+              }
+            }}
           >
             <rect x="17" y={y - 18} width="214" height="56" />
             {#if s.n < scenarios.length}<line
@@ -239,7 +371,7 @@
           </g>
         {/each}
       </g>
-      <g class="pod">
+      <g class="pod dim">
         <rect x="290" y="20" width="200" height="176" />
         <line x1="290" y1="46" x2="490" y2="46" />
         <text class="t" x="300" y="38">CONTROL PLANE</text>
@@ -250,7 +382,7 @@
         <text class="row" x="300" y="160">SpecTrace writer</text>
         <text class="sub" x="300" y="180">one record per action</text>
       </g>
-      <g class="pod">
+      <g class="pod dim">
         <rect x="290" y="276" width="200" height="74" />
         <line x1="290" y1="302" x2="490" y2="302" />
         <text class="t" x="300" y="294">TRACE store</text>
@@ -267,14 +399,14 @@
           {@const x = 560 + (i % 2) * 98}
           {@const y = 64 + Math.floor(i / 2) * 92}
           {@const state = slotState(vm)}
-          <g class="slot" data-state={state}>
+          <g class="slot" class:lit={evidenceVms.has(vm.id)} data-state={state}>
             <rect {x} {y} width="94" height="72" rx="3" />
             <text x={x + 10} y={y + 26}>{vm.role}</text>
             <text class="st" x={x + 10} y={y + 50}>{state ?? ""}</text>
           </g>
         {/each}
       </g>
-      <g class="edge">
+      <g class="edge dim">
         <line x1="232" y1="100" x2="290" y2="100" marker-end="url(#cr-ah)" />
         <text class="lbl" x="261" y="90" text-anchor="middle">HTTP</text>
         <line x1="490" y1="92" x2="548" y2="92" marker-end="url(#cr-ah)" />
@@ -299,17 +431,27 @@
   <div class="part trace">
     <header>
       <span>Trace</span><small>records exported by the control plane</small>
+      <small class="hint">drag the rows to scrub, arrow keys step</small>
     </header>
-    <div class="rows" style:--f={position / duration}>
-      {#each traceRows as [label, pick] (label)}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="rows"
+      bind:this={track}
+      onpointerdown={onPointer}
+      onpointermove={onPointer}
+    >
+      {#each traceRows as [label, pick], r (label)}
         <div class="trow">
           <span class="label">{label}</span>
           <span class="track">
-            {#each events as e, i (e.seq)}
+            {#if r === 0}<b class="playhead" style:left={pct(position)}
+              ></b>{/if}
+            {#each events as e (e.seq)}
               {#if pick(e)}
                 <i
-                  class:seen={i < seen}
-                  class:cur={i === seen - 1}
+                  class:seen={e.i < seen}
+                  class:cur={e.i === seen - 1}
+                  class:lit={evidenceActions.has(e.action)}
                   style:left={pct(e.at)}
                 ></i>
               {/if}
@@ -317,7 +459,6 @@
           </span>
         </div>
       {/each}
-      <b class="playhead"></b>
     </div>
   </div>
 
@@ -336,15 +477,24 @@
       {#each shown as inv (inv.key)}
         {@const [verdict, coverage] = verdicts[inv.key]}
         {@const state = verdict === "vacuous" ? "waiting" : verdict}
-        <div class="cell" data-verdict={state}>
+        <button
+          type="button"
+          class="cell"
+          data-verdict={state}
+          aria-pressed={selected === inv.key}
+          onclick={() => pick(inv.key)}
+        >
           <span class="mark" aria-hidden="true"></span>
           <span class="n">{inv.name}</span>
           <span class="v"
             >{state === "pass" ? `${coverage} checked` : state}</span
           >
-        </div>
+        </button>
       {/each}
     </div>
+    {#if focus}
+      <p class="why">{focus.why}</p>
+    {/if}
   </div>
 </section>
 
@@ -368,8 +518,8 @@
     border-top: 1px solid var(--stroke);
   }
   .cap {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 1rem;
     padding: 0.5rem 1rem;
@@ -378,6 +528,17 @@
   }
   .cap b {
     font-weight: 600;
+  }
+  .chapter {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--ink-2);
+  }
+  .chapter .count {
+    margin-left: 0.6rem;
+    color: var(--ink-3);
   }
   .controls {
     display: flex;
@@ -397,7 +558,8 @@
     outline: none;
   }
   button:focus-visible,
-  input:focus-visible {
+  input:focus-visible,
+  .sc:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 2px;
   }
@@ -457,6 +619,9 @@
     font-size: 11px;
     fill: var(--ink-2);
   }
+  .sc {
+    cursor: pointer;
+  }
   .sc text {
     fill: var(--ink-3);
   }
@@ -471,6 +636,9 @@
     fill: transparent;
     stroke: none;
     transition: fill 200ms ease;
+  }
+  .sc:hover rect {
+    fill: var(--band);
   }
   .sc.on rect {
     fill: var(--tint-accent);
@@ -489,7 +657,8 @@
     stroke-dasharray: 4 3;
     transition:
       fill 240ms ease,
-      stroke 240ms ease;
+      stroke 240ms ease,
+      opacity 240ms ease;
   }
   .slot text {
     font-size: 11.5px;
@@ -537,6 +706,18 @@
   .dots circle.small {
     fill: var(--ink-3);
   }
+  /* A selected rule: its evidence stays lit, the rest of the drawing steps
+     back. */
+  .focused .dim,
+  .focused .slot:not(.lit),
+  .focused .dots {
+    opacity: 0.3;
+  }
+  .focused .slot.lit rect {
+    stroke: var(--move);
+    stroke-width: 2;
+    stroke-dasharray: none;
+  }
   .part header {
     display: flex;
     align-items: baseline;
@@ -551,6 +732,10 @@
     text-transform: none;
     letter-spacing: 0;
     color: var(--ink-2);
+  }
+  .part header .hint {
+    margin-left: auto;
+    color: var(--ink-3);
   }
   .part header .verdict {
     margin-left: auto;
@@ -570,15 +755,18 @@
     position: relative;
     display: grid;
     gap: 0.3rem;
-    padding: 0.6rem 1rem 0.5rem;
+    padding: 0.7rem 1rem 0.6rem;
     font: 0.72rem var(--font-code);
+    cursor: ew-resize;
+    touch-action: pan-y;
+    user-select: none;
   }
   .trow {
     display: grid;
     grid-template-columns: var(--label) minmax(0, 1fr);
     align-items: center;
     gap: 0.5rem;
-    height: 1.25rem;
+    height: 1.4rem;
   }
   .trow .label {
     color: var(--ink-2);
@@ -587,7 +775,7 @@
   .trow .track {
     position: relative;
     display: block;
-    height: 0.85rem;
+    height: 1rem;
     background: var(--band);
   }
   .trow .track i {
@@ -598,6 +786,7 @@
     margin-left: -2px;
     background: var(--move);
     opacity: 0.18;
+    transition: opacity 200ms ease;
   }
   .trow:nth-child(2) .track i {
     background: var(--ink-2);
@@ -608,17 +797,21 @@
   .trow .track i.seen.cur {
     background: var(--move);
   }
-  /* The playhead spans both tracks: the rows' inline padding and the label
-     column are subtracted so it lines up with the marks. */
-  .rows .playhead {
+  .focused .trow .track i {
+    opacity: 0.12;
+  }
+  .focused .trow .track i.lit {
+    opacity: 1;
+    background: var(--move);
+    box-shadow: 0 0 0 2px var(--tint-accent);
+  }
+  /* The playhead lives in the first track and runs down over the second. */
+  .playhead {
     position: absolute;
-    top: 0.6rem;
-    bottom: 0.5rem;
-    left: calc(
-      1rem + var(--label) + 0.5rem + (100% - 2rem - var(--label) - 0.5rem) *
-        var(--f, 0)
-    );
+    top: 0;
+    height: calc(1.4rem + 0.3rem + 1rem);
     width: 2px;
+    z-index: 1;
     margin-left: -1px;
     background: var(--move);
     pointer-events: none;
@@ -637,8 +830,18 @@
     align-items: center;
     min-height: 3.4rem;
     padding: 0.6rem 1rem;
+    border: 0;
+    border-radius: 0;
+    text-align: left;
     background: var(--sheet);
     font-size: 0.75rem;
+  }
+  .cell:hover {
+    background: var(--band);
+  }
+  .cell[aria-pressed="true"] {
+    background: var(--tint-accent);
+    box-shadow: inset 0 0 0 2px var(--move);
   }
   .cells .mark {
     grid-area: m;
@@ -687,6 +890,14 @@
     border: 0;
     background: var(--bad);
   }
+  .why {
+    margin: 0;
+    padding: 0.6rem 1rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
   .sr-only {
     position: absolute;
     width: 1px;
@@ -699,10 +910,17 @@
       --label: 6rem;
     }
     .cap {
-      flex-wrap: wrap;
+      grid-template-columns: 1fr auto;
+    }
+    .chapter {
+      grid-column: 1 / -1;
+      grid-row: 2;
     }
     .scrub input {
       width: 7rem;
+    }
+    .part header .hint {
+      display: none;
     }
     .cells {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -711,7 +929,8 @@
   @media (prefers-reduced-motion: reduce) {
     .sc rect,
     .slot rect,
-    .cells .mark {
+    .cells .mark,
+    .trow .track i {
       transition: none;
     }
   }
