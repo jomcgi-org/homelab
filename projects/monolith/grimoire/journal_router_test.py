@@ -390,9 +390,7 @@ def test_party_budget_ignores_private_and_retracted_events(
     # to exhaust the budget if the Party view ranked them.
     noise = JOURNAL_EVENTS_PER_SESSION + 5
     rows = [event(i, "dm") for i in range(noise)]
-    rows += [
-        event(noise + i, "table", retracted_at=retracted_at) for i in range(noise)
-    ]
+    rows += [event(noise + i, "table", retracted_at=retracted_at) for i in range(noise)]
     live = event(2 * noise, "table")
     rows.append(live)
     h.session.add_all(rows)
