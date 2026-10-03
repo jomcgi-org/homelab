@@ -353,6 +353,8 @@ agents:
 # "http://inference.inference.svc.cluster.local:8080/v1/chat/completions".
 grimoire:
   enabled: true
+  play:
+    enabled: true
   s3Bucket: "grimoire"
   # Production default: direct DeepSeek (first-party, native precision, no fp4
   # quantization, prompt cache preserved). Model id is the bare DeepSeek id (not
