@@ -754,15 +754,15 @@ WITH attempts AS (
  WHERE r.task_class = 'refine' AND t.created_at >= :start AND t.created_at < :end
 )
 SELECT count(*) AS attempts,
- count(*) FILTER (WHERE status IN ('failed','cancelled','escalated') AND finished_at < :end) AS dispatch_failure,
- count(*) FILTER (WHERE status NOT IN ('succeeded','failed','cancelled','escalated') OR finished_at IS NULL OR finished_at >= :end) AS unknown,
+ count(*) FILTER (WHERE status IN ('failed','cancelled','escalated') AND finished_at < :as_of) AS dispatch_failure,
+ count(*) FILTER (WHERE status NOT IN ('succeeded','failed','cancelled','escalated') OR finished_at IS NULL OR finished_at >= :as_of) AS unknown,
  count(*) FILTER (WHERE CASE
     WHEN jsonb_typeof(outcome->'invocation_phase') = 'string' THEN outcome->>'invocation_phase'
     WHEN jsonb_typeof(outcome#>'{recovery,invocation_phase}') = 'string' THEN outcome#>>'{recovery,invocation_phase}'
     WHEN outcome#>>'{never_dispatched,invocation_phase}' = 'never_dispatched' THEN 'never_dispatched'
     WHEN outcome#>>'{not_invoked,invocation_phase}' = 'not_invoked' THEN 'not_invoked'
     WHEN outcome#>>'{lost_before_guest,invocation_phase}' = 'lost_before_guest' THEN 'lost_before_guest'
-    END IN ('never_dispatched', 'not_invoked', 'lost_before_guest') AND finished_at < :end) AS pre_model_failure,
+    END IN ('never_dispatched', 'not_invoked', 'lost_before_guest') AND finished_at < :as_of) AS pre_model_failure,
  (SELECT failures FROM funding) AS funding_execution_failure,
  (SELECT attempts FROM funding) AS funding_attempts,
  (SELECT unknown FROM funding) AS funding_unknown,
@@ -834,7 +834,7 @@ def _load_optimizer(session, now) -> dict:
     if boundary is None:
         return context
     deployed = _utc_time(boundary["observed_at"])
-    context["ledger_cost_as_of"] = now.isoformat()
+    context["outcomes_and_cost_as_of"] = now.isoformat()
     context["deployment"] = {
         "note_id": boundary["note_id"],
         "observed_at": deployed.isoformat(),
@@ -854,7 +854,7 @@ def _load_optimizer(session, now) -> dict:
         ("baseline", deployed - timedelta(hours=72), deployed),
         ("post", deployed, min(now, deployed + timedelta(hours=72))),
     ):
-        params = {"start": start, "end": end}
+        params = {"start": start, "end": end, "as_of": now}
         counts = _rows(session, _OPTIMIZER_COUNTS, params)[0]
         costs = _rows(session, _OPTIMIZER_COSTS, params)[0]
         context[name] = {
