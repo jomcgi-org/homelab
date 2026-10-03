@@ -177,155 +177,244 @@
           ></g
         >
       {:else if mode === "prefill"}
-        <text class="heading" x="92" y="25">Prompt tokens</text>
+        <g class:muted={step === 1}>
+          <text class="heading" x="92" y="25"
+            >{step === 2 ? "Tokens by expert" : "Prompt tokens"}</text
+          >
+          {#each Array(12) as _, index}
+            {@const x = 38 + (index % 3) * 34}
+            {@const y = 50 + Math.floor(index / 3) * 40}
+            {@const groupedX = 24 + Math.floor(index / 3) * 29}
+            {@const groupedY = 58 + (index % 3) * 64}
+            <g
+              class={index % 3 === 0 ? "gpu" : index % 3 === 1 ? "ram" : "disk"}
+            >
+              <rect
+                class="token"
+                style={`transform:translate(${step === 2 ? groupedX - x : 0}px,${step === 2 ? groupedY - y : 0}px)`}
+                {x}
+                {y}
+                width="25"
+                height="25"
+                rx="3"
+              />
+              {#if step === 0}
+                <path
+                  class="wire"
+                  d={`M${x + 25} ${y + 12} C205 ${y + 12} 214 ${72 + (index % 3) * 64} 272 ${72 + (index % 3) * 64}`}
+                />
+                <path
+                  class="traveller"
+                  style={`--delay:${index * -0.17}s`}
+                  d={`M${x + 25} ${y + 12} C205 ${y + 12} 214 ${72 + (index % 3) * 64} 272 ${72 + (index % 3) * 64}`}
+                />
+              {/if}
+            </g>
+          {/each}
+        </g>
         <text class="heading" x="322" y="25"
-          >{step < 2 ? "Selected lookup rows" : "Grouped by expert"}</text
+          >{step === 2 ? "Expert batches" : "Selected lookup rows"}</text
         >
-        <text class="heading" x="554" y="25"
-          >{step < 2 ? "GPU buffer" : "Batched compute"}</text
-        >
-        {#each Array(12) as _, index}
-          <g class={index % 3 === 0 ? "gpu" : index % 3 === 1 ? "ram" : "disk"}>
-            <rect
-              class="token"
-              x={38 + (index % 3) * 34}
-              y={50 + Math.floor(index / 3) * 40}
-              width="25"
-              height="25"
-              rx="3"
-            />
-            <path
-              class="wire"
-              d={`M${63 + (index % 3) * 34} ${62 + Math.floor(index / 3) * 40} C205 ${62 + Math.floor(index / 3) * 40} 214 ${72 + (index % 3) * 64} 272 ${72 + (index % 3) * 64}`}
-            />
-            <path
-              class="traveller"
-              style={`--delay:${index * -0.17}s`}
-              d={`M${63 + (index % 3) * 34} ${62 + Math.floor(index / 3) * 40} C205 ${62 + Math.floor(index / 3) * 40} 214 ${72 + (index % 3) * 64} 272 ${72 + (index % 3) * 64}`}
-            />
-          </g>
-        {/each}
+        <g class:muted={step === 0}>
+          <text class="heading" x="554" y="25"
+            >{step < 2 ? "GPU buffer" : "CPU / GPU compute"}</text
+          >
+        </g>
         {#each ["gpu", "ram", "disk"] as tone, index}
           <g class={tone}>
+            {#if step === 2}
+              <path class="wire" d={`M145 ${72 + index * 64} H272`} />
+              <path
+                class="traveller"
+                style={`--delay:${index * -0.4}s`}
+                d={`M145 ${72 + index * 64} H272`}
+              />
+            {/if}
             <rect x="272" y={50 + index * 64} width="100" height="44" rx="4" />
-            <path class="wire" d={`M372 ${72 + index * 64} H500`} />
-            <path
-              class="traveller"
-              style={`--delay:${index * -0.5}s`}
-              d={`M372 ${72 + index * 64} H500`}
-            />
-            {#each Array(5) as _, tile}<rect
-                class="batch"
-                style={`--delay:${tile * -0.13}s`}
-                x={510 + tile * 18}
-                y={52 + index * 64}
-                width="12"
-                height="40"
-                rx="2"
-              />{/each}
+            {#if step > 0}
+              {#each Array(4) as _, row}
+                <rect
+                  class="row-data"
+                  x={step === 2 ? 280 + row * 22 : 280}
+                  y={step === 2 ? 58 + index * 64 : 57 + index * 64 + row * 8}
+                  width={step === 2 ? 17 : 84}
+                  height={step === 2 ? 28 : 4}
+                  rx="1"
+                />
+              {/each}
+              <path class="wire" d={`M372 ${72 + index * 64} H500`} />
+              <path
+                class="traveller"
+                style={`--delay:${index * -0.5}s`}
+                d={`M372 ${72 + index * 64} H500`}
+              />
+            {/if}
+            <g class:muted={step === 0}>
+              {#each Array(step === 2 ? 3 : 5) as _, tile}
+                <rect
+                  class:batch={step === 2}
+                  class:buffer={step === 1}
+                  style={`--delay:${tile * -0.13}s`}
+                  x={510 + tile * (step === 2 ? 30 : 18)}
+                  y={52 + index * 64}
+                  width={step === 2 ? 24 : 12}
+                  height="40"
+                  rx="2"
+                />
+              {/each}
+            </g>
           </g>
         {/each}
       {:else if mode === "decode"}
-        <g class="ink"
+        <g class="ink" class:muted={step > 0}
           ><circle cx="58" cy="128" r="24" /><text x="58" y="174">Token</text
           ></g
         >
-        <g class="hot"
-          ><path class="wire" d="M82 128 H164" /><path
-            class="traveller"
-            d="M82 128 H164"
-          /><circle cx="194" cy="128" r="30" /><text x="194" y="181"
-            >Router</text
-          ></g
-        >
+        <g class="hot" class:muted={step > 0}>
+          <path class="wire" d="M82 128 H164" />
+          {#if step === 0}<path class="traveller" d="M82 128 H164" />{/if}
+          <circle cx="194" cy="128" r="30" /><text x="194" y="181">Router</text>
+        </g>
         {#each ["gpu", "ram", "cache"] as tone, index}
-          <g class={tone}>
-            <path
-              class="wire"
-              d={`M224 128 Q290 ${42 + index * 86} 334 ${42 + index * 86} H408 Q462 ${42 + index * 86} 516 128`}
+          {@const y = 42 + index * 86}
+          {@const active = step !== 2 || selected === paths[index].key}
+          <g class={tone} class:muted={!active}>
+            {#if step === 0}
+              <path class="wire" d={`M224 128 Q290 ${y} 342 ${y}`} />
+              <path
+                class="traveller"
+                style={`--delay:${index * -0.4}s`}
+                d={`M224 128 Q290 ${y} 342 ${y}`}
+              />
+            {/if}
+            {#if step === 1}
+              <rect
+                class="residency"
+                x="314"
+                y={y - 30}
+                width="108"
+                height="60"
+                rx="5"
+              />
+            {/if}
+            {#if step === 2 && active}
+              <rect x="224" y={y - 18} width="108" height="36" rx="3" />
+              <text class="sub" x="278" y={y + 4}
+                >{index === 0
+                  ? "Resident"
+                  : index === 1
+                    ? "PCIe fetch"
+                    : cacheMiss
+                      ? "NVMe read"
+                      : "Page cache"}</text
+              >
+              <path class="wire" d={`M332 ${y} H366`} />
+              <path class="traveller" d={`M332 ${y} H366`} />
+            {/if}
+            <circle
+              class:expert={step === 3 || (step === 2 && active)}
+              class="expert-node"
+              style={`transform:translateX(${step > 1 ? 22 : 0}px)`}
+              cx="368"
+              cy={y}
+              r="24"
             />
-            <path
-              class="traveller"
-              style={`--delay:${index * -0.4}s`}
-              d={`M224 128 Q290 ${42 + index * 86} 334 ${42 + index * 86} H408 Q462 ${42 + index * 86} 516 128`}
-            />
-            <circle class="expert" cx="368" cy={42 + index * 86} r="24" />
-            <text class="sub" x="368" y={78 + index * 86}
-              >{["GPU", "Pinned", "CPU"][index]}</text
+            <text class="sub" x={step > 1 ? 390 : 368} y={y + 39}
+              >{step === 0
+                ? "Selected expert"
+                : ["GPU", "Pinned RAM", "CPU"][index]}</text
             >
+            {#if step === 3}
+              <path class="wire" d={`M414 ${y} Q466 ${y} 516 128`} />
+              <path
+                class="traveller"
+                style={`--delay:${index * -0.4}s`}
+                d={`M414 ${y} Q466 ${y} 516 128`}
+              />
+            {/if}
           </g>
         {/each}
-        <g class="gpu"
-          ><circle cx="542" cy="128" r="26" /><text x="542" y="174"
-            >Combine</text
-          ><path class="wire" d="M568 128 H620" /><path
-            class="traveller"
-            d="M568 128 H620"
-          /></g
-        >
+        <g class="gpu" class:muted={step !== 3}>
+          <circle cx="542" cy="128" r="26" /><text x="542" y="174">Combine</text
+          >
+          <path class="wire" d="M568 128 H620" />{#if step === 3}<path
+              class="traveller"
+              d="M568 128 H620"
+            />{/if}
+        </g>
       {:else}
-        <g class="ram"
-          ><text class="heading" x="105" y="33">Candidate</text><rect
-            x="43"
-            y="62"
-            width="124"
-            height="122"
-            rx="5"
-          />
-          {#each Array(6) as _, index}<rect
-              class="batch"
-              style={`--delay:${index * -0.15}s`}
+        <g class="ram" class:muted={step === 2}>
+          <text class="heading" x="105" y="33"
+            >{step === 0 ? "Rank candidates" : "Selected weights"}</text
+          >
+          <rect x="43" y="62" width="124" height="122" rx="5" />
+          {#each Array(6) as _, index}
+            <rect
+              class:rank-bar={step === 0}
+              style={`--rank:${index};transform:translateY(${step === 0 ? (5 - 2 * index) * 4 : 0}px)`}
               x="58"
               y={75 + index * 16}
-              width="94"
+              width={step === 0 ? 94 - index * 12 : 94}
               height="9"
               rx="2"
-            />{/each}
+            />
+          {/each}
         </g>
-        <g class="hot"
-          ><path class="wire" d="M168 122 H278" /><path
-            class="traveller"
-            d="M168 122 H278"
-          /><text class="sub" x="224" y="151">Stage</text></g
-        >
-        <g class="gpu"
-          ><text class="heading" x="360" y="33">GPU slot</text><rect
+        {#if step === 1}
+          <g class="hot"
+            ><path class="wire" d="M168 122 H250 Q270 122 280 150" /><path
+              class="traveller"
+              d="M168 122 H250 Q270 122 280 150"
+            /><text class="sub" x="224" y="171">Copy weights</text></g
+          >
+        {/if}
+        <g class="gpu">
+          <text class="heading" x="360" y="33">GPU slot</text><rect
             x="280"
             y="62"
             width="160"
             height="122"
             rx="5"
-          /><rect
-            class="incumbent"
-            x="293"
-            y="75"
-            width="134"
-            height="43"
-            rx="3"
-          /><text x="360" y="102">Serving expert</text><rect
-            class="replacement"
-            x="293"
-            y="130"
-            width="134"
-            height="41"
-            rx="3"
-          /><text x="360" y="156">Replacement</text></g
-        >
-        <g class="gpu"
-          ><path class="wire" d="M440 95 H556" /><path
+          />
+          <g class:muted={step === 2}
+            ><rect
+              class="incumbent"
+              x="293"
+              y="75"
+              width="134"
+              height="43"
+              rx="3"
+            /><text x="360" y="102"
+              >{step === 2 ? "Retired expert" : "Serving expert"}</text
+            ></g
+          >
+          {#if step > 0}<rect
+              class:replacement={step === 1}
+              x="293"
+              y="130"
+              width="134"
+              height="41"
+              rx="3"
+            /><text x="360" y="156"
+              >{step === 1 ? "Staging weights" : "New expert serves"}</text
+            >{/if}
+        </g>
+        <g class="gpu">
+          <path
+            class="wire"
+            d={step === 2 ? "M440 151 Q496 151 496 95 H556" : "M440 95 H556"}
+          />
+          <path
             class="traveller"
-            d="M440 95 H556"
-          /><circle cx="580" cy="95" r="22" /><text x="568" y="144"
+            d={step === 2 ? "M440 151 Q496 151 496 95 H556" : "M440 95 H556"}
+          />
+          <circle cx="580" cy="95" r="22" /><text x="568" y="144"
             >Next step</text
-          ></g
-        >
-        <g class="hot"
-          ><path class="flip" d="M428 151 Q480 150 480 96" /><text
-            class="sub"
-            x="480"
-            y="215">Flip after the copy completes</text
-          ></g
-        >
+          >
+        </g>
+        {#if step === 2}<g class="hot"
+            ><text class="sub" x="420" y="220">Slot mapping switched</text></g
+          >{/if}
       {/if}
     </svg>
     <div class="path-description">
@@ -469,7 +558,26 @@
   .memory svg :global(g.active .traveller) {
     stroke-width: 4;
   }
+  svg :global(.expert-node),
+  svg :global(.rank-bar) {
+    transition:
+      transform 0.45s ease,
+      width 0.45s ease;
+  }
+  svg :global(.muted) {
+    opacity: 0.15;
+    transition: opacity 0.35s ease;
+  }
+  svg :global(.row-data) {
+    fill: currentColor;
+    stroke: none;
+  }
+  svg :global(.buffer) {
+    animation: ready 2s ease-in-out infinite;
+    animation-delay: var(--delay);
+  }
   svg :global(.token) {
+    transition: transform 0.55s cubic-bezier(0.2, 0.7, 0.2, 1);
     fill: currentColor;
     opacity: 0.8;
   }
@@ -566,8 +674,11 @@
     svg :global(.batch),
     svg :global(.expert),
     svg :global(.replacement),
-    svg :global(.flip) {
+    svg :global(.flip),
+    svg :global(.buffer),
+    svg :global(.token) {
       animation: none;
+      transition: none;
     }
   }
 </style>

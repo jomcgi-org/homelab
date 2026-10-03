@@ -57,3 +57,66 @@ test("selecting a step reveals original prose without extra animation controls",
     "Original explanation",
   );
 });
+
+test("prefill changes from row selection to transfer to grouped compute", async () => {
+  const view = await render("prefill");
+  const tokens = [...view.querySelectorAll(".token")].map((token) =>
+    token.getAttribute("style"),
+  );
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(12);
+  view.querySelectorAll(".steps button")[1].click();
+  await tick();
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(3);
+  expect(view.querySelectorAll("svg .row-data")).toHaveLength(12);
+  view.querySelectorAll(".steps button")[2].click();
+  await tick();
+  expect(
+    [...view.querySelectorAll(".token")].map((token) =>
+      token.getAttribute("style"),
+    ),
+  ).not.toEqual(tokens);
+  expect(view.querySelectorAll("svg .batch")).toHaveLength(9);
+});
+
+test("decode routes first, classifies residency, moves one chosen path, then combines", async () => {
+  const view = await render("decode");
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(4);
+  view.querySelectorAll(".steps button")[1].click();
+  await tick();
+  expect(view.querySelectorAll("svg .residency")).toHaveLength(3);
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(0);
+  view.querySelectorAll(".steps button")[2].click();
+  await tick();
+  view.querySelectorAll(".paths button")[2].click();
+  await tick();
+  expect(view.querySelector("svg").textContent).toContain("Page cache");
+  view.querySelectorAll(".paths button")[3].click();
+  await tick();
+  expect(view.querySelector("svg").textContent).toContain("NVMe read");
+  view.querySelectorAll(".steps button")[3].click();
+  await tick();
+  expect(view.querySelectorAll("svg .traveller")).toHaveLength(4);
+});
+
+test("slot replacement leaves the incumbent serving until the mapping flip", async () => {
+  const view = await render("swap");
+  expect(view.querySelector(".replacement")).toBeNull();
+  view.querySelectorAll(".steps button")[1].click();
+  await tick();
+  expect(view.querySelector(".replacement")).not.toBeNull();
+  expect(
+    view.querySelector(".incumbent").parentElement.classList.contains("muted"),
+  ).toBe(false);
+  const oldPath = [...view.querySelectorAll("svg .traveller")]
+    .at(-1)
+    .getAttribute("d");
+  view.querySelectorAll(".steps button")[2].click();
+  await tick();
+  expect(
+    view.querySelector(".incumbent").parentElement.classList.contains("muted"),
+  ).toBe(true);
+  expect(
+    [...view.querySelectorAll("svg .traveller")].at(-1).getAttribute("d"),
+  ).not.toBe(oldPath);
+  expect(view.querySelector("svg").textContent).toContain("New expert serves");
+});

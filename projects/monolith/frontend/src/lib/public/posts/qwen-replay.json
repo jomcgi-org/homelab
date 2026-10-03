@@ -1,88 +1,213 @@
 {
   "version": 3,
-  "recordedAt": "2026-10-03T05:47:36.370Z",
+  "recordedAt": "2026-10-03T05:54:56.278Z",
   "build": "3b51524fb0b08c5bd8a9287c19121176cd3115f6",
   "model": "Qwen3.8-Flash-Next, 125B, NVFP4",
   "hardware": "RTX 4090 24 GB, Ryzen 7800X3D, 64 GB RAM, NVMe",
   "thinking": false,
   "sampleIntervalMs": 200,
-  "conditions": "One warm-up followed by three fresh-prefix requests on the existing service. Zero cached prompt tokens verified from cache-enabled usage reports. Normal hybrid execution, staged prefill, FP8 dense weights. Expert-routing profiling disabled. Median-TTFT recording selected; client timings include transport.",
+  "conditions": "One warm-up followed by three fresh-prefix long-document requests. Cache reports enabled; zero cached and reused prompt tokens verified. Median-TTFT recording selected. Client timings include transport; normal serving configuration.",
   "telemetry": { "routing": false, "stats": true },
   "turns": [
     {
       "title": "How this inference works",
-      "prompt": "Request e1e7eed5-3afc-4a29-b510-0189cc6a66af.\nExplain how a 125B mixture-of-experts model generates tokens on a 24GB RTX 4090 and 64GB RAM in three short sentences, under 80 words. GPU-resident experts compute locally. For pinned weights, a hybrid executor limits PCIe fetches and computes the other experts on the CPU. Cold experts use the CPU and page cache, reading from NVMe on a cache miss. Explain how the outputs combine.",
+      "prompt": "Request e89096c9-0690-4d10-8a81-6148088c442e.\n# Real-source prefill depth comparison\n\n`bench/prefill-depth.py` prepares one fixed manifest and measures cold prefill,\nan immediate cached repeat, and a separate decode request after each document.\nIt addresses the measurement portion of fork issue #80. It does not change the\nserving defaults or qualify a new profile by itself.\n\nPrepare once on the serving machine, before timing any arm:\n\n```sh\npython bench/prefill-depth.py prepare \\\n  --source . --tokenizer /path/to/flash-e2m1.ftw \\\n  --depths 8000 32000 100000 --runs 3 --output manifest.json\n```\n\nThe manifest contains excerpts from the selected source tree and unique prefixes\nper depth and repetition. Its rendered inputs are within 256 tokens below the\nrequested depths. All arms must use the same manifest. The model must support\nthe largest input plus the 192-token output allowance; the node-4 comparison\nkeeps its existing 100352-token KV reservation.\n\nStart an arm with the qualified launch script and override only the chunk size\nbeing tested. For the cold sweep, disable disk prefix persistence in **every**\narm with `--kv-disk-cache-gib 0`, retain the ordinary radix cache, and restart\nbetween arms. This means cold **prefix** state, not flushed operating-system\nfile caches. Wait for `/health` JSON `status` to become `ok`; HTTP 200 alone also\noccurs during model loading.\n\n```sh\npython bench/prefill-depth.py measure \\\n  --manifest manifest.json --arm chunk-2048 \\\n  --base-url http://127.0.0.1:18090 --output chunk-2048.jsonl\n```\n\nRun 2048, 4096 and 8192, then repeat the control or reverse the order. Record the\nexact source revision, native extension, model, launch command, startup memory\nbudget and layer residency beside each result. The native CPU task descriptor\naccepts up to 2147483647 tokens, so it does not bind these candidate chunk sizes;\nactual host and device allocations do.\n\nEach result retains the complete streamed response, token usage, finish reason,\nrequest hash, first-generated-text latency, total wall time and answer check.\nThe decode-rate estimate excludes latency before the first generated text and\nuses completion tokens minus one divided by the interval to the last text\nchunk. It is a client-observed estimate, not an engine kernel timer. Role and\nkeepalive frames do not end the first-token wait. The repeat measures immediate\nin-memory reuse; it does not establish disk-restore or tool-continuation speed.\n\nReject truncated, failed or incorrectly copied answers. Check `cold_valid` and\nactual cached-token counts before accepting a cold measurement. Compare request\nhashes and output counts across arms, retaining differences rather than silently\ndiscarding slow or failed runs. JSON copying is a narrow fidelity check, not a\ngeneral quality gate. Chunk changes can change floating-point rounding and\ngenerated text. A finalist still needs the existing matched multi-turn/coding\nchecks, a disk-prefix restore check, and repeated measurements at long context.\n\nDo not change the default until the harness-root persistence gap in #81 is\naddressed or its effect on the chosen profile has been explicitly qualified.\nLarger chunks can cause more system roots to fall inside a final chunk, where\nthe existing implementation does not persist them independently.\n\n## Initial node-4 screening, 2026-09-22\n\nRuntime `4fbc4ebf3f7d0c4039893b0471faf231c7a15ba0`, RTX 4090, 61.91 GiB host\nRAM, 100352 reserved KV tokens, 14 CPU threads and 6 GiB protected HOT budget.\nAll arms kept 20 PINNED and 28 DISK layers, 82 protected rows per DISK layer,\n3589 expert slots, and 2.12 GiB free GPU memory after graph capture. The CPU\nextension SHA-256 was\n`c88ed9f877a5a6c4cb3eb4c172b0a7a953794e3ff1104a12b8dcb0f22fb4810f`.\n\nThe order was 2048, 8192, 4096, 2048. Each server started from its static expert\nprofile with empty prefix state. Each arm ran an approximately 8k source prompt,\nits cached repeat and a separate decode request, then the same sequence at 32k.\nActual input counts were 7959 and 31958. This is one fixture per depth and two\ncontrol observations, not a confidence interval or a selected serving default.\n\n| Chunk size / order | Cold TTFT, 8k | Cold TTFT, 32k | Decode during cold 32k answer | Independent decode after 32k |\n| --- | ---: | ---: | ---: | ---: |\n| 2048 / first | 46.61 s | 82.38 s | 11.87 tok/s | 29.16 tok/s |\n| 8192 / second | 12.86 s | 52.30 s | 5.30 tok/s | 29.52 tok/s |\n| 4096 / third | 20.62 s | 70.26 s | 10.12 tok/s | 31.09 tok/s |\n| 2048 / last | 33.61 s | 96.37 s | 10.21 tok/s | 29.12 tok/s |\n\nAll 24 responses passed the JSON-copy checks. The cold and repeat answers each\nused 81 output tokens; independent decode used 451. All cold requests reported\nzero cached tokens. The 8192 cold 32k request completed in 67.91 s versus\n89.22 and 104.32 s for the controls, but its immediate decode and cached repeat\nwere slower: repeat wall was 4.70 s versus 3.63 and 3.68 s. Independent subsequent\ndecode recovered to the control rate. That transient cost remains part of the\nqualification, not a discarded measurement.\n\nThe governor charged prefill scratch of 0.37, 0.64 and 1.18 GiB for chunks 2048,\n4096 and 8192 respectively. Expert layer placement was unchanged and no host\npressure warning appeared in the saved arm journals. These startup estimates\ndo not substitute for the pending 100k pressure measurement.\n\nPrivate full-response artifacts, manifests, launch commands and journals are in\n`node-4:/var/lib/longhorn/nvme-02/freetoken/results/prefill-depth-20260922/`,\nusing `screen3-*.jsonl`. Earlier controller setup failures are preserved under\ndifferent names and excluded from this table. The original serving service was\nrestored successfully after the sweep.\n\n## 100k screening and host pressure\n\nThe same runtime then ran one fixed 99,959-token prompt with 81 output tokens,\nits immediate repeat, and a separate 451-token decode request. The order was\n8192, 8192 with `--moe-hot-adapt-prefill-run-cap-frac 0.1`, then 2048. The cap\nlimits expert-cache swaps during a prefill run to a fraction of the HOT budget;\nzero disables this additional cap. All other profile settings stayed fixed,\nincluding disabled disk-prefix persistence and enabled in-memory radix reuse.\n\n| Chunk / prefill swap cap | Cold TTFT | Cold wall | Cold answer decode | Repeat wall | Independent decode |\n| --- | ---: | ---: | ---: | ---: | ---: |\n| 8192 / disabled | 167.77 s | 175.43 s | 10.71 tok/s | 8.36 s | 25.13 tok/s |\n| 8192 / 0.1 | 141.73 s | 147.38 s | 14.65 tok/s | 8.70 s | 24.03 tok/s |\n| 2048 / disabled | 267.03 s | 272.32 s | 15.77 tok/s | 6.30 s | 26.09 tok/s |\n\nAll nine responses passed, with identical request hashes, answer bytes and output\ncounts across arms for each phase. Cold requests had zero cached tokens; repeats\nhad 99,904. Repeat TTFT was 2.67, 2.68 and 2.72 seconds respectively, so the\nrepeat regression was after first text. Repeat decode estimates were 14.38,\n13.54 and 23.14 tok/s. The capped candidate improved cold TTFT by 1.88x, but its\n38% longer repeat wall and lower subsequent decode rate prevent a claim that it\npreserves decode performance. These are single observations, not a qualified\ndefault or a confidence interval.\n\nTwo-second samples of `/proc/meminfo`, `/proc/pressure`, `/proc/vmstat` and\n`/proc/diskstats` were correlated with each cold request's client interval:\n\n| Chunk / cap | Sampled / request seconds | Min available RAM | Memory full stall | I/O full stall | Main NVMe reads |\n| --- | ---: | ---: | ---: | ---: | ---: |\n| 8192 / disabled | 164.4 / 175.4 | 28.65 GiB | 14.17% | 26.69% | 76.86 GiB |\n| 8192 / 0.1 | 144.2 / 147.4 | 28.47 GiB | 9.43% | 21.05% | 59.44 GiB |\n| 2048 / disabled | 270.5 / 272.3 | 29.47 GiB | 2.20% | 10.85% | 51.25 GiB |\n\nStall percentages use deltas of the kernel's cumulative `full` pressure counters,\nnot averages of its rolling averages. NVMe reads use sector-counter deltas for\n`nvme1n1`. These are whole-host counters, not process-exclusive attribution. The\nmonitor started after the first request began, and two-second sampling also\nomits interval edges. Available memory alone did not capture the pressure:\nlarger chunks were faster despite more sampled disk traffic and stall time.\nThis motivates the host-budget diagnosis in #82, but does not prove a specific\nmemory-governor fix.\n\nArtifacts use `long1-*-chunk-*.jsonl`, corresponding command/journal files,\n`long1-host-pressure.jsonl` and `summarize-long-pressure.py` in the same private\nresults directory. The continuation and prefill-to-decode transition comparisons\nbelow extend this screening. The harness-root\nrestart check also exposed a separate tokenizer-template rejection of system-only\nmessages; PR #85 addresses that alongside final-chunk snapshots. Its eager-restore\nrestart checks subsequently passed at both 2048 and 8192 tokens, as documented\nin `docs/disk-prefix-cache.md` on that branch. No serving default has been changed.\n\n## Matched continuation screening\n\nThe existing `fixed-continuation-wall.py` protocol ran three conversations of\nthree turns each, first on 2048 chunks and then on 8192 with the 0.1 prefill swap\ncap. Each arm restarted from the same qualified runtime with disk-prefix storage\ndisabled. Conversation 1 was the prescribed warm-up; conversations 2 and 3 were\nmeasured. Initial prompts were about 2k tokens, and answers about 448 tokens.\n\n| Chunk / cap | Warm-up conversation | Measured conversation 2 | Measured conversation 3 | Measured mean |\n| --- | ---: | ---: | ---: | ---: |\n| 2048 / disabled | 98.25 s | 68.63 s | 64.48 s | 66.55 s |\n| 8192 / 0.1 | 91.42 s | 67.25 s | 64.13 s | 65.69 s |\n\nAll 18 responses passed. The protocol's `fixed_work_mismatches` check found no\ndifferences in request bodies, answer messages, finish reasons, prompt counts or\noutput counts. The candidate reused 2048 tokens on turn 2 versus 1984 for the\ncontrol; both reused 2944 on turn 3. The measured mean improved by only 1.3%,\nwhile the combined measured follow-up turns were about 1.6% slower. This small\nsample is broadly similar total wall time, not proof of a general agent-quality\nor decode-speed improvement, and it does not remove the 100k repeat regression.\nFull results are under `cont1-*-chunk-*/session-*/result.json` beside the exact\nlaunch commands and journals in the private results directory.\n\n## Prefill-to-decode transition screening\n\nThree additional 8192-token arms used the same 100k manifest and baseline runtime.\nThey tested `--moe-hot-adapt-post-prefill-tick on` with prefill swap caps of 0.1\nand 0.01, followed by cap 0.01 with the tick off. The extra tick starts adaptation\ntoward decode after prefill; it does not change the model or allocate a larger\nprotected expert cache.\n\n| Prefill cap / post-prefill tick | Cold TTFT | Cold wall | Cold answer decode | Repeat wall | Repeat decode | Independent decode |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| 0.1 / on | 138.06 s | 148.08 s | 8.13 tok/s | 6.83 s | 21.35 tok/s | 24.73 tok/s |\n| 0.01 / on | 145.51 s | 154.06 s | 9.56 tok/s | 7.16 s | 19.53 tok/s | 24.26 tok/s |\n| 0.01 / off | 133.40 s | 142.00 s | 9.48 tok/s | 7.45 s | 17.67 tok/s | 23.90 tok/s |\n\nAcross all six 100k arms, all 18 responses passed and each phase had identical\nrequest hashes, answer bytes, input counts and output counts. Prefix-hit counts\nalso stayed fixed at zero for cold requests and 99,904 for repeats. The tick\nimproved repeat decode relative to the 0.1-cap/no-tick arm, but slowed decode\nduring the cold answer. The smallest cap without the tick had the fastest cold\nTTFT, almost 2x the 2048 control, while its repeat remained 18% longer and its\nindependent decode rate about 8% lower. No tested configuration demonstrated\nboth the cold-prefill gain and preserved decode across these measurements.\n\nKeep the serving default at 2048. The binding qualification issue in this sweep\nis cached/decode performance, not an observed allocation failure. Larger chunks\nalso showed higher host pressure; a successful allocation is not sufficient\nevidence for selecting them. The next work is to explain and validate the\nprefill-to-decode cache transition, repeat comparisons in reversed order, and\nqualify harness-root reuse with the selected lazy-restore configuration. The experiments establish a\npromising prefill opportunity, not a new qualified serving profile.\n\nAdditional response artifacts use `long2-posttick-*.jsonl` and\n`long3-cap001off-*.jsonl`, with launch commands, journals and pressure samples\nbeside them. The benchmark harness passed six targeted tests on both the local\ndevelopment machine and node-4 Linux. The screening covered 42 depth-benchmark\nresponses plus 18 continuation responses; all passed their narrow fidelity\nchecks. Controllers completed successfully and restored the original service\nconfiguration after each comparison.\n\n## Adaptation-clock follow-up\n\nSaved journals exposed a clock-phase difference: the 2048 control first reranked\nfor decode at routed token 99,992, while the 8192 arms without a forced tick\nwaited until 100,134, during the cached repeat. The automatic fill interval is\n166 tokens. Its first chunk consumes ticks through 1992 or 8134 respectively;\nswitching to the steady 1000-token interval retains that offset in\n`HotAdaptTokenClock.set_interval`. Both forced-tick arms additionally logged\nbandwidth back-off from interval 1000 to 2000 after their first decode tick.\n\nA fresh comparison tested the original 2048/automatic control followed by 8192\nwith cap 0.1 and explicit `--moe-hot-adapt-interval-steps 1000`. The candidate's\nfirst decode rerank moved to token 100,000 as predicted, with no automatic\nback-off. Model, native extension, prompt and cache configuration stayed fixed.\n\n| Configuration | Cold TTFT | Cold wall | Cold answer decode | Repeat wall | Repeat decode | Independent decode |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| 2048 / auto / uncapped | 265.54 s | 270.82 s | 15.66 tok/s | 5.57 s | 21.31 tok/s | 24.38 tok/s |\n| 8192 / fixed 1000 / cap 0.1 | 149.77 s | 160.43 s | 7.65 tok/s | 6.31 s | 22.33 tok/s | 22.82 tok/s |\n\nAll six additional responses passed and matched across arms in request hashes,\nanswer bytes and input/output counts. Repeat hits remained 99,904 tokens. The\ncandidate's repeat decode improved relative to the earlier automatic 8192/0.1\narm, consistent with the timing hypothesis. Its repeat wall was still 13% longer\nthan the fresh control, cold-answer decode was slower, and independent decode\nwas about 6% slower. Clock alignment alone did not qualify the faster profile;\nthe earlier and later observations also show why one control is insufficient.\nRetain 2048 pending a validated solution to the remaining transition costs.\n\nArtifacts use `clock1-*-chunk-*.jsonl`, matching command/journal files and\n`clock1-host-pressure.jsonl` in the same results directory. Including this\nfollow-up, 48 depth responses and 18 continuation responses passed their narrow\nchecks. No serving default was changed.\n\n## Uncapped fixed-interval follow-up\n\nA reversed-order comparison on the same runtime tested 8192-token chunks with\nfixed interval 1000 and no prefill swap cap, then a fresh 2048/automatic control.\nThis separates the earlier fixed-interval candidate from its restrictive 0.1\nprefill swap cap. All other settings and the 100k manifest remained unchanged.\n\n| Configuration | Cold TTFT | Cold wall | Cold answer decode | Repeat wall | Repeat decode | Independent decode |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| 8192 / fixed 1000 / uncapped | 151.28 s | 160.22 s | 9.15 tok/s | 6.45 s | 23.18 tok/s | 25.92 tok/s |\n| 2048 / auto / uncapped | 268.31 s | 274.81 s | 12.72 tok/s | 6.09 s | 24.11 tok/s | 25.98 tok/s |\n\nAll six responses passed. Comparisons performed on node-4 confirmed identical\nrequest hashes, complete answers, prompt counts and output counts for each\nphase. Cold hits remained zero and repeats reused 99,904 tokens. Independent\nrequest wall time was 22.09 versus 21.99 seconds. The candidate substantially\nreduced cold prefill and preserved independent decode in this sample, but its\ncold-answer decode remained slower and its repeat wall was 5.9% longer.\nThis is not yet an unqualified replacement for the selected profile.\n\nThe candidate's first decode adaptation tick reported 36.63% protected-expert\npair coverage, similar to the earlier automatic control's 36.53%, rather than\nthe capped fixed-interval candidate's 23.74%. Placement alone therefore does\nnot explain the remaining cold-answer penalty. These counters do not isolate\nhost page-cache effects or adaptation work overlapping the transition.\n\nArtifacts use `clock2-*.jsonl` and matching commands/journals in the same private\ndirectory. The controller completed successfully and restored the original\nconfiguration. Including this follow-up, 54 depth responses passed the narrow\nfidelity checks; no larger chunk default was selected.\n\n## Deferred CPU workspace experiment\n\nStaged GPU prefill constructs a CPU MoE executor for decode and fallback, but\npreviously allocated the native CPU-prefill batch workspace immediately. That\nworkspace scales with maximum chunk size even if staged prefill never calls the\nCPU batch path. The staged profile now defers native batch setup until its first\nactual CPU-prefill call. Ordinary CPU prefill keeps eager setup. The startup log\nreports `deferred` with zero allocated batch bytes until that first call.\n\nThe host-memory governor still charges the full possible workspace. This keeps\nexpert placement and the fallback memory allowance unchanged. Setup is attempted\nonce; missing kernels or allocation failure retain the serial fallback without\nrepeated allocation attempts. The workspace remains allocated if CPU fallback\nis used. Its capacity is now bounded by the smaller of the scheduler chunk and\none below the staged crossover (1023 rows at the default 1024-token threshold).\nChunks at or above the threshold stage on the GPU. This preserves the saving\nafter short continuations without releasing and reallocating buffers. A threshold\nof one retains the native API's minimum one-row capacity, allocated only if used.\nThe governor deliberately retains its conservative full-chunk allowance.\n\nThe initial lazy-allocation revision passed 40 targeted Linux tests with no skips.\nThe bounded-capacity follow-up is pending Linux tests and matched node-4\nmeasurements. Tests\ncover zero initial native batch bytes in lazy mode, allocation on first prefill,\nserial-reference numerical parity, repeat-buffer reuse, and one-time setup\nfailure handling. No faster serving profile has been qualified by this change.\n\n## Matched chunk curve on the deferred-workspace candidate, 2026-09-22\n\nThe bounded-capacity candidate (644dcc1) passed its 75 targeted Linux tests with\nno skips, then ran on node-4 against a fresh 11654ed control. Four arms shared\none manifest: three repetitions each at 8k, 32k and 100k prompt depth, plus the\nthree-session fixed continuation workload before every depth measurement.\nOrder: control 2048, candidate 2048, candidate 4096, candidate 8192. Every arm\nstarted with an empty disk prefix cache and the automatic HOT adaptation\ninterval. All 108 depth responses and 12 continuation responses passed, with\nexact text, reasoning, finish-reason and usage parity across arms.\n\n| Arm | 8k cold TTFT | 32k cold TTFT | 100k cold TTFT | 100k repeat wall | 100k post-prefill decode | Continuation walls |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| control 2048 | 23.45 s | 72.49 s | 222.34 s | 4.25 s | 27.10 tok/s | 70.9 / 64.5 s |\n| candidate 2048 | 25.01 s | 72.80 s | 226.09 s | 4.33 s | 20.88 tok/s | 78.6 / 65.5 s |\n| candidate 4096 | 16.50 s | 44.28 s | 135.40 s | 4.73 s | 27.56 tok/s | 77.6 / 67.5 s |\n| candidate 8192 | 9.95 s | 33.41 s | 88.64 s | 4.31 s | 26.44 tok/s | 69.7 / 67.9 s |\n\nValues are means of three runs. The candidate at 2048 matched the control,\nwhich is the expected result for a change that only defers and bounds CPU\nscratch. Cold TTFT fell 2.5x at every depth with 8192-token chunks, and the\nearlier cached-repeat penalty did not reproduce: 8192 repeat walls were 4.06,\n3.78 and 4.31 seconds at 8k, 32k and 100k against 3.69, 3.67 and 4.25 for the\ncontrol. The 4096 arm's 8k repeat mean of 7.40 seconds came from a single\nstalled run (14.95 s, 6.4 tok/s); its other two runs matched the control.\nPost-prefill decode at 100k was within run-to-run noise of the control for\n4096 and 8192; the candidate-2048 value of 20.88 tok/s came from one 100k run\nat 16 tok/s and is not attributable to the code change, since the same code at\nlarger chunks did not show it.\n\nArtifacts use `workspacecurve1-*` in the private results directory, with\n`workspacecurve1-host-pressure.jsonl` sampled alongside. This is the first\nmeasurement in which a larger chunk improved cold prefill without a matched\ncached-decode or continuation regression.\n\n## Larger chunks and the governor's scratch charge, 2026-09-26\n\nA follow-up on the same candidate (644dcc1) tried 16384-token chunks with the\nsame manifest. The arm started healthy with the usual 2.12 GiB of free GPU\nmemory, but its first cold 8k prompt took 13.59 s against 9.95 s at 8192, and\nthe three-session continuation workload prefilled 2k-token chunks three to five\ntimes slower than at 2048 or 8192. The sweep was stopped after the first 8k\ncase rather than continuing to 32768.\n\nThe startup log explains it. The host-memory governor still charged CPU prefill\nscratch for the full scheduler chunk: 2.27 GiB at 16384 against 1.18 GiB at\n8192. That lowered the derived pinned-bank budget from 26.70 to 25.89 GiB, which\nfit 19 GPU prefill layers instead of 20 and mapped 29 MoE layers to DISK instead\nof 28, with 80 rather than 82 protected HOT experts per layer. Every chunk then\nstaged one more layer's experts from host memory. The staged executor never\nallocates that scratch: its workspace is bounded one row below the staged\ncrossover (1023 rows), so the charge was for memory that could not be used.\n\nThe governor now charges the same bounded workspace the executor can allocate,\nthrough a helper shared by both. The charge no longer grows with chunk size in\nstaged mode, and ordinary CPU prefill keeps the full-chunk charge. Targeted\nLinux tests (76, including a new chunk-independence check) passed with no\nskips. Artifacts use `workspacecurve2-*`; the fixed tree is measured under\n`workspacecurve3-*` at 16384 and 8192.\n\n## Fixed-governor sweep and promotion, 2026-09-26\n\nWith the bounded governor charge, a 16384-token arm started with the same\nplacement as 8192: 0.23 GiB scratch, 26.77 GiB pinned budget, 20 GPU prefill\nlayers, 28 DISK layers and 82 protected HOT experts. Its three 8k cold requests\ntook 14.41, 11.78 and 10.13 s, converging on the 8192 figure as the page cache\nwarmed, so the per-chunk cost is not worse at 16384. The first 32k request then\nfailed: the scheduler reported a CUDA out-of-memory while prefilling the first\n16384-token chunk with 64 MiB of GPU memory free and 22.9 GiB allocated by\nPyTorch. The server recovered and rejected the request with\n`server_out_of_memory`; the sweep continued to its 8192 control. Peak GPU\nmemory sampled through that 8192 arm was 23.67 GiB of 24.56, so 12288 is not\nexpected to fit either. On this 24 GiB card, 8192 is the largest chunk that\ncompletes the 100k workload.\n\nThe 8192 control on the fixed tree passed all 27 depth responses with exact\nparity against the 2048 control and the earlier 8192 arm.\n\n| Arm | 8k cold TTFT | 32k cold TTFT | 100k cold TTFT | 100k repeat wall | Continuation walls |\n| --- | ---: | ---: | ---: | ---: | ---: |\n| control 2048 (2026-09-22) | 23.45 s | 72.49 s | 222.34 s | 4.25 s | 86.2 / 70.9 / 64.5 s |\n| candidate 8192 (2026-09-22) | 9.95 s | 33.41 s | 88.64 s | 4.31 s | 88.0 / 69.7 / 67.9 s |\n| fixed 8192 (2026-09-26) | 12.97 s | 32.25 s | 89.64 s | 6.14 s | 104.0 / 86.1 / 78.1 s |\n\nCold prefill matched the earlier 8192 arm at 32k and 100k; the 8k mean carries\nthe post-restart warm-up of its first run. Decode-heavy phases were slower than\non 2026-09-22 in this arm, and the same slowdown appeared in the deployment\nchecks below, so it is treated as host state rather than a code effect: the\nfixed tree's 16384 arm, run minutes earlier, completed its continuation\nsessions in 101.9, 71.8 and 69.7 s.\n\n### Host memory attribution\n\nThe serving cgroup, not unrelated host activity, is what swaps. Before the\nsweeps the host had no swap in use. During the 26-minute fixed-governor sweep\nthe host swapped out 1,035,684 pages and swapped in 168,733, with memory-stall\ntime of 1.0% and IO-stall time of 6.6%. Afterwards `freetoken-serve`'s cgroup\nreported `memory.current` of 55.9 GiB and `memory.swap.current` of 1.15 GiB on\na 61.9 GiB host, with 28.1 GiB shmem (the pinned expert banks) and 25.8 GiB of\nfile-backed bank pages, and only 1.7 GiB anonymous. The swapped pages are the\npart of the process the kernel may evict once the pinned banks and the pager's\nfile pages fill memory. The zone-normal free list was also heavily fragmented\n(141,509 movable allocation stalls, 43,436 compaction stalls cumulative). This\nexplains why larger chunks previously showed more stalls without reading more\ndata, and it points at reserve sizing and swap avoidance, not chunking, as the\nnext decode lever.\n\n### Promotion\n\nThe fixed tree (branch `perf/prefill-chunk-finalist-20260926`) was deployed to\n`freetoken-serve` with `--max-extend-length 8192`, the disk prefix cache on,\nand the previous drop-in saved for rollback. Verification on the live server\npassed a short completion, 8k and 32k cold requests with correct JSON answers,\ntheir cached repeats (7,936 and 31,936 reused tokens) and a decode check.\nCold TTFT right after restart was 13.06 s at 8k and 57.54 s at 32k, the usual\nwarm-up; repeat TTFT was 1.57 and 1.38 s. The three-session continuation\nworkload then passed in 94.2, 84.6 and 79.7 s. The serving script's default\nchunk is now 8192, overridable with `FREETOKEN_PREFILL_CHUNK`.\n\n### Live-server depth checks\n\nTwo distinct 100k prompts from the manifest were sent to the deployed server\n(disk prefix cache on, 15 and 19 minutes after restart). Both passed. Cold TTFT\nwas 138.60 s and 165.92 s; the cached repeat of the first reused 99,904 tokens\nwith a 2.96 s TTFT. The journal shows the difference from the 89.6 s arm is in\nthe chunks themselves: 8192-token chunks took 11 to 17 s on the live server\nagainst 6.9 to 8.9 s in the arm, with no additional delay before the first\nchunk (the \"Prefill batch\" line is written at chunk completion, so its\nthroughput figure for a request's first chunk is not a chunk timing).\n\nA second pass of the continuation workload on the live server, with the disk\nprefix cache holding the first pass, completed in 51.4, 46.2 and 46.5 s per\nsession with identical outputs, reading 2,048 to 3,776 cached tokens per call.\nDecode is therefore unchanged; the slower cold sessions are uncached prefill.\nThe remaining suspect for the slower live chunks is the prefix cache itself,\nwhose 1.4 GiB per-100k-request writes go through the same page cache that\nholds the file-backed expert banks. That is measured next as `workspacecurve4-*`\n(8192, finalist tree, prefix cache on with a fresh directory, same manifest).\n\n## Prefix cache staging fix and host budget arms, 2026-09-27\n\nThe live-server gap between cache-off arms (100k cold 89.6 s) and the deployed\nserver (139 to 196 s) came from pinned host memory that the disk prefix cache\nretained after each entry write. The cause, the fix and the live traces are in\n`docs/prefix-cache-page-pressure-20260926.md`. With pageable staging (`f28f44b`)\nthe cache-on protocol (`stagefix1-*`) passed all 27 rows with exact parity and\nran 100k cold in 93.4, 90.0 and 88.3 s with 13.0, 10.0 and 7.9 GiB read from\nNVMe, matching the cache-off arm.\n\n### Host budget arms\n\nOn the fixed tree (`368d9c4`, same tree as `8422299`) the `pagercache1-*`\nsweep tested whether a smaller host reserve or a larger pager share would leave\nmore page cache to the file-backed DISK banks. Three arms ran the same\nprotocol back to back, cache on, fresh directory each. The two non-baseline arms\nheld the pin budget at 27.07 GiB with `FREETOKEN_PIN_BUDGET_GB` so placement\ncould not change; every startup log showed 20 GPU prefill layers, 28 DISK\nlayers and 82 protected HOT experts.\n\n| Arm | Budget table | 100k cold TTFT | NVMe per 100k cold | 32k cold TTFT | 32k repeat wall | 32k post-prefill decode wall | 100k post-prefill decode wall | Swap-out during run |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n| baseline | reserve 9.29, pin 27.07, pager 21.24 (derived) | 91.99 s | 11.8 GiB | 37.45 s | 3.98 s | 19.51 s | 25.23 s | 2.83 GiB |\n| `--host-cache-reserve-gib 6` | reserve 6.00, pin 27.07, pager 24.60 (derived) | 90.95 s | 9.8 GiB | 42.49 s | 4.45 s | 24.54 s | 24.15 s | 2.73 GiB |\n| reserve 4.5, `--moe-pager-budget-gib 25.3` | reserve 4.50, pin 27.07, pager 25.30 | 91.69 s | 9.7 GiB | 44.10 s | 5.93 s | 24.80 s | 25.38 s | 2.72 GiB |\n\nAll 81 responses passed with exact parity against `workspacecurve1-0`. No arm\nwon. The 100k cold differences are inside the run-to-run spread of the\nbaseline itself (89.3 to 94.6 s), total NVMe reads over each arm were 118, 124\nand 126 GiB, and both non-baseline arms were slower on the 32k rows. The\ndefaults in `engine/host_memory.py` are unchanged.\n\nThe null result follows from what the two knobs control on this profile:\n\n- The reserve is an accounting input, not memory the process holds. It lowers\n  the governor's ceiling, and with a derived pin budget the pin share (28/50 of\n  the remainder) grows with it. At reserve 6 the derived pin budget would be\n  about 28.9 GiB, enough for a 21st GPU layer, which is why these arms fixed\n  the pin budget.\n- The served profile uses `moe_disk_pager='madvise'`, not `uffd`, so the DISK\n  banks are an ordinary file mapping and the kernel page cache decides residency. The pager budget\n  then only sets the CPU prefill populate ceiling (half the budget per layer:\n  10.64, 12.30 and 12.65 GiB), and every DISK layer already allows all 512\n  experts at the baseline value.\n\nPage cache for the DISK banks is what physical memory leaves after the pinned\nbanks (26.44 GiB for 20 GPU layers plus 0.56 GiB HOT staging), the engine's\nanonymous memory and the rest of the host. Giving the banks more of it means\npinning fewer layers, which trades GPU prefill layers for DISK layers and is a\nplacement experiment, not a cache setting.\n\nArtifacts: `stagefix1-*`, `stagefix2-*` (reverted transient pinning) and\n`pagercache1-*`, with `node4-cachepressure-summary.py` for per-request TTFT,\nNVMe read, stall and parity, and `pagercache1-summary.txt`.\n\n## HOT adaptation across idle gaps, 2026-09-27\n\nWith the prefix-cache leak fixed, the live server still ran cold 100k prefills\nin 106 to 115 s against about 92 s in the qualification arms. The steady\n8192-token chunks took about 7 s on both; the difference was the first two or\nthree chunks after an idle gap (about 19, 15 and 9 s live against 9 to 10 s).\nUnder `--moe-hot-adapt-aim phase` the idle ticks aim at the decode history\nalone. Every request starts with a prefill, so after each gap the next prefill\nbegan at a 26 to 27% decayed hot rate with a 1,148-swap plan and read 24 to 29\nGiB from NVMe instead of about 10. The arms hid this: their 8k and 32k rows\ntriggered the adaptation's bandwidth back-off early, which spaced later ticks\nout, and no row followed a long idle.\n\nTwo protocols reproduce live traffic, both on `a120203` with the prefix cache on\nand a fresh directory per arm, and all rows passed with exact parity:\n\n- `livelike*`: a freshly started server, the `node4-finalist-verify.py` warm-up,\n  then the three 100k manifest cases each after 90 s of idle\n  (`node4-livelike-driver.py`). Its baseline reproduced the live numbers.\n- `idlegap*`: the fixed continuation workload, then the 27 depth rows with 60 s\n  of idle before every cold request (`prefill-depth.py measure\n  --idle-before-cold 60`).\n\nLive-like 100k cold TTFT (runs 2 and 3; run 1 is page-cache warm-up after the\nrestart in every arm) and NVMe read:\n\n| Sweep, arm order | Baseline | Idle ticks off | Idle off + post-prefill tick | Idle aimed at prefill |\n| --- | --- | --- | --- | --- |\n| livelike1 (baseline first) | 109.8 / 106.5 s, 27 / 24 GiB | 92.3 / 92.4 s, 10 / 11 GiB | | 92.6 / 92.0 s, 11 / 11 GiB |\n| livelike2 (idle off first) | 109.6 / 108.4 s, 28 / 29 GiB | 93.2 / 91.4 s, 12 / 10 GiB | | |\n| livelike3 (post-prefill first) | | 95.8 / 93.5 s, 12 / 11 GiB | 95.7 / 93.5 s, 14 / 12 GiB | |\n\nIdle-gap depth protocol, means of three runs:\n\n| Arm (sweep) | 8k cold TTFT / wall | 32k cold TTFT | 100k cold TTFT | 100k repeat wall | 100k post-prefill decode wall | Continuation walls |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| baseline (idlegap1) | 13.37 / 30.02 s | 37.86 s | 93.23 s | 3.88 s | 21.10 s | 99.5 / 72.8 / 79.3 s |\n| baseline (idlegap2) | 13.60 / 30.78 s | 39.59 s | 98.75 s | 3.99 s | 19.90 s | 104.2 / 77.6 / 78.9 s |\n| idle aimed at prefill (idlegap1) | 13.09 / 24.77 s | 36.78 s | 92.14 s | 7.44 s | 24.75 s | 93.2 / 73.1 / 73.4 s |\n| idle off (idlegap1) | 11.66 / 16.97 s | 33.45 s | 93.19 s | 4.91 s | 23.16 s | 96.1 / 72.0 / 69.9 s |\n| idle off (idlegap2) | 11.75 / 16.73 s | 34.22 s | 90.33 s | 5.40 s | 25.39 s | 96.9 / 71.8 / 75.4 s |\n| idle off (idlegap3) | 11.52 / 18.05 s | 33.36 s | 91.20 s | 5.59 s | 24.36 s | 102.1 / 72.0 / 76.0 s |\n| idle off + post-prefill tick (idlegap3) | 12.36 / 18.55 s | 30.28 s | 89.72 s | 4.22 s | 18.47 s | 100.0 / 74.1 / 66.9 s |\n\nAiming idle ticks at the prefill blend (an opt-in flag, since reverted) fixed\nthe prefill but slowed decode after cached restores. Turning idle ticks off\nimproved every cold row and the continuation sessions, and in all three sweeps\nslowed decode right after a 100k prefill, because nothing re-aimed the set at\ndecode before the next tokens. One bounded decode tick at the first decode\nboundary after each prefill (`--moe-hot-adapt-post-prefill-tick on`) recovers\nthat. The 4090 serving script now passes `--moe-hot-adapt-idle-ms 0\n--moe-hot-adapt-post-prefill-tick on` (`9f9b5d2`); the engine defaults are\nunchanged. The idle ticks were added for short chat turns right after startup;\non this profile the HOT set is seeded from the layer profile and reports its\nfill complete at the first decode tick, so they only ran after the fill.\n\nDeployed with `node4-finalist-deploy.sh 8192` on `9f9b5d2`; the startup log\nshows `idle=off`, the post-prefill tick on, 20 GPU prefill layers and 82 HOT\nexperts, and `node4-finalist-verify.py` passed. The same live sequence as\nbefore (verify warm-up, then three fresh 100k prompts 90 s apart,\n`livetrace-idletick-20260927.jsonl`):\n\n| Live 100k cold request | Before (prefix fix only) | After (idle off + post-prefill tick) |\n| --- | ---: | ---: |\n| first after restart | 179.6 s, 96.1 GiB | 154.0 s, 69.8 GiB |\n| second | 114.5 s, 33.9 GiB | 97.3 s, 14.7 GiB |\n| third | 105.9 s, 25.5 GiB | 93.2 s, 12.7 GiB |\n\nThe first request after a restart still pays the page-cache warm-up of the\nfile-backed DISK banks. Later cold 100k requests on the live server now run\nwithin a few seconds of the qualification arms.\n\n## Layer-major prefill and DISK staging, 2026-09-28\n\nChunked prefill runs all 48 layers for each chunk, so every layer's experts\ncross PCIe once per chunk: at 100k with 8192-token chunks, 13 passes over the\n26.4 GiB of pinned banks and 13 routed-union stagings of the 37 GiB of DISK\nbanks. Four changes, each measured on its own, cut cold 100k TTFT from about\n92 s to 53 s on the 4090 with exact parity on every row.\n\n### What changed\n\n1. **Layer-major groups** (`--prefill-layer-major-tokens N`). Consecutive\n   chunks of one request run layer by layer: every chunk of a group passes\n   layer L before any reaches layer L+1, so a layer's experts move once per\n   group. The scheduler prepares each chunk exactly as chunk-major serving\n   would (pages, QSA and GDN metadata, snapshot tracking) from the lengths the\n   previous chunk's launch leaves behind. A group stops at N tokens, at the\n   prompt's final chunk, and at a chunk persisting an intermediate harness root\n   (its ping-pong snapshot slot is rewritten two chunks later). Only a lone\n   request with no running decode is grouped; the group drains chunk by chunk;\n   an OOM aborts the request cleanly. The model runs the same operations and\n   shapes per chunk as the chunk-major forward; PLE runs per chunk at its layer.\n   The group's hyper-connection residual (20 KiB per token here) stays on the\n   GPU, so N follows free GPU memory: 4 x 8192-token chunks ran out of memory on\n   the 4090 and 32k groups fit with 4096-token chunks\n   (`--prefill-layer-major-chunk 4096`, applied only to prompts that need more\n   than one `--max-extend-length` chunk). On a 96 GB GPU a whole prompt fits in\n   one group.\n2. **Parallel DISK staging reads** (`FREETOKEN_DISK_STAGING_WORKERS`). The\n   staging ring read one 32 MiB piece at a time on one thread (~1.9 GB/s in the\n   trace). Reads are now dealt to N workers with two pinned slots each (pinned\n   total ~64 MiB per reader); a single reader gets ~10.6 GB/s from page cache and\n   ~1.4 GB/s from NVMe on node-4, eight get several GB/s on cold data.\n3. **Predicted DISK staging** inside a group: every layer alternates between the\n   two prefill double buffers, a background reader stages the rows each DISK\n   layer routed in its previous group while the previous layer computes, and\n   only the rows the prediction missed (~550 of ~14,000 per group) are staged\n   on demand. Chunk c+1's attention and routing are enqueued before chunk c's\n   experts, and the routed rows are read back through a fixed-size mask fenced\n   by an event, so the host never waits on the whole stream.\n4. **Cached DISK reads** (`--moe-disk-prefill-io cached`, now parallel): rows\n   already in the page cache are read through it and cold rows with O_DIRECT.\n   The DISK banks (37 GiB) exceed the page cache left for them (~31 GiB).\n   Chunk-major touches popular experts every chunk, so LRU keeps them; a group\n   touches each routed row about once, so buffered group reads became a 36 GiB\n   sweep that evicted the next group's rows and decode's hot rows alike (32k\n   cold reads 16.7-21.4 GiB against 3-13 GiB, decode after prefill 2-5 s\n   slower). Direct reads leave the page cache to the rows decode uses.\n\nTried and reverted on the way: streaming whole DISK layers ahead (routing is\nskewed, so it read the rarely used experts, the pages never in the page cache:\n22-29 GiB from NVMe per 32k request and no gain), and aiming idle ticks at\nprefill.\n\n### Group trace\n\n`FREETOKEN_LAYER_MAJOR_TRACE=1` logs per-layer GPU time and staging counters\nfor each group. One 32k group (8 chunks of 4096 tokens):\n\n| Build | Group GPU time | DISK layers | Pinned layers | DISK staging on demand |\n| --- | ---: | ---: | ---: | ---: |\n| per-row staging, one reader | 22-27 s | 16-22 s | 5.3-5.5 s | 19.4 s (first group) |\n| + predicted staging | 26.7-28.0 s | 21-22.5 s | 5.3-5.5 s | 0.8-1.4 s, 19-20.5 s background reads |\n| + 8 readers | 15.7 s | 10.3 s | 5.4 s | 0.35 s, 3.9-4.2 s background reads (hidden) |\n\n### Idle-gap protocol, final configuration\n\n`idlegap9` (final configuration first, then buffered reads, then baseline;\ncontinuation workload plus 27 depth rows with 60 s idle before each cold\nrequest). All 81 depth rows and 9 continuation sessions passed with exact\nparity.\n\n| Arm | 8k cold TTFT / wall | 32k cold TTFT / wall | 100k cold TTFT / wall | 32k repeat wall | 100k post-prefill decode wall | Continuation walls |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| final (cached reads) | 5.97 / 10.81 s | 16.94 / 21.77 s | 53.16 / 60.36 s | 3.92 s | 17.52 s | 100.9 / 73.2 / 65.0 s |\n| buffered reads | 6.73 / 13.23 s | 17.69 / 24.62 s | 54.80 / 62.47 s | 4.22 s | 20.11 s | 93.2 / 79.1 / 78.8 s |\n| baseline | 12.11 / 17.23 s | 33.77 / 37.48 s | 93.69 / 98.31 s | 4.19 s | 18.04 s | 94.5 / 72.8 / 69.0 s |\n\nEarlier steps on the same protocol: layer-major alone (32k groups) 100k cold\n68.0-69.8 s against 89.3-91.1 s baseline in both arm orders (`idlegap4`,\n`idlegap5`, `idlegap7`); 8 readers alone, chunk-major, 69.7 s (`idlegap8`).\n\n### Scaling\n\nThe pieces are sized by the machine rather than the model: the group budget by\nfree GPU memory (the residual is `hc_count x hidden x 2` bytes per token), the\nstaging readers by storage and page-cache bandwidth, and the double buffers\nalready exist. With more GPU memory a group covers the whole prompt (one expert\npass per prompt) and more layers stay GPU-resident; a larger model with more of\nits experts on DISK is bound by the same staging path, which now reads in\nparallel, predicts a group's rows, and keeps cold rows out of the page cache.\n\n### Deployment\n\nDeployed with `node4-finalist-deploy.sh 8192` on `c841a64`: the startup log\nshows `file_io=cached, workers=8`, 20 GPU prefill layers, 28 DISK layers and 82\nHOT experts; `node4-finalist-verify.py` passed. The live sequence (verify\nwarm-up, then three fresh 100k prompts 90 s apart,\n`livetrace-layermajor-20260928.jsonl`) ran in 57.3, 53.6 and 53.3 s TTFT, against\n154.0, 97.3 and 93.2 s for the same sequence on the previous deployment. Shmem\nstayed at 27.26 GiB with no swap; prefill read about 60 GiB from NVMe per 100k\nrequest, most of it cold rows by direct I/O.\n\n## Prefill MoE kernel, tail chunk and PLE staging, 2026-09-29\n\nThree more changes on the layer-major build, each with exact parity on every\ndepth row and continuation session. Cold 100k TTFT on the idle-gap protocol\nwent from 45.5 s to about 24 s.\n\n### What changed\n\n1. **v2 prefill NVFP4 MoE kernel** (`1f2619e`, deployed). The v1 kernel loaded\n   the even and odd K columns of the activations as two stride-2 gathers and\n   decoded every e2m1 weight through a lookup-table load. v2 loads the\n   activations contiguously, splits the two nibble planes in registers, and\n   decodes e2m1 arithmetically (the magnitude bits form an fp16 pattern worth\n   value x 2^-14). The values and the order of both dots are unchanged, so the\n   output is bit-identical to v1. At the Qwen3.8-Flash expert shapes (512\n   experts, top-10) a 4096-token chunk takes 5.45 ms with 64x128 tiles, 4 warps\n   and 2 stages, against 16.1 ms for v1 at its best tiles. Batching the expert\n   GEMM across chunks (`FREETOKEN_LAYER_MAJOR_MOE_TOKENS`, `6631a9d`, off by\n   default) left the expert GEMM time unchanged with v2 (`lmkernel1`).\n2. **The final chunk joins the last group** (`d1b6e7a`). A 100k prompt split\n   into three 32,768-token groups and a 1,655-token tail. The tail ran\n   chunk-major and streamed every DISK layer's experts again: about 4-5 s for\n   2% of the tokens. The group budget may now be overrun by the prompt's final\n   chunk (at most one chunk); that group costs 0.5-0.8 s more.\n3. **PLE rows staged on a host thread** (`6839780`, then `06079df`). The uring\n   PLE backend hashed each chunk's n-grams on the GPU and read the row ids back\n   (`row_ids.cpu()`), which drained every queued kernel of the group once per\n   chunk while the host deduplicated and read the rows (16 row ids per token,\n   two small O_DIRECT reads per unique row). Each chunk is now hashed from the\n   host prompt (the tested host hash) and its rows read into a ring of slots in\n   the staging bank, above the rows ordinary fills use. The first version\n   staged one group at a time and only gained layers 0-1 of head start; the\n   request-level version plans every remaining chunk of the prompt, so the\n   next group's rows are read while the current group runs.\n\n### Group profile\n\nOne 32k group with v2 (`lmple1`, torch profiler): 8.5 s wall, GPU kernels busy\n6.0 s. The prefill MoE kernel took 2.0 s (about 78 TFLOPS on the rows it\ncomputes), host-to-device copies 2.6 s (partly overlapped), dense bf16 GEMMs\n1.5 s, attention 0.4 s and GDN 0.3 s. PLE spans per group:\n\n| Build | PLE span, first group | PLE span, later groups | Group GPU time, later groups |\n| --- | ---: | ---: | ---: |\n| v2 (`lmple1`) | 1.8-2.3 s | 1.8-2.3 s | 9.0-9.6 s |\n| + tail join, group stager (`lmtrace7`) | 1.5-1.8 s | 1.5-1.8 s | 8.5-9.9 s |\n| + request stager (`lmtrace10`) | 1.5-1.8 s | 0.14-0.24 s | 7.1-7.9 s |\n\nThe first group of a request still waits for its PLE rows: the reads are bound\nby IOPS, and the thread starts with the request. `fb1b1b6` reads the data and\nscale stores concurrently for large fills (`lmtrace11`, pending).\n\n### Idle-gap protocol\n\nEach pair runs in both orders. Cold 100k TTFT, mean of 3:\n\n| Run | First arm | Second arm |\n| --- | --- | --- |\n| `idlegap10` | v2 29.44 s | v1 45.60 s |\n| `idlegap11` | v1 45.50 s | v2 30.17 s |\n| `lmstage2` | tail + group stager 25.90 s | v2 29.64 s |\n| `lmstage3` | v2 29.54 s | tail + group stager 25.98 s |\n| `lmstage4` | tail + group stager 26.68 s | + request stager 23.93 s |\n\nThe v1 arms run the v2 build with `FREETOKEN_NVFP4_PREFILL_KERNEL=v1` (v2's\ntiles). 32k cold TTFT: v1 14.4 s, v2 9.4-9.5 s, later builds 9.0-9.2 s. On the\nlive-like driver (verify warm-up, then three fresh 100k prompts 90 s apart) v2\nran 30.4 s against 45.8 s for v1 (`livelike9`).\n\nContinuation walls follow arm order: the first arm pays 105-120 s for session 1\nand the second 91-97 s, whatever the build. The tail and group-stager build\nalso paid about 107-109 s as the second arm in `lmstage3`; its code does not\nrun for the continuation prompts (about 2k tokens, one chunk), and `contab1`\n(alternating fresh servers, two passes each) is pending to settle it.\n\n### Tried: SwiGLU in the gate/up GEMM epilogue\n\n`562458a` (branch `dev/moe-swiglu-fusion`, not on this branch) computes the gate and up halves of the same columns in one program,\nrounds both to bf16 as the unfused kernel stores them, and applies flashinfer's\nact_and_mul instruction sequence (sm_89 fast-math SASS: FMUL.FTZ, MUFU.EX2,\nFADD.FTZ, MUFU.RCP, FMUL.FTZ) in inline PTX. It is bit-identical (all 65,536\nbf16 gate values against flashinfer, and whole MoE layers) but 1.5-2.3% slower\nthan the separate pass (6.15 against 6.05 ms per 4096-token chunk), so it was\nleft out. The expert GEMMs are\ncompute-bound; a fused MoE megakernel could remove at most the activation,\nalign and top-k sum kernels (about 0.15-0.25 s per 32k group), and the top-k\nsum cannot be fused without changing its summation order.\n\n### Deployment\n\n`1f2619e` (v2) is on the serving branch. The tail and PLE staging changes\ndeploy after `contab1` and `lmstage5`.\n\nA node-4 hard hang at 15:40 UTC on 2026-09-28 (no panic record, journals\nclosed uncleanly, idle between benchmark requests) interrupted the first run\nof these benchmarks; they were rerun after the reboot.\n\n## Group size, decode breakdown and kernel probes, 2026-09-29\n\n### Confirmations\n\n- Request-level PLE stager, reversed order (`lmstage5`): 100k cold 24.14 s as\n  the first arm against 26.45 s for the group stager (`lmstage4`: 23.93 s\n  against 26.68 s).\n- Concurrent PLE data and scale reads (`lmtrace11`): the first group's PLE span\n  went from 1.5-1.8 s to 0.79-0.97 s; later groups 0.08-0.16 s.\n- Continuation walls (`contab1`, four fresh servers alternating v2 and the\n  tail/stager build, two passes each, 24 sessions with exact parity): fresh\n  server totals 253.6 and 247.0 s (v2) against 292.6 and 244.3 s; warm pass\n  totals 222.4 and 156.3 s against 158.0 and 152.9 s. The earlier gap was\n  cold-start variance.\n- One `lmstage5` depth row (8k repeat) diverged while CPU-heavy tests ran on the\n  host. Cold experts run on the CPU (W4A8), with different rounding than the GPU\n  path, and HOT adaptation timing decides which experts run where, so host load\n  can change a greedy token. The same build matched in three other runs.\n  Benchmarks need a quiet host.\n\n### Group size\n\n`lmgroup1`-`lmgroup3`, live-like driver (verify warm-up, three fresh 100k\nprompts 90 s apart) on `main`:\n\n| Arm (order) | 100k cold TTFT | Warm decode | NVMe per 100k |\n| --- | ---: | ---: | ---: |\n| 32k groups, `--memory-ratio 0.87` (1st) | 23.04 s | 17.2 tok/s | 50-65 GiB |\n| 64k groups, `--memory-ratio 0.87` (2nd) | 21.86 s | 16.5 tok/s | 37-39 GiB |\n| 32k groups, 0.90 (3rd) | 22.71 s | 17.4 tok/s | |\n\n64k groups and whole-prompt groups ran out of GPU memory at the default 0.90\n(the automatic sizing gives every byte above the `1 - memory_ratio` headroom to\nKV and expert slots); lowering the HOT budget did not free any. At 0.87 the\n64k groups fit, every row matched, and the prompt makes one expert pass fewer.\n\n### Decode breakdown\n\n`--moe-step-timing` on the continuation workload (`lmdecode1`): a decode step\ntakes about 30 ms, of which the 19 GPU-resident layers take 3.0 ms and the 29\nDISK layers 26.1 ms (about 0.9 ms each, against 0.16 ms). CPU expert compute is\n0.29 ms per DISK layer (about 1.7 cold experts, 137-313 MB of weights per\nstep); host-device copies are 0.56 ms per step. Decode is bound by the GPU\nwaiting on the CPU partial of each DISK layer. Fetching predicted cold experts\nto the GPU a layer ahead would remove most of that wait, but it changes which\nexperts run on the GPU (W4A16) and the CPU (W4A8), so it needs a new parity\nreference.\n\n### Predicting cold experts\n\n`FREETOKEN_ROUTE_DUMP` (eager decode, `--cuda-graph-max-bs 0`) recorded each\nlayer's router input and logits for about 3,800 decode steps of the\ncontinuation workload (`routedump1`); `scripts/routedump-analyze.py` measures\nhow many of a DISK layer's cold routes (experts not HOT) a fetch of F predicted\nexperts would cover. There are 3.2 cold routes per DISK layer per token.\n\n| Predictor | F=1 | F=2 | F=4 | F=8 | F=16 |\n| --- | ---: | ---: | ---: | ---: | ---: |\n| next layer's router on the previous layer's router input | 9.8% | 17.3% | 28.5% | 42.8% | 58.9% |\n| previous token's cold experts at the layer | 3.1% | 5.2% | 7.6% | 8.9% | 9.0% |\n\nFetching predicted cold experts to the GPU does not pay here: half the cold\nroutes need about 10 experts (about 28 MB per layer over PCIe, slower than the\nlayer's 0.9 ms today), and a layer still waits on the CPU while any cold route is\nuncovered. The lever that remains is the CPU round trip itself: a DISK layer\ntakes 0.9 ms against 0.16 ms for a GPU-resident layer, of which the CPU expert\ncompute is 0.29 ms.\n\n### Kernel probes\n\n- Tile sweep of the v2 prefill MoE kernel (`moebench/bench_tiles2.py`, 105\n  configurations at M = 4096, 8192, 16384, all bit-identical): the shipped tiles\n  are within 0-3% of the best at every M. The kernel is faster per token at\n  larger M (4.44 against 5.65 ms per 4096 tokens at M = 16384), which only\n  cross-chunk expert batching reaches, and that does not fit on the 4090.\n- FP8 (e4m3) tensor-core MMA with fp32 accumulation (`moebench/bench_fp8.py`,\n  weights cast to e4m3 after dequantization, activations quantized per row per\n  K tile): 5.05 against 5.65 ms per 4096 tokens at M = 4096 and 4.06 against\n  4.45 ms at M = 16384, with 5.5% relative RMS error on the MoE layer output.\n  The kernel is bound by dequantization and data movement, not MMA rate; not\n  pursued.\n\n### Deployment\n\n`main` (`0b67820`) serves from `/disks/nvme-02/src/freetoken-serve`; the\nlive-like driver measured 100k cold 23.47 s on it (`lmgroup1`), against 30.4 s\nfor v2 (`livelike9`).\n\n\n\"\"\"Protocol-neutral generation core.\n\nThe narrow interface every wire protocol (OpenAI chat, Anthropic messages, OpenAI\nResponses) sits on. A protocol adapter converts its request into a ``GenSpec``\n(messages + sampling + tools), submits it, and formats the resulting semantic\nevents (``GenEvent``) / ``GenResult`` into its own wire shape. This mirrors vLLM's\nsplit of per-request ``to_sampling_params`` + shared preprocess + a neutral\n``SamplingParams`` — no wire request type reaches the engine path.\n\nThis module is imported by ``openai_api`` / ``anthropic_api`` / ``responses_api``;\nit depends on none of them.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport json\nimport os\nimport time\nfrom collections.abc import AsyncIterator\nfrom dataclasses import dataclass, field\nfrom typing import Any\n\nfrom . import request_ring\nfrom freetoken.core import SamplingParams\nfrom freetoken.message import TokenizeMsg\nfrom freetoken.tokenizer.tokenize import resolve_thinking_mode\n\ntry:\n    # Chat templates render through jinja2 (a transformers dependency): a TemplateError means\n    # the template rejected the specific conversation (bad role ordering, an unmatched\n    # tool_result, an explicit raise_exception) — an input-driven, client-classifiable failure.\n    from jinja2 import TemplateError as _TemplateError\nexcept Exception:  # pragma: no cover — jinja2 always ships with transformers\n    _TemplateError = ()\n\nfrom .function_call_parser import FunctionCallParser, TOOLS_TAG_LIST, ToolCallItem\nfrom .reasoning_parser import (\n    DSV4_SPECIAL_TOKENS,\n    ReasoningParser,\n    build_reasoning_parser,\n    strip_special_tokens,\n)\n\n\nclass GenerationError(Exception):\n    \"\"\"A request failed before producing output (surfaced via ``UserReply.error`` — e.g. a\n    chat template the tokenizer cannot render, or a prompt that exceeds the KV budget). Each\n    adapter turns this into its own wire-level error instead of hanging on a reply that never\n    arrives. ``code`` carries the stable class (``UserReply.error_code``) when the failure has\n    one, so an adapter can emit it as OpenAI's error ``code`` and clients need not parse prose.\"\"\"\n\n    def __init__(self, message: str, code: str | None = None, status_code: int = 400):\n        super().__init__(message)\n        self.code = code\n        self.status_code = status_code\n\n\nasync def await_with_disconnect(\n    awaitable, *, request: Any | None, state: Any, uid: int\n):\n    \"\"\"Use the production frontend's ASGI disconnect race when one is available.\n\n    Protocol tests and offline callers intentionally use small state/request doubles. They\n    have no ASGI receive channel and continue to await generation directly.\n    \"\"\"\n    runner = getattr(state, \"run_with_cancellation\", None)\n    if request is None or runner is None or not hasattr(request, \"receive\"):\n        return await awaitable\n    return await runner(awaitable, request, uid)\n\n\n# --------------------------------------------------------------------------- #\n# Protocol-neutral generation events.\n#\n# generate_events() / generate_full() yield these instead of OpenAI wire chunks.\n# The OpenAI, Anthropic, and Responses streamers are thin formatters over them,\n# so generation/parsing logic lives in exactly one place and no adapter has to\n# re-parse a serialized OpenAI stream.\n# --------------------------------------------------------------------------- #\n@dataclass\nclass ReasoningDelta:\n    text: str\n\n\n@dataclass\nclass ContentDelta:\n    text: str\n\n\n@dataclass\nclass ToolCallStart:\n    \"\"\"A tool call opened mid-stream: its name is known, arguments follow as\n    ToolCallArgsDelta fragments, and the matching ToolCallsDelta closes it with the\n    authoritative final arguments. tool_index is the output ordinal (0, 1, ...).\n    args_prefix_stable tells adapters whether the fragments are safe to forward to\n    clients that concatenate them (else: send full args once at close).\"\"\"\n\n    tool_index: int\n    name: str | None\n    args_prefix_stable: bool = True\n\n\n@dataclass\nclass ToolCallArgsDelta:\n    \"\"\"An incremental fragment of the open call's arguments JSON. Fragments always\n    concatenate to a prefix of the final arguments (detectors skip non-prefix\n    diffs), so adapters may stream them and top up the remainder at close.\"\"\"\n\n    tool_index: int\n    fragment: str\n\n\n@dataclass\nclass ToolCallsDelta:\n    \"\"\"Complete call(s). On the streaming path this closes a ToolCallStart-opened\n    call (same tool_index) carrying the final arguments; on the buffered fallback\n    path it arrives standalone, without a preceding start/args events.\"\"\"\n\n    calls: list[ToolCallItem]\n\n\n@dataclass\nclass GenDone:\n    finish_reason: str\n    prompt_tokens: int\n    completion_tokens: int\n    matched_stop: str | None = None\n    cached_tokens: int = 0\n\n\n@dataclass\nclass Progress:\n    \"\"\"A request stage for opt-in progress frames (``X-FreeToken-Include-Progress``):\n    ``prefill`` once the scheduler admits the prompt (``total`` prompt tokens, ``reused``\n    served from the prefix cache, ``done`` = tokens already computed at that point), and\n    ``generating`` before the first sampled token. Only produced when generate_events()\n    is called with ``progress=True``; adapters drop it unless the client opted in.\"\"\"\n\n    stage: str\n    done: int = 0\n    total: int = 0\n    reused: int = 0\n\n\nGenEvent = (\n    ReasoningDelta | ContentDelta | ToolCallStart | ToolCallArgsDelta | ToolCallsDelta\n    | GenDone | Progress\n)\n\n\n@dataclass\nclass GenResult:\n    reasoning: str\n    content: str\n    tool_calls: list[ToolCallItem]\n    finish_reason: str\n    prompt_tokens: int\n    completion_tokens: int\n    matched_stop: str | None = None\n    cached_tokens: int = 0\n    # OpenAI chat logprobs.content entries, one per sampled token (reasoning included);\n    # None unless the request asked for logprobs.\n    logprobs: list[dict[str, Any]] | None = None\n\n\ndef openai_logprob_entry(ack: Any) -> dict[str, Any] | None:\n    \"\"\"An OpenAI chat ``logprobs.content`` entry for one reply, or None without logprobs.\"\"\"\n    if getattr(ack, \"logprob\", None) is None:\n        return None\n\n    def item(token: str, logprob: float) -> dict[str, Any]:\n        return {\"token\": token, \"logprob\": logprob, \"bytes\": list(token.encode())}\n\n    entry = item(ack.token or \"\", ack.logprob)\n    entry[\"top_logprobs\"] = [\n        item(t, lp) for t, lp in zip(ack.top_tokens or [], ack.top_logprobs or [])\n    ]\n    return entry\n\n\n@dataclass\nclass GenSpec:\n    \"\"\"Protocol-neutral 'what to generate'. Each wire protocol converts its request\n    into a GenSpec (like vLLM's to_sampling_params + _preprocess_chat) and the\n    primitive consumes ONLY this — no wire request type reaches the engine path.\"\"\"\n\n    messages: list[dict[str, Any]]                       # normalized, template-ready\n    sampling_params: SamplingParams\n    chat_template_kwargs: dict[str, Any] = field(default_factory=dict)\n    template_tools: list[dict[str, Any]] | None = None   # tools the model sees (TokenizeMsg.tools)\n    parser_tools: list[dict[str, Any]] | None = None     # tools for FunctionCallParser; None disables parsing\n    priority: int = 0\n    # Per-request hard reasoning budget from the wire (None = not given, use the server\n    # default; 0 = explicitly unlimited). Resolved into SamplingParams in submit_generation.\n    reasoning_budget_tokens: int | None = None\n\n    @property\n    def parse_tools(self) -> bool:\n        return self.parser_tools is not None\n\n\n# --------------------------------------------------------------------------- #\n# Wire-neutral builders (shared by every protocol's request->GenSpec converter).\n# --------------------------------------------------------------------------- #\n# Default max output (decode) tokens when a request omits one. Overridable per server via\n# --max-output-tokens (the Responses adapter passes that through); clamped to the remaining\n# context by the scheduler regardless.\nDEFAULT_MAX_OUTPUT_TOKENS = 32768\n\n\ndef resolve_sampling(\n    *,\n    temperature: float | None,\n    top_k: int | None,\n    top_p: float | None,\n    max_tokens: int | None,\n    ignore_eos: bool,\n    model_sampling: dict[str, Any],\n    stop: str | list[str] | None = None,\n) -> SamplingParams:\n    \"\"\"Map a protocol's sampling fields onto the engine's neutral SamplingParams,\n    filling unspecified fields from the checkpoint's recommended defaults.\"\"\"\n\n    def pick(value, key, framework):\n        return value if value is not None else model_sampling.get(key, framework)\n\n    stop_list = [stop] if isinstance(stop, str) else list(stop or [])\n    # `is not None`, not truthiness: an explicit max_tokens=0 must not read as \"unset\" and\n    # silently become the 32k default. The engine cannot serve a zero-token budget either\n    # (the request would never become decodable, so the client would wait forever), so a\n    # non-positive value is a client error.\n    if max_tokens is not None and max_tokens < 1:\n        raise ValueError(f\"max_tokens must be at least 1, got {max_tokens}\")\n    return SamplingParams(\n        ignore_eos=ignore_eos,\n        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS if max_tokens is None else max_tokens,\n        temperature=pick(temperature, \"temperature\", 0.0),\n        top_k=pick(top_k, \"top_k\", -1),\n        top_p=pick(top_p, \"top_p\", 1.0),\n        stop_strs=[s for s in stop_list if s],  # drop empty strings (would match everything)\n    )\n\n\ndef render_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    \"\"\"Normalize OpenAI-shaped message dicts for the chat template: flatten text\n    content parts to a string and decode tool-call arguments from JSON. Raises\n    ValueError on a non-text content part (text-only server). Shared by all adapters.\"\"\"\n    return [_render_message(m) for m in messages]\n\n\ndef _render_message(message: dict[str, Any]) -> dict[str, Any]:\n    m = dict(message)\n    content = m.get(\"content\")\n    if isinstance(content, list):\n        m[\"content\"] = _flatten_text_parts(content)\n    # Templates read different reasoning keys (reasoning_content: most; reasoning:\n    # gemma4; thinking: gpt-oss) — accept any, emit both.\n    reasoning = m.get(\"reasoning_content\") or m.get(\"reasoning\") or m.get(\"thinking\")\n    if reasoning:\n        m.setdefault(\"reasoning_content\", reasoning)\n        # gpt-oss's template raises when a tool-call assistant turn carries BOTH content and\n        # thinking -- it renders one or the other. Visible text wins: dropping it would lose\n        # what the user saw, and every other family reads `content` too.\n        if not (m.get(\"tool_calls\") and m.get(\"content\")):\n            m.setdefault(\"thinking\", reasoning)\n        if m.get(\"role\") == \"assistant\" and m.get(\"content\") is None:\n            # gpt-oss templates concatenate message.content unconditionally.\n            m[\"content\"] = \"\"\n    tool_calls = m.get(\"tool_calls\")\n    if tool_calls:\n        rendered = []\n        for tc in tool_calls:\n            tc = dict(tc)\n            fn = dict(tc.get(\"function\") or {})\n            arguments = fn.get(\"arguments\")\n            if isinstance(arguments, str):\n                try:\n                    fn[\"arguments\"] = json.loads(arguments)\n                except json.JSONDecodeError:\n                    pass\n            tc[\"function\"] = fn\n            rendered.append(tc)\n        m[\"tool_calls\"] = rendered\n    return m\n\n\ndef _flatten_text_parts(parts: list[Any]) -> str:\n    texts: list[str] = []\n    for part in parts:\n        ptype = part.get(\"type\") if isinstance(part, dict) else None\n        if ptype == \"text\":\n            texts.append((part.get(\"text\") if isinstance(part, dict) else None) or \"\")\n        else:\n            raise ValueError(f\"Unsupported content part type for text-only server: {ptype}\")\n    return \"\".join(texts)\n\n\ndef split_tool_lists(\n    all_tool_dicts: list[dict[str, Any]] | None, selected_name: str | None = None\n) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None]:\n    \"\"\"(template_tools, parser_tools): parser sees all tools; the template sees only\n    the selected one when tool_choice forces a specific function. Shared by adapters.\"\"\"\n    if not all_tool_dicts:\n        return None, None\n    if selected_name:\n        template = [t for t in all_tool_dicts if (t.get(\"function\") or {}).get(\"name\") == selected_name]\n    else:\n        template = all_tool_dicts\n    return template, all_tool_dicts\n\n\n# --------------------------------------------------------------------------- #\n# The primitive: submit + generate (consume a GenSpec, drive the engine waist).\n# --------------------------------------------------------------------------- #\ndef parse_reasoning_budget(value: Any, param: str) -> int | None:\n    \"\"\"Validate a wire reasoning budget: None passes through, otherwise a non-negative int\n    (0 = unlimited). Raises ValueError, which every adapter surfaces as a 400.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, bool) or not isinstance(value, int) or value < 0:\n        raise ValueError(f\"{param} must be a non-negative integer; got {value!r}\")\n    return value\n\n\ndef resolve_reasoning_budget(spec: GenSpec, state: Any) -> dict[str, Any] | None:\n    \"\"\"The engine-facing budget for this request, or None when unlimited.\n\n    A request value (even 0) overrides the server default. The end tag, and the start tag\n    when the template does not pre-open reasoning, come from the configured reasoning\n    parser; parsers without a plain tag pair (Harmony, ATEM) cannot be budgeted.\"\"\"\n    tokens = spec.reasoning_budget_tokens\n    if tokens is None:\n        tokens = getattr(state.config, \"reasoning_budget_tokens\", 0) or 0\n    if tokens <= 0:\n        return None\n    parser = _make_reasoning_parser(spec, state)\n    detector = getattr(parser, \"detector\", None)\n    end = getattr(detector, \"think_end_token\", \"\")\n    if not end:\n        return None\n    return {\n        \"tokens\": tokens,\n        \"end\": end,\n        \"start\": detector.think_start_token or None,\n        \"open\": bool(detector.force_reasoning),\n    }\n\n\nasync def submit_generation(spec: GenSpec, state: Any) -> int:\n    \"\"\"Enqueue one generation from a GenSpec; return its uid. Every protocol adapter\n    calls this — it takes the neutral spec, not a wire request type.\"\"\"\n    spec.sampling_params.reasoning_budget = resolve_reasoning_budget(spec, state)\n    uid = state.new_user()\n    await state.send_one(\n        TokenizeMsg(\n            uid=uid,\n            text=spec.messages,\n            sampling_params=spec.sampling_params,\n            chat_template_kwargs=spec.chat_template_kwargs,\n            tools=spec.template_tools,\n            priority=spec.priority,\n        )\n    )\n    return uid\n\n\nasync def count_prompt_tokens(\n    messages: list[dict[str, Any]],\n    tools: list[dict[str, Any]] | None,\n    chat_template_kwargs: dict[str, Any],\n    state: Any,\n) -> int:\n    \"\"\"Token count of an already-converted (messages, tools, chat_template_kwargs) prompt,\n    using the frontend's own tokenizer (``state.frontend_tokenizer()``) so the count equals the\n    ``usage.input_tokens`` a real generation of the same prompt would report. The neutral\n    counterpart to ``submit_generation`` — any protocol's count endpoint converts to this triple\n    and calls it. The caller validates the prompt first (non-empty, has tokenizable content).\n\n    Failure classification mirrors ``/v1/messages``: a chat template that rejects the specific\n    conversation (bad role ordering, an unmatched tool_result, an explicit raise_exception) is\n    re-raised as ``GenerationError`` — an input-driven, client-classifiable failure, the same\n    class the generation path maps to a 400. A tokenizer *initialization* failure (missing\n    template, load error) propagates as its original exception, a server fault. Load + tokenize\n    run in a worker thread so the event loop is never blocked.\"\"\"\n    msg = TokenizeMsg(\n        uid=0,\n        text=messages,\n        sampling_params=SamplingParams(),\n        chat_template_kwargs=chat_template_kwargs,\n        tools=tools,\n    )\n    manager = await asyncio.to_thread(state.frontend_tokenizer)  # init failure -> server fault\n    try:\n        input_ids = (await asyncio.to_thread(manager.tokenize, [msg]))[0]\n    except _TemplateError as exc:\n        raise GenerationError(str(exc)) from exc\n    return int(input_ids.numel())\n\n\nasync def prerender_error(spec: GenSpec, state: Any) -> GenerationError | None:\n    \"\"\"Render ``spec``'s prompt frontend-side, returning the failure a streaming\n    adapter should surface as an HTTP 400 *before* committing an SSE stream —\n    once headers go out, a template rejection can only ride in-stream, where\n    some agents show nothing but \"empty response\". Render only; the worker\n    still renders and encodes authoritatively. Best-effort: a state without a\n    frontend tokenizer, or one that fails to *initialize*, skips validation\n    rather than blocking the generation path.\n    \"\"\"\n    build = getattr(state, \"frontend_tokenizer\", None)\n    if build is None:\n        return None\n    msg = TokenizeMsg(\n        uid=0,\n        text=spec.messages,\n        sampling_params=SamplingParams(),\n        chat_template_kwargs=spec.chat_template_kwargs,\n        tools=spec.template_tools,\n    )\n    try:\n        manager = await asyncio.to_thread(build)\n    except Exception:  # noqa: BLE001 -- server fault, not this request's problem\n        return None\n    try:\n        await asyncio.to_thread(manager.render_prompt, msg)\n    except Exception as exc:  # noqa: BLE001 -- mirror the worker's classification\n        return GenerationError(f\"could not encode request: {exc}\")\n    return None\n\n\ndef _make_reasoning_parser(spec: GenSpec, state: Any) -> ReasoningParser | None:\n    \"\"\"Build a reasoning parser for this generation, or None if the server has no\n    reasoning parser configured. ``force_reasoning`` matches the encode-side\n    thinking mode so chat-mode content is never mislabeled as reasoning.\"\"\"\n    parser_name = getattr(state.config, \"reasoning_parser\", None)\n    if parser_name == \"qwen3\":\n        # The qwen3 chat template opens an implicit <think> (thinking on) unless\n        # enable_thinking is explicitly false, so the model emits only the closing\n        # </think>. Mirror that default here, else the chain-of-thought leaks into content.\n        force_reasoning = (spec.chat_template_kwargs or {}).get(\"enable_thinking\") is not False\n    elif parser_name == \"glm\":\n        # GLM's template honors enable_thinking (default on) even with tools; the\n        # generic fallback would force thinking and mislabel disabled output as reasoning.\n        force_reasoning = (spec.chat_template_kwargs or {}).get(\"enable_thinking\") is not False\n    elif parser_name == \"gemma4\":\n        # Gemma4 defaults thinking off even when tools are present: its template injects an\n        # empty thought channel before generation. Do not let Codex tool definitions make all\n        # visible text look like hidden reasoning.\n        ctk = spec.chat_template_kwargs or {}\n        force_reasoning = (\n            ctk.get(\"thinking_mode\") == \"thinking\"\n            or bool(ctk.get(\"enable_thinking\"))\n            or bool(ctk.get(\"thinking\"))\n        )\n    elif parser_name == \"minimax_m3\":\n        # M3's template pre-opens <mm:think> only in thinking_mode \"enabled\" (the\n        # model then emits just the closing tag); \"adaptive\" (default) leaves the\n        # model to open the tag itself and \"disabled\" pre-closes it.\n        force_reasoning = (spec.chat_template_kwargs or {}).get(\"thinking_mode\") == \"enabled\"\n    else:\n        force_reasoning = (\n            resolve_thinking_mode(spec.chat_template_kwargs, spec.template_tools) == \"thinking\"\n        )\n    return build_reasoning_parser(state.config, force_reasoning)\n\n\ndef _split_reasoning(text: str, spec: GenSpec, state: Any) -> tuple[str, str]:\n    \"\"\"Return ``(reasoning, content)``. A no-op (``(\"\", text)``) when no reasoning\n    parser is configured, preserving the original behavior for other models.\"\"\"\n    parser = _make_reasoning_parser(spec, state)\n    if parser is None:\n        return \"\", text\n    return parser.parse_non_stream(text)\n\n\ndef _leaked_special_tokens(state: Any) -> list[str]:\n    \"\"\"Special-token strings to strip from output. Empty (no-op) unless the dsv4\n    reasoning parser is configured, so non-dsv4 output is untouched.\"\"\"\n    return DSV4_SPECIAL_TOKENS if getattr(state.config, \"reasoning_parser\", None) == \"deepseekv32\" else []\n\n\ndef _make_tool_parser(spec: GenSpec, state: Any) -> FunctionCallParser:\n    \"\"\"Build the tool-call parser with its turn-start state read from the prompt:\n    a muse detector receives the raw turn bytes (opened by the template's\n    ``<|start|>assistant``) only when its reasoning parser is not stacked above,\n    which otherwise delivers tool slices with full headers.\"\"\"\n    return FunctionCallParser(\n        spec.parser_tools or [],\n        getattr(state.config, \"tool_call_parser\", \"llama3\"),\n        turn_starts_open=getattr(state.config, \"reasoning_parser\", None) != \"muse_glimmer\",\n    )\n\n\ndef _parse_tool_response(\n    text: str,\n    spec: GenSpec,\n    state: Any,\n) -> tuple[str, list[ToolCallItem]] | None:\n    if not spec.parse_tools:\n        return None\n    if not any(tag in text for tag in TOOLS_TAG_LIST):\n        return None\n    parser = _make_tool_parser(spec, state)\n    result = parser.parse_non_stream(text)\n    if not result.calls:\n        return None\n    return result.normal_text, result.calls\n\n\ndef _valid_json(text: str) -> bool:\n    if not text:\n        return False\n    try:\n        json.loads(text)\n        return True\n    except (json.JSONDecodeError, ValueError):\n        return False\n\n\nKEEPALIVE = object()\n\"\"\"Sentinel yielded by with_keepalive() when the event stream has been silent.\"\"\"\n\nDEFAULT_KEEPALIVE_INTERVAL_S = 15.0\nKEEPALIVE_ENV = \"FREETOKEN_SSE_KEEPALIVE_S\"\n\n\ndef keepalive_interval_s() -> float:\n    \"\"\"Seconds of stream silence before a keep-alive frame, shared by every streaming\n    route. ``FREETOKEN_SSE_KEEPALIVE_S`` overrides it (read per call); ``0`` disables\n    keep-alives. Unset or unparsable/negative values fall back to the default.\"\"\"\n    raw = os.environ.get(KEEPALIVE_ENV)\n    if raw is None or not raw.strip():\n        return DEFAULT_KEEPALIVE_INTERVAL_S\n    try:\n        value = float(raw)\n    except ValueError:\n        return DEFAULT_KEEPALIVE_INTERVAL_S\n    return value if value >= 0 else DEFAULT_KEEPALIVE_INTERVAL_S\n\n\nasync def with_keepalive(events: AsyncIterator[GenEvent], interval: float):\n    \"\"\"Yield events from ``events``, interspersing the KEEPALIVE sentinel whenever\n    ``interval`` seconds pass without one (covers queue/prefill silence before the\n    first event too). Exceptions propagate unchanged; the pending read is cancelled\n    when the consumer closes. ``interval <= 0`` disables keep-alives (pass-through).\"\"\"\n    if interval <= 0:\n        async for ev in events:\n            yield ev\n        return\n    aiter = events.__aiter__()\n    task = None\n    try:\n        while True:\n            if task is None:\n                task = asyncio.ensure_future(aiter.__anext__())\n            try:\n                ev = await asyncio.wait_for(asyncio.shield(task), interval)\n            except asyncio.TimeoutError:\n                yield KEEPALIVE\n                continue\n            except StopAsyncIteration:\n                return\n            task = None\n            yield ev\n    finally:\n        if task is not None:\n            task.cancel()\n\n\nRETRY_AFTER_S = \"5\"\n\n\ndef retry_headers(status_code: int) -> dict[str, str] | None:\n    \"\"\"``Retry-After`` for a capacity/OOM refusal (503) so clients back off and retry.\"\"\"\n    return {\"Retry-After\": RETRY_AFTER_S} if status_code == 503 else None\n\n\nPROGRESS_HEADER = \"x-freetoken-include-progress\"\n\n\ndef progress_requested(request: Any | None) -> bool:\n    \"\"\"True when the client opted into progress frames with ``X-FreeToken-Include-Progress: 1``.\"\"\"\n    if request is None:\n        return False\n    value = request.headers.get(PROGRESS_HEADER)\n    return value is not None and value.strip().lower() in (\"1\", \"true\", \"yes\", \"on\")\n\n\ndef progress_comment(stage: str, **fields: int) -> bytes:\n    \"\"\"One progress frame as an SSE comment line, which standard SSE parsers ignore.\"\"\"\n    payload = json.dumps({\"stage\": stage, **fields}, separators=(\",\", \":\"))\n    return f\": progress {payload}\\n\\n\".encode()\n\n\ndef progress_event_comment(ev: Progress) -> bytes:\n    if ev.stage == \"prefill\":\n        return progress_comment(\"prefill\", done=ev.done, total=ev.total, reused=ev.reused)\n    return progress_comment(ev.stage)\n\n\nADMISSION_WAIT_ENV = \"FREETOKEN_ADMISSION_WAIT_S\"\nDEFAULT_ADMISSION_WAIT_S = 2.0\n\n\ndef admission_wait_s() -> float:\n    \"\"\"Longest a streaming route waits for the engine's first signal (an admission refusal,\n    a prefill-admitted ack or a token) before committing the 200 SSE response. Refusals the\n    scheduler knows up front (prompt too long, invalid params) arrive within it, so they can\n    still be a real HTTP status. ``FREETOKEN_ADMISSION_WAIT_S`` overrides it; ``0`` commits\n    immediately (refusals then ride in-stream).\"\"\"\n    raw = os.environ.get(ADMISSION_WAIT_ENV)\n    if raw is None or not raw.strip():\n        return DEFAULT_ADMISSION_WAIT_S\n    try:\n        value = float(raw)\n    except ValueError:\n        return DEFAULT_ADMISSION_WAIT_S\n    return value if value >= 0 else DEFAULT_ADMISSION_WAIT_S\n\n\nasync def prime_events(\n    events: AsyncIterator[GenEvent], wait_s: float\n) -> tuple[GenerationError | None, AsyncIterator[GenEvent]]:\n    \"\"\"Wait up to ``wait_s`` for the first event of ``events`` so a streaming route can\n    return a failure the engine already knows (a ``GenerationError`` raised before any\n    output) as a plain HTTP error instead of an in-band error on a committed 200.\n\n    Returns ``(error, stream)``. With an error, ``stream`` is exhausted. Otherwise\n    ``stream`` replays the first event (if one arrived in time) and then the rest;\n    arrival of the first event ends the wait, so the normal path adds no latency. Later\n    failures, and any non-GenerationError, propagate through ``stream`` unchanged.\"\"\"\n\n    async def _empty():\n        return\n        yield  # pragma: no cover\n\n    aiter = events.__aiter__()\n    if wait_s <= 0:\n        return None, aiter\n    task = asyncio.ensure_future(aiter.__anext__())\n    try:\n        await asyncio.wait({task}, timeout=wait_s)\n    except BaseException:\n        task.cancel()\n        raise\n    if task.done() and not task.cancelled():\n        exc = task.exception()\n        if isinstance(exc, GenerationError):\n            return exc, _empty()\n\n    async def _resume():\n        pending = task\n        try:\n            while True:\n                if pending is None:\n                    pending = asyncio.ensure_future(aiter.__anext__())\n                try:\n                    ev = await pending\n                except StopAsyncIteration:\n                    pending = None\n                    return\n                pending = None\n                yield ev\n        finally:\n            if pending is not None:\n                pending.cancel()\n            aclose = getattr(aiter, \"aclose\", None)\n            if aclose is not None and pending is None:\n                await aclose()\n\n    return None, _resume()\n\n\ndef _record_generation(\n    *,\n    source: str | None,\n    stream: bool,\n    start: float,\n    prompt_tokens: int,\n    completion_tokens: int,\n    error: str | None,\n    first_token_at: float | None = None,\n) -> None:\n    \"\"\"Log one generation request into the request ring. Every protocol adapter converges here,\n    so token totals are captured whatever endpoint served the request — unlike the HTTP\n    middleware, which for a stream records before the totals are known. `source is None` opts\n    out (those paths stay logged by the middleware).\"\"\"\n    if source is None:\n        return\n    from .api_server import _served_model_name  # lazy: api_server imports this module\n\n    request_ring.record_request(\n        request_ring.RequestRecord(\n            ts=time.strftime(\"%Y-%m-%dT%H:%M:%SZ\", time.gmtime()),\n            method=\"POST\",\n            path=source,\n            status=500 if error else 200,\n            model=_served_model_name(),\n            duration_ms=int((time.monotonic() - start) * 1000),\n            ttft_ms=int((first_token_at - start) * 1000) if first_token_at is not None else None,\n            prompt_tokens=prompt_tokens,\n            completion_tokens=completion_tokens,\n            stream=stream,\n            error=error,\n        )\n    )\n\n\nasync def generate_events(\n    uid: int, spec: GenSpec, state: Any, *, source: str | None = None, progress: bool = False\n) -> AsyncIterator[GenEvent]:\n    \"\"\"Wraps `_generate_events_impl` to log the request with its totals, read off the terminal\n    `GenDone`. The `finally` still records the row on a mid-stream disconnect — but with 0 tokens\n    if the drop lands before `GenDone`, the only event carrying the totals.\"\"\"\n    start = time.monotonic()\n    prompt_tokens = 0\n    completion_tokens = 0\n    first_token_at: float | None = None\n    error: str | None = None\n    try:\n        async for ev in _generate_events_impl(uid, spec, state, progress=progress):\n            if isinstance(ev, GenDone):\n                prompt_tokens = ev.prompt_tokens\n                completion_tokens = ev.completion_tokens\n            elif first_token_at is None:\n                first_token_at = time.monotonic()\n            yield ev\n    except GenerationError as exc:\n        error = str(exc)\n        raise\n    finally:\n        _record_generation(\n            source=source, stream=True, start=start,\n            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, error=error,\n            first_token_at=first_token_at,\n        )\n\n\nasync def generate_full(\n    uid: int, spec: GenSpec, state: Any, *, source: str | None = None\n) -> GenResult:\n    \"\"\"Wraps `_generate_full_impl` to log the request with its totals; the `finally` also records\n    a `GenerationError` as a failed row.\"\"\"\n    start = time.monotonic()\n    result: GenResult | None = None\n    error: str | None = None\n    try:\n        result = await _generate_full_impl(uid, spec, state)\n        return result\n    except GenerationError as exc:\n        error = str(exc)\n        raise\n    finally:\n        _record_generation(\n            source=source, stream=False, start=start,\n            prompt_tokens=result.prompt_tokens if result else 0,\n            completion_tokens=result.completion_tokens if result else 0,\n            error=error,\n        )\n\n\nasync def _generate_events_impl(\n    uid: int, spec: GenSpec, state: Any, *, progress: bool = False\n) -> AsyncIterator[GenEvent]:\n    \"\"\"Protocol-neutral streaming generation. Yields semantic events (reasoning /\n    content / tool-call deltas) terminated by exactly one GenDone. Produces no wire\n    format — the OpenAI/Anthropic/Responses streamers format these into their own.\n\n    With tools configured, content is parsed incrementally: plain text streams live\n    (the detector holds back only a suffix that could still grow into a tool-call\n    tag) and each tool call is emitted as one complete ToolCallsDelta as soon as it\n    closes — mid-generation, not after the whole response. Emitted ToolCallItems\n    carry the output ordinal (0, 1, ...) in tool_index. Formats whose detector\n    cannot parse incrementally (supports_streaming=False) keep the previous\n    buffer-everything-then-parse-at-the-end behavior.\"\"\"\n    prompt_tokens = 0\n    completion_tokens = 0\n    cached_tokens = 0\n    pending = \"\"\n    parse_tools = spec.parse_tools\n    reasoning_parser = _make_reasoning_parser(spec, state)\n    specials = _leaked_special_tokens(state)\n\n    tool_parser: FunctionCallParser | None = None\n    if parse_tools:\n        try:\n            candidate = _make_tool_parser(spec, state)\n        except ValueError:\n            candidate = None  # unsupported parser name: keep the buffered path's behavior\n        if candidate is not None and candidate.supports_streaming():\n            tool_parser = candidate\n    frag_stable = tool_parser.args_fragments_prefix_stable() if tool_parser else True\n\n    # Streaming tool-call assembly: detectors emit fragments (name first, then\n    # argument diffs); they accumulate here and the call is emitted complete when\n    # the next call starts, trailing text arrives, or the stream ends.\n    open_call: dict[str, Any] | None = None\n    calls_emitted = 0\n    # Swallow whitespace-only text only between a call's close and the next real\n    # text (markup separators) — NOT inside post-call prose, where a lone \" \"\n    # chunk is a legitimate word gap.\n    suppress_ws = False\n\n    def _close_open_call() -> ToolCallsDelta | None:\n        nonlocal open_call, calls_emitted\n        if open_call is None:\n            return None\n        # Streamed fragments concatenate to the exact final arguments (detectors\n        # emit prefix-stable fragments and close the JSON before the call ends);\n        # fall back to the detector's parse state when the stream was cut short.\n        params = open_call[\"params\"]\n        if not _valid_json(params):\n            params = tool_parser.unstreamed_arguments(open_call[\"detector_index\"]) or params\n        call = ToolCallItem(\n            tool_index=open_call[\"ordinal\"], name=open_call[\"name\"], parameters=params or \"{}\"\n        )\n        open_call = None\n        calls_emitted += 1\n        nonlocal suppress_ws\n        suppress_ws = True\n        return ToolCallsDelta([call])\n\n    def _route_tool_text(piece: str) -> list[GenEvent]:\n        nonlocal open_call, suppress_ws\n        out: list[GenEvent] = []\n        if not piece:\n            return out\n        for kind, payload in tool_parser.parse_stream_events(piece):\n            if kind == \"text\":\n                # Text arriving while a call is open means the call finished:\n                # close it first so wire order matches generation order.\n                done = _close_open_call()\n                if done is not None:\n                    out.append(done)\n                stripped = strip_special_tokens(payload, specials)\n                if stripped and not (stripped.strip() == \"\" and suppress_ws):\n                    out.append(ContentDelta(stripped))\n                    if stripped.strip():\n                        suppress_ws = False\n                continue\n            for frag in payload:\n                starts_new = frag.name is not None and (\n                    open_call is None or frag.tool_index != open_call[\"detector_index\"]\n                )\n                if starts_new:\n                    done = _close_open_call()\n                    if done is not None:\n                        out.append(done)\n                if open_call is None or starts_new:\n                    open_call = {\n                        \"detector_index\": frag.tool_index,\n                        \"name\": frag.name,\n                        \"params\": \"\",\n                        \"ordinal\": calls_emitted,\n                    }\n                    out.append(ToolCallStart(\n                        tool_index=calls_emitted, name=frag.name, args_prefix_stable=frag_stable,\n                    ))\n                if frag.parameters:\n                    open_call[\"params\"] += frag.parameters\n                    out.append(\n                        ToolCallArgsDelta(tool_index=open_call[\"ordinal\"], fragment=frag.parameters)\n                    )\n        return out\n\n    engine_finish_reason: str | None = None\n    engine_matched_stop: str | None = None\n    generating_sent = False\n    async for ack in state.wait_for_ack(uid):\n        if getattr(ack, \"error\", None):\n            raise GenerationError(\n                ack.error,\n                getattr(ack, \"error_code\", None),\n                getattr(ack, \"error_status_code\", 400),\n            )\n        if progress:\n            # Prompt-admission ack: the prompt length and prefix-cache hit are known and\n            # prefill is starting. First sampled token: prefill is over.\n            if ack.prompt_tokens_delta > 0:\n                yield Progress(\n                    \"prefill\", done=ack.cached_tokens, total=ack.prompt_tokens_delta,\n                    reused=ack.cached_tokens,\n                )\n            if ack.completion_tokens_delta > 0 and not generating_sent:\n                generating_sent = True\n                yield Progress(\"generating\")\n        prompt_tokens += ack.prompt_tokens_delta\n        completion_tokens += ack.completion_tokens_delta\n        cached_tokens += ack.cached_tokens\n        content_delta = ack.incremental_output\n        if reasoning_parser is not None and content_delta:\n            reasoning_delta, content_delta = reasoning_parser.parse_stream_chunk(content_delta)\n            if reasoning_delta:\n                stripped_reasoning = strip_special_tokens(reasoning_delta, specials)\n                if stripped_reasoning:  # a bare special token must not open a thinking block\n                    yield ReasoningDelta(stripped_reasoning)\n        if content_delta:\n            if tool_parser is not None:\n                for ev in _route_tool_text(content_delta):\n                    yield ev\n            elif parse_tools:\n                pending += content_delta\n            else:\n                yield ContentDelta(strip_special_tokens(content_delta, specials))\n        if ack.finished:\n            engine_finish_reason = getattr(ack, \"finish_reason\", None)\n            engine_matched_stop = getattr(ack, \"matched_stop\", None)\n            break\n\n    # Drain residue held in the reasoning parser (a deferred tool block, or a\n    # trailing partial token) so it is not silently dropped.\n    if reasoning_parser is not None:\n        flush_reasoning, flush_content = reasoning_parser.flush()\n        if flush_reasoning:\n            stripped_reasoning = strip_special_tokens(flush_reasoning, specials)\n            if stripped_reasoning:\n                yield ReasoningDelta(stripped_reasoning)\n        if flush_content:\n            if tool_parser is not None:\n                for ev in _route_tool_text(flush_content):\n                    yield ev\n            elif parse_tools:\n                pending += flush_content\n            else:\n                yield ContentDelta(strip_special_tokens(flush_content, specials))\n\n    # Engine reason (\"stop\"/\"length\"); a tool call overrides it, but a truncation (length) wins.\n    finish_reason = engine_finish_reason or \"stop\"\n\n    if tool_parser is not None:\n        # End-of-stream drain: let the detector finalize a call cut off mid-arguments\n        # (closing fragments keep the client's concatenated JSON valid), close a call\n        # whose end marker never arrived (truncated generation), best-effort recover a\n        # call cut off inside an unterminated tag block, then release text still held\n        # back for tag disambiguation.\n        for frag in tool_parser.finalize_stream():\n            if open_call is not None and frag.parameters:\n                open_call[\"params\"] += frag.parameters\n                yield ToolCallArgsDelta(tool_index=open_call[\"ordinal\"], fragment=frag.parameters)\n        done = _close_open_call()\n        if done is not None:\n            yield done\n        for item in tool_parser.recover_truncated_call():\n            yield ToolCallStart(tool_index=calls_emitted, name=item.name)\n            yield ToolCallsDelta(\n                [ToolCallItem(tool_index=calls_emitted, name=item.name, parameters=item.parameters)]\n            )\n            calls_emitted += 1\n        residual = tool_parser.finish_stream()\n        if residual:\n            stripped = strip_special_tokens(residual, specials)\n            if stripped and not (stripped.strip() == \"\" and suppress_ws):\n                yield ContentDelta(stripped)\n        if calls_emitted and finish_reason != \"length\":\n            finish_reason = \"tool_calls\"\n    else:\n        parsed = _parse_tool_response(pending, spec, state) if parse_tools else None\n        if parsed is not None:\n            normal_text, tool_calls = parsed\n            normal_text = strip_special_tokens(normal_text, specials)\n            if normal_text:\n                yield ContentDelta(normal_text)\n            yield ToolCallsDelta(tool_calls)\n            if finish_reason != \"length\":\n                finish_reason = \"tool_calls\"\n        elif parse_tools and pending:\n            yield ContentDelta(strip_special_tokens(pending, specials))\n\n    yield GenDone(\n        finish_reason, prompt_tokens, completion_tokens,\n        matched_stop=engine_matched_stop, cached_tokens=cached_tokens,\n    )\n\n\nasync def _generate_full_impl(uid: int, spec: GenSpec, state: Any) -> GenResult:\n    \"\"\"Protocol-neutral non-streaming generation: accumulate, split reasoning, parse\n    tool calls, strip special tokens. The adapters format the GenResult into their wire.\"\"\"\n    full_content = \"\"\n    prompt_tokens = 0\n    completion_tokens = 0\n    cached_tokens = 0\n    engine_finish_reason: str | None = None\n    engine_matched_stop: str | None = None\n    logprobs: list[dict[str, Any]] | None = (\n        # getattr probe: generation test doubles pass bare sampling namespaces.\n        [] if getattr(spec.sampling_params, \"logprobs\", 0) > 0 else None\n    )\n    async for ack in state.wait_for_ack(uid):\n        if getattr(ack, \"error\", None):\n            raise GenerationError(\n                ack.error,\n                getattr(ack, \"error_code\", None),\n                getattr(ack, \"error_status_code\", 400),\n            )\n        prompt_tokens += ack.prompt_tokens_delta\n        completion_tokens += ack.completion_tokens_delta\n        cached_tokens += ack.cached_tokens\n        full_content += ack.incremental_output\n        if logprobs is not None:\n            entry = openai_logprob_entry(ack)\n            if entry is not None:\n                logprobs.append(entry)\n        if ack.finished:\n            engine_finish_reason = getattr(ack, \"finish_reason\", None)\n            engine_matched_stop = getattr(ack, \"matched_stop\", None)\n            break\n\n    reasoning_text, content_text = _split_reasoning(full_content, spec, state)\n    # Engine reason (\"stop\"/\"length\"); a tool call overrides it, but a truncation (length) wins.\n    finish_reason = engine_finish_reason or \"stop\"\n    tool_calls: list[ToolCallItem] = []\n    parsed = _parse_tool_response(content_text, spec, state)\n    if parsed is not None:\n        content_text, tool_calls = parsed\n        if finish_reason != \"length\":\n            finish_reason = \"tool_calls\"\n\n    specials = _leaked_special_tokens(state)\n    return GenResult(\n        reasoning=strip_special_tokens(reasoning_text, specials).strip(),\n        content=strip_special_tokens(content_text, specials),\n        tool_calls=tool_calls,\n        finish_reason=finish_reason,\n        prompt_tokens=prompt_tokens,\n        completion_tokens=completion_tokens,\n        matched_stop=engine_matched_stop,\n        cached_tokens=cached_tokens,\n        logprobs=logprobs,\n    )\n\n\nfrom __future__ import annotations\n\nimport asyncio\nimport json\nimport time\nimport uuid\nfrom collections.abc import AsyncIterator, Callable\nfrom typing import Any\n\nfrom fastapi import FastAPI, Request\nfrom fastapi.responses import JSONResponse\nfrom freetoken.core import SamplingParams\nfrom freetoken.guided import (\n    GuidedDecodingUnavailable,\n    import_xgrammar,\n    normalize_response_format,\n    tool_constraint,\n)\nfrom freetoken.message import TokenizeMsg\nfrom freetoken.tokenizer.effort import EFFORT_SCALE, KNOWN_REASONING_EFFORTS\n\nfrom .api_models import (\n    ChatCompletionRequest,\n    CompletionRequest,\n    ModelCard,\n    ModelList,\n    ToolChoiceObject,\n)\nfrom .function_call_parser import ToolCallItem\nfrom .disconnect import ClientDisconnectedResponse, DisconnectAwareStreamingResponse\nfrom .generation import (\n    KEEPALIVE,\n    ContentDelta,\n    GenDone,\n    GenEvent,\n    GenerationError,\n    GenSpec,\n    ReasoningDelta,\n    ToolCallArgsDelta,\n    ToolCallsDelta,\n    ToolCallStart,\n    await_with_disconnect,\n    generate_events,\n    generate_full,\n    keepalive_interval_s,\n    admission_wait_s,\n    prime_events,\n    progress_event_comment,\n    progress_comment,\n    progress_requested,\n    retry_headers,\n    Progress,\n    parse_reasoning_budget,\n    prerender_error,\n    render_messages,\n    resolve_sampling,\n    submit_generation,\n    with_keepalive,\n)\nfrom .priority import resolve_request_priority\nfrom .request_logger import log_request\n\n#: The wire superset plus \"off\", DeepSeek's disable synonym that\n#: effort_toggle_kwargs has always honored.\n_ACCEPTED_EFFORTS = (*KNOWN_REASONING_EFFORTS, \"off\")\n\n\ndef _thinking_type(req: Any) -> str | None:\n    \"\"\"The DeepSeek-wire thinking toggle, or None for ab\nExplain how this serving system handles prefill and decode on a 4090. Write one paragraph of 100 to 120 words. No headings or code.",
       "events": [
-        { "at": 3154, "content": "Hot", "reasoning": "" },
-        { "at": 3158, "content": " experts", "reasoning": "" },
-        { "at": 3183, "content": " compute", "reasoning": "" },
-        { "at": 3251, "content": " directly", "reasoning": "" },
-        { "at": 3254, "content": " on", "reasoning": "" },
-        { "at": 3281, "content": " the", "reasoning": "" },
-        { "at": 3313, "content": " GPU", "reasoning": "" },
-        { "at": 3333, "content": ".", "reasoning": "" },
-        { "at": 3358, "content": " For", "reasoning": "" },
-        { "at": 3380, "content": " pinned", "reasoning": "" },
-        { "at": 3399, "content": " weights", "reasoning": "" },
-        { "at": 3421, "content": ",", "reasoning": "" },
-        { "at": 3444, "content": " the", "reasoning": "" },
-        { "at": 3467, "content": " system", "reasoning": "" },
-        { "at": 3487, "content": " prefetch", "reasoning": "" },
-        { "at": 3506, "content": "es", "reasoning": "" },
-        { "at": 3523, "content": " to", "reasoning": "" },
-        { "at": 3541, "content": " VR", "reasoning": "" },
-        { "at": 3563, "content": "AM", "reasoning": "" },
-        { "at": 3588, "content": " and", "reasoning": "" },
-        { "at": 3609, "content": " off", "reasoning": "" },
-        { "at": 3634, "content": "loads", "reasoning": "" },
-        { "at": 3650, "content": " remaining", "reasoning": "" },
-        { "at": 3668, "content": " experts", "reasoning": "" },
-        { "at": 3684, "content": " to", "reasoning": "" },
-        { "at": 3703, "content": " the", "reasoning": "" },
-        { "at": 3726, "content": " CPU", "reasoning": "" },
-        { "at": 3742, "content": " to", "reasoning": "" },
-        { "at": 3771, "content": " minimize", "reasoning": "" },
-        { "at": 3808, "content": " PCIe", "reasoning": "" },
-        { "at": 3829, "content": " latency", "reasoning": "" },
-        { "at": 3850, "content": ".", "reasoning": "" },
-        { "at": 3870, "content": " Cold", "reasoning": "" },
-        { "at": 3888, "content": " experts", "reasoning": "" },
-        { "at": 3904, "content": " rely", "reasoning": "" },
-        { "at": 3922, "content": " on", "reasoning": "" },
-        { "at": 3939, "content": " CPU", "reasoning": "" },
-        { "at": 3955, "content": " processing", "reasoning": "" },
-        { "at": 3973, "content": " backed", "reasoning": "" },
-        { "at": 3991, "content": " by", "reasoning": "" },
-        { "at": 4008, "content": " NV", "reasoning": "" },
-        { "at": 4029, "content": "Me", "reasoning": "" },
-        { "at": 4046, "content": " page", "reasoning": "" },
-        { "at": 4065, "content": " caching", "reasoning": "" },
-        { "at": 4093, "content": ".", "reasoning": "" },
-        { "at": 4113, "content": " Finally", "reasoning": "" },
-        { "at": 4136, "content": ",", "reasoning": "" },
-        { "at": 4160, "content": " a", "reasoning": "" },
-        { "at": 4181, "content": " router", "reasoning": "" },
-        { "at": 4198, "content": " aggregates", "reasoning": "" },
-        { "at": 4216, "content": " the", "reasoning": "" },
-        { "at": 4239, "content": " weighted", "reasoning": "" },
-        { "at": 4263, "content": " outputs", "reasoning": "" },
-        { "at": 4283, "content": " from", "reasoning": "" },
-        { "at": 4303, "content": " these", "reasoning": "" },
-        { "at": 4329, "content": " parallel", "reasoning": "" },
-        { "at": 4346, "content": " computations", "reasoning": "" },
-        { "at": 4365, "content": " into", "reasoning": "" },
-        { "at": 4384, "content": " a", "reasoning": "" },
-        { "at": 4405, "content": " single", "reasoning": "" },
-        { "at": 4426, "content": " unified", "reasoning": "" },
-        { "at": 4444, "content": " token", "reasoning": "" },
-        { "at": 4464, "content": " prediction", "reasoning": "" },
-        { "at": 4485, "content": ".", "reasoning": "" }
+        { "at": 7152, "content": "The", "reasoning": "" },
+        { "at": 7156, "content": " system", "reasoning": "" },
+        { "at": 7196, "content": " employs", "reasoning": "" },
+        { "at": 7285, "content": " a", "reasoning": "" },
+        { "at": 7287, "content": " staged", "reasoning": "" },
+        { "at": 7326, "content": " execution", "reasoning": "" },
+        { "at": 7356, "content": " architecture", "reasoning": "" },
+        { "at": 7376, "content": " that", "reasoning": "" },
+        { "at": 7397, "content": " lever", "reasoning": "" },
+        { "at": 7424, "content": "ages", "reasoning": "" },
+        { "at": 7444, "content": " an", "reasoning": "" },
+        { "at": 7468, "content": " RTX", "reasoning": "" },
+        { "at": 7520, "content": " ", "reasoning": "" },
+        { "at": 7575, "content": "4", "reasoning": "" },
+        { "at": 7609, "content": "0", "reasoning": "" },
+        { "at": 7647, "content": "9", "reasoning": "" },
+        { "at": 7670, "content": "0", "reasoning": "" },
+        { "at": 7699, "content": "’s", "reasoning": "" },
+        { "at": 7722, "content": " limited", "reasoning": "" },
+        { "at": 7744, "content": " video", "reasoning": "" },
+        { "at": 7766, "content": " memory", "reasoning": "" },
+        { "at": 7784, "content": " by", "reasoning": "" },
+        { "at": 7826, "content": " maintaining", "reasoning": "" },
+        { "at": 7845, "content": " twenty", "reasoning": "" },
+        { "at": 7881, "content": " layers", "reasoning": "" },
+        { "at": 7926, "content": " in", "reasoning": "" },
+        { "at": 7950, "content": " GPU", "reasoning": "" },
+        { "at": 7967, "content": "-res", "reasoning": "" },
+        { "at": 7989, "content": "ident", "reasoning": "" },
+        { "at": 8018, "content": " pinned", "reasoning": "" },
+        { "at": 8036, "content": " banks", "reasoning": "" },
+        { "at": 8057, "content": " while", "reasoning": "" },
+        { "at": 8092, "content": " off", "reasoning": "" },
+        { "at": 8134, "content": "loading", "reasoning": "" },
+        { "at": 8169, "content": " twenty", "reasoning": "" },
+        { "at": 8202, "content": "-eight", "reasoning": "" },
+        { "at": 8237, "content": " expert", "reasoning": "" },
+        { "at": 8270, "content": " layers", "reasoning": "" },
+        { "at": 8307, "content": " to", "reasoning": "" },
+        { "at": 8335, "content": " disk", "reasoning": "" },
+        { "at": 8351, "content": ".", "reasoning": "" },
+        { "at": 8386, "content": " During", "reasoning": "" },
+        { "at": 8411, "content": " cold", "reasoning": "" },
+        { "at": 8430, "content": " pre", "reasoning": "" },
+        { "at": 8458, "content": "fill", "reasoning": "" },
+        { "at": 8482, "content": ",", "reasoning": "" },
+        { "at": 8505, "content": " layer", "reasoning": "" },
+        { "at": 8525, "content": "-major", "reasoning": "" },
+        { "at": 8542, "content": " grouping", "reasoning": "" },
+        { "at": 8560, "content": " processes", "reasoning": "" },
+        { "at": 8576, "content": " chunks", "reasoning": "" },
+        { "at": 8595, "content": " sequentially", "reasoning": "" },
+        { "at": 8623, "content": " to", "reasoning": "" },
+        { "at": 8643, "content": " minimize", "reasoning": "" },
+        { "at": 8672, "content": " expensive", "reasoning": "" },
+        { "at": 8701, "content": " host", "reasoning": "" },
+        { "at": 8737, "content": "-to", "reasoning": "" },
+        { "at": 8770, "content": "-device", "reasoning": "" },
+        { "at": 8790, "content": " transfers", "reasoning": "" },
+        { "at": 8807, "content": " of", "reasoning": "" },
+        { "at": 8832, "content": " sparse", "reasoning": "" },
+        { "at": 8857, "content": " mixture", "reasoning": "" },
+        { "at": 8888, "content": "-of", "reasoning": "" },
+        { "at": 8921, "content": "-exp", "reasoning": "" },
+        { "at": 8943, "content": "erts", "reasoning": "" },
+        { "at": 8963, "content": " weights", "reasoning": "" },
+        { "at": 8984, "content": ",", "reasoning": "" },
+        { "at": 9010, "content": " achieving", "reasoning": "" },
+        { "at": 9040, "content": " sub", "reasoning": "" },
+        { "at": 9090, "content": "-tw", "reasoning": "" },
+        { "at": 9139, "content": "enty", "reasoning": "" },
+        { "at": 9188, "content": "-second", "reasoning": "" },
+        { "at": 9223, "content": " first", "reasoning": "" },
+        { "at": 9247, "content": "-token", "reasoning": "" },
+        { "at": 9267, "content": " latency", "reasoning": "" },
+        { "at": 9286, "content": " at", "reasoning": "" },
+        { "at": 9310, "content": " one", "reasoning": "" },
+        { "at": 9338, "content": " hundred", "reasoning": "" },
+        { "at": 9365, "content": " thousand", "reasoning": "" },
+        { "at": 9396, "content": " token", "reasoning": "" },
+        { "at": 9421, "content": " depths", "reasoning": "" },
+        { "at": 9441, "content": ".", "reasoning": "" },
+        { "at": 9461, "content": " The", "reasoning": "" },
+        { "at": 9486, "content": " host", "reasoning": "" },
+        { "at": 9506, "content": " memory", "reasoning": "" },
+        { "at": 9527, "content": " governor", "reasoning": "" },
+        { "at": 9560, "content": " strategically", "reasoning": "" },
+        { "at": 9581, "content": " reserves", "reasoning": "" },
+        { "at": 9604, "content": " space", "reasoning": "" },
+        { "at": 9622, "content": " for", "reasoning": "" },
+        { "at": 9641, "content": " file", "reasoning": "" },
+        { "at": 9664, "content": "-backed", "reasoning": "" },
+        { "at": 9690, "content": " expert", "reasoning": "" },
+        { "at": 9711, "content": " pages", "reasoning": "" },
+        { "at": 9732, "content": ",", "reasoning": "" },
+        { "at": 9750, "content": " preventing", "reasoning": "" },
+        { "at": 9771, "content": " swap", "reasoning": "" },
+        { "at": 9791, "content": " thr", "reasoning": "" },
+        { "at": 9820, "content": "ashing", "reasoning": "" },
+        { "at": 9847, "content": " that", "reasoning": "" },
+        { "at": 9880, "content": " previously", "reasoning": "" },
+        { "at": 9907, "content": " degraded", "reasoning": "" },
+        { "at": 9925, "content": " performance", "reasoning": "" },
+        { "at": 9956, "content": ".", "reasoning": "" },
+        { "at": 9982, "content": " For", "reasoning": "" },
+        { "at": 10006, "content": " decode", "reasoning": "" },
+        { "at": 10036, "content": ",", "reasoning": "" },
+        { "at": 10057, "content": " a", "reasoning": "" },
+        { "at": 10078, "content": " hybrid", "reasoning": "" },
+        { "at": 10097, "content": " strategy", "reasoning": "" },
+        { "at": 10117, "content": " routes", "reasoning": "" },
+        { "at": 10134, "content": " popular", "reasoning": "" },
+        { "at": 10156, "content": " experts", "reasoning": "" },
+        { "at": 10177, "content": " to", "reasoning": "" },
+        { "at": 10196, "content": " the", "reasoning": "" },
+        { "at": 10219, "content": " GPU", "reasoning": "" },
+        { "at": 10241, "content": " while", "reasoning": "" },
+        { "at": 10263, "content": " executing", "reasoning": "" },
+        { "at": 10279, "content": " colder", "reasoning": "" },
+        { "at": 10297, "content": " experts", "reasoning": "" },
+        { "at": 10314, "content": " on", "reasoning": "" },
+        { "at": 10334, "content": " the", "reasoning": "" },
+        { "at": 10363, "content": " central", "reasoning": "" },
+        { "at": 10388, "content": " processor", "reasoning": "" },
+        { "at": 10405, "content": " using", "reasoning": "" },
+        { "at": 10426, "content": " specialized", "reasoning": "" },
+        { "at": 10445, "content": " kernels", "reasoning": "" },
+        { "at": 10462, "content": ".", "reasoning": "" },
+        { "at": 10482, "content": " Idle", "reasoning": "" },
+        { "at": 10511, "content": " ticks", "reasoning": "" },
+        { "at": 10536, "content": " are", "reasoning": "" },
+        { "at": 10574, "content": " disabled", "reasoning": "" },
+        { "at": 10596, "content": " to", "reasoning": "" },
+        { "at": 10614, "content": " prevent", "reasoning": "" },
+        { "at": 10636, "content": " unnecessary", "reasoning": "" },
+        { "at": 10661, "content": " bandwidth", "reasoning": "" },
+        { "at": 10682, "content": " contention", "reasoning": "" },
+        { "at": 10701, "content": ",", "reasoning": "" },
+        { "at": 10727, "content": " and", "reasoning": "" },
+        { "at": 10748, "content": " post", "reasoning": "" },
+        { "at": 10771, "content": "-p", "reasoning": "" },
+        { "at": 10813, "content": "ref", "reasoning": "" },
+        { "at": 10846, "content": "ill", "reasoning": "" },
+        { "at": 10870, "content": " adaptation", "reasoning": "" },
+        { "at": 10889, "content": " ensures", "reasoning": "" },
+        { "at": 10907, "content": " the", "reasoning": "" },
+        { "at": 10935, "content": " expert", "reasoning": "" },
+        { "at": 10956, "content": " cache", "reasoning": "" },
+        { "at": 10975, "content": " transitions", "reasoning": "" },
+        { "at": 10996, "content": " efficiently", "reasoning": "" },
+        { "at": 11013, "content": " to", "reasoning": "" },
+        { "at": 11031, "content": " decode", "reasoning": "" },
+        { "at": 11051, "content": " patterns", "reasoning": "" },
+        { "at": 11071, "content": ".", "reasoning": "" },
+        { "at": 11093, "content": " This", "reasoning": "" },
+        { "at": 11120, "content": " design", "reasoning": "" },
+        { "at": 11143, "content": " balances", "reasoning": "" },
+        { "at": 11162, "content": " storage", "reasoning": "" },
+        { "at": 11179, "content": " constraints", "reasoning": "" },
+        { "at": 11198, "content": " with", "reasoning": "" },
+        { "at": 11222, "content": " computational", "reasoning": "" },
+        { "at": 11244, "content": " speed", "reasoning": "" },
+        { "at": 11271, "content": ",", "reasoning": "" },
+        { "at": 11294, "content": " maintaining", "reasoning": "" },
+        { "at": 11314, "content": " high", "reasoning": "" },
+        { "at": 11336, "content": " throughput", "reasoning": "" },
+        { "at": 11357, "content": " and", "reasoning": "" },
+        { "at": 11379, "content": " stable", "reasoning": "" },
+        { "at": 11400, "content": " cached", "reasoning": "" },
+        { "at": 11423, "content": "-repeat", "reasoning": "" },
+        { "at": 11445, "content": " performance", "reasoning": "" },
+        { "at": 11465, "content": " despite", "reasoning": "" },
+        { "at": 11494, "content": " the", "reasoning": "" },
+        { "at": 11515, "content": " hardware", "reasoning": "" },
+        { "at": 11535, "content": "’s", "reasoning": "" },
+        { "at": 11563, "content": " limited", "reasoning": "" },
+        { "at": 11582, "content": " capacity", "reasoning": "" },
+        { "at": 11603, "content": " for", "reasoning": "" },
+        { "at": 11622, "content": " fully", "reasoning": "" },
+        { "at": 11642, "content": " resident", "reasoning": "" },
+        { "at": 11660, "content": " model", "reasoning": "" },
+        { "at": 11679, "content": " weights", "reasoning": "" },
+        { "at": 11714, "content": ".", "reasoning": "" }
       ],
       "samples": [],
       "progress": [
-        { "at": 6, "stage": "queued" },
-        { "at": 6, "stage": "prefill", "done": 0, "total": 140, "reused": 0 },
-        { "at": 3154, "stage": "generating" }
+        { "at": 63, "stage": "queued" },
+        {
+          "at": 63,
+          "stage": "prefill",
+          "done": 0,
+          "total": 27500,
+          "reused": 0
+        },
+        { "at": 7152, "stage": "generating" }
       ],
       "statsSamples": [
         {
@@ -90,206 +215,494 @@
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 0,
-          "decodeTps": 41.5,
+          "decodeTps": 42.2,
           "vramBytes": 23653777408
         },
         {
-          "at": 202,
+          "at": 206,
           "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 40.3,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 408,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 38.5,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 609,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36.9,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 811,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36.5,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 1012,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 35,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 1213,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 34.1,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 1415,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 32.3,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 1618,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 30.5,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 1820,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 28.8,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 2021,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 26.8,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 2221,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 24.9,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 2423,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 23,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 2624,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 20.8,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 2825,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 18.9,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 3027,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 16.8,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 3227,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 15.3,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 3428,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 13.6,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 3630,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 11.6,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 3832,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 9.4,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 4033,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 7.2,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 4235,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 5.6,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 4436,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 3.4,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 4637,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 1.4,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 4838,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 5039,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 5241,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 5442,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 5644,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 5845,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 6046,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 6247,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 6448,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 6649,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 6850,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 7052,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 0,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 7254,
+          "kvUsedPages": 430,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 29.7,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 7455,
+          "kvUsedPages": 430,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36.3,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 7657,
+          "kvUsedPages": 430,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 31.7,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 7859,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 34,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 8061,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 35.2,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 8262,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 33.3,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 8464,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 34.3,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 8665,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 35.7,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 8866,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36.2,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 9067,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 9268,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 35.4,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 9470,
+          "kvUsedPages": 431,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 35.8,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 9671,
+          "kvUsedPages": 432,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36.5,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 9873,
+          "kvUsedPages": 432,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 36.8,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 10074,
+          "kvUsedPages": 432,
+          "kvTotalPages": 1570,
+          "activeRequests": 1,
+          "decodeTps": 37,
+          "vramBytes": 23653777408
+        },
+        {
+          "at": 10275,
+          "kvUsedPages": 432,
           "kvTotalPages": 1570,
           "activeRequests": 1,
           "decodeTps": 37.8,
           "vramBytes": 23653777408
         },
         {
-          "at": 404,
-          "kvUsedPages": 0,
+          "at": 10477,
+          "kvUsedPages": 432,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 34.7,
+          "decodeTps": 38.5,
           "vramBytes": 23653777408
         },
         {
-          "at": 605,
-          "kvUsedPages": 0,
+          "at": 10678,
+          "kvUsedPages": 432,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 32,
+          "decodeTps": 38.6,
           "vramBytes": 23653777408
         },
         {
-          "at": 807,
-          "kvUsedPages": 0,
+          "at": 10880,
+          "kvUsedPages": 432,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 29.8,
+          "decodeTps": 38.6,
           "vramBytes": 23653777408
         },
         {
-          "at": 1009,
-          "kvUsedPages": 0,
+          "at": 11082,
+          "kvUsedPages": 433,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 27.8,
+          "decodeTps": 39.2,
           "vramBytes": 23653777408
         },
         {
-          "at": 1211,
-          "kvUsedPages": 0,
+          "at": 11282,
+          "kvUsedPages": 433,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 26.1,
+          "decodeTps": 39.5,
           "vramBytes": 23653777408
         },
         {
-          "at": 1412,
-          "kvUsedPages": 0,
+          "at": 11484,
+          "kvUsedPages": 433,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 24.6,
+          "decodeTps": 39.7,
           "vramBytes": 23653777408
         },
         {
-          "at": 1613,
-          "kvUsedPages": 0,
+          "at": 11685,
+          "kvUsedPages": 433,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 23.2,
+          "decodeTps": 40.2,
           "vramBytes": 23653777408
         },
         {
-          "at": 1814,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 22,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 2015,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 20.9,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 2217,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 19.9,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 2418,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 19,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 2620,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 18.2,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 2822,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 17.5,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3024,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16.5,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3226,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 15.6,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3428,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 15.9,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3630,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3831,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4032,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16.4,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4234,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16.4,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4436,
-          "kvUsedPages": 4,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16.5,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4638,
+          "at": 11887,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 0,
-          "decodeTps": 15.6,
+          "decodeTps": 38.9,
           "vramBytes": 23653777408
         }
       ],
       "usage": {
-        "prompt_tokens": 140,
-        "completion_tokens": 65,
+        "prompt_tokens": 27500,
+        "completion_tokens": 184,
         "cached_tokens": 0
       },
       "finishReason": "stop",
-      "durationMs": 4638,
+      "durationMs": 11887,
       "metrics": {
-        "ttftMs": 3154,
-        "generationMs": 1331,
-        "completionTokens": 65,
-        "tokensPerSecond": 48.08414725770098
+        "ttftMs": 7152,
+        "generationMs": 4562,
+        "completionTokens": 184,
+        "tokensPerSecond": 40.113985094256904
       }
     }
   ],
@@ -300,158 +713,36 @@
     "results": [
       {
         "usage": {
-          "prompt_tokens": 142,
-          "completion_tokens": 68,
+          "prompt_tokens": 27497,
+          "completion_tokens": 182,
           "cached_tokens": 0
         },
-        "ttftMs": 2895,
-        "generationMs": 1417,
-        "completionTokens": 68,
-        "tokensPerSecond": 47.28299223712068
+        "ttftMs": 6969,
+        "generationMs": 4051,
+        "completionTokens": 182,
+        "tokensPerSecond": 44.68032584547026
       },
       {
         "usage": {
-          "prompt_tokens": 140,
-          "completion_tokens": 65,
+          "prompt_tokens": 27500,
+          "completion_tokens": 184,
           "cached_tokens": 0
         },
-        "ttftMs": 3154,
-        "generationMs": 1331,
-        "completionTokens": 65,
-        "tokensPerSecond": 48.08414725770098
+        "ttftMs": 7152,
+        "generationMs": 4562,
+        "completionTokens": 184,
+        "tokensPerSecond": 40.113985094256904
       },
       {
         "usage": {
-          "prompt_tokens": 143,
-          "completion_tokens": 85,
+          "prompt_tokens": 27494,
+          "completion_tokens": 176,
           "cached_tokens": 0
         },
-        "ttftMs": 3201,
-        "generationMs": 1932,
-        "completionTokens": 85,
-        "tokensPerSecond": 43.47826086956522
-      }
-    ],
-    "prefillChecks": [
-      {
-        "request_sha256": "c55939d551e18f71cf11e1778b7cfed3c914ea0b03bcd35fcaa48e7261010f94",
-        "usage": {
-          "prompt_tokens": 143,
-          "completion_tokens": 63,
-          "total_tokens": 206
-        },
-        "cached_tokens": 0,
-        "ttft_s": 3.3347544129937887,
-        "decode_tokens_per_s": 43.30586347579773,
-        "kind": "short",
-        "run": 0,
-        "warmup": true,
-        "isolated": true
-      },
-      {
-        "request_sha256": "ac5d6f8e9e2fc40becfd01ef6e7900571518accd99d03eae9778d0c6c7b3828e",
-        "usage": {
-          "prompt_tokens": 142,
-          "completion_tokens": 63,
-          "total_tokens": 205
-        },
-        "cached_tokens": 0,
-        "ttft_s": 3.122719366045203,
-        "decode_tokens_per_s": 45.796101678009215,
-        "kind": "short",
-        "run": 1,
-        "warmup": false,
-        "isolated": true
-      },
-      {
-        "request_sha256": "a082118a8d92dbe247dd8a57c4b6a5b52e07db6a329e8c7516eff8c27db6325e",
-        "usage": {
-          "prompt_tokens": 142,
-          "completion_tokens": 63,
-          "total_tokens": 205
-        },
-        "cached_tokens": 0,
-        "ttft_s": 3.0275030430057086,
-        "decode_tokens_per_s": 44.41649449843616,
-        "kind": "short",
-        "run": 2,
-        "warmup": false,
-        "isolated": true
-      },
-      {
-        "request_sha256": "83087ebddcd61248a65a3e4a78ab1b712914185b3d7c0b10c2932c84a7065ff6",
-        "usage": {
-          "prompt_tokens": 141,
-          "completion_tokens": 61,
-          "total_tokens": 202
-        },
-        "cached_tokens": 0,
-        "ttft_s": 2.9671592619852163,
-        "decode_tokens_per_s": 45.568237827562925,
-        "kind": "short",
-        "run": 3,
-        "warmup": false,
-        "isolated": true
-      },
-      {
-        "request_sha256": "c2d8e1d4b1974643b073a8421c3ec1d840081abb83b0812a2c7eef2ee834b143",
-        "usage": {
-          "prompt_tokens": 9932,
-          "completion_tokens": 70,
-          "total_tokens": 10002
-        },
-        "cached_tokens": 0,
-        "ttft_s": 5.365670073020738,
-        "decode_tokens_per_s": 26.038543928336832,
-        "kind": "long",
-        "run": 0,
-        "warmup": true,
-        "isolated": true
-      },
-      {
-        "request_sha256": "dd689b6fb343593465c3e0d630481b6fcc8d3485caf49511a9ce379d997f62e7",
-        "usage": {
-          "prompt_tokens": 9932,
-          "completion_tokens": 76,
-          "total_tokens": 10008
-        },
-        "cached_tokens": 0,
-        "ttft_s": 5.083982301992364,
-        "decode_tokens_per_s": 33.17657346348652,
-        "kind": "long",
-        "run": 1,
-        "warmup": false,
-        "isolated": true
-      },
-      {
-        "request_sha256": "688758f58b86ae6cdfc68ca1bf5404b6b973e832eeeef147cfb7a67dd9abb602",
-        "usage": {
-          "prompt_tokens": 9933,
-          "completion_tokens": 84,
-          "total_tokens": 10017
-        },
-        "cached_tokens": 0,
-        "ttft_s": 5.015872322022915,
-        "decode_tokens_per_s": 38.364951265358485,
-        "kind": "long",
-        "run": 2,
-        "warmup": false,
-        "isolated": true
-      },
-      {
-        "request_sha256": "80aa61849f3c35695d05b9747d90367967316507630decc66cc7a2dd3c1cdf07",
-        "usage": {
-          "prompt_tokens": 9933,
-          "completion_tokens": 81,
-          "total_tokens": 10014
-        },
-        "cached_tokens": 0,
-        "ttft_s": 4.826314998033922,
-        "decode_tokens_per_s": 37.26627627391899,
-        "kind": "long",
-        "run": 3,
-        "warmup": false,
-        "isolated": true
+        "ttftMs": 7196,
+        "generationMs": 3876,
+        "completionTokens": 176,
+        "tokensPerSecond": 45.14963880288958
       }
     ]
   }
