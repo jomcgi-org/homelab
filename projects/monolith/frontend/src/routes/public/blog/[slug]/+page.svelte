@@ -235,7 +235,7 @@
 
           <header class="ed-lead">
             <h1>{data.title}</h1>
-            <p>{data.summary}</p>
+            {#if !single}<p>{data.summary}</p>{/if}
           </header>
 
           {#if data.preamble}
