@@ -14,13 +14,16 @@ from grimoire import router, search
 from grimoire.models import (
     CampaignMember,
     Embedding,
+    Entity,
     GameSession,
+    PlayerCharacter,
     SessionEvent,
 )
 from grimoire.testing.leak_harness import ROLES, fake_knn, sqlite_harness
 from grimoire.visibility import visible_entities_query
 
 IDENTITY_KEYS = {"entity_id", "name", "entity_type", "grant_scope"}
+MISSING_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture
@@ -473,9 +476,9 @@ def test_bulk_validates_every_item_before_writes(harness, variant, status):
     elif variant == "foreign_entity":
         body["grants"] = [first, item(h, "foreign")]
     elif variant == "missing_entity":
-        body["grants"] = [first, {**first, "entity_id": "missing"}]
+        body["grants"] = [first, {**first, "entity_id": MISSING_UUID}]
     elif variant == "missing_pc":
-        second["player_character_id"] = "missing"
+        second["player_character_id"] = MISSING_UUID
     elif variant == "foreign_session":
         body["granted_in_session"] = h.rows["other_session"].id
     elif variant == "extra":
@@ -641,3 +644,67 @@ def test_reveal_search_uses_correlated_alias():
     assert "knowledge_grant_1.entity_id = grimoire.entity.id" in sql
     assert "knowledge_grant_1.campaign_id = 'campaign'" in sql
     assert "knowledge_grant_1.player_character_id = 'pc'" in sql
+
+
+@pytest.mark.parametrize(
+    "field", ["entity_id", "player_character_id", "granted_in_session"]
+)
+@pytest.mark.parametrize("malformed", [False, True])
+def test_bulk_missing_and_malformed_identifiers(harness, monkeypatch, field, malformed):
+    h = harness
+    before = h.snapshot()
+    value = "not-a-uuid" if malformed else MISSING_UUID
+    body = {"grants": [item(h, "ancestry")]}
+    if field == "granted_in_session":
+        body[field] = value
+    else:
+        body["grants"][0][field] = value
+    original_get = h.session.get
+
+    def guarded_get(model, identifier, *args, **kwargs):
+        if malformed and model in (Entity, PlayerCharacter, GameSession):
+            assert identifier != value, "malformed UUID reached a database lookup"
+        return original_get(model, identifier, *args, **kwargs)
+
+    monkeypatch.setattr(h.session, "get", guarded_get)
+    with TestClient(h.app()) as client:
+        response = call(client, h, "POST", "/grants/bulk", json=body)
+        assert response.status_code == 404
+        assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("route", ["/entities", "/search"])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_filter_invalid_pc_preserves_auth_order(harness, monkeypatch, route, malformed):
+    h = harness
+    value = "not-a-uuid" if malformed else MISSING_UUID
+    params = {"not_granted_to": value}
+    if route == "/search":
+        params["q"] = "canary"
+    original_get = h.session.get
+
+    def guarded_get(model, identifier, *args, **kwargs):
+        if malformed and model is PlayerCharacter:
+            assert identifier != value, "malformed UUID reached a database lookup"
+        return original_get(model, identifier, *args, **kwargs)
+
+    monkeypatch.setattr(h.session, "get", guarded_get)
+    with TestClient(h.app()) as client:
+        for flag in ("false", "true"):
+            monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", flag)
+            for viewer in ROLES:
+                response = call(client, h, "GET", route, viewer, params=params)
+                if viewer in ("outsider", "other_campaign"):
+                    assert response.status_code == 404
+                    assert response.json()["detail"] == "campaign not found"
+                elif flag == "false":
+                    assert response.status_code == 404
+                    assert response.json()["detail"] == "Not found"
+                elif viewer != "dm":
+                    assert response.status_code == 403
+                else:
+                    assert response.status_code == 404
+                    assert (
+                        response.json()["detail"]
+                        == "player character not found in this campaign"
+                    )
