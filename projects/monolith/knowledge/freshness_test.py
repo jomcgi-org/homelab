@@ -1,6 +1,7 @@
 """Deterministic temporal policy, non-renewal, backfill and recall contracts."""
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -21,7 +22,7 @@ from knowledge.freshness import (
 )
 from knowledge.freshness_backfill import backfill
 from knowledge.frontmatter import ParsedFrontmatter, parse
-from knowledge.models import Note
+from knowledge.models import Chunk, Note, RawInput
 from knowledge.notes import _serialize_frontmatter
 from knowledge.recall import RECALL_HEADER, expire_recall, render_related_notes
 from knowledge.store import KnowledgeStore
@@ -322,3 +323,78 @@ def test_recall_dates_and_persisted_block_expire_at_equality():
     assert expire_recall(text, now=NOW - timedelta(microseconds=1)) == text
     assert expire_recall(text, now=NOW) == "base"
     assert expire_recall(RECALL_HEADER + "legacy", now=NOW) is None
+
+
+@pytest.mark.parametrize("caller", ["api", "recall", "extraction"])
+def test_current_context_callers_exclude_due_during_hydration(
+    session, monkeypatch, caller
+):
+    from knowledge import api, extraction, recall, store as store_module
+
+    current = note("current", review_after=NOW + timedelta(seconds=1))
+    due = note("due", review_after=NOW)
+    session.add_all([current, due])
+    session.flush()
+    chunks = [
+        Chunk(
+            note_fk=row.id,
+            chunk_index=0,
+            section_header="",
+            chunk_text=row.note_id + " evidence " * 30,
+            embedding=[0.1] * 1024,
+        )
+        for row in (current, due)
+    ]
+    session.add_all(chunks)
+    session.commit()
+    # A rank result can become due before hydration, so never trust it alone.
+    monkeypatch.setattr(
+        store_module,
+        "_rank_search_chunks",
+        lambda *args, **kwargs: [
+            (current.id, chunks[0].id, 0.99),
+            (due.id, chunks[1].id, 0.99),
+        ],
+    )
+    store = KnowledgeStore(session, now=NOW)
+    monkeypatch.setattr(store_module, "KnowledgeStore", lambda db: store)
+    monkeypatch.setattr(api, "KnowledgeStore", lambda db: store)
+    monkeypatch.setenv("KNOWLEDGE_DEFAULT_REPO_SCOPE", "repo:test/repo")
+    vector = [0.1] * 1024
+    if caller == "api":
+        results = api.search_notes(session, vector, scope_filter="repo:test/repo")
+        assert [row["note_id"] for row in results] == ["current"]
+    elif caller == "recall":
+        results = recall.search_related(session, vector, limit=5)
+        assert [row["note_id"] for row in results] == ["current"]
+    else:
+        monkeypatch.setattr(extraction.raw_store, "fetch_raw", lambda key: "Raw body")
+        monkeypatch.setattr(
+            extraction,
+            "EmbeddingClient",
+            lambda: type("Embedding", (), {"embed": AsyncMock(return_value=vector)})(),
+        )
+        prompt = extraction.build_extraction_prompt(
+            session,
+            RawInput(raw_id="raw", path="raw.md", content_hash="h", source="test"),
+        )
+        assert "- [current]" in prompt
+        assert "- [due]" not in prompt
+    history = store.search_notes_with_context(vector, include_history=True)
+    assert {row["note_id"] for row in history} == {"current", "due"}
+    store._now = NOW + timedelta(seconds=1)
+    assert store.search_notes_with_context(vector) == []
+
+
+def test_planner_derived_context_marks_due_and_unknown_stale():
+    from factory.orchestration.conductor_context import _is_stale
+
+    current = {
+        "observed_at": (NOW - timedelta(days=1)).isoformat(),
+        "review_after": (NOW + timedelta(seconds=1)).isoformat(),
+        "verification_state": "verified",
+    }
+    assert not _is_stale(current, now=NOW)
+    assert _is_stale(current, now=NOW + timedelta(seconds=1))
+    assert _is_stale({**current, "review_after": None}, now=NOW)
+    assert _is_stale({**current, "verification_state": "invalidated"}, now=NOW)
