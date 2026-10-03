@@ -61,13 +61,18 @@ def resize_text(page):
     return page.evaluate("""() => {
       const rows = [...document.querySelectorAll('.factory-page, .factory-page *')]
         .map(node => ({node, size: parseFloat(getComputedStyle(node).fontSize),
-          line: getComputedStyle(node).lineHeight}));
+          line: getComputedStyle(node).lineHeight}))
+        .filter(({size}) => Number.isFinite(size));
       for (const {node, size, line} of rows) {
         node.style.setProperty('font-size', `${size * 2}px`, 'important');
         if (line !== 'normal') node.style.setProperty('line-height', `${parseFloat(line) * 2}px`, 'important');
       }
-      return {count: rows.length, verified: rows.every(({node, size}) =>
-        Math.abs(parseFloat(getComputedStyle(node).fontSize) - size * 2) < 0.1)};
+      const mismatches = rows.filter(({node, size}) =>
+        !(Math.abs(parseFloat(getComputedStyle(node).fontSize) - size * 2) < 0.1))
+        .map(({node, size}) => ({tag: node.tagName,
+          className: node.getAttribute('class'), text: node.textContent.slice(0, 60),
+          expected: size * 2, actual: getComputedStyle(node).fontSize}));
+      return {count: rows.length, verified: mismatches.length === 0, mismatches};
     }""")
 
 
@@ -261,7 +266,8 @@ def check(root, output, expected_sha):
                     assert page.evaluate("document.fonts.check('16px \"Schibsted Grotesk\"')"), "local production font failed to load"
                     if scale == 2:
                         record["text_resize"] = resize_text(page)
-                        assert record["text_resize"]["verified"], "computed text did not double"
+                        if not record["text_resize"]["verified"]:
+                            record["issues"].append(f"computed text did not double: {record['text_resize']['mismatches']}")
                     page.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
                     issues, metrics = layout_checks(page, view, scenario, width, scale)
                     record["issues"].extend(issues)

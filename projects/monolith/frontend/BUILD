@@ -10,6 +10,18 @@ npm_link_all_packages(name = "node_modules")
 
 vite_bin.vite_binary(name = "vite")
 
+# The frontend package now owns a fixture-harness README. Keep it in the
+# same indexed documentation closure as every other repository package.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        ["**/*.md"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # The public /docs manifest is a build output, not a committed file (#6446).
 # The generator selects its exact allowlisted project docs from the same
 # aggregate the repo-docs manifest reads; an edit to any other doc reruns this
@@ -283,4 +295,65 @@ apko_image(
     contents = "@monolith_frontend_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-frontend",
     tars = [":build_tar_public"],
+)
+
+# Keep synthetic preview fixtures out of the production source/build closure.
+# The dedicated Actions job compiles these real route components and runs
+# Chromium. This independent contract target makes fixture edits participate
+# in affected-target CI without making a test output an input to a build.
+js_library(
+    name = "factory_fixture_src",
+    srcs = glob(
+        ["factory-preview/**"],
+        exclude = [
+            "factory-preview/.generated/**",
+            "factory-preview/__pycache__/**",
+        ],
+    ) + [
+        "package.json",
+        "src/lib/cache-headers.js",
+        "src/lib/global.css",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/factory/activity-view.js",
+        "src/lib/public/factory/activity-view.test.js",
+        "src/lib/public/factory/activity.css",
+        "src/lib/public/factory/charts.js",
+        "src/lib/public/factory/charts.test.js",
+        "src/lib/public/factory/factory.css",
+        "src/lib/public/factory/marks.js",
+        "src/lib/public/factory/model.js",
+        "src/lib/public/factory/model.test.js",
+        "src/lib/public/factory/search-index.js",
+        "src/lib/public/factory/search-index.test.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/tokens.css",
+        "src/routes/public/slop/Trail.svelte",
+        "src/routes/public/slop/factory/+page.server.js",
+        "src/routes/public/slop/factory/+page.svelte",
+        "src/routes/public/slop/factory/activity/+page.server.js",
+        "src/routes/public/slop/factory/activity/+page.svelte",
+        "src/routes/public/slop/factory/context/+page.server.js",
+        "src/routes/public/slop/factory/context/+page.svelte",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "factory_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "factory-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":factory_fixture_src"],
 )

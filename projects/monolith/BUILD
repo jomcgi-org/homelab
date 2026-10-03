@@ -262,6 +262,7 @@ filegroup(
         "//projects/monolith/deploy:repo_docs",
         "//projects/monolith/dev/deploy:repo_docs",
         "//projects/monolith/dev/grimoire:repo_docs",
+        "//projects/monolith/frontend:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
@@ -9639,3 +9640,4 @@ py_test(
         "@pip//sqlmodel",
     ],
 )
+
