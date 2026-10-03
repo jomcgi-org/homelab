@@ -9,6 +9,11 @@ root_command=()
 if [[ "$(id -u)" -ne 0 ]]; then
 	root_command=(sudo -n)
 fi
+# Chromium resolves localhost subdomains itself, but Playwright API requests
+# use Node's system resolver. Keep both on the same synthetic loopback host.
+if ! getent ahostsv4 friends.localhost >/dev/null; then
+	printf '127.0.0.1 friends.localhost\n' | "${root_command[@]}" tee -a /etc/hosts >/dev/null
+fi
 "${root_command[@]}" apt-get update -qq
 "${root_command[@]}" apt-get install -y -qq postgresql-16 postgresql-16-pgvector python3-venv
 
