@@ -1,8 +1,17 @@
 import argparse
+import ast
+import hashlib
+import io
 import json
+from pathlib import Path
+import re
 import shutil
+import subprocess
+import tarfile
+from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from bench.cache import HARNESS_VERSION
 from bench.cli import (
@@ -13,11 +22,174 @@ from bench.cli import (
     _report,
     _resolve_snapshot_preset,
     _review_diff,
+    _snapshot,
     _write_leaderboard_json,
     build_parser,
     load_tasks,
 )
 from bench.schema import Attempt, ResultCell, TaskSpec, VerifierSpec
+
+
+ROLLOUT_PINS = {
+    "rollout-handoff-logs-01": (
+        "ff5fd6444184ff1e6dc89765a48b35d76917fb51",
+        "d04e1d47a38249ec45ff294c4ac50e0be64150f4",
+    ),
+    "rollout-http-drain-logs-01": (
+        "497aaebf50c45db54463e0ff1509f744966edf27",
+        "ff5fd6444184ff1e6dc89765a48b35d76917fb51",
+    ),
+    "factory-rollout-fence-01": (
+        "76244f3cd87198013ef7b50b1a24d2f2a502514c",
+        "497aaebf50c45db54463e0ff1509f744966edf27",
+    ),
+}
+ROLLOUT_TASKS = Path(__file__).resolve().parents[1] / "tasks"
+
+
+@pytest.mark.parametrize("task_id", ROLLOUT_PINS)
+def test_rollout_task_loads_with_exact_contract(task_id):
+    mapping = yaml.safe_load((ROLLOUT_TASKS / task_id / "task.yaml").read_text())
+    task = TaskSpec.model_validate(mapping)
+    assert task.id == task_id
+    assert (task.tier, task.task_class, task.mode) == ("hard", "code-fix", "agentic")
+    assert task.target_files == []
+    fix, parent = ROLLOUT_PINS[task_id]
+    assert task.source_commit == fix
+    assert re.fullmatch("[0-9a-f]{40}", task.source_commit)
+    assert mapping["snapshot"] == {"preset": "monolith-backend", "commit": parent}
+    assert task.verifier.kind == "pytest"
+    assert task.verifier.args["tests"]
+    for target in task.verifier.args["targets"]:
+        assert target.split("::")[0] in task.verifier.args["tests"]
+    for source in task.verifier.args["tests"].values():
+        ast.parse(source)
+        assert "timeout=0.03" not in source
+        assert 'kwargs["timeout"] = 0.03' not in source
+    if task_id == "factory-rollout-fence-01":
+        assert any(
+            "test_shutdown_during_final_admission_recheck_fences_the_physical_post[True]"
+            in target
+            for target in task.verifier.args["targets"]
+        )
+    assert task_id in {loaded.id for loaded in load_tasks(ROLLOUT_TASKS)}
+
+
+@pytest.mark.parametrize("task_id", ROLLOUT_PINS)
+def test_rollout_prompt_has_no_repair_or_hidden_grader_pointers(task_id):
+    mapping = yaml.safe_load((ROLLOUT_TASKS / task_id / "task.yaml").read_text())
+    prompt = mapping["prompt"]
+    assert "synthetic" in prompt.lower()
+    for fix, _parent in ROLLOUT_PINS.values():
+        assert fix not in prompt and fix[:9] not in prompt
+    for path in (
+        "projects/monolith",
+        "app/main.py",
+        "factory/execution/mcp.py",
+        "factory/execution/store.py",
+        "factory/execution/transport.py",
+        "factory/module.py",
+    ):
+        assert path not in prompt
+    assert not re.search(r"\b(?:factory|uvicorn|chat)\.[\w.]+:", prompt)
+    for name in (
+        "_execute_pending_message",
+        "shared_admission_check",
+        "drain_inflight_executors",
+    ):
+        assert name not in prompt
+    if task_id == "rollout-handoff-logs-01":
+        for symbol in (
+            "AGENT_ROLLOUT_HANDOFF_ENABLED",
+            "rollout_handoff_enabled",
+            "RolloutHandoffServer",
+            "begin_rollout_shutdown",
+            "rollout_shutdown_in_progress",
+            "_rollout_handoffs",
+            "_rollout_shutdown_started",
+            "_rollout_drain_started",
+            "observer_record",
+        ):
+            assert symbol not in prompt
+    if task_id == "rollout-http-drain-logs-01":
+        assert "timeout_graceful_shutdown" not in prompt
+    for name in mapping["verifier"]["args"]["tests"]:
+        assert name not in prompt
+        assert Path(name).name not in prompt
+
+
+@pytest.mark.parametrize("task_id", ROLLOUT_PINS)
+def test_rollout_snapshot_reproducible_and_gold_hidden(tmp_path, monkeypatch, task_id):
+    """Exercise the real extractor using a controlled archive, with no git or network."""
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    shutil.copyfile(ROLLOUT_TASKS / task_id / "task.yaml", task_dir / "task.yaml")
+    mapping = yaml.safe_load((task_dir / "task.yaml").read_text())
+    hidden = mapping["verifier"]["args"]["tests"]
+    files = {
+        "app/main.py": b"# historical bootstrap\n",
+        "factory/execution/mcp.py": b"# historical executor\n",
+        "core/db.py": b"# backend navigation context\n",
+        "factory/execution/response_lost_test.py": b"# parent tests must be hidden\n",
+        "ARCHITECTURE.md": b"# decisions must be hidden\n",
+        "chart/values.yaml": b"# deployment must be hidden\n",
+        **{name: b"# gold must be hidden\n" for name in hidden},
+    }
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        for name, content in sorted(files.items()):
+            info = tarfile.TarInfo("projects/monolith/" + name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    calls = []
+
+    def controlled_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "git":
+            assert command == [
+                "git",
+                "-C",
+                "offline-source",
+                "archive",
+                ROLLOUT_PINS[task_id][1],
+                "--",
+                "projects/monolith",
+            ]
+            return SimpleNamespace(stdout=archive.getvalue())
+        assert command[0] == "tar"
+        assert command[-1] == "--strip-components=2"
+        with tarfile.open(fileobj=io.BytesIO(kwargs["input"])) as tar:
+            for member in tar.getmembers():
+                destination = Path(command[3]) / Path(member.name).relative_to(
+                    "projects/monolith"
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(tar.extractfile(member).read())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", controlled_run)
+    args = argparse.Namespace(
+        repo="offline-source", tasks=str(tmp_path / "tasks"), task=task_id
+    )
+    fixture = task_dir / "fixture"
+
+    def manifest():
+        return {
+            str(path.relative_to(fixture)): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+
+    _snapshot(args)
+    first = manifest()
+    (fixture / "stray.py").write_text("# regeneration must remove this\n")
+    _snapshot(args)
+    assert manifest() == first
+    assert set(first) == {"app/main.py", "factory/execution/mcp.py", "core/db.py"}
+    assert not set(hidden) & first.keys()
+    assert len(calls) == 4
 
 
 def test_resolve_snapshot_preset_expands_and_lets_task_override():
