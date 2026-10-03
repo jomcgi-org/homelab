@@ -88,31 +88,37 @@
   const stats = $derived([
     {
       key: "Live",
+      unavailable: data.unavailable.activity,
       value: formatCount(tiles.live.value),
       spark: tiles.live.spark,
     },
     {
       key: "Sessions, 7d",
+      unavailable: data.unavailable.activity,
       value: formatCount(tiles.sessions.value),
       spark: tiles.sessions.spark,
     },
     {
       key: "Merged, 7d",
+      unavailable: data.unavailable.merges,
       value: formatCount(tiles.merged.value),
       spark: tiles.merged.spark,
     },
     {
       key: "Tokens, 7d",
+      unavailable: data.unavailable.activity,
       value: shortNumber(tiles.tokens.input),
       spark: tiles.tokens.spark,
     },
     {
       key: "Spend, 7d (list)",
+      unavailable: data.unavailable.activity,
       value: formatSpend(tiles.spend.value),
       spark: tiles.spend.spark,
     },
     {
       key: "Facts",
+      unavailable: data.unavailable.facts,
       value: formatCount(tiles.facts.value),
       spark: tiles.facts.spark,
     },
@@ -234,6 +240,34 @@
       {#if Object.values(data.unavailable).some(Boolean)}
         <p class="unavailable">Unavailable right now.</p>
       {/if}
+      <details class="mobile-stats">
+        <summary>
+          <span class="summary-numbers">
+            <span
+              >{#if data.unavailable.activity}Live unavailable{:else}<strong
+                  >{formatCount(tiles.live.value)}</strong
+                > live{/if}</span
+            >
+            <span class="summary-divider" aria-hidden="true">·</span>
+            <span
+              >{#if data.unavailable.merges}Merges unavailable{:else}<strong
+                  >{formatCount(tiles.merged.value)}</strong
+                > merged this week{/if}</span
+            >
+          </span>
+          <span class="all-stats-label">All stats</span>
+        </summary>
+        <dl class="mobile-stat-values" aria-label="All factory totals">
+          {#each stats as stat}
+            <div>
+              <dt>{stat.key}</dt>
+              <dd class="num">
+                {stat.unavailable ? "unavailable" : stat.value}
+              </dd>
+            </div>
+          {/each}
+        </dl>
+      </details>
       <dl class="stats" aria-label="Factory headline numbers">
         {#each stats as stat}
           <div>
@@ -243,7 +277,9 @@
                 <span class="added">+{stat.additions}</span>
                 <span class="deleted">−{stat.deletions}</span>
               {:else}
-                {stat.value}{#if stat.unit}<small>{stat.unit}</small>{/if}
+                {stat.unavailable
+                  ? "unavailable"
+                  : stat.value}{#if stat.unit}<small>{stat.unit}</small>{/if}
               {/if}
             </dd>
             {@html sparkSvg(stat.spark)}

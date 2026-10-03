@@ -224,3 +224,14 @@ it("leaves room for enlarged numeric ticks without removing the scale", () => {
   expect(svg.match(/text-anchor="end" fill="currentColor">/g)).toHaveLength(3);
   expect(svg).toContain('x="78" y="29.5" font-size="15"');
 });
+
+it("keeps the colored plot wide when the scale only needs two digits", () => {
+  const svg = barChartSvg(
+    "small",
+    [{ d: "2026-09-01", n: 37 }],
+    ["n"],
+    ["var(--tone-gpu)"],
+  );
+  expect(svg).toContain('data-axis-digits="2"');
+  expect(svg).toContain('<line x1="44"');
+});

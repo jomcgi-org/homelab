@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 PREFIX = "/synthetic/factory/"
@@ -60,7 +61,7 @@ def resize_text(page):
     # Text-only resize: snapshot computed pixels before applying, then double
     # every font and explicit line-height. No transform, zoom, viewport trick,
     # root-rem spacing change, or product stylesheet override hides overflow.
-    return page.evaluate("""() => {
+    return page.evaluate("""async () => {
       const rows = [...document.querySelectorAll('.factory-page, .factory-page *')]
         .map(node => ({node, size: parseFloat(getComputedStyle(node).fontSize),
           line: getComputedStyle(node).lineHeight}))
@@ -69,7 +70,11 @@ def resize_text(page):
         node.style.setProperty('font-size', `${size * 2}px`, 'important');
         if (line !== 'normal') node.style.setProperty('line-height', `${parseFloat(line) * 2}px`, 'important');
       }
-      const mismatches = rows.filter(({node, size}) =>
+      // global.css gives every element a 0.01ms reduced-motion transition.
+      // Same-turn getComputedStyle still sees its starting font size. Wait
+      // for that real browser transition before asserting computed doubling.
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const mismatches = rows.filter(({node, size}) => node.isConnected &&
         !(Math.abs(parseFloat(getComputedStyle(node).fontSize) - size * 2) < 0.1))
         .map(({node, size}) => ({tag: node.tagName,
           className: node.getAttribute('class'), text: node.textContent.slice(0, 60),
@@ -131,6 +136,44 @@ def layout_checks(page, view, scenario, width, scale):
             require(title["fontSize"] >= 13 * scale, f"mobile title too small: {title}")
 
     if view == "overview":
+        mobile = page.locator("details.mobile-stats")
+        desktop = page.locator(".home > .stats")
+        if width <= 900:
+            require(mobile.is_visible(), "mobile live/merged summary missing")
+            require(
+                mobile.get_attribute("open") is None,
+                "mobile totals expanded by default",
+            )
+            require(
+                not desktop.is_visible(), "six desktop stat boxes still shown on mobile"
+            )
+            require(
+                not any(
+                    spark.is_visible() for spark in page.locator(".home .sp").all()
+                ),
+                "tiny sparklines still visible on mobile",
+            )
+            summary = " ".join(mobile.locator("summary").inner_text().split())
+            expected = (
+                ("Live unavailable", "Merges unavailable")
+                if scenario == "error"
+                else (
+                    f"{2 if scenario == 'live' else 0} live",
+                    f"{24 if scenario == 'live' else 0} merged this week",
+                )
+            )
+            require(
+                all(value in summary for value in expected),
+                f"incorrect live/merged summary: {summary}",
+            )
+            box = mobile.locator("summary").bounding_box()
+            require(bool(box and box["height"] >= 43.9), "All stats target below 44px")
+        else:
+            require(not mobile.is_visible(), "mobile summary shown on desktop")
+            require(
+                desktop.is_visible() and desktop.locator(":scope > div").count() == 6,
+                "desktop lost six headline totals",
+            )
         for legend in page.locator(".charts .legend span").all():
             require(
                 legend.is_visible(), f"hidden chart legend: {legend.text_content()}"
@@ -150,7 +193,7 @@ def layout_checks(page, view, scenario, width, scale):
                   .map(node => { const box = node.getBoundingClientRect();
                     return {text: node.textContent, left: box.left, right: box.right};
                   }).sort((a, b) => a.left - b.left)""")
-                for previous, current in zip(labels, labels[1:]):
+                for previous, current in itertools.pairwise(labels):
                     require(
                         previous["right"] <= current["left"] + 0.1,
                         f"chart dates overlap: {previous} and {current}",
@@ -187,6 +230,48 @@ def layout_checks(page, view, scenario, width, scale):
     }).map(node => node.className)""")
     require(not animated, f"motion still running under reduced motion: {animated}")
     return issues, {"overflow": overflow, "targets": targets}
+
+
+def check_mobile_totals(page, scenario, expanded_screenshot=None):
+    details = page.locator("details.mobile-stats")
+    summary = details.locator("summary")
+    summary.focus()
+    page.keyboard.press("Enter")
+    page.locator(".mobile-stat-values").wait_for(state="visible")
+    assert details.get_attribute("open") is not None, "keyboard cannot expand All stats"
+    rows = page.locator(".mobile-stat-values > div").evaluate_all("""nodes => nodes.map(node => ({
+      label: node.querySelector('dt').textContent.trim(), value: node.querySelector('dd').textContent.trim()
+    }))""")
+    labels = [
+        "Live",
+        "Sessions, 7d",
+        "Merged, 7d",
+        "Tokens, 7d",
+        "Spend, 7d (list)",
+        "Facts",
+    ]
+    values = (
+        ["2", "164", "24", "1.5M", "$38", "26"]
+        if scenario == "live"
+        else ["unavailable"] * 6
+        if scenario == "error"
+        else ["0", "0", "0", "0", "$0", "0"]
+    )
+    assert rows == [
+        {"label": label, "value": value} for label, value in zip(labels, values)
+    ], f"All stats lost or changed totals: {rows}"
+    assert not any(spark.is_visible() for spark in page.locator(".home .sp").all()), (
+        "expanded totals restored tiny sparklines"
+    )
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), (
+        "expanded totals introduce page overflow"
+    )
+    if expanded_screenshot:
+        page.screenshot(path=str(expanded_screenshot), full_page=True)
+    summary.focus()
+    page.keyboard.press("Space")
+    page.locator(".mobile-stat-values").wait_for(state="hidden")
+    assert details.get_attribute("open") is None, "keyboard cannot collapse All stats"
 
 
 def interact(page, view):
@@ -310,7 +395,7 @@ def check(root, output, expected_sha):
                 page.clock.set_fixed_time(NOW)
                 forbidden, errors, failures = [], [], []
 
-                def guard(route):
+                def guard(route, forbidden=forbidden):
                     if not route.request.url.startswith(base):
                         forbidden.append(route.request.url)
                         route.abort()
@@ -318,8 +403,13 @@ def check(root, output, expected_sha):
                         route.continue_()
 
                 context.route("**/*", guard)
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                page.on("requestfailed", lambda request: failures.append(request.url))
+                page.on(
+                    "pageerror", lambda error, errors=errors: errors.append(str(error))
+                )
+                page.on(
+                    "requestfailed",
+                    lambda request, failures=failures: failures.append(request.url),
+                )
                 context.tracing.start(screenshots=True, snapshots=True, sources=False)
                 try:
                     page.goto(
@@ -335,7 +425,7 @@ def check(root, output, expected_sha):
                         record["text_resize"] = resize_text(page)
                         if not record["text_resize"]["verified"]:
                             record["issues"].append(
-                                f"computed text did not double: {record['text_resize']['mismatches']}"
+                                f"computed text did not double: {record['text_resize']['mismatches'][:3]}"
                             )
                     page.evaluate(
                         "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
@@ -360,6 +450,14 @@ def check(root, output, expected_sha):
                         page.screenshot(
                             path=str(output / f"{name}-opening.png"), full_page=False
                         )
+                    if view == "overview" and width <= 900:
+                        check_mobile_totals(
+                            page,
+                            scenario,
+                            output / f"{name}-expanded.png"
+                            if width == 320 and scale == 2 and scenario == "live"
+                            else None,
+                        )
                     if scenario == "live" and scale == 1:
                         interact(page, view)
                         assert page.evaluate(
@@ -374,7 +472,7 @@ def check(root, output, expected_sha):
                     assert not forbidden, f"external request: {forbidden}"
                     assert not failures, f"asset request failed: {failures}"
                     assert not errors, f"browser error: {errors}"
-                except Exception as error:
+                except (AssertionError, PlaywrightError) as error:
                     record["issues"].append(str(error))
                     page.screenshot(
                         path=str(output / f"{name}-failure.png"), full_page=True
