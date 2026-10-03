@@ -339,10 +339,12 @@
   <details class="diagram-notes">
     <summary>Memory and execution details</summary>
     <dl>
-      {#each notes.filter((note) => mode === "memory" || /^[A-Z]/.test(note.key)) as note, index}
+      {#each notes as note, index}
         <div>
           <dt>
-            {mode === "memory" ? memoryNames[index] : partNames[note.key]}
+            {mode === "memory"
+              ? memoryNames[index]
+              : (partNames[note.key] ?? phases[mode][Number(note.key) - 1])}
           </dt>
           <dd>{@html note.html}</dd>
         </div>
