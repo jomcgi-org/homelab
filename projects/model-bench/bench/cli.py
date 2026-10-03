@@ -43,7 +43,7 @@ from bench.registry import (
     load_registry,
     prune_retired,
 )
-from bench.report import render_leaderboard
+from bench.report import performance_rows, render_leaderboard
 from bench.runner import _strip_code_fence, run_cell
 from bench.schema import Attempt, ResultCell, TaskSpec
 from bench.verifiers import get_verifier, verifier_source_hash
@@ -75,6 +75,13 @@ def _load_yaml_mapping(p: Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a YAML mapping in {p}, got {type(data).__name__}")
     return data
+
+
+def _verifier_cache_repr(verifier) -> str:
+    src = verifier_source_hash(verifier.kind) if verifier.kind != "judge" else "judge"
+    return json.dumps(
+        {"kind": verifier.kind, "args": verifier.args, "src": src}, sort_keys=True
+    )
 
 
 def load_tasks(tasks_dir: Path) -> list[TaskSpec]:
@@ -597,15 +604,7 @@ async def _run(args) -> None:
             f":api_model={model.api_model or model.id}"
             f":extra={json.dumps(model.extra_body, sort_keys=True)}"
         )
-        src_hash = (
-            verifier_source_hash(task.verifier.kind)
-            if task.verifier.kind != "judge"
-            else "judge"
-        )
-        verifier_repr = json.dumps(
-            {"kind": task.verifier.kind, "args": task.verifier.args, "src": src_hash},
-            sort_keys=True,
-        )
+        verifier_repr = _verifier_cache_repr(task.verifier)
         key = cell_key(
             prompt=task.prompt,
             fixture_hash=fx,
@@ -1151,6 +1150,7 @@ def _report(args) -> None:
         # candidate tables, where their free (cost=0) rows would otherwise dominate.
         agentic_anchor_ids=anchor_ids,
         scored_tasks=scored_tasks,
+        performance_tasks=performance_rows(cells),
     )
     index_block = _index_block(
         args, tasks, agentic_groups, agentic, tier_of, anchor_ids
@@ -1230,6 +1230,11 @@ def _leaderboard_task_data(
             # not just the model-level mean.
             "cost_usd": round(cell.cost_usd, 6),
         }
+        performance = cell.attempts[0].performance
+        if performance is not None:
+            per_model_tasks[cell.model_id][cell.task_id]["performance"] = (
+                performance.model_dump()
+            )
 
     def _blurb(tid: str) -> str:
         if tid not in task_meta:
@@ -1492,7 +1497,8 @@ def _snapshot(args) -> None:
             continue
         snap = _resolve_snapshot_preset(snap)
         commit, paths = snap.get("commit"), snap.get("paths", [])
-        if not commit or not paths:
+        files = _validate_seeded_files(snap.get("files", {}))
+        if (not commit or not paths) and not files:
             print(f"{mapping.get('id')}: snapshot needs commit + paths; skipping")
             continue
         fixture = subdir / "fixture"
@@ -1500,17 +1506,18 @@ def _snapshot(args) -> None:
             shutil.rmtree(fixture)
         fixture.mkdir(parents=True)
         # git archive <commit> -- <paths> | tar -x -C fixture
-        archive = subprocess.run(
-            ["git", "-C", str(repo), "archive", commit, "--", *paths],
-            capture_output=True,
-            check=True,
-            timeout=120,
-        )
         tar_cmd = ["tar", "-x", "-C", str(fixture)]
         strip = snap.get("strip_components")
         if strip:
             tar_cmd.append(f"--strip-components={strip}")
-        subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
+        if commit and paths:
+            archive = subprocess.run(
+                ["git", "-C", str(repo), "archive", commit, "--", *paths],
+                capture_output=True,
+                check=True,
+                timeout=120,
+            )
+            subprocess.run(tar_cmd, input=archive.stdout, check=True, timeout=120)
         # Overlays lay files from other commits on top, with the same strip, so a
         # fixture can pair one layer at the fix's parent with another layer that
         # already ships the contract the model must wire to (e.g. the app's env
@@ -1547,6 +1554,11 @@ def _snapshot(args) -> None:
                     path.unlink()
             elif path.is_dir() and not any(path.iterdir()):
                 path.rmdir()
+        for rel, content in files.items():
+            dest = (fixture / rel).resolve()
+            dest.relative_to(fixture.resolve())
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content)
         # Planted edits (e.g. seeded review bugs) live in task.yaml, never in git, so
         # the fixture still regenerates deterministically from the pinned commit.
         _apply_snapshot_patches(fixture, snap.get("patches", []))
@@ -1563,8 +1575,21 @@ def _snapshot(args) -> None:
             )
         n = sum(1 for _ in fixture.rglob("*") if _.is_file())
         print(
-            f"{mapping.get('id')}: snapshotted {n} file(s) from {commit[:12]} into {fixture}"
+            f"{mapping.get('id')}: snapshotted {n} file(s) from {(commit or 'seeded files')[:12]} into {fixture}"
         )
+
+
+def _validate_seeded_files(files: dict) -> dict[str, str]:
+    """Validate every seed before removing or writing any fixture files."""
+    if not isinstance(files, dict):
+        raise TypeError("snapshot.files must be a mapping of paths to text")
+    for rel, content in files.items():
+        if not isinstance(rel, str) or not isinstance(content, str):
+            raise TypeError("snapshot.files paths and contents must be strings")
+        path = Path(rel)
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise ValueError(f"snapshot.files path escapes fixture: {rel!r}")
+    return files
 
 
 def _calibrate(args) -> None:

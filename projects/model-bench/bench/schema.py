@@ -116,12 +116,33 @@ class TaskSpec(BaseModel):
     axes: list[Literal["judgement", "security", "review"]] = Field(default_factory=list)
 
 
+class PerformanceSample(BaseModel):
+    baseline_s: float = Field(gt=0, allow_inf_nan=False, strict=True)
+    candidate_s: float = Field(gt=0, allow_inf_nan=False, strict=True)
+    order: Literal["baseline-first", "candidate-first"]
+
+
+class PerformanceRecord(BaseModel):
+    metric: Literal["wall_clock_median_paired_ratio"] = "wall_clock_median_paired_ratio"
+    correctness: bool | None
+    warmup: list[PerformanceSample] = Field(default_factory=list)
+    samples: list[PerformanceSample] = Field(default_factory=list)
+    ratios: list[float] = Field(default_factory=list)
+    median_ratio: float | None = None
+    highest_bucket: float | None = None
+    score: float = Field(ge=0, le=1)
+    pass_threshold: float = Field(ge=0, le=1)
+    pair_count: int = Field(gt=0)
+    fixture_version: str
+
+
 class Attempt(BaseModel):
     passed: bool
     feedback: str
     # 0..1 partial credit from a graded verifier; None for binary verifiers and for
     # cells cached before scores existed.
     score: float | None = None
+    performance: PerformanceRecord | None = None
     latency_ms: int
     prompt_tokens: int
     completion_tokens: int

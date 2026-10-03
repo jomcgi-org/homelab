@@ -54,15 +54,133 @@ graded score. Failed cells without a score count as 0; harness errors are exclud
 
 ## Performance (speedup) tasks
 
-The `speedup` verifier grades a performance change. task.yaml carries the original
-module (`baseline`) and a hidden harness script. The harness first checks that the
-candidate's output equals the original's, on edge cases and on the benchmark inputs,
-then times both in one process, interleaved, on fresh inputs per pair so caching
-across calls cannot help. Any output difference scores 0. Wall-time ratios are noisy,
-so the score is bucketed (`buckets: [[min_speedup, score], ...]`) with gaps wide
-enough that run-to-run noise does not flip a bucket. `stars-grid-speedup-01` asks
-for a faster point-in-polygon grid generator: micro-optimisation stays in the bottom
-bucket, a per-row scanline reaches 0.75, and an edge-bucket scanline reaches 1.0.
+The `speedup` verifier grades correctness and performance separately. New tasks
+opt into `protocol: paired-v1`. The trusted helper checks the frozen baseline
+against independent oracle cases before importing the candidate. It checks the
+candidate against those cases and compares both outputs on every benchmark pair.
+A wrong answer earns zero credit, however fast it returns.
+
+There is one discarded warm-up pair, then seven measured pairs by default
+(`pairs` overrides the count). Measured pairs alternate baseline-first and
+candidate-first. The task's `make_input(seed)` builds identical positional
+arguments separately for both sides, using the fixed task seed plus the pair
+index. Arguments are deep-copied and retained throughout the run, preventing
+input mutation and object-identity reuse across calls. Only the function call is
+timed. Imports, fixture generation, argument construction, copying and correctness
+checks are excluded. The helper binds `time.perf_counter_ns` before candidate
+import and reports raw seconds, never a ratio.
+
+The verifier computes baseline/candidate for each measured pair, takes the median
+ratio, and awards the highest cleared bucket. Exact boundaries are inclusive.
+Bucket scores and `pass_threshold` are rounded to 12 decimal places so a YAML
+decimal for 1/3 qualifies at the 2x bucket. The #6696 ladder is 0 below 2x,
+1/3 at 2x, 2/3 at 10x and 1 at 50x, with a 1/3 pass threshold. A correct answer
+below the first bucket records correctness true and score zero.
+
+For a stdlib-only task, the interpreter defaults to the bench's own
+`sys.executable`; `python` overrides it. No monolith venv is needed. Grading uses
+a fresh temporary directory with only `editable` Python files, the trusted
+`baseline`, harness and helper. The interpreter runs with `-I -B -S` and a
+scrubbed environment. Candidate workdir files, site hooks and bytecode are
+excluded. The helper loads implementation files directly by path; candidate
+imports are restricted to the per-task stdlib `allowed_imports`, with no local
+or relative imports. The helper source participates in the verifier cache hash.
+
+Before import, AST checks reject dangerous imports, reflective builtins (including
+dynamic `type` construction), private, dunder or frame attributes, attribute
+writes, wildcard/private imports and dunder
+identifiers (except `__del__`, whose teardown output is suppressed). The default
+import set is `__future__`, `math`, `collections`, `itertools`, `functools`,
+`bisect` and `heapq`. Tasks may explicitly allow `random`, `statistics`, `json`,
+`re`, `array`, `decimal`, `fractions` and `operator`; reflective helpers such as
+`attrgetter` and `methodcaller` remain forbidden. Process and interpreter modules
+including `sys`, `os`, `gc`, `inspect`, `ctypes`, `importlib`, `builtins`, `time`,
+`threading`, `multiprocessing`, `subprocess`, `signal`, `atexit`, `io` and
+`pathlib` cannot be allowed.
+
+The verifier sends a random nonce on stdin. The helper reads it before candidate
+import, emits exactly one authenticated result, flushes and calls `os._exit`.
+Import-time prints and finalizer JSON cannot replace that result. The AST policy
+is a restricted Python contract, not a general security sandbox: memory/CPU
+exhaustion and undiscovered interpreter or library escapes remain possible.
+Keep harnesses trusted and run candidates in disposable workers. Timing remains
+sensitive to hardware, scheduling and the frozen dataset. Reports label those
+datasets; these ratios make no production-speedup claim.
+
+Outcome taxonomy:
+
+- `[harness error]`: missing interpreter, setup or harness failure, baseline oracle
+  failure, invalid/non-positive/non-finite samples, wrong pair counts/order, or an
+  unparsable, missing or ambiguous authenticated result. Aggregation excludes
+  these cells and they earn no credit.
+- Graded failure: rejected candidate source, import/call exception, or an oracle
+  or paired-output mismatch. Passed false, score zero, correctness false.
+- Timeout: the bounded `timeout_s` expired. Passed false, score zero, correctness
+  unknown. This is a graded failure.
+- Correct: correctness true, with score and pass status determined by the buckets.
+
+`VerifyResult.performance` and `Attempt.performance` carry the typed
+`PerformanceRecord`: metric identity, correctness, warm-up and measured samples
+(`baseline_s`, `candidate_s`, `order`), ratios, median ratio, highest bucket, score,
+threshold, pair count and `fixture_version`. Markdown reports show per-model
+performance rows, and JSON retains the whole record. Old cells default this field
+to null; their report rows and non-performance report output stay unchanged.
+
+Example verifier block (the injected `benchmark` function is the helper API;
+the task harness does not import or emit results itself):
+
+```yaml
+verifier:
+  kind: speedup
+  args:
+    protocol: paired-v1
+    editable: [mod.py]
+    allowed_imports: [__future__, collections, math]
+    pairs: 7
+    seed: 6696
+    fixture_version: toy-seeded-v1
+    timeout_s: 60
+    buckets: [[2, 0.3333333333333333], [10, 0.6666666666666666], [50, 1.0]]
+    pass_threshold: 0.3333333333333333
+    baseline:
+      path: _base.py
+      source: |
+        def total(xs):
+            return sum(xs)
+    harness: |
+      def build(seed):
+          return ([i + seed for i in range(200)],)
+      benchmark(candidate_path="mod.py", baseline_path="_base.py",
+                function="total", make_input=build,
+                oracle_cases=[(([],), 0), (([1, 2, 3],), 6)])
+```
+
+`oracle_cases` is a nonempty iterable of `(positional_args_tuple, expected_output)`.
+`make_input(seed)` returns a tuple of positional arguments. Call `benchmark` once.
+Both implementations export the named `function`. The fixed-seed builder must
+cover the task's benchmark workload; independent oracle cases cover its semantic
+edge cases. New tasks pin source provenance and a fixture version in task.yaml.
+
+For task-local seeded implementations, `bench snapshot` also accepts:
+
+```yaml
+snapshot:
+  files:
+    mod.py: |
+      def total(xs):
+          return sum(xs)
+```
+
+`files` paths are validated relative to `fixture/`. With seeded files, `commit`
+and `paths` are optional; supplying both extracts the pinned source first, then
+adds or replaces the seeded files. Existing overlays, excludes and patches keep
+their behavior. Fixtures remain gitignored and reproducible from task.yaml.
+
+Legacy harnesses that print `{ok, speedup, detail}` remain supported in a fresh
+directory with inferred script/import paths and the bench interpreter. Their
+self-reported timing contract remains a compatibility limitation; they do not
+receive the authenticated paired protocol or structured samples.
+`stars-grid-speedup-01` retains its original task.yaml, buckets and threshold.
 
 
 The `checks` verifier is the general form: a hidden task-authored script runs with

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from bench.schema import PerformanceRecord
+
 
 @dataclass
 class VerifyResult:
@@ -13,6 +15,7 @@ class VerifyResult:
     # Graded verifiers (e.g. mutation) report a 0..1 score alongside the pass/fail
     # gate so partial credit is recorded; binary verifiers leave it None.
     score: float | None = None
+    performance: PerformanceRecord | None = None
 
     def __post_init__(self) -> None:
         if self.score is not None and not (
@@ -46,6 +49,8 @@ def verifier_source_hash(kind: str) -> str:
     fn = get_verifier(kind)
     module = inspect.getmodule(fn)
     src = inspect.getsource(module) if module is not None else ""
+    for dependency in getattr(fn, "source_dependencies", ()):
+        src += inspect.getsource(dependency)
     return hashlib.sha256(src.encode()).hexdigest()[:8]
 
 
