@@ -122,3 +122,92 @@ describe("UTC windows", () => {
     expect(rows.at(-1)).toEqual({ d: "2026-09-07" });
   });
 });
+
+describe("phone chart layout", () => {
+  it("uses a legible aspect ratio and labels both range ends inside the viewBox", () => {
+    const svg = barChartSvg(
+      "phone",
+      [
+        { d: "2026-09-01", luna: 4 },
+        { d: "2026-09-30", luna: 6 },
+      ],
+      ["luna"],
+      ["var(--tone-gpu)"],
+      "Sessions per day",
+    );
+    expect(svg).toContain('viewBox="0 0 360 176"');
+    expect(svg).toContain(
+      'font-size="15" text-anchor="start" fill="currentColor">09·01',
+    );
+    expect(svg).toContain(
+      'font-size="15" text-anchor="end" fill="currentColor">09·30',
+    );
+    expect(svg).toContain('aria-label="Sessions per day"');
+    expect(svg).toContain("<desc>2026-09-01 to 2026-09-30. luna: 10.</desc>");
+  });
+
+  it("escapes chart labels and descriptions without changing the underlying totals", () => {
+    const svg = barChartSvg(
+      "phone",
+      [{ d: "2026-09-01", "<bad>": 3 }],
+      ["<bad>"],
+      ["var(--tone-gpu)"],
+      'Sessions <script> & "test"',
+    );
+    expect(svg).not.toContain("<script>");
+    expect(svg).not.toContain("<bad>");
+    expect(svg).toContain(
+      'aria-label="Sessions &lt;script&gt; &amp; &quot;test&quot;"',
+    );
+    expect(svg).toContain("&lt;bad&gt;: 3.");
+  });
+
+  it("names the empty state without inventing a dated series", () => {
+    const svg = barChartSvg("empty", [], ["luna"], ["var(--tone-gpu)"]);
+    expect(svg).toContain("<desc>No recorded days.</desc>");
+    expect(svg).not.toContain("<rect ");
+  });
+});
+
+describe("date label spacing", () => {
+  it.each([7, 8, 14, 18, 25, 26, 27, 30, 60, 90])(
+    "keeps boundary and weekly labels apart in a %i-day range",
+    (length) => {
+      const start = Date.UTC(2026, 8, 1);
+      const rows = Array.from({ length }, (_, index) => ({
+        d: new Date(start + index * 86400000).toISOString().slice(0, 10),
+        value: index + 1,
+      }));
+      const svg = barChartSvg("spacing", rows, ["value"], ["var(--tone-gpu)"]);
+      const labels = [
+        ...svg.matchAll(
+          /<text x="([\d.]+)" y="169" font-size="15" text-anchor="(start|middle|end)" fill="currentColor">(\d\d·\d\d)<\/text>/g,
+        ),
+      ];
+      expect(labels[0][3]).toBe("09·01");
+      expect(labels.at(-1)[3]).toBe(rows.at(-1).d.slice(5).replace("-", "·"));
+      let previousEnd = 0;
+      for (const [, x, anchor] of labels) {
+        const width = 48.75;
+        const start =
+          Number(x) -
+          (anchor === "end" ? width : anchor === "middle" ? width / 2 : 0);
+        expect(start).toBeGreaterThanOrEqual(previousEnd);
+        previousEnd = start + width;
+        expect(previousEnd).toBeLessThanOrEqual(360);
+      }
+    },
+  );
+});
+
+it("describes series using the same language as their visible legend", () => {
+  const svg = barChartSvg(
+    "facts",
+    [{ d: "2026-09-01", v: 3, u: 2 }],
+    ["v", "u"],
+    ["var(--tone-ram)", "hatch"],
+    "Facts written per day",
+    ["verified", "unverified"],
+  );
+  expect(svg).toContain("verified: 3; unverified: 2.");
+});

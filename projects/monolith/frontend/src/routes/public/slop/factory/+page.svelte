@@ -234,24 +234,24 @@
       {#if Object.values(data.unavailable).some(Boolean)}
         <p class="unavailable">Unavailable right now.</p>
       {/if}
-      <div class="stats">
+      <dl class="stats" aria-label="Factory headline numbers">
         {#each stats as stat}
           <div>
-            <div class="k">{stat.key}</div>
-            <div class="v num">
+            <dt class="k">{stat.key}</dt>
+            <dd class="v num">
               {#if stat.additions}
                 <span class="added">+{stat.additions}</span>
                 <span class="deleted">−{stat.deletions}</span>
               {:else}
                 {stat.value}{#if stat.unit}<small>{stat.unit}</small>{/if}
               {/if}
-            </div>
+            </dd>
             {@html sparkSvg(stat.spark)}
           </div>
         {/each}
-      </div>
+      </dl>
 
-      <div class="charts">
+      <div class="charts" aria-label="Factory trends">
         <div class="chart">
           <p class="sec-label">/ Sessions per day</p>
           {#if data.unavailable.activity}
@@ -268,6 +268,8 @@
                 "var(--ink-3)",
                 "hatch",
               ],
+              "Sessions per day",
+              ["luna", "sol, terra", "claude", "spark", "other"],
             )}
           {/if}
           <p class="legend">
@@ -288,6 +290,8 @@
               merges,
               ["feat", "fix", "docs", "rest"],
               ["var(--tone-ram)", "var(--tone-gpu)", "var(--accent)", "hatch"],
+              "Merged to main per day",
+              ["feat", "fix", "docs", "chore, test, other"],
             )}
           {/if}
           <p class="legend">
@@ -308,6 +312,8 @@
               facts,
               ["v", "u"],
               ["var(--tone-ram)", "hatch"],
+              "Facts written per day",
+              ["verified", "unverified"],
             )}
           {/if}
           <p class="legend">
@@ -396,7 +402,7 @@
 
         <div class="goals">
           <p class="sec-label">
-            / Lane
+            / Current work
             <a class="win" href="/slop/factory/activity">all activity ›</a>
           </p>
           {#if data.unavailable.board}
@@ -406,11 +412,12 @@
               {#each lane.live as task, index (`${task.issue_number}-${index}`)}
                 <li>
                   <a href={`/slop/factory/activity/${task.issue_number}`}>
-                    <span class="mark {taskMark(task.state)}"></span>
+                    <span class="mark {taskMark(task.state)}" aria-hidden="true"
+                    ></span>
                     <span class="n num">#{task.issue_number}</span>
                     <span class="t">{task.title}</span>
                     <span class="m"
-                      >{task.phase} · {relative(
+                      >{task.phase || task.state} · {relative(
                         task.admitted_at,
                         laneNow,
                       )}</span
@@ -421,7 +428,8 @@
               {#each lane.done as task, index (`${task.issue_number}-${index}`)}
                 <li class="done">
                   <a href={`/slop/factory/activity/${task.issue_number}`}>
-                    <span class="mark {taskMark(task.state)}"></span>
+                    <span class="mark {taskMark(task.state)}" aria-hidden="true"
+                    ></span>
                     <span class="n num">#{task.issue_number}</span>
                     <span class="t">{task.title}</span>
                     <span class="m"
