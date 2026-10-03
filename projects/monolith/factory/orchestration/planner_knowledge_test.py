@@ -1050,8 +1050,7 @@ def test_persisted_followup_notes_expire_on_replay(planner_db):
     current = conductor_context._planner_factory_context(task_id)
     assert current["ok"] is True
     notes = {
-        note["note_id"]: note
-        for note in current["followups"][0]["knowledge"]["notes"]
+        note["note_id"]: note for note in current["followups"][0]["knowledge"]["notes"]
     }
     assert notes["due-note"]["stale"] is True
     assert notes["due-note"]["review_after"] == deadline.isoformat()
@@ -1083,6 +1082,9 @@ def test_followup_refresh_fails_closed_at_equality():
             }
         }
     ]
-    assert _refresh_followup_notes(followups, now=deadline)[0]["knowledge"][
-        "notes"
-    ][0]["stale"] is True
+    assert (
+        _refresh_followup_notes(followups, now=deadline)[0]["knowledge"]["notes"][0][
+            "stale"
+        ]
+        is True
+    )
