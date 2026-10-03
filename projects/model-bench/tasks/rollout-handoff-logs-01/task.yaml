@@ -514,8 +514,8 @@ verifier:
                 finally:
                     # Release even after a baseline assertion fails, so no tasks leak.
                     release.set()
-                if not task.done() and not task.cancelling():
-                    task.cancel()
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
                     try:
                         await task
                     except asyncio.CancelledError:
