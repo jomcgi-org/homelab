@@ -177,6 +177,7 @@ def _go_findings(root: Path, changes: list[str]) -> Counter:
                     "--no-config",
                     "--output.text.path=",
                     "--output.json.path=stdout",
+                    "--show-stats=false",
                     "--issues-exit-code=1",
                     "--modules-download-mode=readonly",
                     f"--timeout={LINT_TIMEOUT}s",
