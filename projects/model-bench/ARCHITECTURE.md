@@ -12,6 +12,9 @@ checks baseline oracles, loads candidate code after AST screening, and measures
 fresh identical inputs in alternating pairs. The parent verifier validates raw
 samples and computes scores. Helper source and task verifier arguments are part
 of the cache identity. Legacy tasks retain their existing grading contract.
+Pure-function task harnesses opt into input-mutation checks outside timing.
+The climatology task pins a naive fixture with exact integer sums and the
+endpoint's first-valid-row stable tie order. Its references remain model-hidden.
 
 **Why.** Correctness-gated buckets distinguish an algorithmic improvement from a
 fast wrong answer. A discarded warm-up and seven alternating pairs reduce order
@@ -24,4 +27,4 @@ and fixture version; they make no claim about current production algorithms.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Correctness-gated paired-median speedup buckets on frozen seeded fixtures | Performance grading | #6696 | Infrastructure implemented; climatology and rollup task packs planned |
+| Correctness-gated paired-median speedup buckets on frozen seeded fixtures | Performance grading | #6696 | Infrastructure and climatology fixture implemented; rollup task pack follows in part 3 |

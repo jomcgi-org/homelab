@@ -28,6 +28,8 @@ py_library(
     ],
     imports = [".."],
     visibility = ["//projects/model-bench:__subpackages__"],
+    # The smoke test reads the actual task YAML and model-hidden references.
+    data = ["//projects/model-bench:stars_climatology_perf_data"],  # keep
     deps = [
         "//projects/model-bench/bench/verifiers",
         "@pip//httpx",

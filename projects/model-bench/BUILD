@@ -17,6 +17,17 @@
 # turn fixtures into build targets or semgrep-scan deliberately flawed fixture code.
 # gazelle:exclude tasks
 
+# Hand-authored test data; Gazelle still generates the Python test targets.
+filegroup(
+    name = "stars_climatology_perf_data",
+    srcs = [
+        "tasks/stars-climatology-perf-01/task.yaml",
+        "tasks/stars-climatology-perf-01/reference/algorithmic.py",
+        "tasks/stars-climatology-perf-01/reference/micro.py",
+    ],
+    visibility = ["//projects/model-bench/bench:__pkg__"],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(

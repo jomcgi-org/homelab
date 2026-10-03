@@ -162,6 +162,10 @@ verifier:
 Both implementations export the named `function`. The fixed-seed builder must
 cover the task's benchmark workload; independent oracle cases cover its semantic
 edge cases. New tasks pin source provenance and a fixture version in task.yaml.
+For pure-function tasks, `benchmark(..., require_pure_inputs=True)` also rejects
+input mutation in oracle and timed calls. Input copies and comparisons happen
+outside timing. A mutating baseline is a harness error; a mutating candidate is a
+graded correctness failure. The default is false for existing harnesses.
 
 For task-local seeded implementations, `bench snapshot` also accepts:
 
@@ -183,6 +187,76 @@ directory with inferred script/import paths and the bench interpreter. Their
 self-reported timing contract remains a compatibility limitation; they do not
 receive the authenticated paired protocol or structured samples.
 `stars-grid-speedup-01` retains its original task.yaml, buckets and threshold.
+
+### Stars climatology fixture
+
+`stars-climatology-perf-01` is an agentic hard-tier task with shell execution and
+40 turns. It seeds `climatology.py` and a runnable stdlib unittest file through
+`snapshot.files`. The module is a deliberately naive benchmark fixture derived
+from endpoint semantics, not current production code. Provenance is main commit
+`5086f428e23b64d40a9abc6eb450f0f62c9e3f83`, `stars/router.py:get_history`,
+`stars/models.py`, `stars/router_test.py` and `stars/climatology_test.py`, with the
+existing `stars-climatology-months-01` task as a functional-contract reference.
+Fixture and dataset version: `stars-climatology-seeded-v1`.
+
+The pure function takes site metadata and climatology rows as plain dictionaries.
+It returns the endpoint's `sites` and `count`, preserving only `id`, `name`, `lat`
+and `lon` alongside 12-element `clear` and `dark` arrays. Duplicate rows add their
+hours. Missing months contribute zero; invalid months and unknown sites are
+ignored. All-zero-dark sites are omitted. Yearly clear totals sort descending;
+ties retain first valid-row encounter order, derived from the endpoint's
+insertion-ordered aggregation and stable sort. A zero-hour valid row still sets
+that order. Hour quantities are nonnegative integers, including large integers,
+so equality is exact. Identity floats are copied unchanged; no tolerance applies.
+
+The baseline rescans all rows for each site/month cell, doing `12 * sites * rows`
+comparisons. Its YAML anchor is shared byte-for-byte with the seeded module.
+Only that module is editable. Protected copies of all 12 visible semantic cases
+and 50 independently computed fixed-seed oracle cases run before timing. They
+cover empty inputs, sites with no rows, missing months, invalid months (0, 13,
+-1), duplicate rows, zero-dark omissions, sort ties, a single site, unknown sites
+and long ids. The helper checks purity and output on every timed pair as well.
+
+The frozen timing dataset uses 220 sites, shuffled metadata/rows, three rows per
+populated month, missing months, omitted sites, invalid rows and unknown ids.
+The seed is 6696; each pair uses a fresh seed offset. There is one warm-up and
+seven alternating measured pairs, with a 120-second timeout. `harness_args: [N]`
+changes site count for local smoke testing; the default grading size is 220.
+Scores are 0 below 2x, 1/3 at 2x, 2/3 at 10x and 1 at 50x; the pass threshold is
+the same rounded 1/3 as the first bucket. Timing excludes fixture construction,
+imports, input copies, correctness checks and purity comparisons.
+
+The model-hidden `reference/` directory includes a preallocated-array
+micro-optimisation that retains the rescans, and an indexed algorithmic reference.
+It is outside `fixture/` and never materialized by snapshot. The Bazel smoke test
+loads the real YAML, materializes its files, runs visible tests and the real
+verifier with the bench interpreter, and checks baseline, wrong and algorithmic
+candidates. Its reduced 90-site workload uses a generous 2x reference floor.
+Adversarial probes include duplicate overwrites, incorrect month indexing, sort
+and identity changes, zero-dark leaks, poisoned visible tests, forged results and
+input mutations in both oracle and timed calls. Old-cache and forged-sample tests
+remain in the shared verifier/CLI suite.
+
+Local calibration on October 3, 2026 used a Firecracker guest with two vCPUs,
+Intel Xeon Processor at 2.80 GHz, Linux 6.18.35 x86_64 and Python 3.12.15. Three
+full-size grading runs per implementation produced these paired-median ratios:
+
+| Candidate | Run 1 | Run 2 | Run 3 | Highest bucket | Score |
+| --- | --- | --- | --- | --- | --- |
+| Seeded baseline | 1.018x | 1.000x | 1.001x | none | 0 |
+| Micro-optimisation | 0.981x | 1.012x | 1.016x | none | 0 |
+| Algorithmic reference | 301.81x | 284.37x | 290.05x | 50x | 1 |
+
+All runs passed correctness and stayed in the same bucket. Individual baseline
+calls took 0.748 to 0.882 seconds; whole grading runs took 7.493 to 15.097 seconds.
+These ratios describe this frozen fixture on this machine. They make no claim
+about production endpoint throughput or a model's ability to find an improvement.
+To reproduce without a model API, run from the repo root with the bench's Python
+dependencies available:
+
+```bash
+PYTHONPATH=projects/model-bench python projects/model-bench/tasks/stars-climatology-perf-01/reference/calibrate.py
+```
 
 
 The `checks` verifier is the general form: a hidden task-authored script runs with

@@ -50,7 +50,8 @@ def run_harness(harness_path, pair_count, seed):
     load = _load
     results, retained_inputs = [], []
 
-    def benchmark(*, candidate_path, baseline_path, function, make_input, oracle_cases):
+    def benchmark(*, candidate_path, baseline_path, function, make_input, oracle_cases,
+                  require_pure_inputs=False):
         if results:
             raise ValueError("harness must call benchmark exactly once")
         base = getattr(load(baseline_path, "_speedup_baseline"), function)
@@ -62,6 +63,8 @@ def run_harness(harness_path, pair_count, seed):
             retained_inputs.append(base_args)
             if base(*base_args) != expected:
                 raise ValueError("baseline failed its own oracle")
+            if require_pure_inputs and base_args != args:
+                raise ValueError("baseline mutated oracle inputs")
         try:
             candidate = getattr(load(candidate_path, "_speedup_candidate"), function)
         except BaseException as exc:
@@ -72,6 +75,8 @@ def run_harness(harness_path, pair_count, seed):
                 retained_inputs.append(candidate_args)
                 actual = candidate(*candidate_args)
                 matches = actual == expected
+                if require_pure_inputs and candidate_args != args:
+                    raise CandidateFailure("candidate mutated oracle inputs")
             except BaseException as exc:
                 raise CandidateFailure(f"candidate exception: {type(exc).__name__}: {exc}") from exc
             if not matches:
@@ -84,6 +89,7 @@ def run_harness(harness_path, pair_count, seed):
                 raise ValueError("make_input must return identical fresh argument tuples")
             base_args, candidate_args = deepcopy(base_args), deepcopy(candidate_args)
             retained_inputs.extend((base_args, candidate_args))
+            original_args = deepcopy(base_args) if require_pure_inputs else None
             baseline_first = index < 0 or index % 2 == 0
             outputs, durations = {}, {}
             order = ("baseline", "candidate") if baseline_first else ("candidate", "baseline")
@@ -98,6 +104,10 @@ def run_harness(harness_path, pair_count, seed):
                         raise CandidateFailure(f"candidate exception: {type(exc).__name__}: {exc}") from exc
                     raise
                 durations[side] = (stop - start) / 1_000_000_000
+                if require_pure_inputs and args != original_args:
+                    if side == "candidate":
+                        raise CandidateFailure("candidate mutated benchmark inputs")
+                    raise ValueError("baseline mutated benchmark inputs")
                 try:
                     outputs[side] = deepcopy(output)
                 except BaseException as exc:
