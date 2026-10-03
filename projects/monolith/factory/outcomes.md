@@ -28,10 +28,14 @@ evidence of zero successful deliveries. Check the Coverage section's
 `historical_unjudged_merges` column; per-positive ratios are `NULL` when there
 are no positives. Missing historical evidence never establishes a positive.
 
-Full-cohort completion on the existing standby is not yet verified. Operational
-acceptance is tracked on #6774, alongside #6716's broader validation checklist.
-The report remains staged and manually invoked. No dump/restore or snapshot
-execution route has been tested for this acceptance.
+On 2026-10-03, all four sections completed on `monolith-pg-2` for the cohort
+from 2026-09-07 through 2026-10-02, with `as_of=2026-10-02T00:00:00Z`.
+Section times were 9.946, 1.442, 2.560 and 4.253 seconds. The read-only run
+covered 707 tasks and retained 69 historical unjudged merges as unknown.
+Planner settings, timeouts and recovery replay limits were unchanged.
+Three-day before/after profiles and remaining source-record checks are on
+#6774; #6716 retains the broader accounting checklist. The report remains
+staged and manually invoked. No dump/restore or snapshot route has been tested.
 
 ## Profile one section
 
