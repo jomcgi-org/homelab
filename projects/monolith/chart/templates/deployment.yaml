@@ -341,6 +341,10 @@ spec:
             - name: FACTORY_REVIEW_PUBLISH_ENABLED
               value: "true"
             {{- end }}
+            {{- if .Values.factory.dependencyGate.enabled }}
+            - name: FACTORY_DEPENDENCY_GATE_ENABLED
+              value: "true"
+            {{- end }}
             {{- if .Values.chat.enabled }}
             # Who may answer a factory escalation from the private agents page,
             # matched against the X-Auth-Email claim Envoy projected from the

@@ -74,6 +74,8 @@ backend:
 factory:
   reviewPublish:
     enabled: false
+  dependencyGate:
+    enabled: false
 
 # Authentik derives the OIDC issuer from the APPLICATION SLUG, so these values
 # track the mcp-friends slug in projects/platform/authentik/blueprints/mcp-auth.yaml.

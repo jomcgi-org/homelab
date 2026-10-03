@@ -47,6 +47,7 @@ py_test(
     data = [
         "BUILD",
         ":chart",
+        "//:renovate.json",
         "//projects:renovate_enrollment_manifests",
         "//projects/platform-gke/renovate:manifests",
         "@multitool//tools/helm",

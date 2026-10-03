@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -135,3 +136,35 @@ def test_hub_enrollment_and_build_render_use_the_same_overlay_order():
         r'values_files = \[\n        "values.yaml",\n        "values-gke.yaml",\n    \]',
         target,
     )
+
+
+def test_all_renovate_update_types_keep_both_auto_merge_paths_disabled():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    assert config["automerge"] is False
+    assert config["platformAutomerge"] is False
+
+    def visit(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in ("automerge", "platformAutomerge"):
+                    assert child is False
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(config)
+
+
+def test_apko_lock_maintenance_does_not_request_auto_merge():
+    script = (HERE / "templates" / "apko-lock-script.yaml").read_text()
+    for forbidden in (
+        "enablePullRequestAutoMerge",
+        "mergeMethod",
+        "--auto",
+        "auto_merge",
+        "platformAutomerge",
+    ):
+        assert forbidden not in script
+    assert 'method: "POST"' in script
+    assert 'labels: ["dependencies"]' in script

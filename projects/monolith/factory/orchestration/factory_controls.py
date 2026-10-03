@@ -196,6 +196,8 @@ DEFAULT_INTAKE = {
     "refine_enabled": False,
     # Author authority permits inspection, never approval or merge.
     "dependency_pr_authors": [],
+    # Numeric IDs force security evidence; they grant no intake authority.
+    "dependency_pr_author_ids": [],
     # Closing an issue is the one refine outcome that destroys something an
     # operator would have to undo by hand, so it is a flag of its own and the
     # rest of the refine path works without it.
@@ -750,6 +752,14 @@ def _validate_intake(value: object) -> dict:
     ):
         raise ValueError("invalid dependency_pr_authors")
     result["dependency_pr_authors"] = sorted({author.lower() for author in authors})
+    author_ids = value.get("dependency_pr_author_ids", [])
+    if (
+        not isinstance(author_ids, list)
+        or len(author_ids) > 32
+        or any(type(author_id) is not int or author_id <= 0 for author_id in author_ids)
+    ):
+        raise ValueError("invalid dependency_pr_author_ids")
+    result["dependency_pr_author_ids"] = sorted(set(author_ids))
     for key in ("enabled", "refine_enabled", "close_enabled"):
         setting = value.get(key, DEFAULT_INTAKE[key])
         if type(setting) is not bool:

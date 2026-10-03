@@ -5317,6 +5317,20 @@ py_test(
 )
 
 py_test(
+    name = "factory_dependency_gate_test",
+    srcs = ["factory/dependency_gate_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_quota_guard_test",
     srcs = ["factory/orchestration/factory_quota_guard_test.py"],
     imports = ["."],

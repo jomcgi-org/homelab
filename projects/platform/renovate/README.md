@@ -50,9 +50,22 @@ and regeneration of compiled Python requirement locks. Renovate targets only
 `jomcgi/homelab`, requires the checked-in `renovate.json`, and does not perform
 repository autodiscovery or onboarding.
 
-Patch and minor upgrades request GitHub auto-merge after the three-day release
-age and required CI checks pass. Major upgrades remain separate and require
-human review.
+Auto-merge and platform auto-merge are disabled for every update type in
+`renovate.json`. Release-age checks and required Linux CI still apply. PR
+creation grants no merge authority; dependency updates require adversarial
+review and separately authorized merging.
+
+Monolith stages `factory/dependency-evidence` off by default. It compares
+independent assessments against server-fetched PR and queue-base evidence,
+including file blobs, dependency changes and open advisories. Bot identities
+and `renovate/` branches force evidence without granting approval. See the
+activation checklist in `projects/monolith/factory/orchestration/FACTORY.md`:
+dedicated App token delivery, explicit enablement, PR/merge-group canaries,
+App-pinned ruleset 9180009, stale/advisory refusal, unapproved auto-merge refusal,
+BuildBuddy same-repository credential isolation and a dedicated Renovate author.
+The author intake list stays empty and factory dependency landing stays refused.
+No credentials, account settings or deployed flags are changed here. Existing
+PRs with auto-merge armed need a separate operator audit.
 
 ## GKE staged cutover
 
@@ -103,5 +116,7 @@ and any later home-cluster retirement is separately authorized.
 A second CronWorkflow runs at 01:00 America/Vancouver each Monday. It regenerates
 every committed `apko.lock.json` on Linux through the repository's pinned
 `rules_apko` toolchain, runs the committed-artifact generators, and maintains a
-single `renovate/apko-lock-maintenance` PR. That PR requests rebase auto-merge,
-so the same required CI checks gate updated Wolfi packages before they land.
+single `renovate/apko-lock-maintenance` PR. The script opens or updates the PR
+and labels it `dependencies`; it never requests auto-merge. Updated Wolfi
+packages require the same adversarial approval and separately authorized merge
+as other dependency updates.
