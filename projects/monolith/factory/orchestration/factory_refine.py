@@ -1159,6 +1159,11 @@ def reconcile(
         )
         if result.ok:
             factory_conductor._record_allowance(task["id"], policy, cause)
+        elif result.refusal_code == "stale_version":
+            # Another graph writer won. Defer to a fresh reconciliation
+            # snapshot, which observes its nodes, cancellations and holds.
+            # Never turn optimistic concurrency into an operator pause.
+            logger.info("Refine graph changed during admission for %s", task["id"])
         else:
             set_control("pause_task", ACTOR, task_id=task["id"])
         return
