@@ -1,8 +1,8 @@
 """File-backed control, reservation and stop-ordering regressions."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-import json
 from threading import Event
 
 import pytest
@@ -16,11 +16,11 @@ from factory.orchestration.factory_models import (
     FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
+    FactoryStart,
     WorkItem,
     WorkItemEdge,
     WorkItemEvent,
-    FactoryReviewVerdict,
-    FactoryStart,
 )
 from factory.orchestration.models import SwarmTask
 
@@ -675,6 +675,26 @@ def test_escalation_requires_exact_uncertain_reconciliation_and_is_not_task_outc
     assert controls.task_snapshot(task)["state"] == "escalated"
     with pytest.raises(ValueError, match="invalid task outcome"):
         controls.finish_task(task, "reserved", "scheduler")
+
+
+@pytest.mark.parametrize("author_ids", [[], [123]])
+def test_status_carries_dependency_gate_policy(db, policy, author_ids):
+    from factory import dependency_gate
+
+    policy["intake"] = {"dependency_pr_author_ids": author_ids}
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    stored = controls.status()["policy"]
+    assert stored["repo"] == policy["repo"]
+    assert stored["base_branch"] == policy["base_branch"]
+    assert stored["intake"]["dependency_pr_author_ids"] == author_ids
+    assert stored["intake"]["dependency_pr_authors"] == []
+    assert dependency_gate.dependency(
+        {
+            "user": {"id": 123, "type": "User", "login": "user"},
+            "head": {"ref": "ordinary"},
+        },
+        stored,
+    ) is bool(author_ids)
 
 
 def test_model_pools_are_normalised_and_stored_in_policy(db, policy):

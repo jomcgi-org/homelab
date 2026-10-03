@@ -1855,14 +1855,24 @@ independently of guest execution, intake and merge landing. It publishes on
 server-fetched open PR heads and merge-queue entry heads. GraphQL supplies the
 entry's actual `baseCommit`, `headCommit` and PR `headRefOid`; the gate re-reads
 the queue and PR after collecting evidence. Bounded, unavailable or malformed
-discovery never produces a success. Every publication, refusal and skipped
-tick is audited.
+discovery never produces a success. Publications, refusals and discovery
+failures are audited. Disabled and token-missing ticks return without an audit,
+database session or control lock.
 
 The publisher uses only `FACTORY_DEPENDENCY_GATE_TOKEN`, an App installation
 token supplied to monolith through the 1Password Operator and the trusted
 broker path. Both reads and check writes use that identity. No token fallback
-or chart Secret binding is included. A missing token publishes nothing and
-audits `dependency_gate_skipped`.
+or chart Secret binding is included. A missing token publishes nothing. These
+configuration skips deliberately have no per-tick audit.
+
+Every enabled tick revalidates current evidence before reading existing check
+runs with the dedicated token. `FACTORY_DEPENDENCY_GATE_APP_ID` identifies the
+App whose latest completed conclusion may suppress an unchanged publication.
+Other Apps' checks grant no publication authority. Missing or invalid App IDs,
+incomplete or malformed inventories, and failed check reads always publish.
+A changed conclusion publishes, including success revocation and recovery.
+Provision the numeric App ID alongside the token and verify both belong to the
+integration pinned in the ruleset before activation.
 
 Numeric `intake.dependency_pr_author_ids`, GitHub `user.type == Bot`, and
 `renovate/` or `dependabot/` refs force review evidence. Refs and numeric IDs
@@ -1877,10 +1887,13 @@ an empty dependency comparison is also a refusal. Combined queue prefixes
 containing dependency PRs fail closed instead of attributing aggregated changes
 to one receipt.
 
-Changed, moved, unavailable or invalid approval evidence records
+Changed, moved, unsafe or invalid approval evidence records
 `dependency_approval_invalidated`. That receipt cannot pass again even if the
 old evidence returns. Fresh adversarial review requires the existing authorized
-generation mechanism. This publisher neither changes policy nor starts work.
+generation mechanism. Unavailable, incomplete or malformed fresh evidence
+refuses this tick without permanently invalidating the approved generation.
+Success still requires a fresh positive match after the API recovers. This
+publisher neither changes policy nor starts work.
 Dependency landing still refuses `dependency_auto_merge_disabled`
 unconditionally, and `intake.dependency_pr_authors` remains empty by default.
 Renovate platform auto-merge and apko auto-merge requests are disabled.

@@ -36,6 +36,7 @@ CHECK_NAME = "factory/dependency-evidence"
 ACTOR = "factory:dependency-gate"
 ENABLED_ENV = "FACTORY_DEPENDENCY_GATE_ENABLED"
 TOKEN_ENV = "FACTORY_DEPENDENCY_GATE_TOKEN"
+APP_ID_ENV = "FACTORY_DEPENDENCY_GATE_APP_ID"
 QUEUE_QUERY = """
 query DependencyQueue($owner: String!, $name: String!, $branch: String!) {
   repository(owner: $owner, name: $name) {
@@ -275,6 +276,10 @@ def comparable(value: dict) -> str:
     )
 
 
+class EvidenceUnavailable(ValueError):
+    """A failed fresh read cannot establish that durable approval changed."""
+
+
 def evaluate(
     repo: str, branch: str, pull: dict, policy: dict, github: GitHub, entry=None
 ) -> str:
@@ -300,19 +305,28 @@ def evaluate(
             if entry["pullRequest"]["headRefOid"] != head:
                 raise ValueError("queued PR head moved")
             comparison = (entry["baseCommit"]["oid"], entry["headCommit"]["oid"])
-        current = deps.snapshot(
-            repo,
-            pull,
-            read_get=github.get,
-            read_list=github.rows,
-            comparison=comparison,
-        )
-        if comparable(current) != comparable(evidence):
+        reviewed = comparable(evidence)
+        try:
+            current = deps.snapshot(
+                repo,
+                pull,
+                read_get=github.get,
+                read_list=github.rows,
+                comparison=comparison,
+            )
+            fresh = comparable(current)
+        except deps.EvidenceChanged:
+            raise
+        except FAILURES as exc:
+            raise EvidenceUnavailable("fresh dependency evidence unavailable") from exc
+        if fresh != reviewed:
             raise ValueError(
                 "dependency evidence changed; fresh authorized generation required"
             )
         return "independent safe assessments match fresh dependency evidence"
-    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+    except EvidenceUnavailable:
+        raise
+    except FAILURES:
         audit(
             "dependency_approval_invalidated",
             task_id=approved.task_id,
@@ -323,7 +337,67 @@ def evaluate(
         raise
 
 
+def already_published(repo: str, head: str, conclusion: str, token: str) -> bool:
+    """Skip only a complete inventory's latest matching, owned check run."""
+    app_id = os.environ.get(APP_ID_ENV, "")
+    if not re.fullmatch(r"[1-9][0-9]*", app_id):
+        return False
+    try:
+        body = GitHub(token).get(
+            repo,
+            f"commits/{head}/check-runs?"
+            + urlencode({"check_name": CHECK_NAME, "filter": "all", "per_page": 100}),
+        )
+        rows = body["check_runs"]
+        if (
+            not isinstance(rows, list)
+            or type(body["total_count"]) is not int
+            or body["total_count"] != len(rows)
+            or len(rows) > 100
+        ):
+            return False
+        owned = []
+        seen = set()
+        for row in rows:
+            if (
+                type(row["id"]) is not int
+                or row["id"] <= 0
+                or row["id"] in seen
+                or row["name"] != CHECK_NAME
+                or row["head_sha"] != head
+                or type(row["app"]["id"]) is not int
+                or row["app"]["id"] <= 0
+                or row["status"] not in ("queued", "in_progress", "completed")
+                or row["conclusion"]
+                not in (
+                    None,
+                    "success",
+                    "failure",
+                    "neutral",
+                    "cancelled",
+                    "skipped",
+                    "timed_out",
+                    "action_required",
+                    "stale",
+                )
+            ):
+                return False
+            seen.add(row["id"])
+            if row["app"]["id"] == int(app_id):
+                owned.append(row)
+        latest = max(owned, key=lambda row: row["id"], default=None)
+        return (
+            latest is not None
+            and latest["status"] == "completed"
+            and latest["conclusion"] == conclusion
+        )
+    except FAILURES:
+        return False
+
+
 def publish(repo: str, head: str, conclusion: str, reason: str, token: str) -> None:
+    if already_published(repo, head, conclusion, token):
+        return
     body = _github_post(
         repo,
         "check-runs",
@@ -416,11 +490,9 @@ def check(
 
 def tick(policy: dict) -> dict:
     if not enabled():
-        audit("dependency_gate_skipped", reason="publisher_disabled")
         return {"action": "skipped", "reason": "publisher_disabled"}
     token = os.environ.get(TOKEN_ENV)
     if not token:
-        audit("dependency_gate_skipped", reason="publisher_token_missing")
         return {"action": "skipped", "reason": "publisher_token_missing"}
     github = GitHub(token)
     repo, branch = policy["repo"], policy["base_branch"]
