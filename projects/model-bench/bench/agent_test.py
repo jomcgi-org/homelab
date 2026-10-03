@@ -325,3 +325,47 @@ def test_run_agent_cell_scores_norms_only_on_a_pass(tmp_path):
     assert ok.norms is not None and ok.norms["files_changed"] == 0
     assert ok.norms_score == 1.0
     assert run(False).norms is None
+
+
+def test_run_agent_cell_cleans_workdir_when_fixture_copy_fails(
+    tmp_path, monkeypatch
+):
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    (tmp_path / "f.py").write_text("x = 1\n")
+    created = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def _mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created.append(Path(path))
+        return path
+
+    def _copytree(*args, **kwargs):
+        raise OSError("fixture unreadable")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(shutil, "copytree", _copytree)
+
+    async def fake_chat(**kwargs):
+        raise AssertionError("chat must not run when setup fails")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=fake_chat,
+            verify=lambda w, a: VerifyResult(True, ""),
+            verifier_args={},
+            cost_fn=lambda p, c: 0.0,
+        )
+    )
+    assert cell.outcome == "fail"
+    assert "[harness error]" in cell.attempts[0].feedback
+    assert created and all(not p.exists() for p in created)

@@ -315,3 +315,38 @@ def test_complete_uses_api_model_over_registry_id(monkeypatch):
         )
     )
     assert seen["model"] == "claude-sonnet-5-5"
+
+
+def test_anchor_cell_cleans_workdir_when_fixture_copy_fails(monkeypatch, tmp_path):
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    fx = _make_fixture(tmp_path)
+    created = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def _mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created.append(Path(path))
+        return path
+
+    def _copytree(*args, **kwargs):
+        raise OSError("fixture unreadable")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(shutil, "copytree", _copytree)
+
+    cell = claude_code.run_anchor_agent_cell(
+        task_id="t",
+        task_version="v1",
+        model_id="anthropic/claude-opus-4.8",
+        content_hash="h",
+        fixture_dir=fx,
+        task_prompt="p",
+        verify=lambda workdir, args: _VerifyResult(True, ""),
+        verifier_args={},
+    )
+    assert cell.outcome == "fail"
+    assert "harness error" in cell.attempts[0].feedback
+    assert created and all(not p.exists() for p in created)

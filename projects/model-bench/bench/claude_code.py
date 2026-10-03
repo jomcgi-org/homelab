@@ -205,7 +205,6 @@ def run_anchor_agent_cell(
     reliable tool loop, so the candidate flaky-tool-caller signal does not apply.
     """
     workdir = Path(tempfile.mkdtemp())
-    shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
     turns = 0
     wall_ms = 0
     score: float | None = None
@@ -213,6 +212,7 @@ def run_anchor_agent_cell(
     diff: str | None = None
     rental_cost = 0.0
     try:
+        shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
         res = _invoke(
             task_prompt,
             model=cli_model_name,

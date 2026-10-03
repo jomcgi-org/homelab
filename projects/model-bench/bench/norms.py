@@ -222,6 +222,76 @@ def _go_findings(root: Path, changes: list[str]) -> Counter:
     return findings
 
 
+def _js_comment_lines(text: str) -> set[int]:
+    """Comment lines for JS/TS, with template-interpolation awareness.
+
+    Inside a template literal, comment markers are literal text; only ${...}
+    expressions hold real code and may nest further templates. Brace depth is
+    tracked per expression so nested object literals do not end it early.
+    """
+    lines: set[int] = set()
+    stack: list[tuple] = []  # ("str", quote) | ("tpl",) | ("expr", depth)
+    block = False
+    i = line = 0
+    while i < len(text):
+        char = text[i]
+        top = stack[-1] if stack else None
+        if block:
+            if char.strip():
+                lines.add(line)
+            if text.startswith("*/", i):
+                block = False
+                i += 2
+                continue
+        elif top is not None and top[0] == "str":
+            if char == "\\":
+                if i + 1 < len(text) and text[i + 1] == "\n":
+                    line += 1
+                i += 2
+                continue
+            if char == top[1]:
+                stack.pop()
+        elif top is not None and top[0] == "tpl":
+            if char == "\\":
+                if i + 1 < len(text) and text[i + 1] == "\n":
+                    line += 1
+                i += 2
+                continue
+            if text.startswith("${", i):
+                stack.append(("expr", 1))
+                i += 2
+                continue
+            if char == "`":
+                stack.pop()
+        elif char in ('"', "'"):
+            stack.append(("str", char))
+        elif char == "`":
+            stack.append(("tpl",))
+        elif text.startswith("//", i):
+            lines.add(line)
+            end = text.find("\n", i)
+            i = len(text) if end == -1 else end
+            continue
+        elif text.startswith("/*", i):
+            block = True
+            lines.add(line)
+            i += 2
+            continue
+        elif char == "{" and top is not None and top[0] == "expr":
+            stack[-1] = ("expr", top[1] + 1)
+        elif char == "}" and top is not None and top[0] == "expr":
+            if top[1] <= 1:
+                stack.pop()
+            else:
+                stack[-1] = ("expr", top[1] - 1)
+        if char == "\n":
+            line += 1
+        i += 1
+    if stack or block:
+        raise ValueError("unterminated literal or comment")
+    return lines
+
+
 def _comment_lines(text: str, suffix: str) -> set[int]:
     """Zero-based physical lines containing comments, excluding string literals."""
     if suffix == ".py":
@@ -230,6 +300,8 @@ def _comment_lines(text: str, suffix: str) -> set[int]:
             for token in tokenize.generate_tokens(io.StringIO(text).readline)
             if token.type == tokenize.COMMENT
         }
+    if suffix in (".js", ".ts"):
+        return _js_comment_lines(text)
     lines: set[int] = set()
     i = line = 0
     quote: str | None = None
