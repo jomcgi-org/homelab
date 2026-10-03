@@ -2071,6 +2071,94 @@ def test_successful_graph_edit_resets_matching_refusals(db, monkeypatch):
     assert escalations == []
 
 
+@pytest.mark.parametrize(
+    "status,outcome,category,reason",
+    [
+        (
+            "failed",
+            {
+                "invocation_phase": "not_invoked",
+                "reason": "Executor cancelled before invoking the guest",
+            },
+            "pre_model_failure",
+            "Executor cancelled",
+        ),
+        (
+            "failed",
+            {"reason": "guest_cessation_confirmed"},
+            "execution_failed",
+            "guest_cessation_confirmed",
+        ),
+        (
+            "succeeded",
+            {"value": {"reason": "Malformed decision"}},
+            "artifact_invalid",
+            "'action' is a required property",
+        ),
+    ],
+)
+def test_funding_failure_categories(db, monkeypatch, status, outcome, category, reason):
+    task, _policy = envelope_task()
+    add_spent_turns(db, task)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(
+        funding, "_issue", lambda _task: {"number": ISSUE, "state": "open"}
+    )
+    assert funding.request(task, "Review remaining work")
+    with controls._read_session() as session:
+        request = funding.pending(session, task["id"])
+    run = {
+        "id": 900,
+        "node_key": request["node_key"],
+        "attempt": 1,
+        "status": status,
+        "pin": {"model": request["model"]},
+        "dispatch_key": request["start_key"],
+        "outcome_json": json.dumps(outcome),
+    }
+    funding.settle(task, run, request)
+    with controls._read_session() as session:
+        settled = funding.latest(session, task["id"], "funding_review_settled")
+        assert funding.amendment(session, task["id"]) is None
+    assert settled["failure_category"] == category
+    assert reason in settled["refusal"]
+    assert settled["execution_reason"] == outcome.get("reason")
+    assert settled["accounting_basis"] == conductor.graph.settled_zero_basis(outcome)
+
+
+def test_unknown_funding_invocation_stays_pending(db, monkeypatch):
+    task, _policy = envelope_task()
+    add_spent_turns(db, task)
+    monkeypatch.setenv("FACTORY_CONDUCTOR_FUNDING_ENABLED", "true")
+    monkeypatch.setattr(
+        funding, "_issue", lambda _task: {"number": ISSUE, "state": "open"}
+    )
+    assert funding.request(task, "Review remaining work")
+    with controls._read_session() as session:
+        request = funding.pending(session, task["id"])
+    with Session(db) as session:
+        session.add(
+            FactoryStart(
+                task_id=task["id"],
+                start_key=request["start_key"],
+                actor="executor",
+                model=request["model"],
+                max_cost_usd=1,
+                status="uncertain",
+            )
+        )
+        session.commit()
+    funding.settle(task, {"status": "uncertain", "outcome_json": "{}"}, request)
+    with controls._read_session() as session:
+        assert funding.pending(session, task["id"])["audit_id"] == request["audit_id"]
+        assert funding.latest(session, task["id"], "funding_review_settled") is None
+        start = session.exec(
+            select(FactoryStart).where(FactoryStart.start_key == request["start_key"])
+        ).one()
+        assert start.status == "uncertain" and start.accounting_basis is None
+        assert start.cost_usd is None
+
+
 def test_funding_grant_uses_the_recorded_turn_deficit(db, monkeypatch):
     task, _policy = envelope_task()
     add_spent_turns(db, task)

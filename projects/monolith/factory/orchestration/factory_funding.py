@@ -526,6 +526,9 @@ def settle(task, run, request):
 
     issue = _issue(task)
     decision = c._artifact(run)
+    outcome = c._outcome(run)
+    execution_reason = str(outcome.get("reason") or "")[:1000] or None
+    accounting_basis = graph.settled_zero_basis(outcome)
     with controls._locked_session() as (db, control):
         current = pending(db, task["id"])
         row = controls._receipt(db, task["id"])
@@ -545,14 +548,24 @@ def settle(task, run, request):
         graph._lock_task(db, task["id"])
         refusal = None
         escalation = None
+        failure_category = "authority_invalid"
         try:
-            jsonschema.validate(decision, SCHEMA)
             if (
-                run["status"] != "succeeded"
-                or run["pin"]["model"] != review_model(request)
+                run["pin"]["model"] != review_model(request)
                 or run["dispatch_key"] != request["start_key"]
             ):
-                raise ValueError("funding review did not complete")
+                raise ValueError("funding review authority changed")
+            if run["status"] != "succeeded":
+                failure_category = (
+                    "pre_model_failure" if accounting_basis else "execution_failed"
+                )
+                raise ValueError(
+                    "funding review did not complete: "
+                    + (execution_reason or run["status"])
+                )
+            failure_category = "artifact_invalid"
+            jsonschema.validate(decision, SCHEMA)
+            failure_category = "decision_refused"
             if (
                 graph.current_version(task["id"], session=db) != request["revision"]
                 or _runs_digest(
@@ -707,6 +720,10 @@ def settle(task, run, request):
             request_id=request["audit_id"],
             cause=cause,
             refusal=refusal,
+            failure_category=failure_category if refusal else None,
+            execution_reason=execution_reason,
+            accounting_basis=accounting_basis,
+            source_run_id=run["id"],
             retry_after=(controls._now() + timedelta(minutes=5)).isoformat()
             if refusal
             else None,
