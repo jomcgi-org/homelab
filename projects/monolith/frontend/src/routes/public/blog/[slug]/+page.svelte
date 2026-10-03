@@ -1,4 +1,6 @@
 <script>
+  import SystemDiagram from "$lib/public/posts/SystemDiagram.svelte";
+  import { splitSystemDiagrams } from "$lib/public/posts/system-diagrams.js";
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
   import { Seo } from "$lib/public/components";
@@ -228,7 +230,17 @@
             data.slug === "125b-on-a-4090" &&
             section.startsWith('<h2 id="demo"')}
           <section class="edition post-body">
-            {@html section}
+            {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: section }] as part}
+              {#if part.diagram}
+                <SystemDiagram
+                  mode={part.diagram}
+                  title={part.title}
+                  notes={part.notes}
+                />
+              {:else}
+                {@html part.html}
+              {/if}
+            {/each}
             {#if showReplay}
               {#await import("$lib/public/posts/QwenReplay.svelte")}
                 <p>Loading the recorded conversation...</p>

@@ -166,17 +166,17 @@
     <button
       type="button"
       aria-pressed={phase === "Prefill"}
-      onclick={() => seek(0)}>01 / Prefill</button
+      onclick={() => seek(0)}>Prefill</button
     >
     <button
       type="button"
       aria-pressed={phase === "Decode"}
-      onclick={() => seek(decodeAt)}>02 / First token</button
+      onclick={() => seek(decodeAt)}>First token</button
     >
     <button
       type="button"
       aria-pressed={phase === "Complete"}
-      onclick={() => seek(turn.durationMs)}>03 / Complete</button
+      onclick={() => seek(turn.durationMs)}>Complete</button
     >
   </nav>
   <div class="replay-stage">
@@ -545,13 +545,13 @@
     overflow: hidden;
   }
   .hot {
-    --tier-color: var(--replay-hot);
+    --tier-color: var(--tone-gpu);
   }
   .warm {
-    --tier-color: var(--replay-warm);
+    --tier-color: var(--tone-ram);
   }
   .cold {
-    --tier-color: var(--replay-cold);
+    --tier-color: var(--tone-cache);
   }
   .unknown {
     --tier-color: var(--ink-3);
