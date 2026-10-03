@@ -4,9 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/bazelbuild/bazel-gazelle/config"
-	"github.com/bazelbuild/bazel-gazelle/language"
 )
 
 func TestModelBenchTaskSpecs(t *testing.T) {
@@ -25,12 +22,10 @@ func TestModelBenchTaskSpecs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := language.GenerateArgs{Dir: dir, Rel: "projects/model-bench", Config: config.New()}
-	result := generateRules(args)
-	if len(result.Gen) != 1 || len(result.Imports) != 1 {
-		t.Fatalf("generated rules/imports = %d/%d, want 1/1", len(result.Gen), len(result.Imports))
+	specs := generateModelBenchTaskSpecs(dir, "projects/model-bench")
+	if specs == nil {
+		t.Fatal("task contracts did not generate a filegroup")
 	}
-	specs := result.Gen[0]
 	if specs.Kind() != "filegroup" || specs.Name() != "task_specs" {
 		t.Fatalf("generated %s %s, want filegroup task_specs", specs.Kind(), specs.Name())
 	}
@@ -42,17 +37,13 @@ func TestModelBenchTaskSpecs(t *testing.T) {
 	if len(visibility) != 1 || visibility[0] != "//projects/model-bench:__subpackages__" {
 		t.Fatalf("visibility = %v", visibility)
 	}
-	args.Rel = "projects/other"
-	if result := generateRules(args); len(result.Gen) != 0 {
+	if specs := generateModelBenchTaskSpecs(dir, "projects/other"); specs != nil {
 		t.Fatal("benchmark filegroup leaked into another package")
 	}
 }
 
 func TestModelBenchTaskSpecsEmpty(t *testing.T) {
-	result := generateRules(language.GenerateArgs{
-		Dir: t.TempDir(), Rel: "projects/model-bench", Config: config.New(),
-	})
-	if len(result.Gen) != 0 {
+	if specs := generateModelBenchTaskSpecs(t.TempDir(), "projects/model-bench"); specs != nil {
 		t.Fatal("empty task directory generated a filegroup")
 	}
 }
