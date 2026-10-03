@@ -127,3 +127,15 @@ def test_app_colocated_in_chart_dir_is_covered():
     head = {**base, app: OURS.replace("0.10.0", "0.11.0")}
     [problem] = _run(base, head)
     assert app in problem
+
+
+def test_changed_binary_dependency_is_never_read():
+    archive = f"{CHART_DIR}/charts/library.tgz"
+    trees = {"base": _tree(), "head": _tree()}
+
+    def read(ref, path):
+        if path == archive:
+            raise UnicodeDecodeError("utf-8", b"\x8b", 0, 1, "binary archive")
+        return trees[ref].get(path)
+
+    assert guard.findings([archive], {CHART_DIR}, read, "base", "head") == []

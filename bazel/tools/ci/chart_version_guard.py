@@ -102,6 +102,11 @@ def findings(
 
     out: list[str] = []
     for path in changed:
+        p = PurePosixPath(path)
+        if path not in apps and not (
+            p.name == "Chart.yaml" and str(p.parent) in published
+        ):
+            continue
         before, after = read(base, path), read(head, path)
         if before is None or after is None:
             continue
