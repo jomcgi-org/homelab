@@ -53,6 +53,7 @@ SIZE_SATURATION = 3.0  # ... and a further 3x on top of that is a full penalty
 _MARKER_RE = re.compile(r"\bbreakpoint\(|console\.log\(|\b(TODO|FIXME|XXX)\b")
 _DEBUG_RE = re.compile(r"\bprint\(|" + _MARKER_RE.pattern)
 _CODE_SUFFIXES = (".py", ".go", ".js", ".ts")
+_UNMEASURED_COMMENT_SUFFIXES = (".js", ".ts")
 _IGNORED_DIRS = {"__pycache__", "node_modules"}
 
 
@@ -222,172 +223,6 @@ def _go_findings(root: Path, changes: list[str]) -> Counter:
     return findings
 
 
-_JS_REGEX_KEYWORDS = frozenset(
-    "return typeof instanceof in of new delete void throw case do else yield await".split()
-)
-_JS_WORD = re.compile(r"[\w$]")
-
-
-def _js_slash_kind(last: str, prop: bool = False) -> str:
-    """Classify a ``/`` after token ``last`` as "regex", "division" or "ambiguous".
-
-    A word that follows ``.`` (``obj.return``) is a property name, not a keyword,
-    so ``prop`` makes it divide. ``)``, ``}``, ``++`` and ``--`` are ambiguous without a real parser (``if (x)
-    /re/`` versus ``(a + b) / 2``), so they are reported rather than guessed.
-    """
-    if prop:
-        return "division"
-    if last in _JS_REGEX_KEYWORDS or not last:
-        return "regex"
-    if last in (")", "}", "++", "--"):
-        return "ambiguous"
-    if last in ("]", "\0") or _JS_WORD.match(last):
-        return "division"
-    return "regex"
-
-
-def _js_regex_end(text: str, start: int) -> int | None:
-    """End index (past flags) of the regex literal opening at ``start``, if any.
-
-    Escapes and ``[...]`` classes (where ``/`` needs no escape) are honoured. A
-    literal cannot span lines, so no closing ``/`` on the line yields ``None``.
-    """
-    j = start + 1
-    in_class = False
-    while j < len(text):
-        char = text[j]
-        if char == "\n":
-            return None
-        if char == "\\":
-            if j + 1 < len(text) and text[j + 1] == "\n":
-                return None
-            j += 2
-            continue
-        if char == "[":
-            in_class = True
-        elif char == "]":
-            in_class = False
-        elif char == "/" and not in_class:
-            j += 1
-            while j < len(text) and _JS_WORD.match(text[j]):
-                j += 1
-            return j
-        j += 1
-    return None
-
-
-def _js_comment_lines(text: str) -> set[int]:
-    """Comment lines for JS/TS, with template-interpolation awareness.
-
-    Regex literals are skipped whole, so quotes and comment markers inside them
-    are not misread. A ``/`` opens one after an operator, punctuation or a
-    keyword such as ``return``, and divides after an identifier, number, literal
-    or ``]``. After ``)``, ``}``, ``++`` or ``--`` (or when a regex does not close
-    on its line) the parse is ambiguous and ``ValueError`` is raised, so the
-    caller reports the measurement as unavailable instead of guessing.
-
-    Inside a template literal, comment markers are literal text; only ${...}
-    expressions hold real code and may nest further templates. Brace depth is
-    tracked per expression so nested object literals do not end it early.
-    """
-    lines: set[int] = set()
-    stack: list[tuple] = []  # ("str", quote) | ("tpl",) | ("expr", depth)
-    block = False
-    last = ""  # previous code token: a word, punctuation, "++"/"--" or "\0" (literal)
-    word_open = False  # whether ``last`` is a word still being extended
-    prop = False  # whether the word ``last`` is a property name (after ``.``)
-    i = line = 0
-    while i < len(text):
-        char = text[i]
-        top = stack[-1] if stack else None
-        if block:
-            if char.strip():
-                lines.add(line)
-            if text.startswith("*/", i):
-                block = False
-                i += 2
-                continue
-        elif top is not None and top[0] == "str":
-            if char == "\\":
-                if i + 1 < len(text) and text[i + 1] == "\n":
-                    line += 1
-                i += 2
-                continue
-            if char == top[1]:
-                stack.pop()
-                last = "\0"
-        elif top is not None and top[0] == "tpl":
-            if char == "\\":
-                if i + 1 < len(text) and text[i + 1] == "\n":
-                    line += 1
-                i += 2
-                continue
-            if text.startswith("${", i):
-                stack.append(("expr", 1))
-                last = ""
-                word_open = False
-                i += 2
-                continue
-            if char == "`":
-                stack.pop()
-                last = "\0"
-        elif char in ('"', "'"):
-            stack.append(("str", char))
-        elif char == "`":
-            stack.append(("tpl",))
-        elif text.startswith("//", i):
-            lines.add(line)
-            end = text.find("\n", i)
-            i = len(text) if end == -1 else end
-            continue
-        elif text.startswith("/*", i):
-            block = True
-            lines.add(line)
-            i += 2
-            continue
-        elif char == "/" and (kind := _js_slash_kind(last, prop)) != "division":
-            end = _js_regex_end(text, i) if kind == "regex" else None
-            if end is None:
-                raise ValueError("ambiguous regex or division")
-            i = end
-            last = "\0"
-            word_open = prop = False
-            continue
-        elif char == "{" and top is not None and top[0] == "expr":
-            stack[-1] = ("expr", top[1] + 1)
-        elif char == "}" and top is not None and top[0] == "expr":
-            if top[1] <= 1:
-                stack.pop()
-            else:
-                stack[-1] = ("expr", top[1] - 1)
-        if not block and (not stack or stack[-1][0] == "expr"):
-            if _JS_WORD.match(char):
-                if not word_open:
-                    j = len(text[:i].rstrip()) - 1
-                    prop = j >= 0 and text[j] == "." and text[j - 2 : j] != ".."
-                last = last + char if word_open else char
-                word_open = True
-            elif char == "." and word_open and last[0].isdigit():
-                # trailing-dot number (``1.``) stays a number, not punctuation
-                word_open = False
-            else:
-                word_open = False
-                if char in "+-" and last == char and text[i - 1] == char:
-                    last = char * 2
-                    prop = False
-                elif char.strip() and char not in "\"'`":
-                    last = char
-                    prop = False
-        else:
-            word_open = prop = False
-        if char == "\n":
-            line += 1
-        i += 1
-    if stack or block:
-        raise ValueError("unterminated literal or comment")
-    return lines
-
-
 def _comment_lines(text: str, suffix: str) -> set[int]:
     """Zero-based physical lines containing comments, excluding string literals."""
     if suffix == ".py":
@@ -396,8 +231,10 @@ def _comment_lines(text: str, suffix: str) -> set[int]:
             for token in tokenize.generate_tokens(io.StringIO(text).readline)
             if token.type == tokenize.COMMENT
         }
-    if suffix in (".js", ".ts"):
-        return _js_comment_lines(text)
+    if suffix in _UNMEASURED_COMMENT_SUFFIXES:
+        # A lexer without a parser cannot tell regex literals from division, so
+        # JS/TS comment density is reported as unavailable rather than guessed.
+        raise ValueError("comment density is not measured for JS/TS")
     lines: set[int] = set()
     i = line = 0
     quote: str | None = None
