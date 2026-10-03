@@ -56,6 +56,15 @@ func (l *argoCDLang) Configure(c *config.Config, rel string, f *rule.File) {
 // Kinds returns the list of rule kinds that this extension can generate.
 func (l *argoCDLang) Kinds() map[string]rule.KindInfo {
 	return map[string]rule.KindInfo{
+		"filegroup": {
+			NonEmptyAttrs: map[string]bool{
+				"srcs": true,
+			},
+			MergeableAttrs: map[string]bool{
+				"srcs":       true,
+				"visibility": true,
+			},
+		},
 		"sh_binary": {
 			MatchAny: false,
 			NonEmptyAttrs: map[string]bool{

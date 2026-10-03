@@ -4,7 +4,58 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bazelbuild/bazel-gazelle/config"
+	"github.com/bazelbuild/bazel-gazelle/language"
 )
+
+func TestModelBenchTaskSpecs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"tasks/z/task.yaml",
+		"tasks/a/task.yaml",
+		"tasks/a/fixture/task.yaml",
+		"tasks/a/fixture/private_test.py",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("id: fixture\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := language.GenerateArgs{Dir: dir, Rel: "projects/model-bench", Config: config.New()}
+	result := generateRules(args)
+	if len(result.Gen) != 1 || len(result.Imports) != 1 {
+		t.Fatalf("generated rules/imports = %d/%d, want 1/1", len(result.Gen), len(result.Imports))
+	}
+	specs := result.Gen[0]
+	if specs.Kind() != "filegroup" || specs.Name() != "task_specs" {
+		t.Fatalf("generated %s %s, want filegroup task_specs", specs.Kind(), specs.Name())
+	}
+	srcs := specs.AttrStrings("srcs")
+	if len(srcs) != 2 || srcs[0] != "tasks/a/task.yaml" || srcs[1] != "tasks/z/task.yaml" {
+		t.Fatalf("srcs = %v, want sorted contracts without fixture content", srcs)
+	}
+	visibility := specs.AttrStrings("visibility")
+	if len(visibility) != 1 || visibility[0] != "//projects/model-bench:__subpackages__" {
+		t.Fatalf("visibility = %v", visibility)
+	}
+	args.Rel = "projects/other"
+	if result := generateRules(args); len(result.Gen) != 0 {
+		t.Fatal("benchmark filegroup leaked into another package")
+	}
+}
+
+func TestModelBenchTaskSpecsEmpty(t *testing.T) {
+	result := generateRules(language.GenerateArgs{
+		Dir: t.TempDir(), Rel: "projects/model-bench", Config: config.New(),
+	})
+	if len(result.Gen) != 0 {
+		t.Fatal("empty task directory generated a filegroup")
+	}
+}
 
 func TestParseApplication(t *testing.T) {
 	tests := []struct {

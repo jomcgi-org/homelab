@@ -24,9 +24,7 @@ def py_test(name, deps = [], **kwargs):
     # in the macro so CI Gazelle can keep generating the BUILD unchanged.
     if native.package_name() == "projects/model-bench/bench" and name == "cli_test":
         kwargs["data"] = kwargs.get("data", []) + [
-            "//projects/model-bench:tasks/rollout-handoff-logs-01/task.yaml",
-            "//projects/model-bench:tasks/rollout-http-drain-logs-01/task.yaml",
-            "//projects/model-bench:tasks/factory-rollout-fence-01/task.yaml",
+            "//projects/model-bench:task_specs",
         ]
 
     # pytest-asyncio must be present for the `-o asyncio_mode` option below to be
