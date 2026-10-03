@@ -2499,8 +2499,12 @@ def _journal_context(session, campaign_id, viewer, member, events, view):
 JOURNAL_EVENTS_PER_SESSION = 500
 
 
-def _journal_events(session, campaign_id, session_ids, viewer, member):
-    """Load at most JOURNAL_EVENTS_PER_SESSION visible events per session.
+def _journal_events(session, campaign_id, session_ids, viewer, member, view):
+    """Load at most JOURNAL_EVENTS_PER_SESSION projected events per session.
+
+    The budget counts only rows the journal can project: retracted rows and,
+    for the party view, non-table rows are excluded before ranking so they
+    never consume it.
 
     Returns (events, truncated_by_session): events holds the earliest
     budgeted rows per session in (session_id, seq, id) order, and the map
@@ -2509,6 +2513,14 @@ def _journal_events(session, campaign_id, session_ids, viewer, member):
     """
     if not session_ids:
         return [], {}
+    projected = [
+        SessionEvent.campaign_id == campaign_id,
+        SessionEvent.session_id.in_(session_ids),
+        SessionEvent.retracted_at.is_(None),
+        audience_predicate(SessionEvent, viewer, member),
+    ]
+    if view == "party":
+        projected.append(SessionEvent.audience == "table")
     ranked = (
         select(
             SessionEvent.id,
@@ -2519,11 +2531,7 @@ def _journal_events(session, campaign_id, session_ids, viewer, member):
             )
             .label("rn"),
         )
-        .where(
-            SessionEvent.campaign_id == campaign_id,
-            SessionEvent.session_id.in_(session_ids),
-            audience_predicate(SessionEvent, viewer, member),
-        )
+        .where(*projected)
         .subquery("journal_ranked")
     )
     # Belt and braces: the per-session rn filter already caps rows at
@@ -2572,7 +2580,7 @@ def get_session_journal(
     member = _get_member_or_404(session, campaign_id, email)
     viewer = _viewer_for_member(session, campaign_id, member)
     events, truncated = _journal_events(
-        session, campaign_id, [session_id], viewer, member
+        session, campaign_id, [session_id], viewer, member, view
     )
     grants, entities = _journal_context(
         session, campaign_id, viewer, member, events, view
@@ -2657,7 +2665,9 @@ def get_campaign_journal(
     ).all()
     page = sessions[:limit]
     events, truncated = (
-        _journal_events(session, campaign_id, [row.id for row in page], viewer, member)
+        _journal_events(
+            session, campaign_id, [row.id for row in page], viewer, member, view
+        )
         if page
         else ([], {})
     )

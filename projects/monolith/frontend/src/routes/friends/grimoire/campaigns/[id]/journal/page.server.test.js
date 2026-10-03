@@ -149,6 +149,43 @@ describe("journal page", () => {
     expect(body).not.toContain('name="cursor"');
   });
 
+  it("marks a truncated session journal as incomplete on the page", () => {
+    const journal = (truncated) => ({
+      learned: [],
+      received: [],
+      people_and_places: [],
+      rolls: [],
+      open_threads: [],
+      truncated,
+    });
+    const { body } = render(Page, {
+      props: {
+        data: {
+          campaign: membership,
+          view: "mine",
+          journal: {
+            next_cursor: null,
+            sessions: [
+              {
+                session_id: otherId,
+                started_at: "2026-10-03T08:00:00Z",
+                journal: journal(true),
+              },
+              {
+                session_id: campaignId,
+                started_at: "2026-10-02T08:00:00Z",
+                journal: journal(false),
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(body.match(/This journal is incomplete/g)).toHaveLength(1);
+    expect(body).toContain("No open threads in the events shown.");
+    expect(body).toContain("No open threads.");
+  });
+
   it("renders an empty campaign without a pagination link", () => {
     const { body } = render(Page, {
       props: { data: { campaign: membership, journal, view: "mine" } },

@@ -6,17 +6,26 @@
     showViewToggle = true,
   } = $props();
   const panelId = $props.id();
+  const partial = $derived(journal.truncated === true);
+  // A truncated journal only folds the earliest events, so an empty section
+  // is "nothing yet in the part shown", never a claim about the whole session.
+  const emptyText = (text) =>
+    partial ? `${text.replace(/\.$/, "")} in the events shown.` : text;
   const eventSections = $derived([
     {
       title: "Received",
       entries: journal.received,
-      empty: "No handouts received yet.",
+      empty: emptyText("No handouts received yet."),
     },
-    { title: "Rolls", entries: journal.rolls, empty: "No rolls recorded yet." },
+    {
+      title: "Rolls",
+      entries: journal.rolls,
+      empty: emptyText("No rolls recorded yet."),
+    },
     {
       title: "Open threads",
       entries: journal.open_threads,
-      empty: "No open threads.",
+      empty: emptyText("No open threads."),
     },
   ]);
 </script>
@@ -56,9 +65,17 @@
     </form>
   {/if}
 
+  {#if partial}
+    <p class="partial" role="status">
+      This journal is incomplete: the session has more events than can be shown,
+      so later handouts, rolls and replies are missing. Open threads may already
+      have been answered.
+    </p>
+  {/if}
+
   <section aria-labelledby={`${panelId}-learned`}>
     <h3 id={`${panelId}-learned`}>Learned</h3>
-    {#if !journal.learned.length}<p>No discoveries yet.</p>{/if}
+    {#if !journal.learned.length}<p>{emptyText("No discoveries yet.")}</p>{/if}
     {#each journal.learned as entry (`${entry.player_character_id ?? ""}:${entry.entity_id}`)}
       <article>
         {#if entry.name}<h4>{entry.name}</h4>{/if}
@@ -87,7 +104,7 @@
   <section aria-labelledby={`${panelId}-people`}>
     <h3 id={`${panelId}-people`}>People and places</h3>
     {#if !journal.people_and_places.length}<p>
-        No people or places recorded yet.
+        {emptyText("No people or places recorded yet.")}
       </p>{/if}
     <ul>
       {#each journal.people_and_places as entity (entity.id)}
@@ -155,6 +172,12 @@
     margin: 0.5rem 0;
   }
   .retracted {
+    font-weight: 700;
+  }
+  .partial {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    border: 2px solid var(--grim-accent, #33507a);
     font-weight: 700;
   }
   dl,

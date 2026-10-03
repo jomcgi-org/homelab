@@ -116,6 +116,32 @@ describe("JournalPanel", () => {
     expect(root.querySelectorAll("article")).toHaveLength(0);
   });
 
+  it("warns that a truncated journal is incomplete and qualifies empty states", async () => {
+    const root = await panel({
+      journal: { ...emptyJournal(), truncated: true },
+    });
+    const warning = root.querySelector(".partial");
+    expect(warning.getAttribute("role")).toBe("status");
+    expect(warning.textContent).toContain("incomplete");
+    for (const text of [
+      "No discoveries yet in the events shown.",
+      "No handouts received yet in the events shown.",
+      "No people or places recorded yet in the events shown.",
+      "No rolls recorded yet in the events shown.",
+      "No open threads in the events shown.",
+    ])
+      expect(root.textContent).toContain(text);
+    expect(root.textContent).not.toContain("No open threads.");
+  });
+
+  it("shows no partial warning for a complete journal", async () => {
+    const root = await panel({
+      journal: { ...emptyJournal(), truncated: false },
+    });
+    expect(root.querySelector(".partial")).toBeNull();
+    expect(root.textContent).not.toContain("in the events shown");
+  });
+
   it.each(["mine", "party"])(
     "renders the controlled %s view and forwards toggle requests",
     async (view) => {
