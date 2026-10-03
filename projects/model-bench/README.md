@@ -92,7 +92,8 @@ writes, wildcard/private imports and dunder
 identifiers (except `__del__`, whose teardown output is suppressed). The default
 import set is `__future__`, `math`, `collections`, `itertools`, `functools`,
 `bisect` and `heapq`. Tasks may explicitly allow `random`, `statistics`, `json`,
-`re`, `array`, `decimal`, `fractions` and `operator`; reflective helpers such as
+`re`, `array`, `decimal`, `fractions`, `operator`, `datetime` and `calendar`;
+reflective helpers such as
 `attrgetter` and `methodcaller` remain forbidden. Process and interpreter modules
 including `sys`, `os`, `gc`, `inspect`, `ctypes`, `importlib`, `builtins`, `time`,
 `threading`, `multiprocessing`, `subprocess`, `signal`, `atexit`, `io` and
@@ -156,7 +157,8 @@ verifier:
 ```
 
 `oracle_cases` is a nonempty iterable of `(positional_args_tuple, expected_output)`.
-`make_input(seed)` returns a tuple of positional arguments. Call `benchmark` once.
+`make_input(seed)` returns a tuple of deepcopy-compatible positional arguments
+(plain rows, lists and mappings, for example). Call `benchmark` once.
 Both implementations export the named `function`. The fixed-seed builder must
 cover the task's benchmark workload; independent oracle cases cover its semantic
 edge cases. New tasks pin source provenance and a fixture version in task.yaml.

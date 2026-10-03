@@ -411,6 +411,21 @@ def test_every_forbidden_module_is_excluded_by_default(tmp_path, name):
     assert "rejected candidate source" in result.feedback
 
 
+def test_date_modules_can_be_explicitly_allowed_for_month_and_window_tasks(tmp_path):
+    (tmp_path / "mod.py").write_text("""
+from datetime import date
+import calendar
+def total(xs):
+    leap_adjustment = int(calendar.isleap(date(2024, 1, 1).year)) - 1
+    return sum(xs) + leap_adjustment
+""")
+    result = get_verifier("speedup")(
+        tmp_path, _paired_args(allowed_imports=["datetime", "calendar"])
+    )
+    assert result.performance.correctness is True
+    assert len(result.performance.samples) == 7
+
+
 def test_unchanged_baseline_at_one_x_is_correct_but_scores_zero():
     result = _grade_samples(_samples([1] * 7), _paired_args())
     assert result.performance.correctness is True

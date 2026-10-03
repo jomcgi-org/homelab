@@ -149,6 +149,8 @@ SUPPORTED_IMPORTS = DEFAULT_IMPORTS | {
     "decimal",
     "fractions",
     "operator",
+    "datetime",
+    "calendar",
 }
 # Task allowlists cannot opt into interpreter/process introspection.
 BANNED_IMPORTS = {
