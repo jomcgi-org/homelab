@@ -1,0 +1,11 @@
+[
+  {
+    "slug": "125b-on-a-4090",
+    "path": "preview/synthetic-post.md",
+    "title": "Serving larger-than-memory MoE models",
+    "date": "2026-01-01",
+    "summary": "Synthetic fixture for the 4090 blog layout. No measured results.",
+    "tags": ["synthetic", "preview"],
+    "content": "Synthetic fixture content for layout testing. All timings and graph statements in this preview are invented.\n\n## 1. The synthetic setup\n\nA fictional local model reads a made-up incident report. The preview exercises the production blog and replay components without any service connection.\n\n### 1.1 A bounded input\n\nThe fixture uses a fixed clock and a short deterministic stream.\n\n## 2. What to inspect\n\nCheck the title, playback controls, article link, section index and day or night scheme at phone and desktop widths.\n"
+  }
+]
