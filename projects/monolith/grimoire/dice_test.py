@@ -42,12 +42,36 @@ def test_go_cases_and_extensions(formula, minimum, maximum):
 @pytest.mark.parametrize(
     "formula",
     [
-        "", "notdice", "d20", "2d", "abc", "1d1000000", "101d6",
-        "0d6", "1d0", "2d20adv", "2d20dis", "1d6kh0", "1d6kl0",
-        "1d6+1001", "1d6-1001", "1d6+1-1", "1d6kh1kl1",
-        "٣d6", "1d٦", "1d6kh١", "1d6+١", "1d6Kh1", "1d6\n",
-        "1d6\r", "1 d6", "1d 6", "1d6 kh1", "1d6+ 1",
-        "1d6" + " " * 62, "9" * 65,
+        "",
+        "notdice",
+        "d20",
+        "2d",
+        "abc",
+        "1d1000000",
+        "101d6",
+        "0d6",
+        "1d0",
+        "2d20adv",
+        "2d20dis",
+        "1d6kh0",
+        "1d6kl0",
+        "1d6+1001",
+        "1d6-1001",
+        "1d6+1-1",
+        "1d6kh1kl1",
+        "٣d6",
+        "1d٦",
+        "1d6kh١",
+        "1d6+١",
+        "1d6Kh1",
+        "1d6\n",
+        "1d6\r",
+        "1 d6",
+        "1d 6",
+        "1d6 kh1",
+        "1d6+ 1",
+        "1d6" + " " * 62,
+        "9" * 65,
     ],
 )
 def test_invalid_formulas_have_reasons(formula):
@@ -76,8 +100,11 @@ def test_advantage_draws_two_and_keeps_one(mode, selector):
 
 def test_seed_reproducibility_and_known_result():
     expected = {
-        "formula": "4d6kh3+2", "total": 15,
-        "rolls": [6, 1, 1, 6], "kept": [6, 6, 1], "modifier": 2,
+        "formula": "4d6kh3+2",
+        "total": 15,
+        "rolls": [6, 1, 1, 6],
+        "kept": [6, 6, 1],
+        "modifier": 2,
     }
     assert roll("4d6kh3+2", random.Random(42)) == expected
     assert roll("4d6kh3+2", random.Random(42)) == expected
@@ -115,13 +142,18 @@ def test_generated_invalid_formulas():
     generator = random.Random(6612)
     for _ in range(400):
         count, sides = generator.randint(1, 100), generator.randint(1, 1000)
-        formula = generator.choice([
-            f"{count + 100}d{sides}", f"{count}d{sides + 1000}",
-            f"{count}d{sides}kh0", f"{count}d{sides}kl0",
-            f"{count}d{sides}+{generator.randint(1001, 100000)}",
-            f"{count}d{sides}-{generator.randint(1001, 100000)}",
-            f"{count}d{sides}!", f"{count} d{sides}",
-        ])
+        formula = generator.choice(
+            [
+                f"{count + 100}d{sides}",
+                f"{count}d{sides + 1000}",
+                f"{count}d{sides}kh0",
+                f"{count}d{sides}kl0",
+                f"{count}d{sides}+{generator.randint(1001, 100000)}",
+                f"{count}d{sides}-{generator.randint(1001, 100000)}",
+                f"{count}d{sides}!",
+                f"{count} d{sides}",
+            ]
+        )
         with pytest.raises(DiceFormulaError) as exc:
             parse(formula)
         assert str(exc.value)

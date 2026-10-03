@@ -2173,8 +2173,14 @@ def create_roll(
     member = _get_member_or_404(session, campaign_id, email)
     game_session = _session_in_campaign(session, campaign_id, session_id)
     visibility = body.visibility or ("dm" if member.role == "dm" else "table")
-    if member.role != "dm" and member.player_character_id is None and visibility != "table":
-        raise HTTPException(status_code=422, detail="players without a character may roll only table")
+    if (
+        member.role != "dm"
+        and member.player_character_id is None
+        and visibility != "table"
+    ):
+        raise HTTPException(
+            status_code=422, detail="players without a character may roll only table"
+        )
     if visibility == "table":
         audience = Audience("table")
     elif visibility == "dm" or member.role == "dm":
@@ -2220,7 +2226,9 @@ def create_session_event(
     if body.kind == "utterance":
         raise HTTPException(status_code=403, detail="utterances require ingest")
     if body.kind == "roll":
-        raise HTTPException(status_code=403, detail="rolls require the server-side roller")
+        raise HTTPException(
+            status_code=403, detail="rolls require the server-side roller"
+        )
     if member.role != "dm" and (
         body.kind != "action" or body.audience not in ("dm", "table")
     ):
