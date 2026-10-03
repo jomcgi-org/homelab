@@ -848,6 +848,37 @@ def main():
             (args.output / "report.json").write_text(
                 json.dumps(report, indent=2) + "\n"
             )
+            evidence = sorted(
+                path.name
+                for path in args.output.iterdir()
+                if path.suffix in {".png", ".zip"}
+            )
+            lines = [
+                "# Simulated Grimoire session",
+                "",
+                f"Result: {'passed' if report.get('passed') else 'failed'}",
+                "",
+                "## Scenario checks",
+                "",
+            ]
+            lines.extend(f"- {check}" for check in report["checks"])
+            lines.extend(["", "## Timings", ""])
+            lines.extend(
+                f"- {name}: {seconds:.3f} seconds"
+                for name, seconds in report["timings"].items()
+            )
+            if report.get("failure"):
+                lines.extend(["", "## Failure", "", report["failure"]])
+            lines.extend(["", "## Captured evidence", ""])
+            lines.extend(f"- [{name}]({name})" for name in evidence)
+            lines.extend(
+                [
+                    "",
+                    "These artifacts are captured automatically. Screenshot review must be recorded separately.",
+                    "",
+                ]
+            )
+            (args.output / "report.md").write_text("\n".join(lines))
             print(json.dumps(report, indent=2))
 
 
