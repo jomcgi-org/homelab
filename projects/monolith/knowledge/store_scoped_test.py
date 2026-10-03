@@ -193,6 +193,7 @@ def test_disputes_and_provenance_are_batched_by_note(session, state):
 
 @pytest.mark.parametrize("state", ["open", "resolution_failed"])
 def test_search_and_get_note_project_scoped_fields_with_real_session(session, state):
+    test_now = datetime(2026, 9, 15, tzinfo=timezone.utc)
     note = Note(
         note_id="scoped",
         path="scoped.md",
@@ -244,7 +245,9 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session, st
         "knowledge.store._rank_search_chunks",
         return_value=[(note.id, chunk.id, 0.9)],
     ) as rank:
-        results = KnowledgeStore(session).search_notes_with_context(embedding)
+        results = KnowledgeStore(session, now=test_now).search_notes_with_context(
+            embedding
+        )
 
     rank.assert_called_once_with(
         session,
@@ -260,7 +263,7 @@ def test_search_and_get_note_project_scoped_fields_with_real_session(session, st
         include_history=False,
         now=ANY,
     )
-    detail = KnowledgeStore(session).get_note_by_id("scoped")
+    detail = KnowledgeStore(session, now=test_now).get_note_by_id("scoped")
     assert detail is not None
     for result in (results[0], detail):
         assert result["scope"] == "repo:owner/repo"
