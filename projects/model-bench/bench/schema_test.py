@@ -1,13 +1,45 @@
 import pytest  # noqa: F401
 
 from bench.schema import (
-    TaskSpec,
-    VerifierSpec,
+    Attempt,
     ModelSpec,
+    PerformanceRecord,
     ResultCell,
     TaskClass,
-    Attempt,
+    TaskSpec,
+    VerifierSpec,
 )
+
+
+def test_performance_record_roundtrip_and_literal_old_cell():
+    old = """{"task_id":"old","task_version":"v1","model_id":"m",
+    "content_hash":"abc","outcome":"fail","attempts":[{"passed":false,
+    "feedback":"wrong","latency_ms":1,"prompt_tokens":2,"completion_tokens":3}],
+    "cost_usd":0,"harness_version":"0.1.0","prompt_template_hash":"p"}"""
+    cell = ResultCell.model_validate_json(old)
+    assert cell.attempts[0].performance is None
+    assert cell.first_attempt_score is None and not cell.first_attempt_passed
+    record = PerformanceRecord(
+        correctness=True,
+        warmup=[{"baseline_s": 1, "candidate_s": 1, "order": "baseline-first"}],
+        samples=[{"baseline_s": 10, "candidate_s": 1, "order": "baseline-first"}],
+        ratios=[10],
+        median_ratio=10,
+        highest_bucket=10,
+        score=2 / 3,
+        pass_threshold=1 / 3,
+        pair_count=1,
+        fixture_version="fixture-v1",
+    )
+    cell.attempts[0].performance = record
+    assert (
+        ResultCell.model_validate_json(cell.model_dump_json()).attempts[0].performance
+        == record
+    )
+    assert (
+        Attempt.model_validate_json(cell.attempts[0].model_dump_json()).performance
+        == record
+    )
 
 
 def test_taskspec_parses_minimal_yaml_shape():

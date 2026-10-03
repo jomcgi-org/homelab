@@ -4,20 +4,218 @@ import shutil
 
 import pytest
 
-from bench.cache import HARNESS_VERSION
+from bench.cache import HARNESS_VERSION, cell_key
 from bench.cli import (
     _aggregate_agentic_group,
     _apply_snapshot_patches,
+    _leaderboard_task_data,
     _parse_headers,
     _prune_stale,
     _report,
     _resolve_snapshot_preset,
     _review_diff,
+    _snapshot,
+    _verifier_cache_repr,
     _write_leaderboard_json,
     build_parser,
     load_tasks,
 )
-from bench.schema import Attempt, ResultCell, TaskSpec, VerifierSpec
+from bench.schema import Attempt, PerformanceRecord, ResultCell, TaskSpec, VerifierSpec
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("buckets", [[2, 0.5]]),
+        ("pairs", 9),
+        ("harness", "new harness"),
+        ("editable", ["different.py"]),
+        ("fixture_version", "v2"),
+    ],
+)
+def test_performance_cache_keys_track_grading_configuration(field, value):
+    spec = VerifierSpec(
+        kind="speedup",
+        args={
+            "buckets": [[2, 1 / 3]],
+            "pairs": 7,
+            "harness": "old harness",
+            "editable": ["mod.py"],
+            "fixture_version": "v1",
+        },
+    )
+
+    def key():
+        return cell_key(
+            prompt="p",
+            fixture_hash="f",
+            verifier_repr=_verifier_cache_repr(spec),
+            model_id="m",
+            params_repr="a",
+        )
+
+    before = key()
+    spec.args[field] = value
+    assert key() != before
+
+
+def test_performance_json_report_preserves_measurements_and_old_rows():
+    cell = _agentic_cell("t", "m", True, 1, 100, True, score=1 / 3)
+    task = TaskSpec(
+        id="t",
+        version="v1",
+        task_class="code-fix",
+        mode="agentic",
+        prompt="p",
+        verifier=VerifierSpec(kind="speedup"),
+    )
+    _, old_models = _leaderboard_task_data(cells=[cell], tasks=[task])
+    assert "performance" not in old_models["m"]["t"]
+    record = PerformanceRecord(
+        correctness=True,
+        median_ratio=2,
+        highest_bucket=2,
+        score=1 / 3,
+        pass_threshold=1 / 3,
+        pair_count=7,
+        fixture_version="seed-v1",
+    )
+    cell.attempts[0].performance = record
+    _, models = _leaderboard_task_data(cells=[cell], tasks=[task])
+    assert models["m"]["t"]["performance"] == record.model_dump()
+    assert (
+        json.loads(json.dumps(models))["m"]["t"]["performance"]["correctness"] is True
+    )
+
+
+def test_snapshot_seeded_files_without_git_and_idempotent(tmp_path):
+    task_dir = tmp_path / "tasks" / "t"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        "id: t\nsnapshot:\n  files:\n    pkg/mod.py: 'def answer(): return 42'\n"
+    )
+    args = argparse.Namespace(
+        repo=str(tmp_path / "no-repo"), tasks=str(task_dir.parent), task="t"
+    )
+    _snapshot(args)
+    assert (
+        task_dir / "fixture" / "pkg" / "mod.py"
+    ).read_text() == "def answer(): return 42"
+    (task_dir / "fixture" / "pkg" / "mod.py").write_text("changed")
+    _snapshot(args)
+    assert (
+        task_dir / "fixture" / "pkg" / "mod.py"
+    ).read_text() == "def answer(): return 42"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_seeded_files_overlay_pinned_snapshot_without_changing_originals(tmp_path):
+    import subprocess
+
+    import yaml
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, check=True
+        )
+
+    git("init", "-q")
+    (repo / "code").mkdir()
+    (repo / "code" / "keep.py").write_text("PINNED = True\n")
+    (repo / "code" / "replace.py").write_text("REAL = True\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed source")
+    commit = git("rev-parse", "HEAD").stdout.decode().strip()
+    task_dir = tmp_path / "tasks" / "t"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": "t",
+                "snapshot": {
+                    "commit": commit,
+                    "paths": ["code"],
+                    "strip_components": 1,
+                    "files": {
+                        "replace.py": "SEEDED = True\n",
+                        "nested/new.py": "NEW = True\n",
+                    },
+                },
+            }
+        )
+    )
+    _snapshot(argparse.Namespace(repo=str(repo), tasks=str(task_dir.parent), task="t"))
+    fixture = task_dir / "fixture"
+    assert (fixture / "keep.py").read_text() == "PINNED = True\n"
+    assert (fixture / "replace.py").read_text() == "SEEDED = True\n"
+    assert (fixture / "nested/new.py").read_text() == "NEW = True\n"
+    assert (repo / "code/replace.py").read_text() == "REAL = True\n"
+
+
+@pytest.mark.parametrize(
+    "path", ["../escape.py", "/tmp/escape.py", "a/../../escape.py", "."]
+)
+def test_snapshot_seeded_paths_fail_before_removing_fixture(tmp_path, path):
+    import yaml
+
+    task_dir = tmp_path / "tasks" / "t"
+    fixture = task_dir / "fixture"
+    fixture.mkdir(parents=True)
+    (fixture / "keep").write_text("untouched")
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump({"id": "t", "snapshot": {"files": {path: "bad"}}})
+    )
+    with pytest.raises(ValueError, match="escapes fixture"):
+        _snapshot(
+            argparse.Namespace(repo=str(tmp_path), tasks=str(task_dir.parent), task="t")
+        )
+    assert (fixture / "keep").read_text() == "untouched"
+
+
+def test_cli_report_performance_markdown_and_json(tmp_path):
+    (tmp_path / "models.yaml").write_text(
+        "models:\n  - {id: m, status: experimental}\n"
+    )
+    task_dir = tmp_path / "tasks" / "t"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        "id: t\nversion: v1\nclass: code-fix\nmode: agentic\ntier: hard\nprompt: p\nverifier: {kind: speedup}\n"
+    )
+    cell = _agentic_cell("t", "m", True, 1, 100, True, score=1 / 3)
+    cell.attempts[0].performance = PerformanceRecord(
+        correctness=True,
+        median_ratio=2,
+        highest_bucket=2,
+        score=1 / 3,
+        pass_threshold=1 / 3,
+        pair_count=7,
+        fixture_version="seed-v1",
+    )
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / "cell.json").write_text(cell.model_dump_json())
+    _report(
+        argparse.Namespace(
+            results=str(results),
+            models=str(tmp_path / "models.yaml"),
+            tasks=str(task_dir.parent),
+            out=str(tmp_path / "report.md"),
+            json_out=str(tmp_path / "report.json"),
+            generated_at="2026-10-03",
+        )
+    )
+    assert (
+        "| m | t | seed-v1 | true | 2.00x | >=2x | 0.33 |"
+        in (tmp_path / "report.md").read_text()
+    )
+    data = json.loads((tmp_path / "report.json").read_text())
+    assert (
+        data["models"][0]["tasks"][0]["performance"]
+        == cell.attempts[0].performance.model_dump()
+    )
 
 
 def test_resolve_snapshot_preset_expands_and_lets_task_override():

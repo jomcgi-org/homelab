@@ -199,6 +199,7 @@ async def run_agent_cell(
     saw_tool_call = False  # did the model ever drive the loop with a tool call?
     saw_bad_args = False  # did any tool call carry unparseable arguments?
     score: float | None = None
+    performance = None
     norms: dict | None = None
     diff: str | None = None
     try:
@@ -244,6 +245,7 @@ async def run_agent_cell(
                 break
         r = verify(workdir, verifier_args)
         passed, feedback, score = r.passed, r.feedback, r.score
+        performance = r.performance
         if passed:
             norms = safe_norms(fixture_dir, workdir, norms_opts)
             diff = safe_diff(fixture_dir, workdir)
@@ -267,6 +269,7 @@ async def run_agent_cell(
         passed=passed,
         feedback=feedback if not passed else "",
         score=score,
+        performance=performance,
         latency_ms=latency_ms,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,

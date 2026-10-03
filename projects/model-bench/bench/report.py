@@ -1,6 +1,19 @@
 from __future__ import annotations
 
 
+def performance_rows(cells) -> list[dict]:
+    """Per-model measured results, excluding infrastructure failures."""
+    return [
+        {
+            "model": cell.model_id,
+            "task": cell.task_id,
+            **cell.attempts[0].performance.model_dump(),
+        }
+        for cell in cells
+        if not cell.is_harness_error and cell.attempts[0].performance is not None
+    ]
+
+
 def render_leaderboard(
     *,
     per_class: dict,
@@ -10,6 +23,7 @@ def render_leaderboard(
     agentic: dict | None = None,
     agentic_anchor_ids: set | None = None,
     scored_tasks: list[dict] | None = None,
+    performance_tasks: list[dict] | None = None,
 ) -> str:
     """Render a markdown leaderboard report.
 
@@ -213,6 +227,36 @@ def render_leaderboard(
     else:
         lines.append("No scored tasks yet.")
     lines.append("")
+
+    if performance_tasks:
+        lines.extend(
+            [
+                "## Performance on frozen datasets",
+                "",
+                "Buckets are measured on the named frozen datasets. Ratios are hardware-specific; no production-speedup claim.",
+                "",
+                "| Model | Task | Dataset | Correctness | Median ratio | Bucket | Score |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for row in performance_tasks:
+            ratio = (
+                f"{row['median_ratio']:.2f}x"
+                if row["median_ratio"] is not None
+                else "n/a"
+            )
+            bucket = (
+                f">={row['highest_bucket']:g}x"
+                if row["highest_bucket"] is not None
+                else "none"
+            )
+            correctness = {True: "true", False: "false", None: "unknown"}[
+                row["correctness"]
+            ]
+            lines.append(
+                f"| {row['model']} | {row['task']} | {row['fixture_version']} | {correctness} | {ratio} | {bucket} | {row['score']:.2f} |"
+            )
+        lines.append("")
 
     # Budget tier: qualifying candidates sorted by cost ascending
     lines.append("## Budget tier")
