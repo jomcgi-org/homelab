@@ -1422,6 +1422,14 @@ class GrantView(BaseModel):
     created_at: datetime
 
 
+def _validate_reveal_id(value: str, detail: str) -> None:
+    """Keep malformed new identifiers out of PostgreSQL UUID-column lookups."""
+    try:
+        UUID(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=detail) from exc
+
+
 def _get_character_in_campaign_or_404(
     session: Session, campaign_id: str, player_character_id: str
 ) -> PlayerCharacter:
@@ -1568,10 +1576,15 @@ def create_bulk_grants(
     """Validate the entire batch, then commit grants and per-PC reveals once."""
     member = _require_dm(session, campaign_id, email)
     if body.granted_in_session is not None:
+        _validate_reveal_id(body.granted_in_session, "session not found")
         explicit = session.get(GameSession, body.granted_in_session)
         if explicit is None or explicit.campaign_id != campaign_id:
             raise HTTPException(status_code=404, detail="session not found")
     for item in body.grants:
+        _validate_reveal_id(
+            item.player_character_id, "player character not found in this campaign"
+        )
+        _validate_reveal_id(item.entity_id, "entity not found")
         _get_character_in_campaign_or_404(
             session, campaign_id, item.player_character_id
         )
@@ -1783,6 +1796,7 @@ def _authorize_reveal_filter(
     require_play_enabled()
     if member.role != "dm":
         raise HTTPException(status_code=403, detail="campaign DM role required")
+    _validate_reveal_id(not_granted_to, "player character not found in this campaign")
     _get_character_in_campaign_or_404(session, campaign_id, not_granted_to)
 
 

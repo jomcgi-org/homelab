@@ -126,18 +126,17 @@ hidden roll. Self visibility uses `pcs` containing the player's character
 with the same author provenance. A DM choosing self uses the dm audience.
 Characterless players may roll only table; restricted visibility returns 422
 because their audience contract would hide even their own restricted roll.
-These rules leave `audience_predicate` unchanged. There are 41 campaign routes
-in the route inventory, including the roller.
+These rules leave `audience_predicate` unchanged. There are 42 campaign routes
+in the route inventory, including the roller and bulk grants.
 
 **Why.** Server-side `secrets.SystemRandom` prevents clients from supplying
 results or seeds. A dependency override lets tests use a seeded RNG and assert
 the exact stored body without changing production randomness. Characterless
 players' table-only rule keeps every accepted roll visible to its roller.
 
-Part of #6610. The #6612 play-surface PR owns enabling
-`grimoire.play.enabled: true` in `projects/monolith/deploy/values.yaml` and
-verifying the live routes and audiences with #6610. No operational flag flip
-belongs to this change.
+Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
+and live audience checks after the #6612 play surface is ready. Deployment
+values remain off. No operational flag flip belongs to this change.
 
 Grant changes emit `reveal` events only when play is enabled and the campaign
 has an active or paused session. Creation defaults an omitted
