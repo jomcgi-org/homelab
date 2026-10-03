@@ -53,6 +53,18 @@ Run and inspect the browser rehearsal:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse
 ```
 
+For a clean Python environment, use the CI wrapper after installing `uv`, pnpm,
+Postgres 16 with pgvector, and Chromium's system libraries:
+
+```bash
+GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/ci.sh
+```
+
+The wrapper installs the pinned runtime and Playwright, runs the same scenario,
+and preserves the run log and evidence even on failure. It removes only its
+own temporary Python environment. Root runners give the disposable PostgreSQL
+directory and process to the system `postgres` account.
+
 This starts the whole table, exercises three separate browser contexts, saves
 evidence to `/tmp/grimoire-rehearsal`, and stops. `--output /path` changes the
 evidence directory. A failed check exits nonzero and preserves the report and
