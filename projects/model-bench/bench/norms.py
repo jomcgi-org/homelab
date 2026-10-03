@@ -139,6 +139,8 @@ def _ruff_findings(cmd: list[str], rel: str, text: str) -> Counter:
     records = json.loads(res.stdout)
     if not isinstance(records, list):
         raise TypeError("ruff returned an invalid diagnostic list")
+    if res.returncode == 1 and not records:
+        raise RuntimeError("ruff failed without findings")
     return Counter((rel, item["code"], item["message"]) for item in records)
 
 
