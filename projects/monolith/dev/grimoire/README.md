@@ -143,3 +143,10 @@ production source globs. Local runs disable browser telemetry instrumentation
 and require no model, Authentik or cluster credentials. Fixtures use model
 schema creation; production migration and real OIDC enrollment checks remain
 separate from this simulated rehearsal.
+
+A reviewed local snapshot is included in [evidence/report.json](evidence/report.json),
+with provenance and screenshot checks in [evidence/review.json](evidence/review.json).
+Inspect the [DM desktop](evidence/dm.png), [Bram phone](evidence/bram.png),
+[player empty feed](evidence/a-empty-feed.png), [send error](evidence/player-send-error.png)
+and [partial batch retraction](evidence/grouped-reveal-retracted.png).
+This snapshot records a simulated run; rerun the command above for current evidence.

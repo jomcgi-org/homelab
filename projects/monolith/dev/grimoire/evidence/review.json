@@ -1,0 +1,42 @@
+{
+  "simulated": true,
+  "reviewed_at": "2026-10-03",
+  "reviewer": "Codex",
+  "application_commit": "1362f69c3c77d0b215411a1690d980cb2cb1a93f",
+  "command": "GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-empty-state-matched projects/monolith/dev/grimoire/ci.sh",
+  "report": "report.json",
+  "reviewed_screenshots": [
+    {
+      "path": "a-empty-feed.png",
+      "sha256": "2b2512f46357ef746edbf52fa87b5d1916aa68a20e1e2d49ddbab0045f53d10f"
+    },
+    {
+      "path": "dm.png",
+      "sha256": "c7c5f70378b32cc35030de8850c9bd8fce325e8ac377c8680b6b22bca64296ab"
+    },
+    {
+      "path": "bram.png",
+      "sha256": "6a54684c104f00ef62367d7532899da81e690fbec3b12cc5dceac79621627f29"
+    },
+    {
+      "path": "player-send-error.png",
+      "sha256": "651423c2e314cb184c739cbcfbe683a0f386236e1bbb266b24c3ab6cf18ac67d"
+    },
+    {
+      "path": "grouped-reveal-retracted.png",
+      "sha256": "ea85ed3a75eccd357a018a8a946841865a6e9f49042d2f1fde2d5b48777d429f"
+    }
+  ],
+  "findings": [
+    "Player empty feed captures an active session, readable guidance and visible controls.",
+    "DM desktop feed separates sheet and grant links and displays precise audience labels.",
+    "Bram phone feed excludes Elowen private messages and rolls.",
+    "Lost-response error preserves the draft and offers retry guidance beside Send.",
+    "Grouped knowledge keeps Orrin visible after retracting Tessa."
+  ],
+  "limitations": [
+    "Synthetic identities and fixture material only.",
+    "Traces remain in local output and BuildBuddy artifacts; anonymous CI downloads are not verified.",
+    "Real OIDC onboarding, real-device usability and live deployment are separate."
+  ]
+}
