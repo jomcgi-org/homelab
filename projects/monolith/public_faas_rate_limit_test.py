@@ -400,7 +400,6 @@ def test_active_gke_render_scopes_identity_and_preserves_other_budgets():
     assert set(policies) == {
         "monolith-public-public",
         "monolith-public-functions",
-        "monolith-public-ember-reads",
     }
     page_rules = policies["monolith-public-public"]["spec"]["rateLimit"]["local"][
         "rules"
@@ -415,9 +414,20 @@ def test_active_gke_render_scopes_identity_and_preserves_other_budgets():
     assert page_headers[1]["name"] == "CF-Connecting-IP"
     assert page_headers[1]["type"] == "RegularExpression"
 
-    assert policies["monolith-public-ember-reads"]["spec"]["rateLimit"]["local"][
-        "rules"
-    ] == [{"limit": {"requests": 600, "unit": "Minute"}}]
+    retry = policies["monolith-public-public"]["spec"]["retry"]
+    assert retry["numRetries"] == 2
+    # No status-code retries or post-delivery resets: POSTs may have side effects.
+    assert set(retry["retryOn"]["triggers"]) == {
+        "connect-failure",
+        "reset-before-request",
+        "refused-stream",
+    }
+    assert "httpStatusCodes" not in retry["retryOn"]
+    assert "timeout" not in retry["perRetry"]
+    assert (
+        policies["monolith-public-public"]["spec"]["timeout"]["tcp"]["connectTimeout"]
+        == "1s"
+    )
 
     routes = {doc["metadata"]["name"]: doc for doc in _by_kind(documents, "HTTPRoute")}
     function_paths = [

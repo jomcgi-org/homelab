@@ -2095,3 +2095,14 @@ mismatch without silently rewriting the decision record.
 | `agents/062` | A Mutable DAG Owned by an Opus Conductor, Executed Per-Node in VMs | Accepted, partially shipped: typed artifact channel, rationale records, and the factory lane's plan-time graph with per-node dispatch exist; legacy swarm runs still execute `implement_then_review` (#5419, #4781) | deleted |
 | `agents/063` | The Factory Knowledge Graph Learns From Evidence Lanes | Accepted, shipped with its 2026-09-03 amendment: schema, `kg-drain` lane, feeds, report tools, recall (see: /projects/monolith/knowledge/extraction.py); #5527 tracks the program | deleted |
 | 064 | A factory conductor coordinating conductors under a charter | Proposed in PR #5792, never merged; rolled into the Direction subsection above on 2026-09-06 and the full text preserved on #5784 | not merged |
+
+Public frontend rollouts keep terminating servers alive for ten seconds while
+endpoint removal propagates, require ten seconds of stable readiness before
+retiring the previous replica, and reserve 45 seconds for termination. The
+frontend has two replicas. Its gateway policy permits two retries only on
+connection failure, reset before request delivery, or refused stream, with a
+one-second connection timeout and 50ms to 250ms jittered backoff. **Why.** A
+retiring frontend returned connection refused for `/docs/mcp` while its
+replacement was coming online. Serving through endpoint propagation addresses
+the race; retries cover a transient connection failure without re-executing a
+request that reached the application.
