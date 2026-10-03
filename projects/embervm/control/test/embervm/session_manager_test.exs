@@ -264,6 +264,7 @@ defmodule Embervm.SessionManagerTest do
         clock: Keyword.get(opts, :clock, fn -> 5_000_000 end),
         monotonic_clock: Keyword.get(opts, :monotonic_clock, fn -> -800_000 end),
         channel_fun: Keyword.get(opts, :channel_fun, fake_channel_fun()),
+        invalidate_channel_fun: Keyword.get(opts, :invalidate_channel_fun, fn _node, _channel -> :ok end),
         claim_fun: Keyword.get(opts, :claim_fun, fn _d, _n, _w -> {:ok, "vm-primed-#{suffix}"} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:error, :no_prime} end),
         bank_fun: Keyword.get(opts, :bank_fun, fn _ch, req -> {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}} end),
@@ -1720,6 +1721,49 @@ defmodule Embervm.SessionManagerTest do
     # The denial now CARRIES the prime failure instead of flattening it to a
     # capacity lie; the live persistence flip cost a debugging cycle to that.
     assert {:error, {:denied, {:prime_failed, _}}} = SessionManager.create(ctx.mgr, "wl-miss", "p1")
+  end
+
+  test "create invalidates a closed Prime channel so the next create can redial" do
+    parent = self()
+    {:ok, cached} = Agent.start_link(fn -> :closed_channel end)
+    on_exit(fn -> if Process.alive?(cached), do: Agent.stop(cached) end)
+
+    ctx = start_stack(
+      claim_fun: fn _d, _n, _w -> :miss end,
+      channel_fun: fn _node -> {:ok, Agent.get(cached, & &1)} end,
+      invalidate_channel_fun: fn node, channel ->
+        send(parent, {:invalidated, node, channel})
+        Agent.update(cached, fn current ->
+          if current == channel, do: :fresh_channel, else: current
+        end)
+      end,
+      prime_fun: fn channel, _req ->
+        send(parent, {:prime_channel, channel})
+        case channel do
+          :closed_channel -> {:error, %GRPC.RPCError{status: 2, message: "the connection is closed"}}
+          :fresh_channel -> {:ok, %PrimeResponse{vm_id: "vm-redialed"}}
+        end
+      end
+    )
+    put_session_workload(ctx, "wl-redial")
+    assert {:error, {:denied, {:prime_failed, _}}} = SessionManager.create(ctx.mgr, "wl-redial", "p1")
+    assert_receive {:prime_channel, :closed_channel}
+    assert_receive {:invalidated, _node, :closed_channel}
+    refute_receive {:prime_channel, :fresh_channel}
+    assert {:ok, _session} = SessionManager.create(ctx.mgr, "wl-redial", "p1")
+    assert_receive {:prime_channel, :fresh_channel}
+  end
+
+  test "create keeps healthy channels after a server Prime refusal" do
+    parent = self()
+    ctx = start_stack(
+      claim_fun: fn _d, _n, _w -> :miss end,
+      invalidate_channel_fun: fn node, channel -> send(parent, {:invalidated, node, channel}) end,
+      prime_fun: fn _channel, _req -> {:error, %GRPC.RPCError{status: 8, message: "pressure:mem"}} end
+    )
+    put_session_workload(ctx, "wl-pressure")
+    assert {:error, {:denied, {:prime_failed, _}}} = SessionManager.create(ctx.mgr, "wl-pressure", "p1")
+    refute_receive {:invalidated, _, _}
   end
 
   test "create async completes slower claim/prime without blocking" do
