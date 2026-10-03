@@ -327,9 +327,7 @@ def test_run_agent_cell_scores_norms_only_on_a_pass(tmp_path):
     assert run(False).norms is None
 
 
-def test_run_agent_cell_cleans_workdir_when_fixture_copy_fails(
-    tmp_path, monkeypatch
-):
+def test_run_agent_cell_cleans_workdir_when_fixture_copy_fails(tmp_path, monkeypatch):
     import shutil
     import tempfile
     from pathlib import Path
