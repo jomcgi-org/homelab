@@ -137,7 +137,7 @@ def guidance(task: dict) -> str:
             )
         elif gate["kind"] == "live_validation":
             parts.append(rescope_text(gate))
-    if task.get("delivery_adoption"):
+    if task.get("delivery_adoption") and not task.get("dependency_review"):
         parts.append(
             f"Adopted PR #{task['delivery_pr_number']} on {task['delivery_branch']}. "
             "Rebase onto main, repair, push to this branch and independently "

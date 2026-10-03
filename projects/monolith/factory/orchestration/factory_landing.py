@@ -481,6 +481,9 @@ def _deliveries(
                 "conductor_gates": (
                     json.loads(row.direction_json) if row.direction_json else {}
                 ).get("conductor_gates", []),
+                "dependency_review": (
+                    json.loads(row.direction_json) if row.direction_json else {}
+                ).get("dependency_review"),
                 "pr_number": number,
                 # The head the newest arming was measured against, so a branch
                 # that moves under an armed pull request can be caught.
@@ -680,6 +683,13 @@ def _arm(repo: str, item: dict) -> None:
         if item.get("recovery_pending") or pr.get("mergeable") is False:
             _recover_delivery(item, head, "delivered_pr")
             return
+        if item.get("dependency_review"):
+            from factory import review_publisher
+
+            proof = review_publisher.collect(item["task_id"])
+            if isinstance(proof, review_publisher.Refusal):
+                _refuse(item, proof.reason)
+                return
         node_id = pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")
@@ -959,6 +969,16 @@ def _close_issue(repo: str, item: dict) -> None:
             operational_acceptance_pending=True,
         )
         item["closed"] = True  # Landing is complete; the issue remains open.
+        return
+    if item.get("dependency_review"):
+        _record(
+            item["task_id"],
+            "repository_delivery_complete",
+            pr_number=number,
+            closed_by_factory=False,
+            dependency_review=True,
+        )
+        item["closed"] = True
         return
     try:
         current = github_get(repo, f"issues/{issue}")

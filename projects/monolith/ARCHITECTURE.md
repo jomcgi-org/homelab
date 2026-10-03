@@ -1836,6 +1836,56 @@ of Opus went on recovery samples that could not converge. No ARCHITECTURE
 section described the loop, so no reviewer saw its bound. Quality routing
 stays retired; review rounds already bound quality (#6283, closed 2026-10-01).
 
+
+### Adversarial dependency PR intake
+
+`intake.dependency_pr_authors` is an explicit list of GitHub account logins
+(default `[]`); for example `["dependabot[bot]"]`. With intake enabled, the
+existing bounded PR sweep selects open, ready, same-repository PRs from those
+accounts targeting the configured base. They share delivery WIP, daily caps,
+budget and generation deduplication with issue work. Allowlisting permits
+inspection only. PR text, changed repository instructions and upstream package
+material remain untrusted even for an allowlisted author.
+
+`dependency_prs.py` fetches the full changed-file inventory, GitHub dependency
+comparison and open Dependabot alerts. Unavailable, empty, malformed or
+truncated comparison evidence holds the PR; added versions with known
+vulnerabilities are refused. The receipt adopts the original PR and pins its
+head, base, numeric author identity and evidence digest. The conductor uses a
+read-only `implement_*` investigation followed by a separate `review_*` session
+that challenges the investigation. Both structured assessments must cover
+provenance, install scripts, transitive changes, vulnerability remediation,
+compatibility and validation with concrete evidence. Dependency inspection
+nodes have `side_effects=false`; source integration and automatic correction
+rounds are refused. The guest is instructed to inspect hostile scripts before
+execution and use isolated validation without production credentials; this
+prompt is not a new guest capability boundary.
+
+Completion, trusted review publication and merge arming recheck the dependency
+evidence. Both sessions must report safe assessments for the same head, base
+and digest, and the existing exact-head approval and required Linux CI gates
+still apply. Any change invalidates approval and requires fresh review under a
+new authorized generation. Rejected or unsupported changes stay held for an
+operator; missing access to Dependabot alerts is never treated as no alerts.
+The GitHub read identity needs Dependabot alerts read permission in addition
+to access to the repository and dependency graph. This lane never dismisses
+alerts. The existing merge queue and GitOps promotion pipeline remain the
+publication path, and landing still verifies publication and managed rollout
+before recording repository delivery complete. It never closes a PR through
+the issue-close API. Runtime activation is a live policy update after rollout;
+shipping this code alone enables no author accounts. BuildBuddy currently
+injects secrets into same-repository PR events and executes the PR branch
+workflow (`buildbuddy.yaml`). This merge gate does not isolate those earlier
+CI executions; activating automated intake must account for that credential
+boundary.
+
+**Why.** A compromised bot account or malicious upstream release can produce
+a plausible version bump and green CI. Author reputation, semver and a clean
+vulnerability feed do not establish safety. Independent adversarial judgment
+plus server-fetched, commit-bound evidence makes those claims inspectable and
+keeps merge authority outside the guest. Adopting the original PR preserves
+Dependabot's history without creating replacement dependency changes.
+
 ### The factory conductor
 
 One logical Conductor per operator sits above every per-task Planner and drain

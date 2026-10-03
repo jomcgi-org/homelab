@@ -249,6 +249,24 @@ def collect(task_id: str) -> ReviewEvidence | Refusal:
     if head.get("sha") != approved_head:
         return _refusal(task_id, "head_moved")
 
+    if isinstance(direction, dict) and direction.get("dependency_review"):
+        from factory.orchestration import dependency_prs
+
+        try:
+            dependency_prs.verify(
+                {
+                    "repo": receipt.repo,
+                    "dependency_review": direction["dependency_review"],
+                },
+                pull,
+                [
+                    {**run.model_dump(), "pin": json.loads(run.pin_json or "{}")}
+                    for run in runs
+                ],
+            )
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return _refusal(task_id, "dependency_review_invalid")
+
     details_url = SESSION_EVIDENCE_URL.format(session_id=review.session_id)
     if artifact.get("verdict") == "approve":
         return ReviewEvidence(

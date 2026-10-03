@@ -2279,3 +2279,22 @@ def test_drain_interruption_waits_on_same_factory_attempt(harness, monkeypatch):
     assert harness.starts[0][0]["max_cost_usd"] == 2.0
     assert harness.cleanups == ["parent-run"]
     assert sleeps == [5]
+
+
+def test_dependency_read_only_pin_reaches_guest_prompt():
+    from factory.orchestration import dependency_prs
+
+    admitted = nodes._validate_pin(
+        pin(read_only=True, artifact_schema=dependency_prs.artifact_schema(SCHEMA))
+    )
+    assert admitted["read_only"] is True
+    prompt = nodes._node_prompt(
+        "Inspect the incoming dependency PR",
+        "result.json",
+        admitted["artifact_schema"],
+        branch="dependabot/pip/example-2",
+    )
+    assert "Do not modify source, commit or push" in prompt
+    assert "Commit and push source changes" not in prompt
+    with pytest.raises(ValueError, match="read_only"):
+        nodes._validate_pin(pin(read_only="true"))
