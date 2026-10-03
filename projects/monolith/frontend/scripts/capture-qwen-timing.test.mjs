@@ -24,7 +24,7 @@ for (const mixed of [false, true]) {
                 const encoder = new TextEncoder();
                 controller.enqueue(
                   encoder.encode(
-                    'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                    ': progress {"stage":"prefill","done":0,"total":8,"reused":0}\n\ndata: {"choices":[{"delta":{"content":"Hello"}}]}\n',
                   ),
                 );
                 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -59,6 +59,8 @@ for (const mixed of [false, true]) {
           const recording = JSON.parse(await readFile(output, "utf8"));
           assert.equal(recording.turns[0].metrics.completionTokens, 5);
           assert.equal(recording.turns[0].events.length, 2);
+          assert.equal(recording.turns[0].usage.cached_tokens, 0);
+          assert.equal(recording.turns[0].progress[0].total, 8);
           assert.equal(recording.telemetry.routing, false);
           assert.equal(recording.turns[0].statsSamples[0].vramBytes, 24e9);
           assert.ok(recording.turns[0].metrics.tokensPerSecond > 0);

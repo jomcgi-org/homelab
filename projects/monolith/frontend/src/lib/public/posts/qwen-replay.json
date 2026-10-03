@@ -1,350 +1,458 @@
 {
   "version": 3,
-  "recordedAt": "2026-10-03T05:31:19.686Z",
+  "recordedAt": "2026-10-03T05:47:36.370Z",
   "build": "3b51524fb0b08c5bd8a9287c19121176cd3115f6",
   "model": "Qwen3.8-Flash-Next, 125B, NVFP4",
   "hardware": "RTX 4090 24 GB, Ryzen 7800X3D, 64 GB RAM, NVMe",
   "thinking": false,
   "sampleIntervalMs": 200,
-  "conditions": "Existing warm shared service. Default sampling, thinking disabled, prefix reuse available. Client timings include transport. Normal hybrid expert execution, staged prefill and FP8 dense weights. Expert-routing profiling disabled. One request, not an isolated benchmark.",
+  "conditions": "One warm-up followed by three fresh-prefix requests on the existing service. Zero cached prompt tokens verified from cache-enabled usage reports. Normal hybrid execution, staged prefill, FP8 dense weights. Expert-routing profiling disabled. Median-TTFT recording selected; client timings include transport.",
   "telemetry": { "routing": false, "stats": true },
   "turns": [
     {
       "title": "How this inference works",
-      "prompt": "Explain how a 125B mixture-of-experts model generates tokens on a 24GB RTX 4090 and 64GB RAM in three short sentences, under 80 words. GPU-resident experts compute locally. For pinned weights, a hybrid executor limits PCIe fetches and computes the other experts on the CPU. Cold experts use the CPU and page cache, reading from NVMe on a cache miss. Explain how the outputs combine.",
+      "prompt": "Request e1e7eed5-3afc-4a29-b510-0189cc6a66af.\nExplain how a 125B mixture-of-experts model generates tokens on a 24GB RTX 4090 and 64GB RAM in three short sentences, under 80 words. GPU-resident experts compute locally. For pinned weights, a hybrid executor limits PCIe fetches and computes the other experts on the CPU. Cold experts use the CPU and page cache, reading from NVMe on a cache miss. Explain how the outputs combine.",
       "events": [
-        { "at": 3486, "content": "The", "reasoning": "" },
-        { "at": 3490, "content": " router", "reasoning": "" },
-        { "at": 3651, "content": " directs", "reasoning": "" },
-        { "at": 3653, "content": " tokens", "reasoning": "" },
-        { "at": 3717, "content": " to", "reasoning": "" },
-        { "at": 3772, "content": " GPU", "reasoning": "" },
-        { "at": 3855, "content": "-res", "reasoning": "" },
-        { "at": 3913, "content": "ident", "reasoning": "" },
-        { "at": 3977, "content": " experts", "reasoning": "" },
-        { "at": 4031, "content": " for", "reasoning": "" },
-        { "at": 4060, "content": " immediate", "reasoning": "" },
-        { "at": 4090, "content": " local", "reasoning": "" },
-        { "at": 4145, "content": " computation", "reasoning": "" },
-        { "at": 4199, "content": ".", "reasoning": "" },
-        { "at": 4253, "content": " P", "reasoning": "" },
-        { "at": 4346, "content": "inned", "reasoning": "" },
-        { "at": 4398, "content": " weights", "reasoning": "" },
-        { "at": 4422, "content": " enable", "reasoning": "" },
-        { "at": 4461, "content": " a", "reasoning": "" },
-        { "at": 4511, "content": " hybrid", "reasoning": "" },
-        { "at": 4546, "content": " executor", "reasoning": "" },
-        { "at": 4581, "content": " to", "reasoning": "" },
-        { "at": 4615, "content": " limit", "reasoning": "" },
-        { "at": 4645, "content": " PCIe", "reasoning": "" },
-        { "at": 4692, "content": " fetch", "reasoning": "" },
-        { "at": 4731, "content": "es", "reasoning": "" },
-        { "at": 4794, "content": " while", "reasoning": "" },
-        { "at": 4820, "content": " CPU", "reasoning": "" },
-        { "at": 4852, "content": " computes", "reasoning": "" },
-        { "at": 4875, "content": " alternative", "reasoning": "" },
-        { "at": 4903, "content": " experts", "reasoning": "" },
-        { "at": 4931, "content": ".", "reasoning": "" },
-        { "at": 4966, "content": " Cold", "reasoning": "" },
-        { "at": 4998, "content": " experts", "reasoning": "" },
-        { "at": 5031, "content": " rely", "reasoning": "" },
-        { "at": 5067, "content": " on", "reasoning": "" },
-        { "at": 5102, "content": " CPU", "reasoning": "" },
-        { "at": 5124, "content": " and", "reasoning": "" },
-        { "at": 5179, "content": " page", "reasoning": "" },
-        { "at": 5205, "content": " cache", "reasoning": "" },
-        { "at": 5227, "content": ",", "reasoning": "" },
-        { "at": 5262, "content": " triggering", "reasoning": "" },
-        { "at": 5293, "content": " NV", "reasoning": "" },
-        { "at": 5326, "content": "Me", "reasoning": "" },
-        { "at": 5360, "content": " reads", "reasoning": "" },
-        { "at": 5391, "content": " on", "reasoning": "" },
-        { "at": 5433, "content": " misses", "reasoning": "" },
-        { "at": 5483, "content": ",", "reasoning": "" },
-        { "at": 5519, "content": " with", "reasoning": "" },
-        { "at": 5562, "content": " all", "reasoning": "" },
-        { "at": 5613, "content": " expert", "reasoning": "" },
-        { "at": 5651, "content": " outputs", "reasoning": "" },
-        { "at": 5681, "content": " weighted", "reasoning": "" },
-        { "at": 5716, "content": " by", "reasoning": "" },
-        { "at": 5750, "content": " routing", "reasoning": "" },
-        { "at": 5776, "content": " probabilities", "reasoning": "" },
-        { "at": 5827, "content": " to", "reasoning": "" },
-        { "at": 5857, "content": " form", "reasoning": "" },
-        { "at": 5887, "content": " the", "reasoning": "" },
-        { "at": 5915, "content": " final", "reasoning": "" },
-        { "at": 5939, "content": " token", "reasoning": "" },
-        { "at": 5965, "content": " prediction", "reasoning": "" },
-        { "at": 5998, "content": ".", "reasoning": "" }
+        { "at": 3154, "content": "Hot", "reasoning": "" },
+        { "at": 3158, "content": " experts", "reasoning": "" },
+        { "at": 3183, "content": " compute", "reasoning": "" },
+        { "at": 3251, "content": " directly", "reasoning": "" },
+        { "at": 3254, "content": " on", "reasoning": "" },
+        { "at": 3281, "content": " the", "reasoning": "" },
+        { "at": 3313, "content": " GPU", "reasoning": "" },
+        { "at": 3333, "content": ".", "reasoning": "" },
+        { "at": 3358, "content": " For", "reasoning": "" },
+        { "at": 3380, "content": " pinned", "reasoning": "" },
+        { "at": 3399, "content": " weights", "reasoning": "" },
+        { "at": 3421, "content": ",", "reasoning": "" },
+        { "at": 3444, "content": " the", "reasoning": "" },
+        { "at": 3467, "content": " system", "reasoning": "" },
+        { "at": 3487, "content": " prefetch", "reasoning": "" },
+        { "at": 3506, "content": "es", "reasoning": "" },
+        { "at": 3523, "content": " to", "reasoning": "" },
+        { "at": 3541, "content": " VR", "reasoning": "" },
+        { "at": 3563, "content": "AM", "reasoning": "" },
+        { "at": 3588, "content": " and", "reasoning": "" },
+        { "at": 3609, "content": " off", "reasoning": "" },
+        { "at": 3634, "content": "loads", "reasoning": "" },
+        { "at": 3650, "content": " remaining", "reasoning": "" },
+        { "at": 3668, "content": " experts", "reasoning": "" },
+        { "at": 3684, "content": " to", "reasoning": "" },
+        { "at": 3703, "content": " the", "reasoning": "" },
+        { "at": 3726, "content": " CPU", "reasoning": "" },
+        { "at": 3742, "content": " to", "reasoning": "" },
+        { "at": 3771, "content": " minimize", "reasoning": "" },
+        { "at": 3808, "content": " PCIe", "reasoning": "" },
+        { "at": 3829, "content": " latency", "reasoning": "" },
+        { "at": 3850, "content": ".", "reasoning": "" },
+        { "at": 3870, "content": " Cold", "reasoning": "" },
+        { "at": 3888, "content": " experts", "reasoning": "" },
+        { "at": 3904, "content": " rely", "reasoning": "" },
+        { "at": 3922, "content": " on", "reasoning": "" },
+        { "at": 3939, "content": " CPU", "reasoning": "" },
+        { "at": 3955, "content": " processing", "reasoning": "" },
+        { "at": 3973, "content": " backed", "reasoning": "" },
+        { "at": 3991, "content": " by", "reasoning": "" },
+        { "at": 4008, "content": " NV", "reasoning": "" },
+        { "at": 4029, "content": "Me", "reasoning": "" },
+        { "at": 4046, "content": " page", "reasoning": "" },
+        { "at": 4065, "content": " caching", "reasoning": "" },
+        { "at": 4093, "content": ".", "reasoning": "" },
+        { "at": 4113, "content": " Finally", "reasoning": "" },
+        { "at": 4136, "content": ",", "reasoning": "" },
+        { "at": 4160, "content": " a", "reasoning": "" },
+        { "at": 4181, "content": " router", "reasoning": "" },
+        { "at": 4198, "content": " aggregates", "reasoning": "" },
+        { "at": 4216, "content": " the", "reasoning": "" },
+        { "at": 4239, "content": " weighted", "reasoning": "" },
+        { "at": 4263, "content": " outputs", "reasoning": "" },
+        { "at": 4283, "content": " from", "reasoning": "" },
+        { "at": 4303, "content": " these", "reasoning": "" },
+        { "at": 4329, "content": " parallel", "reasoning": "" },
+        { "at": 4346, "content": " computations", "reasoning": "" },
+        { "at": 4365, "content": " into", "reasoning": "" },
+        { "at": 4384, "content": " a", "reasoning": "" },
+        { "at": 4405, "content": " single", "reasoning": "" },
+        { "at": 4426, "content": " unified", "reasoning": "" },
+        { "at": 4444, "content": " token", "reasoning": "" },
+        { "at": 4464, "content": " prediction", "reasoning": "" },
+        { "at": 4485, "content": ".", "reasoning": "" }
       ],
       "samples": [],
+      "progress": [
+        { "at": 6, "stage": "queued" },
+        { "at": 6, "stage": "prefill", "done": 0, "total": 140, "reused": 0 },
+        { "at": 3154, "stage": "generating" }
+      ],
       "statsSamples": [
         {
-          "at": 2,
+          "at": 1,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 0,
-          "decodeTps": 0,
+          "decodeTps": 41.5,
           "vramBytes": 23653777408
         },
         {
-          "at": 205,
+          "at": 202,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 37.8,
           "vramBytes": 23653777408
         },
         {
-          "at": 407,
+          "at": 404,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 34.7,
           "vramBytes": 23653777408
         },
         {
-          "at": 610,
+          "at": 605,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 32,
           "vramBytes": 23653777408
         },
         {
-          "at": 812,
+          "at": 807,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 29.8,
           "vramBytes": 23653777408
         },
         {
-          "at": 1014,
+          "at": 1009,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 27.8,
           "vramBytes": 23653777408
         },
         {
-          "at": 1216,
+          "at": 1211,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 26.1,
           "vramBytes": 23653777408
         },
         {
-          "at": 1419,
+          "at": 1412,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 24.6,
           "vramBytes": 23653777408
         },
         {
-          "at": 1620,
+          "at": 1613,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 23.2,
           "vramBytes": 23653777408
         },
         {
-          "at": 1822,
+          "at": 1814,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 22,
           "vramBytes": 23653777408
         },
         {
-          "at": 2024,
+          "at": 2015,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 20.9,
           "vramBytes": 23653777408
         },
         {
-          "at": 2226,
+          "at": 2217,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 19.9,
           "vramBytes": 23653777408
         },
         {
-          "at": 2428,
+          "at": 2418,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 19,
           "vramBytes": 23653777408
         },
         {
-          "at": 2630,
+          "at": 2620,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 18.2,
           "vramBytes": 23653777408
         },
         {
-          "at": 2832,
+          "at": 2822,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 17.5,
           "vramBytes": 23653777408
         },
         {
-          "at": 3034,
+          "at": 3024,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 0,
+          "decodeTps": 16.5,
           "vramBytes": 23653777408
         },
         {
-          "at": 3236,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 0,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3438,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 0,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3641,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 13,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 3842,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 16.9,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4045,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 17.9,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4248,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 18.4,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4450,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 18.7,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 4652,
+          "at": 3226,
           "kvUsedPages": 3,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 20.6,
+          "decodeTps": 15.6,
           "vramBytes": 23653777408
         },
         {
-          "at": 4854,
+          "at": 3428,
           "kvUsedPages": 3,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 21.2,
+          "decodeTps": 15.9,
           "vramBytes": 23653777408
         },
         {
-          "at": 5055,
+          "at": 3630,
           "kvUsedPages": 3,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 22.3,
+          "decodeTps": 16,
           "vramBytes": 23653777408
         },
         {
-          "at": 5258,
+          "at": 3831,
           "kvUsedPages": 3,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 23.1,
+          "decodeTps": 16,
           "vramBytes": 23653777408
         },
         {
-          "at": 5461,
+          "at": 4032,
           "kvUsedPages": 3,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 23.8,
+          "decodeTps": 16.4,
           "vramBytes": 23653777408
         },
         {
-          "at": 5663,
+          "at": 4234,
           "kvUsedPages": 3,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 23.9,
+          "decodeTps": 16.4,
           "vramBytes": 23653777408
         },
         {
-          "at": 5866,
-          "kvUsedPages": 3,
+          "at": 4436,
+          "kvUsedPages": 4,
           "kvTotalPages": 1570,
           "activeRequests": 1,
-          "decodeTps": 24.4,
+          "decodeTps": 16.5,
           "vramBytes": 23653777408
         },
         {
-          "at": 6069,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1570,
-          "activeRequests": 1,
-          "decodeTps": 24.4,
-          "vramBytes": 23653777408
-        },
-        {
-          "at": 6271,
+          "at": 4638,
           "kvUsedPages": 0,
           "kvTotalPages": 1570,
           "activeRequests": 0,
-          "decodeTps": 23,
+          "decodeTps": 15.6,
           "vramBytes": 23653777408
         }
       ],
-      "usage": { "prompt_tokens": 108, "completion_tokens": 64 },
+      "usage": {
+        "prompt_tokens": 140,
+        "completion_tokens": 65,
+        "cached_tokens": 0
+      },
       "finishReason": "stop",
-      "durationMs": 6271,
+      "durationMs": 4638,
       "metrics": {
-        "ttftMs": 3486,
-        "generationMs": 2512,
-        "completionTokens": 64,
-        "tokensPerSecond": 25.079617834394906
+        "ttftMs": 3154,
+        "generationMs": 1331,
+        "completionTokens": 65,
+        "tokensPerSecond": 48.08414725770098
       }
     }
-  ]
+  ],
+  "benchmark": {
+    "warmupRequests": 1,
+    "measuredRequests": 3,
+    "cacheReportEnabled": true,
+    "results": [
+      {
+        "usage": {
+          "prompt_tokens": 142,
+          "completion_tokens": 68,
+          "cached_tokens": 0
+        },
+        "ttftMs": 2895,
+        "generationMs": 1417,
+        "completionTokens": 68,
+        "tokensPerSecond": 47.28299223712068
+      },
+      {
+        "usage": {
+          "prompt_tokens": 140,
+          "completion_tokens": 65,
+          "cached_tokens": 0
+        },
+        "ttftMs": 3154,
+        "generationMs": 1331,
+        "completionTokens": 65,
+        "tokensPerSecond": 48.08414725770098
+      },
+      {
+        "usage": {
+          "prompt_tokens": 143,
+          "completion_tokens": 85,
+          "cached_tokens": 0
+        },
+        "ttftMs": 3201,
+        "generationMs": 1932,
+        "completionTokens": 85,
+        "tokensPerSecond": 43.47826086956522
+      }
+    ],
+    "prefillChecks": [
+      {
+        "request_sha256": "c55939d551e18f71cf11e1778b7cfed3c914ea0b03bcd35fcaa48e7261010f94",
+        "usage": {
+          "prompt_tokens": 143,
+          "completion_tokens": 63,
+          "total_tokens": 206
+        },
+        "cached_tokens": 0,
+        "ttft_s": 3.3347544129937887,
+        "decode_tokens_per_s": 43.30586347579773,
+        "kind": "short",
+        "run": 0,
+        "warmup": true,
+        "isolated": true
+      },
+      {
+        "request_sha256": "ac5d6f8e9e2fc40becfd01ef6e7900571518accd99d03eae9778d0c6c7b3828e",
+        "usage": {
+          "prompt_tokens": 142,
+          "completion_tokens": 63,
+          "total_tokens": 205
+        },
+        "cached_tokens": 0,
+        "ttft_s": 3.122719366045203,
+        "decode_tokens_per_s": 45.796101678009215,
+        "kind": "short",
+        "run": 1,
+        "warmup": false,
+        "isolated": true
+      },
+      {
+        "request_sha256": "a082118a8d92dbe247dd8a57c4b6a5b52e07db6a329e8c7516eff8c27db6325e",
+        "usage": {
+          "prompt_tokens": 142,
+          "completion_tokens": 63,
+          "total_tokens": 205
+        },
+        "cached_tokens": 0,
+        "ttft_s": 3.0275030430057086,
+        "decode_tokens_per_s": 44.41649449843616,
+        "kind": "short",
+        "run": 2,
+        "warmup": false,
+        "isolated": true
+      },
+      {
+        "request_sha256": "83087ebddcd61248a65a3e4a78ab1b712914185b3d7c0b10c2932c84a7065ff6",
+        "usage": {
+          "prompt_tokens": 141,
+          "completion_tokens": 61,
+          "total_tokens": 202
+        },
+        "cached_tokens": 0,
+        "ttft_s": 2.9671592619852163,
+        "decode_tokens_per_s": 45.568237827562925,
+        "kind": "short",
+        "run": 3,
+        "warmup": false,
+        "isolated": true
+      },
+      {
+        "request_sha256": "c2d8e1d4b1974643b073a8421c3ec1d840081abb83b0812a2c7eef2ee834b143",
+        "usage": {
+          "prompt_tokens": 9932,
+          "completion_tokens": 70,
+          "total_tokens": 10002
+        },
+        "cached_tokens": 0,
+        "ttft_s": 5.365670073020738,
+        "decode_tokens_per_s": 26.038543928336832,
+        "kind": "long",
+        "run": 0,
+        "warmup": true,
+        "isolated": true
+      },
+      {
+        "request_sha256": "dd689b6fb343593465c3e0d630481b6fcc8d3485caf49511a9ce379d997f62e7",
+        "usage": {
+          "prompt_tokens": 9932,
+          "completion_tokens": 76,
+          "total_tokens": 10008
+        },
+        "cached_tokens": 0,
+        "ttft_s": 5.083982301992364,
+        "decode_tokens_per_s": 33.17657346348652,
+        "kind": "long",
+        "run": 1,
+        "warmup": false,
+        "isolated": true
+      },
+      {
+        "request_sha256": "688758f58b86ae6cdfc68ca1bf5404b6b973e832eeeef147cfb7a67dd9abb602",
+        "usage": {
+          "prompt_tokens": 9933,
+          "completion_tokens": 84,
+          "total_tokens": 10017
+        },
+        "cached_tokens": 0,
+        "ttft_s": 5.015872322022915,
+        "decode_tokens_per_s": 38.364951265358485,
+        "kind": "long",
+        "run": 2,
+        "warmup": false,
+        "isolated": true
+      },
+      {
+        "request_sha256": "80aa61849f3c35695d05b9747d90367967316507630decc66cc7a2dd3c1cdf07",
+        "usage": {
+          "prompt_tokens": 9933,
+          "completion_tokens": 81,
+          "total_tokens": 10014
+        },
+        "cached_tokens": 0,
+        "ttft_s": 4.826314998033922,
+        "decode_tokens_per_s": 37.26627627391899,
+        "kind": "long",
+        "run": 3,
+        "warmup": false,
+        "isolated": true
+      }
+    ]
+  }
 }

@@ -17,8 +17,8 @@ if (!base || !/^[a-f0-9]{40}$/.test(build ?? "")) {
   );
 }
 if (process.env.QWEN_REPLAY_TIMING_ONLY === "1") {
-  const { captureTiming } = await import("./capture-qwen-timing.mjs");
-  await captureTiming(
+  const { captureWarmTiming } = await import("./capture-qwen-timing.mjs");
+  await captureWarmTiming(
     base,
     build,
     new URL("../src/lib/public/posts/qwen-replay.json", import.meta.url),

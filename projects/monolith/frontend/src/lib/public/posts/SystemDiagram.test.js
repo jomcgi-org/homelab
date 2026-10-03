@@ -32,11 +32,13 @@ test("a cold cache hit runs through the CPU and adds NVMe only on a miss", async
   const view = await render("memory");
   view.querySelectorAll(".paths button")[2].click();
   await tick();
-  expect(view.querySelector(".flow").textContent).toContain("CPU");
-  expect(view.querySelector(".flow").textContent).not.toContain("NVMe");
+  expect(view.querySelector(".path-description").textContent).toContain("CPU");
+  expect(view.querySelector(".path-description").textContent).not.toContain(
+    "NVMe",
+  );
   view.querySelectorAll(".paths button")[3].click();
   await tick();
-  expect(view.querySelector(".flow").textContent).toContain("NVMe");
+  expect(view.querySelector(".path-description").textContent).toContain("NVMe");
 });
 
 test("selecting a step reveals original prose without extra animation controls", async () => {
