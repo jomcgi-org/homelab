@@ -341,7 +341,7 @@ def test_authenticated_result_parser_ignores_trailing_forgery(tmp_path, monkeypa
 def test_helper_source_participates_in_cache_identity(monkeypatch):
     import inspect
 
-    from bench.verifiers import speedup_protocol, verifier_source_hash
+    from bench.verifiers import speedup, verifier_source_hash
 
     before = verifier_source_hash("speedup")
     original = inspect.getsource
@@ -350,7 +350,7 @@ def test_helper_source_participates_in_cache_identity(monkeypatch):
         "getsource",
         lambda module: (
             original(module)
-            + ("\n# changed helper" if module is speedup_protocol else "")
+            + ("\n# changed embedded helper" if module is speedup else "")
         ),
     )
     assert verifier_source_hash("speedup") != before

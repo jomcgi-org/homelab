@@ -6,6 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from bench.verifiers import PerformanceRecord as PerformanceRecord
+from bench.verifiers import PerformanceSample as PerformanceSample
+
 
 class TaskClass(str, Enum):
     MECHANICAL = "mechanical"
@@ -114,26 +117,6 @@ class TaskSpec(BaseModel):
     # jomcgi-agent-index axes this task measures beyond its tier (index.yaml).
     # Provenance like calibration: not part of any cell key.
     axes: list[Literal["judgement", "security", "review"]] = Field(default_factory=list)
-
-
-class PerformanceSample(BaseModel):
-    baseline_s: float = Field(gt=0, allow_inf_nan=False, strict=True)
-    candidate_s: float = Field(gt=0, allow_inf_nan=False, strict=True)
-    order: Literal["baseline-first", "candidate-first"]
-
-
-class PerformanceRecord(BaseModel):
-    metric: Literal["wall_clock_median_paired_ratio"] = "wall_clock_median_paired_ratio"
-    correctness: bool | None
-    warmup: list[PerformanceSample] = Field(default_factory=list)
-    samples: list[PerformanceSample] = Field(default_factory=list)
-    ratios: list[float] = Field(default_factory=list)
-    median_ratio: float | None = None
-    highest_bucket: float | None = None
-    score: float = Field(ge=0, le=1)
-    pass_threshold: float = Field(ge=0, le=1)
-    pair_count: int = Field(gt=0)
-    fixture_version: str
 
 
 class Attempt(BaseModel):
