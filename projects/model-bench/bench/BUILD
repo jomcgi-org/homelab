@@ -73,6 +73,7 @@ py_test(
     imports = [".."],
     deps = [
         ":bench",
+        "//projects/model-bench/bench/verifiers",
         "@pip//pytest",
     ],
 )
