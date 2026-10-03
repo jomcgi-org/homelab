@@ -51,6 +51,25 @@ def main():
             report["timings"]["foreground_catchup_seconds"] = time.monotonic() - start
             assert report["timings"]["foreground_catchup_seconds"] <= 3
             report["checks"].append("Table narration reaches player A")
+            # Keep A visible while the DM sends through the real composer.
+            # Measure regular polling separately from foreground recovery.
+            a.get_by_label("What do you do?", exact=True).focus()
+            assert a.evaluate("document.visibilityState") == "visible"
+            live_scene = f"The lantern flickers twice. ({stamp})"
+            dm.get_by_label("Set the scene", exact=True).fill(live_scene)
+            sent = time.monotonic()
+            dm.get_by_role("button", name="Send", exact=True).click()
+            expect(a.get_by_text(live_scene, exact=True)).to_be_visible(timeout=5000)
+            report["timings"]["visible_tab_propagation_seconds"] = (
+                time.monotonic() - sent
+            )
+            assert report["timings"]["visible_tab_propagation_seconds"] <= 3
+            assert a.evaluate("document.visibilityState") == "visible"
+            expect(a.get_by_label("What do you do?", exact=True)).to_be_focused()
+            expect(a.get_by_text(live_scene, exact=True)).to_have_count(1)
+            report["checks"].append(
+                "Visible-tab polling delivers narration within three seconds without duplicate entries or stealing composer focus"
+            )
             # Exercise the DM editor through the BFF and normal backend authority.
             dm.bring_to_front()
             reveal_start = time.monotonic()
@@ -623,6 +642,10 @@ def main():
                 for cookie in dm.context.cookies()
                 if cookie["name"] == "grimoire-id-token"
             )
+            a.bring_to_front()
+            a.get_by_role("button", name="Story", exact=True).focus()
+            a.evaluate("window.scrollTo(0, 0)")
+            reading_position = a.evaluate("window.scrollY")
             batch = dm.request.post(
                 f"http://friends.localhost:8177/api/grimoire/campaigns/{campaign_id}/grants/bulk",
                 headers={"x-grimoire-token": token},
@@ -652,6 +675,11 @@ def main():
             assert len(grouped) == 1 and len(grouped[0]["body"]["reveals"]) == 2
             assert "DM_ONLY_BATCH_SECRET" not in json.dumps(grouped)
             assert "BATCH_Mapmaker Tessa" not in b.request.get(b.url + "/state").text()
+            assert abs(a.evaluate("window.scrollY") - reading_position) <= 2
+            expect(a.get_by_role("button", name="Story", exact=True)).to_be_focused()
+            report["checks"].append(
+                "Incoming grouped knowledge preserves the reader's scroll position and keyboard focus"
+            )
             a.screenshot(path=str(args.output / "grouped-reveal.png"), full_page=True)
             a.get_by_role(
                 "button", name="Pin Mapmaker Tessa, Ferryman Orrin to notes", exact=True
