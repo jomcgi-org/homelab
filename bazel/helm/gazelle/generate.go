@@ -122,6 +122,29 @@ func generateRules(args language.GenerateArgs) language.GenerateResult {
 		return result
 	}
 
+	// Task fixtures are excluded from Gazelle's walk. Export only their YAML
+	// contracts for the benchmark harness tests, never generated fixture trees.
+	if args.Rel == "projects/model-bench" {
+		paths, err := filepath.Glob(filepath.Join(args.Dir, "tasks", "*", "task.yaml"))
+		if err != nil || len(paths) == 0 {
+			return result
+		}
+		srcs := make([]string, 0, len(paths))
+		for _, path := range paths {
+			rel, err := filepath.Rel(args.Dir, path)
+			if err != nil {
+				return result
+			}
+			srcs = append(srcs, filepath.ToSlash(rel))
+		}
+		specs := rule.NewRule("filegroup", "task_specs")
+		specs.SetAttr("srcs", srcs)
+		specs.SetAttr("visibility", []string{"//projects/model-bench:__subpackages__"})
+		result.Gen = append(result.Gen, specs)
+		result.Imports = append(result.Imports, nil)
+		return result
+	}
+
 	// Check if this is a chart directory (has Chart.yaml)
 	chartFile := filepath.Join(args.Dir, "Chart.yaml")
 	if _, err := os.Stat(chartFile); err == nil {
