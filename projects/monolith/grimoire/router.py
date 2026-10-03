@@ -37,6 +37,7 @@ from grimoire.access import (
     get_grimoire_operator_email,
 )
 from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
+from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
@@ -2138,6 +2139,70 @@ def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
     )
 
 
+class RollRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    formula: str
+    label: str | None = None
+    visibility: Literal["table", "dm", "self"] | None = None
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if len(value) > 200:
+            raise ValueError("label must be at most 200 characters")
+        return value
+
+
+@router.post(
+    "/campaigns/{campaign_id}/sessions/{session_id}/rolls",
+    response_model=SessionEventView,
+    dependencies=[Depends(require_play_enabled)],
+)
+def create_roll(
+    campaign_id: str,
+    session_id: str,
+    body: RollRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+    rng: DiceRng = Depends(get_dice_rng),
+) -> SessionEventView:
+    member = _get_member_or_404(session, campaign_id, email)
+    game_session = _session_in_campaign(session, campaign_id, session_id)
+    visibility = body.visibility or ("dm" if member.role == "dm" else "table")
+    if member.role != "dm" and member.player_character_id is None and visibility != "table":
+        raise HTTPException(status_code=422, detail="players without a character may roll only table")
+    if visibility == "table":
+        audience = Audience("table")
+    elif visibility == "dm" or member.role == "dm":
+        audience = Audience("dm", author_member_id=member.id)
+    else:
+        audience = Audience(
+            "pcs", frozenset({member.player_character_id}), author_member_id=member.id
+        )
+    try:
+        result = roll(body.formula, rng)
+    except DiceFormulaError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid formula: {exc}") from exc
+    try:
+        row = append_event(
+            session,
+            game_session=game_session,
+            kind="roll",
+            audience=audience,
+            author_member_id=member.id,
+            body={**result, "label": body.label, "visibility": visibility},
+        )
+    except SessionEndedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(row)
+    return _event_view(row, member)
+
+
 @router.post(
     "/campaigns/{campaign_id}/sessions/{session_id}/events",
     response_model=SessionEventView,
@@ -2154,6 +2219,8 @@ def create_session_event(
     game_session = _session_in_campaign(session, campaign_id, session_id)
     if body.kind == "utterance":
         raise HTTPException(status_code=403, detail="utterances require ingest")
+    if body.kind == "roll":
+        raise HTTPException(status_code=403, detail="rolls require the server-side roller")
     if member.role != "dm" and (
         body.kind != "action" or body.audience not in ("dm", "table")
     ):
