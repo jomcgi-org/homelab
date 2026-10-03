@@ -16,7 +16,9 @@ def main():
     report = {"simulated": True, "checks": [], "errors": [], "timings": {}}
     contexts = []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(
+            args=["--host-resolver-rules=MAP friends.localhost 127.0.0.1"]
+        )
         try:
             pages = []
             for role, width in [("dm", 1280), ("a", 390), ("b", 390)]:

@@ -34,6 +34,9 @@ export default defineConfig({
   build: {
     target: "es2022",
   },
+  optimizeDeps: {
+    esbuildOptions: { target: "es2022" },
+  },
   ssr: {
     // The runtime image ships only the SvelteKit output dir (remapped to
     // /app/build at image time); there is no node_modules. Any package

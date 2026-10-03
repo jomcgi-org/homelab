@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import pwd
 from pathlib import Path
 import shutil
 import socket
@@ -37,6 +38,16 @@ def main():
     children = []
     with tempfile.TemporaryDirectory(prefix="grimoire-local-") as directory:
         state = Path(directory)
+        pg_process_identity = {}
+        if os.geteuid() == 0:
+            # CI can run as root; PostgreSQL must own only its disposable tree.
+            account = pwd.getpwnam("postgres")
+            os.chown(state, account.pw_uid, account.pw_gid)
+            pg_process_identity = {
+                "user": account.pw_uid,
+                "group": account.pw_gid,
+                "extra_groups": [],
+            }
         subprocess.run(
             [
                 str(pg_bin / "initdb"),
@@ -51,6 +62,7 @@ def main():
             check=True,
             timeout=60,
             stdout=subprocess.DEVNULL,
+            **pg_process_identity,
         )
         try:
             children.append(
@@ -68,6 +80,7 @@ def main():
                     ],
                     stdout=(state / "postgres.log").open("w"),
                     stderr=subprocess.STDOUT,
+                    **pg_process_identity,
                 )
             )
             for _ in range(100):
