@@ -225,10 +225,23 @@ def test_invalid_roll_formula_is_400_without_writes(http_harness, formula, reaso
 
 
 @pytest.mark.parametrize("viewer", ("outsider", "other_campaign"))
-def test_roll_nonmember_404_before_formula_validation(http_harness, viewer):
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"formula": "notdice"},
+        {},
+        {"formula": None},
+        {"formula": 123},
+        {"formula": "1d1", "label": "x" * 201},
+    ],
+)
+def test_roll_nonmember_404_before_formula_validation(http_harness, viewer, body):
     h, client = http_harness
     before = h.snapshot()
-    assert _roll(h, client, viewer, formula="notdice").status_code == 404
+    response = client.post(
+        _url(h, "/rolls"), headers=h.headers(viewer), json=body
+    )
+    assert response.status_code == 404
     assert h.snapshot() == before
 
 
