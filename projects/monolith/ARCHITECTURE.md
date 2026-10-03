@@ -1875,7 +1875,8 @@ assessments and repository auto-merge enabled. The trusted
 (`factory.dependencyGate.enabled: false`). It checks PR heads and GitHub
 merge-queue entry heads using each entry's actual base, through a dedicated
 `FACTORY_DEPENDENCY_GATE_TOKEN` App installation identity for reads and writes.
-Missing credentials publish nothing and audit a skip. The publisher never
+Missing credentials publish nothing and return a silent skip without an
+audit, database session, control lock or GitHub call. The publisher never
 uses `GITHUB_API_TOKEN`.
 
 Server-fetched Bot identity, an explicit numeric ID in

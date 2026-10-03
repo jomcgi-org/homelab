@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 import httpx
 from core.github import GITHUB_API
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import select
 
 from factory.orchestration import dependency_prs as deps
@@ -140,6 +141,20 @@ class GitHub:
 def audit(action: str, **detail) -> None:
     with _locked_session() as (db, _control):
         _audit(db, ACTOR, action, **detail)
+
+
+def _safe_audit(action: str, **detail) -> None:
+    """Audit writes must never block failure publication or revocation.
+
+    The audit ledger shares the database with approval reads. A database
+    outage must still revoke previously published successes, so every
+    refusal, invalidation and skip audit tolerates audit write failures
+    and lets the caller publish the failure check.
+    """
+    try:
+        audit(action, **detail)
+    except FAILURES:
+        pass
 
 
 @dataclass(frozen=True)
@@ -282,12 +297,22 @@ class EvidenceUnavailable(ValueError):
 
 def evaluate(
     repo: str, branch: str, pull: dict, policy: dict, github: GitHub, entry=None
-) -> str:
+) -> tuple[str, Approval | None]:
+    """Return the success reason with the approving receipt, if any.
+
+    Only dependency PRs carry an approval. Non-dependency PRs return None
+    so final revalidation mismatches refuse without invalidating anything.
+    """
     head = pull["head"]["sha"]
     validate_pull(pull, repo, branch, pull["number"], head)
     if not dependency(pull, policy):
-        return "non-dependency PR"
-    approved = approval(repo, pull["number"])
+        return "non-dependency PR", None
+    try:
+        approved = approval(repo, pull["number"])
+    except SQLAlchemyError as exc:
+        # An unavailable approval database cannot establish approval, so
+        # refuse this tick without invalidating the durable generation.
+        raise EvidenceUnavailable("dependency approval unavailable") from exc
     try:
         evidence = approved.evidence
         encoded = json.dumps(
@@ -323,11 +348,16 @@ def evaluate(
             raise ValueError(
                 "dependency evidence changed; fresh authorized generation required"
             )
-        return "independent safe assessments match fresh dependency evidence"
+        return (
+            "independent safe assessments match fresh dependency evidence",
+            approved,
+        )
     except EvidenceUnavailable:
         raise
     except FAILURES:
-        audit(
+        # The invalidation record must not mask the refusal: a database
+        # outage during this write still refuses and publishes below.
+        _safe_audit(
             "dependency_approval_invalidated",
             task_id=approved.task_id,
             receipt_id=approved.receipt_id,
@@ -412,7 +442,9 @@ def publish(repo: str, head: str, conclusion: str, reason: str, token: str) -> N
     )
     if type(body.get("id")) is not int or body["id"] <= 0:
         raise ValueError("dependency check response malformed")
-    audit(
+    # The check is already posted. A database outage during this write
+    # must not report the publication as failed.
+    _safe_audit(
         "dependency_gate_published",
         repo=repo,
         head_sha=head,
@@ -421,7 +453,33 @@ def publish(repo: str, head: str, conclusion: str, reason: str, token: str) -> N
     )
 
 
-FAILURES = (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError)
+FAILURES = (
+    httpx.HTTPError,
+    ValueError,
+    KeyError,
+    TypeError,
+    AttributeError,
+    SQLAlchemyError,
+)
+
+
+def _approved_head_moved(latest: dict | None, approved: Approval | None) -> bool:
+    """Whether the final reread positively changed the approved head/author.
+
+    Only a successfully fetched pull showing a different approved head SHA
+    or author ID counts. Failed reads and malformed payloads cannot
+    establish a move, so they refuse this tick without invalidating the
+    durable generation.
+    """
+    if latest is None or approved is None:
+        return False
+    try:
+        return (
+            latest["head"]["sha"] != approved.evidence["head_sha"]
+            or latest["user"]["id"] != approved.evidence["author_id"]
+        )
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 def check(
@@ -435,6 +493,7 @@ def check(
     results=None,
 ) -> None:
     head = entries[-1]["headCommit"]["oid"] if entries else pull["head"]["sha"]
+    approved: Approval | None = None
     try:
         # The last queue entry's head can include every predecessor. A group
         # with a bot and another PR is refused rather than attributing combined
@@ -455,18 +514,35 @@ def check(
                     )
             reason = "non-dependency merge group"
         else:
-            reason = evaluate(
+            reason, approved = evaluate(
                 repo, branch, pull, policy, github, entries[0] if entries else None
             )
-        if entries and github.queue(repo, branch)[: len(entries)] != entries:
-            raise ValueError("queue base or merge-group head moved")
-        latest = github.get(repo, f"pulls/{pull['number']}")
-        validate_pull(latest, repo, branch, pull["number"], pull["head"]["sha"])
-        if (
-            latest["user"] != pull["user"]
-            or latest["base"]["sha"] != pull["base"]["sha"]
-        ):
-            raise ValueError("PR identity or base moved")
+        latest: dict | None = None
+        try:
+            if entries and github.queue(repo, branch)[: len(entries)] != entries:
+                raise ValueError("queue base or merge-group head moved")
+            latest = github.get(repo, f"pulls/{pull['number']}")
+            validate_pull(latest, repo, branch, pull["number"], pull["head"]["sha"])
+            if (
+                latest["user"] != pull["user"]
+                or latest["base"]["sha"] != pull["base"]["sha"]
+            ):
+                raise ValueError("PR identity or base moved")
+        except FAILURES:
+            # evaluate() already returned, so this final reread is outside
+            # the durable invalidation handler. A positively observed head
+            # or author change must still invalidate the approved receipt:
+            # returning the old evidence must not restore approval without
+            # fresh authorized-generation review.
+            if approved is not None and _approved_head_moved(latest, approved):
+                _safe_audit(
+                    "dependency_approval_invalidated",
+                    task_id=approved.task_id,
+                    receipt_id=approved.receipt_id,
+                    repo=repo,
+                    pr_number=pull["number"],
+                )
+            raise
         conclusion = "success"
     except FAILURES as exc:
         conclusion, reason = (
@@ -474,7 +550,8 @@ def check(
             "dependency evidence unavailable, changed or unapproved",
         )
         # Exception text can contain attacker-controlled API responses.
-        audit(
+        # The refusal record must not block the failure publication below.
+        _safe_audit(
             "dependency_gate_refused",
             repo=repo,
             head_sha=head,
@@ -513,11 +590,27 @@ def tick(policy: dict) -> dict:
             check(
                 repo, branch, pull, policy, github, token, entries[: index + 1], results
             )
+        # Publish every known head even when one publication fails: a
+        # failed audit or post for one target cannot abort revocation of
+        # the remaining targets.
+        failed: BaseException | None = None
         for head, (conclusion, reason) in results.items():
-            publish(repo, head, conclusion, reason, token)
+            try:
+                publish(repo, head, conclusion, reason, token)
+            except FAILURES as exc:
+                _safe_audit(
+                    "dependency_gate_skipped",
+                    reason="failure_publication_unavailable",
+                    error=type(exc).__name__,
+                )
+                if failed is None:
+                    failed = exc
+        if failed is not None:
+            raise failed
         return {"action": "checked", "pulls": len(pulls), "queue_entries": len(entries)}
     except FAILURES as exc:
-        audit(
+        # The skip record must not block revocation of known targets.
+        _safe_audit(
             "dependency_gate_skipped",
             reason="github_or_evidence_unavailable",
             error=type(exc).__name__,
@@ -533,9 +626,11 @@ def tick(policy: dict) -> dict:
                     "gate discovery unavailable",
                     token,
                 )
-            except FAILURES:
-                audit(
-                    "dependency_gate_skipped", reason="failure_publication_unavailable"
+            except FAILURES as publish_exc:
+                _safe_audit(
+                    "dependency_gate_skipped",
+                    reason="failure_publication_unavailable",
+                    error=type(publish_exc).__name__,
                 )
         for entry in locals().get("entries", []):
             try:
@@ -546,8 +641,10 @@ def tick(policy: dict) -> dict:
                     "gate discovery unavailable",
                     token,
                 )
-            except FAILURES:
-                audit(
-                    "dependency_gate_skipped", reason="failure_publication_unavailable"
+            except FAILURES as publish_exc:
+                _safe_audit(
+                    "dependency_gate_skipped",
+                    reason="failure_publication_unavailable",
+                    error=type(publish_exc).__name__,
                 )
         return {"action": "refused", "reason": "github_or_evidence_unavailable"}

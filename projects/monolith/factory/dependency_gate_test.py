@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import httpx
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, SQLModel, create_engine
 
 from factory import dependency_gate as gate
@@ -610,6 +611,79 @@ def test_discovery_failure_revokes_known_heads(setup):
     github.queue = unavailable
     assert gate.tick(POLICY)["action"] == "refused"
     assert publications[-1][2]["head_sha"] == HEAD
+    assert publications[-1][2]["conclusion"] == "failure"
+
+
+def test_approval_database_failure_revokes_success(setup, monkeypatch):
+    github, _, audits, publications = setup
+    assert gate.tick(POLICY)["action"] == "checked"
+    assert [item[2]["conclusion"] for item in publications] == ["success", "success"]
+
+    def unavailable(*_args):
+        raise SQLAlchemyError("approval table unavailable")
+
+    monkeypatch.setattr(gate, "approval", unavailable)
+    assert gate.tick(POLICY)["action"] == "checked"
+    assert [item[2]["conclusion"] for item in publications[-2:]] == [
+        "failure",
+        "failure",
+    ]
+    assert not any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+
+def test_audit_failure_does_not_block_revocation(setup, monkeypatch):
+    github, _, _, publications = setup
+    gate.tick(POLICY)
+    github.changes[0]["vulnerabilities"] = [{"severity": "high"}]
+
+    def failing_audit(*_args, **_kwargs):
+        raise SQLAlchemyError("audit table unavailable")
+
+    monkeypatch.setattr(gate, "audit", failing_audit)
+    assert gate.tick(POLICY)["action"] == "checked"
+    assert [item[2]["conclusion"] for item in publications[-2:]] == [
+        "failure",
+        "failure",
+    ]
+
+
+def test_final_read_move_invalidates_generation(setup, monkeypatch):
+    github, approved, audits, publications = setup
+    entry = queue_entry()
+    original = deepcopy(github.pull)
+
+    def honoring_approval(*_args):
+        if any(action == "dependency_approval_invalidated" for action, _ in audits):
+            raise ValueError(
+                "dependency approval invalidated; "
+                "fresh authorized generation required"
+            )
+        return approved
+
+    monkeypatch.setattr(gate, "approval", honoring_approval)
+    gate.check(REPO, "main", original, POLICY, github, "token", [entry])
+    assert publications[-1][2]["conclusion"] == "success"
+
+    pulls_reads = []
+    real_get = github.get
+
+    def moving_final_read(repo, endpoint):
+        body = real_get(repo, endpoint)
+        if endpoint == "pulls/91":
+            pulls_reads.append(endpoint)
+            if len(pulls_reads) > 1:
+                body["head"]["sha"] = "f" * 40
+        return body
+
+    monkeypatch.setattr(github, "get", moving_final_read)
+    gate.check(REPO, "main", original, POLICY, github, "token", [entry])
+    assert pulls_reads == ["pulls/91", "pulls/91"]
+    assert publications[-1][2]["conclusion"] == "failure"
+    assert any(action == "dependency_approval_invalidated" for action, _ in audits)
+
+    # Restoring the old head must not restore the same approval generation.
+    monkeypatch.setattr(github, "get", real_get)
+    gate.check(REPO, "main", original, POLICY, github, "token", [entry])
     assert publications[-1][2]["conclusion"] == "failure"
 
 
