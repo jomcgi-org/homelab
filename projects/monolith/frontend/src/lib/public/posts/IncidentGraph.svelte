@@ -7,6 +7,19 @@
     sourceUrl = "",
     review = {},
   } = $props();
+  let output = $state();
+  let followOutput = $state(true);
+  let previousLength = 0;
+  $effect(() => {
+    const length = answer.length;
+    if (length < previousLength) followOutput = true;
+    previousLength = length;
+    if (output && followOutput) output.scrollTop = output.scrollHeight;
+  });
+  function trackOutputScroll() {
+    followOutput =
+      output.scrollHeight - output.clientHeight - output.scrollTop < 24;
+  }
   const instance = `incident-${Math.random().toString(36).slice(2)}`;
   let captured = $derived(incidentGraph(answer, complete));
   // Keep the captured response intact; use verified page links and relationship types in the view.
@@ -192,9 +205,18 @@
     </div>
   </div>
 
-  <details>
+  <details class="model-output" open>
     <summary>Model output</summary>
-    <pre>{answer}</pre>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the output.) -->
+    <pre
+      bind:this={output}
+      onscroll={trackOutputScroll}
+      tabindex="0"
+      role="region"
+      aria-label="Streaming model output"><code
+        >{answer}{#if !complete}<span class="stream-cursor" aria-hidden="true"
+          ></span>{/if}</code
+      ></pre>
   </details>
 </div>
 
@@ -352,9 +374,32 @@
     cursor: pointer;
   }
   pre {
+    height: 5rem;
+    box-sizing: border-box;
+    margin: 0.5rem 0 0;
+    padding: 0.5rem;
+    border: 1px solid var(--line);
+    background: var(--band);
+    color: var(--ink-2);
+    font: 0.7rem/1.5 var(--font-code);
     white-space: pre-wrap;
-    max-height: 15rem;
+    overflow-wrap: anywhere;
     overflow: auto;
+    scrollbar-width: thin;
+  }
+  pre:focus-visible {
+    outline: 2px solid var(--tone-gpu);
+    outline-offset: 2px;
+  }
+  code {
+    font: inherit;
+  }
+  .stream-cursor {
+    display: inline-block;
+    height: 1em;
+    margin-left: 2px;
+    border-left: 2px solid var(--tone-gpu);
+    vertical-align: -0.1em;
   }
   @keyframes arrive {
     from {

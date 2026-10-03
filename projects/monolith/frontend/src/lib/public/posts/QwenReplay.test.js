@@ -136,3 +136,27 @@ test("the input scan follows seeking while thinking stays explicitly disabled", 
     initial,
   );
 });
+
+test("model output is open during decode and contains only arrived text", async () => {
+  const view = await render();
+  const at = turn.events.find(
+    (event) => event.at > turn.events[0].at + 1000,
+  ).at;
+  await seek(at);
+  const pane = view.querySelector(".model-output");
+  expect(pane.open).toBe(true);
+  const arrived = turn.events
+    .filter((event) => event.at <= at)
+    .map((event) => event.content)
+    .join("");
+  expect(pane.querySelector("code").textContent).toBe(arrived);
+  expect(arrived.length).toBeLessThan(
+    turn.events.map((event) => event.content).join("").length,
+  );
+  expect(pane.querySelector(".stream-cursor")).not.toBeNull();
+  pane.open = false;
+  await seek(at + 500);
+  expect(pane.open).toBe(false);
+  await seek(turn.durationMs);
+  expect(pane.querySelector(".stream-cursor")).toBeNull();
+});

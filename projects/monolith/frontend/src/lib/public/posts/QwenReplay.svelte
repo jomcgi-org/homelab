@@ -200,7 +200,7 @@
     line-height: 1.4;
   }
   .demo-body {
-    min-height: 27.5rem;
+    min-height: 33.5rem;
     display: flex;
     flex-direction: column;
     justify-content: flex-start;
@@ -377,7 +377,7 @@
   }
   @media (max-width: 600px) {
     .demo-body {
-      min-height: 27.5rem;
+      min-height: 33.5rem;
     }
     .question {
       font-size: 1.05rem;
