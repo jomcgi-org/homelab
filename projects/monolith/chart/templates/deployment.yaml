@@ -947,6 +947,8 @@ spec:
               value: "20"
             - name: API_BASE
               value: "http://localhost:8000"
+            - name: GRIMOIRE_PLAY_ENABLED
+              value: {{ .Values.grimoire.play.enabled | quote }}
             {{- if .Values.frontend.qwenApiBase }}
             # FreeToken (Qwen on node-4) over the Tailscale egress Service, for
             # the private /qwen chat page.

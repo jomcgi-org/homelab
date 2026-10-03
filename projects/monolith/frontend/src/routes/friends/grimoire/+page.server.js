@@ -50,7 +50,11 @@ export async function load({ fetch, cookies, setHeaders }) {
       };
     }),
   );
-  return { ...lobby, campaigns };
+  return {
+    ...lobby,
+    campaigns,
+    playEnabled: process.env.GRIMOIRE_PLAY_ENABLED === "true",
+  };
 }
 
 function action(run) {

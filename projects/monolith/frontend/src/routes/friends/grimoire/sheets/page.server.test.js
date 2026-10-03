@@ -50,3 +50,25 @@ it("keeps the submitted form body while substituting the verified cookie", async
     "/33333333-3333-4333-8333-333333333333/submit",
   );
 });
+
+it("reloads after a form action has consumed the POST body", async () => {
+  const { load } = await import("./+page.server.js");
+  const body = new FormData();
+  body.set("name", "Nyx");
+  const request = new Request(
+    "https://friends.jomcgi.dev/grimoire/sheets?/save",
+    { method: "POST", body },
+  );
+  await request.formData();
+  const fetch = vi
+    .fn()
+    .mockResolvedValue({ ok: true, status: 200, json: async () => [] });
+  const result = await load({
+    request,
+    fetch,
+    cookies: { get: () => "signed" },
+    setHeaders: vi.fn(),
+  });
+  expect(result.unavailable).toBe(false);
+  expect(fetch.mock.calls[0][1].headers.get("x-grimoire-token")).toBe("signed");
+});

@@ -73,7 +73,10 @@
             {@const latest = workspace.versions[0] ?? null}
             {@const draft = latest?.status === "draft" ? latest : null}
             {@const base = draft?.sheet ?? latest?.sheet ?? null}
-            <article class="sheet-card">
+            <article
+              class="sheet-card"
+              id={`character-${workspace.character.id}`}
+            >
               <header class="character-head">
                 <div>
                   <p class="eyebrow">{workspace.viewer_role}</p>
@@ -291,8 +294,8 @@
   .sheets-page {
     min-height: 100vh;
     padding: 5rem clamp(1rem, 4vw, 4rem);
-    background: var(--grim-bg, #f7f3e8);
-    color: var(--grim-ink, #222018);
+    background: var(--grim-surface-2);
+    color: var(--grim-ink);
   }
   .page-head,
   .campaign-head,
@@ -337,7 +340,7 @@
   .lede,
   .summary,
   .empty-inline {
-    color: var(--grim-muted, #6b6659);
+    color: var(--grim-text-dim);
   }
   .contract,
   .status {
@@ -359,7 +362,7 @@
   .campaign-head {
     justify-content: flex-start;
     align-items: baseline;
-    border-bottom: 1px solid #bdb6a5;
+    border-bottom: 1px solid var(--grim-line);
     margin-bottom: 1rem;
   }
   .character-grid {
@@ -369,10 +372,10 @@
   }
   .sheet-card,
   .empty {
-    border: 1px solid #bdb6a5;
-    background: color-mix(in srgb, var(--grim-bg, #f7f3e8) 88%, white);
+    border: 1px solid var(--grim-line);
+    background: var(--grim-surface);
     padding: clamp(1rem, 3vw, 1.75rem);
-    box-shadow: 4px 4px 0 #d7cfbd;
+    border-radius: 0.6rem;
   }
   .builder {
     margin-top: 1.5rem;
@@ -387,7 +390,7 @@
   .derived span {
     display: block;
     margin-bottom: 0.3rem;
-    color: var(--grim-muted, #6b6659);
+    color: var(--grim-text-dim);
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -397,9 +400,9 @@
   button {
     box-sizing: border-box;
     width: 100%;
-    border: 1px solid #8e8778;
+    border: 1px solid var(--grim-line);
     border-radius: 0;
-    background: #fffdf7;
+    background: var(--grim-surface);
     color: inherit;
     font: inherit;
     padding: 0.65rem 0.7rem;
@@ -413,8 +416,8 @@
   button:hover,
   button:focus-visible,
   button.primary {
-    background: var(--grim-ink, #222018);
-    color: var(--grim-bg, #f7f3e8);
+    background: var(--grim-accent);
+    color: var(--grim-on-accent);
   }
   fieldset {
     margin: 1rem 0;
@@ -474,7 +477,7 @@
   }
   blockquote footer,
   .history time {
-    color: var(--grim-muted, #6b6659);
+    color: var(--grim-text-dim);
     font-size: 0.75rem;
   }
   .history {
