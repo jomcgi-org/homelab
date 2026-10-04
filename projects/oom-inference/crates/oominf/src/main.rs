@@ -1,3 +1,5 @@
+mod check_layer;
+
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -35,6 +37,20 @@ enum Command {
     Verify { model: PathBuf },
     /// Summarise a converted model.
     Inspect { model: PathBuf },
+    /// Run one decoder layer on the GPU against reference fixtures.
+    CheckLayer {
+        /// Converted model directory.
+        #[arg(long)]
+        model: PathBuf,
+        /// Fixture directory for the layer (holds tolerances.json and <mode>/fp32/).
+        #[arg(long)]
+        fixtures: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        layer: u32,
+        /// Expert activation mode of the fixtures to check against.
+        #[arg(long, default_value = "w4a16")]
+        mode: String,
+    },
 }
 
 fn parse_layers(s: &str) -> Result<std::ops::RangeInclusive<u32>> {
@@ -104,6 +120,16 @@ fn main() -> Result<()> {
             }
             if !r.mismatches.is_empty() {
                 bail!("checksum verification failed");
+            }
+        }
+        Command::CheckLayer {
+            model,
+            fixtures,
+            layer,
+            mode,
+        } => {
+            if !check_layer::run(&model, &fixtures, layer, &mode)? {
+                bail!("isolated stages over budget");
             }
         }
         Command::Inspect { model } => {
