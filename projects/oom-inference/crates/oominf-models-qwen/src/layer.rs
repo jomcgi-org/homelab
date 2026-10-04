@@ -178,7 +178,7 @@ impl DecoderLayer {
         let inject = inject.context("MLP hyper-connection without combine")?;
         let moe_out = self
             .moe
-            .forward(gpu, d, &mixed, t, experts, &mut scratch, probe)?;
+            .forward(gpu, d, ws, &mixed, t, experts, &mut scratch, probe)?;
         ws.give("hc.mixed", mixed);
         // The layer output is handed to the caller; the model gives the previous
         // residual back under the same name so two buffers alternate.

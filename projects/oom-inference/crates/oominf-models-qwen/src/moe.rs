@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Nvfp4Record, Slice};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Nvfp4Record, Slice, Workspace};
 use oominf_format::Model;
 
 use crate::util::{bf16_tensor, tap};
@@ -23,12 +23,38 @@ struct ProjParts {
 /// Supplies routed-expert records on the device. The tiering engine implements this
 /// with VRAM slots, a host tier and disk; [`DiskExperts`] reads straight from the
 /// model files.
+///
+/// Kernels read every part of a record, `weight_scale_2` included, from the record
+/// itself, so a source only hands out record addresses.
 pub trait ExpertSource {
     /// Makes `experts` of `layer` device-resident and returns the raw device address
-    /// of each one's record, in the same order. Addresses stay valid until the next
-    /// `fetch` call. Kernels read every part, `weight_scale_2` included, from the
-    /// record itself.
+    /// of each one's record, in the same order, usable by work enqueued afterwards.
+    /// Addresses stay valid until the next fetch.
     fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>>;
+
+    /// Two-phase fetch: returns every record's address and whether it is usable by
+    /// work enqueued now. The rest become usable after [`ExpertSource::finish_fetch`],
+    /// so callers can compute with resident experts while the others load.
+    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
+        let addrs = self.fetch(gpu, layer, experts)?;
+        Ok(Staged {
+            ready: vec![true; addrs.len()],
+            addrs,
+        })
+    }
+
+    /// Completes the last [`ExpertSource::begin_fetch`]: every record it returned is
+    /// usable by work enqueued after this call.
+    fn finish_fetch(&mut self, _gpu: &Gpu) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Result of [`ExpertSource::begin_fetch`].
+pub struct Staged {
+    pub addrs: Vec<u64>,
+    /// `ready[i]`: record `i` is usable before `finish_fetch`.
+    pub ready: Vec<bool>,
 }
 
 /// Reads every requested record from disk and uploads it (no caching).
@@ -65,19 +91,14 @@ impl ExpertSource for DiskExperts {
 /// (gate.ws2, gate.in, up.ws2, up.in, down.ws2, down.in).
 const SCALE2_IDX: [usize; 3] = [0, 2, 4];
 
-/// Reused device buffers for the fused routed-expert path.
-struct Workspace {
+/// Per-step routing tables of the fused path. They are small (a few KiB), so each
+/// layer keeps its own; the large activation buffers come from the sequence
+/// workspace, shared by every layer.
+struct Tables {
     /// `off[n_e + 1] ++ assign_tok[A] ++ slot_assign[A]`.
     meta: Slice<i32>,
     /// Record address of each expert of the step.
     recs: Slice<u64>,
-    /// SwiGLU activations `[A, inter]`.
-    h: Buf,
-    /// Per-assignment down outputs `[A, hidden]`.
-    y: Buf,
-    /// Gate and up outputs `[A, inter]` (tiled prefill path only).
-    g: Buf,
-    u: Buf,
 }
 
 /// Steps where some expert has at least this many assignments use the tiled
@@ -89,7 +110,7 @@ pub struct Moe {
     geo: Nvfp4Record,
     /// Use the slow reference path (oracle); defaults from `OOMINF_MOE_REFERENCE`.
     reference: AtomicBool,
-    ws: Mutex<Workspace>,
+    tables: Mutex<Tables>,
     router: Bf16Buf,
     shared_gate: Bf16Buf,
     shared_up: Bf16Buf,
@@ -155,17 +176,13 @@ impl Moe {
             down_scale: down.scale,
             scale2: SCALE2_IDX,
         };
-        let ws = Workspace {
+        let tables = Tables {
             meta: gpu.upload_i32(&[0; 64])?,
             recs: gpu
                 .ctx
                 .default_stream()
                 .alloc_zeros::<u64>(64)
                 .map_err(oominf_cuda::Error::from)?,
-            h: gpu.zeros(64)?,
-            y: gpu.zeros(64)?,
-            g: gpu.zeros(64)?,
-            u: gpu.zeros(64)?,
         };
         Ok(Moe {
             layer,
@@ -173,7 +190,7 @@ impl Moe {
             reference: AtomicBool::new(
                 std::env::var_os("OOMINF_MOE_REFERENCE").is_some_and(|v| v != "0"),
             ),
-            ws: Mutex::new(ws),
+            tables: Mutex::new(tables),
             router: w("gate.weight", &[d.experts as u64, h])?,
             shared_gate: w("shared_expert.gate_proj.weight", &[si, h])?,
             shared_up: w("shared_expert.up_proj.weight", &[si, h])?,
@@ -195,6 +212,7 @@ impl Moe {
         &self,
         gpu: &Gpu,
         d: &Dims,
+        ws: &mut Workspace,
         x: &Buf,
         t: usize,
         experts: &mut dyn ExpertSource,
@@ -222,6 +240,15 @@ impl Moe {
             ids_host = sub.iter().map(|&v| v as i32).collect();
         }
 
+        // Start loading the routed experts so their copies overlap the shared expert
+        // and the resident experts' compute.
+        let reference = self.reference.load(Ordering::Relaxed);
+        let plan = if reference {
+            None
+        } else {
+            Some(self.begin_routed(gpu, d, t, &ids_host, experts)?)
+        };
+
         // Shared expert.
         let si = d.shared_inter;
         let mut sg = gpu.zeros(t * si)?;
@@ -245,11 +272,12 @@ impl Moe {
         )?;
         tap(gpu, probe, "shared_gate_logit", &mut gate_logit)?;
 
-        let mut routed = if self.reference.load(Ordering::Relaxed) {
-            let weights_host = gpu.download(&weights)?;
-            self.routed_reference(gpu, d, x, t, &ids_host, &weights_host, experts)?
-        } else {
-            self.routed_fused(gpu, d, x, t, &ids_host, &weights, experts)?
+        let mut routed = match plan {
+            None => {
+                let weights_host = gpu.download(&weights)?;
+                self.routed_reference(gpu, d, x, t, &ids_host, &weights_host, experts)?
+            }
+            Some(plan) => self.finish_routed(gpu, d, ws, x, t, plan, &weights, experts)?,
         };
         tap(gpu, probe, "routed_out", &mut routed)?;
         let mut out = gpu.zeros(t * h)?;
@@ -316,37 +344,68 @@ impl Moe {
         Ok(routed)
     }
 
-    /// Fused routed-expert path: one gate/up launch, one down launch and one
-    /// deterministic slot-order combine per step, reading NVFP4 records in place.
-    #[allow(clippy::too_many_arguments)]
-    fn routed_fused(
+    /// Groups the step's assignments by expert, resident experts first, and starts
+    /// fetching their records.
+    fn begin_routed(
         &self,
         gpu: &Gpu,
         d: &Dims,
-        x: &Buf,
         t: usize,
         ids_host: &[i32],
-        weights: &Buf,
         experts: &mut dyn ExpertSource,
-    ) -> Result<Buf> {
-        let (h, e, k) = (d.hidden, d.experts, d.top_k);
-        let a_total = t * k;
+    ) -> Result<RoutedPlan> {
+        let (e, k) = (d.experts, d.top_k);
         // Group assignment slots (t * k + s) by expert.
-        let mut lists: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-        for (slot, &ex) in ids_host.iter().enumerate().take(a_total) {
+        let mut by_expert: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (slot, &ex) in ids_host.iter().enumerate().take(t * k) {
             if ex < 0 || ex as usize >= e {
                 bail!("router picked expert {ex}");
             }
-            lists.entry(ex as u32).or_default().push(slot);
+            by_expert.entry(ex as u32).or_default().push(slot);
         }
-        let distinct: Vec<u32> = lists.keys().copied().collect();
-        let n_e = distinct.len();
-        let max_n = lists.values().map(Vec::len).max().unwrap_or(0);
-        let recs = experts.fetch(gpu, self.layer, &distinct)?;
+        let distinct: Vec<u32> = by_expert.keys().copied().collect();
+        let staged = experts.begin_fetch(gpu, self.layer, &distinct)?;
+        ensure!(
+            staged.addrs.len() == distinct.len() && staged.ready.len() == distinct.len(),
+            "expert source returned {} records for {} experts",
+            staged.addrs.len(),
+            distinct.len()
+        );
+        // Resident experts first so they can run before the rest arrive.
+        let lists: Vec<Vec<usize>> = by_expert.into_values().collect();
+        let mut order: Vec<usize> = (0..lists.len()).collect();
+        order.sort_by_key(|&i| !staged.ready[i]);
+        Ok(RoutedPlan {
+            resident: staged.ready.iter().filter(|&&r| r).count(),
+            recs: order.iter().map(|&i| staged.addrs[i]).collect(),
+            lists: order.into_iter().map(|i| lists[i].clone()).collect(),
+        })
+    }
+
+    /// Fused routed-expert path: per group (resident experts, then the ones that had
+    /// to load) one gate/up and one down launch, then one deterministic slot-order
+    /// combine, reading NVFP4 records in place. An assignment's output depends only
+    /// on its own inputs and the kernel choice, which is made once per step, so the
+    /// grouping never changes results.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_routed(
+        &self,
+        gpu: &Gpu,
+        d: &Dims,
+        ws: &mut Workspace,
+        x: &Buf,
+        t: usize,
+        plan: RoutedPlan,
+        weights: &Buf,
+        experts: &mut dyn ExpertSource,
+    ) -> Result<Buf> {
+        let (h, k) = (d.hidden, d.top_k);
+        let a_total = t * k;
+        let n_e = plan.lists.len();
         // meta = off[n_e + 1] ++ assign_tok[A] ++ slot_assign[A]
         let mut meta = vec![0i32; n_e + 1 + 2 * a_total];
         let mut a = 0usize;
-        for (ei, slots) in lists.values().enumerate() {
+        for (ei, slots) in plan.lists.iter().enumerate() {
             meta[ei] = a as i32;
             for &slot in slots {
                 meta[n_e + 1 + a] = (slot / k) as i32;
@@ -355,37 +414,118 @@ impl Moe {
             }
         }
         meta[n_e] = a as i32;
+        let tiled = plan.lists.iter().map(Vec::len).max().unwrap_or(0) >= TILED_MIN_ASSIGNMENTS;
 
-        let mut ws = self.ws.lock().unwrap();
-        let ws = &mut *ws;
-        gpu.write_into(&meta, &mut ws.meta)?;
-        gpu.write_into(&recs, &mut ws.recs)?;
-        gpu.ensure_len(&mut ws.h, a_total * self.geo.inter)?;
-        gpu.ensure_len(&mut ws.y, a_total * h)?;
-        let off = ws.meta.slice(0..n_e + 1);
-        let assign = ws.meta.slice(n_e + 1..n_e + 1 + a_total);
-        let slot_assign = ws.meta.slice(n_e + 1 + a_total..n_e + 1 + 2 * a_total);
-        let geo = &self.geo;
-        if max_n >= TILED_MIN_ASSIGNMENTS {
-            let (hd, it) = (geo.hidden, geo.inter);
-            gpu.ensure_len(&mut ws.g, a_total * it)?;
-            gpu.ensure_len(&mut ws.u, a_total * it)?;
-            let gate = (geo.gate_weight, geo.gate_scale, geo.scale2[0]);
-            let up = (geo.up_weight, geo.up_scale, geo.scale2[1]);
-            let down = (geo.down_weight, geo.down_scale, geo.scale2[2]);
-            let rows = Some(&assign);
-            gpu.moe_tiled(&ws.recs, &off, rows, n_e, max_n, x, &mut ws.g, it, hd, gate)?;
-            gpu.moe_tiled(&ws.recs, &off, rows, n_e, max_n, x, &mut ws.u, it, hd, up)?;
-            gpu.moe_swiglu(&ws.g, &ws.u, &mut ws.h, a_total * it)?;
-            gpu.moe_tiled(
-                &ws.recs, &off, None, n_e, max_n, &ws.h, &mut ws.y, hd, it, down,
+        let it = self.geo.inter;
+        let mut tables = self.tables.lock().unwrap();
+        gpu.write_into(&meta, &mut tables.meta)?;
+        gpu.write_into(&plan.recs, &mut tables.recs)?;
+        // Every element is written before it is read: h and y cover all assignments,
+        // and g and u only feed the tiled path, which writes them first.
+        let mut buf = Act {
+            h: ws.take(gpu, "moe.h", a_total * it)?,
+            y: ws.take(gpu, "moe.y", a_total * h)?,
+            gu: if tiled {
+                Some((
+                    ws.take(gpu, "moe.g", a_total * it)?,
+                    ws.take(gpu, "moe.u", a_total * it)?,
+                ))
+            } else {
+                None
+            },
+        };
+        for (lo, hi) in [(0, plan.resident), (plan.resident, n_e)] {
+            if lo == plan.resident {
+                experts.finish_fetch(gpu)?;
+            }
+            if lo == hi {
+                continue;
+            }
+            let max_n = plan.lists[lo..hi].iter().map(Vec::len).max().unwrap_or(0);
+            let assigns = (meta[lo] as usize, meta[hi] as usize);
+            self.run_group(
+                gpu,
+                &tables,
+                &mut buf,
+                x,
+                (lo, hi),
+                n_e,
+                a_total,
+                assigns,
+                max_n,
             )?;
-        } else {
-            gpu.moe_gate_up(&ws.recs, &off, &assign, n_e, x, &mut ws.h, geo)?;
-            gpu.moe_down(&ws.recs, &off, n_e, &ws.h, &mut ws.y, geo)?;
         }
+        let slot_assign = tables.meta.slice(n_e + 1 + a_total..n_e + 1 + 2 * a_total);
         let mut routed = gpu.zeros(t * h)?;
-        gpu.moe_combine_slots(&ws.y, &slot_assign, weights, &mut routed, t, h, k)?;
+        gpu.moe_combine_slots(&buf.y, &slot_assign, weights, &mut routed, t, h, k)?;
+        ws.give("moe.h", buf.h);
+        ws.give("moe.y", buf.y);
+        if let Some((g, u)) = buf.gu {
+            ws.give("moe.g", g);
+            ws.give("moe.u", u);
+        }
         Ok(routed)
     }
+
+    /// Runs the plan's experts `[lo, hi)`, whose assignments are `[a0, a1)`, writing
+    /// their outputs into `buf.y`. The tiled kernels are used exactly when `buf.gu`
+    /// holds buffers.
+    #[allow(clippy::too_many_arguments)]
+    fn run_group(
+        &self,
+        gpu: &Gpu,
+        tables: &Tables,
+        buf: &mut Act,
+        x: &Buf,
+        (lo, hi): (usize, usize),
+        n_e: usize,
+        a_total: usize,
+        (a0, a1): (usize, usize),
+        max_n: usize,
+    ) -> Result<()> {
+        let geo = &self.geo;
+        let recs = tables.recs.slice(lo..hi);
+        let off = tables.meta.slice(lo..hi + 1);
+        let assign = tables.meta.slice(n_e + 1..n_e + 1 + a_total);
+        let n = hi - lo;
+        match &mut buf.gu {
+            Some((g, u)) => {
+                let (hd, it) = (geo.hidden, geo.inter);
+                let gate = (geo.gate_weight, geo.gate_scale, geo.scale2[0]);
+                let up = (geo.up_weight, geo.up_scale, geo.scale2[1]);
+                let down = (geo.down_weight, geo.down_scale, geo.scale2[2]);
+                let rows = Some(&assign);
+                gpu.moe_tiled(&recs, &off, rows, n, max_n, x, g, it, hd, gate)?;
+                gpu.moe_tiled(&recs, &off, rows, n, max_n, x, u, it, hd, up)?;
+                gpu.moe_swiglu_range(g, u, &mut buf.h, a0 * it, a1 * it)?;
+                gpu.moe_tiled(
+                    &recs, &off, None, n, max_n, &buf.h, &mut buf.y, hd, it, down,
+                )?;
+            }
+            None => {
+                gpu.moe_gate_up(&recs, &off, &assign, n, x, &mut buf.h, geo)?;
+                gpu.moe_down(&recs, &off, n, &buf.h, &mut buf.y, geo)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Activation buffers of one fused step, borrowed from the sequence workspace.
+struct Act {
+    /// SwiGLU activations `[A, inter]`.
+    h: Buf,
+    /// Per-assignment down outputs `[A, hidden]`.
+    y: Buf,
+    /// Gate and up outputs `[A, inter]` (tiled path only).
+    gu: Option<(Buf, Buf)>,
+}
+
+/// A step's routed experts in launch order (resident first) with their
+/// assignment slots and record addresses.
+struct RoutedPlan {
+    lists: Vec<Vec<usize>>,
+    recs: Vec<u64>,
+    /// The first `resident` experts were usable before `finish_fetch`.
+    resident: usize,
 }

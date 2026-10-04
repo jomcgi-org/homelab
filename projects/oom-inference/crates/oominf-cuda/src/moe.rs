@@ -52,7 +52,7 @@ impl Gpu {
     #[allow(clippy::too_many_arguments)]
     pub fn moe_gate_up(
         &self,
-        recs: &CudaSlice<u64>,
+        recs: &CudaView<u64>,
         off: &CudaView<i32>,
         assign_tok: &CudaView<i32>,
         n_experts: usize,
@@ -103,7 +103,7 @@ impl Gpu {
     #[allow(clippy::too_many_arguments)]
     pub fn moe_down(
         &self,
-        recs: &CudaSlice<u64>,
+        recs: &CudaView<u64>,
         off: &CudaView<i32>,
         n_experts: usize,
         h: &Buf,
@@ -170,7 +170,7 @@ impl Gpu {
     #[allow(clippy::too_many_arguments)]
     pub fn moe_tiled(
         &self,
-        recs: &CudaSlice<u64>,
+        recs: &CudaView<u64>,
         off: &CudaView<i32>,
         rows: Option<&CudaView<i32>>,
         n_experts: usize,
@@ -213,6 +213,38 @@ impl Gpu {
                 .arg(&so)
                 .arg(&s2)
                 .launch(cfg)?
+        };
+        Ok(())
+    }
+
+    /// `h[i] = silu(g[i]) * u[i]` for `i` in `[start, end)`.
+    pub fn moe_swiglu_range(
+        &self,
+        g: &Buf,
+        u: &Buf,
+        h: &mut Buf,
+        start: usize,
+        end: usize,
+    ) -> Result<()> {
+        self.check(
+            start <= end && end <= g.len().min(u.len()).min(h.len()),
+            "moe_swiglu_range bounds",
+        )?;
+        if start == end {
+            return Ok(());
+        }
+        let f = self.func("moe_swiglu")?;
+        let n32 = (end - start) as i32;
+        let (gv, uv) = (g.slice(start..end), u.slice(start..end));
+        let mut hv = h.slice_mut(start..end);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(&gv)
+                .arg(&uv)
+                .arg(&mut hv)
+                .arg(&n32)
+                .launch(grid(end - start, 256))?
         };
         Ok(())
     }

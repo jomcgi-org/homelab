@@ -19,7 +19,7 @@ mod util;
 pub use gdn::GdnState;
 pub use layer::{DecoderLayer, LayerState, StepInput};
 pub use model::{QwenModel, SeqState};
-pub use moe::{DiskExperts, ExpertSource};
+pub use moe::{DiskExperts, ExpertSource, Staged};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
