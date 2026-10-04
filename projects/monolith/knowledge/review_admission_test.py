@@ -384,10 +384,8 @@ def test_admission_does_not_renew_a_claim_with_an_uncovered_reference(session):
     result = admit(session, github, Clock())
     assert result["unsupported"] == 1 and result["renewed"] == 0
     outcome = outcomes(session, row.note_id)[0]
-    assert (outcome.status, outcome.reason) == (
-        "unsupported",
-        "reference #1 is not covered by a verifiable predicate",
-    )
+    assert outcome.status == "unsupported"
+    assert "supported template" in outcome.reason
     assert github.calls == []
     session.expire_all()
     assert row.last_reviewed_at is None
@@ -405,7 +403,7 @@ def test_admission_does_not_renew_a_partially_named_subset(session):
     assert result["unsupported"] == 1 and result["renewed"] == 0
     outcome = outcomes(session, row.note_id)[0]
     assert outcome.status == "unsupported"
-    assert "is not covered by a verifiable predicate" in outcome.reason
+    assert "supported template" in outcome.reason
     assert github.calls == []
     session.expire_all()
     assert row.last_reviewed_at is None
@@ -550,7 +548,7 @@ def test_admission_does_not_renew_extra_wording_in_a_state_sentence(session, tit
 )
 def test_admission_does_not_renew_unestablished_checks(session, case):
     sha = "de02262a35e221804ead81d6e7fe15fa87b416e8"
-    title = f"PR #1 checks passed at {sha}"
+    title = f"PR #1 checks are passed at {sha}"
     if case == "pending-with-failure":
         title = f"Checks are pending at {sha}"
     elif case.startswith("missing-") and case != "missing":

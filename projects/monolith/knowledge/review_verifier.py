@@ -1,10 +1,12 @@
 """Authoritative GitHub verification of the PR and issue state a volatile fact asserts.
 
-Only predicates the GitHub response establishes are verified: issue or PR
-open/closed, PR merged and draft, a PR head SHA, and check runs tied to one
-exact SHA. Every other state term (a workflow run or job, "ready", "blocked",
-a free-text acceptance gate) is unsupported: the verdict records why and the
-fact stays due. The verifier does no database work and never renews anything.
+Every claim sentence must fully match explicit ASCII clause templates: a
+reference's state, head SHA or checks, or checks at an explicit SHA. Complete
+clauses may join with "and" or ", and", each with its own subject. Every named
+reference and SHA produces a predicate; unmatched wording makes the whole
+note unsupported and leaves it due. Why: denylist bypasses across five reviews
+required a grammar that accepts only claims it fully understands. The verifier
+does no database work and never renews anything.
 """
 
 from __future__ import annotations
@@ -19,9 +21,6 @@ from knowledge.freshness import (
     _OPERATIONAL_SUBJECT,
     _OUTSTANDING_GATE,
     _PROVENANCE_SECTION,
-    _SHA,
-    _STATE,
-    has_instance,
     sentences,
     utc,
 )
@@ -29,19 +28,72 @@ from knowledge.freshness import (
 MAX_REFERENCES = 5
 MAX_CHECK_RUNS = 100
 
+_NUM_TOKEN = r"[1-9][0-9]{0,6}"
+_REPO_TOKEN = r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+_REF_TOKEN = (
+    rf"(?:(?:PR|pull[ \t]+request|issue)[ \t]+#{_NUM_TOKEN}"
+    rf"|#{_NUM_TOKEN}|{_REPO_TOKEN}#{_NUM_TOKEN}"
+    rf"|https://github\.com/{_REPO_TOKEN}/(?:pull|issues)/{_NUM_TOKEN})"
+)
 _REF = re.compile(
-    r"github\.com/(?P<urepo>[\w.-]+/[\w.-]+)/(?:pull|issues)/(?P<unum>\d+)"
-    r"|(?P<repo>[\w.-]+/[\w.-]+)#(?P<num>\d{1,7})\b"
-    r"|\b(?:pull request|pull|pr|issue)s?[ \t]*#?(?P<wnum>\d{1,7})\b"
-    r"|(?<![\w/&])#(?P<bare>\d{1,7})\b",
-    re.IGNORECASE,
+    rf"https://github\.com/(?P<url_repo>{_REPO_TOKEN})/"
+    rf"(?:pull|issues)/(?P<url_number>{_NUM_TOKEN})"
+    rf"|(?P<repo>{_REPO_TOKEN})#(?P<number>{_NUM_TOKEN})"
+    rf"|(?:(?:PR|pull[ \t]+request|issue)[ \t]+)?#(?P<bare>{_NUM_TOKEN})",
+    re.IGNORECASE | re.ASCII,
+)
+# Case-insensitive keywords never make uppercase hex a supported SHA.
+# A SHA must contain a letter, including SHAs consisting entirely of a-f.
+_SHA_TOKEN = r"(?-i:(?=[0-9a-f]*[a-f])[0-9a-f]{7,40})"
+_CHECK_TOKEN = (
+    r"(?:passing|passed|green|succeeded|success|failing|failed|failure|red|"
+    r"pending|running|queued)"
+)
+_JOIN_TOKEN = r"(?:,[ \t]+and[ \t]+|[ \t]+and[ \t]+)"
+_JOIN = re.compile(_JOIN_TOKEN, re.IGNORECASE | re.ASCII)
+# Each slot is a named capture consumed below. There are no free-text slots.
+_TEMPLATE_SPECS = (
+    (
+        "state",
+        rf"(?P<ref>{_REF_TOKEN})[ \t]+is[ \t]+(?P<term>open|closed|merged|draft|a[ \t]+draft)",
+    ),
+    ("state", rf"(?P<ref>{_REF_TOKEN})[ \t]+(?P<term>has[ \t]+been[ \t]+merged)"),
+    ("head", rf"(?P<ref>{_REF_TOKEN})[ \t]+head[ \t]+is[ \t]+(?P<sha>{_SHA_TOKEN})"),
+    (
+        "checks",
+        rf"(?P<ref>{_REF_TOKEN})[ \t]+checks[ \t]+are[ \t]+(?P<term>{_CHECK_TOKEN})",
+    ),
+    (
+        "checks",
+        rf"(?P<ref>{_REF_TOKEN})[ \t]+checks[ \t]+(?:are[ \t]+)?(?P<term>{_CHECK_TOKEN})[ \t]+at[ \t]+(?P<sha>{_SHA_TOKEN})",
+    ),
+    (
+        "checks",
+        rf"Checks[ \t]+(?:are[ \t]+)?(?P<term>{_CHECK_TOKEN})[ \t]+at[ \t]+(?P<sha>{_SHA_TOKEN})",
+    ),
+    (
+        "checks",
+        rf"Checks[ \t]+at[ \t]+(?P<sha>{_SHA_TOKEN})[ \t]+are[ \t]+(?P<term>{_CHECK_TOKEN})",
+    ),
+)
+_TEMPLATES = tuple(
+    (kind, re.compile(pattern, re.IGNORECASE | re.ASCII))
+    for kind, pattern in _TEMPLATE_SPECS
+)
+# Fullmatch the sentence before extracting its individually captured clauses.
+_CLAUSE_TOKEN = (
+    "(?:"
+    + "|".join(
+        re.sub(r"\(\?P<[a-z]+>", "(?:", pattern) for _, pattern in _TEMPLATE_SPECS
+    )
+    + ")"
+)
+_SENTENCE_TEMPLATE = re.compile(
+    rf"{_CLAUSE_TOKEN}(?:{_JOIN_TOKEN}{_CLAUSE_TOKEN})*", re.IGNORECASE | re.ASCII
 )
 _RUN = re.compile(
     r"\b(?:workflow[ \t]+)?(?:run|job)(?:[ \t]+id)?[ \t]*#?\d{4,}\b", re.IGNORECASE
 )
-_LEFTOVER_REF = re.compile(r"#\d|\b\d{1,7}\b")
-_LEFTOVER_NUM = re.compile(r"\d{1,7}")
-_CHECK_WORD = re.compile(r"\b(checks?|ci|check[- ]runs?)\b", re.IGNORECASE)
 _GATE_WORDS = re.compile(
     r"\b(remaining|remains?|awaiting|live validation|acceptance|gates?)\b",
     re.IGNORECASE,
@@ -54,54 +106,11 @@ _OPERATIONAL_ANY = re.compile(
     rf"\b(?:{_OPERATIONAL_SUBJECT}|deploy\w*|pilot\w*)\b",
     re.IGNORECASE,
 )
-# Glue words that may surround a verifiable predicate. Anything else left
-# after references, SHAs, state terms and check words are stripped is a claim
-# about something GitHub cannot establish, so the sentence is unsupported.
-# "to", "be" and "being" are deliberately absent: "has to be merged" and "is
-# being merged" state an obligation or a transition, not the state itself.
-_FILLER = frozenset(
-    {
-        "is",
-        "are",
-        "was",
-        "were",
-        "been",
-        "has",
-        "have",
-        "had",
-        "the",
-        "a",
-        "an",
-        "at",
-        "and",
-        "or",
-        "now",
-        "for",
-        "of",
-        "on",
-        "in",
-        "with",
-        "as",
-        "by",
-        "it",
-        "its",
-        "this",
-        "that",
-    }
-)
 _NEGATION = re.compile(
     r"\b(not|never|no longer|isn't|wasn't|aren't|weren't|without|unmerged|"
     r"unless|until)\b|n't\b",
     re.IGNORECASE,
 )
-_STATE_TERMS = {
-    "open": "open",
-    "opened": "open",
-    "reopened": "open",
-    "closed": "closed",
-    "merged": "merged",
-    "draft": "draft",
-}
 _CHECK_TERMS = {
     "passing": "success",
     "passed": "success",
@@ -164,174 +173,58 @@ class _Mismatch(Exception):
     """GitHub answered, and the claimed state is not the actual state."""
 
 
-def _refs(sentence: str, default_repo: str) -> list[tuple[int, str, int]]:
-    """(position, repository, number) for every PR or issue the sentence names."""
-    found = []
-    for match in _REF.finditer(sentence):
-        if match["unum"]:
-            found.append((match.start(), match["urepo"], int(match["unum"])))
-        elif match["num"]:
-            found.append((match.start(), match["repo"], int(match["num"])))
-        elif match["wnum"]:
-            found.append((match.start(), default_repo, int(match["wnum"])))
-        else:
-            found.append((match.start(), default_repo, int(match["bare"])))
-    return found
-
-
-def _subject(position: int, refs: list[tuple[int, str, int]]):
-    """The reference a state term describes: the last one before it, else the first after."""
-    before = [ref for ref in refs if ref[0] < position]
-    return max(before) if before else min(refs)
-
-
-def _distinct_shas(sentence: str) -> list[str]:
-    """Commit SHAs named, an abbreviation and its full form counting once."""
-    tokens = {
-        token
-        for token in _SHA.findall(sentence)
-        if any(c.isdigit() for c in token) and any(c in "abcdef" for c in token)
-    }
-    return sorted(
-        token
-        for token in tokens
-        if not any(other != token and other.startswith(token) for other in tokens)
-    )
-
-
-def _residual_words(sentence: str) -> list[str]:
-    """Words left after everything a verifiable predicate may contain is stripped."""
-    tmp = _REF.sub(" ", sentence)
-    tmp = _SHA.sub(" ", tmp)
-    tmp = _STATE.sub(" ", tmp)
-    tmp = _CHECK_WORD.sub(" ", tmp)
-    words = [
-        word for word in re.findall(r"[^\W\d_]+", tmp) if word.lower() not in _FILLER
-    ]
-    # Any symbol outside the punctuation allowlist (an emoji, a currency sign,
-    # an underscore) is wording too: it qualifies the state like a word does.
-    symbols = re.findall(r"[^\w\s.,:;!?()\[\]*`'\"#/-]|_", tmp)
-    return words + symbols
-
-
 def extract_predicates(
     *, title: str, content: str | None, default_repo: str
 ) -> list[Predicate]:
-    """Predicates the claim asserts, or ``_Unsupported`` naming the first gap.
+    """Fully captured template predicates, or ``_Unsupported`` for the whole note.
 
-    Fails closed: a renewal extends the whole note, so every sentence must
-    produce a predicate tied to a concrete instance. A sentence naming an
-    operational subject (a pilot, deploy, rollout or approval, in any
-    inflection) is an acceptance gate GitHub cannot establish, whatever the
-    obligation wording. A sentence with no state term states no verifiable
-    predicate. A state claim that refers back to an earlier sentence
-    ("Its checks are failing") or a gate written as its own sentence cannot be
-    verified, so the whole claim is unsupported rather than partly renewed.
-    Every distinct named reference anywhere in the claim must also be covered
-    by a predicate: a follow-on sentence that names a reference inherits the
-    earlier state, so per-sentence coverage would renew a strict subset.
-    A number left over after parsed references and SHAs are stripped is an
-    uncovered reference the patterns above do not name ("PRs 6821 and 6822",
-    "PR #6821/#6822", "Issues 5, 6 and 7"), and is likewise unsupported.
-    Within a state sentence, any residual word past references, SHAs, state
-    terms, check words and filler glue ("needs review", "merge conflicts")
-    is a claim about something GitHub cannot establish.
+    Diagnostics may only reject. Acceptance requires a full sentence match,
+    followed by a full match for each explicit-subject clause. No reference,
+    SHA or qualifying wording can be discarded during extraction.
     """
     claim = _PROVENANCE_SECTION.sub("", content or "")
     predicates: list[Predicate] = []
-    note_named: set[tuple[str, int]] = set()
-    note_covered: set[tuple[str, int]] = set()
     for sentence in sentences(f"{title}\n{claim}"):
+        sentence = sentence.strip(" \t").removesuffix(".")
         if (
             _GATE_WORDS.search(sentence)
             or _OUTSTANDING_GATE.search(sentence)
             or _OPERATIONAL_ANY.search(sentence)
         ):
             raise _Unsupported("acceptance gate is not verifiable from GitHub")
-        note_named.update(
-            (repo, number) for _, repo, number in _refs(sentence, default_repo)
-        )
         if _RUN.search(sentence):
             raise _Unsupported("workflow run or job state is not verifiable")
-        stripped = _SHA.sub(" ", _REF.sub(" ", sentence))
-        if _LEFTOVER_REF.search(stripped):
-            number = _LEFTOVER_NUM.search(stripped).group(0)
-            raise _Unsupported(
-                f"reference #{int(number)} is not covered by a verifiable predicate"
-            )
-        if not _STATE.search(sentence):
-            refs = _refs(sentence, default_repo)
-            if refs:
-                _, repo, number = refs[0]
-                raise _Unsupported(
-                    f"reference #{number} is not covered by a verifiable predicate"
-                )
-            raise _Unsupported("sentence states no verifiable predicate")
-        if not has_instance(sentence):
-            raise _Unsupported("state claim names no concrete instance")
         if _NEGATION.search(sentence):
             raise _Unsupported("negated or conditional state claim")
-        refs = _refs(sentence, default_repo)
-        shas = _distinct_shas(sentence)
-        checks = bool(_CHECK_WORD.search(sentence))
-        consumed: set[str] = set()
-        named = {(repo, number) for _, repo, number in refs}
-        covered: set[tuple[str, int]] = set()
-        for match in _STATE.finditer(sentence):
-            term = match.group(1).lower()
-            if term in _STATE_TERMS:
-                if not refs:
-                    raise _Unsupported(f"state {term!r} names no PR or issue")
-                _, repo, number = _subject(match.start(), refs)
-                predicates.append(Predicate("state", repo, number, _STATE_TERMS[term]))
-                covered.add((repo, number))
-            elif term == "head":
-                if not refs or len(shas) != 1:
-                    raise _Unsupported("head claim needs one PR and one SHA")
-                _, repo, number = _subject(match.start(), refs)
-                predicates.append(Predicate("head", repo, number, "head", sha=shas[0]))
-                covered.add((repo, number))
-                consumed.add(shas[0])
-            elif term in _CHECK_TERMS and checks:
-                if len(shas) > 1:
-                    raise _Unsupported("checks claim names more than one SHA")
-                if shas:
-                    if len(named) > 1:
-                        raise _Unsupported(
-                            "checks at a SHA name more than one reference"
-                        )
-                    repo = refs[0][1] if refs else default_repo
-                    number = refs[0][2] if refs else None
-                    predicates.append(
-                        Predicate(
-                            "checks", repo, number, _CHECK_TERMS[term], sha=shas[0]
-                        )
-                    )
-                    consumed.add(shas[0])
-                    covered.update(named)
-                elif refs:
-                    _, repo, number = _subject(match.start(), refs)
-                    predicates.append(
-                        Predicate("checks", repo, number, _CHECK_TERMS[term])
-                    )
-                    covered.add((repo, number))
-                else:
-                    raise _Unsupported("checks claim names no PR or SHA")
-            else:
-                raise _Unsupported(f"state {term!r} is not verifiable from GitHub")
-        if set(shas) - consumed:
-            raise _Unsupported("SHA assertion is not verifiable from GitHub")
-        residual = _residual_words(sentence)
-        if residual:
+        if _SENTENCE_TEMPLATE.fullmatch(sentence) is None:
             raise _Unsupported(
-                f"unsupported wording {residual[0]!r} is not verifiable from GitHub"
+                f"claim does not match a supported template: {sentence[:60]!r}"
             )
-        note_covered.update(covered)
-    if note_named - note_covered:
-        _, number = sorted(note_named - note_covered)[0]
-        raise _Unsupported(
-            f"reference #{number} is not covered by a verifiable predicate"
-        )
+        for clause in _JOIN.split(sentence):
+            for kind, template in _TEMPLATES:
+                match = template.fullmatch(clause)
+                if match is None:
+                    continue
+                captures = match.groupdict()
+                repo, number = default_repo, None
+                if captures.get("ref") is not None:
+                    ref = _REF.fullmatch(captures["ref"])
+                    repo = ref["url_repo"] or ref["repo"] or default_repo
+                    number = int(ref["url_number"] or ref["number"] or ref["bare"])
+                term = captures.get("term", "head").lower()
+                if kind == "state":
+                    term = re.split(r"[ \t]+", term)[-1]
+                elif kind == "checks":
+                    term = _CHECK_TERMS[term]
+                predicates.append(
+                    Predicate(kind, repo, number, term, sha=captures.get("sha"))
+                )
+                break
+            else:
+                # Keep extraction fail-closed if the sentence grammar changes.
+                raise _Unsupported(
+                    f"clause does not match a supported template: {clause[:60]!r}"
+                )
     if not predicates:
         raise _Unsupported("no verifiable predicate")
     deduped = list(dict.fromkeys(predicates))

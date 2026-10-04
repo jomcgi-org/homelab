@@ -90,6 +90,209 @@ def verify(routes, title, content=None, **options):
     return verifier.verify(title=title, content=content), fake
 
 
+SUPPORTED_TEMPLATES = [
+    ("PR #1 is open", [Predicate("state", REPO, 1, "open")]),
+    ("PR #1 is closed", [Predicate("state", REPO, 1, "closed")]),
+    ("PR #1 is merged", [Predicate("state", REPO, 1, "merged")]),
+    ("PR #1 is draft", [Predicate("state", REPO, 1, "draft")]),
+    ("PR #1 is a draft", [Predicate("state", REPO, 1, "draft")]),
+    ("PR #1 has been merged", [Predicate("state", REPO, 1, "merged")]),
+    ("pull request #1 is open", [Predicate("state", REPO, 1, "open")]),
+    ("Issue #1 is closed", [Predicate("state", REPO, 1, "closed")]),
+    ("#1 is open", [Predicate("state", REPO, 1, "open")]),
+    (f"{REPO}#1 is open", [Predicate("state", REPO, 1, "open")]),
+    (
+        f"https://github.com/{REPO}/pull/1 is open",
+        [Predicate("state", REPO, 1, "open")],
+    ),
+    (
+        f"https://github.com/{REPO}/issues/1 is closed",
+        [Predicate("state", REPO, 1, "closed")],
+    ),
+    ("other/repo#2 is open", [Predicate("state", "other/repo", 2, "open")]),
+    ("#9999999 is open", [Predicate("state", REPO, 9999999, "open")]),
+    ("\tPr\t#1\tis\tOPEN.\t", [Predicate("state", REPO, 1, "open")]),
+    ("PR #1 head is abcdef1", [Predicate("head", REPO, 1, "head", sha="abcdef1")]),
+    (f"PR #1 head is {HEAD}", [Predicate("head", REPO, 1, "head", sha=HEAD)]),
+    ("PR #1 head is abcdefa", [Predicate("head", REPO, 1, "head", sha="abcdefa")]),
+    (
+        "PR #1 checks are passing at abcdef1",
+        [Predicate("checks", REPO, 1, "success", sha="abcdef1")],
+    ),
+    (
+        "PR #1 checks passed at abcdef1",
+        [Predicate("checks", REPO, 1, "success", sha="abcdef1")],
+    ),
+    (
+        "Checks are passing at abcdef1",
+        [Predicate("checks", REPO, None, "success", sha="abcdef1")],
+    ),
+    (
+        "Checks passing at abcdef1",
+        [Predicate("checks", REPO, None, "success", sha="abcdef1")],
+    ),
+    (
+        "#6822 Checks are passing at abcdef1",
+        [Predicate("checks", REPO, 6822, "success", sha="abcdef1")],
+    ),
+    (
+        "#6822 Checks passing at abcdef1",
+        [Predicate("checks", REPO, 6822, "success", sha="abcdef1")],
+    ),
+    (
+        "Checks at abcdef1 are passing",
+        [Predicate("checks", REPO, None, "success", sha="abcdef1")],
+    ),
+    (
+        "PR #1 is open and PR #2 is closed",
+        [Predicate("state", REPO, 1, "open"), Predicate("state", REPO, 2, "closed")],
+    ),
+    (
+        "PR #1 is open, and PR #2 is closed",
+        [Predicate("state", REPO, 1, "open"), Predicate("state", REPO, 2, "closed")],
+    ),
+    (
+        f"PR #1 is open and PR #2 checks are passing at {HEAD}",
+        [
+            Predicate("state", REPO, 1, "open"),
+            Predicate("checks", REPO, 2, "success", sha=HEAD),
+        ],
+    ),
+    (
+        "PR #1 head is abcdef1 and PR #1 checks are passing at abcdef2 and Checks at abcdef3 are failed",
+        [
+            Predicate("head", REPO, 1, "head", sha="abcdef1"),
+            Predicate("checks", REPO, 1, "success", sha="abcdef2"),
+            Predicate("checks", REPO, None, "failure", sha="abcdef3"),
+        ],
+    ),
+    ("PR #1 is open and PR #1 is open", [Predicate("state", REPO, 1, "open")]),
+] + [
+    (f"PR #1 checks are {term}", [Predicate("checks", REPO, 1, expected)])
+    for expected, terms in [
+        ("success", ["passing", "passed", "green", "succeeded", "success"]),
+        ("failure", ["failing", "failed", "failure", "red"]),
+        ("pending", ["pending", "running", "queued"]),
+    ]
+    for term in terms
+]
+
+
+@pytest.mark.parametrize(("sentence", "expected"), SUPPORTED_TEMPLATES)
+def test_supported_templates_capture_every_predicate(sentence, expected):
+    assert (
+        extract_predicates(title=sentence, content=None, default_repo=REPO) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "PR #1 head is 12345678",
+        "Checks at 1234567 are passing",
+        "PR #1 checks are passing at 12345678",
+        "PR #1 head is ABCDEF1",
+        "Checks at abCdef1 are passing",
+        "PR #\uff16\uff18\uff12\uff11 is open",
+        "PR #1 is \u043epen",
+        "PR\u200b #1 is open",
+        "PR\u00a0#1 is open",
+        "\u00a0PR #1 is open",
+        "PR #1 is open\u00a0",
+        "Now PR #1 is open",
+        "PR #1 is open again",
+        "PR #1 was open",
+        "PR #1 is open?",
+        "PR #1 is open!",
+        "PR #1 is open (mostly)",
+        "PR #1 is **open**",
+        "PR #1 is open and",
+        "PR #1 is open or closed",
+        "PR 6821 is open",
+        "Issue #1 is open at abcdef1",
+        "PR #1 and PR #1 are open",
+        f"PR #1 and PR #1 head is {HEAD}",
+        "PR #1 and PR #1 checks are passing",
+        f"PR #1 and PR #1 checks are passing at {HEAD}",
+        "PR #1 is open and closed",
+        "PR #0 is open",
+        "PR #01 is open",
+        "PR #10000000 is open",
+        "https://github.com/other/repo/pull/01 is open",
+        "other/r\u0435po#1 is open",
+        "Chec\u212as at abcdef1 are passing",
+        "PR #1 head is abcdef",
+        f"PR #1 head is {HEAD}a",
+        "PR #1 is open..",
+        "PR #1 is open,and PR #2 is closed",
+        "PR #1 is open, and #2",
+    ],
+)
+def test_unmatched_adversarial_claims_never_fetch(title):
+    verdict, fake = verify({}, title)
+    assert verdict.status == "unsupported"
+    assert verdict.reason
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(("sentence", "expected"), SUPPORTED_TEMPLATES)
+def test_inserted_tokens_never_expand_the_supported_grammar(sentence, expected):
+    accepted = {text for text, _ in SUPPORTED_TEMPLATES}
+    vocabulary = [
+        "not",
+        "still",
+        "yet",
+        "to",
+        "being",
+        "needs",
+        "pilot",
+        "6822",
+        "#6822",
+        "abcdef1",
+        "1234567",
+        "\u2014",
+        "\U0001f6a7",
+        "\u5f85",
+        "and",
+    ]
+    tokens = sentence.split()
+    for boundary in range(len(tokens) + 1):
+        for token in vocabulary:
+            mutated = " ".join(tokens[:boundary] + [token] + tokens[boundary:])
+            if mutated in accepted:
+                continue
+            verdict, fake = verify({}, mutated)
+            assert verdict.status == "unsupported", mutated
+            assert fake.calls == [], mutated
+
+
+def test_empty_note_has_no_verifiable_predicate():
+    verdict, fake = verify({}, " \t", "\n\t")
+    assert verdict.status == "unsupported"
+    assert verdict.reason == "no verifiable predicate"
+    assert fake.calls == []
+
+
+def test_joined_checks_verify_each_pr_sha_relationship():
+    routes = association_routes()
+    routes.update(
+        {
+            f"/repos/{REPO}/issues/2": issue(2, pull=True),
+            f"/repos/{REPO}/pulls/2": pull(2),
+        }
+    )
+    title = f"PR #1 checks are passing at {HEAD} and PR #2 checks are passing at {HEAD}"
+    verdict, fake = verify(routes, title)
+    assert verdict.status == "failed"
+    assert "not associated" in verdict.reason
+    assert f"/repos/{REPO}/pulls/2" in fake.calls
+    routes[f"/repos/{REPO}/commits/{HEAD}/pulls?per_page=100"] = [
+        {"number": 1},
+        {"number": 2},
+    ]
+    assert verify(routes, title)[0].status == "success"
+
+
 def test_issue_and_pr_open_closed_merged_draft_are_verified():
     routes = {
         f"/repos/{REPO}/issues/1": issue(1, "open"),
@@ -162,7 +365,7 @@ def test_head_sha_and_checks_are_tied_to_that_sha():
         f"/repos/{REPO}/commits/{HEAD}/pulls?per_page=100": [{"number": 6821}],
     }
     verdict, _ = verify(
-        routes, f"PR #6821 head {HEAD[:7]} has checks passing at {HEAD}"
+        routes, f"PR #6821 head is {HEAD[:7]} and PR #6821 checks are passing at {HEAD}"
     )
     assert verdict.status == "success", verdict
     assert any("head is de02262a35e2" in line for line in verdict.evidence)
@@ -183,7 +386,7 @@ def test_checks_on_a_pr_resolve_its_head_and_a_moved_head_fails():
     }
     assert verify(routes, "PR #7 checks are failing")[0].status == "success"
     assert verify(routes, "PR #7 checks are passing")[0].status == "failed"
-    moved, _ = verify(routes, f"PR #7 head {HEAD[:7]} checks are green")
+    moved, _ = verify(routes, f"PR #7 head is {HEAD[:7]} and PR #7 checks are green")
     assert moved.status == "failed" and "head is aaaaaaaaaaaa" in moved.reason
 
 
@@ -285,11 +488,11 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
         ("Run 1234567 failed", None, "workflow run or job"),
         ("Job 99999 is running", None, "workflow run or job"),
         ("PR #1 is not merged", None, "negated"),
-        ("Main is at abcdef1 and open", None, "names no PR"),
+        ("Main is at abcdef1 and open", None, "supported template"),
         ("PR #1 is green", None, "green"),
-        ("The head is de02262a35e2 and open", None, "head claim"),
-        ("PR #1 head is open", None, "head claim"),
-        ("Issue #1 is open, see abcdef1", None, "SHA assertion"),
+        ("The head is de02262a35e2 and open", None, "supported template"),
+        ("PR #1 head is open", None, "supported template"),
+        ("Issue #1 is open, see abcdef1", None, "supported template"),
         # A state or gate in its own sentence is never partly verified: the
         # renewal would extend the whole note.
         (
@@ -300,7 +503,7 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
         (
             "PR #6806 is open",
             "Its checks are failing.",
-            "names no concrete instance",
+            "supported template",
         ),
         (
             "PR #6806 is open",
@@ -320,12 +523,15 @@ def test_unsupported_and_free_text_gates_stay_due_with_a_reason(title, content, 
 
 
 def test_other_repository_and_too_many_references_are_unsupported():
-    assert (
-        verify({}, "other/repo#5 is open")[0].reason == "repository is not verifiable"
-    )
+    verdict, fake = verify({}, "other/repo#5 is open")
+    assert verdict.status == "unsupported"
+    assert verdict.reason == "repository is not verifiable"
+    assert fake.calls == []
     many = " ".join(f"#{n} is open." for n in range(1, 8))
-    verdict, _ = verify({}, many)
+    verdict, fake = verify({}, many)
+    assert verdict.status == "unsupported"
     assert verdict.reason == "too many references to verify"
+    assert fake.calls == []
 
 
 def test_issue_number_that_is_not_a_pull_request_cannot_be_merged():
@@ -345,16 +551,16 @@ def test_evidence_and_provenance_sections_assert_nothing():
 @pytest.mark.parametrize(
     ("title", "reason"),
     [
-        ("PR #6821 and PR #6822 are open", "reference #6821 is not covered"),
-        (f"PR #1 and PR #2 head is {HEAD}", "reference #1 is not covered"),
-        ("PR #1 and PR #2 checks are passing", "reference #1 is not covered"),
-        (f"#1 and #2 checks are passing at {HEAD}", "more than one reference"),
-        (f"#1 and #2 checks pass at {HEAD}", "reference #1 is not covered"),
+        ("PR #6821 and PR #6822 are open", "supported template"),
+        (f"PR #1 and PR #2 head is {HEAD}", "supported template"),
+        ("PR #1 and PR #2 checks are passing", "supported template"),
+        (f"#1 and #2 checks are passing at {HEAD}", "supported template"),
+        (f"#1 and #2 checks pass at {HEAD}", "supported template"),
         (
-            f"PR #1 is open and PR #2 checks are passing at {HEAD}",
-            "more than one reference",
+            f"PR #1 is open and PR #2 checks are passing at {HEAD} and #3",
+            "supported template",
         ),
-        ("other/repo#1 and PR #1 are open", "reference #1 is not covered"),
+        ("other/repo#1 and PR #1 are open", "supported template"),
     ],
 )
 def test_uncovered_or_ambiguous_references_are_unsupported(title, reason):
@@ -379,7 +585,7 @@ def test_partially_named_second_reference_is_unsupported(title):
     """A second reference the patterns do not name is never silently dropped."""
     verdict, fake = verify({}, title)
     assert verdict.status == "unsupported"
-    assert "is not covered by a verifiable predicate" in verdict.reason
+    assert "supported template" in verdict.reason
     assert fake.calls == []
 
 
@@ -395,7 +601,7 @@ def test_follow_on_sentence_reference_is_unsupported(title, content):
     """A follow-on sentence naming a reference inherits state: fail closed."""
     verdict, fake = verify({}, title, content)
     assert verdict.status == "unsupported"
-    assert "is not covered by a verifiable predicate" in verdict.reason
+    assert "supported template" in verdict.reason
     assert fake.calls == []
 
 
@@ -417,14 +623,17 @@ def test_one_reference_at_a_sha_and_repeated_identical_references_stay_supported
     )
     assert predicates == [Predicate("checks", REPO, 6806, "success", sha="a24da077")]
     for title, expected in [
-        ("PR #1 and PR #1 are open", Predicate("state", REPO, 1, "open")),
+        ("PR #1 is open and PR #1 is open", Predicate("state", REPO, 1, "open")),
         (
-            f"PR #1 and PR #1 head is {HEAD}",
+            f"PR #1 head is {HEAD} and PR #1 head is {HEAD}",
             Predicate("head", REPO, 1, "head", sha=HEAD),
         ),
-        ("PR #1 and PR #1 checks are passing", Predicate("checks", REPO, 1, "success")),
         (
-            f"PR #1 and PR #1 checks are passing at {HEAD}",
+            "PR #1 checks are passing and PR #1 checks are passing",
+            Predicate("checks", REPO, 1, "success"),
+        ),
+        (
+            f"PR #1 checks are passing at {HEAD} and PR #1 checks are passing at {HEAD}",
             Predicate("checks", REPO, 1, "success", sha=HEAD),
         ),
     ]:
@@ -559,7 +768,7 @@ def association_routes():
 def test_checks_sha_must_be_associated_with_the_named_pr_and_share_budget():
     fake = Fake(association_routes())
     verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), max_requests=5)
-    title = f"PR #1 checks passed at {HEAD}"
+    title = f"PR #1 checks are passed at {HEAD}"
     first = verifier.verify(title=title, content=None)
     assert first.status == "success"
     assert verifier.requests == 5
@@ -592,7 +801,7 @@ def test_checks_sha_must_be_associated_with_the_named_pr_and_share_budget():
 )
 def test_unestablished_pr_sha_relationship_cannot_verify(path, response, expected):
     routes = {**association_routes(), f"/repos/{REPO}/{path}": response}
-    verdict, fake = verify(routes, f"PR #1 checks passed at {HEAD}")
+    verdict, fake = verify(routes, f"PR #1 checks are passed at {HEAD}")
     assert verdict.status == expected
     assert not any("check-runs" in path for path in fake.calls)
 
@@ -601,7 +810,7 @@ def test_sha_association_request_obeys_the_shared_budget():
     fake = Fake(association_routes())
     verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), max_requests=2)
     with pytest.raises(BudgetExhausted):
-        verifier.verify(title=f"PR #1 checks passed at {HEAD}", content=None)
+        verifier.verify(title=f"PR #1 checks are passed at {HEAD}", content=None)
     assert verifier.requests == 2
     assert len(fake.calls) == 2
 
@@ -619,7 +828,7 @@ def test_malformed_non_scalar_state_is_unavailable(field):
         routes[status_path(HEAD)]["statuses"] = [{"state": {}}]
     else:
         routes[f"/repos/{REPO}/pulls/1"]["state"] = []
-    verdict, _ = verify(routes, f"PR #1 checks passed at {HEAD}")
+    verdict, _ = verify(routes, f"PR #1 checks are passed at {HEAD}")
     assert verdict.status == "unavailable"
 
 
@@ -739,5 +948,10 @@ def test_has_been_merged_still_verifies():
 
 
 def test_bare_prose_and_filler_claims_yield_no_predicate():
-    assert verify({}, "t", "Durable claim, PR #1 is open.")[0].status == ("unsupported")
-    assert verify({}, "Tracked work.", "Plain body")[0].status == "unsupported"
+    for title, content in [
+        ("t", "Durable claim, PR #1 is open."),
+        ("Tracked work.", "Plain body"),
+    ]:
+        verdict, fake = verify({}, title, content)
+        assert verdict.status == "unsupported"
+        assert fake.calls == []
