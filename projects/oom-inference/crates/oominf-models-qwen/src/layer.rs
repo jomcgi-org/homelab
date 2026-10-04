@@ -173,6 +173,15 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    /// Bytes of this layer's sequence-length-dependent step buffers for a step of
+    /// `t` tokens over `kv_len` cached ones (0 without attention).
+    pub fn step_bytes(&self, t: usize, kv_len: usize) -> usize {
+        match &self.mixer {
+            Mixer::Attention(a) => a.step_bytes(t, kv_len),
+            Mixer::Gdn(_) => 0,
+        }
+    }
+
     /// Bytes [`Self::grow_kv`] would allocate for this layer to hold `tokens`.
     pub fn kv_growth_bytes(&self, state: &LayerState<B>, tokens: usize) -> usize {
         match (&self.mixer, &state.attn) {

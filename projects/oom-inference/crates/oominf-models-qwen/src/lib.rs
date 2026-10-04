@@ -53,6 +53,8 @@ pub struct Dims {
     pub scratch_cols: usize,
     /// The raw `text_config`, for components that parse their own parameters.
     pub text: serde_json::Value,
+    /// How attention layers store their KV cache (a runtime choice, fp32 unless set).
+    pub kv: oominf_core::KvFormat,
 }
 
 impl Dims {
@@ -102,6 +104,7 @@ impl Dims {
                 .unwrap_or_default(),
             scratch_cols: 0,
             text: t.clone(),
+            kv: oominf_core::KvFormat::F32,
         })
     }
 

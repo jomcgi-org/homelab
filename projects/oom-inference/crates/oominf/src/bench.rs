@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use oominf_core::{ExpertStats, Model, Session, decode_step};
 
 use crate::chat::Chat;
-use crate::load::{ExpertArgs, OpenArgs, open_model};
+use crate::load::{CacheArgs, ExpertArgs, OpenArgs, open_model};
 use oominf_core::argmax;
 
 /// Prediction precision and recall, and how many lookahead reads a fetch used.
@@ -129,6 +129,7 @@ pub fn run(
     prefill_chunk: Option<usize>,
     draft: usize,
     expert_args: &ExpertArgs,
+    cache: &CacheArgs,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
@@ -139,6 +140,7 @@ pub fn run(
         max_context,
         prefill_chunk,
         experts: expert_args,
+        cache,
     })?;
     println!(
         "{} (loaded in {:.1}s)",

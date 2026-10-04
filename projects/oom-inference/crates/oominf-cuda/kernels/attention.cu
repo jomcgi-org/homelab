@@ -1,8 +1,133 @@
 // Rotary attention with block-sparse (QSA) key selection: prefill and flash-decode.
 // All arithmetic is fp32.
 
+#include <cuda_fp16.h>
 #include <math.h>
 #include <stdint.h>
+
+// KV cache rows (KvFormat). bits == 0: D fp32 values. bits 3 or 4 (Turbo): the head
+// vector was rotated by kv_rotate_forward and is stored as D/32 blocks of 32
+// coordinates: an fp16 scale per block (the block's RMS; the scales padded to 16 bytes),
+// then per block `bits` 32-bit words, word j holding bit j of the 32 coordinates'
+// codebook indices (bit-planes, so lane l of a warp reads bit l). A coordinate is
+// level[idx] * scale, with Lloyd-Max levels for a unit Gaussian (KvFormat::codebooks:
+// the levels for b bits start at 2^b - 4).
+__device__ __forceinline__ int kv_scale_bytes(int D) { return ((D / 32) * 2 + 15) & ~15; }
+
+__device__ __forceinline__ size_t kv_row_bytes(int D, int bits) {
+    return bits ? (size_t)kv_scale_bytes(D) + (size_t)(D / 32) * bits * 4 : (size_t)D * 4;
+}
+
+// Copies the `bits` codebook into shared `lv` (the caller synchronises before use).
+__device__ __forceinline__ void kv_levels_load(float* lv, const float* levels, int bits) {
+    if (!bits) return;
+    for (int i = threadIdx.x; i < (1 << bits); i += blockDim.x) lv[i] = levels[(1 << bits) - 4 + i];
+}
+
+// Coordinate d of a cache row (rotated space for Turbo rows); `lv` is its codebook.
+__device__ __forceinline__ float kv_value(const uint8_t* row, int d, int D, int bits,
+                                          const float* lv) {
+    if (!bits) return reinterpret_cast<const float*>(row)[d];
+    int b = d >> 5, lane = d & 31;
+    float sc = __half2float(reinterpret_cast<const __half*>(row)[b]);
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(row + kv_scale_bytes(D)) + b * bits;
+    int idx = 0;
+    for (int j = 0; j < bits; j++) idx |= ((w[j] >> lane) & 1) << j;
+    return lv[idx] * sc;
+}
+
+// The fixed random sign of coordinate i in the rotation.
+__device__ __forceinline__ float kv_sign(int i) {
+    return (((unsigned)i * 2654435761u) >> 31) ? -1.0f : 1.0f;
+}
+
+// Unnormalised Walsh-Hadamard transform of s[0..D) in shared memory (D a power of two,
+// blockDim >= D); synchronises before and after.
+__device__ void kv_wht(float* s, int D) {
+    for (int h = 1; h < D; h <<= 1) {
+        __syncthreads();
+        int i = threadIdx.x;
+        if (i < D && (i & h) == 0) {
+            float a = s[i], b = s[i + h];
+            s[i] = a + b;
+            s[i + h] = a - b;
+        }
+    }
+    __syncthreads();
+}
+
+// Rotates rows of D coordinates in place: forward y = H (s . x) / sqrt(D), inverse
+// x = s . (H y) / sqrt(D) (H symmetric, H H = D I). One block of D threads per row.
+extern "C" __global__ void kv_rotate(float* x, int D, int inverse) {
+    __shared__ float s[256];
+    float* r = x + (size_t)blockIdx.x * D;
+    int i = threadIdx.x;
+    float norm = 1.0f / sqrtf((float)D);
+    s[i] = inverse ? r[i] : r[i] * kv_sign(i);
+    kv_wht(s, D);
+    r[i] = inverse ? s[i] * kv_sign(i) * norm : s[i] * norm;
+}
+
+// Appends rows of `src` ([n, D], cache order) to the cache at row `row0`, rotating and
+// quantising them for bits 3 or 4. One block of D threads (a multiple of 32) per row.
+extern "C" __global__ void kv_append(const float* src, uint8_t* cache, long long row0, int D,
+                                     int bits, const float* levels) {
+    __shared__ float s[256];
+    __shared__ float lv[256];
+    size_t r = blockIdx.x;
+    int i = threadIdx.x;
+    const float* x = src + r * D;
+    uint8_t* row = cache + ((size_t)row0 + r) * kv_row_bytes(D, bits);
+    if (!bits) {
+        reinterpret_cast<float*>(row)[i] = x[i];
+        return;
+    }
+    kv_levels_load(lv, levels, bits);
+    s[i] = x[i] * kv_sign(i);
+    kv_wht(s, D);
+    float y = s[i] / sqrtf((float)D);
+    float ss = y * y;
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(0xffffffff, ss, o);
+    __half hs = __float2half_rn(sqrtf(ss / 32.0f));
+    float sc = __half2float(hs);
+    float u = sc > 0.0f ? y / sc : 0.0f;
+    // Nearest level: binary search the ascending codebook, then the closer neighbour.
+    int lo = 0, hi = (1 << bits) - 1;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) >> 1;
+        if (lv[mid] <= u) lo = mid;
+        else hi = mid;
+    }
+    int idx = fabsf(u - lv[lo]) <= fabsf(u - lv[hi]) ? lo : hi;
+    int lane = i & 31, b = i >> 5;
+    if (lane == 0) reinterpret_cast<__half*>(row)[b] = hs;
+    uint32_t* w = reinterpret_cast<uint32_t*>(row + kv_scale_bytes(D)) + b * bits;
+    for (int j = 0; j < bits; j++) {
+        unsigned m = __ballot_sync(0xffffffff, (idx >> j) & 1);
+        if (lane == j) w[j] = m;
+    }
+}
+
+// Reads cache rows back as fp32 [n, D] (decoded and un-rotated for bits 3 or 4). One
+// block of D threads per row.
+extern "C" __global__ void kv_read(const uint8_t* cache, float* dst, int D, int bits,
+                                   const float* levels) {
+    __shared__ float s[256];
+    __shared__ float lv[256];
+    size_t r = blockIdx.x;
+    int i = threadIdx.x;
+    const uint8_t* row = cache + r * kv_row_bytes(D, bits);
+    float* out = dst + r * D;
+    if (!bits) {
+        out[i] = reinterpret_cast<const float*>(row)[i];
+        return;
+    }
+    kv_levels_load(lv, levels, bits);
+    __syncthreads();
+    s[i] = kv_value(row, i, D, bits, lv);
+    kv_wht(s, D);
+    out[i] = s[i] * kv_sign(i) / sqrtf((float)D);
+}
 
 __device__ __forceinline__ float attn_sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
 
@@ -197,9 +322,14 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
     (ATTN_R * ATTN_STRIDE + ATTN_KT * ATTN_STRIDE + ATTN_KT * 256 + ATTN_R * ATTN_KT + 3 * ATTN_R)
 
 extern "C" __global__ void __launch_bounds__(256)
-attn_prefill(const float* q, const float* k, const float* v, const uint8_t* mask, float* out,
-             int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale, int TQ) {
+attn_prefill(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* mask, float* out,
+             int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale, int TQ, int kb,
+             int vb, const float* levels) {
     extern __shared__ __align__(16) float smem[];
+    __shared__ float lvk[256], lvv[256];
+    kv_levels_load(lvk, levels, kb);
+    kv_levels_load(lvv, levels, vb);
+    size_t krow = kv_row_bytes(D, kb), vrow = kv_row_bytes(D, vb);
     float* qs = smem;                          // [R][STRIDE]
     float* ks = qs + ATTN_R * ATTN_STRIDE;     // [KT][STRIDE]
     float* vs = ks + ATTN_KT * ATTN_STRIDE;    // [KT][256]
@@ -241,9 +371,17 @@ attn_prefill(const float* q, const float* k, const float* v, const uint8_t* mask
             int j = j0 + key;
             float4 kv4 = make_float4(0.f, 0.f, 0.f, 0.f), vv4 = kv4;
             if (j < kv_len) {
-                size_t base = ((size_t)j * Hkv + kvh) * D + d;
-                kv4 = *reinterpret_cast<const float4*>(k + base);
-                vv4 = *reinterpret_cast<const float4*>(v + base);
+                size_t r = (size_t)j * Hkv + kvh;
+                const uint8_t* kr = k + r * krow;
+                const uint8_t* vr = v + r * vrow;
+                kv4 = kb ? make_float4(kv_value(kr, d, D, kb, lvk), kv_value(kr, d + 1, D, kb, lvk),
+                                       kv_value(kr, d + 2, D, kb, lvk),
+                                       kv_value(kr, d + 3, D, kb, lvk))
+                         : *reinterpret_cast<const float4*>(kr + 4 * d);
+                vv4 = vb ? make_float4(kv_value(vr, d, D, vb, lvv), kv_value(vr, d + 1, D, vb, lvv),
+                                       kv_value(vr, d + 2, D, vb, lvv),
+                                       kv_value(vr, d + 3, D, vb, lvv))
+                         : *reinterpret_cast<const float4*>(vr + 4 * d);
             }
             *reinterpret_cast<float4*>(ks + key * ATTN_STRIDE + d) = kv4;
             *reinterpret_cast<float4*>(vs + key * 256 + d) = vv4;
@@ -364,10 +502,15 @@ extern "C" __global__ void copy_range(const float* src, size_t src_off, float* d
 // part: [Hkv, P, G, D + 2] with P = gridDim.x * warps per block.
 #define FD_D 256
 template <int G>
-__device__ void attn_decode_partial_impl(const float* q, const float* k, const float* v,
+__device__ void attn_decode_partial_impl(const float* q, const uint8_t* k, const uint8_t* v,
                                          const uint8_t* mask, float* part, int Hkv,
-                                         int kv_len, int chunk, float scale) {
+                                         int kv_len, int chunk, float scale, int kb, int vb,
+                                         const float* levels) {
     __shared__ float qs[G * FD_D];
+    __shared__ float lvk[256], lvv[256];
+    kv_levels_load(lvk, levels, kb);
+    kv_levels_load(lvv, levels, vb);
+    size_t krow = kv_row_bytes(FD_D, kb), vrow = kv_row_bytes(FD_D, vb);
     int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     int wpb = blockDim.x >> 5;
     int kvh = blockIdx.y;
@@ -388,13 +531,13 @@ __device__ void attn_decode_partial_impl(const float* q, const float* k, const f
     int j1 = min(kv_len, j0 + chunk);
     for (int j = j0; j < j1; j++) {
         if (!mask[j]) continue;
-        const float* kr = k + ((size_t)j * Hkv + kvh) * FD_D;
-        const float* vr = v + ((size_t)j * Hkv + kvh) * FD_D;
+        const uint8_t* kr = k + ((size_t)j * Hkv + kvh) * krow;
+        const uint8_t* vr = v + ((size_t)j * Hkv + kvh) * vrow;
         float kk[8], vv[8];
 #pragma unroll
         for (int i = 0; i < 8; i++) {
-            kk[i] = kr[i * 32 + lane];
-            vv[i] = vr[i * 32 + lane];
+            kk[i] = kv_value(kr, i * 32 + lane, FD_D, kb, lvk);
+            vv[i] = kv_value(vr, i * 32 + lane, FD_D, vb, lvv);
         }
 #pragma unroll
         for (int g = 0; g < G; g++) {
@@ -426,9 +569,10 @@ __device__ void attn_decode_partial_impl(const float* q, const float* k, const f
 }
 
 extern "C" __global__ void __launch_bounds__(256)
-attn_decode_partial_g12(const float* q, const float* k, const float* v, const uint8_t* mask,
-                        float* part, int Hkv, int kv_len, int chunk, float scale) {
-    attn_decode_partial_impl<12>(q, k, v, mask, part, Hkv, kv_len, chunk, scale);
+attn_decode_partial_g12(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* mask,
+                        float* part, int Hkv, int kv_len, int chunk, float scale, int kb, int vb,
+                        const float* levels) {
+    attn_decode_partial_impl<12>(q, k, v, mask, part, Hkv, kv_len, chunk, scale, kb, vb, levels);
 }
 
 // Merges flash-decode partials: out[h, d] = sum_p e^(m_p - M) acc_p[d] / sum_p e^(m_p - M) l_p.

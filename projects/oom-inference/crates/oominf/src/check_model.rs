@@ -16,7 +16,7 @@ use oominf_cuda::Gpu;
 use oominf_models_qwen::{Dims, QwenModel};
 
 use crate::check_layer::{STEPS, load_step, rms_rel_and_cos, step_tokens};
-use crate::load::{ExpertArgs, factory};
+use crate::load::{CacheArgs, ExpertArgs, factory};
 
 struct ModelProbe<'a> {
     truth: &'a HashMap<String, Vec<f32>>,
@@ -73,9 +73,15 @@ fn logit_metrics(
     (agree, rows, max_d, sum_d / n.max(1) as f64)
 }
 
-pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Result<bool> {
+pub fn run(
+    model_dir: &Path,
+    fixtures: &Path,
+    expert_args: &ExpertArgs,
+    cache: &CacheArgs,
+) -> Result<bool> {
     let model = Arc::new(oominf_format::Model::open(model_dir)?);
-    let dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
+    let mut dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
+    dims.kv = cache.kv_cache;
     let tolerances: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixtures.join("tolerances.json")).context("tolerances.json")?,
     )?;

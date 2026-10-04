@@ -13,13 +13,15 @@
 //! - Causal GQA attention restricted to the selected keys, fp32 softmax, then
 //!   `out * sigmoid(gate)` and `o_proj`.
 //!
-//! Precision: fp32 throughout except bf16 GEMM operands; the KV and indexer caches
-//! are fp32 (no rounding we do not benefit from), about 4.6 KiB per token per layer.
+//! Precision: fp32 throughout except bf16 GEMM operands; the indexer caches are
+//! fp32 and the KV cache is fp32 by default (no rounding we do not benefit from),
+//! about 4.6 KiB per token per layer, or compressed ([`KvFormat::Turbo`]) when
+//! chosen.
 //! They start small and double as the sequence grows, so short conversations leave
 //! the memory to the expert tiers.
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, DeviceBuffer, Probe, Workspace, tap};
+use oominf_core::{Backend, DeviceBuffer, KvFormat, Probe, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
@@ -101,6 +103,8 @@ pub struct Attention<B: Backend> {
     idx_q_norm: B::Bf16,
     idx_k_norm: B::Bf16,
     inv_freq: B::F32,
+    /// How the KV cache stores keys and values.
+    kv: KvFormat,
 }
 
 /// Tokens of KV cache a fresh sequence starts with; it doubles on demand up to the
@@ -110,10 +114,11 @@ const INITIAL_KV_TOKENS: usize = 2048;
 /// KV cache and indexer raw-key cache for one attention layer. Buffers hold `cap`
 /// tokens and grow by reallocation (see [`Attention::grow`]).
 pub struct AttnState<B: Backend> {
-    /// `[cap, kv_heads, head_dim]`, post-norm, post-RoPE.
-    pub k: B::F32,
-    /// `[cap, kv_heads, head_dim]`.
-    pub v: B::F32,
+    /// `[cap, kv_heads]` rows of `head_dim` keys (post-norm, post-RoPE) in the
+    /// layer's [`KvFormat`].
+    pub k: B::Bytes,
+    /// `[cap, kv_heads]` rows of `head_dim` values in the layer's [`KvFormat`].
+    pub v: B::Bytes,
     /// `[cap, index_head_dim]` raw indexer keys (pre-norm, pre-RoPE).
     pub idx_keys: B::F32,
     /// `[cap / ratio, index_head_dim]` pooled, normed, RoPE'd block keys; the
@@ -164,16 +169,17 @@ impl<B: Backend> Attention<B> {
             idx_q_norm: w("indexer.q_layernorm.weight", &[a.idx_dim as u64])?,
             idx_k_norm: w("indexer.k_layernorm.weight", &[a.idx_dim as u64])?,
             inv_freq: gpu.upload_f32(&inv_freq)?,
+            kv: d.kv,
             a,
         })
     }
 
     pub fn new_state(&self, gpu: &B, _d: &Dims, max_tokens: usize) -> Result<AttnState<B>> {
         let cap = self.capacity_for(INITIAL_KV_TOKENS.min(max_tokens).max(1), 0, max_tokens);
-        let (kv, ik, bk) = self.buffer_lens(cap);
+        let (kb, vb, ik, bk) = self.buffer_lens(cap);
         Ok(AttnState {
-            k: gpu.zeros(kv)?,
-            v: gpu.zeros(kv)?,
+            k: gpu.zeros_bytes(kb)?,
+            v: gpu.zeros_bytes(vb)?,
             idx_keys: gpu.zeros(ik)?,
             block_keys: gpu.zeros(bk)?,
             blocks: 0,
@@ -183,12 +189,13 @@ impl<B: Backend> Attention<B> {
         })
     }
 
-    /// Element counts of the k/v, raw indexer key and block key buffers for `cap`
-    /// tokens.
-    fn buffer_lens(&self, cap: usize) -> (usize, usize, usize) {
+    /// Bytes of the k and v caches and element counts of the raw indexer key and
+    /// block key buffers for `cap` tokens.
+    fn buffer_lens(&self, cap: usize) -> (usize, usize, usize, usize) {
         let a = &self.a;
         (
-            cap * a.kv_heads * a.head_dim,
+            cap * a.kv_heads * self.kv.row_bytes(true, a.head_dim),
+            cap * a.kv_heads * self.kv.row_bytes(false, a.head_dim),
             cap * a.idx_dim,
             (cap / a.ratio).max(1) * a.idx_dim,
         )
@@ -216,12 +223,19 @@ impl<B: Backend> Attention<B> {
         state.blocks = state.blocks.min(state.len / self.a.ratio);
     }
 
+    /// Bytes of the per-step buffers that grow with the sequence (selection mask
+    /// and block scores) for a step of `t` queries over `kv_len` keys.
+    pub fn step_bytes(&self, t: usize, kv_len: usize) -> usize {
+        t * kv_len + t * (kv_len / self.a.ratio + 1) * std::mem::size_of::<f32>()
+    }
+
     pub fn growth_bytes(&self, state: &AttnState<B>, tokens: usize) -> usize {
         if tokens <= state.cap {
             return 0;
         }
-        let (kv, ik, bk) = self.buffer_lens(self.capacity_for(tokens, state.cap, state.max_tokens));
-        (2 * kv + ik + bk) * std::mem::size_of::<f32>()
+        let (kb, vb, ik, bk) =
+            self.buffer_lens(self.capacity_for(tokens, state.cap, state.max_tokens));
+        kb + vb + (ik + bk) * std::mem::size_of::<f32>()
     }
 
     /// Grows the caches to hold `tokens`, keeping their contents. Kernels read the
@@ -238,8 +252,7 @@ impl<B: Backend> Attention<B> {
         );
         let a = &self.a;
         let cap = self.capacity_for(tokens, state.cap, state.max_tokens);
-        let (kv, ik, bk) = self.buffer_lens(cap);
-        let kv_w = a.kv_heads * a.head_dim;
+        let (kb, vb, ik, bk) = self.buffer_lens(cap);
         let moved = |old: &B::F32, n: usize, len: usize| -> Result<B::F32> {
             let mut new = gpu.zeros(len)?;
             if n > 0 {
@@ -247,8 +260,18 @@ impl<B: Backend> Attention<B> {
             }
             Ok(new)
         };
-        state.k = moved(&state.k, state.len * kv_w, kv)?;
-        state.v = moved(&state.v, state.len * kv_w, kv)?;
+        let moved_bytes = |old: &B::Bytes, n: usize, len: usize| -> Result<B::Bytes> {
+            let mut new = gpu.zeros_bytes(len)?;
+            gpu.copy_bytes(old, 0, &mut new, 0, n)?;
+            Ok(new)
+        };
+        let rows = state.len * a.kv_heads;
+        let (kr, vr) = (
+            self.kv.row_bytes(true, a.head_dim),
+            self.kv.row_bytes(false, a.head_dim),
+        );
+        state.k = moved_bytes(&state.k, rows * kr, kb)?;
+        state.v = moved_bytes(&state.v, rows * vr, vb)?;
         state.idx_keys = moved(&state.idx_keys, state.len * a.idx_dim, ik)?;
         state.block_keys = moved(&state.block_keys, state.blocks * a.idx_dim, bk)?;
         state.cap = cap;
@@ -364,7 +387,9 @@ impl<B: Backend> Attention<B> {
             state.blocks = nblocks;
         }
         let score_w = kv_len / a.ratio + 1;
-        let mut idx_scores = ws.take(gpu, "attn.idx_scores", t * score_w)?;
+        // The score and mask buffers grow with the sequence: keep the largest so
+        // successive prefill chunks do not fragment the allocator.
+        let mut idx_scores = ws.take_at_least(gpu, "attn.idx_scores", t * score_w)?;
         gpu.qsa_scores(
             &iq,
             &state.block_keys,
@@ -382,8 +407,8 @@ impl<B: Backend> Attention<B> {
             probe.observe("indexer.num_blocks", nb);
         }
         self.tap_block_scores(gpu, probe, &mut idx_scores, t, start, kv_len)?;
-        // qsa_mask writes every mask byte.
-        let mut mask = gpu.uninit_bytes(t * kv_len)?;
+        // qsa_mask writes every mask byte of the `t * kv_len` it uses.
+        let mut mask = ws.take_bytes_at_least(gpu, "attn.mask", t * kv_len)?;
         gpu.qsa_mask(
             &idx_scores,
             &mut mask,
@@ -395,7 +420,8 @@ impl<B: Backend> Attention<B> {
         )?;
         ws.give("attn.idx_scores", idx_scores);
         if probe.wants("indexer.mask") {
-            let m = gpu.download_bytes(&mask)?;
+            let mut m = gpu.download_bytes(&mask)?;
+            m.truncate(t * kv_len);
             probe.observe("indexer.mask", m.into_iter().map(f32::from).collect());
         }
         if let Some(sub) = probe.substitute("indexer.mask") {
@@ -427,8 +453,8 @@ impl<B: Backend> Attention<B> {
         gpu.rope_rotate_half(&mut k, t, kvh, hd, rd, inv, start, 1)?;
         tap(gpu, probe, "attn.q_rope", &mut q)?;
         tap(gpu, probe, "attn.k_rope", &mut k)?;
-        gpu.copy_at(&k, &mut state.k, start * kv_w, t * kv_w)?;
-        gpu.copy_at(&v, &mut state.v, start * kv_w, t * kv_w)?;
+        gpu.kv_append(&k, &mut state.k, self.kv, true, start, t, kvh, hd)?;
+        gpu.kv_append(&v, &mut state.v, self.kv, false, start, t, kvh, hd)?;
         ws.give("attn.k", k);
         ws.give("attn.v", v);
         state.len = kv_len;
@@ -440,6 +466,7 @@ impl<B: Backend> Attention<B> {
             &q,
             &state.k,
             &state.v,
+            self.kv,
             &mask,
             &mut attn,
             t,
@@ -450,6 +477,7 @@ impl<B: Backend> Attention<B> {
             1.0 / (hd as f32).sqrt(),
         )?;
         ws.give("attn.q", q);
+        ws.give_bytes("attn.mask", mask);
         tap(gpu, probe, "attn.core_out", &mut attn)?;
         gpu.mul_sigmoid(&mut attn, &gate, t * nh * hd)?;
         ws.give("attn.gate", gate);
@@ -503,12 +531,17 @@ impl<B: Backend> Attention<B> {
     fn tap_state(&self, gpu: &B, state: &mut AttnState<B>, probe: &mut dyn Probe) -> Result<()> {
         let a = &self.a;
         let (len, kvh, hd) = (state.len, a.kv_heads, a.head_dim);
-        for (name, cache) in [("state.k", &mut state.k), ("state.v", &mut state.v)] {
+        for (name, key, cache) in [
+            ("state.k", true, &mut state.k),
+            ("state.v", false, &mut state.v),
+        ] {
             if !probe.wants(name) && probe.substitute(name).is_none() {
                 continue;
             }
+            let mut rows = gpu.zeros(len * kvh * hd)?;
+            gpu.kv_read(cache, &mut rows, self.kv, key, len, kvh, hd)?;
             let mut view = gpu.zeros(len * kvh * hd)?;
-            gpu.swap01(cache, &mut view, len, kvh, hd)?;
+            gpu.swap01(&rows, &mut view, len, kvh, hd)?;
             if probe.wants(name) {
                 probe.observe(name, gpu.download_f32(&view)?);
             }
@@ -520,7 +553,7 @@ impl<B: Backend> Attention<B> {
                 let sub = gpu.upload_f32(&sub)?;
                 let mut back = gpu.zeros(len * kvh * hd)?;
                 gpu.swap01(&sub, &mut back, kvh, len, hd)?;
-                gpu.copy_at(&back, cache, 0, len * kvh * hd)?;
+                gpu.kv_append(&back, cache, self.kv, key, 0, len, kvh, hd)?;
             }
         }
         if !probe.wants("state.indexer_k") && probe.substitute("state.indexer_k").is_none() {
