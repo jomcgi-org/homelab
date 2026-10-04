@@ -3,13 +3,13 @@
 import argparse
 import os
 import pwd
-from pathlib import Path
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -19,6 +19,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--rehearse", action="store_true", help="Run the browser rehearsal, then stop"
+    )
+    parser.add_argument(
+        "--join-links",
+        action="store_true",
+        help="Enable registered-player links in this disposable fixture only",
     )
     parser.add_argument("--output", default="/tmp/grimoire-rehearsal")
     args = parser.parse_args()
@@ -107,6 +112,11 @@ def main():
                 "API_BASE": "http://127.0.0.1:8177",
                 "GRIMOIRE_LOCAL_FRONTEND": "http://friends.localhost:4177",
                 "VITE_GRIMOIRE_LOCAL": "true",
+                "GRIMOIRE_INVITATION_LINKS_ENABLED": str(args.join_links).lower(),
+                # Never inherit a live enrollment provider into this fixture.
+                "GRIMOIRE_INVITATION_ENROLLMENT_ENABLED": "false",
+                "GRIMOIRE_INVITATION_API_TOKEN": "",
+                "GRIMOIRE_INVITATION_FLOW_ID": "",
             }
             children.append(
                 subprocess.Popen(
@@ -170,6 +180,7 @@ def main():
                         str(Path(__file__).with_name("rehearse.py")),
                         "--output",
                         args.output,
+                        *(["--join-links"] if args.join_links else []),
                     ],
                     check=True,
                     timeout=180,

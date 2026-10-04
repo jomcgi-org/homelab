@@ -53,6 +53,34 @@ Run and inspect the browser rehearsal:
 grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse
 ```
 
+Rehearse single-use links for registered players in a fresh local campaign:
+
+```bash
+grimoire.venv/bin/python projects/monolith/dev/grimoire/run.py --rehearse --join-links --output /tmp/grimoire-join-links
+```
+
+The opt-in flag enables links only in this disposable frontend and backend.
+The default table and its 29 session checks keep links disabled. Enrollment
+stays disabled in both modes, and the launcher clears inherited provider token
+and flow settings. These checks use signed local identities and never enroll a
+real account.
+
+The link rehearsal covers owner creation, hiding the one-time copy surface,
+anonymous fragment capture, cookie attributes and resume, the wrong account,
+close and browser back, a changed invitation in another tab, explicit acceptance,
+retry, removal and replay, and revocation while acceptance is open. It checks
+membership through the real backend after each mutation. Chromium treats the
+`friends.localhost` loopback host as trustworthy for Secure cookies; the checks
+assert the cookie is actually stored and can resume the invitation.
+
+Inspect `join-owner-links.png`, `join-public-resume.png`, `join-wrong-account.png`,
+`join-changed-tab.png`, `join-review.png`, `join-accepted.png`,
+`join-replay-blocked.png` and `join-revoked.png`. Failure screenshots mask the
+one-time link field, and reports redact capability-shaped values. Traces include
+only disposable local credentials and links. Review evidence before checking
+in any assets. Production migration and real OIDC enrollment remain separate
+checks.
+
 For a clean Python environment, use the CI wrapper after installing `uv`, pnpm,
 Postgres 16 with pgvector, and Chromium's system libraries:
 
@@ -62,9 +90,11 @@ GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/c
 
 The wrapper installs the pinned runtime and Playwright, checks three cold frontend
 starts, and runs the full browser scenario twice with fresh databases and dependency
-caches. It preserves the run log and evidence even on failure. Browser reports
+caches. A third fresh launch runs the opted-in link scenarios. It preserves the
+run log and evidence even on failure. Browser reports
 are under `cold-start-1/` and `cold-start-2/`; dependency-readiness checks are in
-`startup.log`. It removes only its
+`startup.log`. Link reports, screenshots and traces are under `join-links/`, with
+their launcher log in `join-links.log`. It removes only its
 own temporary Python environment. The BuildBuddy PR gate calls `ci-runner.sh`
 after Bazel for relevant changes. It provisions Ubuntu dependencies and uses
 the repository tools image for Node/pnpm. Reports, screenshots, traces and logs

@@ -23,3 +23,8 @@ for attempt in 1 2; do
 	"$ci_environment/venv/bin/python" projects/monolith/dev/grimoire/run.py \
 		--rehearse --output "$evidence_dir/cold-start-$attempt"
 done 2>&1 | tee "$evidence_dir/run.log"
+# Keep the legacy onboarding scenarios default-off. The link UI replaces the
+# legacy invite form, so it gets a separate disposable database and report.
+"$ci_environment/venv/bin/python" projects/monolith/dev/grimoire/run.py \
+	--rehearse --join-links --output "$evidence_dir/join-links" \
+	2>&1 | tee "$evidence_dir/join-links.log"
