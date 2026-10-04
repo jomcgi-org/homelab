@@ -19,23 +19,22 @@ struct ProjParts {
     cols: usize,
 }
 
-/// One routed expert's record on the device plus its per-projection
-/// `weight_scale_2` (gate, up, down).
-pub struct ExpertRecord {
-    pub dev: Slice<u8>,
-    pub scale2: [f32; 3],
-}
-
-/// Supplies routed-expert records. The tiering engine implements this with VRAM
-/// slots and host caches; [`DiskExperts`] reads straight from the model files.
+/// Supplies routed-expert records on the device. The tiering engine implements this
+/// with VRAM slots, a host tier and disk; [`DiskExperts`] reads straight from the
+/// model files.
 pub trait ExpertSource {
-    fn record(&mut self, gpu: &Gpu, layer: u32, expert: u32) -> Result<ExpertRecord>;
+    /// Makes `experts` of `layer` device-resident and returns the raw device address
+    /// of each one's record, in the same order. Addresses stay valid until the next
+    /// `fetch` call. Kernels read every part, `weight_scale_2` included, from the
+    /// record itself.
+    fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>>;
 }
 
 /// Reads every requested record from disk and uploads it (no caching).
 pub struct DiskExperts {
     model: Arc<Model>,
     host: Vec<u8>,
+    held: Vec<Slice<u8>>,
 }
 
 impl DiskExperts {
@@ -43,24 +42,27 @@ impl DiskExperts {
         DiskExperts {
             model,
             host: Vec::new(),
+            held: Vec::new(),
         }
     }
 }
 
 impl ExpertSource for DiskExperts {
-    fn record(&mut self, gpu: &Gpu, layer: u32, expert: u32) -> Result<ExpertRecord> {
-        let (_, stride) = self.model.record_location(layer, expert)?;
-        self.host.resize(stride as usize, 0);
-        self.model.read_record(layer, expert, &mut self.host)?;
-        let s = |i: usize| f32::from_le_bytes(self.host[i * 4..i * 4 + 4].try_into().unwrap());
-        // scalars: gate.ws2, gate.in, up.ws2, up.in, down.ws2, down.in
-        let scale2 = [s(0), s(2), s(4)];
-        Ok(ExpertRecord {
-            dev: gpu.upload_bytes(&self.host)?,
-            scale2,
-        })
+    fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
+        self.held.clear();
+        for &expert in experts {
+            let (_, stride) = self.model.record_location(layer, expert)?;
+            self.host.resize(stride as usize, 0);
+            self.model.read_record(layer, expert, &mut self.host)?;
+            self.held.push(gpu.upload_bytes(&self.host)?);
+        }
+        Ok(self.held.iter().map(|b| gpu.device_ptr(b)).collect())
     }
 }
+
+/// Index of each projection's `weight_scale_2` in the record's leading scalars part
+/// (gate.ws2, gate.in, up.ws2, up.in, down.ws2, down.in).
+const SCALE2_IDX: [usize; 3] = [0, 2, 4];
 
 pub struct Moe {
     layer: u32,
@@ -202,14 +204,15 @@ impl Moe {
         let mut w_up = gpu.zeros(gi * gh)?;
         let mut w_down = gpu.zeros(dr * dc)?;
         let mut routed = gpu.zeros(t * h)?;
-        for (&ex, (toks, wts)) in &by_expert {
+        let distinct: Vec<u32> = by_expert.keys().copied().collect();
+        let records = experts.fetch(gpu, self.layer, &distinct)?;
+        for ((toks, wts), &rec) in by_expert.values().zip(&records) {
             let n = toks.len();
-            let rec = experts.record(gpu, self.layer, ex)?;
-            let [s_gate, s_up, s_down] = rec.scale2;
             let (g_, u_, d_) = (self.gate, self.up, self.down);
-            gpu.dequant_nvfp4(&rec.dev, g_.weight, g_.scale, s_gate, &mut w_gate, gi, gh)?;
-            gpu.dequant_nvfp4(&rec.dev, u_.weight, u_.scale, s_up, &mut w_up, gi, gh)?;
-            gpu.dequant_nvfp4(&rec.dev, d_.weight, d_.scale, s_down, &mut w_down, dr, dc)?;
+            let [s_gate, s_up, s_down] = SCALE2_IDX;
+            gpu.dequant_nvfp4(rec, g_.weight, g_.scale, s_gate, &mut w_gate, gi, gh)?;
+            gpu.dequant_nvfp4(rec, u_.weight, u_.scale, s_up, &mut w_up, gi, gh)?;
+            gpu.dequant_nvfp4(rec, d_.weight, d_.scale, s_down, &mut w_down, dr, dc)?;
             let idx = gpu.upload_i32(toks)?;
             let wv = gpu.upload_f32(wts)?;
             let mut xs = gpu.zeros(n * h)?;

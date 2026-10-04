@@ -1,3 +1,4 @@
+mod bench;
 mod chat;
 mod check_layer;
 mod check_model;
@@ -47,6 +48,15 @@ enum Command {
         /// Fixture directory of the chain (holds manifest.json, fp32/, bf16/).
         #[arg(long)]
         fixtures: PathBuf,
+    },
+    /// Greedy decode with a time breakdown (performance baseline).
+    Bench {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long, default_value = "Write a short story about a lighthouse keeper.")]
+        prompt: String,
+        #[arg(long, default_value_t = 32)]
+        tokens: usize,
     },
     /// Greedy-decode one chat turn (correctness tool).
     Generate {
@@ -167,6 +177,11 @@ fn main() -> Result<()> {
                 bail!("logits less faithful than the reference's bf16 run");
             }
         }
+        Command::Bench {
+            model,
+            prompt,
+            tokens,
+        } => bench::run(&model, &prompt, tokens)?,
         Command::Generate {
             model,
             prompt,

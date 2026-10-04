@@ -91,6 +91,11 @@ impl Gpu {
         Ok(self.stream.clone_htod(host)?)
     }
 
+    /// Raw device address of a buffer (valid while the buffer lives).
+    pub fn device_ptr<T>(&self, buf: &CudaSlice<T>) -> u64 {
+        buf.device_ptr(&self.stream).0
+    }
+
     pub fn upload_bytes(&self, host: &[u8]) -> Result<CudaSlice<u8>> {
         Ok(self.stream.clone_htod(host)?)
     }
@@ -581,15 +586,15 @@ impl Gpu {
         Ok(())
     }
 
-    /// NVFP4 (ModelOpt, group 16) to fp32. `packed` and `scale` are byte views into a
-    /// device-resident expert record.
+    /// NVFP4 (ModelOpt, group 16) to fp32 from a device-resident expert record at raw
+    /// device address `record` (parts at byte offsets, `scale2` read from the record).
     #[allow(clippy::too_many_arguments)]
     pub fn dequant_nvfp4(
         &self,
-        record: &CudaSlice<u8>,
+        record: u64,
         packed_off: usize,
         scale_off: usize,
-        scale2: f32,
+        scale2_idx: usize,
         out: &mut Buf,
         rows: usize,
         cols: usize,
@@ -599,15 +604,15 @@ impl Gpu {
             "dequant_nvfp4 sizes",
         )?;
         let f = self.func("dequant_nvfp4")?;
-        let packed = record.slice(packed_off..packed_off + rows * cols / 2);
-        let scale = record.slice(scale_off..scale_off + rows * cols / 16);
+        let (po, so, si) = (packed_off as i64, scale_off as i64, scale2_idx as i32);
         let (r32, c32) = (rows as i32, cols as i32);
         unsafe {
             self.stream
                 .launch_builder(&f)
-                .arg(&packed)
-                .arg(&scale)
-                .arg(&scale2)
+                .arg(&record)
+                .arg(&po)
+                .arg(&so)
+                .arg(&si)
                 .arg(out)
                 .arg(&r32)
                 .arg(&c32)
