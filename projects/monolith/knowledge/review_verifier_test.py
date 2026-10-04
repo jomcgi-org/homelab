@@ -682,6 +682,11 @@ B3_STATE_SENTENCE_TITLES = [
     "PR #6821 is open, 待部署",
     "PR #6821 is open, не развернут",
     "PR #6821 is open 🚧",
+    "PR #6821 has to be merged",
+    "PR #6821 is to be merged",
+    "PR #6821 is being merged",
+    "PR #6821 has to be closed",
+    "Issue #6812 is to be closed",
 ]
 
 
@@ -698,6 +703,39 @@ def test_extra_wording_in_a_state_sentence_stays_unsupported(title):
     verdict, fake = verify({}, title)
     assert verdict.status == "unsupported"
     assert fake.calls == []
+
+
+OBLIGATION_TITLES = [
+    "PR #6821 has to be merged",
+    "PR #6821 is to be merged",
+    "PR #6821 is being merged",
+    "PR #6821 has to be closed",
+    "Issue #6812 is to be closed",
+    f"Checks at {HEAD} have to be passing",
+    f"PR #6821 head has to be {HEAD}",
+]
+
+
+@pytest.mark.parametrize("title", OBLIGATION_TITLES)
+@pytest.mark.parametrize("merged", [True, False])
+def test_obligation_wording_is_unsupported_whatever_github_reports(title, merged):
+    state = "closed" if merged else "open"
+    routes = {
+        f"/repos/{REPO}/issues/6821": issue(6821, state, pull=True),
+        f"/repos/{REPO}/issues/6812": issue(6812, state),
+        f"/repos/{REPO}/pulls/6821": pull(6821, state=state, merged=merged),
+    }
+    verdict, fake = verify(routes, title)
+    assert verdict.status == "unsupported"
+    assert fake.calls == []
+
+
+def test_has_been_merged_still_verifies():
+    routes = {
+        f"/repos/{REPO}/issues/6821": issue(6821, "closed", pull=True),
+        f"/repos/{REPO}/pulls/6821": pull(6821, state="closed", merged=True),
+    }
+    assert verify(routes, "PR #6821 has been merged")[0].status == "success"
 
 
 def test_bare_prose_and_filler_claims_yield_no_predicate():
