@@ -309,7 +309,7 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
         ),
         ("PR #6806 is open", "Live validation remaining.", "acceptance gate"),
         ("PR #6806 is open", "Still awaiting review.", "acceptance gate"),
-        ("Issue #1 is open", "The rollout is complete.", "names no concrete instance"),
+        ("Issue #1 is open", "The rollout is complete.", "acceptance gate"),
     ],
 )
 def test_unsupported_and_free_text_gates_stay_due_with_a_reason(title, content, reason):
@@ -335,8 +335,10 @@ def test_issue_number_that_is_not_a_pull_request_cannot_be_merged():
 
 
 def test_evidence_and_provenance_sections_assert_nothing():
-    content = "Durable claim, PR #1 is open.\n\n## Evidence\n- PR #2 is merged\n"
-    predicates = extract_predicates(title="t", content=content, default_repo=REPO)
+    content = "PR #1 is open.\n\n## Evidence\n- PR #2 is merged\n"
+    predicates = extract_predicates(
+        title="PR #1 is open", content=content, default_repo=REPO
+    )
     assert [p.number for p in predicates] == [1]
 
 
@@ -651,3 +653,52 @@ def test_httpx_fetcher_maps_transport_errors_and_bodies():
         assert fetch("/text") == GitHubResponse(200, None)
         with pytest.raises(SourceUnavailable):
             fetch("/boom")
+
+
+# Blocking B3: lifecycle evidence must not renew free-text operational gates.
+# Each probe sits next to a verified "PR #6821 is open" claim with GitHub
+# reporting the PR open: the whole note must stay unsupported with no fetch.
+B3_FOLLOW_ON_CONTENT = [
+    "The live pilot is incomplete.",
+    "Pilot not done.",
+    "Run the pilot after merge.",
+    "Next step: run the pilot.",
+    "Do not deploy yet.",
+    "6822 is too.",
+    "Pilot TBD.",
+    "Nobody has run the pilot.",
+    "The deploy hasn't happened.",
+    "Joe requested changes.",
+    "Merge is on hold.",
+    "with changes requested",
+    "enqueued in the merge queue",
+    "Ditto the next PR.",
+]
+
+B3_STATE_SENTENCE_TITLES = [
+    "PR #6821 is open and needs review",
+    "PR #6821 is open and its deployment is verified",
+    "PR #6821 is open and has merge conflicts",
+]
+
+
+@pytest.mark.parametrize("content", B3_FOLLOW_ON_CONTENT)
+def test_lifecycle_evidence_does_not_renew_a_free_text_follow_on(content):
+    routes = {f"/repos/{REPO}/issues/6821": issue(6821, "open")}
+    verdict, fake = verify(routes, "PR #6821 is open", content)
+    assert verdict.status == "unsupported"
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("title", B3_STATE_SENTENCE_TITLES)
+def test_extra_wording_in_a_state_sentence_stays_unsupported(title):
+    verdict, fake = verify({}, title)
+    assert verdict.status == "unsupported"
+    assert fake.calls == []
+
+
+def test_bare_prose_and_filler_claims_yield_no_predicate():
+    assert verify({}, "t", "Durable claim, PR #1 is open.")[0].status == (
+        "unsupported"
+    )
+    assert verify({}, "Tracked work.", "Plain body")[0].status == "unsupported"
