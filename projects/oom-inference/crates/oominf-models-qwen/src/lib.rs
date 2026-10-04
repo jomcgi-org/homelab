@@ -7,9 +7,25 @@
 //! accumulation; routed experts are dequantised from NVFP4 and run in fp32
 //! (W4A16 with no extra rounding).
 
-mod linear_layer;
+pub mod attention;
+pub mod gdn;
+pub mod hc;
+pub mod layer;
+pub mod moe;
+pub mod ple;
+mod util;
 
-pub use linear_layer::{GdnState, LinearLayer};
+pub use gdn::GdnState;
+pub use layer::{DecoderLayer, LayerState, StepInput};
+pub use moe::{DiskExperts, ExpertSource};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerKind {
+    /// Gated DeltaNet.
+    Linear,
+    /// Full attention with the sparse indexer.
+    Full,
+}
 
 /// Model dimensions, from `config.json` `text_config`.
 #[derive(Debug, Clone)]
@@ -27,6 +43,13 @@ pub struct Dims {
     pub moe_inter: usize,
     pub shared_inter: usize,
     pub eps: f32,
+    pub layer_kinds: Vec<LayerKind>,
+    /// Zero-based layers carrying PLE (config `ple_layer_ids` are one-based).
+    pub ple_layers: Vec<u32>,
+    /// Extra bf16 GEMM-input scratch width a component needs beyond the residual.
+    pub scratch_cols: usize,
+    /// The raw `text_config`, for components that parse their own parameters.
+    pub text: serde_json::Value,
 }
 
 impl Dims {
@@ -55,6 +78,27 @@ impl Dims {
             moe_inter: u("moe_intermediate_size")?,
             shared_inter: u("shared_expert_intermediate_size")?,
             eps: t["rms_norm_eps"].as_f64().unwrap_or(1e-6) as f32,
+            layer_kinds: t["layer_types"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("config text_config.layer_types"))?
+                .iter()
+                .map(|k| match k.as_str() {
+                    Some("linear_attention") => Ok(LayerKind::Linear),
+                    Some("full_attention") => Ok(LayerKind::Full),
+                    other => anyhow::bail!("unknown layer type {other:?}"),
+                })
+                .collect::<anyhow::Result<_>>()?,
+            ple_layers: t["ple_layer_ids"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_u64())
+                        .map(|v| v as u32 - 1)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            scratch_cols: 0,
+            text: t.clone(),
         })
     }
 
