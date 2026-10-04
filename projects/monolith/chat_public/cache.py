@@ -14,12 +14,12 @@ The cache is a simple key/value keyed by ``cache_key``, a hash of
   removed and lowercased, so trivial whitespace/case differences still hit.
 - ``prompt_version``: a stable hash of the active system prompt + model name, so
   a prompt edit or a model swap invalidates every entry.
-- ``notes_watermark``: an md5 over the public notes view of each note's id,
-  verification state, dispute flag and ``indexed_at``, so any change to the
+- ``notes_watermark``: an md5 over current public notes of each note's id,
+  verification state, dispute flag, ``indexed_at`` and ``review_after``, so a change to the
   published notes invalidates the cache: a note entering or leaving the view,
   a verification-state change, or a dispute flag flip all change the hash. The
-  watermark query is itself memoized for a short TTL so it does not run on
-  every turn.
+  watermark query is memoized until the earlier of its short TTL or the first
+  review deadline. Every hit also rechecks touched notes against the public view.
 
 Reads + writes of the cache table use the ``public_writer`` chat engine (the
 ``get_chat_session`` dependency), which can DML the chat_public schema. The
@@ -42,7 +42,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import text, update
+from knowledge.freshness import current_predicate
+from knowledge.http_cache import _as_utc
+from sqlalchemy import DateTime, bindparam, column, func, select, table, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session
@@ -89,10 +91,29 @@ class CacheKey:
 _watermark_lock = threading.Lock()
 _watermark_value: str | None = None
 _watermark_deadline: float = 0.0
+_watermark_review_after: datetime | None = None
+
+# A read-only SQL expression, not an ORM mapping or a metadata registration.
+_public_notes = table(
+    "knowledge_notes",
+    *(
+        column(name)
+        for name in ("note_id", "verification_state", "disputed", "indexed_at")
+    ),
+    *(
+        column(name, DateTime(timezone=True))
+        for name in ("review_after", "observed_at", "last_reviewed_at")
+    ),
+    schema="public_api",
+)
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _monotonic() -> float:
+    return time.monotonic()
 
 
 def normalize_message(message: str) -> str:
@@ -126,27 +147,36 @@ def _hash_key(
     return digest.hexdigest()
 
 
-def _query_watermark(read_db: Session) -> str:
+def _query_watermark(read_db: Session, *, now: datetime) -> tuple[str, datetime | None]:
     """Hash of the public notes view membership plus per-note review state.
 
     A single schema-qualified raw SELECT over ``public_api.knowledge_notes``
-    hashing ``note_id``, ``verification_state``, ``disputed`` and
+    hashing ``note_id``, ``verification_state``, ``disputed``, ``review_after`` and
     ``indexed_at`` (ordered by ``note_id``), so the watermark changes whenever
     a note enters or leaves the view or any note's verification state or
-    dispute flag changes. An empty view yields the stable value ``'empty'``.
+    dispute flag changes or a note expires without a row update. Currency uses
+    the retrieval predicate with a bound application clock. Also return the
+    earliest deadline to cap the memo. An empty view yields ``('empty', None)``.
 
     Raises if the view is unreachable (e.g. SQLite test fixtures); callers treat
     any failure as "caching disabled for this turn".
     """
     row = read_db.execute(
-        text(
-            "SELECT coalesce(md5(string_agg(note_id || ':' || "
-            "coalesce(verification_state, '') || ':' || disputed::text || ':' || "
-            "coalesce(indexed_at::text, ''), ',' ORDER BY note_id)), 'empty') "
-            "FROM public_api.knowledge_notes"
+        select(
+            text(
+                "coalesce(md5(string_agg(note_id || ':' || "
+                "coalesce(verification_state, '') || ':' || CAST(disputed AS TEXT) || ':' || "
+                "coalesce(CAST(indexed_at AS TEXT), '') || ':' || CAST(review_after AS TEXT), "
+                "',' ORDER BY note_id)), 'empty')"
+            ),
+            func.min(_public_notes.c.review_after),
         )
-    ).scalar()
-    return row if row is not None else "empty"
+        .select_from(_public_notes)
+        .where(
+            current_predicate(now=bindparam("now", value=now), model=_public_notes.c)
+        )
+    ).one()
+    return row[0] or "empty", _as_utc(row[1])
 
 
 def current_watermark(read_db: Session) -> str | None:
@@ -155,20 +185,50 @@ def current_watermark(read_db: Session) -> str | None:
     Returns None if the watermark cannot be computed (view absent / DB error), in
     which case the caller disables caching for the turn and generates normally.
     """
-    global _watermark_value, _watermark_deadline
-    now = time.monotonic()
+    global _watermark_value, _watermark_deadline, _watermark_review_after
+    now = _utcnow()
+    started = _monotonic()
     with _watermark_lock:
-        if now < _watermark_deadline:
+        if started < _watermark_deadline and (
+            _watermark_review_after is None or now < _watermark_review_after
+        ):
             return _watermark_value
     try:
-        value = _query_watermark(read_db)
+        value, review_after = _query_watermark(read_db, now=now)
     except Exception:  # noqa: BLE001 - any failure just disables caching
         logger.debug("chat_public.cache.watermark_unavailable; caching disabled")
+        read_db.rollback()
+        reset_watermark_memo()
         return None
+    ttl = WATERMARK_TTL_SECONDS
+    if review_after is not None:
+        if review_after <= _utcnow():
+            reset_watermark_memo()
+            return None
+        ttl = min(ttl, max(0.0, (review_after - now).total_seconds()))
     with _watermark_lock:
         _watermark_value = value
-        _watermark_deadline = now + WATERMARK_TTL_SECONDS
+        _watermark_deadline = started + ttl
+        _watermark_review_after = review_after
     return value
+
+
+def _touched_current(read_db: Session, touched: list[dict]) -> bool:
+    """Check citations on every hit, including hits within the watermark memo."""
+    note_ids = {item.get("id") for item in touched}
+    if None in note_ids:
+        return False
+    now = _utcnow()
+    rows = read_db.execute(
+        select(_public_notes.c.note_id, _public_notes.c.review_after).where(
+            _public_notes.c.note_id.in_(note_ids),
+            current_predicate(now=bindparam("now", value=now), model=_public_notes.c),
+        )
+    ).all()
+    served_at = _utcnow()
+    return {row.note_id for row in rows} == note_ids and all(
+        _as_utc(row.review_after) > served_at for row in rows
+    )
 
 
 def lookup(
@@ -203,6 +263,17 @@ def lookup(
         return key, None
     if row is None:
         return key, None
+
+    try:
+        if not _touched_current(read_db, list(row.touched or [])):
+            return key, None
+    except Exception:  # noqa: BLE001 - unavailable citations disable caching
+        logger.warning(
+            "chat_public.cache.citations_unavailable; caching disabled", exc_info=True
+        )
+        read_db.rollback()
+        reset_watermark_memo()
+        return None, None
 
     cached = CachedResponse(text=row.response_text, touched=list(row.touched or []))
     try:
@@ -258,7 +329,8 @@ def store(db: Session, key: CacheKey, response_text: str, touched: list[dict]) -
 
 def reset_watermark_memo() -> None:
     """Clear the short-TTL watermark memo (tests / ops)."""
-    global _watermark_value, _watermark_deadline
+    global _watermark_value, _watermark_deadline, _watermark_review_after
     with _watermark_lock:
         _watermark_value = None
         _watermark_deadline = 0.0
+        _watermark_review_after = None

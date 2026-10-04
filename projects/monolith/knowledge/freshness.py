@@ -215,9 +215,10 @@ def current_predicate(*, now: datetime, model=None):
     """Fail closed at equality, for future observations and transitional rows."""
     from sqlalchemy import and_, func
 
-    from knowledge.models import Note
+    if model is None:
+        from knowledge.models import Note
 
-    model = Note if model is None else model
+        model = Note
     basis = func.coalesce(model.last_reviewed_at, model.observed_at)
     return and_(
         model.review_after.is_not(None),

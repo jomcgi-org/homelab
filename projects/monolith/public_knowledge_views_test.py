@@ -371,6 +371,7 @@ def test_public_reader_reads_published_fact_columns_and_sanitized_scope(
 
 @pytest.mark.asyncio
 async def test_public_reader_freshness_on_real_views(session, monkeypatch):
+    from chat_public.cache import _query_watermark, _touched_current
     from chat_public.retrieval import retrieve
     from core.db import get_session
     from fastapi import FastAPI
@@ -379,6 +380,7 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
     from knowledge.public_router import router
 
     monkeypatch.setattr("knowledge.public_router._now", lambda: _NOW)
+    monkeypatch.setattr("chat_public.cache._utcnow", lambda: _NOW)
     deadline = _NOW + timedelta(days=1)
     seeds = [
         ("fresh-current", _NOW, deadline, None, "standard-90d/v1", "public", None),
@@ -508,6 +510,10 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
     chunks = search_public_chunks(session, embedding, now=_NOW, limit=1)
     assert [row["note_id"] for row in chunks] == ["fresh-current"]
     assert chunks[0]["disputed"] is True
+    watermark, expires = _query_watermark(session, now=_NOW)
+    assert expires == deadline
+    assert _touched_current(session, [{"id": "fresh-current"}])
+    assert not _touched_current(session, [{"id": "fresh-equality"}])
 
     class Embedder:
         base_url = "http://embedding.test"
@@ -553,12 +559,17 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
         assert counts["verified"] == 1
         assert sum(counts.values()) == 1
         monkeypatch.setattr("knowledge.public_router._now", lambda: deadline)
+        monkeypatch.setattr("chat_public.cache._utcnow", lambda: deadline)
         assert (
             client.get("/api/knowledge/public/notes/fresh-current").status_code == 404
         )
         assert client.get("/api/knowledge/public/search?q=fresh").json() == []
     assert search_public_chunks(session, embedding, now=deadline) == []
     assert await retrieve(session, "fresh", embed_client=Embedder(), now=deadline) == []
+    after_watermark, expires = _query_watermark(session, now=deadline)
+    assert expires is None
+    assert after_watermark != watermark
+    assert not _touched_current(session, [{"id": "fresh-current"}])
     session.execute(text("RESET ROLE"))
 
 

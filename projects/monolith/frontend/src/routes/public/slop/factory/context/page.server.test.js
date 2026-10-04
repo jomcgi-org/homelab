@@ -51,6 +51,35 @@ function response(path, failedPath = "") {
 }
 
 describe("factory context loader", () => {
+  it("bounds rendered facts by the shortest upstream policy", async () => {
+    const setHeaders = vi.fn();
+    const fetch = vi.fn((path) => {
+      const data =
+        path === "/slop/factory/entities"
+          ? entities
+          : path === "/slop/factory/facts"
+            ? facts
+            : { notes: [] };
+      return Promise.resolve({
+        ok: true,
+        headers: new Headers({
+          "cache-control": path.includes("/notes?")
+            ? "public, max-age=7, s-maxage=7, must-revalidate"
+            : "public, max-age=13, s-maxage=13, must-revalidate",
+        }),
+        json: async () => data,
+      });
+    });
+    await load({
+      fetch,
+      setHeaders,
+      url: new URL("https://jomcgi.dev/slop/factory/context?entity=embervm"),
+    });
+    expect(setHeaders).toHaveBeenCalledWith({
+      "cache-control": "public, max-age=7, s-maxage=7, must-revalidate",
+      "cloudflare-cdn-cache-control": "public, max-age=7, must-revalidate",
+    });
+  });
   it("includes 16-atom projects and excludes 15-atom projects", async () => {
     const fetch = vi.fn(response);
     const result = await load({

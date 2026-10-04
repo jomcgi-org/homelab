@@ -188,8 +188,14 @@ predicate before its limit. Public search, note detail, graph nodes and edges,
 entity chapters and note counts use the same caller-clock rule. Daily fact
 counts remain aggregate history without fact text. With backfill suspended,
 unclassified public notes stay hidden until an operator-approved backfill gives
-them a lease. Cache expiry is the next slice; migration rollout and operational
-acceptance remain on #6823. Publication policy and stored history are unchanged.
+them a lease. Current-only HTTP responses cap browser and shared lifetimes at
+the earliest served review deadline, remove stale-serving windows and use
+fact-set validators. The same-origin proxies preserve those bounds and response
+age. Public chat hashes current notes and their deadlines, caps its watermark
+memo at the first deadline and rechecks touched notes on every cache hit.
+Migration rollout and operational acceptance remain on #6823. Publication
+policy and stored history are unchanged; dated-history presentation is follow-up
+work.
 
 The existing jobs image provides `knowledge-review-backfill --apply --pending-only`
 as an Argo CronWorkflow that is **suspended by default**, including with the

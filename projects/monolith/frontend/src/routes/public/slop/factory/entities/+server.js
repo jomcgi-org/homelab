@@ -1,6 +1,6 @@
 import { error, json } from "@sveltejs/kit";
 import {
-  cloudflareCacheHeaders,
+  boundedCacheHeaders,
   NOTES_PAGE_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../../lib/cache-headers.js";
@@ -16,7 +16,7 @@ export async function GET({ fetch, setHeaders }) {
     throw error(503, "record index unavailable");
   }
 
-  const headers = cloudflareCacheHeaders(NOTES_PAGE_CACHE_CONTROL);
+  const headers = boundedCacheHeaders(NOTES_PAGE_CACHE_CONTROL, res.headers);
   const etag = versionedEtag(res.headers?.get?.("etag"));
   if (etag) headers.etag = etag;
   const lastModified = res.headers?.get?.("last-modified");

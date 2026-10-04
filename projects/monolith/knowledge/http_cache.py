@@ -8,6 +8,7 @@ router never has to import the private-route module to reuse them.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 # Mirrors NOTES_PAGE_CACHE_CONTROL in projects/monolith/frontend/src/lib/cache-headers.js — keep in sync.
@@ -39,3 +40,24 @@ def _graph_etag(node_count: int, indexed_at: datetime | None) -> str:
     """
     stamp = indexed_at.isoformat() if indexed_at is not None else "null"
     return f'"{stamp}-{node_count}"'
+
+
+def public_cache_control(notes, *, now: datetime, default: str) -> str:
+    """Bound every cache to the served notes' earliest review deadline.
+
+    Public current-only responses never permit stale serving. Empty sets and
+    subsecond leases are not stored; browsers get an explicit freshness bound.
+    The private graph policy is unchanged.
+    """
+    deadlines = [_as_utc(note.review_after) for note in notes]
+    if not deadlines or any(deadline is None for deadline in deadlines):
+        return "no-store"
+    remaining = math.floor((min(deadlines) - _as_utc(now)).total_seconds())
+    if remaining <= 0:
+        return "no-store"
+    directives = dict(
+        part.strip().split("=", 1) for part in default.split(",") if "=" in part
+    )
+    shared = min(remaining, int(directives.get("s-maxage", "0")))
+    browser = min(remaining, int(directives.get("max-age", shared)))
+    return f"public, max-age={browser}, s-maxage={shared}, must-revalidate"
