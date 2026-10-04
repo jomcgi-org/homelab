@@ -500,7 +500,9 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
     assert by_id["fresh-future-reviewed"].last_reviewed_at > _NOW
     for table in ("notes", "chunks", "disputes"):
         with pytest.raises(ProgrammingError, match="permission denied"):
-            with session.begin_nested():
+            # The shared fixture restarts Session savepoints in a listener.
+            # Recover expected permission errors at the connection level.
+            with session.connection().begin_nested():
                 session.execute(text(f"SELECT * FROM knowledge.{table}"))
 
     chunks = search_public_chunks(session, embedding, now=_NOW, limit=1)
