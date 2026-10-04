@@ -26,7 +26,9 @@ Every ordinary write computes a server-side review policy from the persisted
 title and claim body. PR, pull request, issue, job, workflow and check claims
 with state terms (including head, SHA, open, merged, passing and outstanding)
 use `volatile-24h/v1`. Outstanding operational or acceptance gates also use
-that policy. Everything else uses `standard-90d/v1`. These are elapsed UTC
+that policy. `## Evidence`, `## Provenance`, `## Sources` and `## References`
+sections are excluded from classification: a durable claim that cites a PR as
+evidence stays standard. Everything else uses `standard-90d/v1`. These are elapsed UTC
 intervals of 24 and 2160 hours. Caller-supplied deadlines can only shorten them.
 Confidence and verification state do not establish freshness.
 
@@ -54,6 +56,12 @@ transport before retransmission when due. Already sent agent transcripts are
 historical snapshots, explicitly dated and labelled with their expiry.
 Volatile facts require a new authoritative observation before action even
 inside their 24-hour interval.
+
+**Public tier (decision).** `public_api.knowledge_notes` and
+`public_api.knowledge_chunks` do not yet apply review freshness, so a due
+published fact can still ground public chat and `public_router` search. This
+slice covers MCP, HTTP, recall, explorer and planner context only; the public
+views need a migration and a pg-backed test pass, tracked in #6823.
 
 The existing jobs image runs `knowledge-review-backfill --apply --pending-only`
 every five minutes through an Argo CronWorkflow with `Forbid` concurrency, a
