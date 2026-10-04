@@ -15,12 +15,11 @@ and quantisation the release ships in; conversion only re-lays bytes out.
 
 ## Design goals
 
-1. **One read per expert miss.** A decode-time miss loads exactly one contiguous
-   record with one direct I/O and one host-to-device copy. Measured
-   (`docs/iobench-results.md`): this is not faster on disk than a tensor-major
-   layout (0 to 3%, within noise; the KC3000 splits all reads into 128 KiB
-   commands). It is kept for one host-to-device copy per miss instead of six
-   and one slot, checksum and residency entry per expert.
+1. **One record per expert.** A miss is one contiguous read and one
+   host-to-device copy, and the tiers keep one slot, checksum and residency
+   entry per expert. On NVMe this is about as fast as reading the same bytes
+   as six separate parts (drives split large reads into 128 KiB commands
+   either way); the win is in copies and bookkeeping, not disk throughput.
 2. **Sequential layer streaming.** A layer's records are contiguous, so
    streaming a whole layer (prefill) is one sequential range.
 3. **Direct I/O everywhere.** Every tensor and record starts on a 4096-byte
