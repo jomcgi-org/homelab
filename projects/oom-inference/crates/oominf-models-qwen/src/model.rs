@@ -2,7 +2,6 @@
 //! and `lm_head`.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, ensure};
@@ -17,9 +16,10 @@ use crate::util::bf16_tensor;
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
 pub const PREFILL_CHUNK: usize = 512;
 
-/// Most prompt tokens whose routed experts one prefill fetch loads (bounds the
-/// activations held at the MoE while the fetch is assembled).
-pub const PREFILL_FETCH_TOKENS: usize = 4096;
+/// Most prompt tokens whose routed experts one prefill fetch loads and runs as one
+/// step: enough assignments per expert for tensor-core tiles, bounded so the
+/// group's activations at the MoE fit beside the expert tiers.
+pub const PREFILL_FETCH_TOKENS: usize = 2048;
 
 pub struct QwenModel<B: Backend> {
     pub dims: Dims,
@@ -461,9 +461,12 @@ impl<B: Backend> QwenModel<B> {
         }
         let d = &self.dims;
         let r = d.residual();
-        // Residuals of every chunk live across layers (about 40 KB per token); the
-        // activations at the MoE of one fetch's chunks live until it computes.
-        let held = token_ids.len().min(PREFILL_FETCH_TOKENS) * (2 * r + d.hidden);
+        // Residuals of every chunk live across layers (about 40 KB per token); one
+        // fetch group's activations at the MoE live until it computes, and its
+        // routed experts run as one step (`top_k` rows of hidden + 3 x inter each).
+        let group = token_ids.len().min(PREFILL_FETCH_TOKENS);
+        let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
+        let held = group * (2 * r + d.hidden + moe);
         let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>();
         self.reserve_kv(gpu, state, state.pos + token_ids.len(), transient, experts)?;
         let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
@@ -494,30 +497,23 @@ impl<B: Backend> QwenModel<B> {
                 // Experts staged for this layer finish reading from disk while the
                 // device runs the previous layer's experts and the mixers above.
                 experts.finish_stage_ahead(gpu)?;
-                let mut routings = Vec::with_capacity(cs.len());
-                let mut union = BTreeSet::new();
-                let mut predicted = BTreeSet::new();
-                for (c, pre) in cs.iter().zip(&pres) {
-                    let routing = layer.route(gpu, d, pre, c.len(), st)?;
-                    union.extend(routing.experts());
-                    routings.push(routing);
-                    if stage {
-                        predicted.extend(layer.predict_next(gpu, d, pre, c.len(), st)?);
+                let lens: Vec<usize> = cs.iter().map(|c| c.len()).collect();
+                let t = lens.iter().sum();
+                let moe_in = layer.moe_input(gpu, d, &pres, &lens)?;
+                let routing = layer.route(gpu, d, &moe_in, t, st)?;
+                let mut union: Vec<u32> = routing.experts().collect();
+                union.sort_unstable();
+                union.dedup();
+                let addrs = experts.fetch(gpu, layer.layer, &union)?;
+                if stage {
+                    let predicted = layer.predict_next(gpu, d, &moe_in, t, st)?;
+                    if !predicted.is_empty() {
+                        experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
                     }
                 }
-                let union: Vec<u32> = union.into_iter().collect();
-                let addrs = experts.fetch(gpu, layer.layer, &union)?;
-                if !predicted.is_empty() {
-                    let predicted: Vec<u32> = predicted.into_iter().collect();
-                    experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
-                }
                 let mut fetched = Fetched::new(layer.layer, &union, &addrs);
-                for ((c, x), (pre, routing)) in cs
-                    .iter()
-                    .zip(xs.iter_mut())
-                    .zip(pres.into_iter().zip(routings))
-                {
-                    let next = layer.finish(gpu, d, pre, routing, c.len(), st, &mut fetched)?;
+                let outs = layer.finish(gpu, d, pres, &lens, &moe_in, routing, st, &mut fetched)?;
+                for (x, next) in xs.iter_mut().zip(outs) {
                     // The chunk keeps the new residual; its old buffer goes back to the
                     // workspace as the next chunk's "layer.out".
                     let old = std::mem::replace(x, next);

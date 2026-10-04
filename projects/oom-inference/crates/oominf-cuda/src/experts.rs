@@ -233,11 +233,11 @@ impl Experts for Gpu {
         let f = self.func("moe_tiled")?;
         let cfg = LaunchConfig {
             grid_dim: (
-                n.div_ceil(64) as u32,
+                n.div_ceil(128) as u32,
                 max_per_expert.div_ceil(32) as u32,
                 n_experts as u32,
             ),
-            block_dim: (256, 1, 1),
+            block_dim: (128, 1, 1),
             shared_mem_bytes: 0,
         };
         let (n32, k32) = (n as i32, k as i32);

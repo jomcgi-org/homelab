@@ -560,14 +560,20 @@ impl<B: Backend> Moe<B> {
         gpu.write_u64(&plan.recs, &mut tables.recs)?;
         // Every element is written before it is read: h and y cover all assignments,
         // and g and u only feed the tiled path, which writes them first.
+        // Tiled (prefill) steps vary in size from group to group: reuse the largest
+        // buffers. Decode steps take exact sizes, which gives the large ones back.
+        let mut take = |name, n| {
+            if tiled {
+                ws.take_at_least(gpu, name, n)
+            } else {
+                ws.take(gpu, name, n)
+            }
+        };
         let mut buf = Act {
-            h: ws.take(gpu, "moe.h", a_total * it)?,
-            y: ws.take(gpu, "moe.y", a_total * h)?,
+            h: take("moe.h", a_total * it)?,
+            y: take("moe.y", a_total * h)?,
             gu: if tiled {
-                Some((
-                    ws.take(gpu, "moe.g", a_total * it)?,
-                    ws.take(gpu, "moe.u", a_total * it)?,
-                ))
+                Some((take("moe.g", a_total * it)?, take("moe.u", a_total * it)?))
             } else {
                 None
             },
