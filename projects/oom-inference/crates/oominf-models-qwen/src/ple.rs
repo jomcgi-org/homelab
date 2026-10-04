@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use io_uring::{IoUring, opcode, types};
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, Probe, Workspace, tap};
+use oominf_core::{Backend, DeviceBuffer, Probe, Workspace, tap};
 use oominf_format::{Model, TensorFile};
 
 use crate::Dims;
@@ -60,6 +60,18 @@ pub struct PleState<B: Backend> {
     pub conv: B::F32,
     /// The last `ngram_size - 1` tokens, oldest first (EOS before any input).
     pub tokens: Vec<u32>,
+    /// What the last checkpointed step needs to rewind (see [`Ple::rewind`]).
+    ckpt: Option<Checkpoint<B>>,
+}
+
+/// A step's starting state and the conv inputs of its rows.
+struct Checkpoint<B: Backend> {
+    conv: B::F32,
+    tokens: Vec<u32>,
+    step_tokens: Vec<u32>,
+    /// Normalised conv input and residual input rows `[t, hc * hidden]`.
+    gated_n: B::F32,
+    gated: B::F32,
 }
 
 fn i64_tensor(model: &Model, name: &str) -> Result<Vec<i64>> {
@@ -258,7 +270,54 @@ impl<B: Backend> Ple<B> {
         Ok(PleState {
             conv: gpu.zeros(d.residual() * (self.conv_kernel - 1) * self.conv_dilation)?,
             tokens: vec![self.eos; self.ngram_size - 1],
+            ckpt: None,
         })
+    }
+
+    /// Returns the state to just after the first `keep` rows of the last
+    /// checkpointed step (`1 <= keep <= t`).
+    pub fn rewind(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        state: &mut PleState<B>,
+        keep: usize,
+    ) -> Result<()> {
+        let c = state
+            .ckpt
+            .as_ref()
+            .context("PLE rewind without a checkpointed step")?;
+        ensure!(
+            keep >= 1 && keep <= c.step_tokens.len(),
+            "PLE rewind to {keep} of {} rows",
+            c.step_tokens.len()
+        );
+        let r = d.residual();
+        let nc = state.conv.len();
+        gpu.copy_at(&c.conv, &mut state.conv, 0, nc)?;
+        let mut out = ws.take(gpu, "ple.out", keep * r)?;
+        gpu.dilated_conv_silu_add(
+            &c.gated_n,
+            &mut state.conv,
+            &self.conv,
+            &c.gated,
+            &mut out,
+            keep,
+            r,
+            self.conv_kernel,
+            self.conv_dilation,
+        )?;
+        ws.give("ple.out", out);
+        let ctx = c.tokens.len();
+        let hist: Vec<u32> = c
+            .tokens
+            .iter()
+            .chain(&c.step_tokens[..keep])
+            .copied()
+            .collect();
+        state.tokens = hist[hist.len() - ctx..].to_vec();
+        Ok(())
     }
 
     /// Hashed table rows of the next step: `token_ids` following `state`'s context.
@@ -377,6 +436,7 @@ impl<B: Backend> Ple<B> {
             probe.observe("ple.ngram_ids", ids.iter().map(|&v| v as f32).collect());
         }
         let ctx = state.tokens.len();
+        let tokens_before = state.tokens.clone();
         let hist: Vec<u32> = state.tokens.iter().chain(step.token_ids).copied().collect();
         state.tokens = hist[hist.len() - ctx..].to_vec();
 
@@ -414,6 +474,23 @@ impl<B: Backend> Ple<B> {
         ws.give("ple.value", value);
         let mut gated_n = ws.take(gpu, "ple.gated_n", t * r)?;
         gpu.rmsnorm_groups(&gated, &self.norm_conv, &mut gated_n, t, r, h, d.eps, 1.0)?;
+        state.ckpt = if step.checkpoint {
+            let mut conv = gpu.uninit(state.conv.len())?;
+            gpu.copy_at(&state.conv, &mut conv, 0, state.conv.len())?;
+            let mut gn = gpu.uninit(t * r)?;
+            gpu.copy_at(&gated_n, &mut gn, 0, t * r)?;
+            let mut g = gpu.uninit(t * r)?;
+            gpu.copy_at(&gated, &mut g, 0, t * r)?;
+            Some(Checkpoint {
+                conv,
+                tokens: tokens_before,
+                step_tokens: step.token_ids.to_vec(),
+                gated_n: gn,
+                gated: g,
+            })
+        } else {
+            None
+        };
         let mut out = ws.take(gpu, "ple.out", t * r)?;
         gpu.dilated_conv_silu_add(
             &gated_n,

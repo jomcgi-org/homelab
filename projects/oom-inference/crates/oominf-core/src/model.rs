@@ -29,4 +29,22 @@ pub trait Session {
     -> Result<Option<Vec<f32>>>;
     /// Feeds one step of tokens and returns the logits after the last one.
     fn step(&mut self, tokens: &[u32]) -> Result<Vec<f32>>;
+    /// Feeds `tokens` and returns the logits after each of them (`tokens.len()` rows
+    /// of the vocabulary); afterwards [`Session::rewind`] may drop a suffix of them.
+    fn step_all(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        let _ = tokens;
+        anyhow::bail!("this model cannot verify drafted tokens")
+    }
+    /// Drops the last `n` tokens fed by the last [`Session::step_all`] (fewer than it
+    /// fed), as if they had never been fed.
+    fn rewind(&mut self, n: usize) -> Result<()> {
+        anyhow::ensure!(n == 0, "this model cannot rewind");
+        Ok(())
+    }
+    /// Up to `k` tokens the model predicts will follow `next`, the token it is about
+    /// to be fed (speculative decoding); empty when the model has no draft head.
+    fn draft(&mut self, next: u32, k: usize) -> Result<Vec<u32>> {
+        let _ = (next, k);
+        Ok(Vec::new())
+    }
 }

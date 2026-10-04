@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, ExpertSource, NoProbe, Probe, Workspace, tap};
+use oominf_core::{Backend, DeviceBuffer, ExpertSource, NoProbe, Probe, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
@@ -24,7 +24,29 @@ pub struct QwenModel<B: Backend> {
     layers: Vec<DecoderLayer<B>>,
     final_mixer: HyperConn<B>,
     lm_head: B::Bf16,
+    /// The multi-token-prediction head, when the checkpoint has one.
+    mtp: Option<Mtp<B>>,
 }
+
+/// The checkpoint's multi-token-prediction head. Given the final residual at
+/// position `i` (before the final mixer) and the token at `i + 1`, it predicts the
+/// token at `i + 2`: both inputs are normalised and projected, the token's
+/// projection is added to every residual stream, one full-attention decoder layer
+/// runs, and the head's own mixer and the shared `lm_head` produce logits. A chain
+/// of drafts feeds each prediction back with the layer's output residual.
+struct Mtp<B: Backend> {
+    layer: DecoderLayer<B>,
+    norm_embedding: B::Bf16,
+    norm_hidden: B::Bf16,
+    fc_embedding: B::Bf16,
+    fc_hidden: B::Bf16,
+    mixer: HyperConn<B>,
+    /// `[hc]` ones: adds one row to every stream through the combine kernel.
+    ones: B::F32,
+}
+
+/// Longest draft chain a sequence supports.
+pub const MAX_DRAFT: usize = 8;
 
 /// Device memory a step's workspace may need on top of what it already holds (a
 /// prefill chunk's activations and MoE scratch), kept free when caches grow.
@@ -42,6 +64,14 @@ pub struct SeqState<B: Backend> {
     pub pos: usize,
     /// Scratch buffers shared by every layer.
     pub ws: Rc<RefCell<Workspace<B>>>,
+    /// With an MTP head: the final residual rows of the last step, and which row is
+    /// the sequence's last token (the draft head's input).
+    hidden: Option<B::F32>,
+    hidden_row: usize,
+    /// The MTP layer's attention state (its draft chain).
+    mtp: Option<LayerState<B>>,
+    /// Start and length of the last step if it can be rewound.
+    rewindable: Option<(usize, usize)>,
 }
 
 /// Renames a layer's stages to `{stage}.{layer}` for a model-level probe.
@@ -94,7 +124,26 @@ impl<B: Backend> QwenModel<B> {
         let layers = (0..n as u32)
             .map(|l| DecoderLayer::load(gpu, model, &dims, l))
             .collect::<Result<Vec<_>>>()?;
+        let mtp_group = dims.layer_kinds.len() as u32;
+        let mtp = if n == dims.layer_kinds.len()
+            && model.tensor("mtp.fc_embedding.weight").is_some()
+            && model.expert_group(mtp_group).is_some()
+        {
+            let (hu, ru) = (h, dims.residual() as u64);
+            Some(Mtp {
+                layer: DecoderLayer::load_mtp(gpu, model, &dims, mtp_group)?,
+                norm_embedding: bf16_tensor(gpu, model, "mtp.pre_fc_norm_embedding.weight", &[hu])?,
+                norm_hidden: bf16_tensor(gpu, model, "mtp.pre_fc_norm_hidden.weight", &[ru])?,
+                fc_embedding: bf16_tensor(gpu, model, "mtp.fc_embedding.weight", &[hu, hu])?,
+                fc_hidden: bf16_tensor(gpu, model, "mtp.fc_hidden.weight", &[hu, hu])?,
+                mixer: HyperConn::load(gpu, model, &dims, "mtp.hyper_connection_mixer", false)?,
+                ones: gpu.upload_f32(&vec![1.0; dims.hc])?,
+            })
+        } else {
+            None
+        };
         Ok(QwenModel {
+            mtp,
             final_mixer: HyperConn::load(
                 gpu,
                 model,
@@ -123,8 +172,50 @@ impl<B: Backend> QwenModel<B> {
                 .map(|l| l.new_state_shared(gpu, &self.dims, max_tokens, ws.clone()))
                 .collect::<Result<_>>()?,
             pos: 0,
+            hidden: None,
+            hidden_row: 0,
+            mtp: match &self.mtp {
+                Some(m) => {
+                    Some(
+                        m.layer
+                            .new_state_shared(gpu, &self.dims, MAX_DRAFT, ws.clone())?,
+                    )
+                }
+                None => None,
+            },
+            rewindable: None,
             ws,
         })
+    }
+
+    /// Whether the model can propose draft tokens ([`Self::draft`]).
+    pub fn has_draft(&self) -> bool {
+        self.mtp.is_some()
+    }
+
+    /// Keeps rows `[first, first + rows)` of the residual `x` as the draft head's
+    /// input, the last of them being the sequence's last token.
+    fn keep_hidden(
+        &self,
+        gpu: &B,
+        state: &mut SeqState<B>,
+        x: &B::F32,
+        first: usize,
+        rows: usize,
+    ) -> Result<()> {
+        if self.mtp.is_none() {
+            return Ok(());
+        }
+        let r = self.dims.residual();
+        let buf = match state.hidden.take() {
+            Some(b) if b.len() >= rows * r => b,
+            _ => gpu.uninit(rows.max(MAX_DRAFT + 1) * r)?,
+        };
+        let mut buf = buf;
+        gpu.copy_range(x, first * r, &mut buf, 0, rows * r)?;
+        state.hidden = Some(buf);
+        state.hidden_row = rows - 1;
+        Ok(())
     }
 
     /// Embeds `token_ids` (repeated over the hc streams) into `x`.
@@ -259,6 +350,22 @@ impl<B: Backend> QwenModel<B> {
         probe: &mut dyn Probe,
         last_only: bool,
     ) -> Result<B::F32> {
+        self.step(gpu, token_ids, state, experts, probe, last_only, false)
+    }
+
+    /// [`Self::forward`]; with `checkpoint` the step can afterwards be cut back to
+    /// any of its rows with [`Self::rewind`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &self,
+        gpu: &B,
+        token_ids: &[u32],
+        state: &mut SeqState<B>,
+        experts: &mut dyn ExpertSource<B>,
+        probe: &mut dyn Probe,
+        last_only: bool,
+        checkpoint: bool,
+    ) -> Result<B::F32> {
         let d = &self.dims;
         let t = token_ids.len();
         ensure!(t > 0, "empty step");
@@ -276,7 +383,9 @@ impl<B: Backend> QwenModel<B> {
         let step = StepInput {
             token_ids,
             start_pos: state.pos,
+            checkpoint,
         };
+        state.rewindable = checkpoint.then_some((state.pos, t));
         for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
             let mut lp = LayerProbe {
                 inner: probe,
@@ -291,6 +400,7 @@ impl<B: Backend> QwenModel<B> {
             x_name = "layer.out";
         }
         state.pos += t;
+        self.keep_hidden(gpu, state, &x, 0, t)?;
 
         let mut ws = state.ws.borrow_mut();
         let logits = self.head(gpu, &mut ws, &x, t, probe, last_only)?;
@@ -345,6 +455,7 @@ impl<B: Backend> QwenModel<B> {
                 let step = StepInput {
                     token_ids: c,
                     start_pos: pos,
+                    checkpoint: false,
                 };
                 let next = layer.forward(gpu, d, x, c.len(), &step, st, experts, &mut NoProbe)?;
                 // The chunk keeps the new residual; its old buffer goes back to the
@@ -355,10 +466,140 @@ impl<B: Backend> QwenModel<B> {
             }
         }
         state.pos += token_ids.len();
+        state.rewindable = None;
         let last = xs.last().expect("at least one chunk");
         let t = chunks.last().map_or(0, |c| c.len());
+        self.keep_hidden(gpu, state, last, t - 1, 1)?;
         let mut ws = state.ws.borrow_mut();
         self.head(gpu, &mut ws, last, t, &mut NoProbe, true)
             .map(Some)
+    }
+
+    /// Drops the last `n` tokens of the last step, which must have run with
+    /// `checkpoint` and keeps at least one token. May be repeated, each time within
+    /// the rows kept so far.
+    pub fn rewind(&self, gpu: &B, state: &mut SeqState<B>, n: usize) -> Result<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        let (start, t) = state
+            .rewindable
+            .context("rewind needs a checkpointed last step")?;
+        ensure!(n < t, "cannot rewind {n} of a {t}-token step");
+        let keep = t - n;
+        for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
+            layer.rewind(gpu, &self.dims, st, keep, start + keep)?;
+        }
+        state.pos = start + keep;
+        state.hidden_row = keep - 1;
+        // Rewinding replays from the step's start, so a later rewind within the kept
+        // rows is still exact.
+        state.rewindable = Some((start, keep));
+        Ok(())
+    }
+
+    /// Up to `k` tokens predicted to follow `next`, the token the sequence will be
+    /// fed next, from the last token's final residual (empty without an MTP head or
+    /// before the first step).
+    pub fn draft(
+        &self,
+        gpu: &B,
+        state: &mut SeqState<B>,
+        next: u32,
+        k: usize,
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<Vec<u32>> {
+        let (Some(mtp), Some(hidden), Some(mst)) =
+            (&self.mtp, state.hidden.as_ref(), state.mtp.as_mut())
+        else {
+            return Ok(Vec::new());
+        };
+        let d = &self.dims;
+        let (h, r, hc) = (d.hidden, d.residual(), d.hc);
+        let k = k.min(MAX_DRAFT);
+        mtp.layer.reset_attention(mst);
+        let mut ws = state.ws.borrow_mut();
+        let mut x = ws.take(gpu, "mtp.x", r)?;
+        gpu.copy_range(hidden, state.hidden_row * r, &mut x, 0, r)?;
+        let mut drafts = Vec::with_capacity(k);
+        let mut token = next;
+        for s in 0..k {
+            ensure!(
+                (token as usize) < self.vocab,
+                "token id {token} out of vocab"
+            );
+            let row: Vec<f32> = self.embed[token as usize * h..(token as usize + 1) * h]
+                .iter()
+                .map(|&w| bf16_to_f32(w))
+                .collect();
+            let mut scratch = ws.take_bf16(gpu, "gemm.scratch", r)?;
+            let mut e = ws.take(gpu, "mtp.e", h)?;
+            gpu.upload_into(&row, &mut e)?;
+            let mut e_n = ws.take(gpu, "mtp.e_n", h)?;
+            gpu.rmsnorm_groups(&e, &mtp.norm_embedding, &mut e_n, 1, h, h, d.eps, 1.0)?;
+            let mut fe = ws.take(gpu, "mtp.fe", h)?;
+            gpu.gemm_bf16(&e_n, &mtp.fc_embedding, &mut fe, &mut scratch, 1, h, h)?;
+            let mut x_n = ws.take(gpu, "mtp.x_n", r)?;
+            gpu.rmsnorm_groups(&x, &mtp.norm_hidden, &mut x_n, 1, r, r, d.eps, 1.0)?;
+            // fc_hidden applies to each stream: the residual is `hc` rows of `hidden`.
+            let mut fx = ws.take(gpu, "mtp.fx", r)?;
+            gpu.gemm_bf16(&x_n, &mtp.fc_hidden, &mut fx, &mut scratch, hc, h, h)?;
+            let mut fused = ws.take(gpu, "mtp.fused", r)?;
+            gpu.hc_combine(&fx, &fe, &mtp.ones, &mut fused, 1, hc, h)?;
+            for (name, b) in [
+                ("mtp.e", e),
+                ("mtp.e_n", e_n),
+                ("mtp.fe", fe),
+                ("mtp.x_n", x_n),
+                ("mtp.fx", fx),
+            ] {
+                ws.give(name, b);
+            }
+            ws.give_bf16("gemm.scratch", scratch);
+            drop(ws);
+            let step = StepInput {
+                token_ids: std::slice::from_ref(&token),
+                start_pos: s,
+                checkpoint: false,
+            };
+            let out = mtp
+                .layer
+                .forward(gpu, d, &fused, 1, &step, mst, experts, &mut NoProbe)?;
+            ws = state.ws.borrow_mut();
+            ws.give("mtp.fused", fused);
+            let mut scratch = ws.take_bf16(gpu, "gemm.scratch", r)?;
+            let (mixed, _) = mtp.mixer.mix(
+                gpu,
+                d,
+                &mut ws,
+                &out,
+                1,
+                &mut scratch,
+                &mut NoProbe,
+                "mtp_hc",
+            )?;
+            let mut logits = ws.take(gpu, "mtp.logits", self.vocab)?;
+            gpu.gemm_bf16(
+                &mixed,
+                &self.lm_head,
+                &mut logits,
+                &mut scratch,
+                1,
+                self.vocab,
+                h,
+            )?;
+            ws.give("hc.mixed", mixed);
+            ws.give_bf16("gemm.scratch", scratch);
+            let host = gpu.download_f32(&logits)?;
+            ws.give("mtp.logits", logits);
+            token = oominf_core::argmax(&host);
+            drafts.push(token);
+            // The next draft starts from this one's residual; the previous buffer goes
+            // back for the layer's next output.
+            let old = std::mem::replace(&mut x, out);
+            ws.give("layer.out", old);
+        }
+        ws.give("mtp.x", x);
+        Ok(drafts)
     }
 }

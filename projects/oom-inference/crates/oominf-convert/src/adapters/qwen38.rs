@@ -1,7 +1,7 @@
 //! Qwen 3.8 Flash (`qwen4_exp`), as released in ModelOpt NVFP4 (routed experts
 //! only; everything else at source precision, PLE n-gram tables in FP8).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use oominf_format::{RecordSchema, put_part};
 use serde_json::Value;
 
@@ -9,6 +9,10 @@ use super::{Adapter, Class};
 use crate::safetensors::Checkpoint;
 
 pub const LAYOUT: &str = "nvfp4-modelopt-g16";
+/// The MTP layer's experts: bf16 as released, split from their stacked tensors.
+pub const MTP_LAYOUT: &str = "bf16";
+const MTP_GATE_UP: &str = "mtp.layers.0.mlp.experts.gate_up_proj";
+const MTP_DOWN: &str = "mtp.layers.0.mlp.experts.down_proj";
 
 const PROJS: [&str; 3] = ["gate", "up", "down"];
 
@@ -64,6 +68,12 @@ impl Adapter for Qwen38 {
         }
         if let Some((layer, _)) = parse_expert(name) {
             return Class::Expert { layer };
+        }
+        if name == MTP_GATE_UP || name == MTP_DOWN {
+            // The MTP layer follows the decoder layers.
+            return Class::FusedExperts {
+                layer: self.num_layers,
+            };
         }
         if name.contains(".ple.ple_embedding.ngram_embedding.shard_") && name.ends_with(".weight") {
             return Class::Table;
@@ -132,6 +142,62 @@ impl Adapter for Qwen38 {
     fn expert_tensor_count(&self) -> usize {
         PROJS.len() * 4
     }
+
+    fn fused_expert_schema(&self, ckpt: &Checkpoint, layer: u32) -> Result<RecordSchema> {
+        ensure!(
+            layer == self.num_layers,
+            "no stacked experts for layer {layer}"
+        );
+        let gu = ckpt.get(MTP_GATE_UP)?;
+        let dn = ckpt.get(MTP_DOWN)?;
+        let e = self.num_experts as u64;
+        ensure!(
+            gu.dtype == "BF16" && dn.dtype == "BF16" && gu.shape.len() == 3 && dn.shape.len() == 3,
+            "MTP experts: expected stacked BF16 tensors"
+        );
+        let (two_i, h) = (gu.shape[1], gu.shape[2]);
+        ensure!(
+            gu.shape[0] == e && dn.shape == [e, h, two_i / 2],
+            "MTP expert shapes {:?} / {:?}",
+            gu.shape,
+            dn.shape
+        );
+        let i = two_i / 2;
+        Ok(RecordSchema::new(
+            MTP_LAYOUT,
+            &[
+                ("gate.weight", "BF16", &[i, h]),
+                ("up.weight", "BF16", &[i, h]),
+                ("down.weight", "BF16", &[h, i]),
+            ],
+        )?)
+    }
+
+    fn fill_fused_record(
+        &self,
+        ckpt: &Checkpoint,
+        schema: &RecordSchema,
+        _layer: u32,
+        expert: u32,
+        record: &mut [u8],
+    ) -> Result<()> {
+        // gate_up_proj[e] is [gate; up] along its rows.
+        let gu = ckpt.get(MTP_GATE_UP)?;
+        let dn = ckpt.get(MTP_DOWN)?;
+        let e = expert as usize;
+        let gu_bytes = gu.bytes.len() / self.num_experts as usize;
+        let dn_bytes = dn.bytes.len() / self.num_experts as usize;
+        let mine = &gu.bytes[e * gu_bytes..(e + 1) * gu_bytes];
+        put_part(schema, record, "gate.weight", &mine[..gu_bytes / 2])?;
+        put_part(schema, record, "up.weight", &mine[gu_bytes / 2..])?;
+        put_part(
+            schema,
+            record,
+            "down.weight",
+            &dn.bytes[e * dn_bytes..(e + 1) * dn_bytes],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +240,10 @@ mod tests {
         );
         assert_eq!(
             a.classify("mtp.layers.0.mlp.experts.gate_up_proj"),
+            Class::FusedExperts { layer: 48 }
+        );
+        assert_eq!(
+            a.classify("mtp.layers.0.mlp.shared_expert.up_proj.weight"),
             Class::Dense
         );
     }

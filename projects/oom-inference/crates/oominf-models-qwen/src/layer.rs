@@ -44,6 +44,9 @@ pub struct StepInput<'a> {
     pub token_ids: &'a [u32],
     /// Absolute position of the step's first token.
     pub start_pos: usize,
+    /// Keep what is needed to rewind this step to any of its rows
+    /// ([`DecoderLayer::rewind`]).
+    pub checkpoint: bool,
 }
 
 impl<B: Backend> DecoderLayer<B> {
@@ -69,6 +72,25 @@ impl<B: Backend> DecoderLayer<B> {
             ple,
             mlp_hc: HyperConn::load(gpu, model, d, &format!("{p}.mlp_hyper_connection"), true)?,
             moe: Moe::load(gpu, model, d, layer)?,
+        })
+    }
+
+    /// The multi-token-prediction layer: a full-attention layer named `mtp.layers.0`
+    /// whose routed experts are expert group `group`.
+    pub fn load_mtp(gpu: &B, model: &Model, d: &Dims, group: u32) -> Result<Self> {
+        let p = "mtp.layers.0";
+        Ok(DecoderLayer {
+            layer: group,
+            attn_hc: HyperConn::load(gpu, model, d, &format!("{p}.attn_hyper_connection"), true)?,
+            mixer: Mixer::Attention(Attention::load_prefixed(
+                gpu,
+                model,
+                d,
+                &format!("{p}.self_attn."),
+            )?),
+            ple: None,
+            mlp_hc: HyperConn::load(gpu, model, d, &format!("{p}.mlp_hyper_connection"), true)?,
+            moe: Moe::load_group(gpu, model, d, group, &format!("{p}.mlp."), None)?,
         })
     }
 
@@ -99,6 +121,37 @@ impl<B: Backend> DecoderLayer<B> {
                 None => None,
             },
         })
+    }
+
+    /// Returns this layer's state to just after the first `keep` rows of the last
+    /// step, which must have been run with [`StepInput::checkpoint`]; `len` is the
+    /// sequence length after those rows.
+    pub fn rewind(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        state: &mut LayerState<B>,
+        keep: usize,
+        len: usize,
+    ) -> Result<()> {
+        let mut ws = state.ws.borrow_mut();
+        match (&self.mixer, state.gdn.as_mut(), state.attn.as_mut()) {
+            (Mixer::Gdn(g), Some(st), _) => g.rewind(gpu, d, &mut ws, st, keep)?,
+            (Mixer::Attention(a), _, Some(st)) => a.rewind(st, len),
+            _ => anyhow::bail!("layer {} has no state for its mixer", self.layer),
+        }
+        if let (Some(p), Some(st)) = (&self.ple, state.ple.as_mut()) {
+            p.rewind(gpu, d, &mut ws, st, keep)?;
+        }
+        Ok(())
+    }
+
+    /// Forgets every token this layer's attention cached (for a draft chain that
+    /// restarts each step).
+    pub fn reset_attention(&self, state: &mut LayerState<B>) {
+        if let (Mixer::Attention(a), Some(st)) = (&self.mixer, state.attn.as_mut()) {
+            a.reset(st);
+        }
     }
 
     /// Bytes [`Self::grow_kv`] would allocate for this layer to hold `tokens`.
@@ -160,7 +213,17 @@ impl<B: Backend> DecoderLayer<B> {
             Mixer::Gdn(g) => {
                 let st = state.gdn.as_mut().context("GDN layer without GDN state")?;
                 (
-                    g.forward(gpu, d, ws, &mixed, t, st, &mut scratch, probe)?,
+                    g.forward(
+                        gpu,
+                        d,
+                        ws,
+                        &mixed,
+                        t,
+                        st,
+                        step.checkpoint,
+                        &mut scratch,
+                        probe,
+                    )?,
                     "gdn.out",
                 )
             }

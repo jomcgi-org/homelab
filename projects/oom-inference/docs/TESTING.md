@@ -10,6 +10,7 @@ below.
 | Stage fixtures | every stage of one decoder layer matches the reference | `oominf check-layer` |
 | Whole-model chain | all layers, final mixer and logits match the reference end to end | `oominf check-model` |
 | Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
+| Speculative decoding | greedy decoding with MTP drafts produces the same tokens as one-token steps | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored` |
 | GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
 
 ## Reference fixtures

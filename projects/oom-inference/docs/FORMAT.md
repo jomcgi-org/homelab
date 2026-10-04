@@ -62,13 +62,15 @@ Padding bytes are zero.
 
 ### Layout tags
 
-Each schema has a `layout` tag naming how its quantised parts are encoded.
-v0 defines one:
+Each schema has a `layout` tag naming how its parts are encoded. v0 defines
+two:
 
 - `nvfp4-modelopt-g16`: NVIDIA ModelOpt NVFP4 W4A4 as released. Per projection
   `p` in `gate`, `up`, `down`: `p.weight` U8 (two E2M1 values per byte, row-major,
   low nibble first), `p.weight_scale` F8_E4M3 (one per 16 inputs, row-major,
   linear, not swizzled), `p.weight_scale_2` F32 scalar, `p.input_scale` F32 scalar.
+- `bf16`: unquantised weights as released. Parts `gate.weight` and `up.weight`
+  BF16 `[inter, hidden]` and `down.weight` BF16 `[hidden, inter]`, row-major.
 
 Kernel-specific repacks (swizzled scales, fused gate/up, interleaving) get
 their own tags and their own converted copy; v0 stores only the release layout.
@@ -108,8 +110,14 @@ their own tags and their own converted copy; v0 stores only the release layout.
   then gate.weight, gate.weight_scale, up.weight, up.weight_scale,
   down.weight, down.weight_scale.
 - `*.ple.ple_embedding.ngram_embedding.shard_*.weight` go to `tables.bin`.
+- The multi-token-prediction (MTP) layer's routed experts, released stacked as
+  `mtp.layers.0.mlp.experts.gate_up_proj` `[experts, 2 * inter, hidden]` (gate
+  rows, then up rows) and `mtp.layers.0.mlp.experts.down_proj`
+  `[experts, hidden, inter]`, become expert group 48 (after the decoder layers)
+  with layout `bf16`: each record is one expert's slices.
 - `model.visual.*` is skipped (text-only).
-- Everything else, MTP included, goes to `dense.bin`.
+- Everything else, the rest of the MTP layer included, goes to `dense.bin`.
 
 Record size: 256 + 3 x 819,200 + 3 x 102,400 = 2,765,056 bytes, stride
-2,768,896 (676 x 4096). 512 experts x 48 layers is about 68 GB.
+2,768,896 (676 x 4096). 512 experts x 48 layers is about 68 GB. MTP records are
+3 x 3,276,800 = 9,830,400 bytes (2,400 x 4096); 512 of them are about 4.7 GiB.

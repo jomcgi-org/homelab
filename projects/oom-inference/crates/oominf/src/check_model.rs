@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use oominf_core::{Memory, Probe};
+use oominf_core::{Memory, Probe, argmax};
 use oominf_cuda::Gpu;
 use oominf_models_qwen::{Dims, QwenModel};
 
@@ -44,14 +44,6 @@ fn log_softmax(row: &[f32]) -> Vec<f64> {
     let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
     let lse = row.iter().map(|&x| (x as f64 - m).exp()).sum::<f64>().ln() + m;
     row.iter().map(|&x| x as f64 - lse).collect()
-}
-
-fn argmax(row: &[f32]) -> usize {
-    row.iter()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .map(|(i, _)| i)
-        .unwrap()
 }
 
 /// Top-1 agreement with `truth`, and the max / mean |logprob error| over the

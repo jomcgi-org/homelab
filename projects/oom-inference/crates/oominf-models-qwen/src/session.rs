@@ -127,6 +127,35 @@ impl<B: Backend> Session for QwenSession<B> {
         out.map(|o| inner.b.download_f32(&o)).transpose()
     }
 
+    fn step_all(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
+        let inner = &self.inner;
+        let out = inner.model.step(
+            &*inner.b,
+            tokens,
+            &mut self.state,
+            inner.experts.borrow_mut().as_mut(),
+            &mut NoProbe,
+            false,
+            true,
+        )?;
+        inner.b.download_f32(&out)
+    }
+
+    fn rewind(&mut self, n: usize) -> Result<()> {
+        self.inner.model.rewind(&*self.inner.b, &mut self.state, n)
+    }
+
+    fn draft(&mut self, next: u32, k: usize) -> Result<Vec<u32>> {
+        let inner = &self.inner;
+        inner.model.draft(
+            &*inner.b,
+            &mut self.state,
+            next,
+            k,
+            inner.experts.borrow_mut().as_mut(),
+        )
+    }
+
     fn step(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
         let inner = &self.inner;
         let out = inner.model.forward(

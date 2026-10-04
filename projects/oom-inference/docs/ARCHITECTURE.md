@@ -42,7 +42,9 @@ touches the other.
   a step.
 - **`Model`** opens sessions; a **`Session`** owns one sequence's state (caches,
   recurrent state) and runs `prefill(tokens)` and `step(tokens)`, returning the
-  logits after the last token. The server, `generate` and `bench` use only these.
+  logits after the last token. For speculative decoding a session may also
+  `draft(next, k)` tokens, verify them in one `step_all`, and `rewind` the ones
+  the model rejects. The server, `generate` and `bench` use only these.
 - **`ExpertSource`** makes a layer's routed experts device-resident and returns
   their record addresses, optionally in two phases so resident experts compute
   while the rest load. Kernels read every part of a record, scales included,
@@ -63,6 +65,8 @@ in `TESTING.md`. Defaults:
 - Dense weights: bf16 as released. Decode GEMVs read fp32 activations directly;
   prefill GEMMs round activations to bf16 for tensor cores.
 - Residual stream, norms, softmax, recurrent state and KV cache: fp32.
+- MTP experts (the draft head): bf16 as released, fp32 activations and
+  accumulation.
 
 **Why.** The engine exists to run a frontier model on modest hardware without
 making it worse. Rounding that buys nothing is pure loss, and silent precision
@@ -80,9 +84,31 @@ trades are how engines drift from the model they claim to run.
   recorded routing traces (`oominf-tiers/examples/replay.rs`).
 - Prefill streams through a one-layer stage instead of evicting decode-hot
   experts, and runs layer by layer so each layer's experts load once per prompt.
-- During decode, layer L+1's router applied to layer L's input predicts the next
-  experts; predicted disk misses are read into the host tier. Routing, not
-  prediction, decides which experts run.
+- During decode (and draft verification), layer L+1's router applied to layer
+  L's input predicts the next experts; predicted disk misses are read into the
+  host tier. Routing, not prediction, decides which experts run.
+- Groups with different record layouts (the decoder layers' NVFP4 experts, the
+  MTP layer's bf16 experts) get separate tiers behind one source. A small group
+  gets one VRAM chunk and has its records read into the host tier at start-up:
+  measured on the MTP experts, more device slots barely shorten drafting while
+  every slot taken from the main tiers costs decode hits.
+
+## Speculative decoding
+
+The checkpoint's multi-token-prediction head drafts the next token from the last
+token's final residual; one step then feeds the current token and the drafts,
+and `decode_step` (`oominf-core/src/decode.rs`) keeps the longest prefix the
+model agrees with, plus the model's own next token. Greedy decoding keeps a
+draft only when it is the argmax, so output equals one-token decoding; sampling
+keeps it with the model's probability of it and otherwise samples the model
+without it, so output keeps the model's distribution. Rejected drafts are
+rewound: GDN and PLE layers restore the step's starting state and replay their
+recurrences over the kept rows; attention layers cut their KV length.
+
+**Why.** Dense weights are read once per step whatever its width, so verifying a
+draft costs much less than a second step. The gain is bounded by the draft
+acceptance rate (55 to 75% measured) and by the extra routed experts the
+drafted token pulls in.
 
 **Why.** On recorded decode traces the cache hit rate dominates decode time, and
 on-disk layout barely matters because drives split large reads into small

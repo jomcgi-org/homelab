@@ -1,4 +1,4 @@
-// Fused routed-expert kernels over NVFP4 (ModelOpt, group 16) expert records.
+// Fused routed-expert kernels over NVFP4 (ModelOpt, group 16) and bf16 expert records.
 //
 // Precision (W4A16): every weight is decoded exactly as the reference does,
 // w = e2m1(code) * (fp8_e4m3(scale) * weight_scale_2) in fp32; activations are fp32 and
@@ -241,4 +241,106 @@ moe_tiled(const unsigned long long* recs, const int* off, const int* rows, const
 extern "C" __global__ void moe_swiglu(const float* g, const float* u, float* h, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) h[i] = moe_silu(g[i]) * u[i];
+}
+
+// bf16 expert records (weights as released, row-major): the same decode kernels as
+// above with 8-weight groups read as one 16-byte load and widened exactly to fp32.
+__device__ __forceinline__ void moe_bf16x8(const uint4 v, float w[8]) {
+    const uint32_t words[4] = {v.x, v.y, v.z, v.w};
+#pragma unroll
+    for (int q = 0; q < 4; q++) {
+        w[2 * q] = __uint_as_float(words[q] << 16);
+        w[2 * q + 1] = __uint_as_float(words[q] & 0xffff0000u);
+    }
+}
+
+// Gate and up projections plus SwiGLU over bf16 records; layout as moe_gate_up.
+extern "C" __global__ void __launch_bounds__(256)
+moe_gate_up_bf16(const unsigned long long* recs, const int* off, const int* assign_tok,
+                 const float* x, float* h, int H, int I, long long gw_off, long long uw_off) {
+    int e = blockIdx.y;
+    int j = blockIdx.x * 8 + (threadIdx.x >> 5);
+    int lane = threadIdx.x & 31;
+    if (j >= I) return;
+    const uint8_t* rec = reinterpret_cast<const uint8_t*>(recs[e]);
+    const uint4* gw = reinterpret_cast<const uint4*>(rec + gw_off + (size_t)j * H * 2);
+    const uint4* uw = reinterpret_cast<const uint4*>(rec + uw_off + (size_t)j * H * 2);
+    int groups = H / 8;
+    int a_end = off[e + 1];
+    for (int a0 = off[e]; a0 < a_end; a0 += MOE_TB) {
+        int nb = min(MOE_TB, a_end - a0);
+        const float* xr[MOE_TB];
+#pragma unroll
+        for (int b = 0; b < MOE_TB; b++) xr[b] = x + (size_t)assign_tok[a0 + min(b, nb - 1)] * H;
+        float ag[MOE_TB], au[MOE_TB];
+#pragma unroll
+        for (int b = 0; b < MOE_TB; b++) ag[b] = au[b] = 0.0f;
+        for (int g = lane; g < groups; g += 32) {
+            float wg[8], wu[8];
+            moe_bf16x8(gw[g], wg);
+            moe_bf16x8(uw[g], wu);
+#pragma unroll
+            for (int b = 0; b < MOE_TB; b++) {
+                if (b < nb) {
+                    const float4* xv = reinterpret_cast<const float4*>(xr[b] + g * 8);
+#pragma unroll
+                    for (int q = 0; q < 2; q++) {
+                        float4 v = xv[q];
+                        ag[b] += wg[4 * q] * v.x + wg[4 * q + 1] * v.y + wg[4 * q + 2] * v.z +
+                                 wg[4 * q + 3] * v.w;
+                        au[b] += wu[4 * q] * v.x + wu[4 * q + 1] * v.y + wu[4 * q + 2] * v.z +
+                                 wu[4 * q + 3] * v.w;
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int b = 0; b < MOE_TB; b++) {
+            float g = moe_warp_sum(ag[b]);
+            float u = moe_warp_sum(au[b]);
+            if (lane == 0 && b < nb) h[(size_t)(a0 + b) * I + j] = moe_silu(g) * u;
+        }
+    }
+}
+
+// Down projection over bf16 records; layout as moe_down.
+extern "C" __global__ void __launch_bounds__(256)
+moe_down_bf16(const unsigned long long* recs, const int* off, const float* h, float* y, int H,
+              int I, long long dw_off) {
+    int e = blockIdx.y;
+    int r = blockIdx.x * 8 + (threadIdx.x >> 5);
+    int lane = threadIdx.x & 31;
+    if (r >= H) return;
+    const uint8_t* rec = reinterpret_cast<const uint8_t*>(recs[e]);
+    const uint4* dw = reinterpret_cast<const uint4*>(rec + dw_off + (size_t)r * I * 2);
+    int groups = I / 8;
+    int a_end = off[e + 1];
+    for (int a0 = off[e]; a0 < a_end; a0 += MOE_TB) {
+        int nb = min(MOE_TB, a_end - a0);
+        float acc[MOE_TB];
+#pragma unroll
+        for (int b = 0; b < MOE_TB; b++) acc[b] = 0.0f;
+        for (int g = lane; g < groups; g += 32) {
+            float w[8];
+            moe_bf16x8(dw[g], w);
+#pragma unroll
+            for (int b = 0; b < MOE_TB; b++) {
+                if (b < nb) {
+                    const float4* hv =
+                        reinterpret_cast<const float4*>(h + (size_t)(a0 + b) * I + g * 8);
+#pragma unroll
+                    for (int q = 0; q < 2; q++) {
+                        float4 v = hv[q];
+                        acc[b] += w[4 * q] * v.x + w[4 * q + 1] * v.y + w[4 * q + 2] * v.z +
+                                  w[4 * q + 3] * v.w;
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int b = 0; b < MOE_TB; b++) {
+            float s = moe_warp_sum(acc[b]);
+            if (lane == 0 && b < nb) y[(size_t)(a0 + b) * H + r] = s;
+        }
+    }
 }

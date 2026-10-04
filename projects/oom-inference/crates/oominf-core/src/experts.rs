@@ -96,6 +96,23 @@ pub struct ExpertStats {
     pub lookahead_used: u64,
 }
 
+impl std::ops::Add for ExpertStats {
+    type Output = ExpertStats;
+    fn add(self, o: ExpertStats) -> ExpertStats {
+        ExpertStats {
+            requests: self.requests + o.requests,
+            vram_hits: self.vram_hits + o.vram_hits,
+            host_hits: self.host_hits + o.host_hits,
+            disk_reads: self.disk_reads + o.disk_reads,
+            predicted: self.predicted + o.predicted,
+            predicted_routed: self.predicted_routed + o.predicted_routed,
+            routed_after_prediction: self.routed_after_prediction + o.routed_after_prediction,
+            lookahead_reads: self.lookahead_reads + o.lookahead_reads,
+            lookahead_used: self.lookahead_used + o.lookahead_used,
+        }
+    }
+}
+
 impl std::ops::Sub for ExpertStats {
     type Output = ExpertStats;
     fn sub(self, o: ExpertStats) -> ExpertStats {

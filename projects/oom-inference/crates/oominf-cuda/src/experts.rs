@@ -1,8 +1,8 @@
-//! Routing and fused routed-expert kernels on NVFP4 records: `kernels/moe.cu`.
+//! Routing and fused routed-expert kernels on NVFP4 and bf16 records: `kernels/moe.cu`.
 
 use anyhow::Result;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
-use oominf_core::{Experts, Nvfp4Record, View};
+use oominf_core::{Bf16Record, Experts, Nvfp4Record, View};
 
 use crate::{Buf, Dev, Gpu, cview, grid};
 
@@ -87,6 +87,83 @@ impl Experts for Gpu {
                 .arg(&us)
                 .arg(&g2)
                 .arg(&u2)
+                .launch(cfg)?
+        };
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn moe_gate_up_bf16(
+        &self,
+        recs: &View<Dev<u64>>,
+        off: &View<Dev<i32>>,
+        assign_tok: &View<Dev<i32>>,
+        n_experts: usize,
+        x: &Buf,
+        h: &mut Buf,
+        geo: &Bf16Record,
+    ) -> Result<()> {
+        let recs = cview(recs);
+        let off = cview(off);
+        let assign_tok = cview(assign_tok);
+        self.check(
+            geo.hidden.is_multiple_of(8) && geo.inter.is_multiple_of(8),
+            "moe_gate_up_bf16: widths must be multiples of 8",
+        )?;
+        let f = self.func("moe_gate_up_bf16")?;
+        let cfg = LaunchConfig {
+            grid_dim: (geo.inter.div_ceil(8) as u32, n_experts as u32, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let (hh, ii) = (geo.hidden as i32, geo.inter as i32);
+        let (gw, uw) = (geo.gate_weight as i64, geo.up_weight as i64);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(&recs)
+                .arg(&off)
+                .arg(&assign_tok)
+                .arg(x)
+                .arg(h)
+                .arg(&hh)
+                .arg(&ii)
+                .arg(&gw)
+                .arg(&uw)
+                .launch(cfg)?
+        };
+        Ok(())
+    }
+
+    fn moe_down_bf16(
+        &self,
+        recs: &View<Dev<u64>>,
+        off: &View<Dev<i32>>,
+        n_experts: usize,
+        h: &Buf,
+        y: &mut Buf,
+        geo: &Bf16Record,
+    ) -> Result<()> {
+        let recs = cview(recs);
+        let off = cview(off);
+        let f = self.func("moe_down_bf16")?;
+        let cfg = LaunchConfig {
+            grid_dim: (geo.hidden.div_ceil(8) as u32, n_experts as u32, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let (hh, ii) = (geo.hidden as i32, geo.inter as i32);
+        let dw = geo.down_weight as i64;
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(&recs)
+                .arg(&off)
+                .arg(h)
+                .arg(y)
+                .arg(&hh)
+                .arg(&ii)
+                .arg(&dw)
                 .launch(cfg)?
         };
         Ok(())

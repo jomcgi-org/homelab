@@ -81,6 +81,19 @@ fn tiny_checkpoint(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         vec![5, 3],
         next(15),
     ));
+    // Stacked MTP experts: [experts, 2 * inter, hidden] and [experts, hidden, inter].
+    other.push((
+        "mtp.layers.0.mlp.experts.gate_up_proj".to_owned(),
+        "BF16",
+        vec![2, 8, 8],
+        next(256),
+    ));
+    other.push((
+        "mtp.layers.0.mlp.experts.down_proj".to_owned(),
+        "BF16",
+        vec![2, 8, 4],
+        next(128),
+    ));
     other.push((
         "model.visual.patch_embed.proj.weight".to_owned(),
         "BF16",
@@ -132,7 +145,7 @@ fn converts_and_reads_back_every_byte() {
             summary.expert_layers,
             summary.skipped
         ),
-        (3, 1, 2, 1)
+        (3, 1, 3, 1)
     );
 
     let names: Vec<_> = index.tensors.iter().map(|t| t.name.as_str()).collect();
@@ -170,6 +183,24 @@ fn converts_and_reads_back_every_byte() {
             assert_eq!(&rec[..24], &scalars[..]);
         }
     }
+    // The MTP group (after the 2 decoder layers): bf16 slices of the stacked tensors.
+    let g = m.expert_group(2).unwrap().clone();
+    assert_eq!(g.schema.layout, "bf16");
+    let mut rec = vec![0u8; g.schema.stride as usize];
+    let (gu, dn) = (
+        &source["mtp.layers.0.mlp.experts.gate_up_proj"],
+        &source["mtp.layers.0.mlp.experts.down_proj"],
+    );
+    for e in 0..2usize {
+        m.read_record(2, e as u32, &mut rec).unwrap();
+        let part = |n: &str| {
+            let p = g.schema.part(n).unwrap();
+            rec[p.offset as usize..(p.offset + p.nbytes) as usize].to_vec()
+        };
+        assert_eq!(part("gate.weight"), gu[e * 128..e * 128 + 64]);
+        assert_eq!(part("up.weight"), gu[e * 128 + 64..(e + 1) * 128]);
+        assert_eq!(part("down.weight"), dn[e * 64..(e + 1) * 64]);
+    }
     assert!(m.verify(|_| {}).unwrap().mismatches.is_empty());
     assert!(out.path().join("m.oom/config.json").exists());
 }
@@ -192,7 +223,7 @@ fn layer_filter_and_no_tables() {
             .collect::<Vec<_>>(),
         [1]
     );
-    assert_eq!(summary.excluded, 24 + 1);
+    assert_eq!(summary.excluded, 24 + 2 + 1);
     assert_eq!(index.files.tables.bytes, 0);
 }
 

@@ -1,5 +1,6 @@
-//! `oominf bench`: greedy decode with expert-source statistics, the baseline every
-//! performance change is measured against.
+//! `oominf bench`: greedy decode (speculative when the model drafts) with
+//! expert-source statistics, the baseline every performance change is measured
+//! against.
 //!
 //! Decode runs in two equal phases: the first starts from cold expert tiers (they
 //! fill as it goes), the second measures the warmed steady state. The prompt then
@@ -9,11 +10,11 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use oominf_core::{ExpertStats, Model, Session};
+use oominf_core::{ExpertStats, Model, Session, decode_step};
 
 use crate::chat::Chat;
-use crate::generate::argmax;
 use crate::load::{ExpertArgs, OpenArgs, open_model};
+use oominf_core::argmax;
 
 /// Prediction precision and recall, and how many lookahead reads a fetch used.
 fn prediction_line(s: &ExpertStats) -> String {
@@ -47,25 +48,44 @@ fn tier_line(s: ExpertStats, tokens: usize, unit: &str) -> String {
     ) + &prediction_line(&s)
 }
 
+/// Generates at least `tokens` tokens greedily from `next` (the last generated,
+/// not yet fed token), drafting up to `draft` tokens per step; returns them.
 fn decode_phase(
     name: &str,
     model: &dyn Model,
     session: &mut dyn Session,
-    logits: &mut Vec<f32>,
+    next: &mut u32,
     tokens: usize,
-) -> Result<()> {
+    draft: usize,
+) -> Result<Vec<u32>> {
     let before = model.expert_stats();
     let t = Instant::now();
-    for _ in 0..tokens {
-        *logits = session.step(&[argmax(logits)])?;
+    let (mut out, mut steps, mut drafted, mut accepted) = (Vec::new(), 0, 0, 0);
+    while out.len() < tokens {
+        let d = decode_step(session, *next, draft, |row: &[f32], _| Ok(argmax(row)))?;
+        steps += 1;
+        drafted += d.drafted;
+        accepted += d.accepted;
+        *next = *d.tokens.last().expect("a step produces a token");
+        out.extend(d.tokens);
     }
-    let per = t.elapsed().as_secs_f64() / tokens as f64 * 1e3;
+    let n = out.len();
+    let per = t.elapsed().as_secs_f64() / n as f64 * 1e3;
+    let spec = if drafted > 0 {
+        format!(
+            "; {:.2} tokens/step, drafts accepted {accepted}/{drafted} ({:.1}%)",
+            n as f64 / steps as f64,
+            100.0 * accepted as f64 / drafted as f64
+        )
+    } else {
+        String::new()
+    };
     println!(
-        "{name}: {tokens} tokens, {per:.1} ms/token ({:.2} tok/s){}",
+        "{name}: {n} tokens, {per:.1} ms/token ({:.2} tok/s){spec}{}",
         1e3 / per,
-        tier_line(model.expert_stats() - before, tokens, "per token")
+        tier_line(model.expert_stats() - before, n, "per token")
     );
-    Ok(())
+    Ok(out)
 }
 
 fn timed_prefill(
@@ -93,11 +113,12 @@ pub fn run(
     prompt: &str,
     tokens: usize,
     prefill_chunk: Option<usize>,
+    draft: usize,
     expert_args: &ExpertArgs,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
-    let max_context = ids.len() + 2 * tokens + 1;
+    let max_context = ids.len() + 2 * (tokens + draft) + 1;
     let t = Instant::now();
     let model = open_model(&OpenArgs {
         model_dir,
@@ -111,20 +132,23 @@ pub fn run(
         t.elapsed().as_secs_f64()
     );
     let mut session = model.new_session(max_context)?;
-    let mut logits = timed_prefill("prefill", &*model, &mut *session, &ids)?;
+    let logits = timed_prefill("prefill", &*model, &mut *session, &ids)?;
+    let mut next = argmax(&logits);
     decode_phase(
         "decode (cold tiers)",
         &*model,
         &mut *session,
-        &mut logits,
+        &mut next,
         tokens,
+        draft,
     )?;
     decode_phase(
         "decode (warm tiers)",
         &*model,
         &mut *session,
-        &mut logits,
+        &mut next,
         tokens,
+        draft,
     )?;
     println!("after decode: {}", model.describe());
     // The same prompt again on a fresh sequence: prefill from warm tiers.

@@ -64,6 +64,15 @@ impl Sampler {
 
     /// Picks the next token and records it for the penalties.
     pub fn sample(&mut self, logits: &[f32]) -> u32 {
+        self.choose(logits, None)
+    }
+
+    /// Picks the next token given `draft`, a token proposed for this position:
+    /// greedy decoding keeps the draft exactly when it is the argmax; sampling keeps
+    /// it with the target's probability of it and otherwise draws from the target
+    /// with the draft excluded, so the result is distributed exactly as
+    /// [`Sampler::sample`]'s. Records the token for the penalties.
+    pub fn choose(&mut self, logits: &[f32], draft: Option<u32>) -> u32 {
         let p = &self.params;
         let penalised = p.presence_penalty != 0.0 || p.frequency_penalty != 0.0;
         let mut adjusted;
@@ -79,13 +88,25 @@ impl Sampler {
         let id = if p.temperature <= 0.0 {
             argmax(logits)
         } else {
-            self.draw(logits)
+            let (ids, mut probs) = self.distribution(logits);
+            let u = self.rng.next_f64();
+            match draft.and_then(|d| ids.iter().position(|&i| i == d)) {
+                Some(j) if u < probs[j] => ids[j],
+                found => {
+                    // Rejected (or outside the filtered set): the residual distribution.
+                    if let Some(j) = found {
+                        probs[j] = 0.0;
+                    }
+                    self.pick(&ids, &probs)
+                }
+            }
         };
         *self.counts.entry(id).or_default() += 1;
         id
     }
 
-    fn draw(&mut self, logits: &[f32]) -> u32 {
+    /// Token ids and normalised probabilities after temperature, top-k and top-p.
+    fn distribution(&self, logits: &[f32]) -> (Vec<u32>, Vec<f64>) {
         let p = &self.params;
         let mut cand: Vec<(u32, f32)> = logits
             .iter()
@@ -121,24 +142,29 @@ impl Sampler {
             probs.truncate(cut);
         }
         let mass: f64 = probs.iter().sum();
+        let ids = cand[..probs.len()].iter().map(|c| c.0).collect();
+        (ids, probs.into_iter().map(|q| q / mass).collect())
+    }
+
+    /// Draws from `probs` (any non-negative weights) over `ids`.
+    fn pick(&mut self, ids: &[u32], probs: &[f64]) -> u32 {
+        let mass: f64 = probs.iter().sum();
         let mut r = self.rng.next_f64() * mass;
+        let mut last = 0;
         for (i, &q) in probs.iter().enumerate() {
-            r -= q;
-            if r <= 0.0 {
-                return cand[i].0;
+            if q > 0.0 {
+                last = i;
+                r -= q;
+                if r <= 0.0 {
+                    return ids[i];
+                }
             }
         }
-        cand[probs.len() - 1].0
+        ids[last]
     }
 }
 
-pub fn argmax(logits: &[f32]) -> u32 {
-    logits
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0)))
-        .map_or(0, |(i, _)| i as u32)
-}
+use oominf_core::argmax;
 
 #[cfg(test)]
 mod tests {
@@ -204,5 +230,42 @@ mod tests {
         });
         assert_eq!(s.sample(&logits), 0);
         assert_eq!(s.sample(&logits), 1);
+    }
+
+    #[test]
+    fn choosing_with_a_draft_keeps_the_target_distribution() {
+        // Target after temperature 1: softmax([1, 0.5, 0]) = [0.506, 0.307, 0.186].
+        let logits = [1.0f32, 0.5, 0.0];
+        let z: f64 = logits.iter().map(|&l| (l as f64).exp()).sum();
+        let target: Vec<f64> = logits.iter().map(|&l| (l as f64).exp() / z).collect();
+        let n = 200_000;
+        for draft in [None, Some(0), Some(1), Some(2), Some(7)] {
+            let mut s = Sampler::new(SamplingParams {
+                seed: Some(42),
+                ..Default::default()
+            });
+            let mut counts = [0usize; 3];
+            for _ in 0..n {
+                counts[s.choose(&logits, draft) as usize] += 1;
+            }
+            for (x, &c) in counts.iter().enumerate() {
+                let got = c as f64 / n as f64;
+                assert!(
+                    (got - target[x]).abs() < 0.005,
+                    "draft {draft:?}: P({x}) = {got:.4}, target {:.4}",
+                    target[x]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn greedy_choice_ignores_the_draft() {
+        let mut s = Sampler::new(SamplingParams {
+            temperature: 0.0,
+            ..Default::default()
+        });
+        assert_eq!(s.choose(&[0.1, 3.0, 2.0], Some(2)), 1);
+        assert_eq!(s.choose(&[0.1, 3.0, 2.0], Some(1)), 1);
     }
 }

@@ -1,10 +1,11 @@
-//! Sparse MoE: router, shared expert and NVFP4 routed experts (W4A16 in fp32).
+//! Sparse MoE: router, shared expert and routed experts read in place from their
+//! records: NVFP4 (W4A16 in fp32) for the decoder layers, bf16 for the MTP layer.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail, ensure};
-use oominf_core::{Backend, ExpertSource, Nvfp4Record, Probe, View, Workspace, tap};
+use oominf_core::{Backend, Bf16Record, ExpertSource, Nvfp4Record, Probe, View, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
@@ -24,13 +25,34 @@ struct Tables<B: Backend> {
     recs: B::U64,
 }
 
+/// Most tokens in a step that still routes this layer and predicts the next one
+/// with one stacked router GEMV (decode and draft verification).
+const PAIR_MAX_TOKENS: usize = 4;
+
 /// Steps where some expert has at least this many assignments use the tiled
 /// (shared-memory) kernels; smaller steps use the warp-per-row kernels.
 const TILED_MIN_ASSIGNMENTS: usize = 32;
 
+/// How a group's expert records are laid out.
+#[derive(Debug, Clone, Copy)]
+enum Geometry {
+    Nvfp4(Nvfp4Record),
+    Bf16(Bf16Record),
+}
+
+impl Geometry {
+    fn inter(&self) -> usize {
+        match self {
+            Geometry::Nvfp4(g) => g.inter,
+            Geometry::Bf16(g) => g.inter,
+        }
+    }
+}
+
 pub struct Moe<B: Backend> {
+    /// The expert group (and tier key) this MoE routes into.
     layer: u32,
-    geo: Nvfp4Record,
+    geo: Geometry,
     tables: Mutex<Tables<B>>,
     router: B::Bf16,
     /// This layer's router stacked over the next layer's (`[2 * experts, hidden]`):
@@ -44,64 +66,110 @@ pub struct Moe<B: Backend> {
 }
 
 impl<B: Backend> Moe<B> {
+    /// A decoder layer's MoE.
     pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
-        let p = format!("model.language_model.layers.{layer}.mlp.");
+        let next = format!("model.language_model.layers.{}.mlp.gate.weight", layer + 1);
+        let next = model.tensor(&next).map(|_| next);
+        Self::load_group(
+            gpu,
+            model,
+            d,
+            layer,
+            &format!("model.language_model.layers.{layer}.mlp."),
+            next,
+        )
+    }
+
+    /// The MoE whose dense weights are under `prefix` and whose routed experts are
+    /// expert group `layer`; `next_router` names the next layer's router, which is
+    /// stacked with this one to predict its experts.
+    pub fn load_group(
+        gpu: &B,
+        model: &Model,
+        d: &Dims,
+        layer: u32,
+        prefix: &str,
+        next_router: Option<String>,
+    ) -> Result<Self> {
+        let p = prefix;
         let h = d.hidden as u64;
         let group = model
             .expert_group(layer)
-            .with_context(|| format!("no experts for layer {layer}"))?;
-        ensure!(
-            group.schema.layout == "nvfp4-modelopt-g16",
-            "unsupported expert layout {}",
-            group.schema.layout
-        );
+            .with_context(|| format!("no experts for group {layer}"))?;
         ensure!(
             group.num_experts as usize == d.experts,
-            "layer {layer} has {} experts",
+            "group {layer} has {} experts",
             group.num_experts
         );
-        // (weight offset, scale offset, rows, columns) of one projection.
-        let proj = |name: &str| -> Result<(usize, usize, usize, usize)> {
-            let part = |n: &str| {
-                group
-                    .schema
-                    .part(n)
-                    .with_context(|| format!("expert record has no part {n}"))
-            };
-            let w = part(&format!("{name}.weight"))?;
-            let s = part(&format!("{name}.weight_scale"))?;
-            Ok((
-                w.offset as usize,
-                s.offset as usize,
-                w.shape[0] as usize,
-                2 * w.shape[1] as usize,
-            ))
+        let part = |n: &str| {
+            group
+                .schema
+                .part(n)
+                .with_context(|| format!("expert record has no part {n}"))
         };
-        let (gate, up, down) = (proj("gate")?, proj("up")?, proj("down")?);
-        ensure!(
-            gate.2 == d.moe_inter && gate.3 == d.hidden && down.2 == d.hidden,
-            "expert shapes do not match config"
-        );
-        ensure!(
-            down.3 == gate.2,
-            "expert down input does not match gate output"
-        );
-        let geo = Nvfp4Record {
-            hidden: gate.3,
-            inter: gate.2,
-            gate_weight: gate.0,
-            gate_scale: gate.1,
-            up_weight: up.0,
-            up_scale: up.1,
-            down_weight: down.0,
-            down_scale: down.1,
-            scale2: SCALE2_IDX,
+        let geo = match group.schema.layout.as_str() {
+            "nvfp4-modelopt-g16" => {
+                // (weight offset, scale offset, rows, columns) of one projection.
+                let proj = |name: &str| -> Result<(usize, usize, usize, usize)> {
+                    let w = part(&format!("{name}.weight"))?;
+                    let s = part(&format!("{name}.weight_scale"))?;
+                    Ok((
+                        w.offset as usize,
+                        s.offset as usize,
+                        w.shape[0] as usize,
+                        2 * w.shape[1] as usize,
+                    ))
+                };
+                let (gate, up, down) = (proj("gate")?, proj("up")?, proj("down")?);
+                ensure!(
+                    gate.2 == d.moe_inter && gate.3 == d.hidden && down.2 == d.hidden,
+                    "expert shapes do not match config"
+                );
+                ensure!(
+                    down.3 == gate.2,
+                    "expert down input does not match gate output"
+                );
+                Geometry::Nvfp4(Nvfp4Record {
+                    hidden: gate.3,
+                    inter: gate.2,
+                    gate_weight: gate.0,
+                    gate_scale: gate.1,
+                    up_weight: up.0,
+                    up_scale: up.1,
+                    down_weight: down.0,
+                    down_scale: down.1,
+                    scale2: SCALE2_IDX,
+                })
+            }
+            "bf16" => {
+                let (g, u, dn) = (
+                    part("gate.weight")?,
+                    part("up.weight")?,
+                    part("down.weight")?,
+                );
+                let (it, hd) = (g.shape[0] as usize, g.shape[1] as usize);
+                ensure!(
+                    it == d.moe_inter
+                        && hd == d.hidden
+                        && u.shape == g.shape
+                        && dn.shape == [hd as u64, it as u64]
+                        && [g.dtype.as_str(), u.dtype.as_str(), dn.dtype.as_str()] == ["BF16"; 3],
+                    "bf16 expert shapes do not match config"
+                );
+                Geometry::Bf16(Bf16Record {
+                    hidden: hd,
+                    inter: it,
+                    gate_weight: g.offset as usize,
+                    up_weight: u.offset as usize,
+                    down_weight: dn.offset as usize,
+                })
+            }
+            other => bail!("unsupported expert layout {other}"),
         };
         let si = d.shared_inter as u64;
         let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
-        let next = format!("model.language_model.layers.{}.mlp.gate.weight", layer + 1);
-        let router_pair = match model.tensor(&next) {
-            Some(_) => Some(bf16_concat(
+        let router_pair = match next_router {
+            Some(next) => Some(bf16_concat(
                 gpu,
                 model,
                 &[
@@ -141,12 +209,14 @@ impl<B: Backend> Moe<B> {
     ) -> Result<B::F32> {
         let (h, e, k) = (d.hidden, d.experts, d.top_k);
 
-        // Decode with a source that uses hints: route this layer and predict the
-        // next one with a single GEMV over the stacked routers; both rows go through
-        // one top-k launch and one download. A probe sees the plain routing.
+        // Decode-sized steps with a source that uses hints: route this layer and
+        // predict the next one with a single GEMV over the stacked routers; both go
+        // through one top-k launch and one download. Per token the logits are
+        // `[own (e) | next (e)]`, so the top-k results read as `[t, 2k]`: own first.
+        // A probe sees the plain routing.
         let pair = match &self.router_pair {
             Some(p)
-                if t == 1
+                if t <= PAIR_MAX_TOKENS
                     && experts.wants_prefetch()
                     && !probe.wants("router_logits")
                     && !probe.wants("topk_weights") =>
@@ -155,8 +225,12 @@ impl<B: Backend> Moe<B> {
             }
             _ => None,
         };
-        // With the pair, the single token's logits row is two rows of `e`.
-        let (rows, n_out) = if pair.is_some() { (2, 2 * e) } else { (t, e) };
+        // With the pair, each token's logits row is two rows of `e`.
+        let (rows, n_out) = if pair.is_some() {
+            (2 * t, 2 * e)
+        } else {
+            (t, e)
+        };
         let mut logits = gpu.zeros(rows * e)?;
         gpu.gemm_bf16(
             x,
@@ -174,15 +248,27 @@ impl<B: Backend> Moe<B> {
         tap(gpu, probe, "topk_weights", &mut weights)?;
         let mut ids_host = gpu.download_i32(&ids)?;
         let predicted = pair.map(|_| {
-            let mut v: Vec<u32> = ids_host
-                .split_off(k)
-                .into_iter()
-                .map(|i| i as u32)
+            let rows: Vec<Vec<i32>> = ids_host.chunks(k).map(<[i32]>::to_vec).collect();
+            ids_host = rows.iter().step_by(2).flatten().copied().collect();
+            let mut v: Vec<u32> = rows
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .flatten()
+                .map(|&i| i as u32)
                 .collect();
             v.sort_unstable();
             v.dedup();
             v
         });
+        // The routing weights of this layer's rows (`[t, k]`).
+        let weights = if pair.is_some() && t > 1 {
+            let mut own = gpu.uninit(t * k)?;
+            gpu.copy_cols(&weights, &mut own, t, 2 * k, 0, k)?;
+            own
+        } else {
+            weights
+        };
         if probe.wants("topk_ids") {
             probe.observe("topk_ids", ids_host.iter().map(|&i| i as f32).collect());
         }
@@ -303,8 +389,12 @@ impl<B: Backend> Moe<B> {
         }
         meta[n_e] = a as i32;
         let tiled = plan.lists.iter().map(Vec::len).max().unwrap_or(0) >= TILED_MIN_ASSIGNMENTS;
+        ensure!(
+            !tiled || matches!(self.geo, Geometry::Nvfp4(_)),
+            "bf16 expert records only run decode-sized steps"
+        );
 
-        let it = self.geo.inter;
+        let it = self.geo.inter();
         let mut tables = self.tables.lock().unwrap();
         gpu.write_i32(&meta, &mut tables.meta)?;
         gpu.write_u64(&plan.recs, &mut tables.recs)?;
@@ -371,13 +461,17 @@ impl<B: Backend> Moe<B> {
         (a0, a1): (usize, usize),
         max_n: usize,
     ) -> Result<()> {
-        let geo = &self.geo;
         let recs = View::new(&tables.recs, lo, hi - lo);
         let off = View::new(&tables.meta, lo, hi - lo + 1);
         let assign = View::new(&tables.meta, n_e + 1, a_total);
         let n = hi - lo;
-        match &mut buf.gu {
-            Some((g, u)) => {
+        match (&self.geo, &mut buf.gu) {
+            (Geometry::Bf16(geo), None) => {
+                gpu.moe_gate_up_bf16(&recs, &off, &assign, n, x, &mut buf.h, geo)?;
+                gpu.moe_down_bf16(&recs, &off, n, &buf.h, &mut buf.y, geo)?;
+            }
+            (Geometry::Bf16(_), Some(_)) => bail!("bf16 expert records have no tiled path"),
+            (Geometry::Nvfp4(geo), Some((g, u))) => {
                 let (hd, it) = (geo.hidden, geo.inter);
                 let gate = (geo.gate_weight, geo.gate_scale, geo.scale2[0]);
                 let up = (geo.up_weight, geo.up_scale, geo.scale2[1]);
@@ -390,7 +484,7 @@ impl<B: Backend> Moe<B> {
                     &recs, &off, None, n, max_n, &buf.h, &mut buf.y, hd, it, down,
                 )?;
             }
-            None => {
+            (Geometry::Nvfp4(geo), None) => {
                 gpu.moe_gate_up(&recs, &off, &assign, n, x, &mut buf.h, geo)?;
                 gpu.moe_down(&recs, &off, n, &buf.h, &mut buf.y, geo)?;
             }

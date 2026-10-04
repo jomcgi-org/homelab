@@ -81,6 +81,7 @@ async fn gpu_smoke() {
         model_dir: dir,
         model_type: oominf_models::model_type(&files).unwrap(),
         max_context: 4096,
+        draft: 1,
         addr: "127.0.0.1:0".parse().unwrap(),
         model_name: "smoke".into(),
     };
