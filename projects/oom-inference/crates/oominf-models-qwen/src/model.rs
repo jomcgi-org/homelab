@@ -483,7 +483,12 @@ impl<B: Backend> QwenModel<B> {
                 return Ok(None);
             }
             let mut pos = state.pos;
-            for (cs, xs) in chunks.chunks(per_fetch).zip(xs.chunks_mut(per_fetch)) {
+            let groups = chunks.len().div_ceil(per_fetch);
+            for (gi, (cs, xs)) in chunks
+                .chunks(per_fetch)
+                .zip(xs.chunks_mut(per_fetch))
+                .enumerate()
+            {
                 let mut pres = Vec::with_capacity(cs.len());
                 for (c, x) in cs.iter().zip(xs.iter()) {
                     let step = StepInput {
@@ -505,7 +510,10 @@ impl<B: Backend> QwenModel<B> {
                 union.sort_unstable();
                 union.dedup();
                 let addrs = experts.fetch(gpu, layer.layer, &union)?;
-                if stage {
+                // Stage the next layer once, from the layer's last group: a group covers
+                // most of a layer's experts, and staging again for every group would
+                // block on the previous group's reads and copies while the device idles.
+                if stage && gi + 1 == groups {
                     let predicted = layer.predict_next(gpu, d, &moe_in, t, st)?;
                     if !predicted.is_empty() {
                         experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
