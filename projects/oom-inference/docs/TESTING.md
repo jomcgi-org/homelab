@@ -22,7 +22,10 @@ bf16 (the error budget). It writes:
 - per-layer stage fixtures (`layer-NNN/`): every stage boundary, caches and
   recurrent state;
 - a whole-model chain (`model/`): every layer's output, the final mixer output,
-  full logits and top-20 log-probabilities.
+  full logits and top-20 log-probabilities;
+- a long-context layer-3 fixture (`layer-003-long/`, `--long`): a 2734-token
+  prompt, long enough that the QSA indexer keeps only its top 512 blocks, so the
+  sparse selection is exercised (683 of the prefill queries drop blocks).
 
 Regenerating is deterministic: identical inputs give byte-identical files.
 
@@ -37,7 +40,9 @@ ratio of 1.0.
 - *isolated*: every stage is fed the reference's exact inputs, so each error
   belongs to that stage alone. Every stage must stay within 1.5x of the worst
   budget for that stage across steps. Integer stages (top-k expert sets, n-gram
-  ids, indexer masks) are compared as sets and must match.
+  ids, indexer masks) are compared as sets and must match. The indexer mask is
+  computed from the reference's exact block scores here, so it tests the
+  selection rule itself.
 - *chained*: the layer runs from its input with state carried across steps;
   reported, not gated, because near-tie routing flips are legitimate.
 
@@ -67,11 +72,7 @@ fixtures at `$F`:
     oominf check-layer --model $M --fixtures $F/layer-000 --layer 0
     oominf check-layer --model $M --fixtures $F/layer-001 --layer 1
     oominf check-layer --model $M --fixtures $F/layer-003 --layer 3
+    oominf check-layer --model $M --fixtures $F/layer-003-long --layer 3
     oominf check-model --model $M --fixtures $F/model
 
 Each exits non-zero when a gate fails.
-
-## Known gaps
-
-- The QSA indexer's top-k pruning only engages beyond 512 blocks (about 2048
-  tokens); the fixtures are shorter, so that branch is not yet covered.

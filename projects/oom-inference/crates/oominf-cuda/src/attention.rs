@@ -119,31 +119,27 @@ impl Gpu {
         Ok(())
     }
 
-    /// QSA block selection: writes `mask` `[t, kv_stride]` (1 = attendable).
-    /// `scores` needs `t * (kv_stride / ratio + 1)` floats.
+    /// QSA block scores for `t` queries starting at position `start`: row `i` of
+    /// `scores` (stride `kv_stride / ratio + 1`) holds `(start + i + 1) / ratio` scores.
     #[allow(clippy::too_many_arguments)]
-    pub fn qsa_select(
+    pub fn qsa_scores(
         &self,
         q: &Buf,
         block_keys: &Buf,
         scores: &mut Buf,
-        mask: &mut CudaSlice<u8>,
         t: usize,
         start: usize,
         nheads: usize,
         head_dim: usize,
         ratio: usize,
-        topk: usize,
         kv_stride: usize,
     ) -> Result<()> {
         self.check(
-            scores.len() >= t * (kv_stride / ratio + 1)
-                && mask.len() >= t * kv_stride
-                && start + t <= kv_stride,
-            "qsa_select sizes",
+            scores.len() >= t * (kv_stride / ratio + 1) && start + t <= kv_stride,
+            "qsa_scores sizes",
         )?;
-        let f = self.func("qsa_select")?;
-        let a = [t, start, nheads, head_dim, ratio, topk, kv_stride].map(|v| v as i32);
+        let f = self.func("qsa_scores")?;
+        let a = [t, start, nheads, head_dim, ratio, kv_stride].map(|v| v as i32);
         let cfg = LaunchConfig {
             grid_dim: (t as u32, 1, 1),
             block_dim: (256, 1, 1),
@@ -155,29 +151,71 @@ impl Gpu {
                 .arg(q)
                 .arg(block_keys)
                 .arg(scores)
-                .arg(mask)
                 .arg(&a[0])
                 .arg(&a[1])
                 .arg(&a[2])
                 .arg(&a[3])
                 .arg(&a[4])
                 .arg(&a[5])
-                .arg(&a[6])
                 .launch(cfg)?
         };
         Ok(())
     }
 
-    /// Masked GQA attention over the first `kv_len` cache rows.
-    /// `scores` needs `t * heads * kv_stride` floats.
+    /// QSA selection from `scores`: writes `mask` `[t, kv_stride]` (1 = attendable),
+    /// keeping each query's top `topk` blocks (equal scores to the lower block) and the
+    /// incomplete tail block.
     #[allow(clippy::too_many_arguments)]
-    pub fn attn_masked(
+    pub fn qsa_mask(
+        &self,
+        scores: &Buf,
+        mask: &mut CudaSlice<u8>,
+        t: usize,
+        start: usize,
+        ratio: usize,
+        topk: usize,
+        kv_stride: usize,
+    ) -> Result<()> {
+        let flags = kv_stride / ratio + 1;
+        self.check(
+            scores.len() >= t * flags && mask.len() >= t * kv_stride && start + t <= kv_stride,
+            "qsa_mask sizes",
+        )?;
+        self.check(
+            flags <= 48 * 1024,
+            "qsa_mask: context too long for shared flags",
+        )?;
+        let f = self.func("qsa_mask")?;
+        let a = [t, start, ratio, topk, kv_stride].map(|v| v as i32);
+        let cfg = LaunchConfig {
+            grid_dim: (t as u32, 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: flags as u32,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(scores)
+                .arg(mask)
+                .arg(&a[0])
+                .arg(&a[1])
+                .arg(&a[2])
+                .arg(&a[3])
+                .arg(&a[4])
+                .launch(cfg)?
+        };
+        Ok(())
+    }
+
+    /// Masked GQA attention of `t` queries over the first `kv_len` cache rows with an
+    /// online softmax (no `[t, heads, kv]` score matrix). Needs `d <= 256`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_prefill(
         &self,
         q: &Buf,
         k: &Buf,
         v: &Buf,
         mask: &CudaSlice<u8>,
-        scores: &mut Buf,
         out: &mut Buf,
         t: usize,
         heads: usize,
@@ -188,12 +226,13 @@ impl Gpu {
         scale: f32,
     ) -> Result<()> {
         self.check(
-            scores.len() >= t * heads * kv_stride
+            d <= 256
                 && kv_len <= kv_stride
+                && mask.len() >= t * kv_stride
                 && heads.is_multiple_of(kv_heads),
-            "attn_masked sizes",
+            "attn_prefill sizes",
         )?;
-        let f = self.func("attn_masked")?;
+        let f = self.func("attn_prefill")?;
         let a = [t, heads, kv_heads, d, kv_len, kv_stride].map(|v| v as i32);
         let cfg = LaunchConfig {
             grid_dim: ((t * heads) as u32, 1, 1),
@@ -207,7 +246,6 @@ impl Gpu {
                 .arg(k)
                 .arg(v)
                 .arg(mask)
-                .arg(scores)
                 .arg(out)
                 .arg(&a[0])
                 .arg(&a[1])
@@ -312,7 +350,7 @@ impl Gpu {
 
     /// Attention of `t` queries over `kv_len` cached keys under `mask` (`[t, kv_len]`
     /// bytes). One query token with `d == 256` takes the GQA flash-decode path (split
-    /// over keys, merged online-softmax partials); anything else uses `attn_masked`.
+    /// over keys, merged online-softmax partials); anything else uses `attn_prefill`.
     #[allow(clippy::too_many_arguments)]
     pub fn attn_decode_or_masked(
         &self,
@@ -332,24 +370,9 @@ impl Gpu {
         let g = heads / kv_heads;
         // The decode kernel is instantiated for the GQA group size the models use.
         if t != 1 || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
-            let mut scores = ws.take(self, "attn.scores", t * heads * kv_len)?;
-            self.attn_masked(
-                q,
-                k,
-                v,
-                mask,
-                &mut scores,
-                out,
-                t,
-                heads,
-                kv_heads,
-                d,
-                kv_len,
-                kv_len,
-                scale,
-            )?;
-            ws.give("attn.scores", scores);
-            return Ok(());
+            return self.attn_prefill(
+                q, k, v, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
+            );
         }
         // Small chunks keep enough warps busy at short contexts; long contexts get
         // larger chunks so the partial count (and the combine) stays bounded.

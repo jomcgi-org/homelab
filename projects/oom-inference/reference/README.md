@@ -189,7 +189,19 @@ recomputed with a line-for-line copy of HF's selection loop (it keeps no tensors
 step asserts that copy's kept-token mask equals HF's `indexer.mask`. `selected_tokens` is in topk
 order, so compare it as a set. With this prompt (at most 76 tokens) every complete 4-token block
 is kept (`block_topk` is 512), so the mask equals the causal mask: the sparse selection itself is
-not exercised by these fixtures.
+not exercised by these fixtures. The long-context fixture below covers it.
+
+## Long-context layer 3
+
+    CUDA_VISIBLE_DEVICES= nice -n 19 taskset -c 0-11 uv run python make_fixtures.py --long --layers 3
+
+The user message is an instruction plus `long_prompt.txt` (a fixed prefix of the repository's
+MPL-2.0 LICENSE), 2734 prompt tokens after templating, with the same three teacher-forced decode
+steps. Layers 0 to 2 run in memory without capture (the same calls as `--model-chain`), then
+layer 3 writes w4a16 stage fixtures in fp32 and bf16 to `layer-003-long/`, same layout as
+`layer-003/`. Here queries past position 2047 see more than 512 blocks, so the indexer prunes:
+683 prefill queries drop up to 171 blocks (684 tokens). The run fails if nothing is pruned.
+About 3 minutes; output 1.7 GB.
 
 ## Whole-model chain
 
