@@ -392,6 +392,24 @@ def test_admission_does_not_renew_a_claim_with_an_uncovered_reference(session):
     assert utc(row.review_after) == original_deadline
 
 
+def test_admission_does_not_renew_a_partially_named_subset(session):
+    """End to end for the subset renewal: #6822 is closed on GitHub, yet the
+    note "PRs 6821 and 6822 are open" must not renew on #6821 alone."""
+    row = add(session, volatile("subset", 6821, title="PRs 6821 and 6822 are open"))
+    original_deadline = utc(row.review_after)
+    github = Github()
+    github.issues = {6821: "open", 6822: "closed"}
+    result = admit(session, github, Clock())
+    assert result["unsupported"] == 1 and result["renewed"] == 0
+    outcome = outcomes(session, row.note_id)[0]
+    assert outcome.status == "unsupported"
+    assert "is not covered by a verifiable predicate" in outcome.reason
+    assert github.calls == []
+    session.expire_all()
+    assert row.last_reviewed_at is None
+    assert utc(row.review_after) == original_deadline
+
+
 def test_admission_is_idempotent_and_blocked_outcomes_do_not_flood(session):
     rows = seed_mixed(session)
     github = Github()

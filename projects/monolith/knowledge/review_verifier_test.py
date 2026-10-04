@@ -344,7 +344,7 @@ def test_evidence_and_provenance_sections_assert_nothing():
         (f"PR #1 and PR #2 head is {HEAD}", "reference #1 is not covered"),
         ("PR #1 and PR #2 checks are passing", "reference #1 is not covered"),
         (f"#1 and #2 checks are passing at {HEAD}", "more than one reference"),
-        (f"#1 and #2 checks pass at {HEAD}", "no verifiable predicate"),
+        (f"#1 and #2 checks pass at {HEAD}", "reference #1 is not covered"),
         (
             f"PR #1 is open and PR #2 checks are passing at {HEAD}",
             "more than one reference",
@@ -356,6 +356,41 @@ def test_uncovered_or_ambiguous_references_are_unsupported(title, reason):
     verdict, fake = verify({}, title)
     assert verdict.status == "unsupported"
     assert reason in verdict.reason
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "PRs 6821 and 6822 are open",
+        "PR #6821 and 6822 are open",
+        "PR #6821/#6822 are open",
+        "#6821/#6822 are open",
+        "PRs #6821&#6822 are open",
+        "Issues 5, 6 and 7 are closed",
+    ],
+)
+def test_partially_named_second_reference_is_unsupported(title):
+    """A second reference the patterns do not name is never silently dropped."""
+    verdict, fake = verify({}, title)
+    assert verdict.status == "unsupported"
+    assert "is not covered by a verifiable predicate" in verdict.reason
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    ("title", "content"),
+    [
+        ("PR #6821 is open.", "So is PR #6822."),
+        ("PR #6821 is open; PR #6822 as well", None),
+        ("PR #6821 is open", "Same for #6822."),
+    ],
+)
+def test_follow_on_sentence_reference_is_unsupported(title, content):
+    """A follow-on sentence naming a reference inherits state: fail closed."""
+    verdict, fake = verify({}, title, content)
+    assert verdict.status == "unsupported"
+    assert "is not covered by a verifiable predicate" in verdict.reason
     assert fake.calls == []
 
 
