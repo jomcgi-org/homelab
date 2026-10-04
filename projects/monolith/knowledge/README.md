@@ -188,9 +188,15 @@ published fact can still ground public chat and `public_router` search. This
 change covers MCP, HTTP, recall, explorer and planner context only; the public
 views need a migration and a pg-backed test pass, tracked in #6823.
 
-The existing jobs image runs `knowledge-review-backfill --apply --pending-only`
-every five minutes through an Argo CronWorkflow with `Forbid` concurrency, a
-five-minute deadline and bounded resources. It handles at most 20 batches of
+The existing jobs image provides `knowledge-review-backfill --apply --pending-only`
+as an Argo CronWorkflow that is **suspended by default**, including with the
+production values. A merge or deployment does not enable the backfill. After a
+separately approved dry run and review of its counts, an operator can explicitly
+set the `knowledge-review-backfill` entry in `jobs.cronWorkflows` to
+`suspend: false` through GitOps. Keep `knowledge-review-admission` suspended;
+backfill enablement does not authorize renewal admission. Once enabled, the
+backfill runs every five minutes with `Forbid` concurrency, a five-minute
+deadline and bounded resources. It handles at most 20 batches of
 500 notes per run, ordered by stable note id, using only `observed_at` or a
 successful review. Rows waiting for backfill have null deadlines and are
 freshness-unknown and due. There is no migration-day lease. Dry run is the
@@ -199,8 +205,9 @@ counts and `next_after` for bounded continuation. Replays preserve identity,
 provenance, disputes and any shorter deadline. Application commits atomically
 and database errors propagate with rollback.
 
-The five-minute schedule is deliberately perpetual. Pods still running code from
-before the migration can write notes without a policy during a rollout, and
+After explicit enablement, the five-minute schedule is deliberately perpetual.
+Pods still running code from before the migration can write notes without a
+policy during a rollout, and
 those rows would otherwise stay freshness-unknown. With nothing pending the
 query returns no rows, so it locks nothing and applies nothing. Suspend the
 CronWorkflow through the job's `suspend` flag once a dry run reports no pending

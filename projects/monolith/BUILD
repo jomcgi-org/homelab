@@ -5269,6 +5269,12 @@ py_test(
     ],
 )
 
+# Real PostgreSQL row-lock ordering for review, dispute and extraction writers.
+bdd_test(
+    name = "knowledge_review_concurrency_postgres_test",
+    srcs = ["knowledge/review_concurrency_postgres_test.py"],
+)
+
 py_test(
     name = "knowledge_review_admission_test",
     srcs = ["knowledge/review_admission_test.py"],
