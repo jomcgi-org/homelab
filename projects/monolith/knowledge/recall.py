@@ -10,23 +10,21 @@ sessions created afterwards.
 
 from __future__ import annotations
 
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
 import logging
 import os
 import secrets
 import time
-from concurrent.futures import (
-    ThreadPoolExecutor,
-)
-from concurrent.futures import (
-    TimeoutError as FutureTimeoutError,
-)
 from datetime import datetime, timezone
 
 from sqlmodel import Session
 
+from knowledge.recall_cache import cached_vector, prepare_recall, query_text
 from knowledge.clones import dedupe
 from knowledge.freshness import utc
-from knowledge.recall_cache import cached_vector, prepare_recall, query_text
 from knowledge.recall_metrics import increment, record_served
 
 KG_NODE_KEY = "kg-drain"
@@ -207,8 +205,11 @@ def recall_block(
 def expire_recall(text: str | None, *, now: datetime) -> str | None:
     """Discard a stored derived block before retransmission at its deadline.
 
-    Legacy blocks without a deadline fail closed. Previously sent transcripts
-    remain dated history, with an explicit warning in the snapshot itself.
+    Only a block this module generated is touched: it carries a
+    ``RECALL_EXPIRES`` line. Text that merely quotes the header, with no such
+    line after it, is task text and is sent unchanged. Blocks stored before
+    deadlines existed carry no marker and so remain dated history, with the
+    warning in the snapshot itself.
     """
     if text is None:
         return text
@@ -229,6 +230,8 @@ def expire_recall(text: str | None, *, now: datetime) -> str | None:
         ),
         None,
     )
+    if marker is None:
+        return text
     expires = utc(marker)
     if expires is None or utc(now) >= expires:
         return prefix.rstrip() or None
