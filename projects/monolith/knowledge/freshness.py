@@ -33,12 +33,15 @@ _PROVENANCE_SECTION = re.compile(
 )
 # Outstanding work is volatile even when it names no GitHub instance. Keep
 # this vocabulary shared with the verifier: lifecycle evidence cannot clear it.
+_OPERATIONAL_SUBJECT = (
+    r"(?:pilots?|validations?|verifications?|approvals?|rollouts?|deployments?|"
+    r"deploy|CronWorkflow|sign[-\u2010-\u2015 ]?offs?|enablement)"
+)
 _OUTSTANDING_GATE = re.compile(
     # Obligation and operational subject may appear in either order, with
     # arbitrary modifiers or passive wording between them. Do not depend on
     # an action verb being immediately followed by one recognized noun.
-    r"\A(?=[^.!?;\n]*\b(?:pilots?|validation|verification|approval|rollout|"
-    r"deployment|deploy|CronWorkflow|sign[- ]off|enablement)\b)"
+    rf"\A(?=[^.!?;\n]*\b{_OPERATIONAL_SUBJECT}\b)"
     r"(?=[^.!?;\n]*\b(?:needs?[ \t]+to|(?:have|has|ought)[ \t]+to|must|"
     r"shall|should|required[ \t]+to|obliged[ \t]+to|necessary|mandatory|"
     r"compulsory|requirement|owes?|awaiting|remains?|remaining|yet[ \t]+to)\b)"
@@ -47,9 +50,9 @@ _OUTSTANDING_GATE = re.compile(
     # A direct needs/requires object can have modifiers, but cannot jump a
     # conjunction or a durable rule/gate object to a later operational noun.
     r"(?:needs?|requires?)[ \t]+"
-    r"(?:(?!(?:and|or|but|gate|rule|policy)\b)[\w'-]+[ \t]+)*"
-    r"(?:pilots?|validation|verification|approval|rollout)|"
-    r"(?:pilot|validation|approval|verification)[^.!?;\n]*\b"
+    r"(?:(?!(?:and|or|but|gates?|rules?|polic(?:y|ies))\b)[^\s.!?;:]+[ \t]+)*"
+    rf"{_OPERATIONAL_SUBJECT}|"
+    rf"{_OPERATIONAL_SUBJECT}[^.!?;\n]*\b"
     r"(?:required|needed|necessary|mandatory)|"
     r"(?:has|have)[ \t]+not[ \t]+been[ \t]+verified|not[ \t]+yet[ \t]+verified)\b"
     r"|\b(?:todo|follow-up)[ \t]*:",

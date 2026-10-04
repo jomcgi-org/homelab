@@ -153,6 +153,14 @@ def test_volatile_claim_body_survives_evidence_exclusion():
         "A bounded pilot remains to be completed.",
         "The rollout requires a bounded pilot.",
         "We need Joe's approval.",
+        "The rollout requires sign-off.",
+        "We need sign-off from Joe.",
+        "We need Joe’s approval.",
+        "The rollout requires a written, signed approval.",
+        "We need Joe’s final signoff.",
+        "We need Joe’s final sign‑off.",
+        "The service requires deployment.",
+        "We need staged enablement.",
     ],
 )
 def test_outstanding_operational_gate_is_volatile_without_an_instance(claim):
