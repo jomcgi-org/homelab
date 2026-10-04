@@ -67,6 +67,13 @@ slot addresses or a slot table's address. TLC checks the invariants in
 `specs/README.md`; each deliberate `Bug` variant must be caught by the
 invariant it targets (`run.sh bugs`).
 
+## KV cache format and the gates
+
+The default KV cache is lossy (`k8v6`). `check-model` runs the default; its
+chained logits gate holds, while individual layers sit above the per-layer bf16
+budget. The exact path is checked with `--kv-cache fp32` (byte-identical to the
+engine before compression existed) and stays the reference for numerical changes.
+
 ## Running the GPU gates
 
 GPU commands assume exclusive use of the device. With the model at `$M` and
@@ -77,6 +84,7 @@ fixtures at `$F`:
     oominf check-layer --model $M --fixtures $F/layer-003 --layer 3
     oominf check-layer --model $M --fixtures $F/layer-003-long --layer 3
     oominf check-model --model $M --fixtures $F/model
+    oominf check-model --model $M --fixtures $F/model --kv-cache fp32
 
 Each exits non-zero when a gate fails.
 

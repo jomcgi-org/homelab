@@ -68,11 +68,28 @@ in `TESTING.md`. Defaults:
   three bf16 terms, and the products accumulate in fp32.
 - Dense weights: bf16 as released. Decode GEMVs read fp32 activations directly;
   prefill GEMMs round activations to bf16 for tensor cores.
-- Residual stream, norms, softmax, recurrent state and KV cache: fp32. A
-  compressed KV cache (`--kv-cache`, `KvFormat::Turbo`: TurboQuant-style rotation
-  plus 2 to 8-bit Lloyd-Max codebooks per coordinate) is opt-in; it is lossy, so
-  it is judged by outcome (`oominf score`, retrieval, tasks) against fp32 rather
-  than by the per-layer budgets.
+- Residual stream, norms, softmax and recurrent state: fp32.
+- KV cache: compressed by default, `k8v6` (`KvFormat::Turbo`: TurboQuant-style
+  rotation, then 8-bit keys and 6-bit values from Lloyd-Max codebooks with a
+  scale per 32 coordinates); `--kv-cache fp32` keeps it exact. The indexer caches
+  stay fp32.
+
+**Why k8v6 by default.** The one deliberate exception to "no rounding we do not
+benefit from", chosen 2026-10-04 (#6830): it cuts KV memory about 3x (the
+expert tier keeps about 1,400 more slots at 95k tokens, decode VRAM hits go from
+26% to 57%, decode +19%), and its effect on outputs is inside the model's own
+rounding noise at long context (fp32 against fp32 with only the prefill chunk
+size changed shifts next-token distributions as much), with retrieval and
+long-context tasks unchanged. Lower bit widths are measurably lossier. A lossy
+mode is judged by outcome (`oominf score`, retrieval, tasks), not by the
+per-layer budgets. Known cost: prefill attention re-decodes cached tiles, about
+23% slower at 95k (#6853).
+
+Reproducibility: experts computed on the CPU round differently from the GPU, and
+which ones run there depends on cache timing. With an exact cache that rarely
+changes a token; a compressed cache can turn it into a different codebook index,
+so greedy output with `k8v6` varies run to run. With `--host-compute 0` it is
+deterministic, and speculative decoding again equals one-token decoding.
 - MTP experts (the draft head): bf16 as released, fp32 activations and
   accumulation.
 
