@@ -159,3 +159,30 @@ impl Checkpoint {
         })
     }
 }
+
+/// A tensor read fully into memory from a single safetensors file.
+pub struct OwnedTensor {
+    pub dtype: String,
+    pub shape: Vec<u64>,
+    pub bytes: Vec<u8>,
+}
+
+/// Reads every tensor of one (small) safetensors file.
+pub fn read_file(path: &Path) -> Result<HashMap<String, OwnedTensor>> {
+    let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let (start, metas) = parse_header(&data).with_context(|| format!("{}", path.display()))?;
+    Ok(metas
+        .into_iter()
+        .map(|(name, m)| {
+            let bytes = data[start + m.start..start + m.end].to_vec();
+            (
+                name,
+                OwnedTensor {
+                    dtype: m.dtype,
+                    shape: m.shape,
+                    bytes,
+                },
+            )
+        })
+        .collect())
+}
