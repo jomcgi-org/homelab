@@ -165,6 +165,20 @@ class TestUpsertNote:
         note = session.exec(select(Note).where(Note.note_id == "rev")).one()
         assert note.revision == 3
 
+    def test_upsert_refreshes_a_stale_revision_before_replacing_a_note(
+        self, store, session
+    ):
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        stale = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        with Session(session.get_bind()) as other:
+            row = other.exec(select(Note).where(Note.note_id == "rev")).one()
+            row.confidence = 0.8
+            other.commit()
+        assert stale.revision == 0
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        current = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        assert current.revision == 2
+
     def test_a_review_captured_before_a_reindex_cannot_renew(self, store, session):
         from knowledge.freshness import commit_successful_review
 

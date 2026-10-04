@@ -114,7 +114,10 @@ evidence-backed review (below) renews a deadline.
 changes the claim or its support (content, confidence, state, validity,
 a duplicate retelling through `bump_revision`) and by supersession. The review
 lease and layout-only changes do not move it. Every store upsert, including
-reindex, advances it. `content_hash` alone
+reindex, locks and refreshes the existing row before advancing it. ORM
+retellings increment revision with database arithmetic. Open-dispute writes
+update the note revision in the same transaction, serializing against the
+review's note row lock. `content_hash` alone
 cannot see a retelling, so a review captures the revision at admission.
 
 `review_verifier.GitHubVerifier` verifies only what a GitHub response

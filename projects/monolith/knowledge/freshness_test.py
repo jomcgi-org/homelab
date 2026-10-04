@@ -129,6 +129,9 @@ def test_volatile_claim_body_survives_evidence_exclusion():
         "TODO: run the pilot.",
         "Follow-up: enable the CronWorkflow.",
         "Deployment has not been verified yet.",
+        "A pilot is still needed.",
+        "We are waiting on live verification.",
+        "The rollout requires a pilot.",
     ],
 )
 def test_outstanding_operational_gate_is_volatile_without_an_instance(claim):

@@ -34,9 +34,11 @@ _PROVENANCE_SECTION = re.compile(
 # Outstanding work is volatile even when it names no GitHub instance. Keep
 # this vocabulary shared with the verifier: lifecycle evidence cannot clear it.
 _OUTSTANDING_GATE = re.compile(
-    r"\b(still[ \t]+(?:required|needs?)|outstanding|blocked[ \t]+on|"
-    r"waiting[ \t]+for|must[ \t]+verify|"
-    r"(?:pilot|validation|approval|verification)[^.!?;\n]*\brequired|"
+    r"\b(still[ \t]+(?:required|needs?|needed)|outstanding|blocked[ \t]+on|"
+    r"waiting[ \t]+(?:for|on)|must[ \t]+verify|"
+    r"(?:needs?|requires?)[ \t]+(?:(?:a|an|the|live|operational)[ \t]+)*"
+    r"(?:pilot|validation|verification|approval|rollout)|"
+    r"(?:pilot|validation|approval|verification)[^.!?;\n]*\b(?:required|needed)|"
     r"(?:has|have)[ \t]+not[ \t]+been[ \t]+verified|not[ \t]+yet[ \t]+verified)\b"
     r"|\b(?:todo|follow-up)[ \t]*:",
     re.IGNORECASE,

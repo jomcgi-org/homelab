@@ -422,6 +422,9 @@ def test_admission_does_not_renew_a_partially_named_subset(session):
         "TODO: run the pilot.",
         "Follow-up: enable the CronWorkflow.",
         "Deployment has not been verified yet.",
+        "A pilot is still needed.",
+        "We are waiting on live verification.",
+        "The rollout requires a pilot.",
     ],
 )
 def test_admission_does_not_renew_an_operational_gate(session, gate):
@@ -446,6 +449,9 @@ def test_admission_does_not_renew_an_operational_gate(session, gate):
         "issue",
         "malformed",
         "unavailable",
+        "missing-status",
+        "missing-conclusion",
+        "missing-statuses",
     ],
 )
 def test_admission_does_not_renew_unestablished_checks(session, case):
@@ -453,6 +459,13 @@ def test_admission_does_not_renew_unestablished_checks(session, case):
     title = f"PR #1 checks passed at {sha}"
     if case == "pending-with-failure":
         title = f"Checks are pending at {sha}"
+    elif case.startswith("missing-") and case != "missing":
+        term = {
+            "missing-status": "pending",
+            "missing-conclusion": "failing",
+            "missing-statuses": "passed",
+        }[case]
+        title = f"Checks {term} at {sha}"
     row = add(session, volatile(title=title))
     original = utc(row.review_after)
     paths = {
@@ -481,7 +494,7 @@ def test_admission_does_not_renew_unestablished_checks(session, case):
             },
         ),
         f"/repos/{REPO}/commits/{sha}/status?per_page=100": GitHubResponse(
-            200, {"total_count": 0, "statuses": []}
+            200, {"sha": sha, "total_count": 0, "statuses": []}
         ),
     }
     if case == "missing":
@@ -494,17 +507,81 @@ def test_admission_does_not_renew_unestablished_checks(session, case):
         paths[f"/repos/{REPO}/commits/{sha}/pulls?per_page=100"] = GitHubResponse(
             200 if case == "malformed" else 503, {}
         )
+    elif case in {"missing-status", "missing-conclusion", "missing-statuses"}:
+        run = {"head_sha": sha, "status": "completed", "conclusion": "success"}
+        if case != "missing-statuses":
+            del run["status" if case == "missing-status" else "conclusion"]
+        paths[f"/repos/{REPO}/commits/{sha}/check-runs?per_page=100"] = GitHubResponse(
+            200, {"total_count": 1, "check_runs": [run]}
+        )
+        if case == "missing-statuses":
+            paths[f"/repos/{REPO}/commits/{sha}/status?per_page=100"].body[
+                "total_count"
+            ] = 1
     result = admit(session, paths.__getitem__, Clock())
     assert result["renewed"] == 0
     expected = (
         "unsupported"
         if case == "issue"
-        else ("unavailable" if case in {"malformed", "unavailable"} else "failed")
+        else (
+            "unavailable"
+            if case
+            in {
+                "malformed",
+                "unavailable",
+                "missing-status",
+                "missing-conclusion",
+                "missing-statuses",
+            }
+            else "failed"
+        )
     )
     assert outcomes(session, row.note_id)[0].status == expected
     session.refresh(row)
     assert row.last_reviewed_at is None
     assert utc(row.review_after) == original
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_concurrent_retellings_cannot_lose_a_revision(engine, explicit):
+    with Session(engine) as seed:
+        add(seed, volatile(confidence=0.5))
+    with Session(engine) as first, Session(engine) as second:
+        a = first.exec(select(Note).where(Note.note_id == "n1")).one()
+        b = second.exec(select(Note).where(Note.note_id == "n1")).one()
+        if explicit:
+            bump_revision(a)
+        else:
+            a.confidence = 0.6
+        first.commit()
+        first.refresh(a)
+        captured = a.revision
+        if explicit:
+            bump_revision(b)
+        else:
+            b.confidence = 0.7
+        second.commit()
+    with Session(engine) as reviewer:
+        row = reviewer.exec(select(Note).where(Note.note_id == "n1")).one()
+        assert row.revision == captured + 1
+        original = utc(row.review_after)
+        result = review(reviewer, row, expected_revision=captured)
+        assert result.reason == "revision_changed"
+        assert utc(row.review_after) == original
+
+
+def test_dispute_creation_advances_revision_in_the_callers_transaction(session):
+    row = add(session, volatile())
+    captured = row.revision
+    session.add(Dispute(note_id=row.note_id, reason="new evidence"))
+    session.flush()
+    session.refresh(row)
+    assert row.revision == captured + 1
+    assert review(session, row, expected_revision=captured).reason == "revision_changed"
+    session.rollback()
+    session.refresh(row)
+    assert row.revision == captured
+    assert not session.exec(select(Dispute)).all()
 
 
 def test_admission_is_idempotent_and_blocked_outcomes_do_not_flood(session):
