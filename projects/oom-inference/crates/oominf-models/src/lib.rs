@@ -19,6 +19,9 @@ pub struct Options {
     pub max_context: usize,
     /// Prompt tokens per prefill chunk; `None` uses the family's default.
     pub prefill_chunk: Option<usize>,
+    /// CPU threads computing host-resident routed experts of decode-sized steps (0:
+    /// every routed record is copied to the device).
+    pub host_threads: usize,
 }
 
 /// The `model_type` of a converted model directory.
@@ -49,6 +52,7 @@ pub fn open<B: Backend>(
                 prefill_chunk: opts
                     .prefill_chunk
                     .unwrap_or(oominf_models_qwen::PREFILL_CHUNK),
+                host_threads: opts.host_threads,
             },
             experts,
         ),

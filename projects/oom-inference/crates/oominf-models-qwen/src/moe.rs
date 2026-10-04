@@ -2,10 +2,11 @@
 //! records: NVFP4 (W4A16 in fp32) for the decoder layers, bf16 for the MTP layer.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
 use oominf_core::{Backend, Bf16Record, ExpertSource, Nvfp4Record, Probe, View, Workspace, tap};
+use oominf_cpu::{HostExperts, Job, Pending};
 use oominf_format::Model;
 
 use crate::Dims;
@@ -47,6 +48,13 @@ impl Geometry {
             Geometry::Bf16(g) => g.inter,
         }
     }
+
+    fn host(&self) -> oominf_cpu::Geometry {
+        match *self {
+            Geometry::Nvfp4(g) => oominf_cpu::Geometry::Nvfp4(g),
+            Geometry::Bf16(g) => oominf_cpu::Geometry::Bf16(g),
+        }
+    }
 }
 
 pub struct Moe<B: Backend> {
@@ -63,9 +71,19 @@ pub struct Moe<B: Backend> {
     shared_up: B::Bf16,
     shared_down: B::Bf16,
     shared_gate_logit: B::Bf16,
+    /// Computes host-resident experts of decode-sized steps on the CPU (absent:
+    /// every routed record is copied to the device).
+    host: Option<Arc<HostExperts>>,
+    /// Bytes of one expert record.
+    stride: usize,
 }
 
 impl<B: Backend> Moe<B> {
+    /// Lets decode-sized steps compute host-resident experts on `pool`.
+    pub fn set_host_experts(&mut self, pool: Arc<HostExperts>) {
+        self.host = Some(pool);
+    }
+
     /// A decoder layer's MoE.
     pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let next = format!("model.language_model.layers.{}.mlp.gate.weight", layer + 1);
@@ -192,6 +210,8 @@ impl<B: Backend> Moe<B> {
             shared_up: w("shared_expert.up_proj.weight", &[si, h])?,
             shared_down: w("shared_expert.down_proj.weight", &[h, si])?,
             shared_gate_logit: w("shared_expert_gate.weight", &[1, h])?,
+            host: None,
+            stride: group.schema.stride as usize,
         })
     }
 
@@ -281,8 +301,11 @@ impl<B: Backend> Moe<B> {
         }
 
         // Start loading the routed experts so their copies overlap the shared expert
-        // and the resident experts' compute.
-        let plan = self.begin_routed(gpu, d, t, &ids_host, experts)?;
+        // and the resident experts' compute; host-resident experts the source leaves
+        // in host memory start on the CPU now.
+        let host_ok = self.host.is_some() && t <= PAIR_MAX_TOKENS;
+        let plan = self.begin_routed(gpu, d, t, &ids_host, experts, host_ok)?;
+        let host_work = self.start_host(gpu, d, x, t, &plan)?;
 
         // Shared expert.
         let si = d.shared_inter;
@@ -307,7 +330,8 @@ impl<B: Backend> Moe<B> {
         )?;
         tap(gpu, probe, "shared_gate_logit", &mut gate_logit)?;
 
-        let mut routed = self.finish_routed(gpu, d, ws, x, t, plan, &weights, experts)?;
+        let mut routed =
+            self.finish_routed(gpu, d, ws, x, t, plan, host_work, &weights, experts)?;
         tap(gpu, probe, "routed_out", &mut routed)?;
         if let Some(p) = predicted {
             experts.prefetch(gpu, self.layer + 1, &p)?;
@@ -318,8 +342,9 @@ impl<B: Backend> Moe<B> {
         Ok(out)
     }
 
-    /// Groups the step's assignments by expert, resident experts first, and starts
-    /// fetching their records.
+    /// Groups the step's assignments by expert (resident experts first, then those
+    /// computed on the host, then those still loading) and starts fetching their
+    /// records.
     fn begin_routed(
         &self,
         gpu: &B,
@@ -327,6 +352,7 @@ impl<B: Backend> Moe<B> {
         t: usize,
         ids_host: &[i32],
         experts: &mut dyn ExpertSource<B>,
+        host_ok: bool,
     ) -> Result<RoutedPlan> {
         let (e, k) = (d.experts, d.top_k);
         // Group assignment slots (t * k + s) by expert.
@@ -338,22 +364,64 @@ impl<B: Backend> Moe<B> {
             by_expert.entry(ex as u32).or_default().push(slot);
         }
         let distinct: Vec<u32> = by_expert.keys().copied().collect();
-        let staged = experts.begin_fetch(gpu, self.layer, &distinct)?;
+        let staged = experts.begin_fetch(gpu, self.layer, &distinct, host_ok)?;
         ensure!(
-            staged.addrs.len() == distinct.len() && staged.ready.len() == distinct.len(),
+            staged.addrs.len() == distinct.len()
+                && staged.ready.len() == distinct.len()
+                && staged.host.len() == distinct.len(),
             "expert source returned {} records for {} experts",
             staged.addrs.len(),
             distinct.len()
         );
-        // Resident experts first so they can run before the rest arrive.
+        // Resident experts first so they can run before the rest arrive, then the
+        // host-computed ones, then those still loading.
         let lists: Vec<Vec<usize>> = by_expert.into_values().collect();
+        let rank = |i: usize| match (staged.ready[i], staged.host[i]) {
+            (true, _) => 0,
+            (false, Some(_)) => 1,
+            (false, None) => 2,
+        };
         let mut order: Vec<usize> = (0..lists.len()).collect();
-        order.sort_by_key(|&i| !staged.ready[i]);
+        order.sort_by_key(|&i| rank(i));
         Ok(RoutedPlan {
-            resident: staged.ready.iter().filter(|&&r| r).count(),
+            resident: order.iter().filter(|&&i| rank(i) == 0).count(),
+            hosted: order.iter().filter(|&&i| rank(i) == 1).count(),
             recs: order.iter().map(|&i| staged.addrs[i]).collect(),
+            host: order.iter().map(|&i| staged.host[i]).collect(),
             lists: order.into_iter().map(|i| lists[i].clone()).collect(),
         })
+    }
+
+    /// Starts the plan's host-computed experts on the CPU (their records stay in
+    /// host memory until the source's next fetch, which follows this step).
+    fn start_host(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        x: &B::F32,
+        t: usize,
+        plan: &RoutedPlan,
+    ) -> Result<Option<Pending>> {
+        let (Some(pool), true) = (&self.host, plan.hosted > 0) else {
+            return Ok(None);
+        };
+        let mut xs = gpu.download_f32(x)?;
+        xs.truncate(t * d.hidden);
+        let k = d.top_k;
+        let range = plan.resident..plan.resident + plan.hosted;
+        let jobs = range
+            .map(|i| {
+                Ok(Job {
+                    record: plan.host[i].context("host-computed expert without a record")?,
+                    len: self.stride,
+                    tokens: plan.lists[i].iter().map(|&slot| slot / k).collect(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // SAFETY: the source keeps these host records unchanged until its next fetch
+        // or prefetch, and this step waits for the work (or drops `Pending`, which
+        // waits) before either.
+        Ok(Some(unsafe { pool.submit(self.geo.host(), xs, jobs) }))
     }
 
     /// Per group (resident experts, then the ones that had to load) one gate/up and
@@ -370,6 +438,7 @@ impl<B: Backend> Moe<B> {
         x: &B::F32,
         t: usize,
         plan: RoutedPlan,
+        mut host_work: Option<Pending>,
         weights: &B::F32,
         experts: &mut dyn ExpertSource<B>,
     ) -> Result<B::F32> {
@@ -412,9 +481,16 @@ impl<B: Backend> Moe<B> {
                 None
             },
         };
-        for (lo, hi) in [(0, plan.resident), (plan.resident, n_e)] {
-            if lo == plan.resident {
+        let loading = plan.resident + plan.hosted;
+        for (lo, hi) in [(0, plan.resident), (loading, n_e)] {
+            if lo == loading {
                 experts.finish_fetch(gpu)?;
+                if let Some(work) = host_work.take() {
+                    // The host-computed experts' outputs land in their assignment rows.
+                    let y = work.wait()?;
+                    let a0 = meta[plan.resident] as usize;
+                    gpu.write_f32_at(&y, &mut buf.y, a0 * h)?;
+                }
             }
             if lo == hi {
                 continue;
@@ -503,11 +579,16 @@ struct Act<B: Backend> {
     gu: Option<(B::F32, B::F32)>,
 }
 
-/// A step's routed experts in launch order (resident first) with their
-/// assignment slots and record addresses.
+/// A step's routed experts in launch order (resident, host-computed, loading) with
+/// their assignment slots and record addresses.
 struct RoutedPlan {
     lists: Vec<Vec<usize>>,
+    /// Device record addresses (unused for host-computed experts).
     recs: Vec<u64>,
+    /// Host record addresses of host-computed experts.
+    host: Vec<Option<usize>>,
     /// The first `resident` experts were usable before `finish_fetch`.
     resident: usize,
+    /// The next `hosted` experts are computed on the host.
+    hosted: usize,
 }

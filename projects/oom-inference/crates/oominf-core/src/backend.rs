@@ -51,6 +51,9 @@ pub trait Memory {
     /// Copies `host` into `dst` (same length).
     fn upload_into(&self, host: &[f32], dst: &mut Self::F32) -> Result<()>;
     fn download_f32(&self, buf: &Self::F32) -> Result<Vec<f32>>;
+    /// Copies `host` into `dst` starting at element `offset`, ordered after the
+    /// compute issued so far.
+    fn write_f32_at(&self, host: &[f32], dst: &mut Self::F32, offset: usize) -> Result<()>;
 
     fn upload_bf16(&self, host: &[u16]) -> Result<Self::Bf16>;
     /// bf16 buffer of `n` elements with unspecified contents.

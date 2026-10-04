@@ -41,6 +41,25 @@ pub struct ExpertArgs {
     /// disk misses into the host tier: `on` or `off`.
     #[arg(long, default_value = "on")]
     pub lookahead: String,
+    /// Most routed experts per layer and decode step computed on the CPU from host
+    /// memory instead of copied to the device (0 copies every one).
+    #[arg(long, default_value_t = 6)]
+    pub host_compute: usize,
+    /// CPU threads for those experts (default: one per physical core).
+    #[arg(long)]
+    pub host_threads: Option<usize>,
+}
+
+impl ExpertArgs {
+    /// CPU threads computing host-resident experts (0 when host compute is off).
+    pub fn host_threads(&self) -> usize {
+        if self.host_compute == 0 {
+            return 0;
+        }
+        self.host_threads.unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(1))
+        })
+    }
 }
 
 /// Builds the expert source `args` selects, once the model is on the device.
@@ -69,7 +88,20 @@ pub fn factory<B: Backend>(args: &ExpertArgs, files: Arc<Files>) -> ExpertFactor
                         policy::parse(&args.host_policy)?,
                     ))
                 };
-                oominf_tiers::tiered_for_model(b, &files, vram, host, lookahead, &policies)?
+                let host_compute = if args.host_threads() > 0 {
+                    args.host_compute
+                } else {
+                    0
+                };
+                oominf_tiers::tiered_for_model(
+                    b,
+                    &files,
+                    vram,
+                    host,
+                    lookahead,
+                    host_compute,
+                    &policies,
+                )?
             }
             other => anyhow::bail!("unknown --experts {other:?} (tiered, disk)"),
         })
@@ -93,6 +125,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     let opts = oominf_models::Options {
         max_context: args.max_context,
         prefill_chunk: args.prefill_chunk,
+        host_threads: args.experts.host_threads(),
     };
     let experts = factory::<Gpu>(args.experts, files.clone());
     oominf_models::open(gpu, files, &opts, experts)

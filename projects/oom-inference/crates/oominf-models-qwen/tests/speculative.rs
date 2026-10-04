@@ -73,10 +73,11 @@ fn speculative_greedy_matches_one_token_steps() {
         Options {
             max_context: 4096,
             prefill_chunk: oominf_models_qwen::PREFILL_CHUNK,
+            host_threads: 8,
         },
         Box::new(move |b| {
             let policies = || Ok((policy::parse("lru")?, policy::parse("lru")?));
-            oominf_tiers::tiered_for_model(b, &experts_files, 8.0, 16.0, true, &policies)
+            oominf_tiers::tiered_for_model(b, &experts_files, 8.0, 16.0, true, 6, &policies)
         }),
     )
     .unwrap();

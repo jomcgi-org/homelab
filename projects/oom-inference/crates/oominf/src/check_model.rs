@@ -83,7 +83,11 @@ pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Resul
     let tokens = step_tokens(fixtures)?;
     let gpu = Arc::new(Gpu::new(0)?);
     let t0 = std::time::Instant::now();
-    let qwen = QwenModel::load(&*gpu, &model, dims, None)?;
+    let mut qwen = QwenModel::load(&*gpu, &model, dims, None)?;
+    if expert_args.host_threads() > 0 {
+        let pool = oominf_cpu::HostExperts::new(expert_args.host_threads())?;
+        qwen.set_host_experts(Arc::new(pool));
+    }
     gpu.sync()?;
     println!("model loaded in {:.1}s", t0.elapsed().as_secs_f64());
     let vocab = qwen.vocab();
@@ -163,5 +167,10 @@ pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Resul
             );
         }
     }
+    let s = experts.stats();
+    println!(
+        "\nexpert records: {} fetched, {} computed on the host",
+        s.requests, s.host_computed
+    );
     Ok(ok)
 }

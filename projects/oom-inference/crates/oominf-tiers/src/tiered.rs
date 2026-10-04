@@ -37,11 +37,27 @@
 //! slots are refilled on the copy stream after the compute-stream event, and a host
 //! stage slot is reused only after the copy that read it has completed.
 //!
+//! **Host compute** (decode-sized fetches with `host_ok`): a record that misses VRAM
+//! but sits in the host tier can stay there and be computed on the CPU, up to
+//! `host_compute` records per fetch; its host address goes back in
+//! [`Staged::host`] and it is neither placed in VRAM nor copied. Admission to VRAM
+//! is second-hit: the first host-tier miss of a key within the admission window is
+//! computed on the host, a repeat is copied to VRAM, so one-off experts do not evict
+//! recurring ones. **HostRecordValid**: a handed-out host record is pinned against
+//! eviction for the rest of its fetch (it is one of the fetch's keys) and nothing
+//! writes host slots between fetches except the next fetch or prefetch, which the
+//! caller only issues after its host compute finished.
+//!
 //! **Lookahead** ([`ExpertSource::prefetch`], decode only): the model predicts the
 //! next layer's experts and the tier reads predicted disk misses into host cache
 //! slots (evicting cold residents, never VRAM residents, and only after the copy
 //! that last read a slot completed). The next fetch drains those reads before it
 //! copies anything, so a host slot is only a copy source once its read landed.
+//!
+//! **Victim cache** (decode): a decode fetch that evicts a main VRAM record first
+//! copies it device to device into the stage (one copy-queue operation before the
+//! slot's refill, after the compute-stream event like every refill), so the stage
+//! extends the decode cache with recently evicted records between prefills.
 //!
 //! **Giving VRAM back** ([`ExpertSource::release_vram`] / `reclaim_vram`): the main
 //! arena is allocated in chunks of `CHUNK_SLOTS` records. A chunk is freed only after
@@ -49,7 +65,7 @@
 //! so no kernel, copy or table entry can still reference its slots (the spec's
 //! `Retire`); reclaimed chunks come back empty (`Restore`).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
@@ -83,6 +99,10 @@ const GIB: f64 = (1u64 << 30) as f64;
 const PRELOAD_BATCH: usize = 64;
 
 pub const CHUNK_SLOTS: usize = 64;
+
+/// Fetches within which a second host-tier miss of a key admits it to VRAM (about
+/// 32 decode tokens of a 48-layer model).
+const ADMIT_WINDOW: u64 = 48 * 32;
 
 pub struct TieredExperts<B: Backend> {
     b: Arc<B>,
@@ -125,6 +145,12 @@ pub struct TieredExperts<B: Backend> {
     open: bool,
     /// Start disk-to-host reads for predicted experts ([`ExpertSource::prefetch`]).
     pub lookahead: bool,
+    /// Most records per fetch left in host memory for the caller to compute on the
+    /// host (with `host_ok`); 0 copies every host-tier hit to VRAM.
+    pub host_compute: usize,
+    /// Fetch sequence number of each key's last host-computed miss (second-hit
+    /// admission).
+    host_seen: HashMap<u32, u64>,
     /// The last prediction: its layer and keys, and the keys whose disk reads it
     /// started (in flight until the next fetch drains them).
     prediction: Option<(u32, HashSet<u32>)>,
@@ -217,6 +243,8 @@ impl<B: Backend> TieredExperts<B> {
             reads: Vec::new(),
             open: false,
             lookahead: false,
+            host_compute: 0,
+            host_seen: HashMap::new(),
             prediction: None,
             lookahead_inflight: Vec::new(),
             seq: 0,
@@ -372,6 +400,29 @@ impl<B: Backend> TieredExperts<B> {
         Ok(())
     }
 
+    /// Second-hit admission: whether a host-tier miss of `key` should enter VRAM
+    /// now (it missed within the admission window before) rather than be computed
+    /// on the host. Records this miss either way.
+    fn admit(&mut self, key: u32) -> bool {
+        let repeat = self
+            .host_seen
+            .insert(key, self.seq)
+            .is_some_and(|last| self.seq - last <= ADMIT_WINDOW);
+        if repeat {
+            self.host_seen.remove(&key);
+        }
+        repeat
+    }
+
+    /// Drops admission history older than the window (bounded memory).
+    fn prune_host_seen(&mut self) {
+        if self.host_seen.len() > 4 * self.vram.capacity().max(1) {
+            let seq = self.seq;
+            self.host_seen
+                .retain(|_, &mut last| seq - last <= ADMIT_WINDOW);
+        }
+    }
+
     fn forget_reads(&mut self) {
         for &(src, _, key, target) in &self.reads {
             if let Src::Host(_) = src {
@@ -430,12 +481,12 @@ fn enqueue_copy<B: Backend>(
 
 impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
     fn fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
-        let staged = self.begin_fetch(b, layer, experts)?;
+        let staged = self.begin_fetch(b, layer, experts, false)?;
         self.finish_fetch(b)?;
         Ok(staged.addrs)
     }
 
-    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Staged> {
+    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32], host_ok: bool) -> Result<Staged> {
         self.finish_fetch(b)?;
         self.finish_lookahead(layer, experts)?;
         self.seq += 1;
@@ -449,13 +500,22 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
         let wanted: HashSet<u32> = keys.iter().copied().collect();
         let pinned = |k: u32| wanted.contains(&k);
         let streaming = self.stage.capacity() > 0 && keys.len() > self.stream_threshold;
+        let mut host_budget = if host_ok && !streaming {
+            self.host_compute
+        } else {
+            0
+        };
+        self.prune_host_seen();
 
         // VRAM placement: addresses now, fills (key, target, address) and
         // device-to-device promotions (source, destination) for later.
         let mut addrs = Vec::with_capacity(keys.len());
         let mut ready = Vec::with_capacity(keys.len());
+        let mut host_rec = vec![None; keys.len()];
         let mut fills = Vec::new();
         let mut promotions = Vec::new();
+        // Decode evictions saved into the stage (victim cache): (main slot, stage slot).
+        let mut victims = Vec::new();
         for &key in &keys {
             self.stats.requests += 1;
             if streaming {
@@ -494,6 +554,21 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
                 }
                 continue;
             }
+            if host_budget > 0
+                && self.vram.peek(key).is_none()
+                && self.stage.peek(key).is_none()
+                && let Some(hs) = self.host.peek(key)
+                && !self.admit(key)
+            {
+                host_budget -= 1;
+                self.host.place(key, &pinned);
+                self.stats.host_hits += 1;
+                self.stats.host_computed += 1;
+                host_rec[addrs.len()] = Some(self.host_arena.slot_ptr(hs) as usize);
+                addrs.push(0);
+                ready.push(false);
+                continue;
+            }
             let place = self
                 .vram
                 .place(key, &pinned)
@@ -504,8 +579,16 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
                     addrs.push(self.main_addr(s));
                     ready.push(true);
                 }
-                Place::Miss(s, _) => {
+                Place::Miss(s, evicted) => {
                     let dst = self.main_addr(s);
+                    // Keep the evicted record in VRAM: copy it into the stage first, so
+                    // a later miss on it is a device-to-device promotion.
+                    if let Some(old) = evicted
+                        && self.stage.capacity() > 0
+                        && let Some(Place::Miss(ss, _)) = self.stage.place(old, &pinned)
+                    {
+                        victims.push((dst, self.stage_addr(ss)));
+                    }
                     match self.stage.peek(key) {
                         Some(ss) => {
                             self.stats.vram_hits += 1;
@@ -519,14 +602,19 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
             }
         }
         if fills.is_empty() && promotions.is_empty() {
-            return Ok(Staged { addrs, ready });
+            return Ok(Staged {
+                addrs,
+                ready,
+                host: host_rec,
+            });
         }
 
         // Refills wait for every kernel enqueued so far (KernelReadsValid).
         let after = self.b.record_compute()?;
         self.b.copies_wait(&self.copy_queue, &after)?;
         self.open = true;
-        for (src, dst) in promotions {
+        // Victim saves first: they read main slots that promotions and fills refill.
+        for (src, dst) in victims.into_iter().chain(promotions) {
             // SAFETY: both are slots of the VRAM arena; the source is only refilled by
             // later copies on this same stream, and the destination is read only by
             // kernels ordered after finish_fetch.
@@ -579,7 +667,11 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
             self.forget_reads();
             return Err(e);
         }
-        Ok(Staged { addrs, ready })
+        Ok(Staged {
+            addrs,
+            ready,
+            host: host_rec,
+        })
     }
 
     /// Reads predicted disk misses of `layer` into host slots (never into VRAM, and

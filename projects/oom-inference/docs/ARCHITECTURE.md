@@ -13,8 +13,9 @@ demand; everything else stays resident on the device.
 | `oominf-format` | On-disk weight format: reader, writer, checksums (`FORMAT.md`) | |
 | `oominf-convert` | Release checkpoint (safetensors) to the format, one adapter per model family | format |
 | `oominf-cuda` | CUDA implementation of `Backend`: device memory, streams, events, cuBLAS, kernels in `kernels/*.cu` | core |
+| `oominf-cpu` | Routed experts computed on the host from records in host memory (exact NVFP4 and bf16 decoding, fp32, AVX-512 with a scalar path), on a worker pool | core |
 | `oominf-tiers` | Expert sources: `TieredExperts` (VRAM slots, pinned host arena filled by direct I/O, cache policies) and `DiskExperts` | core, format |
-| `oominf-models-qwen` | Qwen 3.8 Flash, generic over `B: Backend` | core, format |
+| `oominf-models-qwen` | Qwen 3.8 Flash, generic over `B: Backend` | core, cpu, format |
 | `oominf-models` | Registry: opens a converted model with the implementation for its `model_type` | core, format, models-* |
 | `oominf-server` | OpenAI and Anthropic HTTP APIs, chat templates, output parsers, sampling, prefix reuse | core |
 | `oominf` | CLI and composition root: picks the backend, the model (via the registry) and the expert source | all |
@@ -82,8 +83,16 @@ trades are how engines drift from the model they claim to run.
   reads, never the page cache. **Disk:** the model files.
 - Placement is a `Policy` (LRU and decay-weighted frequency), chosen by replaying
   recorded routing traces (`oominf-tiers/examples/replay.rs`).
+- **Host compute** (decode-sized steps): a record that misses VRAM but is in the
+  host tier can stay there and run on the CPU (up to `--host-compute` experts
+  per layer), overlapping the GPU's resident experts; only its output rows move.
+  Admission to VRAM is second-hit: a key's first host-tier miss within a window
+  runs on the CPU, a repeat is copied to VRAM, so one-off experts do not evict
+  recurring ones.
 - Prefill streams through a one-layer stage instead of evicting decode-hot
   experts, and runs layer by layer so each layer's experts load once per prompt.
+  Between prefills the stage is a decode victim cache: an evicted record is
+  copied there device to device, so a later miss on it is a promotion.
 - During decode (and draft verification), layer L+1's router applied to layer
   L's input predicts the next experts; predicted disk misses are read into the
   host tier. Routing, not prediction, decides which experts run.
@@ -109,6 +118,12 @@ recurrences over the kept rows; attention layers cut their KV length.
 draft costs much less than a second step. The gain is bounded by the draft
 acceptance rate (55 to 75% measured) and by the extra routed experts the
 drafted token pulls in.
+
+**Why host compute.** A host-tier hit costs a 2.7 MB copy over PCIe (about
+110 us) that the GPU waits for; the CPU computes the same expert for one token
+in about 70 us on 8 cores while the GPU runs the resident experts, and moves a
+10 KB row. On novel prompts warm decode drops about 7%; recurring experts still
+reach VRAM through admission.
 
 **Why.** On recorded decode traces the cache hit rate dominates decode time, and
 on-disk layout barely matters because drives split large reads into small

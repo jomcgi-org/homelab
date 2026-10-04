@@ -97,6 +97,17 @@ fn bf16_to_f32(w: u16) -> f32 {
 }
 
 impl<B: Backend> QwenModel<B> {
+    /// Lets decode-sized steps compute host-resident experts on `pool`, in every
+    /// layer and the draft head.
+    pub fn set_host_experts(&mut self, pool: std::sync::Arc<oominf_cpu::HostExperts>) {
+        for l in &mut self.layers {
+            l.set_host_experts(pool.clone());
+        }
+        if let Some(m) = &mut self.mtp {
+            m.layer.set_host_experts(pool);
+        }
+    }
+
     /// Loads every layer's dense weights onto the GPU (experts stay on disk and come
     /// through an [`ExpertSource`]). `layers` limits how many decoder layers load.
     pub fn load(gpu: &B, model: &Model, dims: Dims, layers: Option<usize>) -> Result<Self> {

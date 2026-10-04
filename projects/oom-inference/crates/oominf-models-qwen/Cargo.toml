@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 io-uring = "0.7"
 oominf-core = { path = "../oominf-core" }
+oominf-cpu = { path = "../oominf-cpu" }
 oominf-format = { path = "../oominf-format" }
 serde_json.workspace = true
 
