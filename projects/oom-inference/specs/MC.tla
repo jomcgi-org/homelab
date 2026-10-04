@@ -3,5 +3,7 @@
 (* unsound for liveness, so the liveness config does not use it.            *)
 EXTENDS ExpertTiering, TLC
 
-Symmetry == Permutations(Experts) \cup Permutations(Slots) \cup Permutations(HostBufs)
+\* Host buffers are only interchangeable within the cache or within staging.
+Symmetry == Permutations(Experts) \cup Permutations(Slots)
+            \cup Permutations(CacheBufs) \cup Permutations(StageBufs)
 ===============================================================================
