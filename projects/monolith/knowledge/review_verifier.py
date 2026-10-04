@@ -37,6 +37,8 @@ _REF = re.compile(
 _RUN = re.compile(
     r"\b(?:workflow[ \t]+)?(?:run|job)(?:[ \t]+id)?[ \t]*#?\d{4,}\b", re.IGNORECASE
 )
+_LEFTOVER_REF = re.compile(r"#\d|\b\d{1,7}\b")
+_LEFTOVER_NUM = re.compile(r"\d{1,7}")
 _CHECK_WORD = re.compile(r"\b(checks?|ci|check[- ]runs?)\b", re.IGNORECASE)
 _GATE_WORDS = re.compile(
     r"\b(remaining|remains?|awaiting|live validation|acceptance|gates?)\b",
@@ -162,13 +164,23 @@ def extract_predicates(
     concrete instance. A state claim that refers back to an earlier sentence
     ("Its checks are failing") or a gate written as its own sentence cannot be
     verified, so the whole claim is unsupported rather than partly renewed.
-    Every distinct named reference in a state sentence must also be covered.
+    Every distinct named reference anywhere in the claim must also be covered
+    by a predicate: a follow-on sentence that names a reference inherits the
+    earlier state, so per-sentence coverage would renew a strict subset.
+    A number left over after parsed references and SHAs are stripped is an
+    uncovered reference the patterns above do not name ("PRs 6821 and 6822",
+    "PR #6821/#6822", "Issues 5, 6 and 7"), and is likewise unsupported.
     """
     claim = _PROVENANCE_SECTION.sub("", content or "")
     predicates: list[Predicate] = []
+    note_named: set[tuple[str, int]] = set()
+    note_covered: set[tuple[str, int]] = set()
     for sentence in sentences(f"{title}\n{claim}"):
         if _GATE_WORDS.search(sentence):
             raise _Unsupported("acceptance gate is not verifiable from GitHub")
+        note_named.update(
+            (repo, number) for _, repo, number in _refs(sentence, default_repo)
+        )
         if not _STATE.search(sentence):
             continue
         if not has_instance(sentence):
@@ -179,6 +191,12 @@ def extract_predicates(
         shas = _distinct_shas(sentence)
         if _RUN.search(sentence):
             raise _Unsupported("workflow run or job state is not verifiable")
+        stripped = _SHA.sub(" ", _REF.sub(" ", sentence))
+        if _LEFTOVER_REF.search(stripped):
+            number = _LEFTOVER_NUM.search(stripped).group(0)
+            raise _Unsupported(
+                f"reference #{int(number)} is not covered by a verifiable predicate"
+            )
         checks = bool(_CHECK_WORD.search(sentence))
         consumed: set[str] = set()
         named = {(repo, number) for _, repo, number in refs}
@@ -224,11 +242,12 @@ def extract_predicates(
                 raise _Unsupported(f"state {term!r} is not verifiable from GitHub")
         if set(shas) - consumed:
             raise _Unsupported("SHA assertion is not verifiable from GitHub")
-        if named - covered:
-            _, number = sorted(named - covered)[0]
-            raise _Unsupported(
-                f"reference #{number} is not covered by a verifiable predicate"
-            )
+        note_covered.update(covered)
+    if note_named - note_covered:
+        _, number = sorted(note_named - note_covered)[0]
+        raise _Unsupported(
+            f"reference #{number} is not covered by a verifiable predicate"
+        )
     if not predicates:
         raise _Unsupported("no verifiable predicate")
     deduped = list(dict.fromkeys(predicates))
