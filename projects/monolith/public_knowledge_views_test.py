@@ -475,10 +475,10 @@ async def test_public_reader_freshness_on_real_views(session, monkeypatch):
     session.execute(
         text("""
         INSERT INTO knowledge.note_links (src_note_fk, target_id, kind, edge_type)
-        SELECT id, 'fresh-equality', 'link', 'contradicts'
+        SELECT id, 'fresh-equality', 'edge', 'contradicts'
         FROM knowledge.notes WHERE note_id = 'fresh-current'
         UNION ALL
-        SELECT id, 'fresh-current', 'link', 'contradicts'
+        SELECT id, 'fresh-current', 'edge', 'contradicts'
         FROM knowledge.notes WHERE note_id = 'fresh-equality'
     """)
     )

@@ -978,7 +978,7 @@ def test_public_surfaces_exclude_noncurrent_before_limits(
     excluded.last_reviewed_at = last_reviewed_at
     excluded.review_policy = policy
     excluded.indexed_at = _NOW + timedelta(seconds=1)
-    link = _make_link(1, "current", "excluded")
+    link = _make_link(1, "current", "excluded", kind="edge")
     link.edge_type = "contradicts"
     session.add_all(
         [
