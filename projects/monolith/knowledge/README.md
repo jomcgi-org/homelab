@@ -190,8 +190,11 @@ counts remain aggregate history without fact text. With backfill suspended,
 unclassified public notes stay hidden until an operator-approved backfill gives
 them a lease. Current-only HTTP responses cap browser and shared lifetimes at
 the earliest served review deadline, remove stale-serving windows and use
-fact-set validators. The same-origin proxies preserve those bounds and response
-age. Public chat hashes current notes and their deadlines, caps its watermark
+fact-set validators. The same-origin proxies bound TTLs to the upstream policy,
+consuming upstream age, and each hop dates its own response instead of
+forwarding upstream Date/Age as a new lease basis. Cloudflare and browsers
+start the TTL at receipt, so the origin lease is measured from serve time.
+Public chat hashes current notes and their deadlines, caps its watermark
 memo at the first deadline and rechecks touched notes on every cache hit.
 Migration rollout and operational acceptance remain on #6823. Publication
 policy and stored history are unchanged; dated-history presentation is follow-up

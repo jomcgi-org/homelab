@@ -79,7 +79,11 @@ def test_public_cache_expires_without_row_update(
     conditional = client.get(path, headers={"If-None-Match": before.headers["etag"]})
     assert conditional.status_code == 304
     assert conditional.headers["cache-control"] == before.headers["cache-control"]
-    assert conditional.headers["date"] == before.headers["date"]
+    # The app sets no explicit Date: uvicorn sends the single Date header
+    # in prod, so TestClient responses carry none and proxies plus
+    # Cloudflare start the TTL at receipt.
+    assert "date" not in before.headers
+    assert "date" not in conditional.headers
 
     monkeypatch.setattr(
         "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13 + offset)
@@ -131,6 +135,29 @@ def test_public_cache_uses_earliest_deadline_and_floor(client, session):
     session.commit()
     assert (
         client.get("/api/knowledge/public/graph").headers["cache-control"] == "no-store"
+    )
+
+
+def test_public_cache_lease_uses_serve_time(client, session, monkeypatch):
+    """The lease is measured from the serve-time clock, not request start.
+
+    Request handling (embedding, DB work) takes time: the handler reads the
+    request-start clock once, then _cache_response reads the serve-time clock
+    again. A 5s gap with a 13s deadline must yield an 8s lease. Measuring
+    from request start would yield 13s and keep the fact past its deadline
+    once proxies and Cloudflare start the TTL at receipt.
+    """
+    note = _make_note("fact", "Fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    clock = iter([_NOW, _NOW + timedelta(seconds=5)])
+    monkeypatch.setattr("knowledge.public_router._now", lambda: next(clock))
+    response = client.get("/api/knowledge/public/graph")
+    assert response.status_code == 200
+    assert (
+        response.headers["cache-control"]
+        == "public, max-age=8, s-maxage=8, must-revalidate"
     )
 
 
