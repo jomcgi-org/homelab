@@ -1,7 +1,6 @@
 //! Sparse MoE: router, shared expert and routed experts read in place from their
 //! records: NVFP4 (W4A16 in fp32) for the decoder layers, bf16 for the MTP layer.
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -391,8 +390,10 @@ impl<B: Backend> Moe<B> {
         scratch: &mut B::Bf16,
     ) -> Result<B::F32> {
         let h = d.hidden;
-        let plan = self.begin_routed(gpu, d, t, &routing.ids, experts, false)?;
+        // The shared expert first: the device runs it while the host plans the routed
+        // experts.
         let (shared, gate_logit) = self.shared(gpu, d, x, t, scratch, &mut oominf_core::NoProbe)?;
+        let plan = self.begin_routed(gpu, d, t, &routing.ids, experts, false)?;
         let routed = self.finish_routed(gpu, d, ws, x, t, plan, None, &routing.weights, experts)?;
         let mut out = gpu.zeros(t * h)?;
         gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
@@ -446,15 +447,17 @@ impl<B: Backend> Moe<B> {
         host_ok: bool,
     ) -> Result<RoutedPlan> {
         let (e, k) = (d.experts, d.top_k);
-        // Group assignment slots (t * k + s) by expert.
-        let mut by_expert: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        // Group assignment slots (t * k + s) by expert, in expert order.
+        let mut by_expert: Vec<Vec<usize>> = vec![Vec::new(); e];
         for (slot, &ex) in ids_host.iter().enumerate().take(t * k) {
             if ex < 0 || ex as usize >= e {
                 bail!("router picked expert {ex}");
             }
-            by_expert.entry(ex as u32).or_default().push(slot);
+            by_expert[ex as usize].push(slot);
         }
-        let distinct: Vec<u32> = by_expert.keys().copied().collect();
+        let distinct: Vec<u32> = (0..e as u32)
+            .filter(|&ex| !by_expert[ex as usize].is_empty())
+            .collect();
         let staged = experts.begin_fetch(gpu, self.layer, &distinct, host_ok)?;
         ensure!(
             staged.addrs.len() == distinct.len()
@@ -466,7 +469,7 @@ impl<B: Backend> Moe<B> {
         );
         // Resident experts first so they can run before the rest arrive, then the
         // host-computed ones, then those still loading.
-        let lists: Vec<Vec<usize>> = by_expert.into_values().collect();
+        let mut lists: Vec<Vec<usize>> = by_expert.into_iter().filter(|l| !l.is_empty()).collect();
         let rank = |i: usize| match (staged.ready[i], staged.host[i]) {
             (true, _) => 0,
             (false, Some(_)) => 1,
@@ -479,7 +482,10 @@ impl<B: Backend> Moe<B> {
             hosted: order.iter().filter(|&&i| rank(i) == 1).count(),
             recs: order.iter().map(|&i| staged.addrs[i]).collect(),
             host: order.iter().map(|&i| staged.host[i]).collect(),
-            lists: order.into_iter().map(|i| lists[i].clone()).collect(),
+            lists: order
+                .into_iter()
+                .map(|i| std::mem::take(&mut lists[i]))
+                .collect(),
         })
     }
 
