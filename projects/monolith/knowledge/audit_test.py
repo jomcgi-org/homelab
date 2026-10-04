@@ -853,7 +853,7 @@ def test_out_of_sample_and_duplicate_verdicts_are_dropped(session):
     assert not session.exec(select(Dispute)).all()
 
 
-def test_defect_uses_open_dispute_and_never_changes_note_or_public_contract(session):
+def test_defect_uses_open_dispute_and_preserves_claim_and_public_contract(session):
     note = _note(session)
     raw = RawInput(
         raw_id="raw-source",
@@ -887,7 +887,10 @@ def test_defect_uses_open_dispute_and_never_changes_note_or_public_contract(sess
         ),
     )
     session.refresh(note)
-    assert note.model_dump() == before
+    assert note.revision == before["revision"] + 1
+    assert note.model_dump(exclude={"revision"}) == {
+        key: value for key, value in before.items() if key != "revision"
+    }
     dispute = session.exec(select(Dispute)).one()
     assert dispute.state == "open"
     assert dispute.reporter_subject == "kg-audit"
