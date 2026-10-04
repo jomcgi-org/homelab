@@ -945,6 +945,12 @@ impl Workspace {
         Self::default()
     }
 
+    /// Device bytes held by buffers currently given back to the workspace.
+    pub fn bytes(&self) -> usize {
+        self.f32s.values().map(|b| b.len() * 4).sum::<usize>()
+            + self.bf16s.values().map(|b| b.len() * 2).sum::<usize>()
+    }
+
     pub fn take(&mut self, gpu: &Gpu, name: &'static str, n: usize) -> Result<Buf> {
         match self.f32s.remove(name) {
             Some(b) if b.len() == n.max(1) => Ok(b),

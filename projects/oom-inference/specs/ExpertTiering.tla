@@ -41,7 +41,8 @@ EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
     Experts,      \* expert ids (one layer's worth is enough: layers are independent)
-    Slots,        \* VRAM slots (fixed arena)
+    Slots,        \* VRAM slots the arena can hold (some may be retired)
+    MinSlots,     \* live slots the tier keeps when giving memory back
     HostBufs,     \* pinned host buffers (fixed arena): cache plus staging
     StageBufs,    \* subset of HostBufs reserved for lookahead staging
     TopK,         \* experts routed per launch
@@ -54,12 +55,13 @@ CONSTANTS
 
 BugVariants == {"skip_kernel_pin", "skip_copy_pin", "skip_graph_pin",
                 "table_before_complete", "write_before_consumed",
-                "skip_table_pin"}
+                "skip_table_pin", "retire_in_use"}
 
 ASSUME Bug \in {"none"} \cup BugVariants
 ASSUME Mode \in {"baked", "indirect"}
 ASSUME StageBufs \subseteq HostBufs
 ASSUME TopK >= 1 /\ MaxInflight >= 1
+ASSUME MinSlots \in 1..Cardinality(Slots)
 
 CacheBufs == HostBufs \ StageBufs
 Pos == 1..TopK      \* routed positions of a layer: the device table's index
@@ -77,11 +79,13 @@ VARIABLES
                \* each entry maps expert -> <<"gpu", slot>> or <<"cpu", hostbuf>>
     graph,     \* None, or the captured graph's baked map expert -> slot
     dtable,    \* indirect mode: the device slot table, position -> slot
-    queue      \* indirect mode: armed graph nodes the GPU has not reached,
+    queue,     \* indirect mode: armed graph nodes the GPU has not reached,
                \* in stream order; each maps position -> expert (or None)
+    live       \* slots currently allocated; the tier retires and restores
+               \* them as other device memory (e.g. a KV cache) grows and shrinks
 
 vars == <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, inflight, graph,
-          dtable, queue>>
+          dtable, queue, live>>
 
 Bytes == Experts \cup {None, Garbage}
 Locs  == ({"gpu"} \X Slots) \cup ({"cpu"} \X HostBufs)
@@ -99,6 +103,7 @@ TypeOK ==
     /\ graph = None \/ \E G \in SUBSET Experts : graph \in [G -> Slots]
     /\ dtable \in [Pos -> Slots \cup {None}]
     /\ Len(queue) <= MaxInflight
+    /\ live \subseteq Slots
 
 ----------------------------------------------------------------------------
 (* Derived sets *)
@@ -152,6 +157,7 @@ Init ==
     /\ graph = None
     /\ dtable = [p \in Pos |-> None]
     /\ queue = << >>
+    /\ live = Slots
 
 \* The router picks the experts for the next layer launch.
 Route ==
@@ -160,7 +166,7 @@ Route ==
         /\ R /= {}
         /\ Cardinality(R) <= TopK
         /\ pending' = R
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, inflight, graph, dtable, queue, live>>
 
 \* Start reading expert e from disk into a free host cache buffer (demand or
 \* prefetch into the cache).
@@ -171,7 +177,7 @@ StageD2H(e, h) ==
     /\ host' = [host EXCEPT ![h] = e]
     /\ hostSt' = [hostSt EXCEPT ![h] = "loading"]
     /\ d2h' = d2h \cup {<<e, h>>}
-    /\ UNCHANGED <<vram, vramSt, table, h2v, pending, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, table, h2v, pending, inflight, graph, dtable, queue, live>>
 
 \* Lookahead: speculatively read e into a free staging buffer. It never
 \* takes a cache buffer, so it never evicts a cache resident; staging
@@ -183,17 +189,18 @@ Lookahead(e, h) ==
     /\ host' = [host EXCEPT ![h] = e]
     /\ hostSt' = [hostSt EXCEPT ![h] = "loading"]
     /\ d2h' = d2h \cup {<<e, h>>}
-    /\ UNCHANGED <<vram, vramSt, table, h2v, pending, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, table, h2v, pending, inflight, graph, dtable, queue, live>>
 
 \* A disk read completes. Disk always holds the right bytes.
 CompleteD2H(c) ==
     /\ c \in d2h
     /\ hostSt' = [hostSt EXCEPT ![c[2]] = "ready"]
     /\ d2h' = d2h \ {c}
-    /\ UNCHANGED <<vram, vramSt, host, table, h2v, pending, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, table, h2v, pending, inflight, graph, dtable, queue, live>>
 
 \* Start copying a ready host copy of e into a free VRAM slot.
 StageH2V(e, h, s) ==
+    /\ s \in live
     /\ hostSt[h] = "ready"
     /\ host[h] = e
     /\ ~InVram(e)
@@ -204,7 +211,7 @@ StageH2V(e, h, s) ==
     /\ table' = IF Bug = "table_before_complete"
                    THEN [table EXCEPT ![e] = s]
                    ELSE table
-    /\ UNCHANGED <<host, hostSt, d2h, pending, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<host, hostSt, d2h, pending, inflight, graph, dtable, queue, live>>
 
 \* A host -> VRAM copy completes. The slot receives whatever the source
 \* buffer holds at that moment: if the source was recycled mid-copy the
@@ -217,7 +224,7 @@ CompleteH2V(c) ==
         /\ vramSt' = [vramSt EXCEPT ![s] = "ready"]
         /\ table' = [table EXCEPT ![e] = s]
     /\ h2v' = h2v \ {c}
-    /\ UNCHANGED <<host, hostSt, d2h, pending, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<host, hostSt, d2h, pending, inflight, graph, dtable, queue, live>>
 
 \* Evict any unpinned ready host buffer (policy is unconstrained).
 EvictHost(h) ==
@@ -225,7 +232,7 @@ EvictHost(h) ==
     /\ ~HostPinned(h)
     /\ host' = [host EXCEPT ![h] = None]
     /\ hostSt' = [hostSt EXCEPT ![h] = "free"]
-    /\ UNCHANGED <<vram, vramSt, table, d2h, h2v, pending, inflight, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, table, d2h, h2v, pending, inflight, graph, dtable, queue, live>>
 
 \* Evict any unpinned ready VRAM slot and unmap it.
 EvictVram(s) ==
@@ -234,7 +241,28 @@ EvictVram(s) ==
     /\ vram' = [vram EXCEPT ![s] = None]
     /\ vramSt' = [vramSt EXCEPT ![s] = "free"]
     /\ table' = [e \in Experts |-> IF table[e] = s THEN None ELSE table[e]]
+    /\ UNCHANGED <<host, hostSt, d2h, h2v, pending, inflight, graph, dtable, queue, live>>
+
+\* The tier gives a slot's memory back (release_vram): only an unpinned slot
+\* with no copy landing in it, above the floor. Its memory is then reused by
+\* other allocations, so it holds garbage until restored.
+Retire(s) ==
+    /\ s \in live
+    /\ Cardinality(live) > MinSlots
+    /\ vramSt[s] /= "loading"
+    /\ ~VramPinned(s) \/ Bug = "retire_in_use"
+    /\ live' = live \ {s}
+    /\ vram' = [vram EXCEPT ![s] = Garbage]
+    /\ vramSt' = [vramSt EXCEPT ![s] = "free"]
+    /\ table' = [e \in Experts |-> IF table[e] = s THEN None ELSE table[e]]
     /\ UNCHANGED <<host, hostSt, d2h, h2v, pending, inflight, graph, dtable, queue>>
+
+\* The tier takes a retired slot back (reclaim_vram), empty.
+Restore(s) ==
+    /\ s \in Slots \ live
+    /\ live' = live \cup {s}
+    /\ vram' = [vram EXCEPT ![s] = None]
+    /\ UNCHANGED <<vramSt, host, hostSt, table, d2h, h2v, pending, inflight, graph, dtable, queue>>
 
 \* Where the engine may run expert e right now, from its own bookkeeping.
 Executable(e) ==
@@ -251,13 +279,13 @@ Launch ==
         /\ \A e \in pending : assign[e] \in Executable(e)
         /\ inflight' = Append(inflight, assign)
     /\ pending' = {}
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, graph, dtable, queue, live>>
 
 \* The oldest launched work completes (stream order).
 Complete ==
     /\ Len(inflight) > 0
     /\ inflight' = Tail(inflight)
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, graph, dtable, queue, live>>
 
 \* Capture a graph that bakes in the current slots of some mapped experts.
 Capture ==
@@ -267,21 +295,21 @@ Capture ==
         /\ G /= {}
         /\ Cardinality(G) <= GraphMax
         /\ graph' = [e \in G |-> table[e]]
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, inflight, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, inflight, dtable, queue, live>>
 
 \* Replay the captured graph: it reads exactly the baked slots.
 Replay ==
     /\ graph /= None
     /\ Len(inflight) < MaxInflight
     /\ inflight' = Append(inflight, [e \in DOMAIN graph |-> <<"gpu", graph[e]>>])
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, graph, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, graph, dtable, queue, live>>
 
 \* Drop the graph (e.g. placement policy wants its slots back). Replays
 \* already in flight stay pinned through InflightSlots.
 Invalidate ==
     /\ graph /= None
     /\ graph' = None
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, inflight, dtable, queue>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, inflight, dtable, queue, live>>
 
 \* Indirect mode, host side of the per-layer handshake: once every routed
 \* expert is in a ready VRAM slot, write the table entries for the routed
@@ -302,7 +330,7 @@ ArmNode ==
                                                        ELSE table[assign[p]]]
         /\ queue' = Append(queue, assign)
     /\ pending' = {}
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, inflight, graph>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, inflight, graph, live>>
 
 \* Indirect mode, GPU side: the stream reaches the oldest armed node, which
 \* reads the device table for each routed position and runs on those slots.
@@ -314,7 +342,7 @@ GpuExec ==
        IN inflight' = Append(inflight,
               [e \in E |-> <<"gpu", dtable[CHOOSE p \in Pos : n[p] = e]>>])
     /\ queue' = Tail(queue)
-    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, graph, dtable>>
+    /\ UNCHANGED <<vram, vramSt, host, hostSt, table, d2h, h2v, pending, graph, dtable, live>>
 
 Next ==
     \/ Route
@@ -327,6 +355,8 @@ Next ==
     \/ \E c \in h2v : CompleteH2V(c)
     \/ \E h \in HostBufs : EvictHost(h)
     \/ \E s \in Slots : EvictVram(s)
+    \/ \E s \in Slots : Retire(s)
+    \/ \E s \in Slots : Restore(s)
     \/ Launch
     \/ Complete
     \/ Capture
@@ -343,7 +373,7 @@ DemandStageH2V == \E e \in pending, h \in HostBufs, s \in Slots : StageH2V(e, h,
 
 \* It frees a slot or buffer only when a routed expert is waiting for one.
 DemandEvictVram == /\ \E e \in pending : ~InVram(e)
-                   /\ \A s \in Slots : vramSt[s] /= "free"
+                   /\ \A s \in live : vramSt[s] /= "free"
                    /\ \E s \in Slots : EvictVram(s)
 DemandEvictHost == /\ \E e \in pending : ~InVram(e) /\ ~InHost(e)
                    /\ \A h \in CacheBufs : hostSt[h] /= "free"

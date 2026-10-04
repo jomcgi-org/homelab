@@ -27,6 +27,15 @@ pub struct QwenModel {
     lm_head: Bf16Buf,
 }
 
+/// Device memory a step's workspace may need on top of what it already holds (a
+/// prefill chunk's activations and MoE scratch), kept free when caches grow.
+/// Expert tiers should leave at least this much when they size themselves.
+pub const WORKSPACE_HEADROOM: usize = 3 << 29;
+
+/// Free device memory left beyond the headroom when expert tiers take memory back,
+/// so a sequence's first KV growths do not immediately take it away again.
+const RECLAIM_SLACK: usize = 512 << 20;
+
 /// Everything carried across steps of one sequence.
 pub struct SeqState {
     pub layers: Vec<LayerState>,
@@ -188,6 +197,57 @@ impl QwenModel {
         Ok(logits)
     }
 
+    /// Makes the KV caches hold `tokens`. When the growth plus `transient` bytes
+    /// (other allocations the step is about to make) plus workspace headroom would
+    /// not fit in free device memory, asks `experts` to give memory back first.
+    pub fn reserve_kv(
+        &self,
+        gpu: &Gpu,
+        state: &mut SeqState,
+        tokens: usize,
+        transient: usize,
+        experts: &mut dyn ExpertSource,
+    ) -> Result<()> {
+        let need: usize = self
+            .layers
+            .iter()
+            .zip(&state.layers)
+            .map(|(l, s)| l.kv_growth_bytes(s, tokens))
+            .sum();
+        if need == 0 && transient == 0 {
+            return Ok(());
+        }
+        gpu.sync()?;
+        let (free, _) = gpu.ctx.mem_get_info()?;
+        let headroom = WORKSPACE_HEADROOM.saturating_sub(state.ws.borrow().bytes());
+        let want = need + transient + headroom;
+        if free < want {
+            experts.release_vram(gpu, want - free)?;
+        }
+        for (l, s) in self.layers.iter().zip(state.layers.iter_mut()) {
+            l.grow_kv(gpu, s, tokens)?;
+        }
+        Ok(())
+    }
+
+    /// Offers `experts` the device memory a fresh `state` does not need (free memory
+    /// beyond the workspace headroom and some slack), e.g. after a long sequence
+    /// was dropped.
+    pub fn reclaim_vram(
+        &self,
+        gpu: &Gpu,
+        state: &SeqState,
+        experts: &mut dyn ExpertSource,
+    ) -> Result<()> {
+        gpu.sync()?;
+        let (free, _) = gpu.ctx.mem_get_info()?;
+        let keep = WORKSPACE_HEADROOM.saturating_sub(state.ws.borrow().bytes()) + RECLAIM_SLACK;
+        if free > keep {
+            experts.reclaim_vram(gpu, free - keep)?;
+        }
+        Ok(())
+    }
+
     /// Runs `token_ids` through the model as one step and returns logits `[t, vocab]`
     /// (or only the last row with `last_only`). Stages are tapped as
     /// `{stage}.{layer}` plus `residual_in`, `mixer_out` and `logits`.
@@ -203,6 +263,7 @@ impl QwenModel {
         let d = &self.dims;
         let t = token_ids.len();
         ensure!(t > 0, "empty step");
+        self.reserve_kv(gpu, state, state.pos + t, 0, experts)?;
         let mut x = state
             .ws
             .borrow_mut()
@@ -266,6 +327,8 @@ impl QwenModel {
                 .map(Some);
         }
         let d = &self.dims;
+        let residuals = token_ids.len() * d.residual() * std::mem::size_of::<f32>();
+        self.reserve_kv(gpu, state, state.pos + token_ids.len(), residuals, experts)?;
         let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
         // Residuals of every chunk live across layers (about 40 KB per token).
         let mut xs = Vec::with_capacity(chunks.len());

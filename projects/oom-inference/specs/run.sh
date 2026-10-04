@@ -41,7 +41,8 @@ run_bugs() { # every variant must violate an invariant
 	local rc=0
 	for pair in skip_kernel_pin:baked skip_copy_pin:baked skip_graph_pin:baked \
 		table_before_complete:baked skip_kernel_pin:indirect \
-		write_before_consumed:indirect skip_table_pin:indirect; do
+		write_before_consumed:indirect skip_table_pin:indirect \
+		retire_in_use:baked retire_in_use:indirect; do
 		local bug=${pair%%:*} mode=${pair##*:}
 		sed -e "s/@BUG@/$bug/" -e "s/@MODE@/$mode/" "$work/bug.cfg.in" >"$work/$bug-$mode.cfg"
 		tlc "$work/$bug-$mode.cfg" "$bug-$mode" >"$work/$bug-$mode.log" 2>&1 || true

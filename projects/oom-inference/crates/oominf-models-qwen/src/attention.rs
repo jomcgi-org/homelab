@@ -14,8 +14,9 @@
 //!   `out * sigmoid(gate)` and `o_proj`.
 //!
 //! Precision: fp32 throughout except bf16 GEMM operands; the KV and indexer caches
-//! are fp32 (no rounding we do not benefit from), at `max_tokens * (2 * kv_heads *
-//! head_dim + index_head_dim) * 4` bytes per layer (about 4.6 KiB per token).
+//! are fp32 (no rounding we do not benefit from), about 4.6 KiB per token per layer.
+//! They start small and double as the sequence grows, so short conversations leave
+//! the memory to the expert tiers.
 
 use anyhow::{Context, Result, ensure};
 use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
@@ -102,20 +103,28 @@ pub struct Attention {
     inv_freq: Buf,
 }
 
-/// KV cache and indexer raw-key cache for one attention layer.
+/// Tokens of KV cache a fresh sequence starts with; it doubles on demand up to the
+/// sequence's `max_tokens`.
+const INITIAL_KV_TOKENS: usize = 2048;
+
+/// KV cache and indexer raw-key cache for one attention layer. Buffers hold `cap`
+/// tokens and grow by reallocation (see [`Attention::grow`]).
 pub struct AttnState {
-    /// `[max_tokens, kv_heads, head_dim]`, post-norm, post-RoPE.
+    /// `[cap, kv_heads, head_dim]`, post-norm, post-RoPE.
     pub k: Buf,
-    /// `[max_tokens, kv_heads, head_dim]`.
+    /// `[cap, kv_heads, head_dim]`.
     pub v: Buf,
-    /// `[max_tokens, index_head_dim]` raw indexer keys (pre-norm, pre-RoPE).
+    /// `[cap, index_head_dim]` raw indexer keys (pre-norm, pre-RoPE).
     pub idx_keys: Buf,
-    /// `[max_tokens / ratio, index_head_dim]` pooled, normed, RoPE'd block keys; the
+    /// `[cap / ratio, index_head_dim]` pooled, normed, RoPE'd block keys; the
     /// first `blocks` are valid. Blocks never change once complete, so each step only
     /// computes the ones it completes.
     pub block_keys: Buf,
     pub blocks: usize,
     pub len: usize,
+    /// Tokens the buffers currently hold.
+    pub cap: usize,
+    /// Most tokens the sequence may ever hold.
     pub max_tokens: usize,
 }
 
@@ -150,17 +159,77 @@ impl Attention {
     }
 
     pub fn new_state(&self, gpu: &Gpu, _d: &Dims, max_tokens: usize) -> Result<AttnState> {
-        let a = &self.a;
-        let kv = max_tokens * a.kv_heads * a.head_dim;
+        let cap = self.capacity_for(INITIAL_KV_TOKENS.min(max_tokens).max(1), 0, max_tokens);
+        let (kv, ik, bk) = self.buffer_lens(cap);
         Ok(AttnState {
             k: gpu.zeros(kv)?,
             v: gpu.zeros(kv)?,
-            idx_keys: gpu.zeros(max_tokens * a.idx_dim)?,
-            block_keys: gpu.zeros((max_tokens / a.ratio).max(1) * a.idx_dim)?,
+            idx_keys: gpu.zeros(ik)?,
+            block_keys: gpu.zeros(bk)?,
             blocks: 0,
             len: 0,
+            cap,
             max_tokens,
         })
+    }
+
+    /// Element counts of the k/v, raw indexer key and block key buffers for `cap`
+    /// tokens.
+    fn buffer_lens(&self, cap: usize) -> (usize, usize, usize) {
+        let a = &self.a;
+        (
+            cap * a.kv_heads * a.head_dim,
+            cap * a.idx_dim,
+            (cap / a.ratio).max(1) * a.idx_dim,
+        )
+    }
+
+    /// Capacity to hold `tokens`: at least double `cap`, a whole number of indexer
+    /// blocks, at most `max_tokens` (rounded up to a block).
+    fn capacity_for(&self, tokens: usize, cap: usize, max_tokens: usize) -> usize {
+        let r = self.a.ratio;
+        tokens.max(2 * cap).min(max_tokens).max(tokens).div_ceil(r) * r
+    }
+
+    /// Bytes of fresh buffers that [`Attention::grow`] would allocate to hold
+    /// `tokens`, or 0 when they already fit.
+    pub fn growth_bytes(&self, state: &AttnState, tokens: usize) -> usize {
+        if tokens <= state.cap {
+            return 0;
+        }
+        let (kv, ik, bk) = self.buffer_lens(self.capacity_for(tokens, state.cap, state.max_tokens));
+        (2 * kv + ik + bk) * std::mem::size_of::<f32>()
+    }
+
+    /// Grows the caches to hold `tokens`, keeping their contents. Kernels read the
+    /// buffers by address at launch, so a reallocation between steps is invisible to
+    /// them.
+    pub fn grow(&self, gpu: &Gpu, state: &mut AttnState, tokens: usize) -> Result<()> {
+        if tokens <= state.cap {
+            return Ok(());
+        }
+        ensure!(
+            tokens <= state.max_tokens,
+            "attention cache limit is {} tokens, {tokens} requested",
+            state.max_tokens
+        );
+        let a = &self.a;
+        let cap = self.capacity_for(tokens, state.cap, state.max_tokens);
+        let (kv, ik, bk) = self.buffer_lens(cap);
+        let kv_w = a.kv_heads * a.head_dim;
+        let moved = |old: &Buf, n: usize, len: usize| -> Result<Buf> {
+            let mut new = gpu.zeros(len)?;
+            if n > 0 {
+                gpu.copy_range(old, 0, &mut new, 0, n)?;
+            }
+            Ok(new)
+        };
+        state.k = moved(&state.k, state.len * kv_w, kv)?;
+        state.v = moved(&state.v, state.len * kv_w, kv)?;
+        state.idx_keys = moved(&state.idx_keys, state.len * a.idx_dim, ik)?;
+        state.block_keys = moved(&state.block_keys, state.blocks * a.idx_dim, bk)?;
+        state.cap = cap;
+        Ok(())
     }
 
     /// `x` is the block input `[t, hidden]`; returns the mixer output `[t, hidden]` as
@@ -187,11 +256,7 @@ impl Attention {
             state.len
         );
         let kv_len = start + t;
-        ensure!(
-            kv_len <= state.max_tokens,
-            "attention cache full ({kv_len} > {})",
-            state.max_tokens
-        );
+        self.grow(gpu, state, kv_len)?;
         let (nh, kvh, hd) = (a.heads, a.kv_heads, a.head_dim);
         let (rd, inv) = (a.rotary_dim, &self.inv_freq);
 
