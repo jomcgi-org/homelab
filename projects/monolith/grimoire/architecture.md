@@ -476,6 +476,7 @@ partially completed enrollment as campaign acceptance.
 
 ### Optional-link enablement checks
 
+Human-owned access review and activation are tracked in [#6858](https://github.com/jomcgi-org/homelab/issues/6858).
 Keep both flags off until reviewed provisioning and normal CI have passed.
 Before enabling, test the exact pinned Authentik version and Envoy routing with
 disposable accounts: fresh signup, existing-account sign-in, interrupted signup,

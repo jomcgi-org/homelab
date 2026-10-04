@@ -2,11 +2,12 @@
 
 import argparse
 import json
-from pathlib import Path
 import time
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import expect, sync_playwright
+from rehearse_join_links import redact_join_artifact, rehearse_join_links
 
 
 def use_loopback_requests(context):
@@ -43,13 +44,28 @@ def fetch_loopback_route(route):
     return route.fetch()
 
 
+def open_campaign_players(page, article):
+    # The lobby's controlled details can be reset during hydration. Wait until
+    # navigation has settled, then open it only if it is currently closed.
+    page.wait_for_load_state("networkidle")
+    panel = article.locator(":scope > details")
+    expect(panel).to_have_count(1)
+    if panel.get_attribute("open") is None:
+        panel.locator(":scope > summary").click()
+    expect(panel).to_have_attribute("open", "")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("/tmp/grimoire-rehearsal"))
+    parser.add_argument(
+        "--join-links", action="store_true", help="Rehearse registered-player links"
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     report = {
         "simulated": True,
+        "mode": "join-links" if args.join_links else "session",
         "checks": [],
         "errors": [],
         "timings": {},
@@ -62,6 +78,13 @@ def main():
             args=["--host-resolver-rules=MAP friends.localhost 127.0.0.1"]
         )
         try:
+            if args.join_links:
+                rehearse_join_links(
+                    browser, args.output, report, contexts, use_loopback_requests
+                )
+                assert not report["errors"], report["errors"]
+                report["passed"] = True
+                return
             pages = []
             for role, width in [("dm", 1280), ("a", 390), ("b", 390)]:
                 context = browser.new_context(viewport={"width": width, "height": 844})
@@ -898,13 +921,17 @@ def main():
             newcomers = dm.get_by_role("article").filter(
                 has=dm.get_by_role("heading", name="The Newcomers", exact=True)
             )
-            newcomers.get_by_text("Players and invitations", exact=True).click()
             for email in ("a@example.test", "b@example.test"):
-                newcomers.get_by_label("Registered player's email").fill(email)
-                newcomers.get_by_role(
-                    "button", name="Invite player", exact=True
-                ).click()
-                newcomers.get_by_text("Players and invitations", exact=True).click()
+                open_campaign_players(dm, newcomers)
+                email_input = newcomers.get_by_label("Registered player's email")
+                expect(email_input).to_be_visible()
+                email_input.fill(email)
+                with dm.expect_navigation(wait_until="networkidle") as submitted:
+                    newcomers.get_by_role(
+                        "button", name="Invite player", exact=True
+                    ).click()
+                assert submitted.value.status == 200
+                expect(dm.get_by_text("Saved.", exact=True)).to_be_visible()
             for player in (a, b):
                 player.goto("http://friends.localhost:4177/grimoire")
                 invitation = player.get_by_role("article").filter(
@@ -924,7 +951,7 @@ def main():
             a.goto("http://friends.localhost:4177/grimoire")
             expect(new_a.get_by_text("Your character: Nyx", exact=True)).to_be_visible()
             dm.reload()
-            newcomers.get_by_text("Players and invitations", exact=True).click()
+            open_campaign_players(dm, newcomers)
             new_b_member = newcomers.get_by_role("listitem").filter(
                 has_text="b@example.test"
             )
@@ -1020,6 +1047,8 @@ def main():
         except Exception as error:
             report["passed"] = False
             report["failure"] = str(error) or repr(error)
+            if args.join_links:
+                raise RuntimeError(redact_join_artifact(report["failure"])) from None
             raise
         finally:
             report["capture_errors"] = []
@@ -1029,6 +1058,17 @@ def main():
                         page.screenshot(
                             path=str(args.output / f"{role}-final-{index}.png"),
                             full_page=True,
+                            **(
+                                {
+                                    "mask": [
+                                        page.get_by_label(
+                                            "Private invitation link", exact=True
+                                        )
+                                    ]
+                                }
+                                if args.join_links
+                                else {}
+                            ),
                         )
                     except Exception as error:
                         report["capture_errors"].append(f"{role} screenshot: {error}")
@@ -1043,6 +1083,8 @@ def main():
                 report["capture_errors"].append(f"browser close: {error}")
             if report["capture_errors"]:
                 report["passed"] = False
+            if args.join_links:
+                report = redact_join_artifact(report)
             (args.output / "report.json").write_text(
                 json.dumps(report, indent=2) + "\n"
             )
