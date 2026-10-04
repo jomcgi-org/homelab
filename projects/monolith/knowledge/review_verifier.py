@@ -207,9 +207,7 @@ def _residual_words(sentence: str) -> list[str]:
     tmp = _STATE.sub(" ", tmp)
     tmp = _CHECK_WORD.sub(" ", tmp)
     return [
-        word
-        for word in re.findall(r"[A-Za-z]+", tmp)
-        if word.lower() not in _FILLER
+        word for word in re.findall(r"[A-Za-z]+", tmp) if word.lower() not in _FILLER
     ]
 
 
