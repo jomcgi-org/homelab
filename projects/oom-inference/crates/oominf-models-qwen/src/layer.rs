@@ -1,8 +1,11 @@
 //! A decoder layer: optional PLE, hyper-connections around the token mixer (GDN or
 //! full attention), then hyper-connections around the MoE.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use anyhow::{Context, Result};
-use oominf_cuda::{Bf16Buf, Buf, Gpu};
+use oominf_cuda::{Buf, Gpu, Workspace};
 use oominf_format::Model;
 
 use crate::attention::{Attention, AttnState};
@@ -33,6 +36,8 @@ pub struct LayerState {
     pub gdn: Option<GdnState>,
     pub attn: Option<AttnState>,
     pub ple: Option<PleState>,
+    /// Scratch buffers, shared by every layer of a sequence (layers run one at a time).
+    pub ws: Rc<RefCell<Workspace>>,
 }
 
 /// What a step needs to know beyond activations.
@@ -70,7 +75,19 @@ impl DecoderLayer {
     }
 
     pub fn new_state(&self, gpu: &Gpu, d: &Dims, max_tokens: usize) -> Result<LayerState> {
+        self.new_state_shared(gpu, d, max_tokens, Rc::new(RefCell::new(Workspace::new())))
+    }
+
+    /// Like [`Self::new_state`], with a workspace shared across layers.
+    pub fn new_state_shared(
+        &self,
+        gpu: &Gpu,
+        d: &Dims,
+        max_tokens: usize,
+        ws: Rc<RefCell<Workspace>>,
+    ) -> Result<LayerState> {
         Ok(LayerState {
+            ws,
             gdn: match self.mixer {
                 Mixer::Gdn(_) => Some(GdnState::new(gpu, d)?),
                 Mixer::Attention(_) => None,
@@ -99,54 +116,77 @@ impl DecoderLayer {
         experts: &mut dyn ExpertSource,
         probe: &mut dyn Probe,
     ) -> Result<Buf> {
-        let mut scratch: Bf16Buf =
-            gpu.upload_u16(&vec![
-                0u16;
-                t * d.residual().max(d.conv_dim()).max(d.scratch_cols)
-            ])?;
+        let ws_rc = state.ws.clone();
+        let mut ws_guard = ws_rc.borrow_mut();
+        let ws: &mut Workspace = &mut ws_guard;
+        let r = d.residual();
+        let mut scratch = ws.take_bf16(
+            gpu,
+            "gemm.scratch",
+            t * r.max(d.conv_dim()).max(d.scratch_cols),
+        )?;
 
-        let with_ple;
-        let residual = match &self.ple {
-            Some(ple) => {
-                let st = state.ple.as_mut().context("PLE layer without PLE state")?;
-                let mut add = ple.forward(gpu, d, residual, t, step, st, &mut scratch, probe)?;
-                tap(gpu, probe, "ple_out", &mut add)?;
-                let mut sum = gpu.zeros(t * d.residual())?;
-                gpu.add(residual, &add, &mut sum, t * d.residual())?;
-                with_ple = sum;
-                &with_ple
-            }
-            None => residual,
-        };
+        let mut with_ple = None;
+        if let Some(ple) = &self.ple {
+            let st = state.ple.as_mut().context("PLE layer without PLE state")?;
+            let mut add = ple.forward(gpu, d, ws, residual, t, step, st, &mut scratch, probe)?;
+            tap(gpu, probe, "ple_out", &mut add)?;
+            let mut sum = ws.take(gpu, "layer.ple_sum", t * r)?;
+            gpu.add(residual, &add, &mut sum, t * r)?;
+            ws.give("ple.out", add);
+            with_ple = Some(sum);
+        }
+        let residual = with_ple.as_ref().unwrap_or(residual);
 
         let (mixed, inject) =
             self.attn_hc
-                .mix(gpu, d, residual, t, &mut scratch, probe, "attn_hc")?;
-        let mut mixer_out = match &self.mixer {
+                .mix(gpu, d, ws, residual, t, &mut scratch, probe, "attn_hc")?;
+        let inject = inject.context("attention hyper-connection without combine")?;
+        let (mut mixer_out, out_name) = match &self.mixer {
             Mixer::Gdn(g) => {
                 let st = state.gdn.as_mut().context("GDN layer without GDN state")?;
-                g.forward(gpu, d, &mixed, t, st, &mut scratch, probe)?
+                (
+                    g.forward(gpu, d, ws, &mixed, t, st, &mut scratch, probe)?,
+                    "gdn.out",
+                )
             }
             Mixer::Attention(a) => {
                 let st = state
                     .attn
                     .as_mut()
                     .context("attention layer without KV state")?;
-                a.forward(gpu, d, &mixed, t, step, st, &mut scratch, probe)?
+                (
+                    a.forward(gpu, d, ws, &mixed, t, step, st, &mut scratch, probe)?,
+                    "attn.out",
+                )
             }
         };
+        ws.give("hc.mixed", mixed);
         tap(gpu, probe, "mixer_out", &mut mixer_out)?;
-        let mut res1 =
-            HyperConn::combine(gpu, d, residual, &mixer_out, inject.as_ref().unwrap(), t)?;
+        let mut res1 = ws.take(gpu, "layer.res1", t * r)?;
+        HyperConn::combine_into(gpu, d, residual, &mixer_out, &inject, t, &mut res1)?;
+        ws.give(out_name, mixer_out);
+        ws.give("hc.inject", inject);
+        if let Some(sum) = with_ple {
+            ws.give("layer.ple_sum", sum);
+        }
         tap(gpu, probe, "attn_combine_out", &mut res1)?;
 
-        let (mixed, inject) = self
-            .mlp_hc
-            .mix(gpu, d, &res1, t, &mut scratch, probe, "mlp_hc")?;
+        let (mixed, inject) =
+            self.mlp_hc
+                .mix(gpu, d, ws, &res1, t, &mut scratch, probe, "mlp_hc")?;
+        let inject = inject.context("MLP hyper-connection without combine")?;
         let moe_out = self
             .moe
             .forward(gpu, d, &mixed, t, experts, &mut scratch, probe)?;
-        let mut out = HyperConn::combine(gpu, d, &res1, &moe_out, inject.as_ref().unwrap(), t)?;
+        ws.give("hc.mixed", mixed);
+        // The layer output is handed to the caller; the model gives the previous
+        // residual back under the same name so two buffers alternate.
+        let mut out = ws.take(gpu, "layer.out", t * r)?;
+        HyperConn::combine_into(gpu, d, &res1, &moe_out, &inject, t, &mut out)?;
+        ws.give("hc.inject", inject);
+        ws.give("layer.res1", res1);
+        ws.give_bf16("gemm.scratch", scratch);
         tap(gpu, probe, "layer_out", &mut out)?;
         if let Some(g) = state.gdn.as_mut() {
             tap(gpu, probe, "state.conv", &mut g.conv)?;

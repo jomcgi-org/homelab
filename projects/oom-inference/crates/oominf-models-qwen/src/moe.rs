@@ -1,10 +1,11 @@
 //! Sparse MoE: router, shared expert and NVFP4 routed experts (W4A16 in fp32).
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Slice};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Nvfp4Record, Slice};
 use oominf_format::Model;
 
 use crate::util::{bf16_tensor, tap};
@@ -64,8 +65,31 @@ impl ExpertSource for DiskExperts {
 /// (gate.ws2, gate.in, up.ws2, up.in, down.ws2, down.in).
 const SCALE2_IDX: [usize; 3] = [0, 2, 4];
 
+/// Reused device buffers for the fused routed-expert path.
+struct Workspace {
+    /// `off[n_e + 1] ++ assign_tok[A] ++ slot_assign[A]`.
+    meta: Slice<i32>,
+    /// Record address of each expert of the step.
+    recs: Slice<u64>,
+    /// SwiGLU activations `[A, inter]`.
+    h: Buf,
+    /// Per-assignment down outputs `[A, hidden]`.
+    y: Buf,
+    /// Gate and up outputs `[A, inter]` (tiled prefill path only).
+    g: Buf,
+    u: Buf,
+}
+
+/// Steps where some expert has at least this many assignments use the tiled
+/// (shared-memory) kernels; smaller steps use the warp-per-row kernels.
+const TILED_MIN_ASSIGNMENTS: usize = 32;
+
 pub struct Moe {
     layer: u32,
+    geo: Nvfp4Record,
+    /// Use the slow reference path (oracle); defaults from `OOMINF_MOE_REFERENCE`.
+    reference: AtomicBool,
+    ws: Mutex<Workspace>,
     router: Bf16Buf,
     shared_gate: Bf16Buf,
     shared_up: Bf16Buf,
@@ -116,8 +140,40 @@ impl Moe {
         );
         let si = d.shared_inter as u64;
         let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
+        ensure!(
+            down.cols == gate.rows,
+            "expert down input does not match gate output"
+        );
+        let geo = Nvfp4Record {
+            hidden: gate.cols,
+            inter: gate.rows,
+            gate_weight: gate.weight,
+            gate_scale: gate.scale,
+            up_weight: up.weight,
+            up_scale: up.scale,
+            down_weight: down.weight,
+            down_scale: down.scale,
+            scale2: SCALE2_IDX,
+        };
+        let ws = Workspace {
+            meta: gpu.upload_i32(&[0; 64])?,
+            recs: gpu
+                .ctx
+                .default_stream()
+                .alloc_zeros::<u64>(64)
+                .map_err(oominf_cuda::Error::from)?,
+            h: gpu.zeros(64)?,
+            y: gpu.zeros(64)?,
+            g: gpu.zeros(64)?,
+            u: gpu.zeros(64)?,
+        };
         Ok(Moe {
             layer,
+            geo,
+            reference: AtomicBool::new(
+                std::env::var_os("OOMINF_MOE_REFERENCE").is_some_and(|v| v != "0"),
+            ),
+            ws: Mutex::new(ws),
             router: w("gate.weight", &[d.experts as u64, h])?,
             shared_gate: w("shared_expert.gate_proj.weight", &[si, h])?,
             shared_up: w("shared_expert.up_proj.weight", &[si, h])?,
@@ -127,6 +183,11 @@ impl Moe {
             up,
             down,
         })
+    }
+
+    /// Switches between the fused path and the slow reference path (oracle).
+    pub fn set_reference(&self, on: bool) {
+        self.reference.store(on, Ordering::Relaxed);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -160,7 +221,6 @@ impl Moe {
             );
             ids_host = sub.iter().map(|&v| v as i32).collect();
         }
-        let weights_host = gpu.download(&weights)?;
 
         // Shared expert.
         let si = d.shared_inter;
@@ -185,7 +245,33 @@ impl Moe {
         )?;
         tap(gpu, probe, "shared_gate_logit", &mut gate_logit)?;
 
-        // Routed experts, grouped by expert.
+        let mut routed = if self.reference.load(Ordering::Relaxed) {
+            let weights_host = gpu.download(&weights)?;
+            self.routed_reference(gpu, d, x, t, &ids_host, &weights_host, experts)?
+        } else {
+            self.routed_fused(gpu, d, x, t, &ids_host, &weights, experts)?
+        };
+        tap(gpu, probe, "routed_out", &mut routed)?;
+        let mut out = gpu.zeros(t * h)?;
+        gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
+        tap(gpu, probe, "moe_out", &mut out)?;
+        Ok(out)
+    }
+
+    /// Reference routed-expert path: per expert, dequantise to fp32 matrices and run
+    /// fp32 cuBLAS GEMMs. Slow; kept as an oracle (`OOMINF_MOE_REFERENCE=1`).
+    #[allow(clippy::too_many_arguments)]
+    fn routed_reference(
+        &self,
+        gpu: &Gpu,
+        d: &Dims,
+        x: &Buf,
+        t: usize,
+        ids_host: &[i32],
+        weights: &[f32],
+        experts: &mut dyn ExpertSource,
+    ) -> Result<Buf> {
+        let (h, e, k) = (d.hidden, d.experts, d.top_k);
         let mut by_expert: BTreeMap<u32, (Vec<i32>, Vec<f32>)> = BTreeMap::new();
         for tok in 0..t {
             for slot in 0..k {
@@ -195,7 +281,7 @@ impl Moe {
                 }
                 let entry = by_expert.entry(ex as u32).or_default();
                 entry.0.push(tok as i32);
-                entry.1.push(weights_host[tok * k + slot]);
+                entry.1.push(weights[tok * k + slot]);
             }
         }
         let (gi, gh) = (self.gate.rows, self.gate.cols);
@@ -227,10 +313,79 @@ impl Moe {
             gpu.gemm_f32(&act, &w_down, &mut y, n, h, gi)?;
             gpu.scatter_add_weighted(&y, &idx, &wv, &mut routed, n, h)?;
         }
-        tap(gpu, probe, "routed_out", &mut routed)?;
-        let mut out = gpu.zeros(t * h)?;
-        gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
-        tap(gpu, probe, "moe_out", &mut out)?;
-        Ok(out)
+        Ok(routed)
+    }
+
+    /// Fused routed-expert path: one gate/up launch, one down launch and one
+    /// deterministic slot-order combine per step, reading NVFP4 records in place.
+    #[allow(clippy::too_many_arguments)]
+    fn routed_fused(
+        &self,
+        gpu: &Gpu,
+        d: &Dims,
+        x: &Buf,
+        t: usize,
+        ids_host: &[i32],
+        weights: &Buf,
+        experts: &mut dyn ExpertSource,
+    ) -> Result<Buf> {
+        let (h, e, k) = (d.hidden, d.experts, d.top_k);
+        let a_total = t * k;
+        // Group assignment slots (t * k + s) by expert.
+        let mut lists: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for (slot, &ex) in ids_host.iter().enumerate().take(a_total) {
+            if ex < 0 || ex as usize >= e {
+                bail!("router picked expert {ex}");
+            }
+            lists.entry(ex as u32).or_default().push(slot);
+        }
+        let distinct: Vec<u32> = lists.keys().copied().collect();
+        let n_e = distinct.len();
+        let max_n = lists.values().map(Vec::len).max().unwrap_or(0);
+        let recs = experts.fetch(gpu, self.layer, &distinct)?;
+        // meta = off[n_e + 1] ++ assign_tok[A] ++ slot_assign[A]
+        let mut meta = vec![0i32; n_e + 1 + 2 * a_total];
+        let mut a = 0usize;
+        for (ei, slots) in lists.values().enumerate() {
+            meta[ei] = a as i32;
+            for &slot in slots {
+                meta[n_e + 1 + a] = (slot / k) as i32;
+                meta[n_e + 1 + a_total + slot] = a as i32;
+                a += 1;
+            }
+        }
+        meta[n_e] = a as i32;
+
+        let mut ws = self.ws.lock().unwrap();
+        let ws = &mut *ws;
+        gpu.write_into(&meta, &mut ws.meta)?;
+        gpu.write_into(&recs, &mut ws.recs)?;
+        gpu.ensure_len(&mut ws.h, a_total * self.geo.inter)?;
+        gpu.ensure_len(&mut ws.y, a_total * h)?;
+        let off = ws.meta.slice(0..n_e + 1);
+        let assign = ws.meta.slice(n_e + 1..n_e + 1 + a_total);
+        let slot_assign = ws.meta.slice(n_e + 1 + a_total..n_e + 1 + 2 * a_total);
+        let geo = &self.geo;
+        if max_n >= TILED_MIN_ASSIGNMENTS {
+            let (hd, it) = (geo.hidden, geo.inter);
+            gpu.ensure_len(&mut ws.g, a_total * it)?;
+            gpu.ensure_len(&mut ws.u, a_total * it)?;
+            let gate = (geo.gate_weight, geo.gate_scale, geo.scale2[0]);
+            let up = (geo.up_weight, geo.up_scale, geo.scale2[1]);
+            let down = (geo.down_weight, geo.down_scale, geo.scale2[2]);
+            let rows = Some(&assign);
+            gpu.moe_tiled(&ws.recs, &off, rows, n_e, max_n, x, &mut ws.g, it, hd, gate)?;
+            gpu.moe_tiled(&ws.recs, &off, rows, n_e, max_n, x, &mut ws.u, it, hd, up)?;
+            gpu.moe_swiglu(&ws.g, &ws.u, &mut ws.h, a_total * it)?;
+            gpu.moe_tiled(
+                &ws.recs, &off, None, n_e, max_n, &ws.h, &mut ws.y, hd, it, down,
+            )?;
+        } else {
+            gpu.moe_gate_up(&ws.recs, &off, &assign, n_e, x, &mut ws.h, geo)?;
+            gpu.moe_down(&ws.recs, &off, n_e, &ws.h, &mut ws.y, geo)?;
+        }
+        let mut routed = gpu.zeros(t * h)?;
+        gpu.moe_combine_slots(&ws.y, &slot_assign, weights, &mut routed, t, h, k)?;
+        Ok(routed)
     }
 }

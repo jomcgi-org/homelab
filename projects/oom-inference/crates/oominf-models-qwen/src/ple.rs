@@ -19,11 +19,11 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 
 use anyhow::{Context, Result, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
 use oominf_format::{Model, TensorFile};
 
 use crate::layer::StepInput;
-use crate::util::{bf16_tensor, tap};
+use crate::util::{bf16_concat, bf16_tensor, tap};
 use crate::{Dims, Probe};
 
 pub struct Ple {
@@ -40,8 +40,8 @@ pub struct Ple {
     shard_offsets: Vec<u64>,
     tables: File,
     scale: f32,
-    key_proj: Bf16Buf,
-    value_proj: Bf16Buf,
+    /// `key_proj` then `value_proj` stacked (both read the embedding): one GEMM.
+    kv_proj: Bf16Buf,
     norm_key: Bf16Buf,
     norm_query: Bf16Buf,
     norm_conv: Bf16Buf,
@@ -213,8 +213,14 @@ impl Ple {
             shard_offsets,
             tables,
             scale,
-            key_proj: w("key_proj.weight", &[r, ed])?,
-            value_proj: w("value_proj.weight", &[h, ed])?,
+            kv_proj: bf16_concat(
+                gpu,
+                model,
+                &[
+                    (format!("{p}key_proj.weight"), vec![r, ed]),
+                    (format!("{p}value_proj.weight"), vec![h, ed]),
+                ],
+            )?,
             norm_key: w("norm_key.weight", &[r])?,
             norm_query: w("norm_query.weight", &[r])?,
             norm_conv: w("norm_conv.weight", &[r])?,
@@ -255,12 +261,14 @@ impl Ple {
         Ok(out)
     }
 
-    /// Returns the PLE contribution `[t, hc * hidden]` to add to `residual`.
+    /// Returns the PLE contribution `[t, hc * hidden]` to add to `residual`, as
+    /// workspace buffer `ple.out` (the caller gives it back).
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         gpu: &Gpu,
         d: &Dims,
+        ws: &mut Workspace,
         residual: &Buf,
         t: usize,
         step: &StepInput,
@@ -290,17 +298,22 @@ impl Ple {
         state.tokens = hist[hist.len() - ctx..].to_vec();
 
         let rows = gpu.upload_bytes(&self.gather_rows(&ids)?)?;
-        let mut emb = gpu.zeros(t * ed)?;
+        let mut emb = ws.take(gpu, "ple.emb", t * ed)?;
         gpu.fp8_dequant_scaled(&rows, self.scale, &mut emb, t * ed)?;
         tap(gpu, probe, "ple.ngram_embed", &mut emb)?;
 
-        let mut key = gpu.zeros(t * r)?;
-        gpu.gemm_bf16(&emb, &self.key_proj, &mut key, scratch, t, r, ed)?;
-        let mut key_n = gpu.zeros(t * r)?;
+        let mut kv = ws.take(gpu, "ple.kv", t * (r + h))?;
+        gpu.gemm_bf16(&emb, &self.kv_proj, &mut kv, scratch, t, r + h, ed)?;
+        ws.give("ple.emb", emb);
+        let mut key = ws.take(gpu, "ple.key", t * r)?;
+        gpu.copy_cols(&kv, &mut key, t, r + h, 0, r)?;
+        let mut value = ws.take(gpu, "ple.value", t * h)?;
+        gpu.copy_cols(&kv, &mut value, t, r + h, r, h)?;
+        ws.give("ple.kv", kv);
+        let mut key_n = ws.take(gpu, "ple.key_n", t * r)?;
         gpu.rmsnorm_groups(&key, &self.norm_key, &mut key_n, t, r, h, d.eps, 1.0)?;
-        let mut value = gpu.zeros(t * h)?;
-        gpu.gemm_bf16(&emb, &self.value_proj, &mut value, scratch, t, h, ed)?;
-        let mut query_n = gpu.zeros(t * r)?;
+        ws.give("ple.key", key);
+        let mut query_n = ws.take(gpu, "ple.query_n", t * r)?;
         gpu.rmsnorm_groups(
             residual,
             &self.norm_query,
@@ -311,11 +324,14 @@ impl Ple {
             d.eps,
             1.0,
         )?;
-        let mut gated = gpu.zeros(t * r)?;
+        let mut gated = ws.take(gpu, "ple.gated", t * r)?;
         gpu.ple_gate(&key_n, &query_n, &value, &mut gated, t, d.hc, h)?;
-        let mut gated_n = gpu.zeros(t * r)?;
+        ws.give("ple.key_n", key_n);
+        ws.give("ple.query_n", query_n);
+        ws.give("ple.value", value);
+        let mut gated_n = ws.take(gpu, "ple.gated_n", t * r)?;
         gpu.rmsnorm_groups(&gated, &self.norm_conv, &mut gated_n, t, r, h, d.eps, 1.0)?;
-        let mut out = gpu.zeros(t * r)?;
+        let mut out = ws.take(gpu, "ple.out", t * r)?;
         gpu.dilated_conv_silu_add(
             &gated_n,
             &mut state.conv,
@@ -327,6 +343,8 @@ impl Ple {
             self.conv_kernel,
             self.conv_dilation,
         )?;
+        ws.give("ple.gated", gated);
+        ws.give("ple.gated_n", gated_n);
 
         tap(gpu, probe, "state.ple_conv", &mut state.conv)?;
         if probe.wants("state.ple_tokens") {

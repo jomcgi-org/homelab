@@ -178,3 +178,108 @@ extern "C" __global__ void swap01(const float* src, float* dst, int A, int B, in
     int b = ab % B, a = ab / B;
     dst[((size_t)b * A + a) * D + d] = src[i];
 }
+
+// dst[dst_off + i] = src[src_off + i] for i < n.
+extern "C" __global__ void copy_range(const float* src, size_t src_off, float* dst, size_t dst_off,
+                                      int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[dst_off + i] = src[src_off + i];
+}
+
+// Flash-decode for one query token (T = 1), GQA-aware. Each warp owns a contiguous
+// chunk of `chunk` keys and all G = H / Hkv query heads that share KV head
+// blockIdx.y, so each K/V row is read once per group. Per (warp, head) it keeps an
+// online-softmax partial (max m, sum l, unnormalised acc[D]); attn_decode_combine
+// merges the partials. D is 256: lane `l` owns elements l, l + 32, ..., so global
+// and shared loads are both conflict-free. G is a compile-time constant so the
+// accumulators stay in registers. Masked keys are skipped.
+// part: [Hkv, P, G, D + 2] with P = gridDim.x * warps per block.
+#define FD_D 256
+template <int G>
+__device__ void attn_decode_partial_impl(const float* q, const float* k, const float* v,
+                                         const uint8_t* mask, float* part, int Hkv,
+                                         int kv_len, int chunk, float scale) {
+    __shared__ float qs[G * FD_D];
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int wpb = blockDim.x >> 5;
+    int kvh = blockIdx.y;
+    int P = gridDim.x * wpb;
+    int p = blockIdx.x * wpb + warp;
+    for (int i = threadIdx.x; i < G * FD_D; i += blockDim.x) qs[i] = q[(size_t)kvh * G * FD_D + i];
+    __syncthreads();
+    float acc[G][8];
+    float m[G], l[G];
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+        m[g] = -INFINITY;
+        l[g] = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 8; i++) acc[g][i] = 0.0f;
+    }
+    int j0 = p * chunk;
+    int j1 = min(kv_len, j0 + chunk);
+    for (int j = j0; j < j1; j++) {
+        if (!mask[j]) continue;
+        const float* kr = k + ((size_t)j * Hkv + kvh) * FD_D;
+        const float* vr = v + ((size_t)j * Hkv + kvh) * FD_D;
+        float kk[8], vv[8];
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            kk[i] = kr[i * 32 + lane];
+            vv[i] = vr[i * 32 + lane];
+        }
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+            float dot = 0.0f;
+#pragma unroll
+            for (int i = 0; i < 8; i++) dot += qs[g * FD_D + i * 32 + lane] * kk[i];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) dot += __shfl_xor_sync(0xffffffff, dot, o);
+            float s = dot * scale;
+            float mn = fmaxf(m[g], s);
+            float corr = expf(m[g] - mn);
+            float e = expf(s - mn);
+            l[g] = l[g] * corr + e;
+#pragma unroll
+            for (int i = 0; i < 8; i++) acc[g][i] = acc[g][i] * corr + e * vv[i];
+            m[g] = mn;
+        }
+    }
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+        float* out = part + (((size_t)kvh * P + p) * G + g) * (FD_D + 2);
+#pragma unroll
+        for (int i = 0; i < 8; i++) out[i * 32 + lane] = acc[g][i];
+        if (lane == 0) {
+            out[FD_D] = m[g];
+            out[FD_D + 1] = l[g];
+        }
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(256)
+attn_decode_partial_g12(const float* q, const float* k, const float* v, const uint8_t* mask,
+                        float* part, int Hkv, int kv_len, int chunk, float scale) {
+    attn_decode_partial_impl<12>(q, k, v, mask, part, Hkv, kv_len, chunk, scale);
+}
+
+// Merges flash-decode partials: out[h, d] = sum_p e^(m_p - M) acc_p[d] / sum_p e^(m_p - M) l_p.
+// One block per query head, one thread per d (blockDim.x == 256).
+extern "C" __global__ void attn_decode_combine(const float* part, float* out, int H, int Hkv,
+                                               int P) {
+    int h = blockIdx.x, d = threadIdx.x;
+    int G = H / Hkv;
+    int kvh = h / G, g = h % G;
+    float M = -INFINITY;
+    for (int p = 0; p < P; p++) M = fmaxf(M, part[(((size_t)kvh * P + p) * G + g) * (FD_D + 2) + FD_D]);
+    float num = 0.0f, den = 0.0f;
+    for (int p = 0; p < P; p++) {
+        const float* pr = part + (((size_t)kvh * P + p) * G + g) * (FD_D + 2);
+        float mp = pr[FD_D];
+        if (mp == -INFINITY) continue;
+        float w = expf(mp - M);
+        num += w * pr[d];
+        den += w * pr[FD_D + 1];
+    }
+    out[(size_t)h * FD_D + d] = num / den;
+}

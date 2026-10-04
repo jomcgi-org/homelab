@@ -1,8 +1,11 @@
 //! The whole text model: embedding, decoder layers, final hyper-connection mixer
 //! and `lm_head`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use anyhow::{Context, Result, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
 use oominf_format::Model;
 
 use crate::hc::HyperConn;
@@ -26,6 +29,8 @@ pub struct SeqState {
     pub layers: Vec<LayerState>,
     /// Tokens processed so far (the next step's start position).
     pub pos: usize,
+    /// Scratch buffers shared by every layer.
+    pub ws: Rc<RefCell<Workspace>>,
 }
 
 /// Renames a layer's stages to `{stage}.{layer}` for a model-level probe.
@@ -99,13 +104,15 @@ impl QwenModel {
     }
 
     pub fn new_state(&self, gpu: &Gpu, max_tokens: usize) -> Result<SeqState> {
+        let ws = Rc::new(RefCell::new(Workspace::new()));
         Ok(SeqState {
             layers: self
                 .layers
                 .iter()
-                .map(|l| l.new_state(gpu, &self.dims, max_tokens))
+                .map(|l| l.new_state_shared(gpu, &self.dims, max_tokens, ws.clone()))
                 .collect::<Result<_>>()?,
             pos: 0,
+            ws,
         })
     }
 
@@ -133,8 +140,15 @@ impl QwenModel {
                 host.extend(row.iter().map(|&w| bf16_to_f32(w)));
             }
         }
-        let mut x = gpu.upload_f32(&host)?;
+        let mut x = state
+            .ws
+            .borrow_mut()
+            .take(gpu, "model.embed", t * d.residual())?;
+        gpu.upload_into(&host, &mut x)?;
         tap(gpu, probe, "residual_in", &mut x)?;
+        // Name the current residual is given back under once a layer has consumed it;
+        // layer outputs then alternate between two stable "layer.out" buffers.
+        let mut x_name = "model.embed";
 
         let step = StepInput {
             token_ids,
@@ -145,24 +159,34 @@ impl QwenModel {
                 inner: probe,
                 layer: layer.layer,
             };
-            x = layer.forward(gpu, d, &x, t, &step, st, experts, &mut lp)?;
+            let next = layer.forward(gpu, d, &x, t, &step, st, experts, &mut lp)?;
+            // Hand the previous residual back so the next layer reuses it.
+            state
+                .ws
+                .borrow_mut()
+                .give(x_name, std::mem::replace(&mut x, next));
+            x_name = "layer.out";
         }
         state.pos += t;
 
-        let mut scratch = gpu.upload_u16(&vec![0u16; t * d.residual()])?;
+        let mut ws_guard = state.ws.borrow_mut();
+        let ws: &mut Workspace = &mut ws_guard;
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", t * d.residual())?;
         let (mut mixed, _) =
             self.final_mixer
-                .mix(gpu, d, &x, t, &mut scratch, probe, "final_hc")?;
+                .mix(gpu, d, ws, &x, t, &mut scratch, probe, "final_hc")?;
+        ws.give(x_name, x);
         tap(gpu, probe, "mixer_out", &mut mixed)?;
         let rows = if last_only { 1 } else { t };
-        let input = if last_only {
-            let mut last = gpu.zeros(h)?;
+        let input = if last_only && t > 1 {
+            let mut last = ws.take(gpu, "model.last", h)?;
             gpu.copy_rows(&mixed, t - 1, 1, h, &mut last)?;
+            ws.give("hc.mixed", mixed);
             last
         } else {
             mixed
         };
-        let mut logits = gpu.zeros(rows * self.vocab)?;
+        let mut logits = gpu.uninit(rows * self.vocab)?;
         gpu.gemm_bf16(
             &input,
             &self.lm_head,
@@ -172,6 +196,15 @@ impl QwenModel {
             self.vocab,
             h,
         )?;
+        ws.give_bf16("gemm.scratch", scratch);
+        ws.give(
+            if last_only && t > 1 {
+                "model.last"
+            } else {
+                "hc.mixed"
+            },
+            input,
+        );
         if !last_only {
             tap(gpu, probe, "logits", &mut logits)?;
         }
