@@ -9,6 +9,7 @@ anyhow.workspace = true
 clap.workspace = true
 oominf-convert = { path = "../oominf-convert" }
 oominf-core = { path = "../oominf-core" }
+oominf-cpu = { path = "../oominf-cpu" }
 oominf-cuda = { path = "../oominf-cuda" }
 oominf-format = { path = "../oominf-format" }
 oominf-models = { path = "../oominf-models" }

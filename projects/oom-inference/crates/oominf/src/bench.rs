@@ -38,10 +38,11 @@ fn tier_line(s: ExpertStats, tokens: usize, unit: &str) -> String {
     }
     let per = |n: u64| n as f64 / tokens as f64;
     format!(
-        "; {unit}: {:.1} records, {:.1} VRAM hits, {:.1} host hits, {:.1} disk reads (VRAM hit rate {:.1}%, host+VRAM {:.1}%)",
+        "; {unit}: {:.1} records, {:.1} VRAM hits, {:.1} host hits ({:.1} computed on the CPU), {:.1} disk reads (VRAM hit rate {:.1}%, host+VRAM {:.1}%)",
         per(s.requests),
         per(s.vram_hits),
         per(s.host_hits),
+        per(s.host_computed),
         per(s.disk_reads),
         100.0 * s.vram_hits as f64 / s.requests as f64,
         100.0 * (s.vram_hits + s.host_hits) as f64 / s.requests as f64

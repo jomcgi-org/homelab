@@ -46,9 +46,9 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
         self.source(layer)?.1.fetch(b, layer, experts)
     }
 
-    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Staged> {
+    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32], host_ok: bool) -> Result<Staged> {
         let (i, s) = self.source(layer)?;
-        let staged = s.begin_fetch(b, layer, experts)?;
+        let staged = s.begin_fetch(b, layer, experts, host_ok)?;
         self.open = Some(i);
         Ok(staged)
     }
@@ -122,6 +122,7 @@ pub fn tiered_for_model<B: Backend + 'static>(
     vram_gib: f64,
     host_gib: f64,
     lookahead: bool,
+    host_compute: usize,
     policies: &PolicyPair<'_>,
 ) -> Result<Box<dyn ExpertSource<B>>> {
     const GIB: f64 = (1u64 << 30) as f64;
@@ -172,6 +173,7 @@ pub fn tiered_for_model<B: Backend + 'static>(
             hp,
         )?;
         t.lookahead = lookahead;
+        t.host_compute = host_compute;
         // No prompt warms a small group's records (e.g. a draft head's experts): read
         // them into the host tier now if it can hold them all.
         if i != largest {

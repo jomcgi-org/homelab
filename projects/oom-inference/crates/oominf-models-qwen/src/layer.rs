@@ -50,6 +50,11 @@ pub struct StepInput<'a> {
 }
 
 impl<B: Backend> DecoderLayer<B> {
+    /// Lets decode-sized steps compute host-resident experts on `pool`.
+    pub fn set_host_experts(&mut self, pool: std::sync::Arc<oominf_cpu::HostExperts>) {
+        self.moe.set_host_experts(pool);
+    }
+
     pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let p = format!("model.language_model.layers.{layer}");
         let kind = d

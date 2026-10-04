@@ -19,6 +19,9 @@ pub struct Options {
     pub max_context: usize,
     /// Prompt tokens per prefill chunk (bounds prefill workspace memory).
     pub prefill_chunk: usize,
+    /// CPU threads computing host-resident experts of decode-sized steps (0: copy
+    /// every routed record to the device).
+    pub host_threads: usize,
 }
 
 struct Inner<B: Backend> {
@@ -46,7 +49,10 @@ pub fn open<B: Backend>(
     experts: ExpertFactory<B>,
 ) -> Result<Box<dyn Model>> {
     let config = std::fs::read_to_string(files.dir().join("config.json")).context("config.json")?;
-    let model = QwenModel::load(&*b, &files, Dims::from_config(&config)?, None)?;
+    let mut model = QwenModel::load(&*b, &files, Dims::from_config(&config)?, None)?;
+    if opts.host_threads > 0 {
+        model.set_host_experts(Arc::new(oominf_cpu::HostExperts::new(opts.host_threads)?));
+    }
     let spare = model.new_state(&*b, opts.max_context)?;
     b.sync()?;
     let experts = experts(&b)?;

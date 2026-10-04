@@ -786,6 +786,7 @@ dependencies = [
  "clap",
  "oominf-convert",
  "oominf-core",
+ "oominf-cpu",
  "oominf-cuda",
  "oominf-format",
  "oominf-models",
@@ -811,6 +812,15 @@ name = "oominf-core"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+]
+
+[[package]]
+name = "oominf-cpu"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "oominf-core",
+ "rayon",
 ]
 
 [[package]]
@@ -851,6 +861,7 @@ dependencies = [
  "anyhow",
  "io-uring",
  "oominf-core",
+ "oominf-cpu",
  "oominf-cuda",
  "oominf-format",
  "oominf-tiers",

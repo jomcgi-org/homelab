@@ -177,6 +177,8 @@ minutes, hence TopK 2 in `large_indirect`.
 | `StageD2H` / `CompleteD2H` | Staging I/O: direct reads from the weight file into host buffers (io_uring completions). Includes `ExpertSource::prefetch`: decode predicts the next layer's experts and reads predicted disk misses into host cache buffers (evicting cold residents); the next fetch drains those reads before any copy, so a buffer is only copied from once `ready` |
 | `StageH2V` / `CompleteH2V` | Host to device copies on a copy stream, completion observed by event |
 | `Route`, `Launch`, `inflight`, `Complete` | Decode/prefill loop: router output, launch on the compute stream, completion events that release pins |
+| `<<"cpu", h>>` launches, `InflightHosts` | Host compute (`oominf-cpu`): a decode-sized fetch may leave a host-tier record in its buffer and hand its address to the CPU workers instead of copying it. The buffer stays pinned for the rest of the fetch (it is one of the fetch's keys) and nothing writes host buffers before the next fetch or prefetch, which the MoE issues only after the CPU work completed (`Pending` also waits on drop) |
+| `StageH2V` with a VRAM source | Stage promotions and decode victim saves: device-to-device copies on the same copy queue, enqueued before any refill of their source slot, so in-order execution of the queue keeps every copy source valid until it is read |
 | `Capture`, `Replay`, `Invalidate`, `graph` | CUDA graph manager; capture registers graph pins, invalidation releases them |
 | Unfair `StageD2H`/`StageH2V`/`Evict*` | Prefetch and placement policy plugins: free to do anything the pins allow |
 | `Demand*` actions | Tier manager's demand path for the routed layer |

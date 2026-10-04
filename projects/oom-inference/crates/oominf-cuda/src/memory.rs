@@ -45,6 +45,18 @@ impl Memory for Gpu {
         Ok(self.stream.memcpy_htod(host, &mut dst.0)?)
     }
 
+    fn write_f32_at(&self, host: &[f32], dst: &mut Buf, offset: usize) -> Result<()> {
+        ensure!(
+            offset + host.len() <= dst.0.len(),
+            "write_f32_at: {} values at {offset} into {}",
+            host.len(),
+            dst.0.len()
+        );
+        Ok(self
+            .stream
+            .memcpy_htod(host, &mut dst.0.slice_mut(offset..offset + host.len()))?)
+    }
+
     fn download_f32(&self, buf: &Buf) -> Result<Vec<f32>> {
         Ok(self.stream.clone_dtoh(&buf.0)?)
     }

@@ -19,10 +19,17 @@ pub trait ExpertSource<B> {
     /// work issued now. The rest become usable after
     /// [`ExpertSource::finish_fetch`], so callers can compute with resident experts
     /// while the others load.
-    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Staged> {
+    ///
+    /// With `host_ok` the caller can compute experts on the host this step: the
+    /// source may then leave some host-resident records where they are and return
+    /// their host addresses in [`Staged::host`] instead of copying them to the
+    /// device.
+    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32], host_ok: bool) -> Result<Staged> {
+        let _ = host_ok;
         let addrs = self.fetch(b, layer, experts)?;
         Ok(Staged {
             ready: vec![true; addrs.len()],
+            host: vec![None; addrs.len()],
             addrs,
         })
     }
@@ -77,6 +84,10 @@ pub struct Staged {
     pub addrs: Vec<u64>,
     /// `ready[i]`: record `i` is usable before `finish_fetch`.
     pub ready: Vec<bool>,
+    /// `host[i]`: record `i` stays in pinned host memory at this address and the
+    /// caller computes it on the host (its `addrs[i]` is not a device record). The
+    /// memory stays unchanged until the source's next fetch or prefetch.
+    pub host: Vec<Option<usize>>,
 }
 
 /// Counters of an [`ExpertSource`]; subtract two snapshots for an interval.
@@ -86,6 +97,8 @@ pub struct ExpertStats {
     pub vram_hits: u64,
     pub host_hits: u64,
     pub disk_reads: u64,
+    /// Host hits computed on the host instead of copied to the device.
+    pub host_computed: u64,
     /// Experts predicted for a layer, how many of those it then routed to, and how
     /// many experts it routed to in total (prediction precision and recall).
     pub predicted: u64,
@@ -104,6 +117,7 @@ impl std::ops::Add for ExpertStats {
             vram_hits: self.vram_hits + o.vram_hits,
             host_hits: self.host_hits + o.host_hits,
             disk_reads: self.disk_reads + o.disk_reads,
+            host_computed: self.host_computed + o.host_computed,
             predicted: self.predicted + o.predicted,
             predicted_routed: self.predicted_routed + o.predicted_routed,
             routed_after_prediction: self.routed_after_prediction + o.routed_after_prediction,
@@ -121,6 +135,7 @@ impl std::ops::Sub for ExpertStats {
             vram_hits: self.vram_hits - o.vram_hits,
             host_hits: self.host_hits - o.host_hits,
             disk_reads: self.disk_reads - o.disk_reads,
+            host_computed: self.host_computed - o.host_computed,
             predicted: self.predicted - o.predicted,
             predicted_routed: self.predicted_routed - o.predicted_routed,
             routed_after_prediction: self.routed_after_prediction - o.routed_after_prediction,
