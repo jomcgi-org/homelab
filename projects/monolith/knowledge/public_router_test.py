@@ -46,6 +46,162 @@ _UTC = timezone.utc
 _NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=_UTC)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/knowledge/public/search?q=deadline",
+        "/api/knowledge/public/search-index",
+        "/api/knowledge/public/graph",
+        "/api/knowledge/public/entities",
+        "/api/knowledge/public/entities/project/embervm/notes",
+        "/api/knowledge/public/notes/deadline",
+    ],
+)
+@pytest.mark.parametrize("offset", [0, 1])
+def test_public_cache_expires_without_row_update(
+    client, session, monkeypatch, path, offset
+):
+    note = _make_note("deadline", "Deadline fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add_all([note, _make_entity(), _link_entity(1, "deadline")])
+    session.commit()
+    before = client.get(path)
+    assert before.status_code == 200
+    if path == "/api/knowledge/public/entities":
+        assert before.json()[0]["note_counts"]["verified"] == 1
+    else:
+        assert "deadline" in before.text.lower()
+    assert (
+        before.headers["cache-control"]
+        == "public, max-age=13, s-maxage=13, must-revalidate"
+    )
+    assert "stale-" not in before.headers["cache-control"]
+    conditional = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+    assert conditional.status_code == 304
+    assert conditional.headers["cache-control"] == before.headers["cache-control"]
+    assert conditional.headers["date"] == before.headers["date"]
+
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13 + offset)
+    )
+    after = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+    assert after.status_code == (404 if "/notes/deadline" in path else 200)
+    assert "deadline" not in after.text.lower()
+    if path == "/api/knowledge/public/entities":
+        assert after.json()[0]["note_counts"]["verified"] == 0
+    assert after.headers["cache-control"] == "no-store"
+    session.refresh(note)
+    assert note.review_after.replace(tzinfo=_UTC) == _NOW + timedelta(seconds=13)
+    assert note.last_reviewed_at is None
+
+
+def test_graph_validator_changes_when_count_and_indexed_at_do_not(
+    client, session, monkeypatch
+):
+    first = _make_note("first", "First")
+    first.review_after = _NOW + timedelta(seconds=13)
+    second = _make_note("second", "Second")
+    second.observed_at = first.review_after
+    session.add_all([first, second])
+    session.commit()
+    before = client.get("/api/knowledge/public/graph")
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13)
+    )
+    after = client.get(
+        "/api/knowledge/public/graph", headers={"If-None-Match": before.headers["etag"]}
+    )
+    assert after.status_code == 200
+    assert before.json()["indexed_at"] == after.json()["indexed_at"]
+    assert len(before.json()["nodes"]) == len(after.json()["nodes"]) == 1
+    assert after.json()["nodes"][0]["id"] == "second"
+    assert after.headers["etag"] != before.headers["etag"]
+
+
+def test_public_cache_uses_earliest_deadline_and_floor(client, session):
+    short = _make_note("short", "Short")
+    short.review_after = _NOW + timedelta(seconds=1.9)
+    session.add_all([short, _make_note("long", "Long")])
+    session.commit()
+    assert (
+        client.get("/api/knowledge/public/graph").headers["cache-control"]
+        == "public, max-age=1, s-maxage=1, must-revalidate"
+    )
+    short.review_after = _NOW + timedelta(milliseconds=900)
+    session.commit()
+    assert (
+        client.get("/api/knowledge/public/graph").headers["cache-control"] == "no-store"
+    )
+
+
+def test_deadline_crossed_during_response_computation_fails_closed(
+    client, session, monkeypatch
+):
+    note = _make_note("short", "Short")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    clock = iter([_NOW, note.review_after.replace(tzinfo=_UTC)])
+    monkeypatch.setattr("knowledge.public_router._now", lambda: next(clock))
+    response = client.get("/api/knowledge/public/graph")
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert "Short" not in response.text
+
+
+def test_304_uses_remaining_lease_at_revalidation(client, session, monkeypatch):
+    note = _make_note("fact", "Fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    before = client.get("/api/knowledge/public/graph")
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=5)
+    )
+    after = client.get(
+        "/api/knowledge/public/graph", headers={"If-None-Match": before.headers["etag"]}
+    )
+    assert after.status_code == 304
+    assert (
+        after.headers["cache-control"]
+        == "public, max-age=8, s-maxage=8, must-revalidate"
+    )
+
+
+def test_semantic_search_cache_expires_without_row_update(client, session, monkeypatch):
+    note = _make_note("deadline", "Deadline fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+
+    class Embeddings:
+        base_url = "configured"
+
+        async def embed(self, query):
+            return [0.0]
+
+    monkeypatch.setattr("knowledge.public_router.EmbeddingClient", Embeddings)
+    monkeypatch.setattr(
+        "knowledge.public_router.search_public_chunks",
+        lambda *args, **kwargs: [{"note_id": "deadline"}],
+    )
+    path = "/api/knowledge/public/search?q=deadline&mode=semantic"
+    before = client.get(path)
+    assert before.status_code == 200
+    assert before.json()[0]["note_id"] == "deadline"
+    assert (
+        before.headers["cache-control"]
+        == "public, max-age=13, s-maxage=13, must-revalidate"
+    )
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13)
+    )
+    after = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+    assert after.status_code == 200
+    assert after.json() == []
+    assert after.headers["cache-control"] == "no-store"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -186,7 +342,7 @@ class TestPublicGraphEmpty:
     def test_empty_graph_has_cache_control_header(self, client):
         resp = client.get("/api/knowledge/public/graph")
         assert "Cache-Control" in resp.headers
-        assert "public" in resp.headers["Cache-Control"]
+        assert resp.headers["Cache-Control"] == "no-store"
 
     def test_empty_graph_has_etag_header(self, client):
         resp = client.get("/api/knowledge/public/graph")
@@ -660,7 +816,7 @@ class TestPublicSearchIndex:
         )
 
         assert first.headers["cache-control"] == (
-            "public, max-age=300, s-maxage=300, stale-while-revalidate=86400"
+            "public, max-age=300, s-maxage=300, must-revalidate"
         )
         assert second.status_code == 304
 
