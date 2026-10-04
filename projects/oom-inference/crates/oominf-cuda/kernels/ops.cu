@@ -310,3 +310,8 @@ extern "C" __global__ void add_inplace(float* x, const float* y, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) x[i] += y[i];
 }
+
+extern "C" __global__ void add_out(const float* x, const float* y, float* out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = x[i] + y[i];
+}

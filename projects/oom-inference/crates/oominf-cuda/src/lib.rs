@@ -30,16 +30,19 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-const PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/ops.ptx"));
+include!(concat!(env!("OUT_DIR"), "/kernels.rs"));
+
+mod attention;
+mod ple;
 
 pub struct Gpu {
     pub ctx: Arc<CudaContext>,
     pub stream: Arc<CudaStream>,
     blas: CudaBlas,
-    module: Arc<CudaModule>,
+    modules: Vec<Arc<CudaModule>>,
 }
 
-fn grid(n: usize, block: u32) -> LaunchConfig {
+pub(crate) fn grid(n: usize, block: u32) -> LaunchConfig {
     LaunchConfig {
         grid_dim: ((n as u32).div_ceil(block).max(1), 1, 1),
         block_dim: (block, 1, 1),
@@ -54,17 +57,26 @@ impl Gpu {
         unsafe { ctx.disable_event_tracking() };
         let stream = ctx.default_stream();
         let blas = CudaBlas::new(stream.clone())?;
-        let module = ctx.load_module(cudarc::nvrtc::Ptx::from_src(PTX))?;
+        let modules = KERNELS
+            .iter()
+            .map(|(_, ptx)| ctx.load_module(cudarc::nvrtc::Ptx::from_src(*ptx)))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Gpu {
             ctx,
             stream,
             blas,
-            module,
+            modules,
         })
     }
 
-    fn func(&self, name: &str) -> Result<CudaFunction> {
-        Ok(self.module.load_function(name)?)
+    /// Looks a kernel up by name across every compiled `kernels/*.cu` module.
+    pub(crate) fn func(&self, name: &str) -> Result<CudaFunction> {
+        for m in &self.modules {
+            if let Ok(f) = m.load_function(name) {
+                return Ok(f);
+            }
+        }
+        Err(Error::Usage(format!("no kernel named {name}")))
     }
 
     pub fn zeros(&self, n: usize) -> Result<Buf> {
@@ -191,7 +203,7 @@ impl Gpu {
         Ok(())
     }
 
-    fn check(&self, ok: bool, what: &str) -> Result<()> {
+    pub(crate) fn check(&self, ok: bool, what: &str) -> Result<()> {
         if ok {
             Ok(())
         } else {
@@ -649,6 +661,22 @@ impl Gpu {
                 .arg(&n32)
                 .arg(&h32)
                 .launch(grid(n * h, 256))?
+        };
+        Ok(())
+    }
+
+    /// `out = x + y`.
+    pub fn add(&self, x: &Buf, y: &Buf, out: &mut Buf, n: usize) -> Result<()> {
+        let f = self.func("add_out")?;
+        let n32 = n as i32;
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(x)
+                .arg(y)
+                .arg(out)
+                .arg(&n32)
+                .launch(grid(n, 256))?
         };
         Ok(())
     }

@@ -4,38 +4,14 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use oominf_convert::safetensors::read_file;
 use oominf_cuda::Gpu;
-use oominf_models_qwen::{Dims, GdnState, LinearLayer, Probe};
+use oominf_models_qwen::{DecoderLayer, Dims, DiskExperts, Probe, StepInput};
 
 const STEPS: [&str; 4] = ["prefill", "decode-1", "decode-2", "decode-3"];
-const STAGES: [&str; 23] = [
-    "attn_hc.mixed",
-    "attn_hc.inject",
-    "gdn.in_proj_qkv",
-    "gdn.in_proj_z",
-    "gdn.in_proj_b",
-    "gdn.in_proj_a",
-    "gdn.conv_out",
-    "gdn.core_out",
-    "gdn.norm_out",
-    "mixer_out",
-    "attn_combine_out",
-    "mlp_hc.mixed",
-    "mlp_hc.inject",
-    "router_logits",
-    "topk_ids",
-    "topk_weights",
-    "shared_out",
-    "shared_gate_logit",
-    "routed_out",
-    "moe_out",
-    "layer_out",
-    "state.conv",
-    "state.recurrent",
-];
 
 fn load_step(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
     let mut out = HashMap::new();
@@ -65,12 +41,13 @@ fn load_step(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
 struct CheckProbe<'a> {
     truth: &'a HashMap<String, Vec<f32>>,
     isolate: bool,
-    observed: HashMap<String, Vec<f32>>,
+    /// Stages in the order the layer produced them.
+    observed: Vec<(String, Vec<f32>)>,
 }
 
 impl Probe for CheckProbe<'_> {
     fn observe(&mut self, stage: &str, data: Vec<f32>) {
-        self.observed.insert(stage.to_owned(), data);
+        self.observed.push((stage.to_owned(), data));
     }
 
     fn substitute(&mut self, stage: &str) -> Option<Vec<f32>> {
@@ -104,8 +81,8 @@ fn rms_rel_and_cos(a: &[f32], b: &[f32]) -> (f64, f64) {
     (rel, cos)
 }
 
-/// Tokens whose top-k expert set differs.
-fn topk_set_mismatches(a: &[f32], b: &[f32], k: usize) -> usize {
+/// Rows whose set of integer ids differs (top-k expert sets, gathered row ids).
+fn id_set_mismatches(a: &[f32], b: &[f32], k: usize) -> usize {
     a.chunks(k)
         .zip(b.chunks(k))
         .filter(|(x, y)| {
@@ -118,22 +95,45 @@ fn topk_set_mismatches(a: &[f32], b: &[f32], k: usize) -> usize {
         .count()
 }
 
+/// Token ids of each step from the fixture manifest: the templated prompt, then
+/// one teacher-forced token per decode step.
+fn step_tokens(fixtures: &Path) -> Result<Vec<Vec<u32>>> {
+    let m: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(fixtures.join("manifest.json")).context("manifest.json")?,
+    )?;
+    let ids = |v: &serde_json::Value| -> Result<Vec<u32>> {
+        v.as_array()
+            .context("token_ids")?
+            .iter()
+            .map(|x| x.as_u64().map(|x| x as u32).context("token id"))
+            .collect()
+    };
+    let mut steps = vec![ids(&m["prompt"]["token_ids"])?];
+    for id in ids(&m["decode"]["token_ids"])? {
+        steps.push(vec![id]);
+    }
+    Ok(steps)
+}
+
 pub fn run(model_dir: &Path, fixtures: &Path, layer: u32, mode: &str) -> Result<bool> {
-    let model = oominf_format::Model::open(model_dir)?;
+    let model = Arc::new(oominf_format::Model::open(model_dir)?);
     let dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
     let tolerances: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixtures.join("tolerances.json")).context("tolerances.json")?,
     )?;
     let budget = &tolerances[format!("{mode}/bf16_vs_fp32")];
+    let tokens = step_tokens(fixtures)?;
     let gpu = Gpu::new(0)?;
     let start = std::time::Instant::now();
-    let lin = LinearLayer::load(&gpu, &model, &dims, layer)?;
+    let dl = DecoderLayer::load(&gpu, &model, &dims, layer)?;
+    let mut experts = DiskExperts::new(model.clone());
     gpu.sync()?;
     println!(
         "layer {layer} loaded in {:.1}s; mode {mode}; truth = HF fp32; budget* = worst HF bf16 vs fp32 over steps",
         start.elapsed().as_secs_f64()
     );
 
+    let max_tokens: usize = tokens.iter().map(Vec::len).sum();
     let mut all_ok = true;
     for isolate in [true, false] {
         println!(
@@ -144,38 +144,53 @@ pub fn run(model_dir: &Path, fixtures: &Path, layer: u32, mode: &str) -> Result<
                 "chained (whole layer from residual_in)"
             }
         );
-        let mut state = GdnState::new(&gpu, &dims)?;
-        for step in STEPS {
+        let mut state = dl.new_state(&gpu, &dims, max_tokens)?;
+        let mut pos = 0;
+        for (step, ids) in STEPS.iter().zip(&tokens) {
             let truth = load_step(&fixtures.join(format!("{mode}/fp32/{step}.safetensors")))?;
             let input = truth
                 .get("residual_in")
                 .context("fixture lacks residual_in")?;
             let t = input.len() / dims.residual();
+            if t != ids.len() {
+                bail!("{step}: fixture has {t} tokens, manifest {}", ids.len());
+            }
             let mut probe = CheckProbe {
                 truth: &truth,
                 isolate,
-                observed: HashMap::new(),
+                observed: Vec::new(),
             };
             let x = gpu.upload_f32(input)?;
-            lin.forward(&gpu, &x, t, &mut state, &mut probe)?;
+            let si = StepInput {
+                token_ids: ids,
+                start_pos: pos,
+            };
+            dl.forward(
+                &gpu,
+                &dims,
+                &x,
+                t,
+                &si,
+                &mut state,
+                &mut experts,
+                &mut probe,
+            )?;
+            pos += t;
             println!("-- {step} (T={t})");
             println!(
-                "   {:<20} {:>10} {:>12} {:>12} {:>7}",
+                "   {:<24} {:>10} {:>12} {:>12} {:>7}",
                 "stage", "rms_rel", "cosine", "budget*", "ratio"
             );
-            for stage in STAGES {
-                let (Some(ours), Some(want)) = (probe.observed.get(stage), truth.get(stage)) else {
+            for (stage, ours) in &probe.observed {
+                let Some(want) = truth.get(stage) else {
                     continue;
                 };
                 if ours.len() != want.len() {
                     bail!("{stage}: {} values, fixture has {}", ours.len(), want.len());
                 }
                 if stage == "topk_ids" {
-                    let hf = topk_set_mismatches(ours, want, dims.top_k);
-                    println!(
-                        "   {:<20} {:>10} tokens with a different expert set (of {t})",
-                        stage, hf
-                    );
+                    let n = id_set_mismatches(ours, want, dims.top_k);
+                    println!("   {stage:<24} {n:>10} tokens with a different expert set (of {t})");
                     continue;
                 }
                 let (rel, cos) = rms_rel_and_cos(ours, want);
@@ -183,7 +198,7 @@ pub fn run(model_dir: &Path, fixtures: &Path, layer: u32, mode: &str) -> Result<
                 // per-step budget is meaningless for single-token, few-element stages.
                 let b = STEPS
                     .iter()
-                    .filter_map(|s| budget[*s][stage]["rms_rel"].as_f64())
+                    .filter_map(|s| budget[*s][stage.as_str()]["rms_rel"].as_f64())
                     .fold(f64::NAN, f64::max);
                 let ratio = rel / b;
                 // Chained errors legitimately include routing flips at near-ties, so
@@ -191,7 +206,7 @@ pub fn run(model_dir: &Path, fixtures: &Path, layer: u32, mode: &str) -> Result<
                 let bad = isolate && ratio > 1.5 && rel > 1e-6;
                 all_ok &= !bad;
                 println!(
-                    "   {:<20} {:>10.3e} {:>12.8} {:>12.3e} {:>7.2}{}",
+                    "   {:<24} {:>10.3e} {:>12.8} {:>12.3e} {:>7.2}{}",
                     stage,
                     rel,
                     cos,
