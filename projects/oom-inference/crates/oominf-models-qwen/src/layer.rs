@@ -182,6 +182,31 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    /// Bytes of the fp32 KV shadow a layer-major prefill of up to `tokens` tokens
+    /// holds while this layer runs (0 without attention or with an fp32 cache).
+    pub fn shadow_bytes(&self, tokens: usize) -> usize {
+        match &self.mixer {
+            Mixer::Attention(a) => a.shadow_bytes(tokens),
+            Mixer::Gdn(_) => 0,
+        }
+    }
+
+    /// Starts this layer's layer-major prefill of up to `tokens` tokens (see
+    /// [`Attention::begin_shadow`]).
+    pub fn begin_prefill(&self, gpu: &B, state: &mut LayerState<B>, tokens: usize) -> Result<()> {
+        if let (Mixer::Attention(a), Some(st)) = (&self.mixer, state.attn.as_mut()) {
+            a.begin_shadow(gpu, &mut state.ws.borrow_mut(), st, tokens)?;
+        }
+        Ok(())
+    }
+
+    /// Ends this layer's layer-major prefill.
+    pub fn end_prefill(&self, state: &mut LayerState<B>) {
+        if let (Mixer::Attention(a), Some(st)) = (&self.mixer, state.attn.as_mut()) {
+            a.end_shadow(&mut state.ws.borrow_mut(), st);
+        }
+    }
+
     /// Bytes [`Self::grow_kv`] would allocate for this layer to hold `tokens`.
     pub fn kv_growth_bytes(&self, state: &LayerState<B>, tokens: usize) -> usize {
         match (&self.mixer, &state.attn) {

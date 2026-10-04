@@ -90,4 +90,14 @@ impl<B: Memory> Workspace<B> {
     pub fn give_bytes(&mut self, name: &'static str, buf: B::Bytes) {
         self.bytes.insert(name, buf);
     }
+
+    /// Frees the buffers held under `names` (e.g. large prefill-only buffers once a
+    /// prefill ends, so the memory can go back to other users).
+    pub fn release(&mut self, names: &[&'static str]) {
+        for name in names {
+            self.f32s.remove(name);
+            self.bf16s.remove(name);
+            self.bytes.remove(name);
+        }
+    }
 }

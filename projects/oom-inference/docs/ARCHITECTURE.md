@@ -82,8 +82,10 @@ rounding noise at long context (fp32 against fp32 with only the prefill chunk
 size changed shifts next-token distributions as much), with retrieval and
 long-context tasks unchanged. Lower bit widths are measurably lossier. A lossy
 mode is judged by outcome (`oominf score`, retrieval, tasks), not by the
-per-layer budgets. Known cost: prefill attention re-decodes cached tiles, about
-23% slower at 95k (#6853).
+per-layer budgets. Prefill keeps an exact fp32 shadow of the prefilling
+layer's keys and values (one layer at a time, about 0.4 GB at 95k tokens), so
+prefill attention reads fp32 rows instead of re-decoding cached tiles in every
+block and runs at fp32 speed; decode reads the compressed cache.
 
 Reproducibility: experts computed on the CPU round differently from the GPU, and
 which ones run there depends on cache timing. With an exact cache that rarely
@@ -123,7 +125,9 @@ trades are how engines drift from the model they claim to run.
   chunk skip this: with little compute per layer to hide copies behind, the less
   precise prediction costs more than it saves. Between prefills the stage is a
   decode victim cache: an evicted record is copied there device to device, so a
-  later miss on it is a promotion.
+  later miss on it is a promotion. When a prefill ends, its prefill-only buffers
+  (residuals, KV shadows, fetch-group buffers) are freed and the memory is
+  offered back to the expert tier for decode.
 - During decode (and draft verification), layer L+1's router applied to layer
   L's input predicts the next experts; predicted disk misses are read into the
   host tier. Routing, not prediction, decides which experts run.

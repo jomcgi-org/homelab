@@ -151,6 +151,21 @@ impl Memory for Gpu {
     }
 
     fn mem_info(&self) -> Result<(usize, usize)> {
+        // Freed buffers return to the stream-ordered allocator's pool, which keeps
+        // them reserved; trim it so the free figure counts them (callers decide how
+        // much memory other users may take from this).
+        unsafe {
+            use cudarc::driver::sys;
+            self.ctx.bind_to_thread()?;
+            let mut dev = 0;
+            let mut pool = std::ptr::null_mut();
+            if sys::cuCtxGetDevice(&mut dev) == sys::CUresult::CUDA_SUCCESS
+                && sys::cuDeviceGetDefaultMemPool(&mut pool, dev) == sys::CUresult::CUDA_SUCCESS
+            {
+                self.stream.synchronize()?;
+                sys::cuMemPoolTrimTo(pool, 0);
+            }
+        }
         Ok(self.ctx.mem_get_info()?)
     }
 }
