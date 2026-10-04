@@ -337,7 +337,12 @@ class GitHubVerifier:
 
     def _issue(self, repo: str, number: int) -> dict:
         body = self._get(f"/repos/{repo}/issues/{number}")
-        if body.get("number") != number or body.get("state") not in {"open", "closed"}:
+        if (
+            type(body.get("number")) is not int
+            or body["number"] != number
+            or not isinstance(body.get("state"), str)
+            or body["state"] not in {"open", "closed"}
+        ):
             raise SourceUnavailable("malformed_response")
         return body
 
@@ -348,8 +353,10 @@ class GitHubVerifier:
         body = self._get(f"/repos/{repo}/pulls/{number}")
         head = body.get("head")
         if (
-            body.get("number") != number
-            or body.get("state") not in {"open", "closed"}
+            type(body.get("number")) is not int
+            or body["number"] != number
+            or not isinstance(body.get("state"), str)
+            or body["state"] not in {"open", "closed"}
             or not isinstance(body.get("merged"), bool)
             or not isinstance(body.get("draft"), bool)
             or not isinstance(head, dict)
@@ -436,7 +443,8 @@ class GitHubVerifier:
         if not runs:
             return None
         if any(
-            run.get("status") not in {"completed", "in_progress", "queued"}
+            not isinstance(run.get("status"), str)
+            or run["status"] not in {"completed", "in_progress", "queued"}
             or (
                 run.get("status") == "completed"
                 and not isinstance(run.get("conclusion"), str)
@@ -470,13 +478,17 @@ class GitHubVerifier:
             raise SourceUnavailable("commit statuses are not tied to the SHA")
         if not statuses:
             return None
-        states = {
+        states = [
             status.get("state") if isinstance(status, dict) else None
             for status in statuses
-        }
-        if not states <= {"success", "pending", "failure", "error"}:
+        ]
+        if any(
+            not isinstance(state, str)
+            or state not in {"success", "pending", "failure", "error"}
+            for state in states
+        ):
             raise SourceUnavailable("malformed_response")
-        if states & {"failure", "error"}:
+        if any(state in {"failure", "error"} for state in states):
             return "failure"
         return "pending" if "pending" in states else "success"
 

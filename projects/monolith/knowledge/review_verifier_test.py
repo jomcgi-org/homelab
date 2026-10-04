@@ -260,6 +260,8 @@ def test_commit_status_must_be_tied_to_the_sha_and_fully_returned():
         GitHubResponse(403, {"message": "rate limit"}),
         GitHubResponse(200, ["not", "an", "object"]),
         GitHubResponse(200, {"number": 1, "state": "weird"}),
+        GitHubResponse(200, {"number": 1, "state": []}),
+        GitHubResponse(200, {"number": True, "state": "open"}),
         SourceUnavailable("ConnectError"),
     ],
 )
@@ -571,6 +573,23 @@ def test_sha_association_request_obeys_the_shared_budget():
         verifier.verify(title=f"PR #1 checks passed at {HEAD}", content=None)
     assert verifier.requests == 2
     assert len(fake.calls) == 2
+
+
+@pytest.mark.parametrize("field", ["check-status", "commit-state", "pull-state"])
+def test_malformed_non_scalar_state_is_unavailable(field):
+    routes = association_routes()
+    if field == "check-status":
+        routes[f"/repos/{REPO}/commits/{HEAD}/check-runs?per_page=100"]["check_runs"][
+            0
+        ]["status"] = []
+    elif field == "commit-state":
+        routes[status_path(HEAD)] = combined()
+        routes[status_path(HEAD)]["total_count"] = 1
+        routes[status_path(HEAD)]["statuses"] = [{"state": {}}]
+    else:
+        routes[f"/repos/{REPO}/pulls/1"]["state"] = []
+    verdict, _ = verify(routes, f"PR #1 checks passed at {HEAD}")
+    assert verdict.status == "unavailable"
 
 
 def test_evidence_time_is_the_oldest_response_used():
