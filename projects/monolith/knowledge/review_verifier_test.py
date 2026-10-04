@@ -8,6 +8,7 @@ from knowledge.review_verifier import (
     BudgetExhausted,
     GitHubResponse,
     GitHubVerifier,
+    Predicate,
     SourceUnavailable,
     extract_predicates,
     httpx_fetcher,
@@ -324,6 +325,57 @@ def test_evidence_and_provenance_sections_assert_nothing():
     content = "Durable claim, PR #1 is open.\n\n## Evidence\n- PR #2 is merged\n"
     predicates = extract_predicates(title="t", content=content, default_repo=REPO)
     assert [p.number for p in predicates] == [1]
+
+
+@pytest.mark.parametrize(
+    ("title", "reason"),
+    [
+        ("PR #6821 and PR #6822 are open", "reference #6821 is not covered"),
+        (f"PR #1 and PR #2 head is {HEAD}", "reference #1 is not covered"),
+        ("PR #1 and PR #2 checks are passing", "reference #1 is not covered"),
+        (f"#1 and #2 checks are passing at {HEAD}", "more than one reference"),
+        (f"#1 and #2 checks pass at {HEAD}", "no verifiable predicate"),
+        (
+            f"PR #1 is open and PR #2 checks are passing at {HEAD}",
+            "more than one reference",
+        ),
+        ("other/repo#1 and PR #1 are open", "reference #1 is not covered"),
+    ],
+)
+def test_uncovered_or_ambiguous_references_are_unsupported(title, reason):
+    verdict, fake = verify({}, title)
+    assert verdict.status == "unsupported"
+    assert reason in verdict.reason
+    assert fake.calls == []
+
+
+def test_each_reference_with_its_own_state_is_covered():
+    predicates = extract_predicates(
+        title="PR #1 is open and PR #2 is closed", content=None, default_repo=REPO
+    )
+    assert predicates == [
+        Predicate("state", REPO, 1, "open"),
+        Predicate("state", REPO, 2, "closed"),
+    ]
+
+
+def test_one_reference_at_a_sha_and_repeated_identical_references_stay_supported():
+    predicates = extract_predicates(
+        title="PR #6806 checks are passing at a24da077",
+        content=None,
+        default_repo=REPO,
+    )
+    assert predicates == [Predicate("checks", REPO, None, "success", sha="a24da077")]
+    for title, expected in [
+        ("PR #1 and PR #1 are open", Predicate("state", REPO, 1, "open")),
+        (f"PR #1 and PR #1 head is {HEAD}", Predicate("head", REPO, 1, "head", sha=HEAD)),
+        ("PR #1 and PR #1 checks are passing", Predicate("checks", REPO, 1, "success")),
+        (
+            f"PR #1 and PR #1 checks are passing at {HEAD}",
+            Predicate("checks", REPO, None, "success", sha=HEAD),
+        ),
+    ]:
+        assert extract_predicates(title=title, content=None, default_repo=REPO) == [expected]
 
 
 def test_shared_responses_spend_one_request_and_budget_stops_the_run():

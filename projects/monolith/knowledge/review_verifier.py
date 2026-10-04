@@ -162,6 +162,7 @@ def extract_predicates(
     concrete instance. A state claim that refers back to an earlier sentence
     ("Its checks are failing") or a gate written as its own sentence cannot be
     verified, so the whole claim is unsupported rather than partly renewed.
+    Every distinct named reference in a state sentence must also be covered.
     """
     claim = _PROVENANCE_SECTION.sub("", content or "")
     predicates: list[Predicate] = []
@@ -180,6 +181,8 @@ def extract_predicates(
             raise _Unsupported("workflow run or job state is not verifiable")
         checks = bool(_CHECK_WORD.search(sentence))
         consumed: set[str] = set()
+        named = {(repo, number) for _, repo, number in refs}
+        covered: set[tuple[str, int]] = set()
         for match in _STATE.finditer(sentence):
             term = match.group(1).lower()
             if term in _STATE_TERMS:
@@ -187,32 +190,43 @@ def extract_predicates(
                     raise _Unsupported(f"state {term!r} names no PR or issue")
                 _, repo, number = _subject(match.start(), refs)
                 predicates.append(Predicate("state", repo, number, _STATE_TERMS[term]))
+                covered.add((repo, number))
             elif term == "head":
                 if not refs or len(shas) != 1:
                     raise _Unsupported("head claim needs one PR and one SHA")
                 _, repo, number = _subject(match.start(), refs)
                 predicates.append(Predicate("head", repo, number, "head", sha=shas[0]))
+                covered.add((repo, number))
                 consumed.add(shas[0])
             elif term in _CHECK_TERMS and checks:
                 if len(shas) > 1:
                     raise _Unsupported("checks claim names more than one SHA")
                 if shas:
+                    if len(named) > 1:
+                        raise _Unsupported("checks at a SHA name more than one reference")
                     repo = refs[0][1] if refs else default_repo
                     predicates.append(
                         Predicate("checks", repo, None, _CHECK_TERMS[term], sha=shas[0])
                     )
                     consumed.add(shas[0])
+                    covered.update(named)
                 elif refs:
                     _, repo, number = _subject(match.start(), refs)
                     predicates.append(
                         Predicate("checks", repo, number, _CHECK_TERMS[term])
                     )
+                    covered.add((repo, number))
                 else:
                     raise _Unsupported("checks claim names no PR or SHA")
             else:
                 raise _Unsupported(f"state {term!r} is not verifiable from GitHub")
         if set(shas) - consumed:
             raise _Unsupported("SHA assertion is not verifiable from GitHub")
+        if named - covered:
+            _, number = sorted(named - covered)[0]
+            raise _Unsupported(
+                f"reference #{number} is not covered by a verifiable predicate"
+            )
     if not predicates:
         raise _Unsupported("no verifiable predicate")
     deduped = list(dict.fromkeys(predicates))
