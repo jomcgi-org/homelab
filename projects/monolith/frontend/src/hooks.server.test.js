@@ -226,7 +226,7 @@ describe("Grimoire invitation cache isolation", () => {
         expect(response.headers.get("cloudflare-cdn-cache-control")).toBe(
           "no-store",
         );
-        expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+        expect(response.headers.get("referrer-policy")).toBe("same-origin");
         expect(response.headers.has("etag")).toBe(false);
       }
     },

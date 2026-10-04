@@ -17,10 +17,14 @@ import {
   safeJoinMessage,
 } from "$lib/server/grimoire-join-links.js";
 
+// Keep native form POST Origin intact while suppressing cross-origin referrers.
+// no-referrer serializes navigation POST Origin to null, which the strict CSRF
+// check below correctly rejects. Keep the response header and HTML meta aligned.
+// https://fetch.spec.whatwg.org/#append-a-request-origin-header
 const privateHeaders = {
   "cache-control": "private, no-store",
   "cloudflare-cdn-cache-control": "no-store",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
 };
@@ -36,7 +40,7 @@ const escapeHtml = (value) =>
 function landing(message, enabled, status = 200, signIn = false) {
   const nonce = randomBytes(18).toString("base64");
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow"><title>Campaign invitation · Grimoire</title><style nonce="${nonce}">${theme}
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><meta name="robots" content="noindex,nofollow"><title>Campaign invitation · Grimoire</title><style nonce="${nonce}">${theme}
 body { margin:0; font:1rem/1.6 system-ui,sans-serif; background:var(--grim-paper); color:var(--grim-ink); }
 main { max-width:40rem; margin:8vh auto; padding:1.5rem; }
 h1 { font-family:var(--grim-serif); line-height:1.15; font-size:2.4rem; }

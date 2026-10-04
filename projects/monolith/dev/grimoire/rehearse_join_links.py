@@ -77,6 +77,19 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
             ).to_be_visible()
         return page
 
+    def native_form(page, label):
+        with page.expect_request(
+            lambda request: (
+                request.method == "POST"
+                and request.is_navigation_request()
+                and urlsplit(request.url).path.startswith("/grimoire/join")
+            )
+        ) as submitted:
+            page.get_by_role("button", name=label, exact=True).click()
+        assert submitted.value.header_value("origin") == FRONTEND, (
+            "Native invitation forms must preserve their same-origin Origin"
+        )
+
     def api(page, method, path, **kwargs):
         token = next(
             cookie["value"]
@@ -151,7 +164,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
         ) as inspected:
             response = open_link(page, url)
         assert response.status == 200
-        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["referrer-policy"] == "same-origin"
         assert "no-store" in response.headers["cache-control"]
         assert inspected.value.ok, inspected.value.status
         metadata = inspected.value.json()
@@ -216,7 +229,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     ).to_be_visible()
     expect(guest).to_have_url(JOIN)
     guest.screenshot(path=str(output / "join-public-resume.png"), full_page=True)
-    guest.get_by_role("button", name="Close invitation", exact=True).click()
+    native_form(guest, "Close invitation")
     expect(
         guest.get_by_text(
             "Invitation closed. Reopen the original link when you are ready.",
@@ -231,7 +244,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
 
     accept_page(b, link_a, "a@example.test")
     expect(b.get_by_text("Signed in as b@example.test.", exact=True)).to_be_visible()
-    b.get_by_role("button", name="Accept and join campaign", exact=True).click()
+    native_form(b, "Accept and join campaign")
     expect(b.get_by_role("alert")).to_have_text(
         "Sign in with the account this invitation was created for."
     )
@@ -242,7 +255,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     )
 
     accept_page(a, link_a, "a@example.test")
-    a.get_by_role("button", name="Close invitation", exact=True).click()
+    native_form(a, "Close invitation")
     expect(a).to_have_url(LOBBY)
     assert not resume_cookies(a)
     a.go_back()
@@ -261,13 +274,13 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     second_tab = observe(a.context.new_page())
     capture(second_tab, link_b, "b@example.test")
     a.bring_to_front()
-    a.get_by_role("button", name="Accept and join campaign", exact=True).click()
+    native_form(a, "Accept and join campaign")
     expect(a.get_by_role("alert")).to_have_text(
         "Invitation changed. Reopen the original link before continuing."
     )
     assert_players([])
     a.screenshot(path=str(output / "join-changed-tab.png"), full_page=True)
-    second_tab.get_by_role("button", name="Close invitation", exact=True).click()
+    native_form(second_tab, "Close invitation")
     expect(
         second_tab.get_by_text(
             "Invitation closed. Reopen the original link when you are ready.",
@@ -281,7 +294,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
 
     accept_page(a, link_a, "a@example.test")
     a.screenshot(path=str(output / "join-review.png"), full_page=True)
-    a.get_by_role("button", name="Accept and join campaign", exact=True).click()
+    native_form(a, "Accept and join campaign")
     expect(a).to_have_url(LOBBY)
     expect(campaign_article(a)).to_be_visible()
     assert not resume_cookies(a)
@@ -340,7 +353,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
         .filter(has_text="b@example.test")
     )
     pending.get_by_role("button", name="Revoke link", exact=True).click()
-    b.get_by_role("button", name="Accept and join campaign", exact=True).click()
+    native_form(b, "Accept and join campaign")
     expect(b.get_by_role("alert")).to_contain_text(
         "invalid, expired, revoked, or already used"
     )
