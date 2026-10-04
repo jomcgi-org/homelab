@@ -530,7 +530,12 @@ class KnowledgeStore:
             existing_valid_until: datetime | None = None
             existing_observed_at: datetime | None = None
             existing_published_at: datetime | None = None
+            revision = 0
             if existing_note is not None:
+                # The row is replaced, so the counter is carried across and
+                # advanced: a review that captured the old revision must not
+                # pass, and an outcome recorded at it must not block forever.
+                revision = (existing_note.revision or 0) + 1
                 existing_scope = existing_note.scope
                 existing_verification_state = existing_note.verification_state
                 existing_confidence = existing_note.confidence
@@ -596,6 +601,7 @@ class KnowledgeStore:
                 updated_at=metadata.updated,
                 extra=metadata.extra,
                 indexed_at=datetime.now(timezone.utc),
+                revision=revision,
             )
             from knowledge.freshness import preserve_deadline
 
