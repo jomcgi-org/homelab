@@ -51,6 +51,9 @@ class PublicNote(SQLModel, table=True):
     valid_until: datetime | None = None
     published_at: datetime | None = None
     disputed: bool = False
+    review_after: datetime | None = None
+    review_policy: str | None = None
+    last_reviewed_at: datetime | None = None
 
 
 class PublicNoteLink(SQLModel, table=True):

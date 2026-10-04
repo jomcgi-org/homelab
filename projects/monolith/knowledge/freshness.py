@@ -211,16 +211,17 @@ def preserve_deadline(note, *, now: datetime, existing=None, supplied=None) -> N
     note.review_after = min(prior, candidate) if prior and candidate else candidate
 
 
-def current_predicate(*, now: datetime):
+def current_predicate(*, now: datetime, model=None):
     """Fail closed at equality, for future observations and transitional rows."""
     from sqlalchemy import and_, func
 
     from knowledge.models import Note
 
-    basis = func.coalesce(Note.last_reviewed_at, Note.observed_at)
+    model = Note if model is None else model
+    basis = func.coalesce(model.last_reviewed_at, model.observed_at)
     return and_(
-        Note.review_after.is_not(None),
-        Note.review_after > now,
+        model.review_after.is_not(None),
+        model.review_after > now,
         basis.is_not(None),
         basis <= now,
     )

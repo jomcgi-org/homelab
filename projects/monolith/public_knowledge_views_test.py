@@ -14,7 +14,10 @@ Hand-written bdd_test (real DB), so excluded from gazelle. The handler logic
 over the view row shape is also covered (SQLite) in knowledge/router_test.py.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
+from sqlalchemy.exc import ProgrammingError
 from sqlmodel import Session, create_engine, text
 
 _INSERT_NOTE = text(
@@ -26,6 +29,8 @@ _INSERT_NOTE = text(
          :deleted_at)
     """
 )
+
+_NOW = datetime(2024, 6, 1, 12, tzinfo=timezone.utc)
 
 
 def _seed(session) -> None:
@@ -161,14 +166,21 @@ def _seed(session) -> None:
         ),
         {"entity_id": deleted_entity_id},
     )
+    session.execute(
+        text(
+            "UPDATE knowledge.notes SET observed_at = :now, review_after = :deadline WHERE note_id IN ('note-a', 'note-b')"
+        ),
+        {"now": _NOW, "deadline": _NOW + timedelta(days=1)},
+    )
     session.commit()
 
 
-def test_views_derive_public_only_and_endpoints_filter(session, client):
+def test_views_derive_public_only_and_endpoints_filter(session, client, monkeypatch):
     """Views expose only public, non-deleted rows; endpoints filter private
     targets and strip private wikilinks. Seeded + read through the SAVEPOINT
     session so nothing persists across tests."""
     _seed(session)
+    monkeypatch.setattr("knowledge.public_router._now", lambda: _NOW)
 
     # --- view derivation (as the migration owner / superuser) ---
     note_ids = [
@@ -355,6 +367,197 @@ def test_public_reader_reads_published_fact_columns_and_sanitized_scope(
     assert row.published_at is not None
     assert row.disputed is True
     assert by_id["personal-scope-fact"].scope is None
+
+
+@pytest.mark.asyncio
+async def test_public_reader_freshness_on_real_views(session, monkeypatch):
+    from chat_public.retrieval import retrieve
+    from core.db import get_session
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from knowledge.api import search_public_chunks
+    from knowledge.public_router import router
+
+    monkeypatch.setattr("knowledge.public_router._now", lambda: _NOW)
+    deadline = _NOW + timedelta(days=1)
+    seeds = [
+        ("fresh-current", _NOW, deadline, None, "standard-90d/v1", "public", None),
+        (
+            "fresh-due",
+            _NOW - timedelta(days=1),
+            _NOW - timedelta(seconds=1),
+            None,
+            "standard-90d/v1",
+            "public",
+            None,
+        ),
+        (
+            "fresh-equality",
+            _NOW - timedelta(days=1),
+            _NOW,
+            None,
+            "standard-90d/v1",
+            "public",
+            None,
+        ),
+        ("fresh-null", _NOW, None, None, "standard-90d/v1", "public", None),
+        ("fresh-unclassified", _NOW, None, None, None, "public", None),
+        (
+            "fresh-future",
+            _NOW + timedelta(seconds=1),
+            deadline,
+            None,
+            "standard-90d/v1",
+            "public",
+            None,
+        ),
+        (
+            "fresh-future-reviewed",
+            _NOW,
+            deadline,
+            _NOW + timedelta(seconds=1),
+            "standard-90d/v1",
+            "public",
+            None,
+        ),
+        ("fresh-missing", None, None, None, "standard-90d/v1", "public", None),
+        ("fresh-private", _NOW, deadline, None, "standard-90d/v1", "private", None),
+        ("fresh-deleted", _NOW, deadline, None, "standard-90d/v1", "public", _NOW),
+    ]
+    embedding = [0.1] * 1024
+    vector = "[" + ",".join(map(str, embedding)) + "]"
+    entity_id = session.execute(
+        text(
+            "INSERT INTO knowledge.entities (kind, slug, title, source) VALUES ('project', 'freshness', 'Freshness', 'test') RETURNING id"
+        )
+    ).scalar_one()
+    for nid, observed, review_after, reviewed, policy, visibility, deleted in seeds:
+        session.execute(
+            text("""
+                INSERT INTO knowledge.notes
+                    (note_id, path, title, content_hash, content, visibility,
+                     type, verification_state, scope, observed_at, review_after,
+                     review_policy, last_reviewed_at, deleted_at)
+                VALUES (:nid, :nid, :nid, :nid, :body, :visibility, 'fact',
+                        'verified', 'personal:joe', :observed, :deadline,
+                        :policy, :reviewed, :deleted)
+            """),
+            {
+                "nid": nid,
+                "body": "[[fresh-equality]] [[fresh-current]]",
+                "visibility": visibility,
+                "observed": observed,
+                "deadline": review_after,
+                "policy": policy,
+                "reviewed": reviewed,
+                "deleted": deleted,
+            },
+        )
+        session.execute(
+            text("""
+                INSERT INTO knowledge.chunks (note_fk, chunk_index, section_header, chunk_text, embedding)
+                SELECT id, 0, '', note_id, CAST(:vector AS vector)
+                FROM knowledge.notes WHERE note_id = :nid
+            """),
+            {"nid": nid, "vector": vector},
+        )
+        session.execute(
+            text(
+                "INSERT INTO knowledge.note_entities (note_id, entity_id, role, source) VALUES (:nid, :entity, 'subject', 'test')"
+            ),
+            {"nid": nid, "entity": entity_id},
+        )
+    session.execute(
+        text(
+            "INSERT INTO knowledge.disputes (note_id, reason, state) VALUES ('fresh-current', 'Contested', 'resolution_failed')"
+        )
+    )
+    session.execute(
+        text("""
+        INSERT INTO knowledge.note_links (src_note_fk, target_id, kind, edge_type)
+        SELECT id, 'fresh-equality', 'link', 'contradicts'
+        FROM knowledge.notes WHERE note_id = 'fresh-current'
+        UNION ALL
+        SELECT id, 'fresh-current', 'link', 'contradicts'
+        FROM knowledge.notes WHERE note_id = 'fresh-equality'
+    """)
+    )
+    session.flush()
+    session.execute(text("SET LOCAL ROLE public_reader"))
+    rows = session.execute(
+        text(
+            "SELECT note_id, review_after, review_policy, last_reviewed_at, scope, disputed FROM public_api.knowledge_notes WHERE note_id LIKE 'fresh-%'"
+        )
+    ).all()
+    by_id = {row.note_id: row for row in rows}
+    assert "fresh-private" not in by_id and "fresh-deleted" not in by_id
+    assert by_id["fresh-current"].review_after == deadline
+    assert by_id["fresh-current"].review_policy == "standard-90d/v1"
+    assert by_id["fresh-current"].last_reviewed_at is None
+    assert by_id["fresh-current"].scope is None
+    assert by_id["fresh-current"].disputed is True
+    assert by_id["fresh-equality"].review_after == _NOW
+    assert by_id["fresh-future-reviewed"].last_reviewed_at > _NOW
+    for table in ("notes", "chunks", "disputes"):
+        with pytest.raises(ProgrammingError, match="permission denied"):
+            with session.begin_nested():
+                session.execute(text(f"SELECT * FROM knowledge.{table}"))
+
+    chunks = search_public_chunks(session, embedding, now=_NOW, limit=1)
+    assert [row["note_id"] for row in chunks] == ["fresh-current"]
+    assert chunks[0]["disputed"] is True
+
+    class Embedder:
+        base_url = "http://embedding.test"
+
+        async def embed(self, query):
+            return embedding
+
+    monkeypatch.setattr("knowledge.public_router.EmbeddingClient", Embedder)
+    grounded = await retrieve(session, "fresh", embed_client=Embedder(), now=_NOW)
+    assert [note.note_id for note in grounded] == ["fresh-current"]
+    assert grounded[0].disputed is True
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_session] = lambda: session
+    with TestClient(app) as client:
+        for mode in ("grep", "semantic"):
+            response = client.get(
+                f"/api/knowledge/public/search?q=fresh&mode={mode}&limit=1"
+            )
+            assert response.status_code == 200
+            assert [row["note_id"] for row in response.json()] == ["fresh-current"]
+            assert response.json()[0]["disputed"] is True
+        index = client.get("/api/knowledge/public/search-index").json()
+        assert [row[0] for row in index["notes"]] == ["fresh-current"]
+        detail = client.get("/api/knowledge/public/notes/fresh-current").json()
+        assert detail["disputed"] is True
+        assert "[[fresh-equality]]" not in detail["body"]
+        assert "[[fresh-current]]" in detail["body"]
+        missing = client.get("/api/knowledge/public/notes/missing")
+        for nid, *_ in seeds[1:]:
+            hidden = client.get(f"/api/knowledge/public/notes/{nid}")
+            assert hidden.status_code == missing.status_code == 404
+            assert hidden.json() == missing.json()
+        graph = client.get("/api/knowledge/public/graph").json()
+        assert {node["id"] for node in graph["nodes"]} == {"fresh-current"}
+        assert graph["edges"] == []
+        chapter = client.get(
+            "/api/knowledge/public/entities/project/freshness/notes?limit=1"
+        ).json()
+        assert [note["note_id"] for note in chapter["notes"]] == ["fresh-current"]
+        assert chapter["contradictions"] == []
+        counts = client.get("/api/knowledge/public/entities").json()[0]["note_counts"]
+        assert counts["verified"] == 1
+        assert sum(counts.values()) == 1
+        monkeypatch.setattr("knowledge.public_router._now", lambda: deadline)
+        assert (
+            client.get("/api/knowledge/public/notes/fresh-current").status_code == 404
+        )
+        assert client.get("/api/knowledge/public/search?q=fresh").json() == []
+    assert search_public_chunks(session, embedding, now=deadline) == []
+    assert await retrieve(session, "fresh", embed_client=Embedder(), now=deadline) == []
+    session.execute(text("RESET ROLE"))
 
 
 def test_public_reader_denied_on_knowledge_note_links(pg):

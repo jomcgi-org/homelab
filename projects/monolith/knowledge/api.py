@@ -17,10 +17,10 @@ from knowledge.extraction import (
     KG_JOB_KIND,
     ExtractionOutputInvalid,
 )
-from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.freshness import VOLATILE as VOLATILE_REVIEW_POLICY
 from knowledge.freshness import result_current
 from knowledge.freshness import state as freshness_state
+from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.recall import (
     append_message_recall,
     attach_recall,
@@ -313,7 +313,11 @@ def raw_extras_by_id(session: Session, raw_ids: list[str]) -> dict[str, dict]:
 
 
 def search_public_chunks(
-    session: Session, query_embedding: list[float], *, limit: int = 6
+    session: Session,
+    query_embedding: list[float],
+    *,
+    limit: int = 6,
+    now: datetime | None = None,
 ) -> list[dict]:
     """pgvector cosine search over the public-only chunk view.
 
@@ -327,8 +331,11 @@ def search_public_chunks(
     Returns dicts with note identity, title, chunk text, verification state,
     dispute status, and ``score = 1 - cosine_distance`` (higher is closer).
     """
+    from datetime import datetime, timezone
+
     from sqlmodel import select
 
+    from knowledge.freshness import current_predicate
     from knowledge.public_models import PublicChunk, PublicNote
 
     distance = PublicChunk.embedding.cosine_distance(query_embedding)
@@ -346,6 +353,9 @@ def search_public_chunks(
             distance.label("distance"),
         )
         .join(PublicNote, PublicNote.note_id == PublicChunk.note_id)
+        .where(
+            current_predicate(now=now or datetime.now(timezone.utc), model=PublicNote)
+        )
         .order_by(distance.asc())
         .limit(max(1, limit) * _PUBLIC_CHUNK_OVERFETCH)
     )

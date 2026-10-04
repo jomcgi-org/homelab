@@ -1,7 +1,7 @@
 """Unit tests for knowledge/router.py — /search and /notes endpoints."""
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1007,6 +1007,7 @@ def _seed_public_note(
     path=None,
 ):
     """Insert a public_api.knowledge_notes view row (a plain SQLite table here)."""
+    now = datetime.now(timezone.utc)
     note = PublicNote(
         note_id=note_id,
         title=title,
@@ -1018,6 +1019,9 @@ def _seed_public_note(
         tags=tags or [],
         aliases=aliases or [],
         path=path or f"{note_id}.md",
+        observed_at=now,
+        review_after=now + timedelta(days=1),
+        review_policy="standard-90d/v1",
     )
     session.add(note)
     session.commit()
