@@ -5,6 +5,9 @@ Streams chat completions with fixed prompts and reports, per run and as medians:
 TTFT (request to first generated token) and decode tok/s (completion tokens after
 the first, over the time from first to last token). Standard library only.
 
+Every run (warm-ups included) uses a different topic, so no run re-measures
+text whose routed experts an earlier run already made resident.
+
 Cases:
   short       a short chat prompt
   long        a ~2k-token prompt (prefill-bound TTFT)
@@ -22,7 +25,24 @@ import sys
 import time
 import urllib.request
 
-SHORT = "Write a short story about a lighthouse keeper."
+TOPICS = [
+    "a lighthouse keeper",
+    "a glacier survey team",
+    "a night-shift baker",
+    "a deep-sea cable repair",
+    "a desert observatory",
+    "a river ferry pilot",
+    "a beekeeper in winter",
+    "a clockmaker's apprentice",
+    "a mountain rescue dog",
+    "a lunar greenhouse",
+    "a railway signal box",
+    "a museum restorer",
+    "a storm-chasing meteorologist",
+    "a lost-and-found office",
+    "a violin maker",
+    "an orbital debris tracker",
+]
 
 NOTES = [
     "The pump station on the east bank failed twice in March after the spring thaw.",
@@ -103,14 +123,16 @@ def stream_chat(url, model, messages, max_tokens, timeout):
 
 
 def run_case(args, case, run):
-    # A per-run tag keeps runs from reusing each other's prompt cache.
-    tag = f"(run {run}) "
+    """`run` numbers every run of every case (warm-ups first), so each gets its own topic."""
+    topic = TOPICS[run % len(TOPICS)]
     if case == "short":
-        return stream_chat(args.url, args.model, [{"role": "user", "content": tag + SHORT}], args.max_tokens, args.timeout)
+        prompt = f"Write a short story about {topic}."
+        return stream_chat(args.url, args.model, [{"role": "user", "content": prompt}], args.max_tokens, args.timeout)
     if case == "long":
-        return stream_chat(args.url, args.model, [{"role": "user", "content": tag + long_prompt()}], 64, args.timeout)
+        prompt = f"(For a report on {topic}.) " + long_prompt()
+        return stream_chat(args.url, args.model, [{"role": "user", "content": prompt}], 64, args.timeout)
     if case == "multiturn":
-        first_turn = [{"role": "user", "content": tag + "Name three uses of a lighthouse, briefly."}]
+        first_turn = [{"role": "user", "content": f"Name three challenges facing {topic}, briefly."}]
         r1 = stream_chat(args.url, args.model, first_turn, args.max_tokens, args.timeout)
         reply = {"role": "assistant", "content": r1["content"]}
         if r1["reasoning"]:
@@ -133,12 +155,15 @@ def main():
     args = p.parse_args()
 
     results = {}
+    serial = 0
     for case in args.cases.split(","):
-        for w in range(args.warmup):
-            run_case(args, case, f"w{w}")
+        for _ in range(args.warmup):
+            run_case(args, case, serial)
+            serial += 1
         runs = []
         for i in range(args.runs):
-            r = run_case(args, case, i)
+            r = run_case(args, case, serial)
+            serial += 1
             runs.append(r)
             print(
                 f"{case:9s} run {i}: ttft {r['ttft']:6.2f}s  decode {r['decode_tps']:6.2f} tok/s  "
