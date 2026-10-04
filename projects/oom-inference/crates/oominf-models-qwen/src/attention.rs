@@ -277,19 +277,15 @@ impl Attention {
         }
         let score_w = kv_len / a.ratio + 1;
         let mut idx_scores = ws.take(gpu, "attn.idx_scores", t * score_w)?;
-        // qsa_select writes every mask byte.
-        let mut mask = unsafe { gpu.stream.alloc::<u8>(t * kv_len)? };
-        gpu.qsa_select(
+        gpu.qsa_scores(
             &iq,
             &state.block_keys,
             &mut idx_scores,
-            &mut mask,
             t,
             start,
             a.idx_heads,
             a.idx_dim,
             a.ratio,
-            a.block_topk,
             kv_len,
         )?;
         ws.give("attn.iq", iq);
@@ -297,17 +293,18 @@ impl Attention {
             let nb = (0..t).map(|i| ((start + i + 1) / a.ratio) as f32).collect();
             probe.observe("indexer.num_blocks", nb);
         }
-        if probe.wants("indexer.block_scores") {
-            // [t, kv_len / ratio], zero beyond each query's visible blocks.
-            let raw = gpu.download(&idx_scores)?;
-            let w = kv_len / a.ratio;
-            let mut padded = vec![0f32; t * w];
-            for i in 0..t {
-                let nb = (start + i + 1) / a.ratio;
-                padded[i * w..i * w + nb].copy_from_slice(&raw[i * score_w..i * score_w + nb]);
-            }
-            probe.observe("indexer.block_scores", padded);
-        }
+        self.tap_block_scores(gpu, probe, &mut idx_scores, t, start, kv_len)?;
+        // qsa_mask writes every mask byte.
+        let mut mask = unsafe { gpu.stream.alloc::<u8>(t * kv_len)? };
+        gpu.qsa_mask(
+            &idx_scores,
+            &mut mask,
+            t,
+            start,
+            a.ratio,
+            a.block_topk,
+            kv_len,
+        )?;
         ws.give("attn.idx_scores", idx_scores);
         if probe.wants("indexer.mask") {
             let m = gpu.download(&mask)?;
@@ -374,6 +371,43 @@ impl Attention {
         ws.give("attn.core", attn);
         self.tap_state(gpu, state, probe)?;
         Ok(out)
+    }
+
+    /// Taps the block scores as `indexer.block_scores` (`[t, kv_len / ratio]`, zero
+    /// beyond each query's visible blocks) and writes a substitute back, so the
+    /// selection can be tested on exact reference scores.
+    fn tap_block_scores(
+        &self,
+        gpu: &Gpu,
+        probe: &mut dyn Probe,
+        scores: &mut Buf,
+        t: usize,
+        start: usize,
+        kv_len: usize,
+    ) -> Result<()> {
+        let stage = "indexer.block_scores";
+        let ratio = self.a.ratio;
+        let (w, stride) = (kv_len / ratio, kv_len / ratio + 1);
+        let visible = |i: usize| (start + i + 1) / ratio;
+        if probe.wants(stage) {
+            let raw = gpu.download(scores)?;
+            let mut padded = vec![0f32; t * w];
+            for i in 0..t {
+                let nb = visible(i);
+                padded[i * w..i * w + nb].copy_from_slice(&raw[i * stride..i * stride + nb]);
+            }
+            probe.observe(stage, padded);
+        }
+        if let Some(sub) = probe.substitute(stage) {
+            ensure!(sub.len() == t * w, "{stage} substitute has wrong length");
+            let mut raw = gpu.download(scores)?;
+            for i in 0..t {
+                let nb = visible(i);
+                raw[i * stride..i * stride + nb].copy_from_slice(&sub[i * w..i * w + nb]);
+            }
+            gpu.upload_into(&raw, scores)?;
+        }
+        Ok(())
     }
 
     /// Taps the caches in the reference layout (`state.k` / `state.v` as

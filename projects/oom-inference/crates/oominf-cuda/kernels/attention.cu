@@ -57,19 +57,45 @@ extern "C" __global__ void pool_rows(const float* raw, float* out, int nblocks, 
 }
 
 // QSA indexer selection. One block per query token t (absolute position start + t).
-// Block b covers key positions [b*ratio, (b+1)*ratio); a query sees nb = (p+1)/ratio
-// complete blocks. score[b] = sum_h relu(q[t,h] . kb[b]) / sqrt(Di). The top `topk`
-// blocks (ties to the lower block index) plus the incomplete tail are selected.
-// mask: [T, kv_stride] bytes, 1 where key position j is attendable (j <= p).
-extern "C" __global__ void qsa_select(const float* q, const float* kb, float* scores,
-                                      uint8_t* mask, int T, int start, int nheads, int Di,
-                                      int ratio, int topk, int kv_stride) {
+// Block-wide reductions for blockDim.x == 256.
+__device__ float attn_block_max(float v, float* red) {
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, o));
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = v;
+    __syncthreads();
+    v = threadIdx.x < 8 ? red[threadIdx.x] : -INFINITY;
+    if (threadIdx.x < 32)
+        for (int o = 4; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, o));
+    if (threadIdx.x == 0) red[8] = v;
+    __syncthreads();
+    float r = red[8];
+    __syncthreads();
+    return r;
+}
+
+__device__ float attn_block_sum(float v, float* red) {
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = v;
+    __syncthreads();
+    v = threadIdx.x < 8 ? red[threadIdx.x] : 0.0f;
+    if (threadIdx.x < 32)
+        for (int o = 4; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
+    if (threadIdx.x == 0) red[8] = v;
+    __syncthreads();
+    float r = red[8];
+    __syncthreads();
+    return r;
+}
+
+// QSA block scores. Block b covers key positions [b*ratio, (b+1)*ratio); query t at
+// position p = start + t sees nb = (p+1)/ratio complete blocks, and
+// score[t, b] = sum_h relu(q[t,h] . kb[b]) / sqrt(Di). Row stride: kv_stride/ratio + 1.
+extern "C" __global__ void qsa_scores(const float* q, const float* kb, float* scores, int T,
+                                      int start, int nheads, int Di, int ratio, int kv_stride) {
     int t = blockIdx.x;
-    int p = start + t;
-    int nb = (p + 1) / ratio;
+    int nb = (start + t + 1) / ratio;
     float* sc = scores + (size_t)t * (kv_stride / ratio + 1);
     const float* qt = q + (size_t)t * nheads * Di;
-    float inv = rsqrtf((float)Di);
+    float div = sqrtf((float)Di);
     for (int b = threadIdx.x; b < nb; b += blockDim.x) {
         float s = 0.0f;
         for (int h = 0; h < nheads; h++) {
@@ -77,84 +103,128 @@ extern "C" __global__ void qsa_select(const float* q, const float* kb, float* sc
             for (int d = 0; d < Di; d++) dot += qt[h * Di + d] * kb[(size_t)b * Di + d];
             s += fmaxf(dot, 0.0f);
         }
-        sc[b] = s * inv;
+        sc[b] = s / div;
+    }
+}
+
+// Order-preserving map from float to unsigned (larger float, larger key).
+__device__ __forceinline__ unsigned qsa_key(float f) {
+    unsigned u = __float_as_uint(f);
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+// QSA selection mask from block scores: per query, keep the top `topk` complete blocks
+// (equal scores go to the lower block index) and the incomplete tail; every block when
+// nb <= topk. mask: [T, kv_stride] bytes, 1 where key position j (j <= p) is kept.
+// The k-th largest score is found by an 8-bit radix select over its float key, so a
+// query costs O(nb) rather than O(nb^2). Dynamic shared memory: kv_stride/ratio + 1
+// bytes for the per-block keep flags. blockDim.x == 256.
+extern "C" __global__ void __launch_bounds__(256)
+qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int topk,
+         int kv_stride) {
+    extern __shared__ uint8_t keep[];
+    __shared__ unsigned hist[256];
+    __shared__ unsigned s_prefix, s_k;
+    int t = blockIdx.x;
+    int p = start + t;
+    int nb = (p + 1) / ratio;
+    const float* sc = scores + (size_t)t * (kv_stride / ratio + 1);
+    if (nb > topk) {
+        unsigned prefix = 0, pmask = 0, k = topk;
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            hist[threadIdx.x] = 0;
+            __syncthreads();
+            for (int b = threadIdx.x; b < nb; b += blockDim.x) {
+                unsigned key = qsa_key(sc[b]);
+                if ((key & pmask) == prefix) atomicAdd(&hist[(key >> shift) & 255u], 1u);
+            }
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                // Walk bins from the largest digit down to the one holding the k-th key.
+                unsigned acc = 0;
+                int bin = 255;
+                for (; bin > 0; bin--) {
+                    if (acc + hist[bin] >= k) break;
+                    acc += hist[bin];
+                }
+                s_k = k - acc;
+                s_prefix = prefix | ((unsigned)bin << shift);
+            }
+            __syncthreads();
+            prefix = s_prefix;
+            k = s_k;
+            pmask |= 255u << shift;
+        }
+        // `prefix` is now the k-th largest key exactly; keep everything above it, then
+        // the first `k` equal keys in block order.
+        for (int b = threadIdx.x; b < nb; b += blockDim.x) keep[b] = qsa_key(sc[b]) > prefix;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            unsigned taken = 0;
+            for (int b = 0; b < nb && taken < k; b++)
+                if (qsa_key(sc[b]) == prefix) {
+                    keep[b] = 1;
+                    taken++;
+                }
+        }
+    } else {
+        for (int b = threadIdx.x; b < nb; b += blockDim.x) keep[b] = 1;
     }
     __syncthreads();
     uint8_t* m = mask + (size_t)t * kv_stride;
     for (int j = threadIdx.x; j < kv_stride; j += blockDim.x) {
-        uint8_t keep = 0;
-        if (j <= p) {
-            int b = j / ratio;
-            if (b >= nb || nb <= topk) {
-                keep = 1;  // tail token, or every block fits the budget
-            } else {
-                float s = sc[b];
-                int rank = 0;
-                for (int o = 0; o < nb && rank < topk; o++)
-                    rank += (sc[o] > s) || (sc[o] == s && o < b);
-                keep = rank < topk;
-            }
-        }
-        m[j] = keep;
+        int b = j / ratio;
+        m[j] = j <= p && (b >= nb || keep[b]);
     }
 }
 
-// Masked GQA attention, one block (256 threads) per (query t, head h).
-// q: [T, H, D] (already scaled is NOT assumed; `scale` applied here). k, v caches:
-// [kv_len_max, Hkv, D]. mask: [T, kv_stride]. scores: scratch [T, H, kv_stride].
-// out: [T, H, D].
-extern "C" __global__ void attn_masked(const float* q, const float* k, const float* v,
-                                       const uint8_t* mask, float* scores, float* out, int T,
-                                       int H, int Hkv, int D, int kv_len, int kv_stride,
-                                       float scale) {
+// Masked GQA attention for several query tokens with an online softmax over 256-key
+// tiles, so no [T, H, kv] score matrix exists. One block (256 threads) per (t, h);
+// thread i scores key i of the tile, then owns output element d = i (D <= 256).
+// q: [T, H, D]; k, v caches: [kv_len_max, Hkv, D]; mask: [T, kv_stride]; out: [T, H, D].
+extern "C" __global__ void __launch_bounds__(256)
+attn_prefill(const float* q, const float* k, const float* v, const uint8_t* mask, float* out,
+             int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale) {
+    __shared__ float qs[256];
+    __shared__ float ps[256];
+    __shared__ float red[9];
     int t = blockIdx.x / H, h = blockIdx.x % H;
     int kvh = h / (H / Hkv);
-    const float* qr = q + ((size_t)t * H + h) * D;
-    const uint8_t* m = mask + (size_t)t * kv_stride;
-    float* sc = scores + ((size_t)t * H + h) * kv_stride;
-    __shared__ float red[256];
-
-    float mx = -INFINITY;
-    for (int j = threadIdx.x; j < kv_len; j += blockDim.x) {
+    int i = threadIdx.x;
+    qs[i] = i < D ? q[((size_t)t * H + h) * D + i] : 0.0f;
+    const uint8_t* mrow = mask + (size_t)t * kv_stride;
+    float m = -INFINITY, l = 0.0f, acc = 0.0f;
+    __syncthreads();
+    for (int j0 = 0; j0 < kv_len; j0 += 256) {
+        int j = j0 + i;
         float s = -INFINITY;
-        if (m[j]) {
+        if (j < kv_len && mrow[j]) {
             const float* kr = k + ((size_t)j * Hkv + kvh) * D;
             float dot = 0.0f;
-            for (int d = 0; d < D; d++) dot += qr[d] * kr[d];
+            for (int d = 0; d < D; d++) dot += qs[d] * kr[d];
             s = dot * scale;
         }
-        sc[j] = s;
-        mx = fmaxf(mx, s);
-    }
-    red[threadIdx.x] = mx;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + s]);
-        __syncthreads();
-    }
-    mx = red[0];
-    __syncthreads();
-    float sum = 0.0f;
-    for (int j = threadIdx.x; j < kv_len; j += blockDim.x) {
-        float e = m[j] ? expf(sc[j] - mx) : 0.0f;
-        sc[j] = e;
-        sum += e;
-    }
-    red[threadIdx.x] = sum;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
-        __syncthreads();
-    }
-    float inv = 1.0f / red[0];
-    for (int d = threadIdx.x; d < D; d += blockDim.x) {
-        float acc = 0.0f;
-        for (int j = 0; j < kv_len; j++) {
-            float p = sc[j];
-            if (p != 0.0f) acc += p * v[((size_t)j * Hkv + kvh) * D + d];
+        float tmax = attn_block_max(s, red);
+        if (tmax == -INFINITY) continue;  // whole tile masked (uniform across the block)
+        float mn = fmaxf(m, tmax);
+        float corr = expf(m - mn);
+        float e = s == -INFINITY ? 0.0f : expf(s - mn);
+        ps[i] = e;
+        float tsum = attn_block_sum(e, red);
+        l = l * corr + tsum;
+        if (i < D) {
+            float a = 0.0f;
+            int n = min(256, kv_len - j0);
+            for (int jj = 0; jj < n; jj++) {
+                float pj = ps[jj];
+                if (pj != 0.0f) a += pj * v[((size_t)(j0 + jj) * Hkv + kvh) * D + i];
+            }
+            acc = acc * corr + a;
         }
-        out[((size_t)t * H + h) * D + d] = acc * inv;
+        m = mn;
+        __syncthreads();  // ps is rewritten by the next tile
     }
+    if (i < D) out[((size_t)t * H + h) * D + i] = acc / l;
 }
 
 // x *= sigmoid(gate), elementwise.

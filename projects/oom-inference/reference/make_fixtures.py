@@ -46,6 +46,14 @@ USER_MESSAGE = "In two short sentences, explain why a sparse mixture-of-experts 
 CONTINUATION = "The user asks why a sparse"
 DECODE_STEPS = 3
 
+# Long-context workload (--long): enough tokens that the QSA indexer keeps fewer blocks than are
+# visible (top block_topk of more than 512 blocks), so its top-k pruning is exercised. The text is
+# a fixed prefix of the repository's MPL-2.0 LICENSE, stored next to this script.
+LONG_PROMPT_FILE = Path(__file__).with_name("long_prompt.txt")
+LONG_INSTRUCTION = (
+    "Summarize the obligations this license places on distributors in three bullet points.\n\n"
+)
+
 DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16}
 
 # ---------------------------------------------------------------------------------------------
@@ -823,6 +831,106 @@ def model_chain(
     print(f"wrote {out}", flush=True)
 
 
+def long_layer(
+    args,
+    ckpt,
+    tc,
+    layer: int,
+    embeds,
+    ids_per_step,
+    step_names,
+    user_message,
+    prompt,
+    ids_prefill,
+    ids_decode,
+    index_sha,
+):
+    """w4a16 stage fixtures for ``layer`` on the long workload. Layers before it run in memory
+    without capture (``run_layer_plain``: the same calls, so the same numbers)."""
+    out_dir = args.out / f"layer-{layer:03d}-long"
+    results = {}
+    for dname, dtype in DTYPES.items():
+        t0 = time.time()
+        residuals = [
+            e.to(torch.float32).to(dtype).unsqueeze(0).repeat(1, 1, tc.hc_count)
+            for e in embeds
+        ]
+        for prev in range(layer):
+            mod = build_layer(ckpt, tc, prev, dtype)
+            residuals = run_layer_plain(mod, tc, prev, residuals, ids_per_step)
+            del mod
+            gc.collect()
+            print(f"  chain layer {prev} {dname}: {time.time() - t0:.1f}s", flush=True)
+        mod = build_layer(ckpt, tc, layer, dtype)
+        results[dname] = run_sequence(
+            mod, tc, layer, residuals, ids_per_step, step_names
+        )
+        del mod, residuals
+        gc.collect()
+        print(f"layer {layer} {dname}: {time.time() - t0:.1f}s", flush=True)
+
+    pre = results["fp32"]["prefill"]
+    if "indexer.mask" in pre:
+        mask = pre["indexer.mask"].bool()
+        causal = torch.ones_like(mask).tril()
+        dropped = (causal & ~mask).sum(dim=1)
+        if int(dropped.max()) == 0:
+            raise RuntimeError("long workload does not prune any indexer block")
+        print(
+            f"indexer pruning: {int((dropped > 0).sum())} of {mask.shape[0]} prefill queries drop "
+            f"keys, up to {int(dropped.max())} tokens ({int(dropped.max()) // tc.indexer_compress_ratio} blocks)",
+            flush=True,
+        )
+
+    for dname, steps in results.items():
+        d = out_dir / "w4a16" / dname
+        d.mkdir(parents=True, exist_ok=True)
+        for step, stages in steps.items():
+            save_file(stages, str(d / f"{step}.safetensors"))
+    tolerances = {
+        "w4a16/bf16_vs_fp32": {
+            s: compare(results["fp32"][s], results["bf16"][s]) for s in step_names
+        }
+    }
+    (out_dir / "tolerances.json").write_text(json.dumps(tolerances, indent=1))
+    manifest = {
+        "model": str(args.model),
+        "model_index_sha256": index_sha,
+        "layer": layer,
+        "layer_type": tc.layer_types[layer],
+        "prompt": {
+            "user_message": user_message,
+            "templated": prompt,
+            "token_ids": ids_prefill,
+        },
+        "decode": {
+            "continuation": CONTINUATION,
+            "token_ids": ids_decode,
+            "note": "teacher-forced",
+        },
+        "steps": step_names,
+        "input": f"layers 0..{layer - 1} chained in memory from the token embeddings (same mode and dtype)",
+        "modes": {
+            "w4a16": "NVFP4 weights densified with ModelOpt dequant; activations unquantised; HF experts forward",
+        },
+        "dtypes": {
+            "fp32": "all parameters and activations fp32 (bf16 checkpoint values upcast exactly)",
+            "bf16": "all parameters bf16 as released; dequantised expert weights computed in fp32 then cast to bf16",
+        },
+        "stages": {k: v for k, v in STAGES.items() if k in results["fp32"]["prefill"]},
+        "versions": {
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "python": platform.python_version(),
+        },
+        "threads": args.threads,
+        "deterministic_algorithms": True,
+        "randomness": "none (no sampling; fixed inputs)",
+    }
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1))
+    print(f"wrote {out_dir}")
+
+
 def compare(ref: dict, other: dict) -> dict:
     """Per-stage deltas of ``other`` against fp32 ``ref``."""
     rows = {}
@@ -885,6 +993,12 @@ def main() -> None:
         help="with --model-chain: only run these layers this invocation",
     )
     ap.add_argument(
+        "--long",
+        action="store_true",
+        help="long-context workload: chain layers 0..L-1 in memory and write w4a16 stage "
+        "fixtures for the single --layers L into <out>/layer-LLL-long",
+    )
+    ap.add_argument(
         "--threads",
         type=int,
         default=8,
@@ -906,8 +1020,11 @@ def main() -> None:
     tc._experts_implementation = "eager"
     tc._attn_implementation = "eager"
     tok = AutoTokenizer.from_pretrained(args.model)
+    user_message = (
+        LONG_INSTRUCTION + LONG_PROMPT_FILE.read_text() if args.long else USER_MESSAGE
+    )
     prompt = tok.apply_chat_template(
-        [{"role": "user", "content": USER_MESSAGE}],
+        [{"role": "user", "content": user_message}],
         tokenize=False,
         add_generation_prompt=True,
     )
@@ -945,6 +1062,25 @@ def main() -> None:
             load_file(str(prev / f"{n}.safetensors"))["layer_out"].unsqueeze(0)
             for n in step_names
         ]
+
+    if args.long:
+        if len(args.layers) != 1:
+            raise SystemExit("--long takes exactly one --layers value")
+        long_layer(
+            args,
+            ckpt,
+            tc,
+            args.layers[0],
+            embeds,
+            ids_per_step,
+            step_names,
+            user_message,
+            prompt,
+            ids_prefill,
+            ids_decode,
+            index_sha,
+        )
+        return
 
     if args.model_chain:
         model_chain(
