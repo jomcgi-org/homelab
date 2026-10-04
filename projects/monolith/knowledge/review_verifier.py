@@ -203,7 +203,9 @@ def extract_predicates(
                     raise _Unsupported("checks claim names more than one SHA")
                 if shas:
                     if len(named) > 1:
-                        raise _Unsupported("checks at a SHA name more than one reference")
+                        raise _Unsupported(
+                            "checks at a SHA name more than one reference"
+                        )
                     repo = refs[0][1] if refs else default_repo
                     predicates.append(
                         Predicate("checks", repo, None, _CHECK_TERMS[term], sha=shas[0])

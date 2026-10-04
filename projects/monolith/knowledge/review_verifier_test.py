@@ -72,7 +72,12 @@ def runs(*conclusions, sha=HEAD, status="completed"):
 def combined(state=None, sha=HEAD):
     """The combined commit status: where a commit-status gate like pr-checks lives."""
     statuses = [{"state": state}] if state else []
-    return {"state": state or "pending", "sha": sha, "total_count": len(statuses), "statuses": statuses}
+    return {
+        "state": state or "pending",
+        "sha": sha,
+        "total_count": len(statuses),
+        "statuses": statuses,
+    }
 
 
 def status_path(sha):
@@ -216,9 +221,9 @@ def test_a_commit_status_is_folded_into_checks():
     assert check(runs("success"), "failure", "failing").status == "success"
     assert check(runs("failure"), "pending", "failing").status == "success"
     assert check(runs("failure"), "pending", "pending").status == "failed"
-    assert check(runs("success", None, status="queued"), "failure", "pending").status == (
-        "failed"
-    )
+    assert check(
+        runs("success", None, status="queued"), "failure", "pending"
+    ).status == ("failed")
     # A status-only commit (no check runs) is judged on the status alone.
     assert check(runs(), "success", "passing").status == "success"
     assert check(runs(), "pending", "pending").status == "success"
@@ -231,13 +236,14 @@ def test_commit_status_must_be_tied_to_the_sha_and_fully_returned():
     path = f"/repos/{REPO}/commits/{sha}/check-runs?per_page=100"
     title = f"Checks at {sha} are passing"
     untied = combined("success", sha="f" * 40)
-    assert verify({path: runs("success"), status_path(sha): untied}, title)[0].status == (
-        "unavailable"
-    )
-    truncated = {**combined("success"), "total_count": 101}
-    assert verify({path: runs("success"), status_path(sha): truncated}, title)[
+    assert verify({path: runs("success"), status_path(sha): untied}, title)[
         0
-    ].status == "unsupported"
+    ].status == ("unavailable")
+    truncated = {**combined("success"), "total_count": 101}
+    assert (
+        verify({path: runs("success"), status_path(sha): truncated}, title)[0].status
+        == "unsupported"
+    )
     odd = {**combined("success"), "statuses": [{"state": "weird"}]}
     assert verify({path: runs("success"), status_path(sha): odd}, title)[0].status == (
         "unavailable"
@@ -265,7 +271,11 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
 @pytest.mark.parametrize(
     ("title", "content", "reason"),
     [
-        ("Operational acceptance for #6812 remains outstanding", None, "acceptance gate"),
+        (
+            "Operational acceptance for #6812 remains outstanding",
+            None,
+            "acceptance gate",
+        ),
         ("Issue #1 is blocked on #2", None, "blocked"),
         ("PR #1 is ready for review", None, "ready"),
         ("PR #1 is approved", None, "approved"),
@@ -368,14 +378,19 @@ def test_one_reference_at_a_sha_and_repeated_identical_references_stay_supported
     assert predicates == [Predicate("checks", REPO, None, "success", sha="a24da077")]
     for title, expected in [
         ("PR #1 and PR #1 are open", Predicate("state", REPO, 1, "open")),
-        (f"PR #1 and PR #1 head is {HEAD}", Predicate("head", REPO, 1, "head", sha=HEAD)),
+        (
+            f"PR #1 and PR #1 head is {HEAD}",
+            Predicate("head", REPO, 1, "head", sha=HEAD),
+        ),
         ("PR #1 and PR #1 checks are passing", Predicate("checks", REPO, 1, "success")),
         (
             f"PR #1 and PR #1 checks are passing at {HEAD}",
             Predicate("checks", REPO, None, "success", sha=HEAD),
         ),
     ]:
-        assert extract_predicates(title=title, content=None, default_repo=REPO) == [expected]
+        assert extract_predicates(title=title, content=None, default_repo=REPO) == [
+            expected
+        ]
 
 
 def test_shared_responses_spend_one_request_and_budget_stops_the_run():
