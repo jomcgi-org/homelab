@@ -698,7 +698,5 @@ def test_extra_wording_in_a_state_sentence_stays_unsupported(title):
 
 
 def test_bare_prose_and_filler_claims_yield_no_predicate():
-    assert verify({}, "t", "Durable claim, PR #1 is open.")[0].status == (
-        "unsupported"
-    )
+    assert verify({}, "t", "Durable claim, PR #1 is open.")[0].status == ("unsupported")
     assert verify({}, "Tracked work.", "Plain body")[0].status == "unsupported"

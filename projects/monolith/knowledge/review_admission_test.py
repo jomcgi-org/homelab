@@ -513,9 +513,7 @@ def test_admission_does_not_renew_a_free_text_follow_on(session, content):
         "PR #6821 is open and has merge conflicts",
     ],
 )
-def test_admission_does_not_renew_extra_wording_in_a_state_sentence(
-    session, title
-):
+def test_admission_does_not_renew_extra_wording_in_a_state_sentence(session, title):
     row = add(session, volatile(title=title))
     original = utc(row.review_after)
     github = Github()
