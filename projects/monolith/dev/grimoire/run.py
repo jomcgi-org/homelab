@@ -23,9 +23,9 @@ def main():
     parser.add_argument("--output", default="/tmp/grimoire-rehearsal")
     args = parser.parse_args()
     pg_bin = Path(os.environ.get("GRIMOIRE_PG_BIN", "/usr/lib/postgresql/16/bin"))
-    pnpm = shutil.which("pnpm")
-    if not pnpm or not (pg_bin / "initdb").exists():
-        raise SystemExit("Install pnpm and PostgreSQL 16 with pgvector first.")
+    node = shutil.which("node")
+    if not node or not (pg_bin / "initdb").exists():
+        raise SystemExit("Install Node and PostgreSQL 16 with pgvector first.")
     for port in (4177, 8177, 55477):
         with socket.socket() as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -128,19 +128,27 @@ def main():
             children.append(
                 subprocess.Popen(
                     [
-                        pnpm,
-                        "exec",
-                        "vite",
-                        "--host",
-                        "127.0.0.1",
-                        "--port",
-                        "4177",
-                        "--strictPort",
+                        node,
+                        "test/grimoire-dev-server.mjs",
+                        "--cache-dir",
+                        str(state / "vite-cache"),
+                        "--ready-file",
+                        str(state / "frontend-ready.json"),
                     ],
                     cwd=ROOT / "projects/monolith/frontend",
                     env=env,
                 )
             )
+            # Every table owns a cold dependency cache. Wait for the running
+            # server's committed batch, not merely its Vite runtime endpoint.
+            for _ in range(100):
+                if children[-1].poll() is not None:
+                    raise RuntimeError("Frontend exited before dependency readiness")
+                if (state / "frontend-ready.json").exists():
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("Frontend dependencies did not become ready")
             print("\nLocal table: http://friends.localhost:8177/__local\n", flush=True)
             if args.rehearse:
                 for address in [

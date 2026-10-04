@@ -35,6 +35,9 @@ export default defineConfig({
     target: "es2022",
   },
   optimizeDeps: {
+    // Kit scans routes, but its generated client also imports this hook.
+    // Include its static telemetry imports in the first dependency batch.
+    entries: ["src/hooks.client.js"],
     esbuildOptions: { target: "es2022" },
   },
   ssr: {

@@ -60,14 +60,23 @@ Postgres 16 with pgvector, and Chromium's system libraries:
 GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence projects/monolith/dev/grimoire/ci.sh
 ```
 
-The wrapper installs the pinned runtime and Playwright, runs the same scenario,
-and preserves the run log and evidence even on failure. It removes only its
+The wrapper installs the pinned runtime and Playwright, checks three cold frontend
+starts, and runs the full browser scenario twice with fresh databases and dependency
+caches. It preserves the run log and evidence even on failure. Browser reports
+are under `cold-start-1/` and `cold-start-2/`; dependency-readiness checks are in
+`startup.log`. It removes only its
 own temporary Python environment. The BuildBuddy PR gate calls `ci-runner.sh`
 after Bazel for relevant changes. It provisions Ubuntu dependencies and uses
 the repository tools image for Node/pnpm. Reports, screenshots, traces and logs
 are uploaded from `BUILDBUDDY_ARTIFACTS_DIRECTORY/grimoire`, including on failure.
 Root runners give the disposable PostgreSQL
 directory and process to the system `postgres` account.
+
+The launcher warms the client hook with the running Vite server and waits for
+its dependency scan and optimized files to finish before announcing readiness.
+Each launch owns a fresh cache, including the telemetry imports that SvelteKit's
+route-only scan otherwise discovers after the first page opens. Startup errors
+fail the launcher; browser assertions and interaction deadlines are unchanged.
 
 This starts the whole table, exercises three separate browser contexts, saves
 evidence to `/tmp/grimoire-rehearsal`, and stops. `--output /path` changes the
