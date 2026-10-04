@@ -59,21 +59,56 @@ extern "C" __global__ void pool_rows(const float* raw, float* out, int nblocks, 
 // QSA block scores. Block b covers key positions [b*ratio, (b+1)*ratio); query t at
 // position p = start + t sees nb = (p+1)/ratio complete blocks, and
 // score[t, b] = sum_h relu(q[t,h] . kb[b]) / sqrt(Di). Row stride: kv_stride/ratio + 1.
-extern "C" __global__ void qsa_scores(const float* q, const float* kb, float* scores, int T,
-                                      int start, int nheads, int Di, int ratio, int kv_stride) {
-    int t = blockIdx.x;
-    int nb = (start + t + 1) / ratio;
-    float* sc = scores + (size_t)t * (kv_stride / ratio + 1);
-    const float* qt = q + (size_t)t * nheads * Di;
-    float div = sqrtf((float)Di);
-    for (int b = threadIdx.x; b < nb; b += blockDim.x) {
-        float s = 0.0f;
-        for (int h = 0; h < nheads; h++) {
-            float dot = 0.0f;
-            for (int d = 0; d < Di; d++) dot += qt[h * Di + d] * kb[(size_t)b * Di + d];
-            s += fmaxf(dot, 0.0f);
+// Tiled: a CUDA block stages QSA_TQ queries and QSA_TB key blocks in shared memory and
+// each thread scores one key block for 4 queries; every score is summed in the same
+// order as a plain loop over h then d. Grid (ceil(nb_max / QSA_TB), ceil(T / QSA_TQ)),
+// block 256, dynamic shared memory QSA_SMEM_FLOATS * 4 bytes. nheads * Di <= 512,
+// Di <= 128.
+#define QSA_TQ 16
+#define QSA_TB 64
+#define QSA_KSTRIDE 129  // odd stride: threads reading different key blocks hit distinct banks
+#define QSA_SMEM_FLOATS (QSA_TQ * 512 + QSA_TB * QSA_KSTRIDE)
+
+extern "C" __global__ void __launch_bounds__(256)
+qsa_scores(const float* q, const float* kb, float* scores, int T, int start, int nheads, int Di,
+           int ratio, int kv_stride) {
+    extern __shared__ float qsa_smem[];
+    float* qs = qsa_smem;                  // [TQ][nheads * Di]
+    float* ks = qs + QSA_TQ * 512;         // [TB][KSTRIDE]
+    int b0 = blockIdx.x * QSA_TB, t0 = blockIdx.y * QSA_TQ;
+    int tlast = min(t0 + QSA_TQ, T) - 1;
+    int nb_last = (start + tlast + 1) / ratio;
+    if (b0 >= nb_last) return;  // no query of this tile sees these blocks
+    int tid = threadIdx.x, qd = nheads * Di;
+    for (int i = tid; i < QSA_TQ * qd; i += 256) {
+        int tq = i / qd, e = i % qd;
+        qs[tq * 512 + e] = t0 + tq < T ? q[(size_t)(t0 + tq) * qd + e] : 0.0f;
+    }
+    for (int i = tid; i < QSA_TB * Di; i += 256) {
+        int bb = i / Di, d = i % Di;
+        ks[bb * QSA_KSTRIDE + d] = b0 + bb < nb_last ? kb[(size_t)(b0 + bb) * Di + d] : 0.0f;
+    }
+    __syncthreads();
+    int bb = tid % QSA_TB, tg = tid / QSA_TB;  // key block, group of 4 queries
+    int b = b0 + bb;
+    const float* kr = ks + bb * QSA_KSTRIDE;
+    float sum[4] = {0.f, 0.f, 0.f, 0.f};
+    for (int h = 0; h < nheads; h++) {
+        float dot[4] = {0.f, 0.f, 0.f, 0.f};
+        for (int d = 0; d < Di; d++) {
+            float kv = kr[d];
+#pragma unroll
+            for (int i = 0; i < 4; i++) dot[i] += qs[(tg * 4 + i) * 512 + h * Di + d] * kv;
         }
-        sc[b] = s / div;
+#pragma unroll
+        for (int i = 0; i < 4; i++) sum[i] += fmaxf(dot[i], 0.0f);
+    }
+    float div = sqrtf((float)Di);
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        int t = t0 + tg * 4 + i;
+        if (t < T && b < (start + t + 1) / ratio)
+            scores[(size_t)t * (kv_stride / ratio + 1) + b] = sum[i] / div;
     }
 }
 
