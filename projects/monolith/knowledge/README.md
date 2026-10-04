@@ -125,11 +125,21 @@ establishes: issue or PR open and closed, PR merged and draft, a PR head SHA,
 and check runs tied to one exact SHA (a PR's own head is resolved and recorded).
 Checks at an explicit SHA naming a PR also require a valid PR and GitHub's
 commit-to-PR association. Completed failed runs outrank incomplete runs.
-Each sentence asserting an instance in a state yields predicates; every other
-term (a workflow run or job, ready, blocked, approved, a free-text acceptance
-gate, a negated claim, an unnamed SHA, another repository, more than five
-references, more than 100 check runs) makes the whole note `unsupported` with
-the reason recorded, and it stays due. A response that contradicts the claim is
+Every sentence must fully match explicit ASCII templates: `REF is STATE`,
+`REF has been merged`, `REF head is SHA`, `REF checks are TERM` (optionally
+`at SHA`), `REF checks TERM at SHA`, or `Checks are TERM at SHA`,
+`Checks TERM at SHA` and `Checks at SHA are TERM`. STATE is open, closed,
+merged, draft or a draft; TERM maps passing/failed/pending synonyms to check
+outcomes. REF is one PR/issue reference, bare number with `#`, repository
+reference or GitHub URL. SHA is 7-40 lowercase hex characters containing a
+letter. Complete clauses may join with `and` or `, and`, each naming its own
+subject. Every reference and SHA produces a predicate. Any unmatched wording
+makes the whole note `unsupported` with a recorded reason, and it stays due.
+**Why.** Denylist bypasses across five reviews required explicit supported
+claim templates and fail-closed matching.
+
+Another repository, more than five references or more than 100 check runs is
+also unsupported. A response that contradicts the claim is
 `failed`; an unreachable source, rate limit or malformed response is
 `unavailable`. Evidence time is the oldest response used, never later.
 
