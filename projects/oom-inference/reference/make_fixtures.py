@@ -42,9 +42,7 @@ DEFAULT_OUT = "/disks/nvme-02/src/oominf-data/fixtures/qwen38-flash"
 
 # Fixed workload. The user message goes through the checkpoint's own chat template; decode tokens
 # are teacher-forced from CONTINUATION (a single layer cannot produce real next tokens).
-USER_MESSAGE = (
-    "In two short sentences, explain why a sparse mixture-of-experts model can run on a gaming PC."
-)
+USER_MESSAGE = "In two short sentences, explain why a sparse mixture-of-experts model can run on a gaming PC."
 CONTINUATION = "The user asks why a sparse"
 DECODE_STEPS = 3
 
@@ -57,12 +55,16 @@ DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16}
 #   = even element), dequantize(): per_block_scale = fp8_scale.float() * weight_scale_2, value =
 #   e2m1[nibble] * per_block_scale, computed in fp32 then cast to the target dtype.
 # ---------------------------------------------------------------------------------------------
-E2M1_VALUES = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6])
+E2M1_VALUES = torch.tensor(
+    [0, 0.5, 1, 1.5, 2, 3, 4, 6, 0, -0.5, -1, -1.5, -2, -3, -4, -6]
+)
 E4M3_MAX = 448.0
 BLOCK = 16
 
 
-def dequant_nvfp4(packed: torch.Tensor, scale: torch.Tensor, scale_2: torch.Tensor) -> torch.Tensor:
+def dequant_nvfp4(
+    packed: torch.Tensor, scale: torch.Tensor, scale_2: torch.Tensor
+) -> torch.Tensor:
     """ModelOpt NVFP4QTensor.dequantize (non-fast path), returned in fp32."""
     unpacked = torch.empty((*packed.shape[:-1], packed.shape[-1] * 2), dtype=torch.long)
     unpacked[..., 1::2] = (packed >> 4).long()
@@ -101,7 +103,12 @@ def fake_quant_nvfp4(x: torch.Tensor, input_scale: torch.Tensor) -> torch.Tensor
     gs = torch.where(gs > 0, gs, torch.tensor(1e-12))
     blocks = xf.view(*xf.shape[:-1], -1, BLOCK)
     block_max = blocks.abs().amax(dim=-1, keepdim=True)
-    s = torch.clamp(block_max / (6.0 * gs), max=E4M3_MAX).to(torch.float8_e4m3fn).to(torch.float32) * gs
+    s = (
+        torch.clamp(block_max / (6.0 * gs), max=E4M3_MAX)
+        .to(torch.float8_e4m3fn)
+        .to(torch.float32)
+        * gs
+    )
     s = torch.where(s >= 1e-5, s, torch.tensor(1.0))
     q = fp4_round_magnitude(blocks.abs() / s) * s
     y = torch.where(blocks >= 0, q, -q)
@@ -114,7 +121,9 @@ def fake_quant_nvfp4(x: torch.Tensor, input_scale: torch.Tensor) -> torch.Tensor
 class Checkpoint:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.weight_map = json.loads((path / "model.safetensors.index.json").read_text())["weight_map"]
+        self.weight_map = json.loads(
+            (path / "model.safetensors.index.json").read_text()
+        )["weight_map"]
         self._files: dict[str, object] = {}
 
     def _open(self, name: str):
@@ -144,7 +153,14 @@ class LazyPleTable(torch.nn.Module):
     cast to the run dtype.
     """
 
-    def __init__(self, ckpt: "Checkpoint", prefix: str, num_shards: int, dtype: torch.dtype, on_rows=None) -> None:
+    def __init__(
+        self,
+        ckpt: "Checkpoint",
+        prefix: str,
+        num_shards: int,
+        dtype: torch.dtype,
+        on_rows=None,
+    ) -> None:
         super().__init__()
         self.ckpt, self.prefix, self.dtype, self.on_rows = ckpt, prefix, dtype, on_rows
         self.shards = [f"{prefix}shard_{i}.weight" for i in range(num_shards)]
@@ -156,7 +172,12 @@ class LazyPleTable(torch.nn.Module):
         if self.on_rows is not None:
             self.on_rows(ids)
         flat = ids.reshape(-1).tolist()
-        rows = [self.ckpt.rows(self.shards[r // self.rows_per_shard], [r % self.rows_per_shard]) for r in flat]
+        rows = [
+            self.ckpt.rows(
+                self.shards[r // self.rows_per_shard], [r % self.rows_per_shard]
+            )
+            for r in flat
+        ]
         out = (torch.cat(rows).to(torch.float32) * self.scale).to(self.dtype)
         return out.view(*ids.shape, -1)
 
@@ -165,7 +186,9 @@ def layer_prefix(layer: int) -> str:
     return f"model.language_model.layers.{layer}."
 
 
-def build_layer(ckpt: Checkpoint, tc, layer: int, dtype: torch.dtype) -> torch.nn.Module:
+def build_layer(
+    ckpt: Checkpoint, tc, layer: int, dtype: torch.dtype
+) -> torch.nn.Module:
     torch.set_default_dtype(dtype)
     try:
         with torch.device("meta"):
@@ -175,7 +198,10 @@ def build_layer(ckpt: Checkpoint, tc, layer: int, dtype: torch.dtype) -> torch.n
     prefix = layer_prefix(layer)
     if mod.ple is not None:
         mod.ple.ple_embedding.ngram_embedding = LazyPleTable(
-            ckpt, prefix + "ple.ple_embedding.ngram_embedding.", tc.split_ngram_parts, dtype
+            ckpt,
+            prefix + "ple.ple_embedding.ngram_embedding.",
+            tc.split_ngram_parts,
+            dtype,
         )
     mod = mod.to_empty(device="cpu").eval()
     with torch.no_grad():
@@ -184,7 +210,9 @@ def build_layer(ckpt: Checkpoint, tc, layer: int, dtype: torch.dtype) -> torch.n
                 continue
             src = ckpt.get(prefix + name)
             if src.shape != param.shape:
-                raise ValueError(f"{name}: checkpoint {tuple(src.shape)} vs module {tuple(param.shape)}")
+                raise ValueError(
+                    f"{name}: checkpoint {tuple(src.shape)} vs module {tuple(param.shape)}"
+                )
             param.copy_(src.to(torch.float32).to(dtype))
         experts = mod.mlp.experts
         inter = tc.moe_intermediate_size
@@ -193,7 +221,11 @@ def build_layer(ckpt: Checkpoint, tc, layer: int, dtype: torch.dtype) -> torch.n
             w = {}
             for proj in ("gate", "up", "down"):
                 k = f"{ep}{e}.{proj}_proj."
-                w[proj] = dequant_nvfp4(ckpt.get(k + "weight"), ckpt.get(k + "weight_scale"), ckpt.get(k + "weight_scale_2"))
+                w[proj] = dequant_nvfp4(
+                    ckpt.get(k + "weight"),
+                    ckpt.get(k + "weight_scale"),
+                    ckpt.get(k + "weight_scale_2"),
+                )
             experts.gate_up_proj[e, :inter].copy_(w["gate"].to(dtype))
             experts.gate_up_proj[e, inter:].copy_(w["up"].to(dtype))
             experts.down_proj[e].copy_(w["down"].to(dtype))
@@ -205,7 +237,12 @@ def build_layer(ckpt: Checkpoint, tc, layer: int, dtype: torch.dtype) -> torch.n
 def load_input_scales(ckpt: Checkpoint, tc, layer: int) -> dict[str, torch.Tensor]:
     ep = layer_prefix(layer) + "mlp.experts."
     return {
-        proj: torch.stack([ckpt.get(f"{ep}{e}.{proj}_proj.input_scale") for e in range(tc.num_experts)])
+        proj: torch.stack(
+            [
+                ckpt.get(f"{ep}{e}.{proj}_proj.input_scale")
+                for e in range(tc.num_experts)
+            ]
+        )
         for proj in ("gate", "up", "down")
     }
 
@@ -217,7 +254,9 @@ def load_input_scales(ckpt: Checkpoint, tc, layer: int) -> dict[str, torch.Tenso
 def experts_forward(experts, hidden_states, top_k_index, top_k_weights, scales=None):
     final = torch.zeros_like(hidden_states)
     with torch.no_grad():
-        mask = torch.nn.functional.one_hot(top_k_index, num_classes=experts.num_experts).permute(2, 1, 0)
+        mask = torch.nn.functional.one_hot(
+            top_k_index, num_classes=experts.num_experts
+        ).permute(2, 1, 0)
         hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
     inter = experts.intermediate_dim
     for expert_idx in hit:
@@ -230,8 +269,12 @@ def experts_forward(experts, hidden_states, top_k_index, top_k_weights, scales=N
         if scales is None:
             gate, up = torch.nn.functional.linear(x, w).chunk(2, dim=-1)
         else:
-            gate = torch.nn.functional.linear(fake_quant_nvfp4(x, scales["gate"][expert_idx]), w[:inter])
-            up = torch.nn.functional.linear(fake_quant_nvfp4(x, scales["up"][expert_idx]), w[inter:])
+            gate = torch.nn.functional.linear(
+                fake_quant_nvfp4(x, scales["gate"][expert_idx]), w[:inter]
+            )
+            up = torch.nn.functional.linear(
+                fake_quant_nvfp4(x, scales["up"][expert_idx]), w[inter:]
+            )
         h = experts.act_fn(gate) * up
         if scales is not None:
             h = fake_quant_nvfp4(h, scales["down"][expert_idx])
@@ -313,13 +356,16 @@ class Recorder:
         if L.ple is not None:
             hook(L.ple, lambda a, o: self.put("ple_out", flat(o)))
             hook(L.ple.ple_embedding, lambda a, o: self.put("ple.ngram_embed", flat(o)))
-            L.ple.ple_embedding.ngram_embedding.on_rows = lambda ids: self.put("ple.ngram_ids", flat(ids))
+            L.ple.ple_embedding.ngram_embedding.on_rows = lambda ids: self.put(
+                "ple.ngram_ids", flat(ids)
+            )
 
         def hc(prefix):
             def f(a, o):
                 mixed, _, inject = o
                 self.put(f"{prefix}.mixed", flat(mixed))
                 self.put(f"{prefix}.inject", flat(inject))
+
             return f
 
         hook(L.attn_hyper_connection, hc("attn_hc"))
@@ -329,9 +375,17 @@ class Recorder:
             for p in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"):
                 hook(getattr(mixer, p), lambda a, o, p=p: self.put(f"gdn.{p}", flat(o)))
             hook(mixer.norm, lambda a, o: self.put("gdn.norm_out", o))
-            self._wrap_fn("causal_conv1d_fn", lambda o: self.put("gdn.conv_out", flat(o.transpose(1, 2))))
-            self._wrap_fn("causal_conv1d_update", lambda o: self.put("gdn.conv_out", flat(o.transpose(1, 2))))
-            core = lambda o: self.put("gdn.core_out", o[0].reshape(-1, *o[0].shape[-2:]))
+            self._wrap_fn(
+                "causal_conv1d_fn",
+                lambda o: self.put("gdn.conv_out", flat(o.transpose(1, 2))),
+            )
+            self._wrap_fn(
+                "causal_conv1d_update",
+                lambda o: self.put("gdn.conv_out", flat(o.transpose(1, 2))),
+            )
+            core = lambda o: self.put(
+                "gdn.core_out", o[0].reshape(-1, *o[0].shape[-2:])
+            )
             self._wrap_fn("torch_chunk_gated_delta_rule", core)
             self._wrap_fn("torch_recurrent_gated_delta_rule", core)
             hook(mixer, lambda a, o: self.put("mixer_out", flat(o)))
@@ -373,7 +427,9 @@ class Recorder:
         return False
 
 
-def run_step(layer_mod, residual, cache, layer: int, ple_ids=None) -> dict[str, torch.Tensor]:
+def run_step(
+    layer_mod, residual, cache, layer: int, ple_ids=None
+) -> dict[str, torch.Tensor]:
     with Recorder(layer_mod) as rec, torch.no_grad():
         rec.put("residual_in", residual.reshape(-1, residual.shape[-1]))
         out = layer_mod(
@@ -387,7 +443,9 @@ def run_step(layer_mod, residual, cache, layer: int, ple_ids=None) -> dict[str, 
         rec.put("layer_out", out.reshape(-1, out.shape[-1]))
     if "gdn.conv_out" in rec.out:
         # The prefill conv runs over cached + new positions; keep the current step's T rows.
-        rec.out["gdn.conv_out"] = rec.out["gdn.conv_out"][-residual.shape[1] :].contiguous()
+        rec.out["gdn.conv_out"] = rec.out["gdn.conv_out"][
+            -residual.shape[1] :
+        ].contiguous()
     if layer_mod.layer_type == "linear_attention":
         cl = cache.layers[layer]
         rec.out["state.conv"] = cl.conv_states[0].detach().clone()
@@ -402,7 +460,10 @@ def run_step(layer_mod, residual, cache, layer: int, ple_ids=None) -> dict[str, 
 def run_sequence(layer_mod, tc, layer, residuals, ids_per_step, names):
     """Prefill then single-token decode steps through one layer with one cache; {step: stages}."""
     cache = DynamicCache(config=tc)
-    return {name: run_step(layer_mod, r, cache, layer, ids) for name, r, ids in zip(names, residuals, ids_per_step)}
+    return {
+        name: run_step(layer_mod, r, cache, layer, ids)
+        for name, r, ids in zip(names, residuals, ids_per_step)
+    }
 
 
 def compare(ref: dict, other: dict) -> dict:
@@ -412,35 +473,55 @@ def compare(ref: dict, other: dict) -> dict:
         b = other[k]
         if a.dtype == torch.int64:
             # Top-k ids: order-insensitive. Fraction of reference (token, expert) picks missing.
-            missing = sum(len(set(ra.tolist()) - set(rb.tolist())) for ra, rb in zip(a, b))
-            rows[k] = {"set_mismatch_frac": missing / a.numel(), "tokens_differing": int(sum(
-                set(ra.tolist()) != set(rb.tolist()) for ra, rb in zip(a, b))), "tokens": a.shape[0]}
+            missing = sum(
+                len(set(ra.tolist()) - set(rb.tolist())) for ra, rb in zip(a, b)
+            )
+            rows[k] = {
+                "set_mismatch_frac": missing / a.numel(),
+                "tokens_differing": int(
+                    sum(set(ra.tolist()) != set(rb.tolist()) for ra, rb in zip(a, b))
+                ),
+                "tokens": a.shape[0],
+            }
             continue
         a32, b32 = a.to(torch.float64), b.to(torch.float64)
         d = (a32 - b32).abs()
         scale = a32.abs().max().item() or 1.0
-        cos = torch.nn.functional.cosine_similarity(a32.flatten(), b32.flatten(), dim=0).item()
+        cos = torch.nn.functional.cosine_similarity(
+            a32.flatten(), b32.flatten(), dim=0
+        ).item()
         rows[k] = {
             "max_abs": d.max().item(),
             "max_abs_over_absmax": d.max().item() / scale,
-            "rms_rel": (d.pow(2).mean().sqrt() / a32.pow(2).mean().sqrt().clamp_min(1e-30)).item(),
+            "rms_rel": (
+                d.pow(2).mean().sqrt() / a32.pow(2).mean().sqrt().clamp_min(1e-30)
+            ).item(),
             "cosine": cos,
         }
     return rows
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--model", type=Path, default=Path(DEFAULT_MODEL))
     ap.add_argument("--out", type=Path, default=Path(DEFAULT_OUT))
     ap.add_argument("--layers", type=int, nargs="+", default=[0])
-    ap.add_argument("--threads", type=int, default=8, help="fixed: CPU matmul reduction order depends on it")
+    ap.add_argument(
+        "--threads",
+        type=int,
+        default=8,
+        help="fixed: CPU matmul reduction order depends on it",
+    )
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads)
     torch.use_deterministic_algorithms(True)
     if torch.cuda.is_available():
-        raise SystemExit("run with CUDA_VISIBLE_DEVICES= (fixtures are CPU-only by design)")
+        raise SystemExit(
+            "run with CUDA_VISIBLE_DEVICES= (fixtures are CPU-only by design)"
+        )
 
     ckpt = Checkpoint(args.model)
     cfg = Qwen4ExpConfig.from_pretrained(args.model)
@@ -449,25 +530,45 @@ def main() -> None:
     tc._experts_implementation = "eager"
     tc._attn_implementation = "eager"
     tok = AutoTokenizer.from_pretrained(args.model)
-    prompt = tok.apply_chat_template([{"role": "user", "content": USER_MESSAGE}], tokenize=False, add_generation_prompt=True)
+    prompt = tok.apply_chat_template(
+        [{"role": "user", "content": USER_MESSAGE}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
     ids_prefill = tok(prompt, add_special_tokens=False)["input_ids"]
     ids_decode = tok(CONTINUATION, add_special_tokens=False)["input_ids"][:DECODE_STEPS]
     all_ids = ids_prefill + ids_decode
     emb_rows = ckpt.rows("model.language_model.embed_tokens.weight", all_ids)
     ids_t = torch.tensor([all_ids])
-    index_sha = hashlib.sha256((args.model / "model.safetensors.index.json").read_bytes()).hexdigest()
+    index_sha = hashlib.sha256(
+        (args.model / "model.safetensors.index.json").read_bytes()
+    ).hexdigest()
 
     step_names = ["prefill"] + [f"decode-{i + 1}" for i in range(len(ids_decode))]
-    ids_per_step = [ids_t[:, : len(ids_prefill)]] + [ids_t[:, len(ids_prefill) + i :][:, :1] for i in range(len(ids_decode))]
-    embeds = [emb_rows[: len(ids_prefill)]] + [emb_rows[len(ids_prefill) + i :][:1] for i in range(len(ids_decode))]
+    ids_per_step = [ids_t[:, : len(ids_prefill)]] + [
+        ids_t[:, len(ids_prefill) + i :][:, :1] for i in range(len(ids_decode))
+    ]
+    embeds = [emb_rows[: len(ids_prefill)]] + [
+        emb_rows[len(ids_prefill) + i :][:1] for i in range(len(ids_decode))
+    ]
 
-    def residuals_for(layer: int, mode: str, dname: str, dtype: torch.dtype) -> list[torch.Tensor]:
+    def residuals_for(
+        layer: int, mode: str, dname: str, dtype: torch.dtype
+    ) -> list[torch.Tensor]:
         if layer == 0:
-            return [e.to(torch.float32).to(dtype).unsqueeze(0).repeat(1, 1, tc.hc_count) for e in embeds]
+            return [
+                e.to(torch.float32).to(dtype).unsqueeze(0).repeat(1, 1, tc.hc_count)
+                for e in embeds
+            ]
         prev = args.out / f"layer-{layer - 1:03d}" / mode / dname
         if not prev.exists():
-            raise SystemExit(f"layer {layer} needs {prev}: generate layer {layer - 1} first")
-        return [load_file(str(prev / f"{n}.safetensors"))["layer_out"].unsqueeze(0) for n in step_names]
+            raise SystemExit(
+                f"layer {layer} needs {prev}: generate layer {layer - 1} first"
+            )
+        return [
+            load_file(str(prev / f"{n}.safetensors"))["layer_out"].unsqueeze(0)
+            for n in step_names
+        ]
 
     for layer in sorted(args.layers):
         out_dir = args.out / f"layer-{layer:03d}"
@@ -478,16 +579,22 @@ def main() -> None:
             t0 = time.time()
             mod = build_layer(ckpt, tc, layer, dtype)
             r16 = residuals_for(layer, "w4a16", dname, dtype)
-            results[("w4a16", dname)] = run_sequence(mod, tc, layer, r16, ids_per_step, step_names)
+            results[("w4a16", dname)] = run_sequence(
+                mod, tc, layer, r16, ids_per_step, step_names
+            )
             with patched_experts(mod.mlp.experts, None):
                 mirror = run_sequence(mod, tc, layer, r16, ids_per_step, step_names)
             for step, stages in results[("w4a16", dname)].items():
                 for k, v in stages.items():
                     if not torch.equal(v, mirror[step][k]):
-                        raise RuntimeError(f"experts mirror diverges from HF at {dname}/{step}/{k}")
+                        raise RuntimeError(
+                            f"experts mirror diverges from HF at {dname}/{step}/{k}"
+                        )
             with patched_experts(mod.mlp.experts, scales):
                 r4 = residuals_for(layer, "w4a4", dname, dtype)
-                results[("w4a4", dname)] = run_sequence(mod, tc, layer, r4, ids_per_step, step_names)
+                results[("w4a4", dname)] = run_sequence(
+                    mod, tc, layer, r4, ids_per_step, step_names
+                )
             del mod
             gc.collect()
             print(f"layer {layer} {dname}: {time.time() - t0:.1f}s", flush=True)
@@ -500,9 +607,13 @@ def main() -> None:
                 save_file(stages, str(d / f"{step}.safetensors"))
             if dname != "fp32":
                 ref = results[(mode, "fp32")]
-                tolerances[f"{mode}/{dname}_vs_fp32"] = {s: compare(ref[s], steps[s]) for s in steps}
+                tolerances[f"{mode}/{dname}_vs_fp32"] = {
+                    s: compare(ref[s], steps[s]) for s in steps
+                }
         ref = results[("w4a16", "fp32")]
-        tolerances["w4a4_vs_w4a16/fp32"] = {s: compare(ref[s], results[("w4a4", "fp32")][s]) for s in ref}
+        tolerances["w4a4_vs_w4a16/fp32"] = {
+            s: compare(ref[s], results[("w4a4", "fp32")][s]) for s in ref
+        }
         (out_dir / "tolerances.json").write_text(json.dumps(tolerances, indent=1))
 
         manifest = {
@@ -510,10 +621,19 @@ def main() -> None:
             "model_index_sha256": index_sha,
             "layer": layer,
             "layer_type": tc.layer_types[layer],
-            "prompt": {"user_message": USER_MESSAGE, "templated": prompt, "token_ids": ids_prefill},
-            "decode": {"continuation": CONTINUATION, "token_ids": ids_decode, "note": "teacher-forced"},
+            "prompt": {
+                "user_message": USER_MESSAGE,
+                "templated": prompt,
+                "token_ids": ids_prefill,
+            },
+            "decode": {
+                "continuation": CONTINUATION,
+                "token_ids": ids_decode,
+                "note": "teacher-forced",
+            },
             "steps": step_names,
-            "input": "token embeddings repeated over hc streams" if layer == 0
+            "input": "token embeddings repeated over hc streams"
+            if layer == 0
             else f"layer-{layer - 1:03d} layer_out of the same mode, dtype and step (chained)",
             "modes": {
                 "w4a16": "NVFP4 weights densified with ModelOpt dequant; activations unquantised; HF experts forward",
@@ -524,7 +644,11 @@ def main() -> None:
                 "bf16": "all parameters bf16 as released; dequantised expert weights computed in fp32 then cast to bf16",
             },
             "stages": STAGES,
-            "versions": {"torch": torch.__version__, "transformers": transformers.__version__, "python": platform.python_version()},
+            "versions": {
+                "torch": torch.__version__,
+                "transformers": transformers.__version__,
+                "python": platform.python_version(),
+            },
             "threads": args.threads,
             "deterministic_algorithms": True,
             "randomness": "none (no sampling; fixed inputs)",
