@@ -87,15 +87,23 @@ impl Attention for Gpu {
         kv_stride: usize,
     ) -> Result<()> {
         self.check(
-            scores.len() >= t * (kv_stride / ratio + 1) && start + t <= kv_stride,
+            scores.len() >= t * (kv_stride / ratio + 1)
+                && start + t <= kv_stride
+                && nheads * head_dim <= 512
+                && head_dim <= 128,
             "qsa_scores sizes",
         )?;
         let f = self.func("qsa_scores")?;
+        f.set_attribute(
+            CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+            QSA_SMEM_BYTES as i32,
+        )?;
         let a = [t, start, nheads, head_dim, ratio, kv_stride].map(|v| v as i32);
+        let nb_max = (start + t) / ratio;
         let cfg = LaunchConfig {
-            grid_dim: (t as u32, 1, 1),
+            grid_dim: (nb_max.div_ceil(64).max(1) as u32, t.div_ceil(16) as u32, 1),
             block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
+            shared_mem_bytes: QSA_SMEM_BYTES as u32,
         };
         unsafe {
             self.stream
@@ -277,6 +285,10 @@ impl Gpu {
         Ok(())
     }
 }
+
+/// `qsa_scores`' shared memory: 16 queries of up to 512 floats and 64 key blocks of
+/// up to 128 floats (rows padded to 129).
+const QSA_SMEM_BYTES: usize = 4 * (16 * 512 + 64 * 129);
 
 /// Query rows (tokens x heads sharing a KV head) per `attn_prefill` block.
 const ATTN_ROWS: usize = 48;
