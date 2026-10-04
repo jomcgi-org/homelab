@@ -1,7 +1,8 @@
 //! Rotary attention with block-sparse (QSA) key selection: `kernels/attention.cu`.
 
 use anyhow::Result;
-use cudarc::driver::{LaunchConfig, PushKernelArg};
+use cudarc::driver::sys::CUfunction_attribute;
+use cudarc::driver::{CudaView, CudaViewMut, LaunchConfig, PushKernelArg};
 use oominf_core::{Attention, Workspace};
 
 use crate::{Buf, Dev, Gpu, grid};
@@ -159,8 +160,10 @@ impl Attention for Gpu {
     }
 
     /// Attention of `t` queries over `kv_len` cached keys under `mask` (`[t, kv_len]`
-    /// bytes). One query token with `d == 256` takes the GQA flash-decode path (split
-    /// over keys, merged online-softmax partials); anything else uses `attn_prefill`.
+    /// bytes). Up to [`DECODE_MAX_TOKENS`] query tokens with `d == 256` (decode and
+    /// draft verification) take the GQA flash-decode path one token at a time (split
+    /// over keys, merged online-softmax partials), which keeps the GPU busy for a
+    /// handful of queries; longer steps use `attn_prefill`.
     #[allow(clippy::too_many_arguments)]
     fn attention(
         &self,
@@ -179,11 +182,52 @@ impl Attention for Gpu {
     ) -> Result<()> {
         let g = heads / kv_heads;
         // The decode kernel is instantiated for the GQA group size the models use.
-        if t != 1 || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
+        if t > DECODE_MAX_TOKENS || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
             return self.attn_prefill(
                 q, k, v, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
             );
         }
+        let row = heads * d;
+        for i in 0..t {
+            self.flash_decode(
+                ws,
+                &q.0.slice(i * row..(i + 1) * row),
+                k,
+                v,
+                &mask.0.slice(i * kv_len..(i + 1) * kv_len),
+                &mut out.0.slice_mut(i * row..(i + 1) * row),
+                heads,
+                kv_heads,
+                d,
+                kv_len,
+                scale,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Most query tokens that take the flash-decode path, one token at a time.
+const DECODE_MAX_TOKENS: usize = 4;
+
+impl Gpu {
+    /// Flash-decode of one query token (`q`, `mask` row and `out` of that token).
+    #[allow(clippy::too_many_arguments)]
+    fn flash_decode(
+        &self,
+        ws: &mut Workspace<Gpu>,
+        q: &CudaView<f32>,
+        k: &Buf,
+        v: &Buf,
+        mask: &CudaView<u8>,
+        out: &mut CudaViewMut<f32>,
+        heads: usize,
+        kv_heads: usize,
+        d: usize,
+        kv_len: usize,
+        scale: f32,
+    ) -> Result<()> {
+        let g = heads / kv_heads;
         // Small chunks keep enough warps busy at short contexts; long contexts get
         // larger chunks so the partial count (and the combine) stays bounded.
         const WARPS: usize = 8;
@@ -234,6 +278,13 @@ impl Attention for Gpu {
     }
 }
 
+/// Query rows (tokens x heads sharing a KV head) per `attn_prefill` block.
+const ATTN_ROWS: usize = 48;
+/// `attn_prefill`'s shared memory: Q rows and a key tile (padded rows of 260
+/// floats), a value tile, the tile's scores and three per-row statistics.
+const ATTN_SMEM_BYTES: usize =
+    4 * (ATTN_ROWS * 260 + 16 * 260 + 16 * 256 + ATTN_ROWS * 16 + 3 * ATTN_ROWS);
+
 impl Gpu {
     /// Masked GQA attention of `t` queries over the first `kv_len` cache rows with an
     /// online softmax (no `[t, heads, kv]` score matrix). Needs `d <= 256`.
@@ -253,19 +304,29 @@ impl Gpu {
         kv_stride: usize,
         scale: f32,
     ) -> Result<()> {
+        let g = heads / kv_heads.max(1);
         self.check(
             d <= 256
+                && d.is_multiple_of(4)
                 && kv_len <= kv_stride
                 && mask.len() >= t * kv_stride
-                && heads.is_multiple_of(kv_heads),
+                && heads.is_multiple_of(kv_heads)
+                && g <= ATTN_ROWS,
             "attn_prefill sizes",
         )?;
         let f = self.func("attn_prefill")?;
+        f.set_attribute(
+            CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+            ATTN_SMEM_BYTES as i32,
+        )?;
+        // Tokens per block: as many as fill the block's query rows.
+        let tq = ATTN_ROWS / g;
         let a = [t, heads, kv_heads, d, kv_len, kv_stride].map(|v| v as i32);
+        let tq32 = tq as i32;
         let cfg = LaunchConfig {
-            grid_dim: ((t * heads) as u32, 1, 1),
+            grid_dim: (t.div_ceil(tq) as u32, kv_heads as u32, 1),
             block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
+            shared_mem_bytes: ATTN_SMEM_BYTES as u32,
         };
         unsafe {
             self.stream
@@ -282,6 +343,7 @@ impl Gpu {
                 .arg(&a[4])
                 .arg(&a[5])
                 .arg(&scale)
+                .arg(&tq32)
                 .launch(cfg)?
         };
         Ok(())

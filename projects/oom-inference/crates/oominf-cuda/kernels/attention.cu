@@ -56,36 +56,6 @@ extern "C" __global__ void pool_rows(const float* raw, float* out, int nblocks, 
     out[i] = acc / ratio;
 }
 
-// QSA indexer selection. One block per query token t (absolute position start + t).
-// Block-wide reductions for blockDim.x == 256.
-__device__ float attn_block_max(float v, float* red) {
-    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, o));
-    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = v;
-    __syncthreads();
-    v = threadIdx.x < 8 ? red[threadIdx.x] : -INFINITY;
-    if (threadIdx.x < 32)
-        for (int o = 4; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffff, v, o));
-    if (threadIdx.x == 0) red[8] = v;
-    __syncthreads();
-    float r = red[8];
-    __syncthreads();
-    return r;
-}
-
-__device__ float attn_block_sum(float v, float* red) {
-    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
-    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = v;
-    __syncthreads();
-    v = threadIdx.x < 8 ? red[threadIdx.x] : 0.0f;
-    if (threadIdx.x < 32)
-        for (int o = 4; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
-    if (threadIdx.x == 0) red[8] = v;
-    __syncthreads();
-    float r = red[8];
-    __syncthreads();
-    return r;
-}
-
 // QSA block scores. Block b covers key positions [b*ratio, (b+1)*ratio); query t at
 // position p = start + t sees nb = (p+1)/ratio complete blocks, and
 // score[t, b] = sum_h relu(q[t,h] . kb[b]) / sqrt(Di). Row stride: kv_stride/ratio + 1.
@@ -178,53 +148,146 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
     }
 }
 
-// Masked GQA attention for several query tokens with an online softmax over 256-key
-// tiles, so no [T, H, kv] score matrix exists. One block (256 threads) per (t, h);
-// thread i scores key i of the tile, then owns output element d = i (D <= 256).
+// Masked GQA attention for several query tokens, flash style: one block owns one KV
+// head and TQ tokens x G query heads (the heads sharing that KV head), R = TQ * G <= 48
+// rows. Key and value tiles of 16 rows are staged in shared memory once and read by
+// every row, the online softmax keeps no score matrix, and a tile no row may see is
+// skipped. Arithmetic is fp32 throughout (dots, expf, accumulation), as the reference.
+// Grid (ceil(T / TQ), Hkv), block 256, dynamic shared memory ATTN_SMEM_BYTES.
 // q: [T, H, D]; k, v caches: [kv_len_max, Hkv, D]; mask: [T, kv_stride]; out: [T, H, D].
+#define ATTN_R 48
+#define ATTN_KT 16
+#define ATTN_STRIDE 260  // floats per Q/K row: 256 + 4 keeps float4 reads conflict-free
+#define ATTN_SMEM_FLOATS \
+    (ATTN_R * ATTN_STRIDE + ATTN_KT * ATTN_STRIDE + ATTN_KT * 256 + ATTN_R * ATTN_KT + 3 * ATTN_R)
+
 extern "C" __global__ void __launch_bounds__(256)
 attn_prefill(const float* q, const float* k, const float* v, const uint8_t* mask, float* out,
-             int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale) {
-    __shared__ float qs[256];
-    __shared__ float ps[256];
-    __shared__ float red[9];
-    int t = blockIdx.x / H, h = blockIdx.x % H;
-    int kvh = h / (H / Hkv);
-    int i = threadIdx.x;
-    qs[i] = i < D ? q[((size_t)t * H + h) * D + i] : 0.0f;
-    const uint8_t* mrow = mask + (size_t)t * kv_stride;
-    float m = -INFINITY, l = 0.0f, acc = 0.0f;
-    __syncthreads();
-    for (int j0 = 0; j0 < kv_len; j0 += 256) {
-        int j = j0 + i;
-        float s = -INFINITY;
-        if (j < kv_len && mrow[j]) {
-            const float* kr = k + ((size_t)j * Hkv + kvh) * D;
-            float dot = 0.0f;
-            for (int d = 0; d < D; d++) dot += qs[d] * kr[d];
-            s = dot * scale;
-        }
-        float tmax = attn_block_max(s, red);
-        if (tmax == -INFINITY) continue;  // whole tile masked (uniform across the block)
-        float mn = fmaxf(m, tmax);
-        float corr = expf(m - mn);
-        float e = s == -INFINITY ? 0.0f : expf(s - mn);
-        ps[i] = e;
-        float tsum = attn_block_sum(e, red);
-        l = l * corr + tsum;
-        if (i < D) {
-            float a = 0.0f;
-            int n = min(256, kv_len - j0);
-            for (int jj = 0; jj < n; jj++) {
-                float pj = ps[jj];
-                if (pj != 0.0f) a += pj * v[((size_t)(j0 + jj) * Hkv + kvh) * D + i];
-            }
-            acc = acc * corr + a;
-        }
-        m = mn;
-        __syncthreads();  // ps is rewritten by the next tile
+             int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale, int TQ) {
+    extern __shared__ __align__(16) float smem[];
+    float* qs = smem;                          // [R][STRIDE]
+    float* ks = qs + ATTN_R * ATTN_STRIDE;     // [KT][STRIDE]
+    float* vs = ks + ATTN_KT * ATTN_STRIDE;    // [KT][256]
+    float* ps = vs + ATTN_KT * 256;            // [R][KT] scores, then probabilities
+    float* rm = ps + ATTN_R * ATTN_KT;         // running max per row
+    float* rl = rm + ATTN_R;                   // running sum per row
+    float* rc = rl + ATTN_R;                   // this tile's rescale per row
+    int G = H / Hkv, R = TQ * G;
+    int t0 = blockIdx.x * TQ, kvh = blockIdx.y;
+    int tid = threadIdx.x;
+    // Row r is token t0 + r / G, head kvh * G + r % G.
+    for (int i = tid; i < ATTN_R * (D / 4); i += 256) {
+        int r = i / (D / 4), d = (i % (D / 4)) * 4;
+        int t = t0 + r / G;
+        float4 val = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (r < R && t < T)
+            val = *reinterpret_cast<const float4*>(q + ((size_t)t * H + kvh * G + r % G) * D + d);
+        *reinterpret_cast<float4*>(qs + r * ATTN_STRIDE + d) = val;
     }
-    if (i < D) out[((size_t)t * H + h) * D + i] = acc / l;
+    if (tid < ATTN_R) {
+        rm[tid] = -INFINITY;
+        rl[tid] = 0.0f;
+    }
+    // Scores: thread (rg, kk) dots rows 3 rg .. 3 rg + 2 with key kk of the tile.
+    int kk = tid & 15, rg = tid >> 4;
+    // Values: thread (rgo, dg) accumulates rows 12 rgo .. 12 rgo + 11, columns 4 dg .. 4 dg + 3.
+    int dg = tid & 63, rgo = tid >> 6;
+    float acc[12][4] = {};
+    for (int j0 = 0; j0 < kv_len; j0 += ATTN_KT) {
+        // Skip a tile no row may see (uniform across the block).
+        bool any = false;
+        if (tid < TQ * ATTN_KT) {
+            int t = t0 + tid / ATTN_KT, j = j0 + tid % ATTN_KT;
+            any = t < T && j < kv_len && mask[(size_t)t * kv_stride + j];
+        }
+        if (!__syncthreads_or(any)) continue;
+        for (int i = tid; i < ATTN_KT * (D / 4); i += 256) {
+            int key = i / (D / 4), d = (i % (D / 4)) * 4;
+            int j = j0 + key;
+            float4 kv4 = make_float4(0.f, 0.f, 0.f, 0.f), vv4 = kv4;
+            if (j < kv_len) {
+                size_t base = ((size_t)j * Hkv + kvh) * D + d;
+                kv4 = *reinterpret_cast<const float4*>(k + base);
+                vv4 = *reinterpret_cast<const float4*>(v + base);
+            }
+            *reinterpret_cast<float4*>(ks + key * ATTN_STRIDE + d) = kv4;
+            *reinterpret_cast<float4*>(vs + key * 256 + d) = vv4;
+        }
+        __syncthreads();
+        {
+            float dot[3] = {0.f, 0.f, 0.f};
+            const float* kr = ks + kk * ATTN_STRIDE;
+            for (int d = 0; d < D; d += 4) {
+                float4 kv4 = *reinterpret_cast<const float4*>(kr + d);
+#pragma unroll
+                for (int i = 0; i < 3; i++) {
+                    float4 qv = *reinterpret_cast<const float4*>(qs + (rg * 3 + i) * ATTN_STRIDE + d);
+                    dot[i] += qv.x * kv4.x;
+                    dot[i] += qv.y * kv4.y;
+                    dot[i] += qv.z * kv4.z;
+                    dot[i] += qv.w * kv4.w;
+                }
+            }
+            int j = j0 + kk;
+#pragma unroll
+            for (int i = 0; i < 3; i++) {
+                int r = rg * 3 + i, t = t0 + r / G;
+                bool ok = r < R && t < T && j < kv_len && mask[(size_t)t * kv_stride + j];
+                ps[r * ATTN_KT + kk] = ok ? dot[i] * scale : -INFINITY;
+            }
+        }
+        __syncthreads();
+        if (tid < R) {
+            float* pr = ps + tid * ATTN_KT;
+            float mt = -INFINITY;
+            for (int i = 0; i < ATTN_KT; i++) mt = fmaxf(mt, pr[i]);
+            float mo = rm[tid], mn = fmaxf(mo, mt);
+            if (mn == -INFINITY) {
+                rc[tid] = 1.0f;
+                for (int i = 0; i < ATTN_KT; i++) pr[i] = 0.0f;
+            } else {
+                float corr = expf(mo - mn), sum = 0.0f;
+                for (int i = 0; i < ATTN_KT; i++) {
+                    float e = pr[i] == -INFINITY ? 0.0f : expf(pr[i] - mn);
+                    pr[i] = e;
+                    sum += e;
+                }
+                rl[tid] = rl[tid] * corr + sum;
+                rm[tid] = mn;
+                rc[tid] = corr;
+            }
+        }
+        __syncthreads();
+        if (dg * 4 < D) {
+#pragma unroll
+            for (int i = 0; i < 12; i++) {
+                float c = rc[rgo * 12 + i];
+#pragma unroll
+                for (int c4 = 0; c4 < 4; c4++) acc[i][c4] *= c;
+            }
+            for (int key = 0; key < ATTN_KT; key++) {
+                float4 vv = *reinterpret_cast<const float4*>(vs + key * 256 + dg * 4);
+#pragma unroll
+                for (int i = 0; i < 12; i++) {
+                    float p = ps[(rgo * 12 + i) * ATTN_KT + key];
+                    acc[i][0] += p * vv.x;
+                    acc[i][1] += p * vv.y;
+                    acc[i][2] += p * vv.z;
+                    acc[i][3] += p * vv.w;
+                }
+            }
+        }
+        __syncthreads();  // tiles and probabilities are rewritten by the next tile
+    }
+    if (dg * 4 >= D) return;
+#pragma unroll
+    for (int i = 0; i < 12; i++) {
+        int r = rgo * 12 + i, t = t0 + r / G;
+        if (r >= R || t >= T) continue;
+        float l = rl[r];
+        float4 o = make_float4(acc[i][0] / l, acc[i][1] / l, acc[i][2] / l, acc[i][3] / l);
+        *reinterpret_cast<float4*>(out + ((size_t)t * H + kvh * G + r % G) * D + dg * 4) = o;
+    }
 }
 
 // x *= sigmoid(gate), elementwise.
