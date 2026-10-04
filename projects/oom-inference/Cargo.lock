@@ -806,8 +806,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "minijinja",
- "minijinja-contrib",
  "oominf-convert",
  "oominf-cuda",
  "oominf-format",
@@ -815,7 +813,6 @@ dependencies = [
  "oominf-server",
  "oominf-tiers",
  "serde_json",
- "tokenizers",
 ]
 
 [[package]]

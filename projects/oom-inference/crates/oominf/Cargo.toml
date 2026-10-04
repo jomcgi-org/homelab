@@ -7,8 +7,6 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-minijinja = { version = "2.24.0", features = ["loop_controls"] }
-minijinja-contrib = { version = "2.24.0", features = ["pycompat"] }
 oominf-convert = { path = "../oominf-convert" }
 oominf-cuda = { path = "../oominf-cuda" }
 oominf-format = { path = "../oominf-format" }
@@ -16,7 +14,6 @@ oominf-models-qwen = { path = "../oominf-models-qwen" }
 oominf-server = { path = "../oominf-server" }
 oominf-tiers = { path = "../oominf-tiers" }
 serde_json.workspace = true
-tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 
 [lints]
 workspace = true
