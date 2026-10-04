@@ -21,4 +21,8 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 data:
 {{ ($files.AsConfig) | indent 2 }}
+{{- if .Values.grimoireLinkEnrollment.enabled }}
+  grimoire-link-enrollment.yaml: |
+{{ .Files.Get "optional/grimoire-link-enrollment.yaml" | indent 4 }}
+{{- end }}
 {{- end }}

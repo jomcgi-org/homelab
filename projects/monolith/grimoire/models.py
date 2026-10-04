@@ -676,6 +676,58 @@ class CampaignInvitation(SQLModel, table=True):
     )
 
 
+class CampaignJoinLink(SQLModel, table=True):
+    __tablename__ = "campaign_join_link"
+    __table_args__ = (
+        UniqueConstraint("token_digest", name="campaign_join_link_digest_key"),
+        Index("campaign_join_link_campaign_idx", "campaign_id", "status"),
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'revoked')",
+            name="campaign_join_link_status_chk",
+        ),
+        CheckConstraint(
+            "status = 'revoked' OR ((status = 'accepted') = (accepted_by_id IS NOT NULL))",
+            name="campaign_join_link_acceptance_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.campaign.id")
+    )
+    recipient_id: str | None = Field(
+        default=None, sa_column=_uuid_column(fk="grimoire.app_user.id")
+    )
+    invitee_email: str = Field(sa_column=Column(String, nullable=False))
+    issued_by_id: str = Field(
+        sa_column=_uuid_column(nullable=False, fk="grimoire.app_user.id")
+    )
+    token_digest: str = Field(sa_column=Column(String, nullable=False))
+    status: str = Field(default="pending", sa_column=Column(String, nullable=False))
+    expires_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False)
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    accepted_by_id: str | None = Field(
+        default=None, sa_column=_uuid_column(fk="grimoire.app_user.id")
+    )
+    enrollment_allowed: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False)
+    )
+    enrollment_username: str = Field(sa_column=Column(String, nullable=False))
+    # Authentik's UUID is itself a credential. Never include it in API views,
+    # exception messages, logs or telemetry. Needed only for retry/revocation.
+    enrollment_id: str | None = Field(
+        default=None, repr=False, sa_column=_uuid_column()
+    )
+
+
 class Campaign(SQLModel, table=True):
     __tablename__ = "campaign"
     __table_args__ = {"schema": "grimoire", "extend_existing": True}

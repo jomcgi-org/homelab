@@ -1,3 +1,8 @@
+# Separate opt-in flow only. No token, role, permissions or service account
+# are provisioned by this flag. Existing Grimoire/moving/global flows unchanged.
+grimoireLinkEnrollment:
+  enabled: false
+
 # The Ember OIDC provider remains intentionally unconfigured here. ADR 032
 # requires Ember's object-authorization matrix to land before SSO is admitted.
 

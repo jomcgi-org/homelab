@@ -1281,6 +1281,7 @@ py_library(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
         "@pip//opentelemetry_sdk",
@@ -9680,4 +9681,25 @@ py_test(
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
+)
+
+py_test(
+    name = "grimoire_join_links_test",
+    srcs = ["grimoire/join_links_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_join_links_postgres_test",
+    srcs = ["grimoire/join_links_postgres_test.py"],
 )

@@ -353,14 +353,12 @@ signed Grimoire ID token, which the backend independently checks against the
 Grimoire issuer, audience, signature and expiry. This provider is not added to
 the shared operator/MCP token resolver.
 
-An administrator uses **Account invitations** in the lobby to open Authentik's
-invitation management page. Choose **Grimoire enrollment**, enable **Single
-use**, set an expiry, and put the recipient's email in **Fixed data**, for
-example `{"email": "friend@example.com"}`. Deliver the generated link to that
-person. Enrollment requires the invitation and fixes the email to its supplied
-value; it asks for username, display name and password. New users are external
-users, with no operator or family group membership. After enrollment they land
-in Grimoire. Existing human Authentik users can sign in directly.
+Account signup remains administrator-controlled. The lobby does not send email
+or send campaign owners into Authentik's global invitation administration.
+With campaign links disabled, the existing registered-player invitation and
+acceptance workflow remains available. Existing human Authentik users can sign
+in directly; administrator-managed account enrollment is separate until the
+optional integration has passed its access and rollout review.
 
 First login creates the Grimoire account. Subsequent logins update its email
 and display name using the verified `(issuer, subject)` identity. Memberships,
@@ -402,6 +400,92 @@ unassigned. A session screen remains follow-up work.
 moving knowledge between accounts. Campaign-scoped roles let a DM seat their
 own table without operator access.
 
+### Optional single-use campaign links (disabled)
+
+`grimoire.invitationLinks.enabled` defaults to false. When enabled, campaign
+owners create a seven-day, single-recipient link for a registered player and
+copy it themselves. The raw capability is shown once, carried in a URL
+fragment, then exchanged for a Secure, HttpOnly, SameSite=Lax resume cookie.
+The database stores only its SHA-256 digest. Opening the link does not grant
+membership or consume it. An explicit authenticated Join inserts membership
+and consumes the link in one transaction. Existing recipients are bound to
+immutable app-account IDs, including after email changes. Repeating a successful
+Join returns success only for that same identity while membership still exists.
+Removing a player revokes their old links; replay cannot restore access.
+
+Campaign locking serializes issuance, redemption, revocation and removal.
+There is only one unexpired pending link for a campaign and email. Duplicate
+Create requests return an instruction to revoke the old link before replacing
+it; they never recover a stored raw token. Links that expire or are revoked
+cannot be redeemed. The exact anonymous `/grimoire/join` route serves a
+self-contained, no-store landing page with no telemetry or authenticated assets.
+The authenticated `/grimoire/join/accept` route and every other Grimoire route
+keep their existing OIDC policy. No private API is exposed on the friends host.
+
+New-account enrollment has a second default-off flag,
+`grimoire.invitationLinks.enrollmentEnabled`. Issuance requires both campaign
+ownership and the existing `operators` account-administration entitlement.
+Ordinary campaign owners cannot create account-enrollment invitations. The
+backend adapter only creates expiring, single-use invitations for the configured
+flow, with a fixed email and a stable account username derived from normalized
+email. This username is not a credential. Its database uniqueness prevents
+concurrent or replacement enrollment flows in this integration from creating
+multiple accounts for one recipient. Authentik's separate optional
+`grimoireLinkEnrollment.enabled` flag mounts `grimoire-link-enrollment`; no
+existing enrollment, Moving, provider or group policy is modified. The new
+flow discards unapproved fixed-data fields and forces external, ungrouped
+accounts. New recipients must present this app's verified Grimoire issuer and
+the invited email when they Join. The capability authorizes this invitation;
+email never links or transfers an existing account's memberships.
+
+The chart creates no service account, API token, RBAC grant or Secret. Enabling
+account enrollment requires a separately reviewed existing Operator-managed
+Secret reference and the exact flow ID. The credential is mounted only in the
+backend. Proposed access is model-wide `add_invitation` plus initial
+object-level `view_invitation` and `delete_invitation` for this role's newly
+created invitations. Those initial permissions must be verified in an isolated
+integration test before provisioning. No global view/delete/change, user,
+group, provider or permission-management grants are intended. Importantly,
+Authentik's creation permission is not flow-scoped: a stolen credential can
+create invitations for other flows with arbitrary fixed data. The app's
+allowlist does not eliminate that credential-compromise risk, nor does the
+model permission provide a separate prohibition on Authentik email actions
+for accessible invitations. The integration never calls those actions. This boundary
+needs explicit approval before enablement.
+
+Authentik consumes its single-use token at the invitation stage, before signup
+finishes. The outer campaign link stays pending and can obtain a replacement
+account invitation after an interrupted signup, with the same fixed username.
+If an account already exists, the recipient signs in instead. An upstream
+timeout can leave an orphan invitation; it remains bounded by the campaign
+expiry and the same unique account identity. Revocation commits locally first,
+then attempts Authentik cancellation. Provider failures leave a visible cleanup
+retry without restoring campaign access. An already-started Authentik flow can
+still finish account creation after its token is deleted; revocation guarantees
+no campaign access, not cancellation of an in-progress upstream signup.
+
+App-side HTTP logging and instrumentation exclude enrollment credentials.
+Authentik itself has upstream invitation-token debug logging; its logging and
+ingress redaction must be reviewed before enabling this integration. Never put
+real invitation URLs, provider UUIDs or API tokens in CI logs, PRs or fixtures.
+
+**Why.** Account admission and campaign membership are separate security
+boundaries. Keeping a single-use app capability until the final Join provides
+atomic membership, safe retries and revocation without treating Authentik's
+partially completed enrollment as campaign acceptance.
+
+### Optional-link enablement checks
+
+Keep both flags off until reviewed provisioning and normal CI have passed.
+Before enabling, test the exact pinned Authentik version and Envoy routing with
+disposable accounts: fresh signup, existing-account sign-in, interrupted signup,
+Back/Close/reopen, wrong-account rejection, duplicate submission, expiry,
+concurrent redemption, revoke during signup, provider outage and cleanup retry.
+Verify the adapter cannot read/delete unrelated invitations, and explicitly
+review the remaining model-wide create privilege. Check that the anonymous
+route is exact-only and does not expose `/join/accept`, assets or private APIs.
+Verify no operator/family group assignment and no Moving-policy changes.
+
 ### Deployment and verification
 
 The `k8s-homelab/grimoire-oidc` 1Password item holds a concealed `client-secret`.
@@ -420,9 +504,9 @@ After the normal Linux CI and deployment gates, verify with two fresh accounts:
    until they accept. Declining or cancelling grants no membership.
 4. An accepted player can see their campaign but cannot invite or remove
    members. Removal takes effect on the next request.
-5. Ordinary users do not see the account-admin link and cannot access
-   Authentik administration. Operators see a link to
-   `/if/admin/#/flow/stages/invitations`.
+5. Ordinary users cannot access Authentik administration. The Grimoire lobby
+   has no email-delivery option or global account-admin redirect. Optional
+   enrollment controls require the existing account-administrator entitlement.
 6. The moving app and preview lane retain their original access policies.
    Shared `/_app/` assets accept either app's signed cookie, while page and API
    permissions remain separate. Requests to `/api/grimoire` on the friends

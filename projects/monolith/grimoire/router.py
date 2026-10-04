@@ -42,12 +42,16 @@ from grimoire.access import (
 )
 from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
+from grimoire.invitation_provider import enrollment_enabled
+from grimoire.join_links import links_enabled
+from grimoire.join_links import router as join_links_router
 from grimoire.journal import Journal, journal, narration_entity_ids, visible_rows
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
     Campaign,
     CampaignInvitation,
+    CampaignJoinLink,
     CampaignMember,
     CharacterSheetStatus,
     CharacterSheetVersion,
@@ -65,9 +69,8 @@ from grimoire.models import (
     SessionEvent,
     SessionStatus,
 )
-from grimoire.search import search_campaign
 from grimoire.reveals import reveal_items
-
+from grimoire.search import search_campaign
 from grimoire.session_events import (
     EventRequestConflictError,
     InvalidEventAudienceError,
@@ -1428,6 +1431,11 @@ def revoke_player(
     session: Session = Depends(get_session),
 ) -> None:
     _require_owner(session, campaign_id, email)
+    session.exec(
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update(key_share=True)
+    ).one()
     member = session.get(CampaignMember, member_id)
     if member is None or member.campaign_id != campaign_id or member.role != "player":
         raise HTTPException(status_code=404, detail="player membership not found")
@@ -1442,6 +1450,17 @@ def revoke_player(
     if invitation is not None:
         invitation.status = "revoked"
         session.add(invitation)
+    links = session.exec(
+        select(CampaignJoinLink)
+        .where(
+            CampaignJoinLink.campaign_id == campaign_id,
+            CampaignJoinLink.recipient_id == member.app_user_id,
+            CampaignJoinLink.status.in_(["pending", "accepted"]),
+        )
+        .with_for_update()
+    ).all()
+    for link in links:
+        link.status = "revoked"
     session.delete(member)
     session.commit()
 
@@ -3060,6 +3079,8 @@ class InvitationView(BaseModel):
 
 class LobbyView(BaseModel):
     can_administer_accounts: bool
+    invitation_links_enabled: bool = False
+    invitation_enrollment_enabled: bool = False
     user: LobbyUserView
     campaigns: list[LobbyCampaignView]
     invitations: list[InvitationView]
@@ -3122,6 +3143,8 @@ def get_lobby(
         .order_by(CampaignInvitation.created_at)
     ).all()
     return LobbyView(
+        invitation_links_enabled=links_enabled(),
+        invitation_enrollment_enabled=enrollment_enabled(),
         can_administer_accounts=principal.has_group("operators"),
         user=LobbyUserView(
             id=user.id, email=user.email, display_name=user.display_name
@@ -3270,3 +3293,7 @@ def decide_invitation(
     session.add(row)
     session.commit()
     return _invitation_view(session, row)
+
+
+# Specific public-capability endpoints stay behind their own default-off gate.
+router.include_router(join_links_router)

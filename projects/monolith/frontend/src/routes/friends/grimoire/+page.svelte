@@ -1,5 +1,6 @@
 <script>
   import "$lib/grimoire/theme.css";
+  import JoinLinks from "$lib/grimoire/JoinLinks.svelte";
   let { data, form } = $props();
 </script>
 
@@ -12,28 +13,22 @@
     <p>Welcome, {data.user.display_name || data.user.email}.</p>
     <nav aria-label="Account">
       <a href="/grimoire/sheets">Character sheets</a>
-      {#if data.can_administer_accounts}
-        <a href="https://auth.jomcgi.dev/if/admin/#/flow/stages/invitations"
-          >Account invitations ↗</a
-        >
-      {/if}
       <a href="/grimoire/oauth2/logout">Sign out</a>
     </nav>
   </header>
 
   {#if form?.error}<p class="notice" role="alert">{form.error}</p>
-  {:else if form?.ok}<p class="notice" role="status">Saved.</p>{/if}
+  {:else if form?.ok && !form?.new_link}<p class="notice" role="status">
+      Saved.
+    </p>{/if}
 
-  {#if data.can_administer_accounts}
+  {#if data.can_administer_accounts && !data.invitation_links_enabled}
     <aside>
-      <strong>Invite a friend to Grimoire</strong>
+      <strong>Account invitations are unavailable right now.</strong>
       <p>
-        Open Account invitations, choose the Grimoire enrollment flow, and
-        create a single-use invitation with their email in Fixed data. Share the
-        generated link with your friend. Once they sign in to Grimoire, campaign
-        owners can invite them to a table.
+        Campaign owners can still invite players who have already signed in to
+        Grimoire.
       </p>
-      <code>{'{"email": "friend@example.com"}'}</code>
     </aside>
   {/if}
 
@@ -99,7 +94,7 @@
         <a href={`/grimoire/campaigns/${campaign.id}/notes`}>Open notes</a>
         <a href={`/grimoire/campaigns/${campaign.id}/journal`}>Open journal</a>
         {#if campaign.role === "dm"}
-          <details>
+          <details open={form?.new_link?.campaign_id === campaign.id}>
             <summary
               >{campaign.is_owner
                 ? "Players and invitations"
@@ -200,22 +195,35 @@
               {/each}
             </ul>
             {#if campaign.is_owner}
-              <form method="POST" action="?/invite">
-                <input type="hidden" name="campaign_id" value={campaign.id} />
-                <label
-                  >Registered player's email <input
-                    type="email"
-                    name="email"
-                    required
-                    maxlength="320"
-                  /></label
-                >
-                <button>Invite player</button>
-              </form>
-              <p class="hint">
-                They must have signed in to Grimoire once. They get access after
-                accepting.
-              </p>
+              {#if data.invitation_links_enabled && !campaign.join_links_error}
+                <JoinLinks
+                  {campaign}
+                  {form}
+                  isAdmin={data.can_administer_accounts}
+                  canEnroll={data.invitation_enrollment_enabled}
+                />
+              {:else}
+                <p class="notice">
+                  Single-use campaign links are unavailable right now. You can
+                  still invite a registered player below.
+                </p>
+                <form method="POST" action="?/invite">
+                  <input type="hidden" name="campaign_id" value={campaign.id} />
+                  <label
+                    >Registered player's email <input
+                      type="email"
+                      name="email"
+                      required
+                      maxlength="320"
+                    /></label
+                  >
+                  <button>Invite player</button>
+                </form>
+                <p class="hint">
+                  They must have signed in to Grimoire once. They get access
+                  after accepting.
+                </p>
+              {/if}
               {#each campaign.invitations as invite (invite.id)}
                 <form method="POST" action="?/cancel">
                   <span>{invite.invitee_email} · Pending</span>

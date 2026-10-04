@@ -195,3 +195,40 @@ describe("Activity index cache isolation", () => {
     },
   );
 });
+
+describe("Grimoire invitation cache isolation", () => {
+  it.each([
+    "/friends/grimoire",
+    "/friends/grimoire/join",
+    "/friends/grimoire/join/accept",
+  ])(
+    "protects GET, POST errors and navigation responses for %s",
+    async (id) => {
+      for (const method of ["GET", "POST", "HEAD"]) {
+        const response = await handle({
+          event: {
+            route: { id },
+            request: new Request("https://friends.jomcgi.dev/grimoire", {
+              method,
+            }),
+          },
+          resolve: async () =>
+            new Response(method === "HEAD" ? null : "private invitation", {
+              status: 400,
+              headers: {
+                "content-type": "text/html",
+                "cache-control": "public",
+                etag: "old",
+              },
+            }),
+        });
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+        expect(response.headers.get("cloudflare-cdn-cache-control")).toBe(
+          "no-store",
+        );
+        expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+        expect(response.headers.has("etag")).toBe(false);
+      }
+    },
+  );
+});

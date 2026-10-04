@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import secrets
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 
-from grimoire import search
+from grimoire import join_links, search
+from grimoire.models import CampaignJoinLink
 from grimoire.testing.leak_harness import ROLES, SHEET_BODY, fake_knn, sqlite_harness
 
 PREFIX = "/api/grimoire/campaigns/{campaign_id}"
@@ -34,10 +39,6 @@ class Case:
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
-    ("GET", PREFIX + "/journal"): Case(state="play"),
-    ("GET", PREFIX + "/sessions/{session_id}/journal"): Case(
-        params={"session_id": "$campaign_session.id"}, state="play"
-    ),
     ("POST", PREFIX + "/grants/preview"): Case(
         state="play",
         read_only=True,
@@ -208,18 +209,57 @@ CASES = {
         params={"invitation_id": "$invitation.id"},
         success=204,
     ),
+    ("POST", PREFIX + "/join-links"): Case(body={"email": "$email.invitee"}),
+    ("GET", PREFIX + "/join-links"): Case(),
+    ("DELETE", PREFIX + "/join-links/{link_id}"): Case(
+        params={"link_id": "$join_link.id"}, success=204
+    ),
+}
+
+# These endpoints intentionally sit outside the campaign ACL namespace. The
+# token is authority for minimal invitation metadata and enrollment; redeem
+# additionally requires the bound verified account. Enumerate them exactly so
+# adding another capability endpoint cannot silently escape this inventory.
+CAPABILITY_CASES = {
+    ("POST", "/api/grimoire/join-links/inspect"): "bearer metadata",
+    ("POST", "/api/grimoire/join-links/enroll"): "bearer enrollment",
+    ("POST", "/api/grimoire/join-links/redeem"): "bearer plus verified recipient",
 }
 
 
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "true")
+    monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     with sqlite_harness(tmp_path / "inventory.db") as h:
         monkeypatch.setattr(search, "knn_embeddings", fake_knn)
+        links = []
+        for key, campaign, owner, recipient in (
+            ("join_link", "campaign", "dm", "outsider"),
+            ("other_join_link", "other", "other_campaign", "invitee"),
+        ):
+            token = secrets.token_urlsafe(32)
+            row = CampaignJoinLink(
+                id=h.token(f"{key}.id", (owner,), identifier=True),
+                campaign_id=h.rows[campaign].id,
+                recipient_id=h.rows[f"user_{recipient}"].id,
+                invitee_email=h.emails[recipient],
+                issued_by_id=h.rows[f"user_{owner}"].id,
+                token_digest=hashlib.sha256(token.encode()).hexdigest(),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                enrollment_allowed=False,
+                enrollment_username=f"grimoire-{key}",
+            )
+            h.rows[key] = row
+            links.append(row)
+        h.session.add_all(links)
+        h.session.commit()
         yield h
 
 
 CAMPAIGN_SHAPE = re.compile(r"^/api/grimoire/campaigns/\{[^}/]+\}(/|$)")
+CAPABILITY_SHAPE = re.compile(r"^/api/grimoire/join-links(/|$)")
 
 
 def campaign_routes(app):
@@ -242,7 +282,20 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 45
+    assert len(enumerated) == 48
+    capability_routes = set()
+    for context in iter_route_contexts(app.routes):
+        if not CAPABILITY_SHAPE.match(context.path):
+            continue
+        assert isinstance(context.original_route, APIRoute), (
+            "Uncovered non-APIRoute under join-link prefix: "
+            f"{type(context.original_route).__name__} {context.path}"
+        )
+        capability_routes.update((method, context.path) for method in context.methods)
+    assert capability_routes == set(CAPABILITY_CASES), (
+        f"Missing capability CASES: {sorted(capability_routes - set(CAPABILITY_CASES))}; "
+        f"stale capability CASES: {sorted(set(CAPABILITY_CASES) - capability_routes)}"
+    )
 
 
 def test_route_inventory(harness):
@@ -384,7 +437,9 @@ def test_campaign_route_matrix(harness, method, path):
                         assert response.status_code == expected, response.text
                     elif viewer in ("outsider", "other_campaign"):
                         assert response.status_code == 404, response.text
-                    elif path.endswith(("/members", "/grants", "/invitations")):
+                    elif path.endswith(
+                        ("/members", "/grants", "/invitations", "/join-links")
+                    ):
                         assert response.status_code == 403, response.text
                     elif "note_id" in case.params and viewer == "no_character":
                         assert response.status_code == 404, response.text
@@ -457,7 +512,7 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 198
+    assert len(tokens) == 200
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
@@ -483,3 +538,146 @@ def test_inventory_guard_names_new_and_stale_routes(harness, monkeypatch):
     monkeypatch.setitem(CASES, ("GET", PREFIX + "/stale"), Case())
     with pytest.raises(AssertionError, match="stale CASES.*stale"):
         assert_inventory(app)
+
+
+def test_capability_inventory_guard_names_new_and_stale_routes(harness, monkeypatch):
+    app = harness.app()
+
+    def unreviewed():
+        return {}
+
+    app.add_api_route(
+        "/api/grimoire/join-links/unreviewed", unreviewed, methods=["POST"]
+    )
+    with pytest.raises(AssertionError, match="Missing capability CASES.*unreviewed"):
+        assert_inventory(app)
+    app = harness.app()
+    monkeypatch.setitem(
+        CAPABILITY_CASES, ("POST", "/api/grimoire/join-links/stale"), "unreviewed"
+    )
+    with pytest.raises(AssertionError, match="stale capability CASES.*stale"):
+        assert_inventory(app)
+
+
+@pytest.mark.parametrize("method,path", CAPABILITY_CASES)
+def test_capability_routes_reject_unknown_token_without_disclosing_campaigns(
+    harness, method, path
+):
+    before = harness.snapshot()
+    with TestClient(harness.app()) as client:
+        for viewer in ROLES:
+            response = client.request(
+                method,
+                path,
+                headers=harness.headers(viewer),
+                json={"token": secrets.token_urlsafe(32)},
+            )
+            harness.assert_no_leak(response, viewer)
+            assert response.status_code in (403, 404), response.text
+            assert harness.snapshot() == before
+
+
+def test_capability_routes_have_explicit_positive_controls(harness, monkeypatch):
+    h = harness
+    campaign_id = h.rows["campaign"].id
+    with TestClient(h.app()) as client:
+        issued = client.post(
+            f"/api/grimoire/campaigns/{campaign_id}/join-links",
+            headers=h.headers("dm"),
+            json={"email": h.emails["invitee"]},
+        )
+        assert issued.status_code == 200, issued.text
+        token = issued.json()["token"]
+        before = h.snapshot()
+        metadata = client.post(
+            "/api/grimoire/join-links/inspect", json={"token": token}
+        )
+        assert metadata.status_code == 200, metadata.text
+        # A valid bearer deliberately grants only this minimal projection,
+        # even before login. It never grants entities, roster, or other links.
+        assert set(metadata.json()) == {
+            "id",
+            "campaign_id",
+            "campaign_name",
+            "invitee_email",
+            "expires_at",
+            "status",
+            "enrollment_cleanup_pending",
+            "can_enroll",
+        }
+        assert metadata.json()["campaign_id"] == campaign_id
+        assert metadata.json()["invitee_email"] == h.emails["invitee"]
+        h.assert_no_leak(metadata, "dm")
+        assert token not in metadata.text
+        assert h.snapshot() == before
+        joined = client.post(
+            "/api/grimoire/join-links/redeem",
+            headers=h.headers("invitee"),
+            json={"token": token},
+        )
+        assert joined.status_code == 200, joined.text
+        assert joined.json() == {"campaign_id": campaign_id, "status": "accepted"}
+        assert h.snapshot() != before
+
+        # The provider boundary is mocked; this test performs no enrollment
+        # outside the local fixture, and exercises a genuinely allowed POST.
+        provider_id = str(uuid4())
+
+        class LocalProvider:
+            def create(self, **kwargs):
+                assert kwargs["email"] == "new-recipient@example.test"
+                return provider_id
+
+            def enrollment_url(self, invitation_id):
+                assert invitation_id == provider_id
+                return "https://auth.example/test-enrollment"
+
+        monkeypatch.setattr(join_links, "InvitationProvider", LocalProvider)
+        monkeypatch.setenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", "true")
+        row = h.rows["join_link"]
+        enrollment_token = secrets.token_urlsafe(32)
+        row.token_digest = hashlib.sha256(enrollment_token.encode()).hexdigest()
+        row.invitee_email = "new-recipient@example.test"
+        row.recipient_id = None
+        row.enrollment_allowed = True
+        h.session.commit()
+        before = h.snapshot()
+        enrollment = client.post(
+            "/api/grimoire/join-links/enroll", json={"token": enrollment_token}
+        )
+        assert enrollment.status_code == 200, enrollment.text
+        assert enrollment.json() == {
+            "enrollment_url": "https://auth.example/test-enrollment"
+        }
+        assert h.snapshot() != before
+        assert row.enrollment_id == provider_id
+        assert row.status == "pending"
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [*CAPABILITY_CASES, *(key for key in CASES if "/join-links" in key[1])],
+)
+def test_every_join_link_route_fails_closed_when_disabled(
+    harness, monkeypatch, method, path
+):
+    monkeypatch.delenv("GRIMOIRE_INVITATION_LINKS_ENABLED")
+    before = harness.snapshot()
+    with TestClient(harness.app()) as client:
+        for viewer in ROLES:
+            response = client.request(
+                method,
+                path.format(
+                    campaign_id=harness.rows["campaign"].id,
+                    link_id=harness.rows["join_link"].id,
+                ),
+                headers=harness.headers(viewer),
+                json=(
+                    {"email": harness.emails["invitee"]}
+                    if path == PREFIX + "/join-links"
+                    else {"token": secrets.token_urlsafe(32)}
+                ),
+            )
+            assert response.status_code == 503, response.text
+            harness.assert_no_leak(response, viewer)
+            assert harness.snapshot() == before

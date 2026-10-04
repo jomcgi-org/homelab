@@ -707,6 +707,22 @@ spec:
             {{- end }}
             - name: GRIMOIRE_PLAY_ENABLED
               value: {{ .Values.grimoire.play.enabled | quote }}
+            - name: GRIMOIRE_INVITATION_LINKS_ENABLED
+              value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
+            - name: GRIMOIRE_INVITATION_ENROLLMENT_ENABLED
+              value: {{ .Values.grimoire.invitationLinks.enrollmentEnabled | quote }}
+            {{- if .Values.grimoire.invitationLinks.enrollmentEnabled }}
+            {{- if not .Values.grimoire.invitationLinks.enabled }}
+            {{- fail "grimoire invitation enrollment requires invitationLinks.enabled" }}
+            {{- end }}
+            - name: GRIMOIRE_INVITATION_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "reviewed existing invitation Secret is required" .Values.grimoire.invitationLinks.existingSecretName | quote }}
+                  key: {{ .Values.grimoire.invitationLinks.tokenKey | quote }}
+            - name: GRIMOIRE_INVITATION_FLOW_ID
+              value: {{ required "reviewed Grimoire invitation flow ID is required" .Values.grimoire.invitationLinks.flowID | quote }}
+            {{- end }}
             {{- if .Values.grimoire.enabled }}
             # Grimoire D&D ingest pipeline (private tier only; spec
             # the grimoire pg-first design, section 4.3). The S3
@@ -949,6 +965,8 @@ spec:
               value: "http://localhost:8000"
             - name: GRIMOIRE_PLAY_ENABLED
               value: {{ .Values.grimoire.play.enabled | quote }}
+            - name: GRIMOIRE_INVITATION_LINKS_ENABLED
+              value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             {{- if .Values.frontend.qwenApiBase }}
             # FreeToken (Qwen on node-4) over the Tailscale egress Service, for
             # the private /qwen chat page.
