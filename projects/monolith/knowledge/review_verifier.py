@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import NamedTuple
 
 from knowledge.freshness import (
+    _OUTSTANDING_GATE,
     _PROVENANCE_SECTION,
     _SHA,
     _STATE,
@@ -176,7 +177,7 @@ def extract_predicates(
     note_named: set[tuple[str, int]] = set()
     note_covered: set[tuple[str, int]] = set()
     for sentence in sentences(f"{title}\n{claim}"):
-        if _GATE_WORDS.search(sentence):
+        if _GATE_WORDS.search(sentence) or _OUTSTANDING_GATE.search(sentence):
             raise _Unsupported("acceptance gate is not verifiable from GitHub")
         note_named.update(
             (repo, number) for _, repo, number in _refs(sentence, default_repo)
@@ -225,8 +226,11 @@ def extract_predicates(
                             "checks at a SHA name more than one reference"
                         )
                     repo = refs[0][1] if refs else default_repo
+                    number = refs[0][2] if refs else None
                     predicates.append(
-                        Predicate("checks", repo, None, _CHECK_TERMS[term], sha=shas[0])
+                        Predicate(
+                            "checks", repo, number, _CHECK_TERMS[term], sha=shas[0]
+                        )
                     )
                     consumed.add(shas[0])
                     covered.update(named)
@@ -280,7 +284,7 @@ class GitHubVerifier:
         self._used: list[datetime] = []
         self.requests = 0
 
-    def _get(self, path: str) -> object:
+    def _get(self, path: str, *, body_type: type = dict) -> object:
         cached = self._cache.get(path)
         if cached is None:
             if self._remaining <= 0:
@@ -296,7 +300,7 @@ class GitHubVerifier:
             raise _NotFound(path)
         if response.status != 200:
             raise SourceUnavailable(f"http_{response.status}")
-        if not isinstance(response.body, dict):
+        if not isinstance(response.body, body_type):
             raise SourceUnavailable("malformed_response")
         return response.body
 
@@ -379,6 +383,22 @@ class GitHubVerifier:
         sha = p.sha
         if sha is None:
             sha = self._pull(p.repo, p.number)["head"]["sha"]
+        elif p.number is not None:
+            self._pull(p.repo, p.number)
+            associated = self._get(
+                f"/repos/{p.repo}/commits/{sha}/pulls?per_page=100", body_type=list
+            )
+            if any(
+                not isinstance(pull, dict)
+                or type(pull.get("number")) is not int
+                or pull["number"] < 1
+                for pull in associated
+            ):
+                raise SourceUnavailable("malformed_response")
+            if not any(pull["number"] == p.number for pull in associated):
+                if len(associated) >= MAX_CHECK_RUNS:
+                    raise _Unsupported("PR association response may be truncated")
+                raise _Mismatch(f"{label} is not associated with {sha}")
         outcomes = [
             outcome
             for outcome in (self._check_runs(p.repo, sha), self._statuses(p.repo, sha))
@@ -413,6 +433,11 @@ class GitHubVerifier:
             raise SourceUnavailable("check runs are not tied to the SHA")
         if not runs:
             return None
+        if any(
+            run.get("status") == "completed" and run.get("conclusion") not in _GOOD
+            for run in runs
+        ):
+            return "failure"
         if any(run.get("status") != "completed" for run in runs):
             return "pending"
         if all(run.get("conclusion") in _GOOD for run in runs):

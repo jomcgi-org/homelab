@@ -49,9 +49,23 @@
 
   let body = $state("");
   let detail = $state(null);
+  let now = $state(Date.now());
   // Review freshness is the private detail payload's; the public endpoint has
   // none, so the block simply does not render there.
-  let freshness = $derived(describeFreshness(detail));
+  let freshness = $derived(describeFreshness(detail, now));
+  $effect(() => {
+    const deadline = Date.parse(detail?.review_after);
+    let timer;
+    // Refresh the countdown coarsely, but cross a near deadline at equality.
+    function tick() {
+      const clock = Date.now();
+      now = clock;
+      const delay = deadline - clock;
+      timer = setTimeout(tick, delay > 0 ? Math.min(delay, 60_000) : 60_000);
+    }
+    tick();
+    return () => clearTimeout(timer);
+  });
   let loading = $state(false);
   let error = $state("");
 

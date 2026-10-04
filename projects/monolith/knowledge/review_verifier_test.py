@@ -159,6 +159,7 @@ def test_head_sha_and_checks_are_tied_to_that_sha():
         f"/repos/{REPO}/commits/{HEAD}/check-runs?per_page=100": runs(
             "success", "skipped"
         ),
+        f"/repos/{REPO}/commits/{HEAD}/pulls?per_page=100": [{"number": 6821}],
     }
     verdict, _ = verify(
         routes, f"PR #6821 head {HEAD[:7]} has checks passing at {HEAD}"
@@ -276,7 +277,7 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
             None,
             "acceptance gate",
         ),
-        ("Issue #1 is blocked on #2", None, "blocked"),
+        ("Issue #1 is blocked on #2", None, "acceptance gate"),
         ("PR #1 is ready for review", None, "ready"),
         ("PR #1 is approved", None, "approved"),
         ("Run 1234567 failed", None, "workflow run or job"),
@@ -410,7 +411,7 @@ def test_one_reference_at_a_sha_and_repeated_identical_references_stay_supported
         content=None,
         default_repo=REPO,
     )
-    assert predicates == [Predicate("checks", REPO, None, "success", sha="a24da077")]
+    assert predicates == [Predicate("checks", REPO, 6806, "success", sha="a24da077")]
     for title, expected in [
         ("PR #1 and PR #1 are open", Predicate("state", REPO, 1, "open")),
         (
@@ -420,7 +421,7 @@ def test_one_reference_at_a_sha_and_repeated_identical_references_stay_supported
         ("PR #1 and PR #1 checks are passing", Predicate("checks", REPO, 1, "success")),
         (
             f"PR #1 and PR #1 checks are passing at {HEAD}",
-            Predicate("checks", REPO, None, "success", sha=HEAD),
+            Predicate("checks", REPO, 1, "success", sha=HEAD),
         ),
     ]:
         assert extract_predicates(title=title, content=None, default_repo=REPO) == [
@@ -438,6 +439,111 @@ def test_shared_responses_spend_one_request_and_budget_stops_the_run():
         verifier.verify(title="Issue #2 is open", content=None)
     assert fake.calls == [f"/repos/{REPO}/issues/1"]
     assert verifier.requests == 1
+
+
+OPERATIONAL_GATES = [
+    "Live pilot is still required before enabling.",
+    "Still needs a live pilot.",
+    "Operational validation is outstanding.",
+    "Must verify after deploy.",
+    "Blocked on Joe's approval.",
+    "Waiting for the rollout.",
+    "TODO: run the pilot.",
+    "Follow-up: enable the CronWorkflow.",
+    "Deployment has not been verified yet.",
+]
+
+
+@pytest.mark.parametrize("gate", OPERATIONAL_GATES)
+@pytest.mark.parametrize("in_title", [False, True])
+def test_operational_gate_prose_cannot_be_cleared_by_a_merge(gate, in_title):
+    title, content = (
+        (gate, "PR #6821 is merged.") if in_title else ("PR #6821 is merged.", gate)
+    )
+    verdict, fake = verify({}, title, content)
+    assert verdict.status == "unsupported"
+    assert "acceptance gate" in verdict.reason
+    assert fake.calls == []
+
+
+def test_operational_gate_in_provenance_does_not_change_the_claim():
+    routes = {f"/repos/{REPO}/issues/1": issue(1)}
+    verdict, _ = verify(routes, "PR #1 is open.", "## Evidence\nTODO: run pilot.")
+    assert verdict.status == "success"
+
+
+def test_failed_check_run_outranks_an_incomplete_run():
+    body = runs("failure", None)
+    body["check_runs"][1]["status"] = "in_progress"
+    routes = {
+        f"/repos/{REPO}/commits/{HEAD}/check-runs?per_page=100": body,
+        status_path(HEAD): combined(),
+    }
+    verdict, _ = verify(routes, f"Checks are pending at {HEAD}")
+    assert verdict.status == "failed"
+    assert "are failure, not pending" in verdict.reason
+    verdict, _ = verify(routes, f"Checks are failing at {HEAD}")
+    assert verdict.status == "success"
+
+
+def association_routes():
+    return {
+        f"/repos/{REPO}/issues/1": issue(1, pull=True),
+        f"/repos/{REPO}/pulls/1": pull(1),
+        f"/repos/{REPO}/commits/{HEAD}/pulls?per_page=100": [{"number": 1}],
+        f"/repos/{REPO}/commits/{HEAD}/check-runs?per_page=100": runs("success"),
+        status_path(HEAD): combined(),
+    }
+
+
+def test_checks_sha_must_be_associated_with_the_named_pr_and_share_budget():
+    fake = Fake(association_routes())
+    verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), max_requests=5)
+    title = f"PR #1 checks passed at {HEAD}"
+    first = verifier.verify(title=title, content=None)
+    assert first.status == "success"
+    assert verifier.requests == 5
+    assert verifier.verify(title=title, content=None) == first
+    assert len(fake.calls) == 5
+    with pytest.raises(BudgetExhausted):
+        verifier.verify(title="Issue #2 is open", content=None)
+
+
+@pytest.mark.parametrize(
+    ("path", "response", "expected"),
+    [
+        ("issues/1", issue(1), "unsupported"),
+        ("issues/1", GitHubResponse(404, {}), "failed"),
+        ("pulls/1", GitHubResponse(404, {}), "failed"),
+        (f"commits/{HEAD}/pulls?per_page=100", [], "failed"),
+        (f"commits/{HEAD}/pulls?per_page=100", [{"number": 2}], "failed"),
+        (f"commits/{HEAD}/pulls?per_page=100", {}, "unavailable"),
+        (f"commits/{HEAD}/pulls?per_page=100", [None], "unavailable"),
+        (f"commits/{HEAD}/pulls?per_page=100", [{}], "unavailable"),
+        (f"commits/{HEAD}/pulls?per_page=100", [{"number": True}], "unavailable"),
+        (f"commits/{HEAD}/pulls?per_page=100", GitHubResponse(503, {}), "unavailable"),
+        (
+            f"commits/{HEAD}/pulls?per_page=100",
+            SourceUnavailable("ConnectError"),
+            "unavailable",
+        ),
+        (f"commits/{HEAD}/pulls?per_page=100", [{"number": 2}] * 100, "unsupported"),
+    ],
+)
+def test_unestablished_pr_sha_relationship_cannot_verify(path, response, expected):
+    routes = {**association_routes(), f"/repos/{REPO}/{path}": response}
+    verdict, fake = verify(routes, f"PR #1 checks passed at {HEAD}")
+    assert verdict.status == expected
+    assert not any("check-runs" in path for path in fake.calls)
+
+
+def test_sha_association_request_obeys_the_shared_budget():
+    fake = Fake(association_routes())
+    verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), max_requests=2)
+    with pytest.raises(BudgetExhausted):
+        verifier.verify(title=f"PR #1 checks passed at {HEAD}", content=None)
+    assert verifier.requests == 2
+    assert len(fake.calls) == 2
 
 
 def test_evidence_time_is_the_oldest_response_used():
