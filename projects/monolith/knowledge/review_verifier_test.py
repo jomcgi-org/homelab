@@ -463,6 +463,20 @@ OPERATIONAL_GATES = [
     "We are required to conduct a pilot.",
     "The deployment verification is mandatory.",
     "We need to verify after deploy.",
+    "We need to run the bounded post-deploy live pilot.",
+    "The pilot needs to be run.",
+    "The bounded pilot still needs to be run.",
+    "Before enabling, we must finish a bounded pilot.",
+    "We are required to complete the scoped production verification.",
+    "Joe's final sign-off is necessary before enabling.",
+    "The pilot has yet to be conducted.",
+    "The pilot has to be run before enabling.",
+    "We are obliged to conduct a scoped live pilot.",
+    "The production verification is compulsory.",
+    "We still owe Joe a scoped pilot.",
+    "A bounded pilot remains to be completed.",
+    "The rollout requires a bounded pilot.",
+    "We need Joe's approval.",
 ]
 
 

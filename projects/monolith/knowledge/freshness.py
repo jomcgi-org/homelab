@@ -34,16 +34,21 @@ _PROVENANCE_SECTION = re.compile(
 # Outstanding work is volatile even when it names no GitHub instance. Keep
 # this vocabulary shared with the verifier: lifecycle evidence cannot clear it.
 _OUTSTANDING_GATE = re.compile(
-    r"\b(still[ \t]+(?:required|needs?|needed)|outstanding|blocked[ \t]+on|"
+    # Obligation and operational subject may appear in either order, with
+    # arbitrary modifiers or passive wording between them. Do not depend on
+    # an action verb being immediately followed by one recognized noun.
+    r"\A(?=[^.!?;\n]*\b(?:pilots?|validation|verification|approval|rollout|"
+    r"deployment|deploy|CronWorkflow|sign[- ]off|enablement)\b)"
+    r"(?=[^.!?;\n]*\b(?:needs?[ \t]+to|(?:have|has|ought)[ \t]+to|must|"
+    r"shall|should|required[ \t]+to|obliged[ \t]+to|necessary|mandatory|"
+    r"compulsory|requirement|owes?|awaiting|remains?|remaining|yet[ \t]+to)\b)"
+    r"|\b(still[ \t]+(?:required|needs?|needed)|outstanding|blocked[ \t]+on|"
     r"waiting[ \t]+(?:for|on)|must[ \t]+verify|"
-    r"(?:needs?|requires?)[ \t]+(?:(?:a|an|the|live|operational)[ \t]+)*"
-    r"(?:pilot|validation|verification|approval|rollout)|"
-    r"(?:needs?[ \t]+to|must|required[ \t]+to)[ \t]+"
-    r"(?:run|perform|complete|conduct|verify|finish|execute|enable)[ \t]+"
-    r"(?:(?:a|an|the|live|operational|deployment)[ \t]+)*"
-    r"(?:pilot|validation|verification|approval|rollout|CronWorkflow)|"
-    r"(?:needs?[ \t]+to|must|required[ \t]+to)[ \t]+verify[ \t]+"
-    r"(?:after|following)[ \t]+(?:deploy|deployment|rollout)|"
+    # A direct needs/requires object can have modifiers, but cannot jump a
+    # conjunction or a durable rule/gate object to a later operational noun.
+    r"(?:needs?|requires?)[ \t]+"
+    r"(?:(?!(?:and|or|but|gate|rule|policy)\b)[\w'-]+[ \t]+)*"
+    r"(?:pilots?|validation|verification|approval|rollout)|"
     r"(?:pilot|validation|approval|verification)[^.!?;\n]*\b"
     r"(?:required|needed|necessary|mandatory)|"
     r"(?:has|have)[ \t]+not[ \t]+been[ \t]+verified|not[ \t]+yet[ \t]+verified)\b"
