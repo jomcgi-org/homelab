@@ -9,7 +9,7 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use oominf_cuda::{Gpu, Slice};
+use oominf_cuda::{Gpu, Slice, Workspace};
 use oominf_models_qwen::moe::Moe;
 use oominf_models_qwen::{Dims, ExpertSource, NoProbe};
 
@@ -85,16 +85,35 @@ fn moe_fused_vs_reference() -> Result<()> {
     for (t, iters) in [(1usize, 50usize), (73, 10), (2048, 3)] {
         let x = gpu.upload_f32(&activations(t * d.hidden, 7 + t as u64))?;
         let mut scratch = gpu.upload_u16(&vec![0u16; t * d.hidden])?;
+        let mut ws = Workspace::new();
         let mut outs = Vec::new();
         for reference in [false, true] {
             moe.set_reference(reference);
             // Warm up, then time.
-            let out = moe.forward(&gpu, &d, &x, t, &mut src, &mut scratch, &mut NoProbe)?;
+            let out = moe.forward(
+                &gpu,
+                &d,
+                &mut ws,
+                &x,
+                t,
+                &mut src,
+                &mut scratch,
+                &mut NoProbe,
+            )?;
             gpu.sync()?;
             let n = if reference { iters.min(3) } else { iters };
             let start = Instant::now();
             for _ in 0..n {
-                moe.forward(&gpu, &d, &x, t, &mut src, &mut scratch, &mut NoProbe)?;
+                moe.forward(
+                    &gpu,
+                    &d,
+                    &mut ws,
+                    &x,
+                    t,
+                    &mut src,
+                    &mut scratch,
+                    &mut NoProbe,
+                )?;
             }
             gpu.sync()?;
             let ms = start.elapsed().as_secs_f64() * 1e3 / n as f64;

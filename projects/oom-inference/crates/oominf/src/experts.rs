@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use oominf_cuda::Gpu;
 use oominf_format::Model;
-use oominf_models_qwen::{DiskExperts, ExpertSource};
+use oominf_models_qwen::{DiskExperts, ExpertSource, Staged};
 use oominf_tiers::{TierStats, TieredExperts, policy};
 
 #[derive(clap::Args, Debug, Clone)]
@@ -14,12 +14,21 @@ pub struct ExpertArgs {
     /// (read and upload every record, no cache).
     #[arg(long, default_value = "tiered")]
     pub experts: String,
-    /// VRAM budget for cached expert records.
-    #[arg(long, default_value_t = 6.0)]
-    pub vram_expert_gib: f64,
-    /// Pinned host-memory budget for cached expert records.
-    #[arg(long, default_value_t = 24.0)]
-    pub host_expert_gib: f64,
+    /// VRAM budget for cached expert records (default: free VRAM when the tiers are
+    /// built, minus `--vram-reserve-gib`; build them after allocating sequence state).
+    #[arg(long)]
+    pub vram_expert_gib: Option<f64>,
+    /// VRAM left free for activations and later allocations when sizing automatically.
+    #[arg(long, default_value_t = 2.0)]
+    pub vram_reserve_gib: f64,
+    /// Pinned host-memory budget for cached expert records (default: available RAM
+    /// minus `--host-reserve-gib`).
+    #[arg(long)]
+    pub host_expert_gib: Option<f64>,
+    /// RAM left available (page cache for PLE rows, the OS, other processes) when
+    /// sizing automatically.
+    #[arg(long, default_value_t = 12.0)]
+    pub host_reserve_gib: f64,
     /// VRAM tier policy: `lru`, `lfu` or `lrfu:<half-life in expert accesses>`.
     #[arg(long, default_value = "lrfu:7680")]
     pub vram_policy: String,
@@ -37,14 +46,24 @@ impl Experts {
     pub fn build(args: &ExpertArgs, gpu: &Gpu, model: &Arc<Model>) -> Result<Self> {
         Ok(match args.experts.as_str() {
             "disk" => Experts::Disk(DiskExperts::new(model.clone())),
-            "tiered" => Experts::Tiered(Box::new(TieredExperts::new(
-                gpu,
-                model.clone(),
-                TieredExperts::slots_for(model, args.vram_expert_gib),
-                TieredExperts::slots_for(model, args.host_expert_gib),
-                policy::parse(&args.vram_policy)?,
-                policy::parse(&args.host_policy)?,
-            )?)),
+            "tiered" => {
+                let vram = match args.vram_expert_gib {
+                    Some(g) => g,
+                    None => TieredExperts::free_vram_gib(gpu, args.vram_reserve_gib)?,
+                };
+                let host = match args.host_expert_gib {
+                    Some(g) => g,
+                    None => TieredExperts::available_host_gib(args.host_reserve_gib)?,
+                };
+                Experts::Tiered(Box::new(TieredExperts::new(
+                    gpu,
+                    model.clone(),
+                    TieredExperts::slots_for(model, vram),
+                    TieredExperts::slots_for(model, host),
+                    policy::parse(&args.vram_policy)?,
+                    policy::parse(&args.host_policy)?,
+                )?))
+            }
             other => anyhow::bail!("unknown --experts {other:?} (tiered, disk)"),
         })
     }
@@ -69,6 +88,20 @@ impl ExpertSource for Experts {
         match self {
             Experts::Disk(d) => d.fetch(gpu, layer, experts),
             Experts::Tiered(t) => t.fetch(gpu, layer, experts),
+        }
+    }
+
+    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
+        match self {
+            Experts::Disk(d) => d.begin_fetch(gpu, layer, experts),
+            Experts::Tiered(t) => t.begin_fetch(gpu, layer, experts),
+        }
+    }
+
+    fn finish_fetch(&mut self, gpu: &Gpu) -> Result<()> {
+        match self {
+            Experts::Disk(d) => d.finish_fetch(gpu),
+            Experts::Tiered(t) => t.finish_fetch(gpu),
         }
     }
 }

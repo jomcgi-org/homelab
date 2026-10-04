@@ -1,30 +1,40 @@
 //! `TieredExperts`: VRAM slots over a pinned host tier over the model's
 //! `experts.bin` (O_DIRECT via io_uring).
 //!
+//! A fetch has two phases. `begin_fetch` places every requested record, hands out
+//! the addresses of those already in VRAM, enqueues host-tier hits on a dedicated
+//! copy stream and submits disk reads for the rest, then returns, so the caller can
+//! compute with the resident experts meanwhile. `finish_fetch` reaps the disk reads,
+//! enqueues their copies as each lands, and makes the compute stream wait for the
+//! copy stream.
+//!
 //! How the invariants of `specs/ExpertTiering.tla` hold here:
 //! - **KernelReadsValid** (in-flight work reads fully staged memory of its expert):
-//!   all copies and kernels run on one stream. A slot's refill copy is enqueued after
-//!   every kernel that read its previous contents, and before the kernels that read
-//!   the new contents, so stream order serialises them. Keys requested by the
-//!   current `fetch` are pinned against eviction while it places the others.
+//!   before a fetch's first copy, the copy stream waits on an event recorded on the
+//!   compute stream, so a slot is refilled only after every kernel enqueued earlier
+//!   (including those reading its previous contents) has run. Kernels that read the
+//!   new contents are enqueued after `finish_fetch` makes the compute stream wait for
+//!   the copies. Records requested by the current fetch are pinned against eviction
+//!   while the others are placed, and resident records handed out early are never
+//!   refilled by the same fetch.
 //! - **CopySourceValid** (a copy's host source keeps its expert until it completes):
-//!   every host slot records the fetch sequence number of the last copy that read
-//!   it, and each fetch records a CUDA event. Before a disk read overwrites a host
-//!   slot, the tier waits for that slot's last copy event.
-//! - **TableConsistent**: the host-side slot table (`SlotCache`) is updated before
-//!   the copy is enqueued, but nothing on the device reads a slot except the kernels
-//!   enqueued after the copy, so no consumer can observe the gap. A device-side slot
-//!   table for CUDA graphs must be written on the stream after the copy.
+//!   every host slot records the sequence number of the last fetch whose copies read
+//!   it, and each fetch with copies records an event on the copy stream. Before a disk
+//!   read overwrites a host slot, the tier waits for that slot's last copy event.
+//! - **TableConsistent**: the host-side slot table (`SlotCache`) is updated before the
+//!   copy is enqueued, but nothing on the device reads a slot except kernels ordered
+//!   after the copy, so no consumer can observe the gap. A device-side slot table for
+//!   CUDA graphs must be written on the compute stream after it waits for the copies.
 //! - **NoDuplicates**: `SlotCache` maps each key to at most one slot per tier.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use cudarc::driver::{CudaEvent, sys};
+use cudarc::driver::{CudaEvent, CudaStream, sys};
 use oominf_cuda::{Gpu, Slice};
 use oominf_format::Model;
-use oominf_models_qwen::ExpertSource;
+use oominf_models_qwen::{ExpertSource, Staged};
 
 use crate::cache::{Place, SlotCache};
 use crate::host::{DirectReader, PinnedArena, ReadJob};
@@ -50,6 +60,8 @@ impl std::ops::Sub for TierStats {
     }
 }
 
+const GIB: f64 = (1u64 << 30) as f64;
+
 pub struct TieredExperts {
     model: Arc<Model>,
     num_experts: u32,
@@ -61,9 +73,14 @@ pub struct TieredExperts {
     host_arena: PinnedArena,
     /// Fetch sequence number of the last device copy that read each host slot.
     host_last_copy: Vec<u64>,
-    /// Events of fetches whose copies may still be pending, oldest first.
+    /// Copy-stream events of fetches whose copies may still be pending, oldest first.
     pending: VecDeque<(u64, CudaEvent)>,
+    copy_stream: Arc<CudaStream>,
     reader: DirectReader,
+    /// Disk reads of the open fetch: (host slot, VRAM slot, key) per read tag.
+    reads: Vec<(usize, usize, u32)>,
+    /// The open fetch enqueued copies that the compute stream has not waited for.
+    open: bool,
     seq: u64,
     pub stats: TierStats,
 }
@@ -107,7 +124,10 @@ impl TieredExperts {
             host_last_copy: vec![0; host_slots],
             host_arena,
             pending: VecDeque::new(),
+            copy_stream: gpu.ctx.new_stream()?,
             reader,
+            reads: Vec::new(),
+            open: false,
             seq: 0,
             stats: TierStats::default(),
             model,
@@ -122,17 +142,34 @@ impl TieredExperts {
             .first()
             .map(|g| g.schema.stride)
             .unwrap_or(1);
-        ((gib * (1u64 << 30) as f64) / stride as f64) as usize
+        ((gib * GIB) / stride as f64) as usize
+    }
+
+    /// Free device memory now, minus `reserve_gib`, in GiB (at least 0).
+    pub fn free_vram_gib(gpu: &Gpu, reserve_gib: f64) -> Result<f64> {
+        let (free, _) = gpu.ctx.mem_get_info()?;
+        Ok((free as f64 / GIB - reserve_gib).max(0.0))
+    }
+
+    /// `MemAvailable` from `/proc/meminfo`, minus `reserve_gib`, in GiB (at least 0).
+    pub fn available_host_gib(reserve_gib: f64) -> Result<f64> {
+        let info = std::fs::read_to_string("/proc/meminfo")?;
+        let kib: f64 = info
+            .lines()
+            .find_map(|l| l.strip_prefix("MemAvailable:"))
+            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+            .context("MemAvailable missing from /proc/meminfo")?;
+        Ok((kib / (1u64 << 20) as f64 - reserve_gib).max(0.0))
     }
 
     pub fn describe(&self) -> String {
         format!(
             "tiered experts: VRAM {} slots ({:.1} GiB, {}), host {} slots ({:.1} GiB pinned, {})",
             self.vram.capacity(),
-            (self.vram_arena.len() as f64) / (1u64 << 30) as f64,
+            self.vram_arena.len() as f64 / GIB,
             self.vram.policy_name(),
             self.host.capacity(),
-            (self.host.capacity() * self.stride) as f64 / (1u64 << 30) as f64,
+            (self.host.capacity() * self.stride) as f64 / GIB,
             self.host.policy_name()
         )
     }
@@ -149,31 +186,55 @@ impl TieredExperts {
         }
         Ok(())
     }
+
+    /// Enqueues the copy of host slot `host_slot` into VRAM slot `vram_slot` on the
+    /// copy stream.
+    fn copy_to_vram(&mut self, host_slot: usize, vram_slot: usize) -> Result<()> {
+        enqueue_copy(
+            &self.copy_stream,
+            self.vram_base + (vram_slot * self.stride) as u64,
+            &self.host_arena,
+            host_slot,
+        )?;
+        self.host_last_copy[host_slot] = self.seq;
+        Ok(())
+    }
+
+    fn forget_reads(&mut self) {
+        for &(_, _, key) in &self.reads {
+            self.host.forget(key);
+            self.vram.forget(key);
+        }
+        self.reads.clear();
+    }
 }
 
-/// Enqueues the copy of host slot `host_slot` into VRAM slot `vram_slot`.
-fn copy_to_vram(
-    gpu: &Gpu,
-    vram_base: u64,
-    stride: usize,
-    host: &PinnedArena,
+/// Enqueues one record copy from a host slot to device address `dst` on `stream`.
+fn enqueue_copy(
+    stream: &CudaStream,
+    dst: u64,
+    arena: &PinnedArena,
     host_slot: usize,
-    vram_slot: usize,
 ) -> Result<()> {
-    let dst = vram_base + (vram_slot * stride) as u64;
-    let src = host.slot(host_slot);
-    // SAFETY: dst is inside the VRAM arena; src is a registered host slot that is not
-    // overwritten until this copy's fetch event completes (CopySourceValid).
+    // SAFETY: dst is a slot of the VRAM arena that no kernel ordered before the copy
+    // reads (KernelReadsValid); the source is a registered host slot that is not
+    // overwritten until this fetch's copy event completes (CopySourceValid).
     unsafe {
-        cudarc::driver::result::memcpy_htod_async(dst, src, gpu.stream.cu_stream())?;
+        cudarc::driver::result::memcpy_htod_async(dst, arena.slot(host_slot), stream.cu_stream())?;
     }
     Ok(())
 }
 
 impl ExpertSource for TieredExperts {
     fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
+        let staged = self.begin_fetch(gpu, layer, experts)?;
+        self.finish_fetch(gpu)?;
+        Ok(staged.addrs)
+    }
+
+    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
+        self.finish_fetch(gpu)?;
         self.seq += 1;
-        let seq = self.seq;
         let keys: Vec<u32> = experts
             .iter()
             .map(|&e| {
@@ -186,6 +247,7 @@ impl ExpertSource for TieredExperts {
 
         // VRAM placement.
         let mut addrs = Vec::with_capacity(keys.len());
+        let mut ready = Vec::with_capacity(keys.len());
         let mut fills = Vec::new(); // (key, vram slot)
         for &key in &keys {
             self.stats.requests += 1;
@@ -203,13 +265,23 @@ impl ExpertSource for TieredExperts {
                     s
                 }
             };
+            ready.push(matches!(place, Place::Hit(_)));
             addrs.push(self.vram_base + (slot * self.stride) as u64);
         }
+        if fills.is_empty() {
+            return Ok(Staged { addrs, ready });
+        }
+
+        // Refills wait for every kernel enqueued so far (KernelReadsValid).
+        let after = gpu
+            .stream
+            .record_event(Some(sys::CUevent_flags::CU_EVENT_DISABLE_TIMING))?;
+        self.copy_stream.wait(&after)?;
+        self.open = true;
 
         // Host placement for the VRAM misses: host hits copy now, the rest read from disk.
         let mut jobs = Vec::new();
-        let mut targets = Vec::new(); // job tag -> (host slot, vram slot)
-        for &(key, vslot) in &fills {
+        for (key, vslot) in fills {
             let place = self
                 .host
                 .place(key, &pinned)
@@ -217,15 +289,7 @@ impl ExpertSource for TieredExperts {
             match place {
                 Place::Hit(hs) => {
                     self.stats.host_hits += 1;
-                    copy_to_vram(
-                        gpu,
-                        self.vram_base,
-                        self.stride,
-                        &self.host_arena,
-                        hs,
-                        vslot,
-                    )?;
-                    self.host_last_copy[hs] = seq;
+                    self.copy_to_vram(hs, vslot)?;
                 }
                 Place::Miss(hs, _) => {
                     self.stats.disk_reads += 1;
@@ -236,42 +300,58 @@ impl ExpertSource for TieredExperts {
                         offset,
                         dst: self.host_arena.slot_ptr(hs),
                         len: stride as usize,
-                        tag: targets.len(),
+                        tag: self.reads.len(),
                     });
-                    targets.push((hs, vslot, key));
+                    self.reads.push((hs, vslot, key));
                 }
             }
         }
-        if !jobs.is_empty() {
-            let result = self.reader.read_all(&jobs, |tag| {
-                let (hs, vs, _) = targets[tag];
-                copy_to_vram(gpu, self.vram_base, self.stride, &self.host_arena, hs, vs)?;
-                self.host_last_copy[hs] = seq;
-                Ok(())
-            });
-            if let Err(e) = result {
-                for &(_, _, key) in &targets {
-                    self.host.forget(key);
-                    self.vram.forget(key);
-                }
-                return Err(e);
-            }
+        if !jobs.is_empty()
+            && let Err(e) = self.reader.submit(jobs)
+        {
+            self.forget_reads();
+            return Err(e);
         }
-        if !fills.is_empty() {
-            let ev = gpu
-                .stream
-                .record_event(Some(sys::CUevent_flags::CU_EVENT_DISABLE_TIMING))?;
-            self.pending.push_back((seq, ev));
+        Ok(Staged { addrs, ready })
+    }
+
+    fn finish_fetch(&mut self, gpu: &Gpu) -> Result<()> {
+        if !self.open {
+            return Ok(());
         }
+        self.open = false;
+        let reads = std::mem::take(&mut self.reads);
+        let (seq, base, stride) = (self.seq, self.vram_base, self.stride);
+        let (stream, arena, last) = (
+            &self.copy_stream,
+            &self.host_arena,
+            &mut self.host_last_copy,
+        );
+        let drained = self.reader.drain(|tag| {
+            let (hs, vs, _) = reads[tag];
+            enqueue_copy(stream, base + (vs * stride) as u64, arena, hs)?;
+            last[hs] = seq;
+            Ok(())
+        });
+        if let Err(e) = drained {
+            self.reads = reads;
+            self.forget_reads();
+            return Err(e);
+        }
+        let done = self
+            .copy_stream
+            .record_event(Some(sys::CUevent_flags::CU_EVENT_DISABLE_TIMING))?;
+        gpu.stream.wait(&done)?;
+        self.pending.push_back((self.seq, done));
         // Drop completed events so the queue stays short.
         while self.pending.len() > 1 {
-            let done = unsafe { sys::cuEventQuery(self.pending[0].1.cu_event()) }
+            let complete = unsafe { sys::cuEventQuery(self.pending[0].1.cu_event()) }
                 == sys::cudaError_enum::CUDA_SUCCESS;
-            if !done {
+            if !complete {
                 break;
             }
             self.pending.pop_front();
         }
-        Ok(addrs)
+        Ok(())
     }
 }

@@ -1,5 +1,5 @@
-//! `oominf bench`: greedy decode with a time breakdown (expert loading vs the rest),
-//! the baseline every performance change is measured against.
+//! `oominf bench`: greedy decode with tier statistics and the host time spent in the
+//! expert source, the baseline every performance change is measured against.
 //!
 //! Decode runs in two equal phases: the first starts from cold expert tiers (they
 //! fill as it goes), the second measures the warmed steady state.
@@ -10,13 +10,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use oominf_cuda::{Buf, Gpu};
-use oominf_models_qwen::{Dims, ExpertSource, NoProbe, QwenModel, SeqState};
+use oominf_models_qwen::{Dims, ExpertSource, NoProbe, QwenModel, SeqState, Staged};
 use oominf_tiers::TierStats;
 
 use crate::chat::Chat;
 use crate::experts::{ExpertArgs, Experts};
 
-/// Wraps an expert source and accounts the time it spends.
+/// Wraps an expert source and accounts the host time spent inside it (waiting for
+/// disk reads and enqueueing copies). Copies and kernels overlap on the device, so
+/// the end-to-end ms/token is the number that matters.
 struct Timed {
     inner: Experts,
     time: Duration,
@@ -25,13 +27,26 @@ struct Timed {
 
 impl ExpertSource for Timed {
     fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
-        gpu.sync()?;
         let t = Instant::now();
         let r = self.inner.fetch(gpu, layer, experts)?;
-        gpu.sync()?;
         self.time += t.elapsed();
         self.calls += experts.len();
         Ok(r)
+    }
+
+    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
+        let t = Instant::now();
+        let r = self.inner.begin_fetch(gpu, layer, experts)?;
+        self.time += t.elapsed();
+        self.calls += experts.len();
+        Ok(r)
+    }
+
+    fn finish_fetch(&mut self, gpu: &Gpu) -> Result<()> {
+        let t = Instant::now();
+        self.inner.finish_fetch(gpu)?;
+        self.time += t.elapsed();
+        Ok(())
     }
 }
 
@@ -85,10 +100,9 @@ fn decode_phase(
         _ => None,
     };
     println!(
-        "{name}: {tokens} tokens, {per:.1} ms/token ({:.2} tok/s); expert loading {load:.1} ms/token ({} records/token), everything else {:.1} ms/token{}",
+        "{name}: {tokens} tokens, {per:.1} ms/token ({:.2} tok/s); host time in expert source {load:.1} ms/token ({} records/token){}",
         1e3 / per,
         experts.calls / tokens,
-        per - load,
         tier_line(stats, tokens)
     );
     Ok(())
@@ -101,6 +115,8 @@ pub fn run(model_dir: &Path, prompt: &str, tokens: usize, expert_args: &ExpertAr
     let dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
     let gpu = Gpu::new(0)?;
     let qwen = QwenModel::load(&gpu, &model, dims, None)?;
+    // Sequence state first, so automatic tier sizing sees the VRAM that is left.
+    let mut state = qwen.new_state(&gpu, ids.len() + 2 * tokens + 1)?;
     let t = Instant::now();
     let inner = Experts::build(expert_args, &gpu, &model)?;
     println!(
@@ -113,12 +129,11 @@ pub fn run(model_dir: &Path, prompt: &str, tokens: usize, expert_args: &ExpertAr
         time: Duration::ZERO,
         calls: 0,
     };
-    let mut state = qwen.new_state(&gpu, ids.len() + 2 * tokens + 1)?;
     let t = Instant::now();
     let mut logits = qwen.forward(&gpu, &ids, &mut state, &mut experts, &mut NoProbe, true)?;
     gpu.sync()?;
     println!(
-        "prefill {} tokens: {:.2}s (expert loading {:.2}s over {} records)",
+        "prefill {} tokens: {:.2}s (host time in expert source {:.2}s over {} records)",
         ids.len(),
         t.elapsed().as_secs_f64(),
         experts.time.as_secs_f64(),
@@ -142,5 +157,22 @@ pub fn run(model_dir: &Path, prompt: &str, tokens: usize, expert_args: &ExpertAr
         &mut logits,
         tokens,
     )?;
+    // The same prompt again on a fresh sequence: prefill from warm tiers.
+    drop(state);
+    let mut state = qwen.new_state(&gpu, ids.len() + 1)?;
+    let before = experts.inner.stats();
+    let t = Instant::now();
+    qwen.forward(&gpu, &ids, &mut state, &mut experts, &mut NoProbe, true)?;
+    gpu.sync()?;
+    let stats = match (experts.inner.stats(), before) {
+        (Some(a), Some(b)) => Some(a - b),
+        _ => None,
+    };
+    println!(
+        "prefill {} tokens (warm tiers): {:.2}s{}",
+        ids.len(),
+        t.elapsed().as_secs_f64(),
+        tier_line(stats, 1).replace("per token", "in total")
+    );
     Ok(())
 }
