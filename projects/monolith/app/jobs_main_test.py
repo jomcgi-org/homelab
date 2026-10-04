@@ -859,6 +859,46 @@ def test_knowledge_clone_job_defaults_to_dry_run():
             merge.assert_not_called()
 
 
+def test_knowledge_review_admission_job_bounds_and_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "job-token")
+    seen = {}
+
+    def run(session, *, verifier, clock, limits, apply):
+        seen.update(limits=limits, apply=apply, requests=verifier._remaining)
+        return {"dry_run": not apply, "candidates": 0}
+
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session"),
+        mock.patch("knowledge.review_admission.run_admission", side_effect=run),
+    ):
+        result = runner.invoke(jobs_main.app, ["knowledge-review-admission"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {"dry_run": True, "candidates": 0}
+        assert seen["apply"] is False
+        assert (seen["limits"].batch, seen["limits"].max_requests) == (20, 60)
+        assert seen["requests"] == 60
+        result = runner.invoke(
+            jobs_main.app,
+            [
+                "knowledge-review-admission",
+                "--apply",
+                "--batch-size",
+                "5",
+                "--max-requests",
+                "7",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert seen["apply"] is True and seen["requests"] == 7
+        for invalid in (["--batch-size", "0"], ["--max-requests", "501"]):
+            result = runner.invoke(
+                jobs_main.app, ["knowledge-review-admission", *invalid]
+            )
+            assert result.exit_code == 2
+
+
 def test_post_internal_gives_up_when_budget_leaves_no_room_to_retry(monkeypatch):
     monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
     monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)

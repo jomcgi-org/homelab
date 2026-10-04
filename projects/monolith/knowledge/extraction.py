@@ -24,7 +24,14 @@ from sqlmodel import Session, select
 from core.github import GITHUB_REPO
 from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput, SCOPE_PATTERN
+from knowledge.models import (
+    AtomRawProvenance,
+    Dispute,
+    Note,
+    RawInput,
+    SCOPE_PATTERN,
+    bump_revision,
+)
 from knowledge.recall import _get_repo_scope, render_related_notes
 from knowledge.repo_diff_source import (
     REPO_DIFF_PATCH_CAP,
@@ -1537,6 +1544,9 @@ def apply_extraction(
                 )
                 # Retelling adds provenance and confidence, never a new lease
                 # or a replacement for the original historical observation.
+                # It is still newer evidence: bump the revision so a review
+                # that read the note before this retelling cannot renew it.
+                bump_revision(existing_note)
                 session.add(existing_note)
                 _, unknown = link_subjects(
                     session,
@@ -1630,6 +1640,7 @@ def apply_extraction(
                     .values(
                         valid_until=valid_until,
                         verification_state="invalidated",
+                        revision=Note.revision + 1,
                     )
                 )
 

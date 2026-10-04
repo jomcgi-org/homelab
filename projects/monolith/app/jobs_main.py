@@ -505,6 +505,46 @@ def knowledge_review_backfill(
     typer.echo(json.dumps(result))
 
 
+@app.command("knowledge-review-admission")
+def knowledge_review_admission(
+    apply: bool = typer.Option(
+        False, "--apply", help="Verify and renew; default only counts candidates."
+    ),
+    batch_size: int = typer.Option(20, min=1, max=100),
+    max_requests: int = typer.Option(60, min=1, max=500),
+    deadline_seconds: float = typer.Option(240.0, min=1.0),
+) -> None:
+    """Review due volatile facts against GitHub, within request and time bounds."""
+    import httpx
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from core.github import GITHUB_REPO
+    from knowledge.review_admission import Limits, run_admission
+    from knowledge.review_verifier import GitHubVerifier, httpx_fetcher
+
+    def clock() -> datetime:
+        return datetime.now(timezone.utc)
+
+    token = os.environ.get("GITHUB_API_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+        verifier = GitHubVerifier(
+            httpx_fetcher(client, token=token),
+            repo=GITHUB_REPO,
+            clock=clock,
+            max_requests=max_requests,
+        )
+        with Session(get_engine()) as session:
+            result = run_admission(
+                session,
+                verifier=verifier,
+                clock=clock,
+                limits=Limits(batch_size, max_requests, deadline_seconds),
+                apply=apply,
+            )
+    typer.echo(json.dumps(result))
+
+
 # Entity spine rollout is manual after deployment. The supported path is the
 # suspended seed-entities CronWorkflow, followed by backfill-entities. Submit
 # each with `argo submit --from cronworkflow/<name> -n monolith-workflows`.

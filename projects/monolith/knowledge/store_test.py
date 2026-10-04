@@ -9,6 +9,7 @@ from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from knowledge.entities import Entity, NoteEntity
+from knowledge.freshness import utc
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
 from knowledge.models import Chunk, Note, NoteLink
@@ -925,10 +926,33 @@ class TestGetNoteById:
             "last_reviewed_at": None,
             "freshness": "unknown",
             "requires_authoritative_observation": False,
+            "last_review_outcome": None,
             "disputed": False,
             "provenance": [],
             "entities": [],
         }
+
+    def test_surfaces_why_a_due_fact_is_still_due(self, store):
+        from knowledge.freshness import record_outcome
+
+        _upsert(store, note_id="n1", path="n1.md", title="My Note", metadata=_meta())
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        record_outcome(
+            store.session,
+            note_id="n1",
+            revision=0,
+            status="unsupported",
+            reason="state 'ready' is not verifiable from GitHub",
+            now=now,
+        )
+        store.session.commit()
+        got = store.get_note_by_id("n1")["last_review_outcome"]
+        assert (got["status"], got["reason"], got["next_attempt_at"]) == (
+            "unsupported",
+            "state 'ready' is not verifiable from GitHub",
+            None,
+        )
+        assert utc(got["attempted_at"]) == now
 
     def test_returns_content_when_set(self, store):
         """ADR 006: get_note_by_id surfaces the authoritative body."""

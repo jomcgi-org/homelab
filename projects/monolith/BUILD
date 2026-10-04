@@ -5259,6 +5259,29 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_review_verifier_test",
+    srcs = ["knowledge/review_verifier_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "knowledge_review_admission_test",
+    srcs = ["knowledge/review_admission_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],
     imports = ["."],
