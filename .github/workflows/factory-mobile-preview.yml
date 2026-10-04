@@ -6,6 +6,8 @@ on:
     paths:
       - projects/monolith/frontend/**
       - projects/design-system/tokens/**
+      - projects/monolith/chart/templates/httproute-friends*.yaml
+      - projects/monolith/chart/templates/httproute-grimoire.yaml
       - .github/workflows/factory-mobile-preview.yml
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
@@ -47,7 +49,7 @@ jobs:
       - name: Install Chromium test runner
         run: |
           python3 -m venv /tmp/factory-browser
-          /tmp/factory-browser/bin/pip install playwright==1.63.0
+          /tmp/factory-browser/bin/pip install playwright==1.63.0 PyYAML==6.0.3
           /tmp/factory-browser/bin/playwright install --with-deps chromium
       - name: Check synthetic phone, text-resize, and desktop breakpoints
         run: |
@@ -55,6 +57,28 @@ jobs:
             --artifact projects/monolith/frontend/factory-fixture-preview \
             --output factory-preview-evidence \
             --expected-sha "$FACTORY_PREVIEW_SHA"
+      - name: Build production frontend and check friends asset redirects
+        run: |
+          python3 projects/monolith/knowledge/tools/gen_docs_manifest.py
+          pnpm --dir projects/monolith/frontend exec vite build
+          # Same pinned Helm archive and checksum as bazel/tools/tools.lock.json.
+          curl --fail --silent --show-error --location https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz -o /tmp/friends-helm.tar.gz
+          echo 'fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/friends-helm.tar.gz' | sha256sum --check
+          mkdir -p /tmp/friends-helm
+          tar -xzf /tmp/friends-helm.tar.gz -C /tmp/friends-helm
+          export HELM_BIN=/tmp/friends-helm/linux-amd64/helm
+          export PYTHON=/tmp/factory-browser/bin/python
+          # Reuse the exact Playwright driver and Chromium installed above.
+          export PLAYWRIGHT_MODULE="$($PYTHON -c 'import pathlib,playwright; print(pathlib.Path(playwright.__file__).parent / "driver/package/index.mjs")')"
+          node projects/monolith/frontend/scripts/check-friends-assets.mjs
+      - name: Upload friends asset network evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: friends-assets-evidence-${{ github.event.pull_request.head.sha }}
+          path: friends-assets-evidence/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload exact-commit screenshots, traces, and failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

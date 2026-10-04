@@ -13,6 +13,30 @@ spec:
   hostnames:
     - {{ .Values.cfIngress.friends.hostname | quote }}
   rules:
+    # Keep compiled assets on this SAME route and SecurityPolicy. The OIDC
+    # filter decrypts the app's cookies before JWT checks, including when both
+    # friends apps have sessions. Rewrite only the asset prefix for sirv.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /grimoire/_app
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /_app
+        # Browser caching is fine; an edge/shared cache must not bypass auth.
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Cloudflare-CDN-Cache-Control
+                value: no-store
+              - name: Cache-Control
+                value: private, no-cache
+      backendRefs:
+        - name: {{ include "monolith.fullname" . }}
+          port: {{ .Values.cfIngress.friends.servicePort | int }}
     # Only the Svelte BFF is reachable. Never expose the private API wholesale.
     - matches:
         - path:
