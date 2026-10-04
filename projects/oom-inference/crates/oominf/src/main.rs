@@ -1,5 +1,6 @@
 mod chat;
 mod check_layer;
+mod check_model;
 mod generate;
 
 use std::path::PathBuf;
@@ -39,6 +40,14 @@ enum Command {
     Verify { model: PathBuf },
     /// Summarise a converted model.
     Inspect { model: PathBuf },
+    /// Run the whole model on the GPU against the reference whole-model chain.
+    CheckModel {
+        #[arg(long)]
+        model: PathBuf,
+        /// Fixture directory of the chain (holds manifest.json, fp32/, bf16/).
+        #[arg(long)]
+        fixtures: PathBuf,
+    },
     /// Greedy-decode one chat turn (correctness tool).
     Generate {
         #[arg(long)]
@@ -151,6 +160,11 @@ fn main() -> Result<()> {
         } => {
             if !check_layer::run(&model, &fixtures, layer, &mode)? {
                 bail!("isolated stages over budget");
+            }
+        }
+        Command::CheckModel { model, fixtures } => {
+            if !check_model::run(&model, &fixtures)? {
+                bail!("logits less faithful than the reference's bf16 run");
             }
         }
         Command::Generate {

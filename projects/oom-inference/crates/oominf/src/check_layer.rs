@@ -11,9 +11,9 @@ use oominf_convert::safetensors::read_file;
 use oominf_cuda::Gpu;
 use oominf_models_qwen::{DecoderLayer, Dims, DiskExperts, Probe, StepInput};
 
-const STEPS: [&str; 4] = ["prefill", "decode-1", "decode-2", "decode-3"];
+pub(crate) const STEPS: [&str; 4] = ["prefill", "decode-1", "decode-2", "decode-3"];
 
-fn load_step(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
+pub(crate) fn load_step(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
     let mut out = HashMap::new();
     for (name, t) in read_file(path)? {
         let v: Vec<f32> = match t.dtype.as_str() {
@@ -23,6 +23,13 @@ fn load_step(path: &Path) -> Result<HashMap<String, Vec<f32>>> {
                 .0
                 .iter()
                 .map(|&c| f32::from_le_bytes(c))
+                .collect(),
+            "BF16" => t
+                .bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| f32::from_bits((u16::from_le_bytes(c) as u32) << 16))
                 .collect(),
             "I64" => t
                 .bytes
@@ -59,7 +66,7 @@ impl Probe for CheckProbe<'_> {
     }
 }
 
-fn rms_rel_and_cos(a: &[f32], b: &[f32]) -> (f64, f64) {
+pub(crate) fn rms_rel_and_cos(a: &[f32], b: &[f32]) -> (f64, f64) {
     let (mut d2, mut b2, mut a2, mut ab) = (0f64, 0f64, 0f64, 0f64);
     for (&x, &y) in a.iter().zip(b) {
         let (x, y) = (x as f64, y as f64);
@@ -97,7 +104,7 @@ fn id_set_mismatches(a: &[f32], b: &[f32], k: usize) -> usize {
 
 /// Token ids of each step from the fixture manifest: the templated prompt, then
 /// one teacher-forced token per decode step.
-fn step_tokens(fixtures: &Path) -> Result<Vec<Vec<u32>>> {
+pub(crate) fn step_tokens(fixtures: &Path) -> Result<Vec<Vec<u32>>> {
     let m: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixtures.join("manifest.json")).context("manifest.json")?,
     )?;
