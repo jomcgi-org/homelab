@@ -206,9 +206,13 @@ def _residual_words(sentence: str) -> list[str]:
     tmp = _SHA.sub(" ", tmp)
     tmp = _STATE.sub(" ", tmp)
     tmp = _CHECK_WORD.sub(" ", tmp)
-    return [
-        word for word in re.findall(r"[A-Za-z]+", tmp) if word.lower() not in _FILLER
+    words = [
+        word for word in re.findall(r"[^\W\d_]+", tmp) if word.lower() not in _FILLER
     ]
+    # Any symbol outside the punctuation allowlist (an emoji, a currency sign,
+    # an underscore) is wording too: it qualifies the state like a word does.
+    symbols = re.findall(r"[^\w\s.,:;!?()\[\]*`'\"#/-]|_", tmp)
+    return words + symbols
 
 
 def extract_predicates(
