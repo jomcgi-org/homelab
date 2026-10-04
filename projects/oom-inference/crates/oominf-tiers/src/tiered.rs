@@ -48,6 +48,17 @@
 //! writes host slots between fetches except the next fetch or prefetch, which the
 //! caller only issues after its host compute finished.
 //!
+//! **Stage-ahead** ([`ExpertSource::stage_ahead`], prefill): while one layer
+//! computes, the model predicts the next layer's experts and the tier places the
+//! predicted misses in free main slots, then the stage, then main slots by policy,
+//! never evicting a record of the last fetched layer, and starts their copies and
+//! disk reads. While the stage holds the computing layer, the next one borrows the
+//! main tier's coldest records instead of a permanently larger stage, which would
+//! cost decode hits on every step. The copies wait for
+//! the compute-stream event like every refill (KernelReadsValid); the next fetch
+//! makes the compute stream wait for them before it hands out any address, so a
+//! staged record counts as resident from then on.
+//!
 //! **Lookahead** ([`ExpertSource::prefetch`], decode only): the model predicts the
 //! next layer's experts and the tier reads predicted disk misses into host cache
 //! slots (evicting cold residents, never VRAM residents, and only after the copy
@@ -155,6 +166,16 @@ pub struct TieredExperts<B: Backend> {
     /// started (in flight until the next fetch drains them).
     prediction: Option<(u32, HashSet<u32>)>,
     lookahead_inflight: Vec<u32>,
+    /// Stage-ahead copies or reads were queued that `finish_stage_ahead` has not
+    /// completed yet.
+    ahead_open: bool,
+    /// Copy-stream event after the last stage-ahead's copies, for the next fetch's
+    /// compute to wait on.
+    ahead_done: Option<B::Event>,
+    /// The last stage-ahead's layer and the keys it loaded.
+    ahead_keys: Option<(u32, HashSet<u32>)>,
+    /// The layer of the last fetch (its records are pinned during a stage-ahead).
+    last_layer: Option<u32>,
     seq: u64,
     pub stats: ExpertStats,
 }
@@ -194,11 +215,8 @@ impl<B: Backend> TieredExperts<B> {
             "tier sizes must be positive"
         );
         // Set one layer's worth of slots aside for streaming when the budget allows.
-        let stage_slots = if vram_slots >= 2 * num_experts as usize {
-            num_experts as usize
-        } else {
-            0
-        };
+        let ne = num_experts as usize;
+        let stage_slots = if vram_slots >= 2 * ne { ne } else { 0 };
         let max_chunks = (vram_slots - stage_slots) / CHUNK_SLOTS;
         ensure!(
             max_chunks > 0,
@@ -216,7 +234,9 @@ impl<B: Backend> TieredExperts<B> {
         };
         let stage_base = stage_arena.as_ref().map_or(0, |a| b.bytes_addr(a));
         let host_arena = PinnedArena::new(b.clone(), host_slots, stride)?;
-        let host_stage = PinnedArena::new(b.clone(), stage_slots.max(1), stride)?;
+        // A fetch or a stage-ahead reads at most one layer's worth of records.
+        let ring = stage_slots.max(1);
+        let host_stage = PinnedArena::new(b.clone(), ring, stride)?;
         let reader = DirectReader::open(&model.dir().join(oominf_format::EXPERTS_FILE))?;
         let layers = groups.iter().map(|g| g.layer).collect();
         Ok(TieredExperts {
@@ -233,7 +253,7 @@ impl<B: Backend> TieredExperts<B> {
             host: SlotCache::new(host_slots, host_policy),
             host_last_copy: vec![0; host_slots],
             host_arena,
-            host_stage_last_copy: vec![0; stage_slots.max(1)],
+            host_stage_last_copy: vec![0; ring],
             host_stage,
             host_stage_next: 0,
             stream_threshold: (num_experts as usize / 8).max(1),
@@ -247,6 +267,10 @@ impl<B: Backend> TieredExperts<B> {
             host_seen: HashMap::new(),
             prediction: None,
             lookahead_inflight: Vec::new(),
+            ahead_open: false,
+            ahead_done: None,
+            ahead_keys: None,
+            last_layer: None,
             seq: 0,
             stats: ExpertStats::default(),
             model,
@@ -423,6 +447,64 @@ impl<B: Backend> TieredExperts<B> {
         }
     }
 
+    /// Waits for the open batch of disk reads, queueing each record's device copy
+    /// as its read lands.
+    fn land_reads(&mut self) -> Result<()> {
+        let reads = std::mem::take(&mut self.reads);
+        let seq = self.seq;
+        let (b, queue, host, host_last, stage, stage_last) = (
+            &*self.b,
+            &self.copy_queue,
+            &self.host_arena,
+            &mut self.host_last_copy,
+            &self.host_stage,
+            &mut self.host_stage_last_copy,
+        );
+        let drained = self.reader.drain(|tag| {
+            let (src, dst, _, _) = reads[tag];
+            match src {
+                Src::Host(hs) => {
+                    enqueue_copy(b, queue, dst, host, hs)?;
+                    host_last[hs] = seq;
+                }
+                Src::Stage(ss) => {
+                    enqueue_copy(b, queue, dst, stage, ss)?;
+                    stage_last[ss] = seq;
+                }
+            }
+            Ok(())
+        });
+        if let Err(e) = drained {
+            self.reads = reads;
+            self.forget_reads();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Completes the open stage-ahead (its reads land and their copies are queued)
+    /// and makes the compute stream wait for every stage-ahead copy, so staged
+    /// records can be handed out as resident.
+    fn wait_staged(&mut self) -> Result<()> {
+        self.finish_staging()?;
+        if let Some(ev) = self.ahead_done.take() {
+            self.b.compute_wait(&ev)?;
+        }
+        Ok(())
+    }
+
+    fn finish_staging(&mut self) -> Result<()> {
+        if !self.ahead_open {
+            return Ok(());
+        }
+        self.ahead_open = false;
+        self.land_reads()?;
+        let done = self.b.record_copies(&self.copy_queue)?;
+        self.pending.push_back((self.seq, done));
+        self.ahead_done = Some(self.b.record_copies(&self.copy_queue)?);
+        Ok(())
+    }
+
     fn forget_reads(&mut self) {
         for &(src, _, key, target) in &self.reads {
             if let Src::Host(_) = src {
@@ -488,6 +570,7 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
 
     fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32], host_ok: bool) -> Result<Staged> {
         self.finish_fetch(b)?;
+        self.wait_staged()?;
         self.finish_lookahead(layer, experts)?;
         self.seq += 1;
         let keys: Vec<u32> = experts
@@ -498,6 +581,12 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
             })
             .collect::<Result<_>>()?;
         let wanted: HashSet<u32> = keys.iter().copied().collect();
+        if let Some((l, staged)) = self.ahead_keys.take()
+            && l == layer
+        {
+            self.stats.staged_used += staged.intersection(&wanted).count() as u64;
+        }
+        self.last_layer = Some(layer);
         let pinned = |k: u32| wanted.contains(&k);
         let streaming = self.stage.capacity() > 0 && keys.len() > self.stream_threshold;
         let mut host_budget = if host_ok && !streaming {
@@ -683,6 +772,7 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
 
     fn prefetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
         self.finish_fetch(b)?;
+        self.finish_staging()?;
         self.finish_lookahead(u32::MAX, &[])?;
         let keys: HashSet<u32> = experts
             .iter()
@@ -727,11 +817,101 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
         Ok(())
     }
 
+    fn stages_ahead(&self) -> bool {
+        self.stage.capacity() > 0
+    }
+
+    fn stage_ahead(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
+        self.finish_fetch(b)?;
+        self.finish_staging()?;
+        self.finish_lookahead(u32::MAX, &[])?;
+        self.seq += 1;
+        let ne = self.num_experts;
+        let mut keys: Vec<u32> = experts
+            .iter()
+            .filter(|&&e| e < ne)
+            .map(|&e| layer * ne + e)
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        self.stats.predicted += keys.len() as u64;
+        let predicted: HashSet<u32> = keys.iter().copied().collect();
+        let current = self.last_layer;
+        let pinned = |k: u32| predicted.contains(&k) || Some(k / ne) == current;
+
+        // Free main slots, then the stage, then main slots by policy: while the
+        // stage holds the last fetched layer, the next one borrows the main tier's
+        // coldest records (once-staged records score lowest, so later layers
+        // evict each other before any decode-hot record).
+        let mut fills = Vec::new();
+        for &key in &keys {
+            if self.vram.peek(key).is_some() || self.stage.peek(key).is_some() {
+                continue;
+            }
+            if self.vram.has_free() {
+                let Some(Place::Miss(s, None)) = self.vram.place(key, &pinned) else {
+                    unreachable!("a free slot evicts nothing");
+                };
+                fills.push((key, Target::Main, self.main_addr(s)));
+                continue;
+            }
+            if let Some(Place::Miss(s, _)) = self.stage.place(key, &pinned) {
+                fills.push((key, Target::Stage, self.stage_addr(s)));
+                continue;
+            }
+            match self.vram.place(key, &pinned) {
+                Some(Place::Miss(s, _)) => fills.push((key, Target::Main, self.main_addr(s))),
+                // Every slot of both holds a pinned record.
+                _ => break,
+            }
+        }
+        let loaded: HashSet<u32> = fills.iter().map(|&(k, _, _)| k).collect();
+        self.prediction = Some((layer, predicted.clone()));
+        self.stats.staged += loaded.len() as u64;
+        self.ahead_keys = Some((layer, loaded));
+        if fills.is_empty() {
+            return Ok(());
+        }
+
+        // Refills wait for every kernel enqueued so far (KernelReadsValid).
+        let after = self.b.record_compute()?;
+        self.b.copies_wait(&self.copy_queue, &after)?;
+        self.ahead_open = true;
+        let mut jobs = Vec::new();
+        for (key, target, dst) in fills {
+            match self.host.peek(key) {
+                Some(hs) => self.copy_host(hs, dst)?,
+                None if self.host.has_free() => {
+                    let Some(Place::Miss(hs, None)) = self.host.place(key, &pinned) else {
+                        unreachable!("a free slot evicts nothing");
+                    };
+                    self.queue_read(&mut jobs, key, Src::Host(hs), dst, target)?;
+                }
+                None => {
+                    let ss = self.next_host_stage()?;
+                    self.queue_read(&mut jobs, key, Src::Stage(ss), dst, target)?;
+                }
+            }
+        }
+        if !jobs.is_empty()
+            && let Err(e) = self.reader.submit(jobs)
+        {
+            self.forget_reads();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn finish_stage_ahead(&mut self, _b: &B) -> Result<()> {
+        self.finish_staging()
+    }
+
     /// Retires main VRAM chunks from the top until `bytes` are freed, keeping at
     /// least one layer's worth of slots. KernelReadsValid: every copy and kernel that
     /// could read a retired slot has completed before its chunk is freed.
     fn release_vram(&mut self, b: &B, bytes: usize) -> Result<usize> {
         self.finish_fetch(b)?;
+        self.finish_staging()?;
         let floor = self.num_experts as usize;
         let mut freed = 0;
         let mut synced = false;
@@ -775,35 +955,7 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
             return Ok(());
         }
         self.open = false;
-        let reads = std::mem::take(&mut self.reads);
-        let seq = self.seq;
-        let (b, queue, host, host_last, stage, stage_last) = (
-            &*self.b,
-            &self.copy_queue,
-            &self.host_arena,
-            &mut self.host_last_copy,
-            &self.host_stage,
-            &mut self.host_stage_last_copy,
-        );
-        let drained = self.reader.drain(|tag| {
-            let (src, dst, _, _) = reads[tag];
-            match src {
-                Src::Host(hs) => {
-                    enqueue_copy(b, queue, dst, host, hs)?;
-                    host_last[hs] = seq;
-                }
-                Src::Stage(ss) => {
-                    enqueue_copy(b, queue, dst, stage, ss)?;
-                    stage_last[ss] = seq;
-                }
-            }
-            Ok(())
-        });
-        if let Err(e) = drained {
-            self.reads = reads;
-            self.forget_reads();
-            return Err(e);
-        }
+        self.land_reads()?;
         let done = self.b.record_copies(&self.copy_queue)?;
         self.b.compute_wait(&done)?;
         self.pending.push_back((self.seq, done));

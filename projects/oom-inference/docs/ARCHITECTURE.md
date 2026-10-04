@@ -90,9 +90,15 @@ trades are how engines drift from the model they claim to run.
   runs on the CPU, a repeat is copied to VRAM, so one-off experts do not evict
   recurring ones.
 - Prefill streams through a one-layer stage instead of evicting decode-hot
-  experts, and runs layer by layer so each layer's experts load once per prompt.
-  Between prefills the stage is a decode victim cache: an evicted record is
-  copied there device to device, so a later miss on it is a promotion.
+  experts. It runs layer by layer: a layer's token mixer runs over every chunk,
+  the union of their routed experts is fetched once, and the next layer's
+  experts, predicted by its router on this layer's MoE inputs, are staged while
+  this layer's experts compute (stage-ahead), borrowing the main tier's coldest
+  slots while the stage holds the computing layer. Prompts of one chunk skip
+  this: with little compute per layer to hide copies behind, the less precise
+  prediction costs more than it saves. Between prefills the stage is a
+  decode victim cache: an evicted record is copied there device to device, so a
+  later miss on it is a promotion.
 - During decode (and draft verification), layer L+1's router applied to layer
   L's input predicts the next experts; predicted disk misses are read into the
   host tier. Routing, not prediction, decides which experts run.
@@ -118,6 +124,13 @@ recurrences over the kept rows; attention layers cut their KV length.
 draft costs much less than a second step. The gain is bounded by the draft
 acceptance rate (55 to 75% measured) and by the extra routed experts the
 drafted token pulls in.
+
+**Why stage-ahead.** Fetching a layer's experts only once it has routed left
+the GPU idle for every layer's copies and disk reads: on a 2.2k-token prompt,
+copies and compute overlapped for 0.3 s of a 4.7 s prefill. The prediction
+covers about 90% of the routed experts (93% of what it stages is used), so most
+of each layer's loading now runs under the previous layer's compute; what is
+left is bound by disk reads of records the host tier does not hold.
 
 **Why host compute.** A host-tier hit costs a 2.7 MB copy over PCIe (about
 110 us) that the GPU waits for; the CPU computes the same expert for one token

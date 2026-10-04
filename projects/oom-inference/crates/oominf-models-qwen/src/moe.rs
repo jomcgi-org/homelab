@@ -307,8 +307,109 @@ impl<B: Backend> Moe<B> {
         let plan = self.begin_routed(gpu, d, t, &ids_host, experts, host_ok)?;
         let host_work = self.start_host(gpu, d, x, t, &plan)?;
 
-        // Shared expert.
-        let si = d.shared_inter;
+        let (shared, gate_logit) = self.shared(gpu, d, x, t, scratch, probe)?;
+
+        let mut routed =
+            self.finish_routed(gpu, d, ws, x, t, plan, host_work, &weights, experts)?;
+        tap(gpu, probe, "routed_out", &mut routed)?;
+        if let Some(p) = predicted {
+            experts.prefetch(gpu, self.layer + 1, &p)?;
+        }
+        let mut out = gpu.zeros(t * h)?;
+        gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
+        tap(gpu, probe, "moe_out", &mut out)?;
+        Ok(out)
+    }
+
+    /// Routes `t` tokens of `x` (`[t, hidden]`) with this layer's router alone:
+    /// the experts each token picks (`[t, k]`, on the host) and their weights.
+    pub fn route(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        x: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+    ) -> Result<Routing<B>> {
+        let (h, e, k) = (d.hidden, d.experts, d.top_k);
+        let mut logits = gpu.zeros(t * e)?;
+        gpu.gemm_bf16(x, &self.router, &mut logits, scratch, t, e, h)?;
+        let mut ids = gpu.upload_i32(&vec![0i32; t * k])?;
+        let mut weights = gpu.zeros(t * k)?;
+        gpu.router_topk(&logits, &mut ids, &mut weights, t, e, k)?;
+        Ok(Routing {
+            ids: gpu.download_i32(&ids)?,
+            weights,
+        })
+    }
+
+    /// The next layer's experts predicted for `t` tokens of `x` (its router applied
+    /// to this layer's input), distinct and sorted; empty for the last layer.
+    pub fn predict_next(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        x: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+    ) -> Result<Vec<u32>> {
+        let Some(pair) = &self.router_pair else {
+            return Ok(Vec::new());
+        };
+        let (h, e, k) = (d.hidden, d.experts, d.top_k);
+        // Per token the logits are `[own (e) | next (e)]`; top-k rows alternate.
+        let mut logits = gpu.zeros(2 * t * e)?;
+        gpu.gemm_bf16(x, pair, &mut logits, scratch, t, 2 * e, h)?;
+        let mut ids = gpu.upload_i32(&vec![0i32; 2 * t * k])?;
+        let mut weights = gpu.zeros(2 * t * k)?;
+        gpu.router_topk(&logits, &mut ids, &mut weights, 2 * t, e, k)?;
+        let ids = gpu.download_i32(&ids)?;
+        let mut next: Vec<u32> = ids
+            .chunks(k)
+            .skip(1)
+            .step_by(2)
+            .flatten()
+            .map(|&i| i as u32)
+            .collect();
+        next.sort_unstable();
+        next.dedup();
+        Ok(next)
+    }
+
+    /// The MoE output for `t` tokens of `x` routed by `routing` (from
+    /// [`Moe::route`] on the same `x`), with records from `experts`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
+        t: usize,
+        routing: Routing<B>,
+        experts: &mut dyn ExpertSource<B>,
+        scratch: &mut B::Bf16,
+    ) -> Result<B::F32> {
+        let h = d.hidden;
+        let plan = self.begin_routed(gpu, d, t, &routing.ids, experts, false)?;
+        let (shared, gate_logit) = self.shared(gpu, d, x, t, scratch, &mut oominf_core::NoProbe)?;
+        let routed = self.finish_routed(gpu, d, ws, x, t, plan, None, &routing.weights, experts)?;
+        let mut out = gpu.zeros(t * h)?;
+        gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
+        Ok(out)
+    }
+
+    /// The shared expert's output and its gate logit for `t` tokens of `x`.
+    fn shared(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        x: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+        probe: &mut dyn Probe,
+    ) -> Result<(B::F32, B::F32)> {
+        let (h, si) = (d.hidden, d.shared_inter);
         let mut sg = gpu.zeros(t * si)?;
         gpu.gemm_bf16(x, &self.shared_gate, &mut sg, scratch, t, si, h)?;
         let mut su = gpu.zeros(t * si)?;
@@ -329,17 +430,7 @@ impl<B: Backend> Moe<B> {
             h,
         )?;
         tap(gpu, probe, "shared_gate_logit", &mut gate_logit)?;
-
-        let mut routed =
-            self.finish_routed(gpu, d, ws, x, t, plan, host_work, &weights, experts)?;
-        tap(gpu, probe, "routed_out", &mut routed)?;
-        if let Some(p) = predicted {
-            experts.prefetch(gpu, self.layer + 1, &p)?;
-        }
-        let mut out = gpu.zeros(t * h)?;
-        gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
-        tap(gpu, probe, "moe_out", &mut out)?;
-        Ok(out)
+        Ok((shared, gate_logit))
     }
 
     /// Groups the step's assignments by expert (resident experts first, then those
@@ -566,6 +657,19 @@ impl<B: Backend> Moe<B> {
             }
         }
         Ok(())
+    }
+}
+
+/// A step's routing: each token's experts (`[t, k]`, host) and weights (`[t, k]`).
+pub struct Routing<B: Backend> {
+    ids: Vec<i32>,
+    weights: B::F32,
+}
+
+impl<B: Backend> Routing<B> {
+    /// The expert of every assignment (repeats included).
+    pub fn experts(&self) -> impl Iterator<Item = u32> + '_ {
+        self.ids.iter().map(|&i| i as u32)
     }
 }
 
