@@ -36,6 +36,18 @@
 //! is promoted with a device-to-device copy. The stage follows the same rules: its
 //! slots are refilled on the copy stream after the compute-stream event, and a host
 //! stage slot is reused only after the copy that read it has completed.
+//!
+//! **Lookahead** ([`ExpertSource::prefetch`], decode only): the model predicts the
+//! next layer's experts and the tier reads predicted disk misses into host cache
+//! slots (evicting cold residents, never VRAM residents, and only after the copy
+//! that last read a slot completed). The next fetch drains those reads before it
+//! copies anything, so a host slot is only a copy source once its read landed.
+//!
+//! **Giving VRAM back** ([`ExpertSource::release_vram`] / `reclaim_vram`): the main
+//! arena is allocated in chunks of `CHUNK_SLOTS` records. A chunk is freed only after
+//! the open fetch finished, every copy completed and the compute stream synchronised,
+//! so no kernel, copy or table entry can still reference its slots (the spec's
+//! `Retire`); reclaimed chunks come back empty (`Restore`).
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -72,6 +84,14 @@ pub struct TierStats {
     pub vram_hits: u64,
     pub host_hits: u64,
     pub disk_reads: u64,
+    /// Experts predicted for a layer, how many of those it then routed to, and how
+    /// many experts it routed to in total (for prediction precision and recall).
+    pub predicted: u64,
+    pub predicted_routed: u64,
+    pub routed_after_prediction: u64,
+    /// Disk reads started by predictions, and how many of them a fetch then used.
+    pub lookahead_reads: u64,
+    pub lookahead_used: u64,
 }
 
 impl std::ops::Sub for TierStats {
@@ -82,20 +102,35 @@ impl std::ops::Sub for TierStats {
             vram_hits: self.vram_hits - o.vram_hits,
             host_hits: self.host_hits - o.host_hits,
             disk_reads: self.disk_reads - o.disk_reads,
+            predicted: self.predicted - o.predicted,
+            predicted_routed: self.predicted_routed - o.predicted_routed,
+            routed_after_prediction: self.routed_after_prediction - o.routed_after_prediction,
+            lookahead_reads: self.lookahead_reads - o.lookahead_reads,
+            lookahead_used: self.lookahead_used - o.lookahead_used,
         }
     }
 }
 
 const GIB: f64 = (1u64 << 30) as f64;
 
+/// Records per chunk of the main VRAM arena (about 177 MB for Qwen 3.8 Flash).
+const CHUNK_SLOTS: usize = 64;
+
 pub struct TieredExperts {
     model: Arc<Model>,
     num_experts: u32,
     stride: usize,
     vram: SlotCache,
-    /// Main slots then stage slots, `stride` bytes each.
-    vram_arena: Slice<u8>,
-    vram_base: u64,
+    /// The main VRAM tier in chunks of `CHUNK_SLOTS` records, so whole chunks can be
+    /// given back ([`ExpertSource::release_vram`]) and taken again
+    /// ([`ExpertSource::reclaim_vram`]) up to `max_chunks`.
+    main_chunks: Vec<Slice<u8>>,
+    main_bases: Vec<u64>,
+    max_chunks: usize,
+    /// Owns the stage slots behind `stage_base`, `stride` bytes each (absent when
+    /// there is no stage).
+    _stage_arena: Option<Slice<u8>>,
+    stage_base: u64,
     /// Streaming fetches fill these instead of the main VRAM tier (empty when the
     /// VRAM budget is too small to set a layer's worth aside).
     stage: SlotCache,
@@ -117,6 +152,12 @@ pub struct TieredExperts {
     reads: Vec<(Src, u64, u32, Target)>,
     /// The open fetch enqueued copies that the compute stream has not waited for.
     open: bool,
+    /// Start disk-to-host reads for predicted experts ([`ExpertSource::prefetch`]).
+    pub lookahead: bool,
+    /// The last prediction: its layer and keys, and the keys whose disk reads it
+    /// started (in flight until the next fetch drains them).
+    prediction: Option<(u32, HashSet<u32>)>,
+    lookahead_inflight: Vec<u32>,
     seq: u64,
     pub stats: TierStats,
 }
@@ -151,9 +192,22 @@ impl TieredExperts {
         } else {
             0
         };
-        let main_slots = vram_slots - stage_slots;
-        let vram_arena = gpu.stream.alloc_zeros::<u8>(vram_slots * stride)?;
-        let vram_base = gpu.device_ptr(&vram_arena);
+        let max_chunks = (vram_slots - stage_slots) / CHUNK_SLOTS;
+        ensure!(
+            max_chunks > 0,
+            "VRAM tier of {vram_slots} slots is smaller than one {CHUNK_SLOTS}-slot chunk plus the stage"
+        );
+        let main_slots = max_chunks * CHUNK_SLOTS;
+        let main_chunks = (0..max_chunks)
+            .map(|_| gpu.stream.alloc_zeros::<u8>(CHUNK_SLOTS * stride))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let main_bases = main_chunks.iter().map(|c| gpu.device_ptr(c)).collect();
+        let stage_arena = if stage_slots > 0 {
+            Some(gpu.stream.alloc_zeros::<u8>(stage_slots * stride)?)
+        } else {
+            None
+        };
+        let stage_base = stage_arena.as_ref().map_or(0, |a| gpu.device_ptr(a));
         gpu.ctx.bind_to_thread()?;
         let host_arena = PinnedArena::new(host_slots, stride)?;
         let host_stage = PinnedArena::new(stage_slots.max(1), stride)?;
@@ -162,8 +216,11 @@ impl TieredExperts {
             num_experts,
             stride,
             vram: SlotCache::new(main_slots, vram_policy),
-            vram_arena,
-            vram_base,
+            main_chunks,
+            main_bases,
+            max_chunks,
+            _stage_arena: stage_arena,
+            stage_base,
             stage: SlotCache::new(stage_slots, Box::new(crate::policy::Lru::default())),
             host: SlotCache::new(host_slots, host_policy),
             host_last_copy: vec![0; host_slots],
@@ -177,6 +234,9 @@ impl TieredExperts {
             reader,
             reads: Vec::new(),
             open: false,
+            lookahead: false,
+            prediction: None,
+            lookahead_inflight: Vec::new(),
             seq: 0,
             stats: TierStats::default(),
             model,
@@ -216,7 +276,7 @@ impl TieredExperts {
             "tiered experts: VRAM {} + {} stage slots ({:.1} GiB, {}), host {} slots ({:.1} GiB pinned, {})",
             self.vram.capacity(),
             self.stage.capacity(),
-            self.vram_arena.len() as f64 / GIB,
+            ((self.vram.capacity() + self.stage.capacity()) * self.stride) as f64 / GIB,
             self.vram.policy_name(),
             self.host.capacity(),
             (self.host.capacity() * self.stride) as f64 / GIB,
@@ -226,12 +286,17 @@ impl TieredExperts {
 
     /// Device address of main VRAM slot `slot`.
     fn main_addr(&self, slot: usize) -> u64 {
-        self.vram_base + (slot * self.stride) as u64
+        self.main_bases[slot / CHUNK_SLOTS] + ((slot % CHUNK_SLOTS) * self.stride) as u64
     }
 
-    /// Device address of stage slot `slot` (stage slots follow the main slots).
+    /// Device address of stage slot `slot`.
     fn stage_addr(&self, slot: usize) -> u64 {
-        self.main_addr(self.vram.capacity() + slot)
+        self.stage_base + (slot * self.stride) as u64
+    }
+
+    /// Bytes of device memory the VRAM tier holds.
+    pub fn vram_bytes(&self) -> usize {
+        (self.vram.capacity() + self.stage.capacity()) * self.stride
     }
 
     /// Blocks until every copy enqueued by fetches up to `need` has completed.
@@ -288,6 +353,33 @@ impl TieredExperts {
         Ok(())
     }
 
+    /// Waits for the lookahead reads (their records are host-resident from then on)
+    /// and scores the last prediction against `experts`, the routing of `layer`.
+    fn finish_lookahead(&mut self, layer: u32, experts: &[u32]) -> Result<()> {
+        if !self.lookahead_inflight.is_empty()
+            && let Err(e) = self.reader.drain(|_| Ok(()))
+        {
+            for k in self.lookahead_inflight.drain(..) {
+                self.host.forget(k);
+            }
+            return Err(e);
+        }
+        let inflight = std::mem::take(&mut self.lookahead_inflight);
+        if let Some((pl, keys)) = self.prediction.take()
+            && pl == layer
+        {
+            let routed: HashSet<u32> = experts
+                .iter()
+                .map(|&e| layer * self.num_experts + e)
+                .collect();
+            self.stats.routed_after_prediction += routed.len() as u64;
+            self.stats.predicted_routed += keys.intersection(&routed).count() as u64;
+            self.stats.lookahead_used +=
+                inflight.iter().filter(|k| routed.contains(k)).count() as u64;
+        }
+        Ok(())
+    }
+
     fn forget_reads(&mut self) {
         for &(src, _, key, target) in &self.reads {
             if let Src::Host(_) = src {
@@ -327,6 +419,7 @@ impl ExpertSource for TieredExperts {
 
     fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
         self.finish_fetch(gpu)?;
+        self.finish_lookahead(layer, experts)?;
         self.seq += 1;
         let keys: Vec<u32> = experts
             .iter()
@@ -475,6 +568,102 @@ impl ExpertSource for TieredExperts {
             return Err(e);
         }
         Ok(Staged { addrs, ready })
+    }
+
+    /// Reads predicted disk misses of `layer` into host slots (never into VRAM, and
+    /// never evicting a slot an in-flight copy still reads), so its fetch finds them
+    /// in the host tier.
+    fn wants_prefetch(&self) -> bool {
+        self.lookahead
+    }
+
+    fn prefetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<()> {
+        self.finish_fetch(gpu)?;
+        self.finish_lookahead(u32::MAX, &[])?;
+        let keys: HashSet<u32> = experts
+            .iter()
+            .filter(|&&e| e < self.num_experts)
+            .map(|&e| layer * self.num_experts + e)
+            .collect();
+        self.stats.predicted += keys.len() as u64;
+        if self.lookahead {
+            let mut jobs = Vec::new();
+            for &key in &keys {
+                if self.vram.peek(key).is_some()
+                    || self.stage.peek(key).is_some()
+                    || self.host.peek(key).is_some()
+                {
+                    continue;
+                }
+                let Some(Place::Miss(hs, _)) = self.host.place(key, &|_| false) else {
+                    continue;
+                };
+                self.wait_copies(self.host_last_copy[hs])?;
+                let (l, e) = (key / self.num_experts, key % self.num_experts);
+                let (offset, stride) = self.model.record_location(l, e)?;
+                jobs.push(ReadJob {
+                    offset,
+                    dst: self.host_arena.slot_ptr(hs),
+                    len: stride as usize,
+                    tag: jobs.len(),
+                });
+                self.lookahead_inflight.push(key);
+            }
+            self.stats.lookahead_reads += jobs.len() as u64;
+            if !jobs.is_empty()
+                && let Err(e) = self.reader.submit(jobs)
+            {
+                for k in self.lookahead_inflight.drain(..) {
+                    self.host.forget(k);
+                }
+                return Err(e);
+            }
+        }
+        self.prediction = Some((layer, keys));
+        Ok(())
+    }
+
+    /// Retires main VRAM chunks from the top until `bytes` are freed, keeping at
+    /// least one layer's worth of slots. KernelReadsValid: every copy and kernel that
+    /// could read a retired slot has completed before its chunk is freed.
+    fn release_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+        self.finish_fetch(gpu)?;
+        let floor = self.num_experts as usize;
+        let mut freed = 0;
+        let mut synced = false;
+        while freed < bytes && self.main_chunks.len() > 1 {
+            let keep = (self.main_chunks.len() - 1) * CHUNK_SLOTS;
+            if keep < floor {
+                break;
+            }
+            if !synced {
+                self.wait_copies(u64::MAX)?;
+                self.copy_stream.synchronize()?;
+                gpu.sync()?;
+                synced = true;
+            }
+            self.vram.shrink(keep);
+            self.main_chunks.pop();
+            self.main_bases.pop();
+            freed += CHUNK_SLOTS * self.stride;
+        }
+        Ok(freed)
+    }
+
+    /// Appends empty main chunks while `bytes` allow, up to the configured size.
+    fn reclaim_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+        let chunk_bytes = CHUNK_SLOTS * self.stride;
+        let mut taken = 0;
+        while taken + chunk_bytes <= bytes && self.main_chunks.len() < self.max_chunks {
+            let Ok(chunk) = gpu.stream.alloc_zeros::<u8>(chunk_bytes) else {
+                break;
+            };
+            self.main_bases.push(gpu.device_ptr(&chunk));
+            self.main_chunks.push(chunk);
+            self.vram.grow(self.main_chunks.len() * CHUNK_SLOTS);
+            taken += chunk_bytes;
+        }
+        Ok(taken)
     }
 
     fn finish_fetch(&mut self, gpu: &Gpu) -> Result<()> {

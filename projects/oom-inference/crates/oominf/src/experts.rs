@@ -35,6 +35,10 @@ pub struct ExpertArgs {
     /// Host tier policy (same syntax).
     #[arg(long, default_value = "lrfu:30720")]
     pub host_policy: String,
+    /// During decode, predict the next layer's experts and start reading predicted
+    /// disk misses into the host tier: `on` or `off`.
+    #[arg(long, default_value = "on")]
+    pub lookahead: String,
 }
 
 pub enum Experts {
@@ -55,14 +59,20 @@ impl Experts {
                     Some(g) => g,
                     None => TieredExperts::available_host_gib(args.host_reserve_gib)?,
                 };
-                Experts::Tiered(Box::new(TieredExperts::new(
+                let mut tiered = TieredExperts::new(
                     gpu,
                     model.clone(),
                     TieredExperts::slots_for(model, vram),
                     TieredExperts::slots_for(model, host),
                     policy::parse(&args.vram_policy)?,
                     policy::parse(&args.host_policy)?,
-                )?))
+                )?;
+                tiered.lookahead = match args.lookahead.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => anyhow::bail!("unknown --lookahead {other:?} (on, off)"),
+                };
+                Experts::Tiered(Box::new(tiered))
             }
             other => anyhow::bail!("unknown --experts {other:?} (tiered, disk)"),
         })
@@ -102,6 +112,34 @@ impl ExpertSource for Experts {
         match self {
             Experts::Disk(d) => d.finish_fetch(gpu),
             Experts::Tiered(t) => t.finish_fetch(gpu),
+        }
+    }
+
+    fn wants_prefetch(&self) -> bool {
+        match self {
+            Experts::Disk(d) => d.wants_prefetch(),
+            Experts::Tiered(t) => t.wants_prefetch(),
+        }
+    }
+
+    fn prefetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<()> {
+        match self {
+            Experts::Disk(d) => d.prefetch(gpu, layer, experts),
+            Experts::Tiered(t) => t.prefetch(gpu, layer, experts),
+        }
+    }
+
+    fn release_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+        match self {
+            Experts::Disk(d) => d.release_vram(gpu, bytes),
+            Experts::Tiered(t) => t.release_vram(gpu, bytes),
+        }
+    }
+
+    fn reclaim_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+        match self {
+            Experts::Disk(d) => d.reclaim_vram(gpu, bytes),
+            Experts::Tiered(t) => t.reclaim_vram(gpu, bytes),
         }
     }
 }

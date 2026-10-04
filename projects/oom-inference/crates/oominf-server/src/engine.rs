@@ -243,6 +243,10 @@ impl Engine {
                     Some(s) => s,
                     None => self.model.new_state(&self.gpu, max_context)?,
                 };
+                // The dropped sequence may have grown its caches at the tiers'
+                // expense: give the memory back to the experts.
+                self.model
+                    .reclaim_vram(&self.gpu, &state, self.experts.as_mut())?;
                 (Vec::new(), state, None)
             }
         };

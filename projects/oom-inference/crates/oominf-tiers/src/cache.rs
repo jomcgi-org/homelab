@@ -85,6 +85,31 @@ impl SlotCache {
         }
     }
 
+    /// Retires every slot at or above `capacity`, dropping their keys, and returns
+    /// the dropped keys. The caller must make sure nothing still reads those slots.
+    pub fn shrink(&mut self, capacity: usize) -> Vec<u32> {
+        let capacity = capacity.min(self.capacity);
+        let dropped: Vec<u32> = self.key_of[capacity..].iter().flatten().copied().collect();
+        for &k in &dropped {
+            self.slot_of.remove(&k);
+            self.policy.remove(k);
+        }
+        self.key_of.truncate(capacity);
+        self.free.retain(|&s| s < capacity);
+        self.capacity = capacity;
+        dropped
+    }
+
+    /// Adds empty slots up to `capacity`.
+    pub fn grow(&mut self, capacity: usize) {
+        if capacity <= self.capacity {
+            return;
+        }
+        self.key_of.resize(capacity, None);
+        self.free.extend((self.capacity..capacity).rev());
+        self.capacity = capacity;
+    }
+
     pub fn len(&self) -> usize {
         self.slot_of.len()
     }
@@ -112,5 +137,24 @@ mod tests {
         assert_eq!(c.peek(3), Some(0));
         c.forget(3);
         assert_eq!(c.place(4, &|_| false), Some(Place::Miss(0, None)));
+    }
+
+    #[test]
+    fn shrink_drops_top_slots_only() {
+        let mut c = SlotCache::new(4, Box::new(Lru::default()));
+        let none = |_: u32| false;
+        for k in 10..13 {
+            c.place(k, &none);
+        }
+        // Slots 0, 1, 2 hold 10, 11, 12; slot 3 is free.
+        assert_eq!(c.shrink(2), vec![12]);
+        assert_eq!((c.capacity(), c.len()), (2, 2));
+        assert_eq!(c.peek(12), None);
+        assert!(!c.has_free());
+        // The policy forgot 12 too: the next miss evicts a surviving key.
+        assert_eq!(c.place(13, &none), Some(Place::Miss(0, Some(10))));
+        // Growing back adds free slots that fill before anything is evicted.
+        c.grow(3);
+        assert_eq!(c.place(14, &none), Some(Place::Miss(2, None)));
     }
 }

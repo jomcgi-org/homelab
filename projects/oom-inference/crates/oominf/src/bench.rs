@@ -48,6 +48,40 @@ impl ExpertSource for Timed {
         self.time += t.elapsed();
         Ok(())
     }
+
+    fn wants_prefetch(&self) -> bool {
+        self.inner.wants_prefetch()
+    }
+
+    fn prefetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<()> {
+        let t = Instant::now();
+        self.inner.prefetch(gpu, layer, experts)?;
+        self.time += t.elapsed();
+        Ok(())
+    }
+
+    fn release_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+        self.inner.release_vram(gpu, bytes)
+    }
+
+    fn reclaim_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+        self.inner.reclaim_vram(gpu, bytes)
+    }
+}
+
+/// Prediction precision and recall, and how many lookahead reads a fetch used.
+fn prediction_line(s: &TierStats) -> String {
+    if s.predicted == 0 {
+        return String::new();
+    }
+    let pct = |a: u64, b: u64| 100.0 * a as f64 / b.max(1) as f64;
+    format!(
+        "; prediction precision {:.1}%, recall {:.1}%; lookahead reads {} ({:.1}% used)",
+        pct(s.predicted_routed, s.predicted),
+        pct(s.predicted_routed, s.routed_after_prediction),
+        s.lookahead_reads,
+        pct(s.lookahead_used, s.lookahead_reads)
+    )
 }
 
 fn tier_line(s: Option<TierStats>, tokens: usize) -> String {
@@ -61,7 +95,7 @@ fn tier_line(s: Option<TierStats>, tokens: usize) -> String {
                 per(s.disk_reads),
                 100.0 * s.vram_hits as f64 / s.requests as f64,
                 100.0 * (s.vram_hits + s.host_hits) as f64 / s.requests as f64
-            )
+            ) + &prediction_line(&s)
         }
         _ => String::new(),
     }
@@ -182,9 +216,12 @@ pub fn run(
         &mut logits,
         tokens,
     )?;
+    println!("after decode: {}", experts.inner.describe());
     // The same prompt again on a fresh sequence: prefill from warm tiers.
     drop(state);
     let mut state = qwen.new_state(&gpu, ids.len() + 1)?;
+    qwen.reclaim_vram(&gpu, &state, &mut experts)?;
+    println!("fresh sequence: {}", experts.inner.describe());
     let before = experts.inner.stats();
     let t = Instant::now();
     prefill(&gpu, &qwen, &ids, prefill_chunk, &mut state, &mut experts)?;

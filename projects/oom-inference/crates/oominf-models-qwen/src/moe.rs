@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use oominf_cuda::{Bf16Buf, Buf, Gpu, Nvfp4Record, Slice, Workspace};
 use oominf_format::Model;
 
-use crate::util::{bf16_tensor, tap};
+use crate::util::{bf16_concat, bf16_tensor, tap};
 use crate::{Dims, Probe};
 
 /// Byte offsets of one projection's parts inside an expert record.
@@ -47,6 +47,32 @@ pub trait ExpertSource {
     /// usable by work enqueued after this call.
     fn finish_fetch(&mut self, _gpu: &Gpu) -> Result<()> {
         Ok(())
+    }
+
+    /// Hints that `layer` is about to route to `experts` (a prediction): the source
+    /// may start loading them toward a faster tier. Routing alone decides what runs;
+    /// a wrong hint only costs bandwidth. Called after the previous fetch finished.
+    fn prefetch(&mut self, _gpu: &Gpu, _layer: u32, _experts: &[u32]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Whether [`ExpertSource::prefetch`] hints are used (so callers can skip
+    /// computing them).
+    fn wants_prefetch(&self) -> bool {
+        false
+    }
+
+    /// Gives device memory back so other buffers (e.g. a growing KV cache) can use
+    /// it: frees at least `bytes` of cached records if possible and returns how many
+    /// bytes it freed. Called between steps, never while a fetch is open.
+    fn release_vram(&mut self, _gpu: &Gpu, _bytes: usize) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Takes device memory back after it was released: grows the cache by up to
+    /// `bytes` (never beyond its configured size) and returns how many bytes it took.
+    fn reclaim_vram(&mut self, _gpu: &Gpu, _bytes: usize) -> Result<usize> {
+        Ok(0)
     }
 }
 
@@ -112,6 +138,10 @@ pub struct Moe {
     reference: AtomicBool,
     tables: Mutex<Tables>,
     router: Bf16Buf,
+    /// This layer's router stacked over the next layer's (`[2 * experts, hidden]`):
+    /// one decode GEMV routes this layer and predicts the next (absent for the last
+    /// layer).
+    router_pair: Option<Bf16Buf>,
     shared_gate: Bf16Buf,
     shared_up: Bf16Buf,
     shared_down: Bf16Buf,
@@ -192,6 +222,20 @@ impl Moe {
             ),
             tables: Mutex::new(tables),
             router: w("gate.weight", &[d.experts as u64, h])?,
+            router_pair: {
+                let next = format!("model.language_model.layers.{}.mlp.gate.weight", layer + 1);
+                match model.tensor(&next) {
+                    Some(_) => Some(bf16_concat(
+                        gpu,
+                        model,
+                        &[
+                            (format!("{p}gate.weight"), vec![d.experts as u64, h]),
+                            (next, vec![d.experts as u64, h]),
+                        ],
+                    )?),
+                    None => None,
+                }
+            },
             shared_gate: w("shared_expert.gate_proj.weight", &[si, h])?,
             shared_up: w("shared_expert.up_proj.weight", &[si, h])?,
             shared_down: w("shared_expert.down_proj.weight", &[h, si])?,
@@ -221,14 +265,48 @@ impl Moe {
     ) -> Result<Buf> {
         let (h, e, k) = (d.hidden, d.experts, d.top_k);
 
-        let mut logits = gpu.zeros(t * e)?;
-        gpu.gemm_bf16(x, &self.router, &mut logits, scratch, t, e, h)?;
+        // Decode with a source that uses hints: route this layer and predict the
+        // next one with a single GEMV over the stacked routers; both rows go through
+        // one top-k launch and one download. A probe sees the plain routing.
+        let pair = match &self.router_pair {
+            Some(p)
+                if t == 1
+                    && experts.wants_prefetch()
+                    && !probe.wants("router_logits")
+                    && !probe.wants("topk_weights") =>
+            {
+                Some(p)
+            }
+            _ => None,
+        };
+        // With the pair, the single token's logits row is two rows of `e`.
+        let (rows, n_out) = if pair.is_some() { (2, 2 * e) } else { (t, e) };
+        let mut logits = gpu.zeros(rows * e)?;
+        gpu.gemm_bf16(
+            x,
+            pair.unwrap_or(&self.router),
+            &mut logits,
+            scratch,
+            t,
+            n_out,
+            h,
+        )?;
         tap(gpu, probe, "router_logits", &mut logits)?;
-        let mut ids = gpu.upload_i32(&vec![0i32; t * k])?;
-        let mut weights = gpu.zeros(t * k)?;
-        gpu.router_topk(&logits, &mut ids, &mut weights, t, e, k)?;
+        let mut ids = gpu.upload_i32(&vec![0i32; rows * k])?;
+        let mut weights = gpu.zeros(rows * k)?;
+        gpu.router_topk(&logits, &mut ids, &mut weights, rows, e, k)?;
         tap(gpu, probe, "topk_weights", &mut weights)?;
         let mut ids_host = gpu.download(&ids)?;
+        let predicted = pair.map(|_| {
+            let mut v: Vec<u32> = ids_host
+                .split_off(k)
+                .into_iter()
+                .map(|i| i as u32)
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        });
         if probe.wants("topk_ids") {
             probe.observe("topk_ids", ids_host.iter().map(|&i| i as f32).collect());
         }
@@ -280,6 +358,9 @@ impl Moe {
             Some(plan) => self.finish_routed(gpu, d, ws, x, t, plan, &weights, experts)?,
         };
         tap(gpu, probe, "routed_out", &mut routed)?;
+        if let Some(p) = predicted {
+            experts.prefetch(gpu, self.layer + 1, &p)?;
+        }
         let mut out = gpu.zeros(t * h)?;
         gpu.moe_combine(&routed, &shared, &gate_logit, &mut out, t, h)?;
         tap(gpu, probe, "moe_out", &mut out)?;

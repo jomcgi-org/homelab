@@ -33,8 +33,13 @@ liveness configs do not use it).
 ### What is modelled
 
 - **Tiers.** Every expert is always on disk. A fixed arena of host buffers and
-  a fixed arena of VRAM slots cache copies. Each buffer or slot is `free`,
+  an arena of VRAM slots cache copies. Each buffer or slot is `free`,
   `loading` or `ready`.
+- **Giving VRAM back.** The VRAM tier retires slots (`Retire`) when other
+  device memory such as a growing KV cache needs room, and restores them
+  (`Restore`) when it is free again, keeping at least `MinSlots` live. A slot
+  may only be retired when nothing pins it and no copy is landing in it; its
+  memory then holds garbage, since other allocations reuse it.
 - **Staging.** Disk to host and host to VRAM copies are asynchronous: started
   in one step, completed in a later one, with any amount of other activity in
   between. A host to VRAM copy reads its source when it completes, so a source
@@ -44,8 +49,9 @@ liveness configs do not use it).
   resolve their slots through it at launch time.
 - **Host tier and lookahead staging.** The host arena is split into the host
   cache (`CacheBufs`) and an optional lookahead staging area (`StageBufs`).
-  Cache reads (demand or prefetch) use cache buffers; lookahead reads use
-  only free staging buffers, so lookahead never evicts a cache resident.
+  Cache reads (demand or prefetch) use cache buffers, after the policy evicts
+  an unpinned resident if none is free; lookahead reads into `StageBufs` use
+  only free staging buffers, so they never evict a cache resident.
   Staging buffers feed host to VRAM copies like cache buffers and are
   recycled by eviction when unpinned.
 - **Routing and launch.** The router picks up to `TopK` experts for the next
@@ -136,6 +142,7 @@ and each is caught by exactly the invariant it targets:
 | `skip_kernel_pin` (indirect) | Eviction ignores work in flight after the GPU read the table | `KernelReadsValid` |
 | `write_before_consumed` (indirect) | Host writes a layer's table entries without waiting for the GPU to consume the previous node | `TableReadValid` (and `TableStable` alone, checked by hand) |
 | `skip_table_pin` (indirect) | Eviction ignores slots referenced through the device table by armed nodes | `TableReadValid` |
+| `retire_in_use` | A VRAM slot is retired (its memory reused) while work, a graph or the device table still references it | `KernelReadsValid` (baked), `TableReadValid` (indirect) |
 
 ### Results
 
@@ -143,12 +150,12 @@ TLC 2.19 (`tla2tools.jar` 1.8.0), 4 workers on the 4090 box, 2026-10-04.
 
 | Config | Constants | Checks | Distinct states | Time |
 |---|---|---|---|---|
-| `small.cfg` (CI) | baked; 3 experts, 3 slots, 1 host buffer, TopK 2, MaxInflight 1, GraphMax 1 | safety + liveness | 30,226 | 18 to 20 s |
-| `small_indirect.cfg` (CI) | indirect; 3 experts, 3 slots, cache buffer + staging buffer, TopK 2, MaxInflight 1 | safety + `TableStable` | 1,123,003 | 7 to 9 s |
-| `live_indirect.cfg` (CI) | indirect; 2 experts, 2 slots, cache buffer + staging buffer, TopK 2, MaxInflight 1 | safety + `TableStable` + liveness | 21,116 | 10 to 11 s |
-| `large.cfg` | baked; 4 experts, 4 slots, 3 host buffers, TopK 3, MaxInflight 2, GraphMax 2, symmetry | safety | 985,516 | 6 min 53 s |
-| `large_indirect.cfg` | indirect; 4 experts, 4 slots, 2 cache buffers + 1 staging buffer, TopK 2, MaxInflight 2, symmetry | safety + `TableStable` | 1,202,549 | 4 min 44 s |
-| `bug.cfg.in` x 7 | 3 experts, 2 slots, 2 host buffers, symmetry, baked or indirect | safety, must fail | n/a | about 5 s for all 7 |
+| `small.cfg` (CI) | baked; 3 experts, 3 slots, 1 host buffer, TopK 2, MaxInflight 1, GraphMax 1 | safety + liveness | 30,226 | 18 s |
+| `small_indirect.cfg` (CI) | indirect; 3 experts, 3 slots, cache buffer + staging buffer, TopK 2, MaxInflight 1 | safety + `TableStable` | 1,887,277 | 14 s |
+| `live_indirect.cfg` (CI) | indirect; 2 experts, 2 slots, cache buffer + staging buffer, TopK 2, MaxInflight 1 | safety + `TableStable` + liveness | 21,116 | 10 s |
+| `large.cfg` | baked; 4 experts, 4 slots, 3 host buffers, TopK 3, MaxInflight 2, GraphMax 2, symmetry | safety | 1,484,290 | 9 min 25 s |
+| `large_indirect.cfg` | indirect; 4 experts, 4 slots, 2 cache buffers + 1 staging buffer, TopK 2, MaxInflight 2, symmetry | safety + `TableStable` | 1,945,070 | 8 min 00 s |
+| `bug.cfg.in` x 9 | 3 experts, 2 slots, 2 host buffers, symmetry, baked or indirect | safety, must fail | n/a | about 6 s for all 9 |
 
 `run.sh ci` takes about 38 s in total. Liveness for the indirect mode at
 `small_indirect` size (3 experts, 3 slots) passes in about 5 minutes without
@@ -163,10 +170,11 @@ minutes, hence TopK 2 in `large_indirect`.
 |---|---|
 | `host`, `hostSt`, `HostPinned` | Host tier: fixed pinned-buffer arena with per-buffer state and pin counts |
 | `CacheBufs`, `StageBufs`, `Lookahead` | Host arena split: the host expert cache, and a separate lookahead staging pool for next-layer prediction that only takes free staging buffers |
-| `vram`, `vramSt`, `VramPinned` | VRAM tier: fixed slot arena with per-slot state and pin counts |
+| `vram`, `vramSt`, `VramPinned` | VRAM tier: slot arena with per-slot state and pin counts |
+| `live`, `Retire`, `Restore`, `MinSlots` | `ExpertSource::release_vram` / `reclaim_vram`: the main VRAM arena is allocated in chunks; a chunk is freed only after the open fetch finished, every copy completed and the compute stream synchronised (so nothing can pin its slots), and re-added empty; the tier keeps at least one layer's experts |
 | `table` | Host-side slot table, expert to slot. `oominf-tiers` (being written now) implements this first, with host-resolved launches (baked mode without graphs) |
 | `dtable`, `ArmNode`, `queue`, `GpuExec` | Device-side slot table for whole-step CUDA graphs (comes with CUDA graphs): per layer, a table of routed position to slot address read by the MoE kernels at run time; `ArmNode` is the host filling it and releasing the layer's flag (stream memop or mapped flag); `GpuExec` is the graph's kernel reaching that layer |
-| `StageD2H` / `CompleteD2H` | Staging I/O: direct reads from the weight file into host buffers (io_uring completions) |
+| `StageD2H` / `CompleteD2H` | Staging I/O: direct reads from the weight file into host buffers (io_uring completions). Includes `ExpertSource::prefetch`: decode predicts the next layer's experts and reads predicted disk misses into host cache buffers (evicting cold residents); the next fetch drains those reads before any copy, so a buffer is only copied from once `ready` |
 | `StageH2V` / `CompleteH2V` | Host to device copies on a copy stream, completion observed by event |
 | `Route`, `Launch`, `inflight`, `Complete` | Decode/prefill loop: router output, launch on the compute stream, completion events that release pins |
 | `Capture`, `Replay`, `Invalidate`, `graph` | CUDA graph manager; capture registers graph pins, invalidation releases them |

@@ -103,6 +103,22 @@ impl DecoderLayer {
         })
     }
 
+    /// Bytes [`Self::grow_kv`] would allocate for this layer to hold `tokens`.
+    pub fn kv_growth_bytes(&self, state: &LayerState, tokens: usize) -> usize {
+        match (&self.mixer, &state.attn) {
+            (Mixer::Attention(a), Some(st)) => a.growth_bytes(st, tokens),
+            _ => 0,
+        }
+    }
+
+    /// Grows this layer's KV cache (if it has one) to hold `tokens`.
+    pub fn grow_kv(&self, gpu: &Gpu, state: &mut LayerState, tokens: usize) -> Result<()> {
+        match (&self.mixer, state.attn.as_mut()) {
+            (Mixer::Attention(a), Some(st)) => a.grow(gpu, st, tokens),
+            _ => Ok(()),
+        }
+    }
+
     /// Runs the layer over `t` tokens of `residual` (`[t, hc * hidden]`).
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
