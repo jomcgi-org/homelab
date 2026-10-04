@@ -48,6 +48,8 @@ pub struct Gpu {
     funcs: Mutex<HashMap<String, CudaFunction>>,
     /// Split-K partials of the decode GEMV, grown on demand and reused (stable address).
     gemv_partial: Mutex<Option<Buf>>,
+    /// One self-resetting ticket per GEMV row tile (all zero between launches).
+    gemv_tickets: Mutex<Option<CudaSlice<u32>>>,
 }
 
 pub(crate) fn grid(n: usize, block: u32) -> LaunchConfig {
@@ -76,6 +78,7 @@ impl Gpu {
             modules,
             funcs: Mutex::new(HashMap::new()),
             gemv_partial: Mutex::new(None),
+            gemv_tickets: Mutex::new(None),
         })
     }
 
@@ -306,6 +309,7 @@ impl Gpu {
                     .arg(w)
                     .arg(y)
                     .arg(&null)
+                    .arg(&null)
                     .arg(&n32)
                     .arg(&k32)
                     .arg(&kl32)
@@ -319,29 +323,24 @@ impl Gpu {
             *guard = Some(self.uninit(need)?);
         }
         let partial = guard.as_mut().unwrap();
-        let null: u64 = 0;
+        let mut tickets = self.gemv_tickets.lock().unwrap();
+        let tiles = cfg.grid_dim.0 as usize;
+        if tickets.as_ref().is_none_or(|b| b.len() < tiles) {
+            *tickets = Some(self.stream.alloc_zeros::<u32>(tiles)?);
+        }
+        let tickets = tickets.as_mut().unwrap();
         unsafe {
             self.stream
                 .launch_builder(&f)
                 .arg(x)
                 .arg(w)
-                .arg(&null)
+                .arg(y)
                 .arg(&mut *partial)
+                .arg(&mut *tickets)
                 .arg(&n32)
                 .arg(&k32)
                 .arg(&kl32)
                 .launch(cfg)?
-        };
-        let r = self.func("gemv_reduce")?;
-        let (tn, s32) = ((t * n) as i32, splits as i32);
-        unsafe {
-            self.stream
-                .launch_builder(&r)
-                .arg(&*partial)
-                .arg(y)
-                .arg(&tn)
-                .arg(&s32)
-                .launch(grid(t * n, 256))?
         };
         Ok(())
     }

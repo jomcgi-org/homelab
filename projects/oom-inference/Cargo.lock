@@ -828,6 +828,7 @@ name = "oominf-models-qwen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "io-uring",
  "oominf-cuda",
  "oominf-format",
  "serde_json",

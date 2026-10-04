@@ -375,12 +375,13 @@ extern "C" __global__ void copy_rows(const float* src, float* dst, int first, in
 // rounded), W is bf16 [N, K] row-major, accumulation fp32. Each warp owns GEMV_R rows
 // and streams them with 16-byte loads (8 bf16 per lane); x for this block's K range
 // sits in shared memory. Split-K (gridDim.y > 1) writes per-split partials
-// [splits, T, N] that gemv_reduce sums in a fixed order, so results are deterministic.
+// [splits, T, N]; the last block to finish a row tile (an atomic ticket per tile in
+// `tickets`, reset after use) sums them in split order, so results are deterministic.
 // K must be a multiple of 8; klen (K per split) a multiple of 256 except the last.
 #define GEMV_R 4
 template <int T>
-__device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* partial, int N,
-                               int K, int klen) {
+__device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* partial,
+                               unsigned* tickets, int N, int K, int klen) {
     extern __shared__ float xs[];
     int split = blockIdx.y;
     int k0 = split * klen;
@@ -393,13 +394,12 @@ __device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* p
     __syncthreads();
     int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     int row0 = (blockIdx.x * (blockDim.x >> 5) + warp) * GEMV_R;
-    if (row0 >= N) return;
     float acc[T][GEMV_R];
 #pragma unroll
     for (int t = 0; t < T; t++)
 #pragma unroll
         for (int r = 0; r < GEMV_R; r++) acc[t][r] = 0.0f;
-    for (int kb = lane * 8; kb < kl; kb += 256) {
+    for (int kb = lane * 8; row0 < N && kb < kl; kb += 256) {
         float xv[T][8];
 #pragma unroll
         for (int t = 0; t < T; t++) {
@@ -433,33 +433,44 @@ __device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* p
         for (int r = 0; r < GEMV_R; r++)
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) acc[t][r] += __shfl_xor_sync(0xffffffff, acc[t][r], o);
-    if (lane != 0) return;
+    if (lane == 0) {
 #pragma unroll
-    for (int t = 0; t < T; t++)
+        for (int t = 0; t < T; t++)
 #pragma unroll
-        for (int r = 0; r < GEMV_R; r++) {
-            int n = row0 + r;
-            if (n >= N) break;
-            if (partial)
-                partial[((size_t)split * T + t) * N + n] = acc[t][r];
-            else
-                y[(size_t)t * N + n] = acc[t][r];
-        }
+            for (int r = 0; r < GEMV_R; r++) {
+                int n = row0 + r;
+                if (n >= N) break;
+                if (partial)
+                    partial[((size_t)split * T + t) * N + n] = acc[t][r];
+                else
+                    y[(size_t)t * N + n] = acc[t][r];
+            }
+    }
+    if (!partial) return;
+    // Last block of this row tile sums every split's partials in split order.
+    __shared__ bool last;
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) last = atomicAdd(&tickets[blockIdx.x], 1u) == gridDim.y - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    int tile = (blockDim.x >> 5) * GEMV_R;
+    int first = blockIdx.x * tile;
+    for (int i = threadIdx.x; i < T * tile; i += blockDim.x) {
+        int t = i / tile, n = first + i % tile;
+        if (n >= N) continue;
+        float sum = 0.0f;
+        for (int s = 0; s < (int)gridDim.y; s++) sum += __ldcg(&partial[((size_t)s * T + t) * N + n]);
+        y[(size_t)t * N + n] = sum;
+    }
+    if (threadIdx.x == 0) tickets[blockIdx.x] = 0;
 }
 
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t1(const float* x, const bf16* W, float* y, float* partial, int N, int K, int klen) { gemv_bf16_impl<1>(x, W, y, partial, N, K, klen); }
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t2(const float* x, const bf16* W, float* y, float* partial, int N, int K, int klen) { gemv_bf16_impl<2>(x, W, y, partial, N, K, klen); }
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t3(const float* x, const bf16* W, float* y, float* partial, int N, int K, int klen) { gemv_bf16_impl<3>(x, W, y, partial, N, K, klen); }
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t4(const float* x, const bf16* W, float* y, float* partial, int N, int K, int klen) { gemv_bf16_impl<4>(x, W, y, partial, N, K, klen); }
-
-// y[i] = sum_s partial[s * n + i], fixed order.
-extern "C" __global__ void gemv_reduce(const float* partial, float* y, int n, int splits) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float acc = 0.0f;
-    for (int s = 0; s < splits; s++) acc += partial[(size_t)s * n + i];
-    y[i] = acc;
-}
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t1(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<1>(x, W, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t2(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<2>(x, W, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t3(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<3>(x, W, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t4(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<4>(x, W, y, partial, tickets, N, K, klen); }
 
 // Inverse of copy_cols: dst[r, col .. col + cols] = src[r, :] for rows of `stride`.
 extern "C" __global__ void put_cols(const float* src, float* dst, int rows, int stride, int col,
