@@ -78,6 +78,41 @@ def test_volatile_policy(title):
     )
 
 
+@pytest.mark.parametrize(
+    ("title", "content"),
+    [
+        (
+            "Funding evidence uses the bug-fix task class window",
+            "The window is chosen by task class.\n\n## Evidence\n\n"
+            "- Independent review of PR #6214 at head d7ea299 found it open and red\n"
+            "- job failed, workflow check complete",
+        ),
+        (
+            "Admission discovery runs before existing-receipt short-circuit",
+            "Discovery precedes the short-circuit.\n\n## Provenance\n\n"
+            "This issue is complete; PR checks passed at SHA abc.",
+        ),
+        (
+            "Sources are cited",
+            "Durable claim.\n\n### Sources:\nPR 12 is merged, status closed.\n"
+            "\n## Notes\nStable detail.",
+        ),
+    ],
+)
+def test_durable_claims_citing_pr_evidence_stay_standard(title, content):
+    assert classify(title=title, content=content, now=NOW) == STANDARD
+
+
+def test_volatile_claim_body_survives_evidence_exclusion():
+    content = (
+        "PR #6804 is open and ready.\n\n## Evidence\n\n- stable pointer\n\n"
+        "## Status\nJob is running."
+    )
+    assert classify(title="Durable title", content=content, now=NOW) == VOLATILE
+    after_evidence = "Claim.\n\n## Evidence\n\n- x\n\n## Follow-up\nPR is open."
+    assert classify(title="Durable title", content=after_evidence, now=NOW) == VOLATILE
+
+
 def test_maximum_uses_elapsed_utc_and_supplied_only_shortens():
     observed = NOW.astimezone(timezone(timedelta(hours=-7)))
     assert (
@@ -323,6 +358,13 @@ def test_recall_dates_and_persisted_block_expire_at_equality():
     assert expire_recall(text, now=NOW - timedelta(microseconds=1)) == text
     assert expire_recall(text, now=NOW) == "base"
     assert expire_recall(RECALL_HEADER + "legacy", now=NOW) is None
+
+
+def test_expire_recall_keeps_text_after_a_quoted_header():
+    quoted = f"quote:\n\n{RECALL_HEADER}is a quote\n\nthen the real task"
+    appended = quoted + "\n\n" + RECALL_HEADER + f"RECALL_EXPIRES {NOW.isoformat()}\nx"
+    assert expire_recall(appended, now=NOW - timedelta(seconds=1)) == appended
+    assert expire_recall(appended, now=NOW) == quoted
 
 
 @pytest.mark.parametrize("caller", ["api", "recall", "extraction"])
