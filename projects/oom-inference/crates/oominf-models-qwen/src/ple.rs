@@ -12,11 +12,15 @@
 //! out_c  = v_c + silu(dilated_conv(norm_conv(v)_c))
 //! ```
 //!
-//! Only the rows a step needs are read (host `pread`, then upload). A row cache or
-//! asynchronous row tier can slot in behind [`Ple::gather_rows`].
+//! Only the rows a step needs are read, all at once through io_uring. A caller that
+//! knows the next step's tokens early calls [`Ple::prefetch`] so the reads overlap
+//! earlier layers; [`Ple::forward`] then only waits for them.
 
 use std::fs::File;
-use std::os::unix::fs::FileExt;
+use std::os::fd::AsRawFd;
+use std::sync::Mutex;
+
+use io_uring::{IoUring, opcode, types};
 
 use anyhow::{Context, Result, ensure};
 use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
@@ -39,6 +43,7 @@ pub struct Ple {
     /// Offset of each shard in `tables.bin`, in shard order.
     shard_offsets: Vec<u64>,
     tables: File,
+    rows: Mutex<RowReads>,
     scale: f32,
     /// `key_proj` then `value_proj` stacked (both read the embedding): one GEMM.
     kv_proj: Bf16Buf,
@@ -119,6 +124,18 @@ pub fn ngram_ids(
     }
     out
 }
+
+/// One batch of table-row reads in flight: `ids[i]` lands at `buf[i * row_bytes..]`.
+struct RowReads {
+    ring: IoUring,
+    ids: Vec<i64>,
+    buf: Vec<u8>,
+    next: usize,
+    inflight: usize,
+}
+
+/// Submission queue depth for row reads.
+const ROW_QUEUE_DEPTH: u32 = 256;
 
 impl Ple {
     pub fn load(gpu: &Gpu, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
@@ -212,6 +229,13 @@ impl Ple {
             rows_per_shard,
             shard_offsets,
             tables,
+            rows: Mutex::new(RowReads {
+                ring: IoUring::new(ROW_QUEUE_DEPTH)?,
+                ids: Vec::new(),
+                buf: Vec::new(),
+                next: 0,
+                inflight: 0,
+            }),
             scale,
             kv_proj: bf16_concat(
                 gpu,
@@ -239,26 +263,109 @@ impl Ple {
         })
     }
 
-    /// Reads the FP8 rows for `ids` (concatenated-table row numbers) into one
-    /// contiguous host buffer, row after row.
-    fn gather_rows(&self, ids: &[i64]) -> Result<Vec<u8>> {
-        let mut out = vec![0u8; ids.len() * self.row_bytes];
-        for (i, &id) in ids.iter().enumerate() {
+    /// Hashed table rows of the next step: `token_ids` following `state`'s context.
+    fn step_rows(&self, state: &PleState, token_ids: &[u32]) -> Vec<i64> {
+        ngram_ids(
+            &state.tokens,
+            token_ids,
+            self.eos,
+            self.ngram_size,
+            self.heads_per_ngram,
+            &self.multipliers,
+            &self.head_sizes,
+            &self.head_offsets,
+        )
+    }
+
+    /// Starts reading the table rows the step `token_ids` will need, so `forward`
+    /// only waits for them. Optional: `forward` reads whatever was not prefetched.
+    pub fn prefetch(&self, state: &PleState, token_ids: &[u32]) -> Result<()> {
+        let ids = self.step_rows(state, token_ids);
+        let mut r = self.rows.lock().unwrap();
+        self.wait_rows(&mut r)?;
+        self.start_rows(&mut r, ids)
+    }
+
+    /// Queues reads of `ids` into `r.buf` (no reads may be in flight).
+    fn start_rows(&self, r: &mut RowReads, ids: Vec<i64>) -> Result<()> {
+        debug_assert_eq!(r.inflight, 0);
+        for &id in &ids {
             ensure!(id >= 0, "negative PLE row id {id}");
-            let (shard, row) = (
-                id as u64 / self.rows_per_shard,
-                id as u64 % self.rows_per_shard,
+            ensure!(
+                ((id as u64 / self.rows_per_shard) as usize) < self.shard_offsets.len(),
+                "PLE row {id} beyond the table"
             );
-            let base = *self
-                .shard_offsets
-                .get(shard as usize)
-                .with_context(|| format!("PLE row {id} beyond the table"))?;
-            self.tables.read_exact_at(
-                &mut out[i * self.row_bytes..(i + 1) * self.row_bytes],
-                base + row * self.row_bytes as u64,
-            )?;
         }
-        Ok(out)
+        r.buf.resize(ids.len() * self.row_bytes, 0);
+        r.ids = ids;
+        r.next = 0;
+        self.push_rows(r)
+    }
+
+    /// Fills free submission slots with the next queued row reads.
+    fn push_rows(&self, r: &mut RowReads) -> Result<()> {
+        let fd = types::Fd(self.tables.as_raw_fd());
+        while r.next < r.ids.len() && r.inflight < ROW_QUEUE_DEPTH as usize {
+            let i = r.next;
+            let id = r.ids[i] as u64;
+            let offset = self.shard_offsets[(id / self.rows_per_shard) as usize]
+                + (id % self.rows_per_shard) * self.row_bytes as u64;
+            // SAFETY: the destination slice is not touched or reallocated until this
+            // read completes (`wait_rows` runs before any resize).
+            let dst = unsafe { r.buf.as_mut_ptr().add(i * self.row_bytes) };
+            let sqe = opcode::Read::new(fd, dst, self.row_bytes as u32)
+                .offset(offset)
+                .build()
+                .user_data(i as u64);
+            unsafe { r.ring.submission().push(&sqe) }
+                .map_err(|_| anyhow::anyhow!("io_uring submission queue full"))?;
+            r.next += 1;
+            r.inflight += 1;
+        }
+        r.ring.submit()?;
+        Ok(())
+    }
+
+    /// Waits until every queued row read has landed.
+    fn wait_rows(&self, r: &mut RowReads) -> Result<()> {
+        let mut failed = None;
+        while r.inflight > 0 {
+            r.ring.submit_and_wait(1)?;
+            let done: Vec<(u64, i32)> = r
+                .ring
+                .completion()
+                .map(|c| (c.user_data(), c.result()))
+                .collect();
+            for (i, res) in done {
+                r.inflight -= 1;
+                if res as usize != self.row_bytes && failed.is_none() {
+                    failed = Some(anyhow::anyhow!("PLE row read {i} returned {res}"));
+                }
+            }
+            if failed.is_none() {
+                self.push_rows(r)?;
+            } else {
+                r.next = r.ids.len();
+            }
+        }
+        if let Some(e) = failed {
+            r.ids.clear();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The FP8 rows for `ids`, row after row: the prefetched batch when it matches,
+    /// otherwise read now.
+    fn gather_rows(&self, ids: Vec<i64>) -> Result<Vec<u8>> {
+        let mut r = self.rows.lock().unwrap();
+        self.wait_rows(&mut r)?;
+        if r.ids != ids {
+            self.start_rows(&mut r, ids)?;
+            self.wait_rows(&mut r)?;
+        }
+        r.ids.clear();
+        Ok(std::mem::take(&mut r.buf))
     }
 
     /// Returns the PLE contribution `[t, hc * hidden]` to add to `residual`, as
@@ -279,16 +386,7 @@ impl Ple {
         ensure!(step.token_ids.len() == t, "PLE needs one token id per row");
         let (h, r, ed) = (d.hidden, d.residual(), self.embed_dim);
 
-        let ids = ngram_ids(
-            &state.tokens,
-            step.token_ids,
-            self.eos,
-            self.ngram_size,
-            self.heads_per_ngram,
-            &self.multipliers,
-            &self.head_sizes,
-            &self.head_offsets,
-        );
+        let ids = self.step_rows(state, step.token_ids);
         // Row ids exceed f32's exact range, so they are reported but never substituted.
         if probe.wants("ple.ngram_ids") {
             probe.observe("ple.ngram_ids", ids.iter().map(|&v| v as f32).collect());
@@ -297,7 +395,7 @@ impl Ple {
         let hist: Vec<u32> = state.tokens.iter().chain(step.token_ids).copied().collect();
         state.tokens = hist[hist.len() - ctx..].to_vec();
 
-        let rows = gpu.upload_bytes(&self.gather_rows(&ids)?)?;
+        let rows = gpu.upload_bytes(&self.gather_rows(ids)?)?;
         let mut emb = ws.take(gpu, "ple.emb", t * ed)?;
         gpu.fp8_dequant_scaled(&rows, self.scale, &mut emb, t * ed)?;
         tap(gpu, probe, "ple.ngram_embed", &mut emb)?;
