@@ -1,9 +1,17 @@
 """GitHub verifier: only what the response establishes, everything else due."""
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
+from knowledge.freshness import (
+    STANDARD,
+    VOLATILE,
+    classify,
+    metadata,
+    preserve_deadline,
+)
 from knowledge.review_verifier import (
     BudgetExhausted,
     GitHubResponse,
@@ -183,6 +191,49 @@ def test_supported_templates_capture_every_predicate(sentence, expected):
     assert (
         extract_predicates(title=sentence, content=None, default_repo=REPO) == expected
     )
+
+
+@pytest.mark.parametrize("sha", ["abcdefa", "a" * 40])
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Checks are passing at {sha}",
+        "Checks passed at {sha}",
+        "Checks at {sha} are pending",
+    ],
+)
+def test_all_letter_sha_check_templates_keep_the_24_hour_policy(sha, claim):
+    title = claim.format(sha=sha)
+    expected = "pending" if "pending" in title else "success"
+    assert extract_predicates(title=title, content=None, default_repo=REPO) == [
+        Predicate("checks", REPO, None, expected, sha=sha)
+    ]
+    row = SimpleNamespace(
+        title=title,
+        content=None,
+        observed_at=T0,
+        last_reviewed_at=None,
+        review_policy=None,
+        review_after=None,
+    )
+    preserve_deadline(row, now=T0)
+    assert row.review_policy == VOLATILE
+    assert row.review_after == T0 + timedelta(hours=24)
+    result = metadata(row, now=T0 + timedelta(hours=25))
+    assert result["freshness"] == "due"
+    assert result["requires_authoritative_observation"] is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "The deadbeef implementation checks are reliable",
+        "The abcdefa policy keeps durable facts open",
+        "Checksums at deadbeef are stable",
+    ],
+)
+def test_all_letter_hex_prose_is_still_durable(title):
+    assert classify(title=title, content=None, now=T0) == STANDARD
 
 
 @pytest.mark.parametrize(
