@@ -15,6 +15,7 @@ import binascii
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -1579,8 +1580,11 @@ class EmberVmShimTransport:
         async def invoke(
             current: EmberSession, current_cli_session_id: str | None
         ) -> Turn:
+            from knowledge.api import expire_recall
+
+            send_time = datetime.now(timezone.utc)
             payload = {
-                "message": message,
+                "message": expire_recall(message, now=send_time) or "",
                 "session_id": current_cli_session_id,
                 "thinking": "high" if reasoning else "off",
             }
@@ -1607,7 +1611,9 @@ class EmberVmShimTransport:
             if progress_token is not None:
                 payload["progress_token"] = progress_token
             if system_prompt is not None:
-                payload["system_prompt"] = system_prompt
+                fresh_prompt = expire_recall(system_prompt, now=send_time)
+                if fresh_prompt is not None:
+                    payload["system_prompt"] = fresh_prompt
             if effort is not None:
                 payload["effort"] = effort
             if artifact_path is not None:

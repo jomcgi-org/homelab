@@ -1,4 +1,4 @@
-h1:i0X4XZ3VscaGgI/Uqr1M211dlAj2yU+QCBsw+3MHiM4=
+h1:QaxTFFtHifzR9ZboersFc7kwRLhbe9FiDSbvg7+Armw=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -253,3 +253,5 @@ h1:i0X4XZ3VscaGgI/Uqr1M211dlAj2yU+QCBsw+3MHiM4=
 20261002140000_dispute_resolution_failed.sql h1:nfIb3XPfi3hhWcJyXgQevZwFsHD4iIGO92XKQvrwc+M=
 20261002150000_knowledge_notes_dead_letter_disputed.sql h1:AjAtgKsbCklRDrqkXO7NXnaEyl8vVHrzE1+x18nGxc8=
 20261002160000_knowledge_audit.sql h1:Ph+9DgJHRYNNYPdQ3QYZ8VvjfeNOxfNC4mteo30y3v8=
+20261003090000_knowledge_review_deadlines.sql h1:V+l4ppvAz+MKTvBdkAtrEvc1ZwUpV8HalI+gmFq6E04=
+20261004090000_knowledge_review_outcomes.sql h1:xat/J5uLP2F7RJJ7BK74KF9CftWwX8uNJcMvN5QND4w=

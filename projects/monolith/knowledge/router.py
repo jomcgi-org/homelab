@@ -361,10 +361,15 @@ async def search_knowledge(
     type: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     include_personal: bool = Query(default=False),
+    include_history: bool = Query(default=False),
+    response: Response = None,
     principal: Principal = Depends(get_principal),
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
 ) -> dict:
+    if response is not None:
+        # Deadline crossings change the result even when no row was written.
+        response.headers["Cache-Control"] = "private, no-store"
     try:
         authorization = authorize_retrieval(
             principal, include_personal=include_personal
@@ -410,6 +415,8 @@ async def search_knowledge(
         scope_filters=authorization.scopes,
         include_unscoped=authorization.include_unscoped,
         include_legacy=True,
+        include_history=include_history,
+        exclude_invalidated=not include_history,
     )
     return {"results": results}
 

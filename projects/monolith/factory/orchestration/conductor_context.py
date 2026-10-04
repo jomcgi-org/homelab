@@ -102,19 +102,101 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _is_stale(row: dict) -> bool:
-    if row.get("verification_state") == "invalidated":
-        return True
-    valid_until = row.get("valid_until")
-    if not isinstance(valid_until, str):
-        return False
-    try:
-        end = datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
-    return end <= datetime.now(timezone.utc)
+def _is_stale(row: dict, *, now: datetime | None = None) -> bool:
+    from knowledge.api import result_current
+
+    now = now if now is not None else datetime.now(timezone.utc)
+    return not result_current(row, now=now)
+
+
+def _projected_note(row: dict) -> dict:
+    """Project one retrieved row keeping the deadline metadata with it.
+
+    A persisted projection is replayed on later planner turns, so the
+    review deadline and the volatile-action warning must travel with the
+    note. Without them a later turn cannot re-evaluate expiry.
+    """
+    from knowledge.api import VOLATILE_REVIEW_POLICY, freshness_state
+
+    freshness = row.get("freshness")
+    if not isinstance(freshness, str):
+        try:
+            freshness = freshness_state(
+                review_after=row.get("review_after"),
+                observed_at=row.get("observed_at"),
+                last_reviewed_at=row.get("last_reviewed_at"),
+                now=datetime.now(timezone.utc),
+            )
+        except Exception:
+            freshness = "unknown"
+    authoritative = row.get("requires_authoritative_observation")
+    if not isinstance(authoritative, bool):
+        authoritative = row.get("review_policy") == VOLATILE_REVIEW_POLICY
+    return {
+        "review_after": row.get("review_after"),
+        "review_policy": row.get("review_policy"),
+        "last_reviewed_at": row.get("last_reviewed_at"),
+        "freshness": freshness,
+        "requires_authoritative_observation": authoritative,
+    }
+
+
+def _refresh_followup_notes(
+    followups: list[dict], *, now: datetime | None = None
+) -> list[dict]:
+    """Re-evaluate persisted follow-up notes before each planner prompt.
+
+    Follow-up knowledge is persisted in planner_context_result audit rows
+    and reloaded on later planner turns. A note fetched just before its
+    deadline would otherwise replay as current after it is due. Recompute
+    expiry from the preserved deadline on every load; legacy projections
+    stored without temporal metadata fail closed as stale with unknown
+    freshness so they are never replayed as current.
+    """
+    current = now if now is not None else datetime.now(timezone.utc)
+    refreshed: list[dict] = []
+    for followup in followups:
+        if not isinstance(followup, dict):
+            refreshed.append(followup)
+            continue
+        knowledge = followup.get("knowledge")
+        if not isinstance(knowledge, dict) or not isinstance(
+            knowledge.get("notes"), list
+        ):
+            refreshed.append(followup)
+            continue
+        notes = []
+        for note in knowledge["notes"]:
+            if not isinstance(note, dict):
+                notes.append(note)
+                continue
+            updated = dict(note)
+            if (
+                note.get("review_after") is None
+                and note.get("review_policy") is None
+                and note.get("last_reviewed_at") is None
+            ):
+                updated["stale"] = True
+                updated.setdefault("freshness", "unknown")
+                updated.setdefault("requires_authoritative_observation", False)
+            else:
+                updated["stale"] = _is_stale(note, now=current)
+                updated.update(
+                    {
+                        key: value
+                        for key, value in _projected_note(note).items()
+                        if updated.get(key) is None and value is not None
+                    }
+                )
+                if updated.get("stale"):
+                    updated["freshness"] = (
+                        "due"
+                        if updated.get("review_after") is not None
+                        else updated.get("freshness", "unknown")
+                    )
+            notes.append(updated)
+        refreshed.append({**followup, "knowledge": {**knowledge, "notes": notes}})
+    return refreshed
 
 
 def _request_record(actor: str, item: dict, row: FactoryReceipt) -> dict:
@@ -556,6 +638,7 @@ async def retrieve_knowledge(
                     "score",
                 )
             }
+            | _projected_note(row)
             | {
                 "stale": _is_stale(row),
                 "evidence_raw_ids": candidate_raw_ids,
@@ -710,7 +793,7 @@ def _planner_factory_context(task_id: str) -> dict:
             },
             "decision": decision,
             "recent_exchanges": [],
-            "followups": followups,
+            "followups": _refresh_followup_notes(followups),
         }
 
 

@@ -1618,7 +1618,11 @@ def _planner_context(
                 "prompt_budget": 0,
             },
         }
-        context_followups = current.get("followups") or []
+        from factory.orchestration.conductor_context import (
+            _refresh_followup_notes,
+        )
+
+        context_followups = _refresh_followup_notes(current.get("followups") or [])
         current_direction = current.get("operator_direction")
         # Keep the compatibility field, but source it from the current receipt.
         # The complete acceptance lives separately and is protected from the

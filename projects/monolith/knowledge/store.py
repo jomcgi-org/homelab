@@ -232,8 +232,7 @@ def exact_query_tokens(query: str) -> tuple[str, ...]:
             continue
         for match in _QUERY_TOKEN_RE.finditer(word):
             token = match.group().rstrip(".")
-            if token.startswith("./"):
-                token = token[2:]
+            token = token.removeprefix("./")
             if not token or len(token) > _MAX_EXACT_TOKEN_LENGTH:
                 continue
             tokens.setdefault(token, None)
@@ -299,8 +298,13 @@ def _rank_search_chunks(
     include_legacy: bool = False,
     include_deployment_observations: bool = False,
     query_text: str | None = None,
+    include_history: bool = False,
+    now: datetime | None = None,
 ) -> list[tuple[int, int, float]]:
     """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
+    from knowledge.freshness import current_predicate
+
+    now = now if now is not None else datetime.now(timezone.utc)
     distance = Chunk.embedding.cosine_distance(query_embedding)
     len_penalty = func.least(
         1.0,
@@ -319,7 +323,8 @@ def _rank_search_chunks(
     if tokens:
         exact = _exact_note_match(tokens)
         current = and_(
-            or_(Note.valid_until.is_(None), Note.valid_until > func.now()),
+            or_(Note.valid_until.is_(None), Note.valid_until > now),
+            current_predicate(now=now),
             or_(
                 Note.verification_state.is_(None),
                 Note.verification_state != "invalidated",
@@ -363,12 +368,14 @@ def _rank_search_chunks(
         notes_stmt = notes_stmt.where(_not_deployment_observation())
     if exclude_invalidated:
         notes_stmt = notes_stmt.where(
-            or_(Note.valid_until.is_(None), Note.valid_until > func.now()),
+            or_(Note.valid_until.is_(None), Note.valid_until > now),
             or_(
                 Note.verification_state.is_(None),
                 Note.verification_state != "invalidated",
             ),
         )
+    if not include_history:
+        notes_stmt = notes_stmt.where(current_predicate(now=now))
     # Authorization belongs in this query, before top-N is selected. Filtering
     # ranked results in Python would let unauthorized rows consume the limit.
     notes_stmt = notes_stmt.limit(limit)
@@ -400,8 +407,14 @@ def _iso_or_none(value: datetime | None) -> str | None:
 
 
 class KnowledgeStore:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, now: datetime | None = None) -> None:
         self.session = session
+        self._now = now
+
+    @property
+    def now(self) -> datetime:
+        # Long-lived explorer stores must not freeze the production clock.
+        return self._now if self._now is not None else datetime.now(timezone.utc)
 
     def get_indexed(self) -> dict[str, str]:
         # Soft-deleted rows are excluded so the reconciler doesn't see a
@@ -517,7 +530,12 @@ class KnowledgeStore:
             existing_valid_until: datetime | None = None
             existing_observed_at: datetime | None = None
             existing_published_at: datetime | None = None
+            revision = 0
             if existing_note is not None:
+                # The row is replaced, so the counter is carried across and
+                # advanced: a review that captured the old revision must not
+                # pass, and an outcome recorded at it must not block forever.
+                revision = (existing_note.revision or 0) + 1
                 existing_scope = existing_note.scope
                 existing_verification_state = existing_note.verification_state
                 existing_confidence = existing_note.confidence
@@ -583,6 +601,15 @@ class KnowledgeStore:
                 updated_at=metadata.updated,
                 extra=metadata.extra,
                 indexed_at=datetime.now(timezone.utc),
+                revision=revision,
+            )
+            from knowledge.freshness import preserve_deadline
+
+            preserve_deadline(
+                note,
+                now=self.now,
+                existing=existing_note,
+                supplied=metadata.extra.get("review_after"),
             )
             self.session.add(note)
             self.session.flush()
@@ -701,11 +728,12 @@ class KnowledgeStore:
         scope_filter: str | None = None,
         scope_filters: tuple[str, ...] | None = None,
         include_unscoped: bool = False,
-        exclude_invalidated: bool = False,
+        exclude_invalidated: bool = True,
         include_embeddings: bool = False,
         include_legacy: bool = False,
         include_deployment_observations: bool = False,
         query_text: str | None = None,
+        include_history: bool = False,
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
@@ -739,6 +767,8 @@ class KnowledgeStore:
             include_legacy=include_legacy,
             include_deployment_observations=include_deployment_observations,
             query_text=query_text,
+            include_history=include_history,
+            now=self.now,
         )
         if not ranked:
             return []
@@ -759,6 +789,9 @@ class KnowledgeStore:
             Note.valid_from,
             Note.valid_until,
             Note.observed_at,
+            Note.review_after,
+            Note.review_policy,
+            Note.last_reviewed_at,
         ).where(Note.id.in_(top_ids), Note.deleted_at.is_(None))
         hydration_scope_predicate = _scope_predicate(
             effective_scope_filters, include_unscoped=include_unscoped
@@ -768,6 +801,15 @@ class KnowledgeStore:
             # READ COMMITTED a concurrent scope change between the two queries
             # must fail closed rather than expose the newly unauthorized row.
             note_stmt = note_stmt.where(hydration_scope_predicate)
+        if not include_history:
+            from knowledge.freshness import current_predicate
+
+            note_stmt = note_stmt.where(current_predicate(now=self.now))
+        if exclude_invalidated:
+            note_stmt = note_stmt.where(
+                or_(Note.valid_until.is_(None), Note.valid_until > self.now),
+                Note.verification_state != "invalidated",
+            )
         note_by_id = {note.id: note for note in self.session.exec(note_stmt).all()}
         chunk_projection = [
             Chunk.id,
@@ -852,6 +894,7 @@ class KnowledgeStore:
                     "valid_from": _iso_or_none(row.valid_from),
                     "valid_until": _iso_or_none(row.valid_until),
                     "observed_at": _iso_or_none(row.observed_at),
+                    **self._freshness_metadata(row),
                     "disputed": (
                         row.note_id in disputed_note_ids
                         or row.verification_state == "disputed"
@@ -890,6 +933,9 @@ class KnowledgeStore:
                 Note.valid_from,
                 Note.valid_until,
                 Note.observed_at,
+                Note.review_after,
+                Note.review_policy,
+                Note.last_reviewed_at,
             )
             .where(Note.note_id == note_id)
             .where(Note.deleted_at.is_(None))
@@ -913,12 +959,33 @@ class KnowledgeStore:
             "valid_from": _iso_or_none(row.valid_from),
             "valid_until": _iso_or_none(row.valid_until),
             "observed_at": _iso_or_none(row.observed_at),
+            **self._freshness_metadata(row),
+            "last_review_outcome": self._last_review_outcome(row.note_id),
             "disputed": (
                 row.note_id in disputed_note_ids or row.verification_state == "disputed"
             ),
             "provenance": provenance_by_note.get(row.note_id, []),
             "entities": entities_by_note.get(row.note_id, []),
         }
+
+    def _last_review_outcome(self, note_id: str) -> dict | None:
+        """Why a due fact is still due: the latest durable review outcome."""
+        from knowledge.freshness import latest_outcome
+
+        outcome = latest_outcome(self.session, note_id)
+        if outcome is None:
+            return None
+        return {
+            "status": outcome.status,
+            "reason": outcome.reason,
+            "attempted_at": _iso_or_none(outcome.attempted_at),
+            "next_attempt_at": _iso_or_none(outcome.next_attempt_at),
+        }
+
+    def _freshness_metadata(self, note) -> dict:
+        from knowledge.freshness import metadata
+
+        return metadata(note, now=self.now)
 
     def get_graph(self) -> dict:
         """Return the full knowledge graph: nodes (notes) and edges (links).

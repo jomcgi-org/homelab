@@ -191,6 +191,15 @@ spec:
                   name: monolith-chat-secrets
                   key: GITHUB_TOKEN
             {{- end }}
+            {{- if and .githubToken (not .changelog) }}
+            # knowledge-review-admission reads PR and issue state from the GitHub
+            # API. Same Secret and key as the changelog jobs, so no new credential.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: monolith-chat-secrets
+                  key: GITHUB_TOKEN
+            {{- end }}
             {{- if .whatsapp }}
             # The morning-digest job reads WHATSAPP_TZ for the household-local send
             # time and quiet hours. Derive it from the same single source the

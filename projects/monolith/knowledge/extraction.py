@@ -24,7 +24,14 @@ from sqlmodel import Session, select
 from core.github import GITHUB_REPO
 from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput, SCOPE_PATTERN
+from knowledge.models import (
+    AtomRawProvenance,
+    Dispute,
+    Note,
+    RawInput,
+    SCOPE_PATTERN,
+    bump_revision,
+)
 from knowledge.recall import _get_repo_scope, render_related_notes
 from knowledge.repo_diff_source import (
     REPO_DIFF_PATCH_CAP,
@@ -1289,6 +1296,8 @@ def _best_duplicate(
         limit=DEDUPE_NOTES,
         scope_filter=scope,
         exclude_invalidated=True,
+        # Due claims remain duplicate candidates. Retelling cannot renew them.
+        include_history=True,
     )
     if not matches:
         return None
@@ -1533,17 +1542,11 @@ def apply_extraction(
                 existing_note.confidence = min(
                     1.0, base_confidence + _REOBSERVE_CONFIDENCE_STEP
                 )
-                if assertion.observed_at:
-                    reobserved = datetime.fromisoformat(
-                        assertion.observed_at.replace("Z", "+00:00")
-                    )
-                    if reobserved.tzinfo is None:
-                        reobserved = reobserved.replace(tzinfo=timezone.utc)
-                    current_observed = existing_note.observed_at
-                    if current_observed is not None and current_observed.tzinfo is None:
-                        current_observed = current_observed.replace(tzinfo=timezone.utc)
-                    if current_observed is None or reobserved > current_observed:
-                        existing_note.observed_at = reobserved
+                # Retelling adds provenance and confidence, never a new lease
+                # or a replacement for the original historical observation.
+                # It is still newer evidence: bump the revision so a review
+                # that read the note before this retelling cannot renew it.
+                bump_revision(existing_note)
                 session.add(existing_note)
                 _, unknown = link_subjects(
                     session,
@@ -1637,6 +1640,7 @@ def apply_extraction(
                     .values(
                         valid_until=valid_until,
                         verification_state="invalidated",
+                        revision=Note.revision + 1,
                     )
                 )
 

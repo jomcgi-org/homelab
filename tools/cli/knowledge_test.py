@@ -310,6 +310,8 @@ class TestSearch:
                     ),
                     include_unscoped=False,
                     include_legacy=True,
+                    include_history=False,
+                    exclude_invalidated=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]
@@ -335,6 +337,8 @@ class TestSearch:
                     ),
                     include_unscoped=False,
                     include_legacy=True,
+                    include_history=False,
+                    exclude_invalidated=True,
                 )
         finally:
             del fastapi_app.dependency_overrides[get_embedding_client]

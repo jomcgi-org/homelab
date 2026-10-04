@@ -209,6 +209,9 @@ async def search_knowledge(
     Embeds the query and searches notes by cosine similarity.
     Returns ranked results with title, type, tags, best-matching
     section, a 240-char snippet, and graph edges.
+    Results include observation time, review deadline, policy and freshness.
+    Volatile facts require a new authoritative observation before any action
+    relies on them, even while freshness is current.
 
     Args:
         query: Natural language search query (minimum 2 characters).
@@ -220,7 +223,8 @@ async def search_knowledge(
         include_deployment_observations: Include server-projected deployment
             observation facts (one per app per cd poll). Hidden by default so
             they cannot crowd ordinary knowledge out of the top results.
-        include_history: Include invalidated and expired notes for investigations.
+        include_history: Include invalidated, review-due and unknown-freshness
+            notes for investigations, with dated evidence and review deadlines.
             Hidden by default. Other retrieval filters still apply.
         scope: Optionally narrow to one scope the caller is already authorized
             for, e.g. "repo:jomcgi-org/homelab". Exact membership only. A value
@@ -272,6 +276,7 @@ async def search_knowledge(
                 include_unscoped=authorization.include_unscoped,
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=not include_history,
+                include_history=include_history,
             )
         else:
             results = KnowledgeStore(session).search_notes_with_context(
@@ -283,6 +288,7 @@ async def search_knowledge(
                 include_unscoped=False,
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=not include_history,
+                include_history=include_history,
             )
     from knowledge.audit import count_retrievals
 

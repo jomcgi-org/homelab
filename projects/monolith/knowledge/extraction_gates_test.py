@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -181,6 +182,7 @@ def test_process_gate_keeps_causal_failure_mechanism(session):
 
 
 def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
+    observed = datetime(2026, 1, 1, tzinfo=timezone.utc)
     existing = Note(
         note_id="qwen-is-a-deprecated-alias-for-the-spark-pi-model",
         path="_processed/qwen-alias.md",
@@ -189,6 +191,9 @@ def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
         content="Qwen resolves to Spark so persisted sessions retain Pi compatibility.",
         type="fact",
         scope="repo:jomcgi-org/homelab",
+        observed_at=observed,
+        review_after=observed + timedelta(days=90),
+        review_policy="standard-90d/v1",
     )
     session.add(existing)
     session.commit()
@@ -212,6 +217,7 @@ def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
             _assertion(
                 "qwen-is-a-deprecated-alias-for-the-spark-pi-model",
                 "Qwen resolves to Spark because persisted sessions require Pi compatibility.",
+                observed_at="2026-10-03T00:00:00Z",
             )
         ),
     )
@@ -227,6 +233,29 @@ def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
         )
     ).one()
     assert provenance.atom_fk == existing.id
+    session.refresh(existing)
+    assert existing.observed_at.replace(tzinfo=timezone.utc) == observed
+    assert existing.review_after.replace(tzinfo=timezone.utc) == observed + timedelta(
+        days=90
+    )
+    # The retelling is newer evidence: it moves the revision a review captured.
+    assert existing.revision == 1
+    # Exact replay retains both deadline and original evidence age.
+    apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            _assertion(
+                "qwen-is-a-deprecated-alias-for-the-spark-pi-model",
+                "Qwen resolves to Spark because persisted sessions require Pi compatibility.",
+                observed_at="2026-10-03T00:00:00Z",
+            )
+        ),
+    )
+    session.refresh(existing)
+    assert existing.review_after.replace(tzinfo=timezone.utc) == observed + timedelta(
+        days=90
+    )
 
 
 def test_reobservation_raises_existing_note_confidence(session, monkeypatch):
@@ -250,7 +279,7 @@ def test_reobservation_raises_existing_note_confidence(session, monkeypatch):
         microsecond=0,
         tzinfo=None,
     )
-    expected_observed_at = existing.observed_at.replace(hour=13)
+    expected_observed_at = existing.observed_at
     session.add(existing)
     session.commit()
     session.refresh(existing)
@@ -319,6 +348,9 @@ def test_supersession_wins_over_duplicate_gate(session, monkeypatch):
 
     assert result["rejected"] == []
     assert result["atoms"] == ["current-alias-rule"]
+    session.refresh(existing)
+    assert existing.verification_state == "invalidated"
+    assert existing.revision == 1
 
 
 def test_duplicate_search_excludes_invalidated_notes(session, monkeypatch):
@@ -346,6 +378,7 @@ def test_duplicate_search_excludes_invalidated_notes(session, monkeypatch):
             "limit": 3,
             "scope_filter": "repo:jomcgi-org/homelab",
             "exclude_invalidated": True,
+            "include_history": True,
         }
     ]
 
