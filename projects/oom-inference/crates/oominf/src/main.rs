@@ -63,6 +63,26 @@ enum Command {
         #[command(flatten)]
         experts: experts::ExpertArgs,
     },
+    /// Serve the model over OpenAI- and Anthropic-compatible HTTP APIs.
+    Serve {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: std::net::IpAddr,
+        #[arg(long, default_value_t = 8091)]
+        port: u16,
+        /// Model name reported by the API (default: the model directory's name).
+        #[arg(long)]
+        served_model_name: Option<String>,
+        /// Longest sequence (prompt plus generation) the KV cache is sized for.
+        #[arg(long, default_value_t = 32768)]
+        max_context: usize,
+        /// Prompt tokens per prefill forward pass (bounds prefill activation memory).
+        #[arg(long, default_value_t = 256)]
+        prefill_chunk: usize,
+        #[command(flatten)]
+        experts: experts::ExpertArgs,
+    },
     /// Greedy-decode one chat turn (correctness tool).
     Generate {
         #[arg(long)]
@@ -194,6 +214,38 @@ fn main() -> Result<()> {
             tokens,
             experts,
         } => bench::run(&model, &prompt, tokens, &experts)?,
+        Command::Serve {
+            model,
+            host,
+            port,
+            served_model_name,
+            max_context,
+            prefill_chunk,
+            experts,
+        } => {
+            let model_name =
+                served_model_name.unwrap_or_else(|| oominf_server::default_model_name(&model));
+            let cfg = oominf_server::ServeConfig {
+                engine: oominf_server::engine::EngineConfig {
+                    model_dir: model,
+                    max_context,
+                    prefill_chunk,
+                },
+                addr: std::net::SocketAddr::new(host, port),
+                model_name,
+            };
+            oominf_server::serve(
+                cfg,
+                Box::new(move |gpu, files| {
+                    let source = experts::Experts::build(&experts, gpu, files)?;
+                    let summary = source.describe();
+                    Ok((
+                        Box::new(source) as Box<dyn oominf_models_qwen::ExpertSource>,
+                        summary,
+                    ))
+                }),
+            )?
+        }
         Command::Generate {
             model,
             prompt,
