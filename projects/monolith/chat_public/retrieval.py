@@ -23,11 +23,11 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-
-from sqlmodel import Session
+from datetime import datetime
 
 from knowledge.api import search_public_chunks
 from shared.embedding import EmbeddingClient
+from sqlmodel import Session
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ async def retrieve(
     *,
     k: int | None = None,
     embed_client: EmbeddingClient | None = None,
+    now: datetime | None = None,
 ) -> list[RetrievedNote]:
     """Embed ``query`` and return up to ``k`` distinct public notes for grounding.
 
@@ -72,7 +73,8 @@ async def retrieve(
         return []
     try:
         vector = await client.embed(query)
-        rows = search_public_chunks(session, vector, limit=limit)
+        kwargs = {"now": now} if now is not None else {}
+        rows = search_public_chunks(session, vector, limit=limit, **kwargs)
     except Exception:  # noqa: BLE001 - retrieval is best-effort; never fail a turn
         logger.exception("chat_public.retrieval.failed; answering ungrounded")
         return []

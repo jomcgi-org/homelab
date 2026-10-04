@@ -182,11 +182,14 @@ historical snapshots, explicitly dated and labelled with their expiry.
 Volatile facts require a new authoritative observation before action even
 inside their 24-hour interval.
 
-**Public tier (decision).** `public_api.knowledge_notes` and
-`public_api.knowledge_chunks` do not yet apply review freshness, so a due
-published fact can still ground public chat and `public_router` search. This
-change covers MCP, HTTP, recall, explorer and planner context only; the public
-views need a migration and a pg-backed test pass, tracked in #6823.
+**Public tier (staged).** `public_api.knowledge_notes` exposes the review
+columns. Public retrieval joins chunks to notes and applies the shared current
+predicate before its limit. Public search, note detail, graph nodes and edges,
+entity chapters and note counts use the same caller-clock rule. Daily fact
+counts remain aggregate history without fact text. With backfill suspended,
+unclassified public notes stay hidden until an operator-approved backfill gives
+them a lease. Cache expiry is the next slice; migration rollout and operational
+acceptance remain on #6823. Publication policy and stored history are unchanged.
 
 The existing jobs image provides `knowledge-review-backfill --apply --pending-only`
 as an Argo CronWorkflow that is **suspended by default**, including with the
