@@ -77,3 +77,24 @@ filegroup(
     ),
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+py_test(
+    name = "grimoire_join_enrollment_test",
+    srcs = ["grimoire_join_enrollment_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "blueprints/*.yaml",
+        "optional/*.yaml",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

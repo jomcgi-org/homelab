@@ -14,6 +14,7 @@ function event(fetch, fields = {}, token = "signed-token") {
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
   return {
     fetch,
+    url: new URL("https://friends.jomcgi.dev/grimoire"),
     cookies: {
       get: (name) => (name === "grimoire-id-token" ? token : undefined),
     },
@@ -66,6 +67,7 @@ async function renderLobby(campaign) {
 
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
+  delete process.env.GRIMOIRE_INVITATION_LINKS_ENABLED;
 });
 
 describe("Grimoire lobby", () => {
@@ -127,6 +129,7 @@ describe("Grimoire lobby", () => {
         members,
         unassigned_characters: [available],
         invitations: is_owner ? invitations : [],
+        join_links: [],
       });
       for (const [, options] of fetch.mock.calls)
         expect(options.headers).toEqual({ "x-grimoire-token": "signed-token" });
@@ -460,5 +463,182 @@ describe("Grimoire lobby", () => {
     expect(html).not.toContain('<select name="player_character_id"');
     expect(html).toContain("Create and assign character");
     expect(html).not.toContain("Clear character assignment");
+  });
+});
+
+describe("single-use campaign links", () => {
+  const token = "T".repeat(43);
+  const metadata = {
+    id: invitationId,
+    campaign_id: campaignId,
+    campaign_name: "Adventure",
+    invitee_email: "friend@example.test",
+    expires_at: "2026-10-06T12:00:00Z",
+    status: "pending",
+  };
+
+  it("returns the new secret once and forwards only validated creation fields", async () => {
+    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        ...metadata,
+        token,
+        provider_invitation_id: "secret-provider-id",
+      }),
+    );
+    const result = await actions.createLink(
+      event(fetch, {
+        campaign_id: campaignId,
+        email: " friend@example.test ",
+        allow_enrollment: "on",
+        role: "dm",
+        app_user_id: "forged",
+      }),
+    );
+    expect(result.new_link.url).toBe(
+      `https://friends.jomcgi.dev/grimoire/join#${token}`,
+    );
+    expect(result.new_link).not.toHaveProperty("token");
+    expect(result.new_link).not.toHaveProperty("provider_invitation_id");
+    expectJsonRequest(fetch, `/campaigns/${campaignId}/join-links`, "POST", {
+      email: "friend@example.test",
+      allow_enrollment: true,
+    });
+  });
+
+  it.each([
+    { campaign_id: "../other" },
+    { email: "wrong" },
+    { email: " " },
+    { email: "a".repeat(321) },
+    { allow_enrollment: "true" },
+  ])("rejects malformed form fields %j", async (fields) => {
+    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
+    const fetch = vi.fn();
+    const result = await actions.createLink(
+      event(fetch, {
+        campaign_id: campaignId,
+        email: "friend@example.test",
+        ...fields,
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["createLink", "revokeLink"])(
+    "fails closed when disabled for %s",
+    async (actionName) => {
+      const fetch = vi.fn();
+      const result = await actions[actionName](
+        event(fetch, {
+          campaign_id: campaignId,
+          join_link_id: invitationId,
+          email: "friend@example.test",
+        }),
+      );
+      expect(result.data.error).toContain("unavailable");
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not reflect unknown backend or transport errors from creation", async () => {
+    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
+    for (const fetch of [
+      vi
+        .fn()
+        .mockRejectedValue(
+          new TypeError("Cannot fetch https://user:secret@backend.test"),
+        ),
+      vi.fn().mockResolvedValue(response({ detail: "provider-secret" }, 500)),
+    ]) {
+      const result = await actions.createLink(
+        event(fetch, { campaign_id: campaignId, email: "friend@example.test" }),
+      );
+      expect(result.data.error).toContain("unavailable");
+      expect(JSON.stringify(result)).not.toContain("secret");
+    }
+  });
+
+  it("revokes only the specified campaign link", async () => {
+    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
+    const fetch = vi.fn().mockResolvedValue(response(null, 204));
+    expect(
+      await actions.revokeLink(
+        event(fetch, { campaign_id: campaignId, join_link_id: invitationId }),
+      ),
+    ).toEqual({ ok: true });
+    expect(fetch.mock.calls[0][0]).toBe(
+      `http://backend.test/api/grimoire/campaigns/${campaignId}/join-links/${invitationId}`,
+    );
+    expect(fetch.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("strips tokens and provider identifiers from loaded link metadata", async () => {
+    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          user: { email: "owner@example.test" },
+          invitation_links_enabled: true,
+          campaigns: [{ id: campaignId, role: "dm", is_owner: true }],
+        }),
+      )
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(
+        response([
+          { ...metadata, token, provider_invitation_id: "provider-secret" },
+        ]),
+      );
+    const data = await load(event(fetch));
+    expect(data.invitation_links_enabled).toBe(true);
+    expect(data.campaigns[0].join_links[0]).toMatchObject(metadata);
+    expect(JSON.stringify(data)).not.toContain(token);
+    expect(JSON.stringify(data)).not.toContain("provider-secret");
+  });
+
+  it("keeps the lobby and registered invitation fallback when the links backend is unavailable", async () => {
+    process.env.GRIMOIRE_INVITATION_LINKS_ENABLED = "true";
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          user: { email: "owner@example.test" },
+          invitation_links_enabled: true,
+          campaigns: [{ id: campaignId, role: "dm", is_owner: true }],
+          invitations: [],
+        }),
+      )
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response({ detail: "provider-secret" }, 503));
+    const data = await load(event(fetch));
+    expect(data.campaigns[0].join_links).toEqual([]);
+    expect(data.campaigns[0].join_links_error).toContain("unavailable");
+    const { html } = await render(Lobby, { props: { data } });
+    expect(html).toContain('action="?/invite"');
+    expect(html).not.toContain('action="?/createLink"');
+    expect(html).not.toContain("provider-secret");
+  });
+
+  it("removes the provider admin redirect and explains the disabled fallback", async () => {
+    const { html } = await render(Lobby, {
+      props: {
+        data: {
+          user: { email: "owner@example.test" },
+          can_administer_accounts: true,
+          campaigns: [],
+          invitations: [],
+        },
+      },
+    });
+    expect(html).toContain("Account invitations are unavailable right now");
+    expect(html).not.toContain("auth.jomcgi.dev/if/admin");
+    expect(html).not.toContain("Fixed data");
+    expect(html).not.toContain("Send via Email");
   });
 });

@@ -1903,6 +1903,14 @@ swarm:
 # skips cleanly if the key is absent. S3 endpoint/creds reuse the shared
 # SeaweedFS block emitted alongside stars.
 grimoire:
+  invitationLinks:
+    enabled: false
+    enrollmentEnabled: false
+    # Set only after a separate permission/provisioning review. The chart
+    # references an existing Operator-managed Secret; it does not create one.
+    existingSecretName: ""
+    tokenKey: api-token
+    flowID: ""
   authentikBaseUrl: "http://authentik-server.authentik:80"
   enabled: false
   play:
