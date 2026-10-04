@@ -12,6 +12,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -21,25 +25,21 @@ import random
 import re
 import threading
 import zlib
-from collections.abc import Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import ContextVar
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import NamedTuple, Protocol
+from typing import Awaitable, Callable, NamedTuple, Protocol
 
 import httpx
-from faas.embervm_client import (
-    SUBMIT_CONNECT_TIMEOUT,
-    EmberVMTimeout,
-    EmberVMTransportError,
-)
 from opentelemetry import trace
-from shared.k8s_auth import auth_headers
 
 from factory import execution as agent_sessions
-from factory.execution import create_outcome, model_family
+from factory.execution import model_family
+from factory.execution import create_outcome
 from factory.execution.constants import exact_dispatch_id
+from faas.embervm_client import (
+    EmberVMTimeout,
+    EmberVMTransportError,
+    SUBMIT_CONNECT_TIMEOUT,
+)
+from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)

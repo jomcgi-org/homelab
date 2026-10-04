@@ -357,7 +357,7 @@ def test_recall_dates_and_persisted_block_expire_at_equality():
     text = "base\n\n" + RECALL_HEADER + f"RECALL_EXPIRES {NOW.isoformat()}\nevidence"
     assert expire_recall(text, now=NOW - timedelta(microseconds=1)) == text
     assert expire_recall(text, now=NOW) == "base"
-    assert expire_recall(RECALL_HEADER + "legacy", now=NOW) is None
+    assert expire_recall(f"{RECALL_HEADER}RECALL_EXPIRES nonsense\nx", now=NOW) is None
 
 
 def test_expire_recall_keeps_text_after_a_quoted_header():
@@ -365,6 +365,14 @@ def test_expire_recall_keeps_text_after_a_quoted_header():
     appended = quoted + "\n\n" + RECALL_HEADER + f"RECALL_EXPIRES {NOW.isoformat()}\nx"
     assert expire_recall(appended, now=NOW - timedelta(seconds=1)) == appended
     assert expire_recall(appended, now=NOW) == quoted
+
+
+def test_expire_recall_keeps_task_text_when_a_quote_has_no_real_block():
+    task = "Now do the real task: fix bug X."
+    text = f"Review this prior prompt:\n\n{RECALL_HEADER}item...\n\n{task}"
+    assert expire_recall(text, now=NOW) == text
+    bare = f"{RECALL_HEADER}item..."
+    assert expire_recall(bare, now=NOW) == bare
 
 
 @pytest.mark.parametrize("caller", ["api", "recall", "extraction"])

@@ -4,14 +4,14 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import shared.inference
-from knowledge.api import KnowledgeStore, result_current
 from pydantic_ai import Agent, ModelSettings, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from shared.embedding import EmbeddingClient
 
 from chat.sse import SSEEmitter
+from knowledge.api import KnowledgeStore, result_current
+from shared.embedding import EmbeddingClient
+import shared.inference
 
 SYSTEM_PROMPT = """\
 You are a knowledge graph explorer. The user asks questions and you search \
