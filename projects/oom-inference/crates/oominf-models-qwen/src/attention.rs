@@ -523,6 +523,9 @@ impl<B: Backend> Attention<B> {
                 gpu.copy_at(&back, cache, 0, len * kvh * hd)?;
             }
         }
+        if !probe.wants("state.indexer_k") && probe.substitute("state.indexer_k").is_none() {
+            return Ok(());
+        }
         let n = len * a.idx_dim;
         let mut view = gpu.zeros(n)?;
         gpu.copy_at(&state.idx_keys, &mut view, 0, n)?;
