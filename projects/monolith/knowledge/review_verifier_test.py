@@ -679,6 +679,9 @@ B3_STATE_SENTENCE_TITLES = [
     "PR #6821 is open and needs review",
     "PR #6821 is open and its deployment is verified",
     "PR #6821 is open and has merge conflicts",
+    "PR #6821 is open, 待部署",
+    "PR #6821 is open, не развернут",
+    "PR #6821 is open 🚧",
 ]
 
 
