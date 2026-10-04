@@ -28,6 +28,16 @@ deeper connections. Discard results that aren't relevant — be decisive. \
 Reference notes by title when answering."""
 
 
+_FRESHNESS_KEYS = (
+    "review_after",
+    "review_policy",
+    "freshness",
+    "observed_at",
+    "last_reviewed_at",
+    "requires_authoritative_observation",
+)
+
+
 @dataclass
 class ExplorerDeps:
     store: KnowledgeStore
@@ -95,17 +105,7 @@ async def _search_kg(
                 "tags": r["tags"],
                 "snippet": r["snippet"],
                 "edges": r.get("edges", []),
-                **{
-                    key: r.get(key)
-                    for key in (
-                        "review_after",
-                        "review_policy",
-                        "freshness",
-                        "observed_at",
-                        "last_reviewed_at",
-                        "requires_authoritative_observation",
-                    )
-                },
+                **{key: r.get(key) for key in _FRESHNESS_KEYS},
             },
         )
         lines.append(
@@ -156,10 +156,18 @@ async def _expand_node(
                     "tags": target.get("tags", []),
                     "snippet": "",
                     "edges": [],
+                    **{key: target.get(key) for key in _FRESHNESS_KEYS},
                 },
             )
             edge_label = link.get("edge_type", "link")
-            lines.append(f"- {target['title']} ({edge_label})")
+            lines.append(
+                f"- {target['title']} ({edge_label}; "
+                f"observed: {target.get('observed_at')}, "
+                f"freshness: {target.get('freshness')}, "
+                f"review after: {target.get('review_after')})"
+            )
+            if target.get("requires_authoritative_observation"):
+                lines.append("New authoritative observation required before action.")
         else:
             lines.append(f"- {target_id} (unresolved)")
 
