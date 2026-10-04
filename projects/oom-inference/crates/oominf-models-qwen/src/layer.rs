@@ -214,67 +214,94 @@ impl<B: Backend> DecoderLayer<B> {
         self.post_moe(gpu, d, pre, &moe_out, t, state, probe)
     }
 
-    /// Routes `pre` (from [`Self::pre_moe`]) with this layer's router.
+    /// The MoE inputs of `pres` (from [`Self::pre_moe`], `lens[i]` tokens each) in one
+    /// `[sum(lens), hidden]` buffer, so their routed experts run as one step.
+    pub fn moe_input(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        pres: &[PreMoe<B>],
+        lens: &[usize],
+    ) -> Result<B::F32> {
+        let h = d.hidden;
+        let mut x = gpu.uninit(lens.iter().sum::<usize>() * h)?;
+        let mut at = 0;
+        for (pre, &t) in pres.iter().zip(lens) {
+            gpu.copy_range(&pre.mixed, 0, &mut x, at * h, t * h)?;
+            at += t;
+        }
+        Ok(x)
+    }
+
+    /// Routes `t` tokens of MoE input `x` (from [`Self::moe_input`]) with this
+    /// layer's router.
     pub fn route(
         &self,
         gpu: &B,
         d: &Dims,
-        pre: &PreMoe<B>,
+        x: &B::F32,
         t: usize,
         state: &LayerState<B>,
     ) -> Result<Routing<B>> {
         let mut ws = state.ws.borrow_mut();
         let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
-        let routing = self.moe.route(gpu, d, &pre.mixed, t, &mut scratch);
+        let routing = self.moe.route(gpu, d, x, t, &mut scratch);
         ws.give_bf16("gemm.scratch", scratch);
         routing
     }
 
-    /// The next layer's experts predicted for `pre` (see [`Moe::predict_next`]).
+    /// The next layer's experts predicted for `t` tokens of MoE input `x` (see
+    /// [`Moe::predict_next`]).
     pub fn predict_next(
         &self,
         gpu: &B,
         d: &Dims,
-        pre: &PreMoe<B>,
+        x: &B::F32,
         t: usize,
         state: &LayerState<B>,
     ) -> Result<Vec<u32>> {
         let mut ws = state.ws.borrow_mut();
         let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
-        let next = self.moe.predict_next(gpu, d, &pre.mixed, t, &mut scratch);
+        let next = self.moe.predict_next(gpu, d, x, t, &mut scratch);
         ws.give_bf16("gemm.scratch", scratch);
         next
     }
 
-    /// Finishes the layer for `pre` routed by `routing` (from [`Self::route`]),
-    /// with records from `experts`.
+    /// Finishes the layer for `pres` (`lens[i]` tokens each) whose MoE input `x`
+    /// (from [`Self::moe_input`]) is routed by `routing` (from [`Self::route`]),
+    /// with records from `experts`: their routed experts run as one step. Returns
+    /// each chunk's layer output.
     #[allow(clippy::too_many_arguments)]
     pub fn finish(
         &self,
         gpu: &B,
         d: &Dims,
-        pre: PreMoe<B>,
+        pres: Vec<PreMoe<B>>,
+        lens: &[usize],
+        x: &B::F32,
         routing: Routing<B>,
-        t: usize,
         state: &mut LayerState<B>,
         experts: &mut dyn ExpertSource<B>,
-    ) -> Result<B::F32> {
+    ) -> Result<Vec<B::F32>> {
+        let h = d.hidden;
+        let total = lens.iter().sum();
         let ws_rc = state.ws.clone();
         let mut ws = ws_rc.borrow_mut();
-        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
-        let moe_out = self.moe.apply(
-            gpu,
-            d,
-            &mut ws,
-            &pre.mixed,
-            t,
-            routing,
-            experts,
-            &mut scratch,
-        )?;
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, total))?;
+        let moe_out = self
+            .moe
+            .apply(gpu, d, &mut ws, x, total, routing, experts, &mut scratch)?;
         ws.give_bf16("gemm.scratch", scratch);
         drop(ws);
-        self.post_moe(gpu, d, pre, &moe_out, t, state, &mut NoProbe)
+        let mut outs = Vec::with_capacity(pres.len());
+        let mut at = 0;
+        for (pre, &t) in pres.into_iter().zip(lens) {
+            let mut part = gpu.uninit(t * h)?;
+            gpu.copy_range(&moe_out, at * h, &mut part, 0, t * h)?;
+            outs.push(self.post_moe(gpu, d, pre, &part, t, state, &mut NoProbe)?);
+            at += t;
+        }
+        Ok(outs)
     }
 
     /// The layer up to its MoE: PLE, the token mixer and the hyper-connections into

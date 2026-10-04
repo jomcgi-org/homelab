@@ -42,6 +42,17 @@ impl<B: Memory> Workspace<B> {
         }
     }
 
+    /// Like [`Self::take`], but keeps a buffer that already holds at least `n`
+    /// elements: steps of varying size (prefill fetch groups) reuse one allocation
+    /// instead of fragmenting the allocator. Callers pass explicit sizes to every
+    /// operation on it.
+    pub fn take_at_least(&mut self, b: &B, name: &'static str, n: usize) -> Result<B::F32> {
+        match self.f32s.remove(name) {
+            Some(buf) if buf.len() >= n.max(1) => Ok(buf),
+            _ => b.uninit(n),
+        }
+    }
+
     pub fn take_zeroed(&mut self, b: &B, name: &'static str, n: usize) -> Result<B::F32> {
         let mut buf = self.take(b, name, n)?;
         b.fill_zero(&mut buf)?;

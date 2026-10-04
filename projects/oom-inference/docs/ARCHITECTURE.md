@@ -62,7 +62,10 @@ the hardware gains from it, and any such mode is opt-in and must pass the gates
 in `TESTING.md`. Defaults:
 
 - NVFP4 experts: weights decoded exactly in fp32 (`e2m1 * fp8 * scale_2`),
-  activations unquantised (W4A16), fp32 accumulation.
+  activations unquantised (W4A16), fp32 accumulation. Prefill runs them on
+  tensor cores without giving that up: `e2m1 * fp8` is an exact bf16 value
+  (`scale_2` scales the fp32 result), each fp32 activation splits exactly into
+  three bf16 terms, and the products accumulate in fp32.
 - Dense weights: bf16 as released. Decode GEMVs read fp32 activations directly;
   prefill GEMMs round activations to bf16 for tensor cores.
 - Residual stream, norms, softmax, recurrent state and KV cache: fp32.
@@ -91,12 +94,13 @@ trades are how engines drift from the model they claim to run.
   recurring ones.
 - Prefill streams through a one-layer stage instead of evicting decode-hot
   experts. It runs layer by layer: a layer's token mixer runs over every chunk,
-  the union of their routed experts is fetched once, and the next layer's
-  experts, predicted by its router on this layer's MoE inputs, are staged while
-  this layer's experts compute (stage-ahead), borrowing the main tier's coldest
-  slots while the stage holds the computing layer. Prompts of one chunk skip
-  this: with little compute per layer to hide copies behind, the less precise
-  prediction costs more than it saves. Between prefills the stage is a
+  the union of their routed experts is fetched once and runs as one step (up to
+  2048 tokens, about 40 per expert, enough for tensor-core tiles), and the next
+  layer's experts, predicted by its router on this layer's MoE inputs, are
+  staged while this layer's experts compute (stage-ahead), borrowing the main
+  tier's coldest slots while the stage holds the computing layer. Prompts of one
+  chunk skip this: with little compute per layer to hide copies behind, the less
+  precise prediction costs more than it saves. Between prefills the stage is a
   decode victim cache: an evicted record is copied there device to device, so a
   later miss on it is a promotion.
 - During decode (and draft verification), layer L+1's router applied to layer

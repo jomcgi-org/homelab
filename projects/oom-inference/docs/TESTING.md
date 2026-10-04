@@ -11,6 +11,7 @@ below.
 | Whole-model chain | all layers, final mixer and logits match the reference end to end | `oominf check-model` |
 | Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
 | Speculative decoding | greedy decoding with MTP drafts produces the same tokens as one-token steps | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored` |
+| Expert kernel | the tensor-core NVFP4 kernel matches an f64 reference on random records, and its throughput | `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture` |
 | GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
 
 ## Reference fixtures
