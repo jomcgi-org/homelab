@@ -1,6 +1,10 @@
 ALTER TABLE knowledge.notes
     ADD COLUMN revision bigint NOT NULL DEFAULT 0;
 
+-- A dispute insert fences in-flight reviews by incrementing the note revision
+-- in the same transaction. No claim or review-deadline column is writable.
+GRANT UPDATE (revision) ON knowledge.notes TO agents_writer;
+
 CREATE TABLE knowledge.review_outcomes (
     id bigserial PRIMARY KEY,
     note_id text NOT NULL,
