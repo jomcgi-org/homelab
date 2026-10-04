@@ -12,9 +12,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use oominf_cuda::Gpu;
-use oominf_models_qwen::{Dims, DiskExperts, Probe, QwenModel};
+use oominf_models_qwen::{Dims, Probe, QwenModel};
 
 use crate::check_layer::{STEPS, load_step, rms_rel_and_cos, step_tokens};
+use crate::experts::{ExpertArgs, Experts};
 
 struct ModelProbe<'a> {
     truth: &'a HashMap<String, Vec<f32>>,
@@ -79,7 +80,7 @@ fn logit_metrics(
     (agree, rows, max_d, sum_d / n.max(1) as f64)
 }
 
-pub fn run(model_dir: &Path, fixtures: &Path) -> Result<bool> {
+pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Result<bool> {
     let model = Arc::new(oominf_format::Model::open(model_dir)?);
     let dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
     let tolerances: serde_json::Value = serde_json::from_slice(
@@ -95,6 +96,8 @@ pub fn run(model_dir: &Path, fixtures: &Path) -> Result<bool> {
     let vocab = qwen.vocab();
     let max_tokens: usize = tokens.iter().map(Vec::len).sum();
 
+    let mut experts = Experts::build(expert_args, &gpu, &model)?;
+    println!("{}", experts.describe());
     let mut ok = true;
     for isolate in [true, false] {
         println!(
@@ -105,7 +108,6 @@ pub fn run(model_dir: &Path, fixtures: &Path) -> Result<bool> {
                 "chained (end to end)"
             }
         );
-        let mut experts = DiskExperts::new(model.clone());
         let mut state = qwen.new_state(&gpu, max_tokens)?;
         for (step, ids) in STEPS.iter().zip(&tokens) {
             let truth = load_step(&fixtures.join(format!("fp32/{step}.safetensors")))?;

@@ -2,6 +2,7 @@ mod bench;
 mod chat;
 mod check_layer;
 mod check_model;
+mod experts;
 mod generate;
 
 use std::path::PathBuf;
@@ -48,6 +49,8 @@ enum Command {
         /// Fixture directory of the chain (holds manifest.json, fp32/, bf16/).
         #[arg(long)]
         fixtures: PathBuf,
+        #[command(flatten)]
+        experts: experts::ExpertArgs,
     },
     /// Greedy decode with a time breakdown (performance baseline).
     Bench {
@@ -57,6 +60,8 @@ enum Command {
         prompt: String,
         #[arg(long, default_value_t = 32)]
         tokens: usize,
+        #[command(flatten)]
+        experts: experts::ExpertArgs,
     },
     /// Greedy-decode one chat turn (correctness tool).
     Generate {
@@ -66,6 +71,8 @@ enum Command {
         prompt: String,
         #[arg(long, default_value_t = 64)]
         max_tokens: usize,
+        #[command(flatten)]
+        experts: experts::ExpertArgs,
     },
     /// Render a user turn with the chat template and tokenize it; with
     /// `--manifest`, check it against a reference fixture manifest.
@@ -172,8 +179,12 @@ fn main() -> Result<()> {
                 bail!("isolated stages over budget");
             }
         }
-        Command::CheckModel { model, fixtures } => {
-            if !check_model::run(&model, &fixtures)? {
+        Command::CheckModel {
+            model,
+            fixtures,
+            experts,
+        } => {
+            if !check_model::run(&model, &fixtures, &experts)? {
                 bail!("logits less faithful than the reference's bf16 run");
             }
         }
@@ -181,12 +192,14 @@ fn main() -> Result<()> {
             model,
             prompt,
             tokens,
-        } => bench::run(&model, &prompt, tokens)?,
+            experts,
+        } => bench::run(&model, &prompt, tokens, &experts)?,
         Command::Generate {
             model,
             prompt,
             max_tokens,
-        } => generate::run(&model, &prompt, max_tokens)?,
+            experts,
+        } => generate::run(&model, &prompt, max_tokens, &experts)?,
         Command::Tokenize {
             model,
             prompt,

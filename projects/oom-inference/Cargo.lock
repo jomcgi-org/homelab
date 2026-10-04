@@ -580,6 +580,7 @@ dependencies = [
  "oominf-cuda",
  "oominf-format",
  "oominf-models-qwen",
+ "oominf-tiers",
  "serde_json",
  "tokenizers",
 ]
@@ -634,6 +635,19 @@ dependencies = [
  "oominf-cuda",
  "oominf-format",
  "serde_json",
+]
+
+[[package]]
+name = "oominf-tiers"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "cudarc",
+ "io-uring",
+ "libc",
+ "oominf-cuda",
+ "oominf-format",
+ "oominf-models-qwen",
 ]
 
 [[package]]
