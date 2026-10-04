@@ -8,11 +8,17 @@ use std::time::Instant;
 
 use anyhow::Result;
 use oominf_cuda::Gpu;
-use oominf_models_qwen::{Dims, DiskExperts, NoProbe, QwenModel};
+use oominf_models_qwen::{Dims, NoProbe, QwenModel};
 
 use crate::chat::Chat;
+use crate::experts::{ExpertArgs, Experts};
 
-pub fn run(model_dir: &Path, prompt: &str, max_tokens: usize) -> Result<()> {
+pub fn run(
+    model_dir: &Path,
+    prompt: &str,
+    max_tokens: usize,
+    expert_args: &ExpertArgs,
+) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
     let stop: Vec<u32> = ["<|im_end|>", "<|endoftext|>"]
@@ -32,7 +38,8 @@ pub fn run(model_dir: &Path, prompt: &str, max_tokens: usize) -> Result<()> {
         ids.len()
     );
 
-    let mut experts = DiskExperts::new(model.clone());
+    let mut experts = Experts::build(expert_args, &gpu, &model)?;
+    eprintln!("{}", experts.describe());
     let mut state = qwen.new_state(&gpu, ids.len() + max_tokens)?;
     let t1 = Instant::now();
     let mut logits = qwen.forward(&gpu, &ids, &mut state, &mut experts, &mut NoProbe, true)?;

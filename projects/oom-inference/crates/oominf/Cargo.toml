@@ -13,6 +13,7 @@ oominf-convert = { path = "../oominf-convert" }
 oominf-cuda = { path = "../oominf-cuda" }
 oominf-format = { path = "../oominf-format" }
 oominf-models-qwen = { path = "../oominf-models-qwen" }
+oominf-tiers = { path = "../oominf-tiers" }
 serde_json.workspace = true
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
 
