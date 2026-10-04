@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import NamedTuple
 
 from knowledge.freshness import (
+    _OPERATIONAL_SUBJECT,
     _OUTSTANDING_GATE,
     _PROVENANCE_SECTION,
     _SHA,
@@ -44,6 +45,50 @@ _CHECK_WORD = re.compile(r"\b(checks?|ci|check[- ]runs?)\b", re.IGNORECASE)
 _GATE_WORDS = re.compile(
     r"\b(remaining|remains?|awaiting|live validation|acceptance|gates?)\b",
     re.IGNORECASE,
+)
+# Any operational subject fails closed: GitHub lifecycle and check data
+# establish nothing about pilots, deploys, rollouts or approvals, whatever
+# the obligation wording around them. deploy\w* and pilot\w* cover inflected
+# forms (deployed, deploying, piloted) the shared vocabulary does not name.
+_OPERATIONAL_ANY = re.compile(
+    rf"\b(?:{_OPERATIONAL_SUBJECT}|deploy\w*|pilot\w*)\b",
+    re.IGNORECASE,
+)
+# Glue words that may surround a verifiable predicate. Anything else left
+# after references, SHAs, state terms and check words are stripped is a claim
+# about something GitHub cannot establish, so the sentence is unsupported.
+_FILLER = frozenset(
+    {
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "has",
+        "have",
+        "had",
+        "the",
+        "a",
+        "an",
+        "at",
+        "and",
+        "or",
+        "now",
+        "for",
+        "to",
+        "of",
+        "on",
+        "in",
+        "with",
+        "as",
+        "by",
+        "it",
+        "its",
+        "this",
+        "that",
+    }
 )
 _NEGATION = re.compile(
     r"\b(not|never|no longer|isn't|wasn't|aren't|weren't|without|unmerged|"
@@ -155,14 +200,30 @@ def _distinct_shas(sentence: str) -> list[str]:
     )
 
 
+def _residual_words(sentence: str) -> list[str]:
+    """Words left after everything a verifiable predicate may contain is stripped."""
+    tmp = _REF.sub(" ", sentence)
+    tmp = _SHA.sub(" ", tmp)
+    tmp = _STATE.sub(" ", tmp)
+    tmp = _CHECK_WORD.sub(" ", tmp)
+    return [
+        word
+        for word in re.findall(r"[A-Za-z]+", tmp)
+        if word.lower() not in _FILLER
+    ]
+
+
 def extract_predicates(
     *, title: str, content: str | None, default_repo: str
 ) -> list[Predicate]:
     """Predicates the claim asserts, or ``_Unsupported`` naming the first gap.
 
-    Fails closed: a renewal extends the whole note, so every sentence that
-    states a state or an acceptance gate must produce a predicate tied to a
-    concrete instance. A state claim that refers back to an earlier sentence
+    Fails closed: a renewal extends the whole note, so every sentence must
+    produce a predicate tied to a concrete instance. A sentence naming an
+    operational subject (a pilot, deploy, rollout or approval, in any
+    inflection) is an acceptance gate GitHub cannot establish, whatever the
+    obligation wording. A sentence with no state term states no verifiable
+    predicate. A state claim that refers back to an earlier sentence
     ("Its checks are failing") or a gate written as its own sentence cannot be
     verified, so the whole claim is unsupported rather than partly renewed.
     Every distinct named reference anywhere in the claim must also be covered
@@ -171,25 +232,24 @@ def extract_predicates(
     A number left over after parsed references and SHAs are stripped is an
     uncovered reference the patterns above do not name ("PRs 6821 and 6822",
     "PR #6821/#6822", "Issues 5, 6 and 7"), and is likewise unsupported.
+    Within a state sentence, any residual word past references, SHAs, state
+    terms, check words and filler glue ("needs review", "merge conflicts")
+    is a claim about something GitHub cannot establish.
     """
     claim = _PROVENANCE_SECTION.sub("", content or "")
     predicates: list[Predicate] = []
     note_named: set[tuple[str, int]] = set()
     note_covered: set[tuple[str, int]] = set()
     for sentence in sentences(f"{title}\n{claim}"):
-        if _GATE_WORDS.search(sentence) or _OUTSTANDING_GATE.search(sentence):
+        if (
+            _GATE_WORDS.search(sentence)
+            or _OUTSTANDING_GATE.search(sentence)
+            or _OPERATIONAL_ANY.search(sentence)
+        ):
             raise _Unsupported("acceptance gate is not verifiable from GitHub")
         note_named.update(
             (repo, number) for _, repo, number in _refs(sentence, default_repo)
         )
-        if not _STATE.search(sentence):
-            continue
-        if not has_instance(sentence):
-            raise _Unsupported("state claim names no concrete instance")
-        if _NEGATION.search(sentence):
-            raise _Unsupported("negated or conditional state claim")
-        refs = _refs(sentence, default_repo)
-        shas = _distinct_shas(sentence)
         if _RUN.search(sentence):
             raise _Unsupported("workflow run or job state is not verifiable")
         stripped = _SHA.sub(" ", _REF.sub(" ", sentence))
@@ -198,6 +258,20 @@ def extract_predicates(
             raise _Unsupported(
                 f"reference #{int(number)} is not covered by a verifiable predicate"
             )
+        if not _STATE.search(sentence):
+            refs = _refs(sentence, default_repo)
+            if refs:
+                _, repo, number = refs[0]
+                raise _Unsupported(
+                    f"reference #{number} is not covered by a verifiable predicate"
+                )
+            raise _Unsupported("sentence states no verifiable predicate")
+        if not has_instance(sentence):
+            raise _Unsupported("state claim names no concrete instance")
+        if _NEGATION.search(sentence):
+            raise _Unsupported("negated or conditional state claim")
+        refs = _refs(sentence, default_repo)
+        shas = _distinct_shas(sentence)
         checks = bool(_CHECK_WORD.search(sentence))
         consumed: set[str] = set()
         named = {(repo, number) for _, repo, number in refs}
@@ -246,6 +320,11 @@ def extract_predicates(
                 raise _Unsupported(f"state {term!r} is not verifiable from GitHub")
         if set(shas) - consumed:
             raise _Unsupported("SHA assertion is not verifiable from GitHub")
+        residual = _residual_words(sentence)
+        if residual:
+            raise _Unsupported(
+                f"unsupported wording {residual[0]!r} is not verifiable from GitHub"
+            )
         note_covered.update(covered)
     if note_named - note_covered:
         _, number = sorted(note_named - note_covered)[0]

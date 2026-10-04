@@ -56,7 +56,9 @@ def volatile(name="n1", number=1, **fields):
         "path": f"{name}.md",
         "title": f"Issue #{number} is open",
         "content_hash": f"hash-{name}",
-        "content": "Tracked work.",
+        # No claim body: every body sentence must yield its own predicate for
+        # the note to renew, so filler prose would fail the note closed.
+        "content": None,
         "observed_at": NOW - timedelta(days=2),
         "review_policy": VOLATILE,
         "review_after": NOW - timedelta(days=1),
@@ -463,6 +465,63 @@ def test_admission_does_not_renew_an_operational_gate(session, gate):
     result = admit(session, github, Clock())
     assert result["unsupported"] == 1 and result["renewed"] == 0
     assert "acceptance gate" in outcomes(session, row.note_id)[0].reason
+    assert github.calls == []
+    session.refresh(row)
+    assert row.last_reviewed_at is None
+    assert utc(row.review_after) == original
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "The live pilot is incomplete.",
+        "Pilot not done.",
+        "Run the pilot after merge.",
+        "Next step: run the pilot.",
+        "Do not deploy yet.",
+        "6822 is too.",
+        "Pilot TBD.",
+        "Nobody has run the pilot.",
+        "The deploy hasn't happened.",
+        "Joe requested changes.",
+        "Merge is on hold.",
+        "with changes requested",
+        "enqueued in the merge queue",
+        "Ditto the next PR.",
+    ],
+)
+def test_admission_does_not_renew_a_free_text_follow_on(session, content):
+    # Blocking B3: GitHub reports PR #6821 open, yet the follow-on sentence
+    # states an operational gate or nothing verifiable: no renewal, no move.
+    row = add(session, volatile(title="PR #6821 is open", content=content))
+    original = utc(row.review_after)
+    github = Github()
+    github.issues = {6821: "open"}
+    result = admit(session, github, Clock())
+    assert result["unsupported"] == 1 and result["renewed"] == 0
+    assert github.calls == []
+    session.refresh(row)
+    assert row.last_reviewed_at is None
+    assert utc(row.review_after) == original
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "PR #6821 is open and needs review",
+        "PR #6821 is open and its deployment is verified",
+        "PR #6821 is open and has merge conflicts",
+    ],
+)
+def test_admission_does_not_renew_extra_wording_in_a_state_sentence(
+    session, title
+):
+    row = add(session, volatile(title=title))
+    original = utc(row.review_after)
+    github = Github()
+    github.issues = {6821: "open"}
+    result = admit(session, github, Clock())
+    assert result["unsupported"] == 1 and result["renewed"] == 0
     assert github.calls == []
     session.refresh(row)
     assert row.last_reviewed_at is None
