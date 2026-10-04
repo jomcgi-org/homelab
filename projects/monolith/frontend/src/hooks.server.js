@@ -59,6 +59,20 @@ export function pickEncoding(accept) {
 export async function handle({ event, resolve }) {
   const response = await resolve(event);
 
+  // The Activity index still accepts legacy JSON clients at its HTML URL.
+  // Cloudflare's URL cache key does not distinguish Accept, so neither
+  // representation can be stored here. Keep the exception at the response
+  // boundary to cover HTML, JSON, navigation data, HEAD and error responses.
+  // Cacheable JSON lives at /slop/factory/data/activity (agent aggregates)
+  // and /slop/factory/data/board (the factory ledger).
+  if (event.route?.id === "/public/slop/factory/activity") {
+    response.headers.set("cache-control", "no-store");
+    response.headers.set("cloudflare-cdn-cache-control", "no-store");
+    // Do not revalidate a previously cached representation into a 304. Kit
+    // evaluates If-None-Match after this hook, so remove its validator too.
+    response.headers.delete("etag");
+  }
+
   // HEAD must not have its body materialised; pass through untouched.
   if (event.request.method === "HEAD") return response;
   // Respect anything upstream already encoded.
