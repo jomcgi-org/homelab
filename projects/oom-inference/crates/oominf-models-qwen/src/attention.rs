@@ -18,11 +18,11 @@
 //! head_dim + index_head_dim) * 4` bytes per layer (about 4.6 KiB per token).
 
 use anyhow::{Context, Result, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
 use oominf_format::Model;
 
 use crate::layer::StepInput;
-use crate::util::{bf16_tensor, tap};
+use crate::util::{bf16_concat, bf16_tensor, tap};
 use crate::{Dims, Probe};
 
 #[derive(Debug, Clone)]
@@ -92,13 +92,11 @@ fn rope_inv_freq(t: &serde_json::Value, rotary_dim: usize) -> Result<Vec<f32>> {
 
 pub struct Attention {
     a: AttnDims,
-    q_proj: Bf16Buf,
-    k_proj: Bf16Buf,
-    v_proj: Bf16Buf,
+    /// `index_qk_proj`, `q_proj` (query and gate), `k_proj`, `v_proj` stacked: one GEMM.
+    in_proj: Bf16Buf,
     o_proj: Bf16Buf,
     q_norm: Bf16Buf,
     k_norm: Bf16Buf,
-    idx_qk: Bf16Buf,
     idx_q_norm: Bf16Buf,
     idx_k_norm: Bf16Buf,
     inv_freq: Buf,
@@ -112,6 +110,11 @@ pub struct AttnState {
     pub v: Buf,
     /// `[max_tokens, index_head_dim]` raw indexer keys (pre-norm, pre-RoPE).
     pub idx_keys: Buf,
+    /// `[max_tokens / ratio, index_head_dim]` pooled, normed, RoPE'd block keys; the
+    /// first `blocks` are valid. Blocks never change once complete, so each step only
+    /// computes the ones it completes.
+    pub block_keys: Buf,
+    pub blocks: usize,
     pub len: usize,
     pub max_tokens: usize,
 }
@@ -126,13 +129,19 @@ impl Attention {
         let idx_out = ((a.idx_heads + a.idx_kv_heads) * a.idx_dim) as u64;
         let inv_freq = rope_inv_freq(&d.text, a.rotary_dim)?;
         Ok(Attention {
-            q_proj: w("q_proj.weight", &[nh * hd * 2, h])?,
-            k_proj: w("k_proj.weight", &[kvh * hd, h])?,
-            v_proj: w("v_proj.weight", &[kvh * hd, h])?,
+            in_proj: bf16_concat(
+                gpu,
+                model,
+                &[
+                    (format!("{p}indexer.index_qk_proj.weight"), vec![idx_out, h]),
+                    (format!("{p}q_proj.weight"), vec![nh * hd * 2, h]),
+                    (format!("{p}k_proj.weight"), vec![kvh * hd, h]),
+                    (format!("{p}v_proj.weight"), vec![kvh * hd, h]),
+                ],
+            )?,
             o_proj: w("o_proj.weight", &[h, nh * hd])?,
             q_norm: w("q_norm.weight", &[hd])?,
             k_norm: w("k_norm.weight", &[hd])?,
-            idx_qk: w("indexer.index_qk_proj.weight", &[idx_out, h])?,
             idx_q_norm: w("indexer.q_layernorm.weight", &[a.idx_dim as u64])?,
             idx_k_norm: w("indexer.k_layernorm.weight", &[a.idx_dim as u64])?,
             inv_freq: gpu.upload_f32(&inv_freq)?,
@@ -147,17 +156,21 @@ impl Attention {
             k: gpu.zeros(kv)?,
             v: gpu.zeros(kv)?,
             idx_keys: gpu.zeros(max_tokens * a.idx_dim)?,
+            block_keys: gpu.zeros((max_tokens / a.ratio).max(1) * a.idx_dim)?,
+            blocks: 0,
             len: 0,
             max_tokens,
         })
     }
 
-    /// `x` is the block input `[t, hidden]`; returns the mixer output `[t, hidden]`.
+    /// `x` is the block input `[t, hidden]`; returns the mixer output `[t, hidden]` as
+    /// workspace buffer `attn.out` (the caller gives it back).
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         gpu: &Gpu,
         d: &Dims,
+        ws: &mut Workspace,
         x: &Buf,
         t: usize,
         step: &StepInput,
@@ -180,18 +193,33 @@ impl Attention {
             state.max_tokens
         );
         let (nh, kvh, hd) = (a.heads, a.kv_heads, a.head_dim);
+        let (rd, inv) = (a.rotary_dim, &self.inv_freq);
+
+        // One GEMM for every projection of x: [indexer qk | q+gate | k | v].
+        let idx_w = (a.idx_heads + a.idx_kv_heads) * a.idx_dim;
+        let (qg_w, kv_w) = (nh * hd * 2, kvh * hd);
+        let n = idx_w + qg_w + 2 * kv_w;
+        let mut proj = ws.take(gpu, "attn.proj", t * n)?;
+        gpu.gemm_bf16(x, &self.in_proj, &mut proj, scratch, t, n, h)?;
+        let mut idx_qk = ws.take(gpu, "attn.idx_qk", t * idx_w)?;
+        gpu.copy_cols(&proj, &mut idx_qk, t, n, 0, idx_w)?;
+        let mut qg = ws.take(gpu, "attn.qg", t * qg_w)?;
+        gpu.copy_cols(&proj, &mut qg, t, n, idx_w, qg_w)?;
+        let mut k_raw = ws.take(gpu, "attn.k_raw", t * kv_w)?;
+        gpu.copy_cols(&proj, &mut k_raw, t, n, idx_w + qg_w, kv_w)?;
+        let mut v = ws.take(gpu, "attn.v", t * kv_w)?;
+        gpu.copy_cols(&proj, &mut v, t, n, idx_w + qg_w + kv_w, kv_w)?;
+        ws.give("attn.proj", proj);
 
         // Indexer: selection mask over [0, kv_len) for each query.
-        let idx_w = (a.idx_heads + a.idx_kv_heads) * a.idx_dim;
-        let mut idx_qk = gpu.zeros(t * idx_w)?;
-        gpu.gemm_bf16(x, &self.idx_qk, &mut idx_qk, scratch, t, idx_w, h)?;
         tap(gpu, probe, "indexer.qk_proj", &mut idx_qk)?;
         let iq_w = a.idx_heads * a.idx_dim;
-        let mut iq_raw = gpu.zeros(t * iq_w)?;
+        let mut iq_raw = ws.take(gpu, "attn.iq_raw", t * iq_w)?;
         gpu.copy_cols(&idx_qk, &mut iq_raw, t, idx_w, 0, iq_w)?;
-        let mut ik_raw = gpu.zeros(t * a.idx_dim)?;
+        let mut ik_raw = ws.take(gpu, "attn.ik_raw", t * a.idx_dim)?;
         gpu.copy_cols(&idx_qk, &mut ik_raw, t, idx_w, iq_w, a.idx_dim)?;
-        let mut iq = gpu.zeros(t * iq_w)?;
+        ws.give("attn.idx_qk", idx_qk);
+        let mut iq = ws.take(gpu, "attn.iq", t * iq_w)?;
         let rows = t * a.idx_heads;
         gpu.rmsnorm_groups(
             &iq_raw,
@@ -203,8 +231,8 @@ impl Attention {
             d.eps,
             1.0,
         )?;
+        ws.give("attn.iq_raw", iq_raw);
         tap(gpu, probe, "indexer.q_normed", &mut iq)?;
-        let (rd, inv) = (a.rotary_dim, &self.inv_freq);
         gpu.rope_rotate_half(&mut iq, t, a.idx_heads, a.idx_dim, rd, inv, start, 1)?;
         tap(gpu, probe, "indexer.q_rope", &mut iq)?;
         gpu.copy_at(
@@ -213,31 +241,47 @@ impl Attention {
             start * a.idx_dim,
             t * a.idx_dim,
         )?;
+        ws.give("attn.ik_raw", ik_raw);
 
+        // Block keys for the blocks this step completes.
         let nblocks = kv_len / a.ratio;
-        let mut block_keys = gpu.zeros(nblocks.max(1) * a.idx_dim)?;
-        if nblocks > 0 {
-            let mut pooled = gpu.zeros(nblocks * a.idx_dim)?;
-            gpu.pool_rows(&state.idx_keys, &mut pooled, nblocks, a.ratio, a.idx_dim)?;
-            let id = a.idx_dim;
+        if nblocks > state.blocks {
+            let (b0, nb_new, id) = (state.blocks, nblocks - state.blocks, a.idx_dim);
+            let mut raw = ws.take(gpu, "attn.blk_raw", nb_new * a.ratio * id)?;
+            gpu.copy_range(
+                &state.idx_keys,
+                b0 * a.ratio * id,
+                &mut raw,
+                0,
+                nb_new * a.ratio * id,
+            )?;
+            let mut pooled = ws.take(gpu, "attn.blk_pooled", nb_new * id)?;
+            gpu.pool_rows(&raw, &mut pooled, nb_new, a.ratio, id)?;
+            ws.give("attn.blk_raw", raw);
+            let mut normed = ws.take(gpu, "attn.blk_normed", nb_new * id)?;
             gpu.rmsnorm_groups(
                 &pooled,
                 &self.idx_k_norm,
-                &mut block_keys,
-                nblocks,
+                &mut normed,
+                nb_new,
                 id,
                 id,
                 d.eps,
                 1.0,
             )?;
-            gpu.rope_rotate_half(&mut block_keys, nblocks, 1, id, rd, inv, 0, a.ratio)?;
+            ws.give("attn.blk_pooled", pooled);
+            gpu.rope_rotate_half(&mut normed, nb_new, 1, id, rd, inv, b0 * a.ratio, a.ratio)?;
+            gpu.copy_at(&normed, &mut state.block_keys, b0 * id, nb_new * id)?;
+            ws.give("attn.blk_normed", normed);
+            state.blocks = nblocks;
         }
         let score_w = kv_len / a.ratio + 1;
-        let mut idx_scores = gpu.zeros(t * score_w)?;
-        let mut mask = gpu.upload_bytes(&vec![0u8; t * kv_len])?;
+        let mut idx_scores = ws.take(gpu, "attn.idx_scores", t * score_w)?;
+        // qsa_select writes every mask byte.
+        let mut mask = unsafe { gpu.stream.alloc::<u8>(t * kv_len)? };
         gpu.qsa_select(
             &iq,
-            &block_keys,
+            &state.block_keys,
             &mut idx_scores,
             &mut mask,
             t,
@@ -248,6 +292,7 @@ impl Attention {
             a.block_topk,
             kv_len,
         )?;
+        ws.give("attn.iq", iq);
         if probe.wants("indexer.num_blocks") {
             let nb = (0..t).map(|i| ((start + i + 1) / a.ratio) as f32).collect();
             probe.observe("indexer.num_blocks", nb);
@@ -263,6 +308,7 @@ impl Attention {
             }
             probe.observe("indexer.block_scores", padded);
         }
+        ws.give("attn.idx_scores", idx_scores);
         if probe.wants("indexer.mask") {
             let m = gpu.download(&mask)?;
             probe.observe("indexer.mask", m.into_iter().map(f32::from).collect());
@@ -276,56 +322,56 @@ impl Attention {
             mask = gpu.upload_bytes(&bytes)?;
         }
 
-        // Projections, norms, RoPE.
-        let mut qg = gpu.zeros(t * nh * hd * 2)?;
-        gpu.gemm_bf16(x, &self.q_proj, &mut qg, scratch, t, nh * hd * 2, h)?;
-        let mut k_raw = gpu.zeros(t * kvh * hd)?;
-        gpu.gemm_bf16(x, &self.k_proj, &mut k_raw, scratch, t, kvh * hd, h)?;
-        let mut v = gpu.zeros(t * kvh * hd)?;
-        gpu.gemm_bf16(x, &self.v_proj, &mut v, scratch, t, kvh * hd, h)?;
+        // Norms, RoPE, cache append.
         tap(gpu, probe, "attn.q_proj", &mut qg)?;
         tap(gpu, probe, "attn.k_proj", &mut k_raw)?;
         tap(gpu, probe, "attn.v_proj", &mut v)?;
-        let mut q_raw = gpu.zeros(t * nh * hd)?;
-        let mut gate = gpu.zeros(t * nh * hd)?;
+        let mut q_raw = ws.take(gpu, "attn.q_raw", t * nh * hd)?;
+        let mut gate = ws.take(gpu, "attn.gate", t * nh * hd)?;
         gpu.split_q_gate(&qg, &mut q_raw, &mut gate, t, nh, hd)?;
-        let mut q = gpu.zeros(t * nh * hd)?;
+        ws.give("attn.qg", qg);
+        let mut q = ws.take(gpu, "attn.q", t * nh * hd)?;
         gpu.rmsnorm_groups(&q_raw, &self.q_norm, &mut q, t * nh, hd, hd, d.eps, 1.0)?;
-        let mut k = gpu.zeros(t * kvh * hd)?;
+        ws.give("attn.q_raw", q_raw);
+        let mut k = ws.take(gpu, "attn.k", t * kv_w)?;
         gpu.rmsnorm_groups(&k_raw, &self.k_norm, &mut k, t * kvh, hd, hd, d.eps, 1.0)?;
+        ws.give("attn.k_raw", k_raw);
         tap(gpu, probe, "attn.q_normed", &mut q)?;
         tap(gpu, probe, "attn.k_normed", &mut k)?;
         gpu.rope_rotate_half(&mut q, t, nh, hd, rd, inv, start, 1)?;
         gpu.rope_rotate_half(&mut k, t, kvh, hd, rd, inv, start, 1)?;
         tap(gpu, probe, "attn.q_rope", &mut q)?;
         tap(gpu, probe, "attn.k_rope", &mut k)?;
-        gpu.copy_at(&k, &mut state.k, start * kvh * hd, t * kvh * hd)?;
-        gpu.copy_at(&v, &mut state.v, start * kvh * hd, t * kvh * hd)?;
+        gpu.copy_at(&k, &mut state.k, start * kv_w, t * kv_w)?;
+        gpu.copy_at(&v, &mut state.v, start * kv_w, t * kv_w)?;
+        ws.give("attn.k", k);
+        ws.give("attn.v", v);
         state.len = kv_len;
 
         // Masked attention, gate, output projection.
-        let mut scores = gpu.zeros(t * nh * kv_len)?;
-        let mut attn = gpu.zeros(t * nh * hd)?;
-        gpu.attn_masked(
+        let mut attn = ws.take(gpu, "attn.core", t * nh * hd)?;
+        gpu.attn_decode_or_masked(
+            ws,
             &q,
             &state.k,
             &state.v,
             &mask,
-            &mut scores,
             &mut attn,
             t,
             nh,
             kvh,
             hd,
             kv_len,
-            kv_len,
             1.0 / (hd as f32).sqrt(),
         )?;
+        ws.give("attn.q", q);
         tap(gpu, probe, "attn.core_out", &mut attn)?;
         gpu.mul_sigmoid(&mut attn, &gate, t * nh * hd)?;
+        ws.give("attn.gate", gate);
         tap(gpu, probe, "attn.gated_out", &mut attn)?;
-        let mut out = gpu.zeros(t * h)?;
+        let mut out = ws.take(gpu, "attn.out", t * h)?;
         gpu.gemm_bf16(&attn, &self.o_proj, &mut out, scratch, t, h, nh * hd)?;
+        ws.give("attn.core", attn);
         self.tap_state(gpu, state, probe)?;
         Ok(out)
     }
@@ -358,8 +404,14 @@ impl Attention {
         let n = len * a.idx_dim;
         let mut view = gpu.zeros(n)?;
         gpu.copy_at(&state.idx_keys, &mut view, 0, n)?;
+        let substituted =
+            probe.wants("state.indexer_k") && probe.substitute("state.indexer_k").is_some();
         tap(gpu, probe, "state.indexer_k", &mut view)?;
         gpu.copy_at(&view, &mut state.idx_keys, 0, n)?;
+        if substituted {
+            // Raw keys changed under the cached block keys: rebuild them next step.
+            state.blocks = 0;
+        }
         Ok(())
     }
 }

@@ -44,3 +44,62 @@ pub fn tap(gpu: &Gpu, probe: &mut dyn Probe, stage: &str, buf: &mut Buf) -> Resu
     }
     Ok(())
 }
+
+/// Uploads several BF16 tensors concatenated along their first (output) dimension,
+/// so projections sharing one input run as a single GEMM. Each `(name, shape)` is
+/// checked like [`bf16_tensor`].
+pub fn bf16_concat(gpu: &Gpu, model: &Model, parts: &[(String, Vec<u64>)]) -> Result<Bf16Buf> {
+    let mut words: Vec<u16> = Vec::new();
+    for (name, shape) in parts {
+        let t = model
+            .tensor(name)
+            .with_context(|| format!("missing tensor {name}"))?;
+        ensure!(t.dtype == "BF16", "{name}: expected BF16, got {}", t.dtype);
+        ensure!(
+            t.shape.iter().product::<u64>() == shape.iter().product::<u64>(),
+            "{name}: shape {:?}, expected {shape:?}",
+            t.shape
+        );
+        let bytes = model.read_tensor(t)?;
+        words.extend(
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c)),
+        );
+    }
+    Ok(gpu.upload_u16(&words)?)
+}
+
+/// Taps the `[t, cols]` column range at `col` of a fused `[t, stride]` buffer as
+/// `stage`: copied out only when the probe wants it, a substitute written back in
+/// place. Costs nothing without a probe.
+#[allow(clippy::too_many_arguments)]
+pub fn tap_cols(
+    gpu: &Gpu,
+    probe: &mut dyn Probe,
+    stage: &str,
+    fused: &mut Buf,
+    t: usize,
+    stride: usize,
+    col: usize,
+    cols: usize,
+) -> Result<()> {
+    if probe.wants(stage) {
+        let mut v = gpu.uninit(t * cols)?;
+        gpu.copy_cols(fused, &mut v, t, stride, col, cols)?;
+        probe.observe(stage, gpu.download(&v)?);
+    }
+    if let Some(sub) = probe.substitute(stage) {
+        ensure!(
+            sub.len() == t * cols,
+            "{stage}: substitute has {} values, expected {}",
+            sub.len(),
+            t * cols
+        );
+        let s = gpu.upload_f32(&sub)?;
+        gpu.put_cols(&s, fused, t, stride, col, cols)?;
+    }
+    Ok(())
+}

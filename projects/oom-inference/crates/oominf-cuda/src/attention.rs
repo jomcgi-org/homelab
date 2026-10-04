@@ -3,7 +3,7 @@
 
 use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
 
-use crate::{Buf, Gpu, Result, grid};
+use crate::{Buf, Gpu, Result, Workspace, grid};
 
 impl Gpu {
     /// Splits `qg` `[t, heads, 2 * d]` into `q` `[t, heads, d]` and `gate` `[t, heads * d]`.
@@ -253,6 +253,37 @@ impl Gpu {
         Ok(())
     }
 
+    /// `dst[dst_off..dst_off + n] = src[src_off..src_off + n]`.
+    pub fn copy_range(
+        &self,
+        src: &Buf,
+        src_off: usize,
+        dst: &mut Buf,
+        dst_off: usize,
+        n: usize,
+    ) -> Result<()> {
+        self.check(
+            src.len() >= src_off + n && dst.len() >= dst_off + n,
+            "copy_range sizes",
+        )?;
+        if n == 0 {
+            return Ok(());
+        }
+        let f = self.func("copy_range")?;
+        let n32 = n as i32;
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(src)
+                .arg(&src_off)
+                .arg(dst)
+                .arg(&dst_off)
+                .arg(&n32)
+                .launch(grid(n, 256))?
+        };
+        Ok(())
+    }
+
     /// `dst[b, a, :] = src[a, b, :]` for `src` `[a_len, b_len, d]`.
     pub fn swap01(
         &self,
@@ -276,6 +307,96 @@ impl Gpu {
                 .arg(&d32)
                 .launch(grid(n, 256))?
         };
+        Ok(())
+    }
+
+    /// Attention of `t` queries over `kv_len` cached keys under `mask` (`[t, kv_len]`
+    /// bytes). One query token with `d == 256` takes the GQA flash-decode path (split
+    /// over keys, merged online-softmax partials); anything else uses `attn_masked`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_decode_or_masked(
+        &self,
+        ws: &mut Workspace,
+        q: &Buf,
+        k: &Buf,
+        v: &Buf,
+        mask: &CudaSlice<u8>,
+        out: &mut Buf,
+        t: usize,
+        heads: usize,
+        kv_heads: usize,
+        d: usize,
+        kv_len: usize,
+        scale: f32,
+    ) -> Result<()> {
+        let g = heads / kv_heads;
+        // The decode kernel is instantiated for the GQA group size the models use.
+        if t != 1 || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
+            let mut scores = ws.take(self, "attn.scores", t * heads * kv_len)?;
+            self.attn_masked(
+                q,
+                k,
+                v,
+                mask,
+                &mut scores,
+                out,
+                t,
+                heads,
+                kv_heads,
+                d,
+                kv_len,
+                kv_len,
+                scale,
+            )?;
+            ws.give("attn.scores", scores);
+            return Ok(());
+        }
+        // Small chunks keep enough warps busy at short contexts; long contexts get
+        // larger chunks so the partial count (and the combine) stays bounded.
+        const WARPS: usize = 8;
+        let chunk = kv_len.div_ceil(1024).clamp(16, 1024);
+        let blocks = kv_len.div_ceil(chunk * WARPS);
+        let p = blocks * WARPS;
+        let mut part = ws.take(self, "attn.fd_part", kv_heads * p * g * (d + 2))?;
+        let f = self.func("attn_decode_partial_g12")?;
+        let (h32, kvh32, kv32, c32) = (heads as i32, kv_heads as i32, kv_len as i32, chunk as i32);
+        let cfg = LaunchConfig {
+            grid_dim: (blocks as u32, kv_heads as u32, 1),
+            block_dim: ((WARPS * 32) as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(q)
+                .arg(k)
+                .arg(v)
+                .arg(mask)
+                .arg(&mut part)
+                .arg(&kvh32)
+                .arg(&kv32)
+                .arg(&c32)
+                .arg(&scale)
+                .launch(cfg)?
+        };
+        let f = self.func("attn_decode_combine")?;
+        let p32 = p as i32;
+        let cfg = LaunchConfig {
+            grid_dim: (heads as u32, 1, 1),
+            block_dim: (d as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(&part)
+                .arg(out)
+                .arg(&h32)
+                .arg(&kvh32)
+                .arg(&p32)
+                .launch(cfg)?
+        };
+        ws.give("attn.fd_part", part);
         Ok(())
     }
 }

@@ -1,17 +1,15 @@
 //! Gated DeltaNet, the token mixer of linear-attention layers.
 
 use anyhow::Result;
-use oominf_cuda::{Bf16Buf, Buf, Gpu};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
 use oominf_format::Model;
 
-use crate::util::{bf16_tensor, tap};
+use crate::util::{bf16_concat, bf16_tensor, tap, tap_cols};
 use crate::{Dims, Probe};
 
 pub struct Gdn {
-    qkv: Bf16Buf,
-    z: Bf16Buf,
-    a: Bf16Buf,
-    b: Bf16Buf,
+    /// `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` stacked: one GEMM.
+    in_proj: Bf16Buf,
     conv: Bf16Buf,
     a_log: Bf16Buf,
     dt_bias: Bf16Buf,
@@ -48,10 +46,16 @@ impl Gdn {
         );
         let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{la}{n}"), s);
         Ok(Gdn {
-            qkv: w("in_proj_qkv.weight", &[2 * kd + vd, h])?,
-            z: w("in_proj_z.weight", &[vd, h])?,
-            a: w("in_proj_a.weight", &[hv, h])?,
-            b: w("in_proj_b.weight", &[hv, h])?,
+            in_proj: bf16_concat(
+                gpu,
+                model,
+                &[
+                    (format!("{la}in_proj_qkv.weight"), vec![2 * kd + vd, h]),
+                    (format!("{la}in_proj_z.weight"), vec![vd, h]),
+                    (format!("{la}in_proj_b.weight"), vec![hv, h]),
+                    (format!("{la}in_proj_a.weight"), vec![hv, h]),
+                ],
+            )?,
             conv: w("conv1d.weight", &[cd, d.conv_kernel as u64])?,
             a_log: w("A_log", &[hv])?,
             dt_bias: w("dt_bias", &[hv])?,
@@ -60,11 +64,14 @@ impl Gdn {
         })
     }
 
+    /// Returns the mixer output `[t, hidden]` as workspace buffer `gdn.out`; the
+    /// caller gives it back.
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         gpu: &Gpu,
         d: &Dims,
+        ws: &mut Workspace,
         x: &Buf,
         t: usize,
         state: &mut GdnState,
@@ -73,22 +80,22 @@ impl Gdn {
     ) -> Result<Buf> {
         let w = self;
         let (cd, vd, hv, h) = (d.conv_dim(), d.value_dim(), d.v_heads, d.hidden);
-        let mut qkv = gpu.zeros(t * cd)?;
-        gpu.gemm_bf16(x, &w.qkv, &mut qkv, scratch, t, cd, h)?;
-        let mut z = gpu.zeros(t * vd)?;
-        gpu.gemm_bf16(x, &w.z, &mut z, scratch, t, vd, h)?;
-        let mut b = gpu.zeros(t * hv)?;
-        gpu.gemm_bf16(x, &w.b, &mut b, scratch, t, hv, h)?;
-        let mut a = gpu.zeros(t * hv)?;
-        gpu.gemm_bf16(x, &w.a, &mut a, scratch, t, hv, h)?;
-        tap(gpu, probe, "gdn.in_proj_qkv", &mut qkv)?;
-        tap(gpu, probe, "gdn.in_proj_z", &mut z)?;
-        tap(gpu, probe, "gdn.in_proj_b", &mut b)?;
-        tap(gpu, probe, "gdn.in_proj_a", &mut a)?;
+        let n = cd + vd + 2 * hv;
+        let mut proj = ws.take(gpu, "gdn.proj", t * n)?;
+        gpu.gemm_bf16(x, &w.in_proj, &mut proj, scratch, t, n, h)?;
+        // Downstream kernels read the fused projection in place:
+        // [qkv (cd) | z (vd) | b (hv) | a (hv)] per row.
+        let (z_off, b_off, a_off) = (cd, cd + vd, cd + vd + hv);
+        tap_cols(gpu, probe, "gdn.in_proj_qkv", &mut proj, t, n, 0, cd)?;
+        tap_cols(gpu, probe, "gdn.in_proj_z", &mut proj, t, n, z_off, vd)?;
+        tap_cols(gpu, probe, "gdn.in_proj_b", &mut proj, t, n, b_off, hv)?;
+        tap_cols(gpu, probe, "gdn.in_proj_a", &mut proj, t, n, a_off, hv)?;
 
-        let mut conv = gpu.zeros(t * cd)?;
+        let mut conv = ws.take(gpu, "gdn.conv", t * cd)?;
         gpu.causal_conv_silu(
-            &qkv,
+            &proj,
+            0,
+            n,
             &mut state.conv,
             &w.conv,
             &mut conv,
@@ -97,13 +104,14 @@ impl Gdn {
             d.conv_kernel,
         )?;
         tap(gpu, probe, "gdn.conv_out", &mut conv)?;
-        let kd = d.key_dim();
-        gpu.l2norm_heads(&mut conv, t, cd, 0, d.k_heads, d.head_k, 1e-6)?;
-        gpu.l2norm_heads(&mut conv, t, cd, kd, d.k_heads, d.head_k, 1e-6)?;
-        let mut g = gpu.zeros(t * hv)?;
-        let mut beta = gpu.zeros(t * hv)?;
-        gpu.gdn_gates(&a, &b, &w.a_log, &w.dt_bias, &mut g, &mut beta, t, hv)?;
-        let mut core = gpu.zeros(t * vd)?;
+        // q and k heads are contiguous at the start of each row: normalise both at once.
+        gpu.l2norm_heads(&mut conv, t, cd, 0, 2 * d.k_heads, d.head_k, 1e-6)?;
+        let mut g = ws.take(gpu, "gdn.g", t * hv)?;
+        let mut beta = ws.take(gpu, "gdn.beta", t * hv)?;
+        gpu.gdn_gates(
+            &proj, a_off, b_off, n, &w.a_log, &w.dt_bias, &mut g, &mut beta, t, hv,
+        )?;
+        let mut core = ws.take(gpu, "gdn.core", t * vd)?;
         gpu.gdn_recurrent(
             &conv,
             &g,
@@ -117,12 +125,29 @@ impl Gdn {
             d.head_k,
             d.head_v,
         )?;
+        ws.give("gdn.conv", conv);
+        ws.give("gdn.g", g);
+        ws.give("gdn.beta", beta);
         tap(gpu, probe, "gdn.core_out", &mut core)?;
-        let mut normed = gpu.zeros(t * vd)?;
-        gpu.gated_rmsnorm_sigmoid(&core, &z, &w.norm, &mut normed, t * hv, d.head_v, d.eps)?;
+        let mut normed = ws.take(gpu, "gdn.normed", t * vd)?;
+        gpu.gated_rmsnorm_sigmoid(
+            &core,
+            &proj,
+            z_off,
+            n,
+            hv,
+            &w.norm,
+            &mut normed,
+            t * hv,
+            d.head_v,
+            d.eps,
+        )?;
+        ws.give("gdn.core", core);
+        ws.give("gdn.proj", proj);
         tap(gpu, probe, "gdn.norm_out", &mut normed)?;
-        let mut out = gpu.zeros(t * h)?;
+        let mut out = ws.take(gpu, "gdn.out", t * h)?;
         gpu.gemm_bf16(&normed, &w.out, &mut out, scratch, t, h, vd)?;
+        ws.give("gdn.normed", normed);
         Ok(out)
     }
 }

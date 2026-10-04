@@ -5,7 +5,8 @@
 //! ([`Bf16Buf`]) and raw bytes. Every op is enqueued on the single stream; host
 //! reads synchronise implicitly.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use cudarc::cublas::{CudaBlas, sys as blas_sys};
 use cudarc::driver::{
@@ -33,13 +34,20 @@ pub type Result<T> = std::result::Result<T, Error>;
 include!(concat!(env!("OUT_DIR"), "/kernels.rs"));
 
 mod attention;
+mod moe;
 mod ple;
+
+pub use moe::Nvfp4Record;
 
 pub struct Gpu {
     pub ctx: Arc<CudaContext>,
     pub stream: Arc<CudaStream>,
     blas: CudaBlas,
     modules: Vec<Arc<CudaModule>>,
+    /// Kernel handles by name, resolved once.
+    funcs: Mutex<HashMap<String, CudaFunction>>,
+    /// Split-K partials of the decode GEMV, grown on demand and reused (stable address).
+    gemv_partial: Mutex<Option<Buf>>,
 }
 
 pub(crate) fn grid(n: usize, block: u32) -> LaunchConfig {
@@ -66,17 +74,31 @@ impl Gpu {
             stream,
             blas,
             modules,
+            funcs: Mutex::new(HashMap::new()),
+            gemv_partial: Mutex::new(None),
         })
     }
 
-    /// Looks a kernel up by name across every compiled `kernels/*.cu` module.
+    /// Looks a kernel up by name across every compiled `kernels/*.cu` module (cached).
     pub(crate) fn func(&self, name: &str) -> Result<CudaFunction> {
+        let mut cache = self.funcs.lock().unwrap();
+        if let Some(f) = cache.get(name) {
+            return Ok(f.clone());
+        }
         for m in &self.modules {
             if let Ok(f) = m.load_function(name) {
+                cache.insert(name.to_owned(), f.clone());
                 return Ok(f);
             }
         }
         Err(Error::Usage(format!("no kernel named {name}")))
+    }
+
+    /// An fp32 buffer with unspecified contents, for outputs a kernel fully writes.
+    pub fn uninit(&self, n: usize) -> Result<Buf> {
+        // SAFETY: callers only hand this to kernels that overwrite every element
+        // before anything reads it.
+        Ok(unsafe { self.stream.alloc::<f32>(n.max(1))? })
     }
 
     pub fn zeros(&self, n: usize) -> Result<Buf> {
@@ -87,8 +109,81 @@ impl Gpu {
         Ok(self.stream.clone_htod(host)?)
     }
 
+    /// Copies `host` into the existing device buffer `dst` (same length).
+    pub fn upload_into(&self, host: &[f32], dst: &mut Buf) -> Result<()> {
+        self.check(host.len() == dst.len(), "upload_into length")?;
+        Ok(self.stream.memcpy_htod(host, dst)?)
+    }
+
     pub fn upload_u16(&self, host: &[u16]) -> Result<Bf16Buf> {
         Ok(self.stream.clone_htod(host)?)
+    }
+
+    /// Splits the stacked hyper-connection `[down | inject logits]` projection:
+    /// `act = silu(down * inv_c)`, `inject = 2 * sigmoid(logit * inv_c)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hc_post_down(
+        &self,
+        fused: &Buf,
+        lr: usize,
+        hc: usize,
+        inv_c: f32,
+        act: &mut Buf,
+        inject: &mut Buf,
+        t: usize,
+    ) -> Result<()> {
+        self.check(fused.len() >= t * (lr + hc), "hc_post_down sizes")?;
+        let f = self.func("hc_post_down")?;
+        let (s32, l32, h32, t32) = ((lr + hc) as i32, lr as i32, hc as i32, t as i32);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(fused)
+                .arg(&s32)
+                .arg(&l32)
+                .arg(&h32)
+                .arg(&inv_c)
+                .arg(act)
+                .arg(inject)
+                .arg(&t32)
+                .launch(grid(t * (lr + hc), 256))?
+        };
+        Ok(())
+    }
+
+    /// Raw device address of element `off` of `buf` (valid while the buffer lives).
+    pub fn ptr_at(&self, buf: &Buf, off: usize) -> u64 {
+        buf.device_ptr(&self.stream).0 + (off * 4) as u64
+    }
+
+    /// `dst[r, col .. col + cols] = src[r, :]` for `rows` rows of `stride` floats.
+    pub fn put_cols(
+        &self,
+        src: &Buf,
+        dst: &mut Buf,
+        rows: usize,
+        stride: usize,
+        col: usize,
+        cols: usize,
+    ) -> Result<()> {
+        self.check(
+            src.len() >= rows * cols && dst.len() >= (rows - 1) * stride + col + cols,
+            "put_cols sizes",
+        )?;
+        let f = self.func("put_cols")?;
+        let (r32, s32, c32, n32) = (rows as i32, stride as i32, col as i32, cols as i32);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(src)
+                .arg(dst)
+                .arg(&r32)
+                .arg(&s32)
+                .arg(&c32)
+                .arg(&n32)
+                .launch(grid(rows * cols, 256))?
+        };
+        Ok(())
     }
 
     /// Raw device address of a buffer (valid while the buffer lives).
@@ -115,8 +210,9 @@ impl Gpu {
         Ok(self.stream.synchronize()?)
     }
 
-    /// `y[T, N] = x[T, K] @ w[N, K]^T` with bf16 operands (x rounded to bf16 into
-    /// `scratch`) and fp32 accumulation and output.
+    /// `y[T, N] = x[T, K] @ w[N, K]^T` with bf16 weights and fp32 accumulation and
+    /// output. Up to 4 tokens run as a bandwidth-bound GEMV on the fp32 activations
+    /// directly; larger `t` rounds x to bf16 into `scratch` for a tensor-core GEMM.
     #[allow(clippy::too_many_arguments)]
     pub fn gemm_bf16(
         &self,
@@ -132,6 +228,9 @@ impl Gpu {
             x.len() >= t * k && w.len() >= n * k && y.len() >= t * n,
             "gemm_bf16 sizes",
         )?;
+        if t <= 4 && k.is_multiple_of(8) {
+            return self.gemv_bf16(x, w, y, t, n, k);
+        }
         self.check(scratch.len() >= t * k, "gemm_bf16 scratch")?;
         self.f32_to_bf16(x, scratch, t * k)?;
         let (wp, _g1) = w.device_ptr(&self.stream);
@@ -161,6 +260,89 @@ impl Gpu {
                 blas_sys::cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT,
             )?;
         }
+        Ok(())
+    }
+
+    /// Decode GEMV, `t <= 4`, `k % 8 == 0` (see `gemv_bf16_impl` in ops.cu).
+    fn gemv_bf16(
+        &self,
+        x: &Buf,
+        w: &Bf16Buf,
+        y: &mut Buf,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
+        const WARPS: usize = 8;
+        const ROWS_PER_WARP: usize = 4;
+        const SMEM: usize = 48 * 1024;
+        let row_groups = n.div_ceil(ROWS_PER_WARP);
+        let kchunks = k.div_ceil(256);
+        // Enough warps to saturate memory bandwidth, and x per split must fit in shared.
+        let want = 2048usize.div_ceil(row_groups).clamp(1, kchunks);
+        let smem_min = (t * k * 4).div_ceil(SMEM);
+        let splits0 = want.max(smem_min).min(kchunks);
+        let klen = k.div_ceil(splits0).div_ceil(256) * 256;
+        let splits = k.div_ceil(klen);
+        let name = [
+            "gemv_bf16_t1",
+            "gemv_bf16_t2",
+            "gemv_bf16_t3",
+            "gemv_bf16_t4",
+        ][t - 1];
+        let f = self.func(name)?;
+        let cfg = LaunchConfig {
+            grid_dim: (row_groups.div_ceil(WARPS) as u32, splits as u32, 1),
+            block_dim: ((WARPS * 32) as u32, 1, 1),
+            shared_mem_bytes: (t * klen.min(k) * 4) as u32,
+        };
+        let (n32, k32, kl32) = (n as i32, k as i32, klen as i32);
+        if splits == 1 {
+            let null: u64 = 0;
+            unsafe {
+                self.stream
+                    .launch_builder(&f)
+                    .arg(x)
+                    .arg(w)
+                    .arg(y)
+                    .arg(&null)
+                    .arg(&n32)
+                    .arg(&k32)
+                    .arg(&kl32)
+                    .launch(cfg)?
+            };
+            return Ok(());
+        }
+        let mut guard = self.gemv_partial.lock().unwrap();
+        let need = splits * t * n;
+        if guard.as_ref().is_none_or(|b| b.len() < need) {
+            *guard = Some(self.uninit(need)?);
+        }
+        let partial = guard.as_mut().unwrap();
+        let null: u64 = 0;
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(x)
+                .arg(w)
+                .arg(&null)
+                .arg(&mut *partial)
+                .arg(&n32)
+                .arg(&k32)
+                .arg(&kl32)
+                .launch(cfg)?
+        };
+        let r = self.func("gemv_reduce")?;
+        let (tn, s32) = ((t * n) as i32, splits as i32);
+        unsafe {
+            self.stream
+                .launch_builder(&r)
+                .arg(&*partial)
+                .arg(y)
+                .arg(&tn)
+                .arg(&s32)
+                .launch(grid(t * n, 256))?
+        };
         Ok(())
     }
 
@@ -353,6 +535,8 @@ impl Gpu {
     pub fn causal_conv_silu(
         &self,
         x: &Buf,
+        x_off: usize,
+        x_stride: usize,
         state: &mut Buf,
         w: &Bf16Buf,
         out: &mut Buf,
@@ -360,13 +544,18 @@ impl Gpu {
         d: usize,
         k: usize,
     ) -> Result<()> {
-        self.check(k <= 8, "conv kernel width > 8")?;
+        self.check(
+            k <= 8 && x.len() >= x_off + (t - 1) * x_stride + d,
+            "causal_conv_silu sizes",
+        )?;
         let f = self.func("causal_conv_silu")?;
-        let (t32, d32, k32) = (t as i32, d as i32, k as i32);
+        let xp = self.ptr_at(x, x_off);
+        let (s32, t32, d32, k32) = (x_stride as i32, t as i32, d as i32, k as i32);
         unsafe {
             self.stream
                 .launch_builder(&f)
-                .arg(x)
+                .arg(&xp)
+                .arg(&s32)
                 .arg(state)
                 .arg(w)
                 .arg(out)
@@ -413,10 +602,14 @@ impl Gpu {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// `a` and `b` are `[t, hv]` column ranges at `a_off` / `b_off` of rows of
+    /// `ab_stride` floats in `ab`.
     pub fn gdn_gates(
         &self,
-        a: &Buf,
-        b: &Buf,
+        ab: &Buf,
+        a_off: usize,
+        b_off: usize,
+        ab_stride: usize,
         a_log: &Bf16Buf,
         dt_bias: &Bf16Buf,
         g: &mut Buf,
@@ -424,13 +617,20 @@ impl Gpu {
         t: usize,
         hv: usize,
     ) -> Result<()> {
+        let last = (t - 1) * ab_stride + hv;
+        self.check(
+            ab.len() >= a_off + last && ab.len() >= b_off + last,
+            "gdn_gates sizes",
+        )?;
         let f = self.func("gdn_gates")?;
-        let (t32, h32) = (t as i32, hv as i32);
+        let (ap, bp) = (self.ptr_at(ab, a_off), self.ptr_at(ab, b_off));
+        let (s32, t32, h32) = (ab_stride as i32, t as i32, hv as i32);
         unsafe {
             self.stream
                 .launch_builder(&f)
-                .arg(a)
-                .arg(b)
+                .arg(&ap)
+                .arg(&bp)
+                .arg(&s32)
                 .arg(a_log)
                 .arg(dt_bias)
                 .arg(g)
@@ -465,7 +665,7 @@ impl Gpu {
             (t as i32, stride as i32, hk as i32, hv as i32, dv as i32);
         let cfg = LaunchConfig {
             grid_dim: (hv as u32, 1, 1),
-            block_dim: (dv as u32, 1, 1),
+            block_dim: (4 * dv as u32, 1, 1),
             shared_mem_bytes: 0,
         };
         unsafe {
@@ -488,23 +688,37 @@ impl Gpu {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Rows `r = t * per_token + i` of `x` (`[rows, d]`) gated by `z` rows at
+    /// `z + z_off + t * z_stride + i * d`.
     pub fn gated_rmsnorm_sigmoid(
         &self,
         x: &Buf,
         z: &Buf,
+        z_off: usize,
+        z_stride: usize,
+        per_token: usize,
         w: &Bf16Buf,
         out: &mut Buf,
         rows: usize,
         d: usize,
         eps: f32,
     ) -> Result<()> {
+        let tokens = rows / per_token;
+        self.check(
+            rows.is_multiple_of(per_token)
+                && z.len() >= z_off + (tokens - 1) * z_stride + per_token * d,
+            "gated_rmsnorm_sigmoid sizes",
+        )?;
         let f = self.func("gated_rmsnorm_sigmoid")?;
-        let (r32, d32) = (rows as i32, d as i32);
+        let zp = self.ptr_at(z, z_off);
+        let (zs32, pt32, r32, d32) = (z_stride as i32, per_token as i32, rows as i32, d as i32);
         unsafe {
             self.stream
                 .launch_builder(&f)
                 .arg(x)
-                .arg(z)
+                .arg(&zp)
+                .arg(&zs32)
+                .arg(&pt32)
                 .arg(w)
                 .arg(out)
                 .arg(&r32)
@@ -524,13 +738,13 @@ impl Gpu {
         e: usize,
         k: usize,
     ) -> Result<()> {
-        self.check(k <= 32, "router top-k > 32")?;
+        self.check(k <= 32 && e <= 8192, "router top-k > 32 or experts > 8192")?;
         let f = self.func("router_topk")?;
         let (e32, k32) = (e as i32, k as i32);
         let cfg = LaunchConfig {
             grid_dim: (t as u32, 1, 1),
             block_dim: (256, 1, 1),
-            shared_mem_bytes: 0,
+            shared_mem_bytes: (e * 4) as u32,
         };
         unsafe {
             self.stream
@@ -712,5 +926,52 @@ impl Gpu {
                 .launch(grid(n * h, 256))?
         };
         Ok(())
+    }
+}
+
+/// Reusable named device buffers, so a steady-state decode step allocates nothing and
+/// every intermediate keeps a stable address (a prerequisite for CUDA-graph capture).
+///
+/// Components `take` a buffer of an exact length and `give` it back when done. A
+/// buffer of a different length is reallocated; one that is not given back is simply
+/// reallocated next time. Contents are unspecified unless taken with `take_zeroed`.
+#[derive(Default)]
+pub struct Workspace {
+    f32s: HashMap<&'static str, Buf>,
+    bf16s: HashMap<&'static str, Bf16Buf>,
+}
+
+impl Workspace {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn take(&mut self, gpu: &Gpu, name: &'static str, n: usize) -> Result<Buf> {
+        match self.f32s.remove(name) {
+            Some(b) if b.len() == n.max(1) => Ok(b),
+            _ => gpu.uninit(n),
+        }
+    }
+
+    pub fn take_zeroed(&mut self, gpu: &Gpu, name: &'static str, n: usize) -> Result<Buf> {
+        let mut b = self.take(gpu, name, n)?;
+        gpu.stream.memset_zeros(&mut b)?;
+        Ok(b)
+    }
+
+    pub fn give(&mut self, name: &'static str, buf: Buf) {
+        self.f32s.insert(name, buf);
+    }
+
+    /// A bf16 scratch of at least `n` elements (grows, never shrinks).
+    pub fn take_bf16(&mut self, gpu: &Gpu, name: &'static str, n: usize) -> Result<Bf16Buf> {
+        match self.bf16s.remove(name) {
+            Some(b) if b.len() >= n.max(1) => Ok(b),
+            _ => Ok(unsafe { gpu.stream.alloc::<u16>(n.max(1))? }),
+        }
+    }
+
+    pub fn give_bf16(&mut self, name: &'static str, buf: Bf16Buf) {
+        self.bf16s.insert(name, buf);
     }
 }

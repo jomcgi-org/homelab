@@ -2,18 +2,19 @@
 //! combine a block's output back into every stream.
 
 use anyhow::Result;
-use oominf_cuda::{Bf16Buf, Buf, Gpu};
+use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
 use oominf_format::Model;
 
-use crate::util::{bf16_tensor, tap};
+use crate::util::{bf16_concat, bf16_tensor, tap};
 use crate::{Dims, Probe};
 
 pub struct HyperConn {
     norm: Bf16Buf,
-    down: Bf16Buf,
+    /// `input_mix_weight_down` with, when the connection combines,
+    /// `block_inject_weight` stacked under it: both read the normed residual.
+    down_inject: Bf16Buf,
     up: Bf16Buf,
-    /// `None` for the final mixer, which has no combine.
-    inject: Option<Bf16Buf>,
+    combine: bool,
 }
 
 impl HyperConn {
@@ -21,40 +22,38 @@ impl HyperConn {
     pub fn load(gpu: &Gpu, model: &Model, d: &Dims, prefix: &str, combine: bool) -> Result<Self> {
         let r = d.residual() as u64;
         let lr = d.hc_lowrank as u64;
+        let mut parts = vec![(
+            format!("{prefix}.input_mix_weight_down.weight"),
+            vec![lr, r],
+        )];
+        if combine {
+            parts.push((
+                format!("{prefix}.block_inject_weight.weight"),
+                vec![d.hc as u64, r],
+            ));
+        }
         Ok(HyperConn {
             norm: bf16_tensor(gpu, model, &format!("{prefix}.hc_norm.weight"), &[r])?,
-            down: bf16_tensor(
-                gpu,
-                model,
-                &format!("{prefix}.input_mix_weight_down.weight"),
-                &[lr, r],
-            )?,
+            down_inject: bf16_concat(gpu, model, &parts)?,
             up: bf16_tensor(
                 gpu,
                 model,
                 &format!("{prefix}.input_mix_weight_up.weight"),
                 &[r, lr],
             )?,
-            inject: if combine {
-                Some(bf16_tensor(
-                    gpu,
-                    model,
-                    &format!("{prefix}.block_inject_weight.weight"),
-                    &[d.hc as u64, r],
-                )?)
-            } else {
-                None
-            },
+            combine,
         })
     }
 
-    /// Returns the block input `[t, hidden]` and, with combine, the injection weights
-    /// `[t, hc]`. Stages are tapped as `{name}.mixed` and `{name}.inject`.
+    /// Returns the block input `[t, hidden]` (workspace buffer `hc.mixed`) and, with
+    /// combine, the injection weights `[t, hc]` (`hc.inject`). The caller gives both
+    /// back to `ws`. Stages are tapped as `{name}.mixed` and `{name}.inject`.
     #[allow(clippy::too_many_arguments)]
     pub fn mix(
         &self,
         gpu: &Gpu,
         d: &Dims,
+        ws: &mut Workspace,
         residual: &Buf,
         t: usize,
         scratch: &mut Bf16Buf,
@@ -62,7 +61,10 @@ impl HyperConn {
         name: &str,
     ) -> Result<(Buf, Option<Buf>)> {
         let r = d.residual();
-        let mut normed = gpu.zeros(t * r)?;
+        let lr = d.hc_lowrank;
+        let hc = if self.combine { d.hc } else { 0 };
+        let inv_c = 1.0 / d.hc as f32;
+        let mut normed = ws.take(gpu, "hc.normed", t * r)?;
         gpu.rmsnorm_groups(
             residual,
             &self.norm,
@@ -73,38 +75,51 @@ impl HyperConn {
             d.eps,
             1.0,
         )?;
-        let inv_c = 1.0 / d.hc as f32;
-        let mut down = gpu.zeros(t * d.hc_lowrank)?;
-        gpu.gemm_bf16(&normed, &self.down, &mut down, scratch, t, d.hc_lowrank, r)?;
-        let mut act = gpu.zeros(t * d.hc_lowrank)?;
-        gpu.silu_scale(&down, &mut act, inv_c, t * d.hc_lowrank)?;
-        let mut up = gpu.zeros(t * r)?;
-        gpu.gemm_bf16(&act, &self.up, &mut up, scratch, t, r, d.hc_lowrank)?;
-        let mut mixed = gpu.zeros(t * d.hidden)?;
+        let mut down = ws.take(gpu, "hc.down", t * (lr + hc))?;
+        gpu.gemm_bf16(
+            &normed,
+            &self.down_inject,
+            &mut down,
+            scratch,
+            t,
+            lr + hc,
+            r,
+        )?;
+        let mut act = ws.take(gpu, "hc.act", t * lr)?;
+        let mut inject = ws.take(gpu, "hc.inject", t * hc.max(1))?;
+        if self.combine {
+            gpu.hc_post_down(&down, lr, hc, inv_c, &mut act, &mut inject, t)?;
+        } else {
+            gpu.silu_scale(&down, &mut act, inv_c, t * lr)?;
+        }
+        ws.give("hc.down", down);
+        let mut up = ws.take(gpu, "hc.up", t * r)?;
+        gpu.gemm_bf16(&act, &self.up, &mut up, scratch, t, r, lr)?;
+        ws.give("hc.act", act);
+        let mut mixed = ws.take(gpu, "hc.mixed", t * d.hidden)?;
         gpu.hc_mix(&up, &normed, &mut mixed, t, d.hc, d.hidden)?;
+        ws.give("hc.up", up);
+        ws.give("hc.normed", normed);
         tap(gpu, probe, &format!("{name}.mixed"), &mut mixed)?;
-        let Some(w) = &self.inject else {
+        if !self.combine {
+            ws.give("hc.inject", inject);
             return Ok((mixed, None));
-        };
-        let mut logit = gpu.zeros(t * d.hc)?;
-        gpu.gemm_bf16(&normed, w, &mut logit, scratch, t, d.hc, r)?;
-        let mut inject = gpu.zeros(t * d.hc)?;
-        gpu.hc_inject(&logit, &mut inject, t * d.hc, inv_c)?;
+        }
         tap(gpu, probe, &format!("{name}.inject"), &mut inject)?;
         Ok((mixed, Some(inject)))
     }
 
-    /// `residual + block_out (x) inject`, broadcast over the streams.
-    pub fn combine(
+    /// `out = residual + block_out (x) inject`, broadcast over the streams.
+    pub fn combine_into(
         gpu: &Gpu,
         d: &Dims,
         residual: &Buf,
         block_out: &Buf,
         inject: &Buf,
         t: usize,
-    ) -> Result<Buf> {
-        let mut out = gpu.zeros(t * d.residual())?;
-        gpu.hc_combine(residual, block_out, inject, &mut out, t, d.hc, d.hidden)?;
-        Ok(out)
+        out: &mut Buf,
+    ) -> Result<()> {
+        gpu.hc_combine(residual, block_out, inject, out, t, d.hc, d.hidden)?;
+        Ok(())
     }
 }
