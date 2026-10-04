@@ -328,6 +328,25 @@ STAGES = {
     "state.recurrent": "GDN recurrent state after this step [1, Hv, Dk, Dv]",
     "state.ple_conv": "PLE dilated short-conv state after this step (PLE layers only)",
     "state.ple_tokens": "PLE n-gram token context after this step, int64 (PLE layers only)",
+    "attn.q_proj": "attention q_proj output [T, heads*2*head_dim]; per head the first head_dim are the query, the next head_dim the output gate",
+    "attn.k_proj": "attention k_proj output [T, kv_heads*head_dim]",
+    "attn.v_proj": "attention v_proj output [T, kv_heads*head_dim]",
+    "attn.q_normed": "query after q_norm (RMSNorm, 1 + w), before RoPE [T, heads, head_dim]",
+    "attn.k_normed": "key after k_norm (RMSNorm, 1 + w), before RoPE [T, kv_heads, head_dim]",
+    "attn.q_rope": "query after RoPE (first rotary_dim dims rotated, rotate_half layout) [T, heads, head_dim]",
+    "attn.k_rope": "key after RoPE [T, kv_heads, head_dim]",
+    "attn.core_out": "softmax(q k^T * scale + mask) v, before the output gate [T, heads, head_dim]",
+    "attn.gated_out": "core_out * sigmoid(gate), flattened: o_proj input [T, heads*head_dim]",
+    "indexer.qk_proj": "indexer index_qk_proj output [T, (index_heads + index_kv_heads)*index_head_dim]",
+    "indexer.q_normed": "indexer query after q_layernorm (1 + w), before RoPE [T, index_heads, index_head_dim]",
+    "indexer.q_rope": "indexer query after RoPE at the current positions [T, index_heads, index_head_dim]",
+    "indexer.num_blocks": "complete compress_ratio blocks visible to each query [T] int64",
+    "indexer.block_scores": "per-block score sum_h relu(q_h . k_block) / sqrt(index_head_dim) [T, max_blocks], zero padded beyond num_blocks (recomputed with HF's indexer loop; its selection is asserted equal to HF's mask)",
+    "indexer.selected_tokens": "token positions the indexer keeps per query: selected blocks' tokens then the incomplete tail block [T, budget + compress_ratio - 1] int64, -1 padded (recomputed, asserted equal to HF's mask)",
+    "indexer.mask": "HF indexer output: 1 where a key position is kept [T, kv_len] int64",
+    "state.k": "attention key cache after this step (normed, RoPE'd) [1, kv_heads, kv_len, head_dim]",
+    "state.v": "attention value cache after this step [1, kv_heads, kv_len, head_dim]",
+    "state.indexer_k": "indexer raw key cache after this step (pre k_layernorm, unpooled, no RoPE) [1, kv_len, index_head_dim]",
 }
 
 
@@ -390,6 +409,7 @@ class Recorder:
             self._wrap_fn("torch_recurrent_gated_delta_rule", core)
             hook(mixer, lambda a, o: self.put("mixer_out", flat(o)))
         else:
+            self._attention_hooks(mixer, hook, pre, flat)
             hook(mixer, lambda a, o: self.put("mixer_out", flat(o[0])))
         hook(L.mlp_hyper_connection, hc("mlp_hc"))
 
@@ -405,6 +425,58 @@ class Recorder:
         hook(L.mlp.shared_expert_gate, lambda a, o: self.put("shared_gate_logit", o))
         hook(L.mlp, lambda a, o: self.put("moe_out", flat(o)))
         return self
+
+    def _attention_hooks(self, A, hook, pre, flat) -> None:
+        heads_of = lambda o: o.reshape(-1, *o.shape[-2:])
+        hook(A.q_proj, lambda a, o: self.put("attn.q_proj", flat(o)))
+        hook(A.k_proj, lambda a, o: self.put("attn.k_proj", flat(o)))
+        hook(A.v_proj, lambda a, o: self.put("attn.v_proj", flat(o)))
+        hook(A.q_norm, lambda a, o: self.put("attn.q_normed", heads_of(o)))
+        hook(A.k_norm, lambda a, o: self.put("attn.k_normed", heads_of(o)))
+        ix = A.indexer
+        hook(ix.index_qk_proj, lambda a, o: self.put("indexer.qk_proj", flat(o)))
+        hook(ix.q_layernorm, lambda a, o: self.put("indexer.q_normed", heads_of(o)))
+
+        def rope(o):
+            if isinstance(o, tuple):  # attention q and k: [B, H, T, D]
+                self.put("attn.q_rope", heads_of(o[0].transpose(1, 2)))
+                self.put("attn.k_rope", heads_of(o[1].transpose(1, 2)))
+            elif (
+                o.dim() == 4 and "indexer.q_rope" not in self.out
+            ):  # indexer q: [B, T, H, D]
+                self.put("indexer.q_rope", heads_of(o))
+            # 3D outputs are the indexer's pooled block keys, one call per query: not stages.
+
+        self._wrap_fn("apply_rotary_pos_emb", rope)
+        self._wrap_fn(
+            "eager_attention_forward",
+            lambda o: self.put("attn.core_out", heads_of(o[0])),
+        )
+        pre(A.o_proj, lambda a: self.put("attn.gated_out", flat(a[0])))
+
+        def indexer(args, mask):
+            hidden, (full_cos, full_sin), attention_mask, cache = args
+            raw_keys = cache.layers[ix.layer_idx].indexer_keys
+            ref = indexer_reference(
+                ix,
+                self.out["indexer.q_rope"],
+                raw_keys[0],
+                full_cos[0],
+                full_sin[0],
+                attention_mask,
+            )
+            kept = mask if mask.dtype == torch.bool else mask == 0
+            kept = kept[0, 0]
+            if not torch.equal(ref["mask"], kept):
+                raise RuntimeError(
+                    "indexer reference selection diverges from HF's mask"
+                )
+            self.put("indexer.num_blocks", ref["num_blocks"])
+            self.put("indexer.block_scores", ref["scores"])
+            self.put("indexer.selected_tokens", ref["selected"])
+            self.put("indexer.mask", kept.to(torch.int64))
+
+        self._handles.append(ix.register_forward_hook(lambda m, a, o: indexer(a, o)))
 
     def _wrap_fn(self, name: str, on_out) -> None:
         orig = getattr(hf, name)
@@ -427,15 +499,78 @@ class Recorder:
         return False
 
 
+def indexer_reference(ix, q_rope, raw_keys, full_cos, full_sin, attention_mask) -> dict:
+    """HF ``Qwen4ExpTextQSAIndexer.forward``'s per-query selection loop, line for line (batch 0),
+    also returning the per-block scores. Its kept-token mask is asserted equal to HF's output."""
+    visible = (
+        attention_mask if attention_mask.dtype == torch.bool else attention_mask == 0
+    )
+    visible = visible[0, 0]
+    T, kv_len = visible.shape
+    r = ix.compress_ratio
+    max_blocks = kv_len // r
+    scores_out = torch.zeros(T, max(max_blocks, 1), dtype=torch.float32)
+    num_blocks = torch.zeros(T, dtype=torch.int64)
+    selected_out = torch.full((T, ix.token_budget + r - 1), -1, dtype=torch.int64)
+    mask = torch.zeros(T, kv_len, dtype=torch.bool)
+    for qi in range(T):
+        local = torch.nonzero(visible[qi], as_tuple=False).flatten()
+        nb = local.shape[-1] // r
+        num_blocks[qi] = nb
+        if nb > 0:
+            block_tok = local[: nb * r].view(nb, r)
+            groups = raw_keys.index_select(0, block_tok.flatten()).view(
+                *block_tok.shape, ix.index_head_dim
+            )
+            pooled = ix.k_layernorm(groups.float().mean(dim=1).to(raw_keys.dtype))
+            starts = block_tok[:, 0]
+            block_k = hf.apply_rotary_pos_emb(
+                pooled.unsqueeze(1),
+                cos=full_cos.index_select(0, starts),
+                sin=full_sin.index_select(0, starts),
+            ).squeeze(1)
+            sc = torch.matmul(
+                q_rope[qi].float(), block_k.float().transpose(-1, -2)
+            ).transpose(-1, -2)
+            sc = torch.relu(sc).sum(dim=-1) / (ix.index_head_dim**0.5)
+            scores_out[qi, :nb] = sc
+            sel_blocks = sc.topk(min(ix.block_topk, nb), dim=0).indices
+            sel = block_tok.index_select(0, sel_blocks).flatten()
+        else:
+            sel = torch.tensor([], dtype=torch.int64)
+        sel = torch.cat([sel, local[nb * r :]]).to(torch.int64)
+        selected_out[qi, : sel.numel()] = sel
+        mask[qi, sel] = True
+    return {
+        "scores": scores_out,
+        "num_blocks": num_blocks,
+        "selected": selected_out,
+        "mask": mask,
+    }
+
+
+def attention_inputs(rotary, residual, past: int):
+    """What ``Qwen4ExpTextModel.forward`` hands a full-attention layer for text-only input with no
+    padding: cos/sin over all positions so far (all three mRoPE axes equal the text position), and
+    the eager causal float mask (0 visible, dtype min hidden) of shape [1, 1, T, past + T]."""
+    T = residual.shape[1]
+    pos = torch.arange(past + T).view(1, 1, -1).expand(3, 1, -1)
+    cos, sin = rotary(residual, pos)
+    q = torch.arange(T).view(-1, 1) + past
+    k = torch.arange(past + T).view(1, -1)
+    mask = torch.where(k <= q, 0.0, torch.finfo(residual.dtype).min).to(residual.dtype)
+    return (cos, sin), mask.view(1, 1, T, past + T)
+
+
 def run_step(
-    layer_mod, residual, cache, layer: int, ple_ids=None
+    layer_mod, residual, cache, layer: int, ple_ids=None, attn=None
 ) -> dict[str, torch.Tensor]:
     with Recorder(layer_mod) as rec, torch.no_grad():
         rec.put("residual_in", residual.reshape(-1, residual.shape[-1]))
         out = layer_mod(
             residual,
-            position_embeddings=None,
-            attention_mask=None,
+            position_embeddings=attn[0] if attn else None,
+            attention_mask=attn[1] if attn else None,
             conv_mask=None,
             past_key_values=cache,
             ple_input_ids=ple_ids,
@@ -450,6 +585,11 @@ def run_step(
         cl = cache.layers[layer]
         rec.out["state.conv"] = cl.conv_states[0].detach().clone()
         rec.out["state.recurrent"] = cl.recurrent_states[0].detach().clone()
+    if layer_mod.layer_type != "linear_attention":
+        cl = cache.layers[layer]
+        rec.out["state.k"] = cl.keys.detach().clone()
+        rec.out["state.v"] = cl.values.detach().clone()
+        rec.out["state.indexer_k"] = cl.indexer_keys.detach().clone()
     if layer_mod.ple is not None:
         cl = cache.layers[layer]
         rec.out["state.ple_conv"] = cl.conv_states[1].detach().clone()
@@ -460,10 +600,227 @@ def run_step(
 def run_sequence(layer_mod, tc, layer, residuals, ids_per_step, names):
     """Prefill then single-token decode steps through one layer with one cache; {step: stages}."""
     cache = DynamicCache(config=tc)
-    return {
-        name: run_step(layer_mod, r, cache, layer, ids)
-        for name, r, ids in zip(names, residuals, ids_per_step)
+    rotary = (
+        hf.Qwen4ExpTextRotaryEmbedding(config=tc)
+        if layer_mod.layer_type != "linear_attention"
+        else None
+    )
+    out, past = {}, 0
+    for name, r, ids in zip(names, residuals, ids_per_step):
+        attn = attention_inputs(rotary, r, past) if rotary is not None else None
+        out[name] = run_step(layer_mod, r, cache, layer, ids, attn)
+        past += r.shape[1]
+    return out
+
+
+# ---------------------------------------------------------------------------------------------
+# Whole-model chain: every layer, one in memory at a time, then the final mixer and lm_head.
+# ---------------------------------------------------------------------------------------------
+TOP_LOGPROBS = 20
+
+
+def run_layer_plain(
+    layer_mod, tc, layer, residuals, ids_per_step
+) -> list[torch.Tensor]:
+    """``run_sequence`` without stage capture: the same calls, so the same numbers."""
+    cache = DynamicCache(config=tc)
+    rotary = (
+        hf.Qwen4ExpTextRotaryEmbedding(config=tc)
+        if layer_mod.layer_type != "linear_attention"
+        else None
+    )
+    outs, past = [], 0
+    with torch.no_grad():
+        for r, ids in zip(residuals, ids_per_step):
+            attn = attention_inputs(rotary, r, past) if rotary is not None else None
+            outs.append(
+                layer_mod(
+                    r,
+                    position_embeddings=attn[0] if attn else None,
+                    attention_mask=attn[1] if attn else None,
+                    conv_mask=None,
+                    past_key_values=cache,
+                    ple_input_ids=ids,
+                )
+                .detach()
+                .clone()
+            )
+            past += r.shape[1]
+    return outs
+
+
+def build_head(ckpt: Checkpoint, tc, dtype: torch.dtype):
+    """The top-level hyper-connection mixer (no combine) and lm_head."""
+    torch.set_default_dtype(dtype)
+    try:
+        with torch.device("meta"):
+            mixer = hf.Qwen4ExpTextGatedResidual(tc, use_combine=False)
+            head = torch.nn.Linear(tc.hidden_size, tc.vocab_size, bias=False)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    mixer = mixer.to_empty(device="cpu").eval()
+    head = head.to_empty(device="cpu").eval()
+    with torch.no_grad():
+        for name, param in mixer.named_parameters():
+            param.copy_(
+                ckpt.get("model.language_model.hyper_connection_mixer." + name)
+                .to(torch.float32)
+                .to(dtype)
+            )
+        head.weight.copy_(ckpt.get("lm_head.weight").to(torch.float32).to(dtype))
+    return mixer, head
+
+
+def model_chain(
+    args,
+    ckpt,
+    tc,
+    embeds,
+    ids_per_step,
+    step_names,
+    all_ids,
+    ids_prefill,
+    ids_decode,
+    prompt,
+    index_sha,
+):
+    out = args.out / "model"
+    work = out / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    n_layers = tc.num_hidden_layers
+    lo, hi = args.chain_layers if args.chain_layers else (0, n_layers - 1)
+
+    def work_file(layer: int, dname: str) -> Path:
+        return work / f"layer-{layer:03d}-{dname}.safetensors"
+
+    for layer in range(lo, hi + 1):
+        for dname, dtype in DTYPES.items():
+            wf = work_file(layer, dname)
+            if wf.exists():
+                continue
+            t0 = time.time()
+            if layer == 0:
+                residuals = [
+                    e.to(torch.float32).to(dtype).unsqueeze(0).repeat(1, 1, tc.hc_count)
+                    for e in embeds
+                ]
+            else:
+                prev = work_file(layer - 1, dname)
+                if not prev.exists():
+                    raise SystemExit(
+                        f"layer {layer} needs {prev}: run the earlier layers first"
+                    )
+                prev_t = load_file(str(prev))
+                residuals = [prev_t[n].unsqueeze(0) for n in step_names]
+            mod = build_layer(ckpt, tc, layer, dtype)
+            outs = run_layer_plain(mod, tc, layer, residuals, ids_per_step)
+            del mod
+            # Drop the shard mmaps too, or every layer's touched pages stay mapped (RSS).
+            ckpt._files.clear()
+            gc.collect()
+            tmp = wf.with_suffix(".tmp")
+            save_file(
+                {
+                    n: o.reshape(-1, o.shape[-1]).contiguous()
+                    for n, o in zip(step_names, outs)
+                },
+                str(tmp),
+            )
+            tmp.rename(wf)
+            print(f"chain layer {layer} {dname}: {time.time() - t0:.1f}s", flush=True)
+
+    if not all(work_file(n_layers - 1, d).exists() for d in DTYPES):
+        print(f"chain: layers {lo}..{hi} done; rerun to continue", flush=True)
+        return
+
+    results = {}
+    for dname, dtype in DTYPES.items():
+        mixer, head = build_head(ckpt, tc, dtype)
+        per_layer = [load_file(str(work_file(l, dname))) for l in range(n_layers)]
+        steps = {}
+        for i, (name, e) in enumerate(zip(step_names, embeds)):
+            st = {
+                "residual_in": e.to(torch.float32)
+                .to(dtype)
+                .repeat(1, tc.hc_count)
+                .contiguous()
+            }
+            for l in range(n_layers):
+                st[f"layer_out.{l}"] = per_layer[l][name]
+            with torch.no_grad():
+                mixed = mixer(per_layer[-1][name].unsqueeze(0))
+                logits = head(mixed)
+            st["mixer_out"] = mixed.reshape(-1, mixed.shape[-1]).contiguous()
+            st["logits"] = logits.reshape(-1, logits.shape[-1]).contiguous()
+            lp = torch.log_softmax(st["logits"].float(), dim=-1)
+            top = lp.topk(TOP_LOGPROBS, dim=-1)
+            st["top_logprobs.ids"] = top.indices.to(torch.int64).contiguous()
+            st["top_logprobs.values"] = top.values.contiguous()
+            steps[name] = st
+        results[dname] = steps
+        del mixer, head
+        gc.collect()
+
+    tolerances = {}
+    for dname, steps in results.items():
+        d = out / dname
+        d.mkdir(parents=True, exist_ok=True)
+        for name, st in steps.items():
+            save_file(st, str(d / f"{name}.safetensors"))
+        if dname != "fp32":
+            ref = results["fp32"]
+            tol = {}
+            for name in steps:
+                keys = [k for k in ref[name] if not k.startswith("top_logprobs.")]
+                tol[name] = compare(
+                    {k: ref[name][k] for k in keys}, {k: steps[name][k] for k in keys}
+                )
+                a = ref[name]["logits"].float().argmax(-1)
+                b = steps[name]["logits"].float().argmax(-1)
+                tol[name]["logits.top1_agreement"] = {
+                    "agree": int((a == b).sum()),
+                    "positions": a.numel(),
+                }
+            tolerances[f"w4a16/{dname}_vs_fp32"] = tol
+    (out / "tolerances.json").write_text(json.dumps(tolerances, indent=1))
+    manifest = {
+        "model": str(args.model),
+        "model_index_sha256": index_sha,
+        "mode": "w4a16 (NVFP4 weights densified with ModelOpt dequant; activations unquantised)",
+        "prompt": {
+            "user_message": USER_MESSAGE,
+            "templated": prompt,
+            "token_ids": ids_prefill,
+        },
+        "decode": {
+            "continuation": CONTINUATION,
+            "token_ids": ids_decode,
+            "note": "teacher-forced",
+        },
+        "steps": step_names,
+        "keys": {
+            "residual_in": "layer 0 input: token embedding repeated over hc streams [T, hc*H]",
+            "layer_out.L": "output residual of layer L (plain decimal L, 0..47) [T, hc*H]",
+            "mixer_out": "top-level hyper_connection_mixer output (no combine) [T, H]",
+            "logits": "lm_head(mixer_out) in the run dtype [T, vocab]",
+            "top_logprobs.ids": f"top-{TOP_LOGPROBS} token ids of log_softmax(logits.float()) per position [T, {TOP_LOGPROBS}] int64",
+            "top_logprobs.values": f"their log-probabilities, fp32 [T, {TOP_LOGPROBS}]",
+        },
+        "dtypes": {
+            "fp32": "all parameters and activations fp32 (truth)",
+            "bf16": "all parameters bf16 as released (budget reference), stored in bf16",
+        },
+        "chain": "each layer runs alone (one in memory at a time) on the previous layer's stored output of the same dtype and step; per-layer caches carry decode state",
+        "versions": {
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "python": platform.python_version(),
+        },
+        "threads": args.threads,
+        "deterministic_algorithms": True,
     }
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
+    print(f"wrote {out}", flush=True)
 
 
 def compare(ref: dict, other: dict) -> dict:
@@ -471,6 +828,13 @@ def compare(ref: dict, other: dict) -> dict:
     rows = {}
     for k, a in ref.items():
         b = other[k]
+        if a.dtype == torch.int64 and k != "topk_ids":
+            # Other integer stages (indexer selections, row ids, masks): exact comparison.
+            rows[k] = {
+                "mismatches": int((a != b).sum()) if a.shape == b.shape else a.numel(),
+                "numel": a.numel(),
+            }
+            continue
         if a.dtype == torch.int64:
             # Top-k ids: order-insensitive. Fraction of reference (token, expert) picks missing.
             missing = sum(
@@ -508,6 +872,18 @@ def main() -> None:
     ap.add_argument("--model", type=Path, default=Path(DEFAULT_MODEL))
     ap.add_argument("--out", type=Path, default=Path(DEFAULT_OUT))
     ap.add_argument("--layers", type=int, nargs="+", default=[0])
+    ap.add_argument(
+        "--model-chain",
+        action="store_true",
+        help="whole-model w4a16 chain into <out>/model (resumable; see --chain-layers)",
+    )
+    ap.add_argument(
+        "--chain-layers",
+        type=int,
+        nargs=2,
+        metavar=("FIRST", "LAST"),
+        help="with --model-chain: only run these layers this invocation",
+    )
     ap.add_argument(
         "--threads",
         type=int,
@@ -569,6 +945,22 @@ def main() -> None:
             load_file(str(prev / f"{n}.safetensors"))["layer_out"].unsqueeze(0)
             for n in step_names
         ]
+
+    if args.model_chain:
+        model_chain(
+            args,
+            ckpt,
+            tc,
+            embeds,
+            ids_per_step,
+            step_names,
+            all_ids,
+            ids_prefill,
+            ids_decode,
+            prompt,
+            index_sha,
+        )
+        return
 
     for layer in sorted(args.layers):
         out_dir = args.out / f"layer-{layer:03d}"
@@ -643,7 +1035,11 @@ def main() -> None:
                 "fp32": "all parameters and activations fp32 (bf16 checkpoint values upcast exactly)",
                 "bf16": "all parameters bf16 as released; dequantised expert weights computed in fp32 then cast to bf16",
             },
-            "stages": STAGES,
+            "stages": {
+                k: v
+                for k, v in STAGES.items()
+                if k in results[("w4a16", "fp32")]["prefill"]
+            },
             "versions": {
                 "torch": torch.__version__,
                 "transformers": transformers.__version__,

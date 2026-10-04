@@ -172,3 +172,40 @@ Layer 1 tolerances are cumulative (its inputs already carry layer 0's drift): `l
   chains through layer 2 and needs the indexer path hooked.
 - The fp32 run upcasts BF16 checkpoint values exactly; it is a higher-precision reference, not a
   different model.
+
+## Full-attention layers (layer 3, 7, ...)
+
+HF's config calls these `qwen_sparse_attention` (`config.json` says `full_attention`). The script
+feeds them what `Qwen4ExpTextModel.forward` would: cos/sin over every position so far (the three
+mRoPE axes all equal the text position, so interleaved mRoPE is plain RoPE) and the eager causal
+float mask (0 visible, dtype min hidden). Extra stages: `attn.q_proj` (per head: 256 query values
+then 256 gate values), `attn.k_proj`, `attn.v_proj`, `attn.q_normed` / `attn.k_normed` (RMSNorm
+with `1 + w`), `attn.q_rope` / `attn.k_rope` (rotate-half RoPE on the first 64 of 256 dims),
+`attn.core_out` (before the gate), `attn.gated_out` (`* sigmoid(gate)`, the o_proj input),
+`indexer.*` and the caches `state.k`, `state.v`, `state.indexer_k`.
+
+The indexer stages `indexer.block_scores`, `indexer.num_blocks` and `indexer.selected_tokens` are
+recomputed with a line-for-line copy of HF's selection loop (it keeps no tensors to hook); every
+step asserts that copy's kept-token mask equals HF's `indexer.mask`. `selected_tokens` is in topk
+order, so compare it as a set. With this prompt (at most 76 tokens) every complete 4-token block
+is kept (`block_topk` is 512), so the mask equals the causal mask: the sparse selection itself is
+not exercised by these fixtures.
+
+## Whole-model chain
+
+    CUDA_VISIBLE_DEVICES= nice -n 19 taskset -c 0-11 uv run python make_fixtures.py --model-chain
+
+Runs all 48 layers (w4a16, fp32 and bf16), one layer in memory at a time, each on the previous
+layer's stored output, then the top-level `hyper_connection_mixer` and `lm_head`. Per-layer
+outputs go to `model/work/` first, so a run can be split (`--chain-layers FIRST LAST`) and
+resumed. Output: `model/{fp32,bf16}/{prefill,decode-1..3}.safetensors` with `residual_in`,
+`layer_out.L` (plain decimal L), `mixer_out`, `logits` (all positions) and
+`top_logprobs.{ids,values}` (top 20 of `log_softmax(logits.float())`), plus `manifest.json` and
+`tolerances.json` (fp32 vs bf16 per key per step, and `logits.top1_agreement`). The chain's
+`layer_out` for layers 0 to 3 is bit-identical to the per-layer fixtures. About 4.5 minutes,
+peak RSS 12.6 GB, 542 MB on disk; deterministic across runs.
+
+bf16 vs fp32 over the whole model (prefill / decode-1): final logits rms_rel 0.071 / 0.238,
+top-1 agreement 69 of 73 prefill positions and every decode step. Errors compound with depth
+(layer_out rms_rel 0.008 at layer 0, 0.05 to 0.26 at layer 47), so judge an engine against the
+fp32 truth with these as the scale, not as a per-layer bound.
