@@ -1,4 +1,4 @@
-// Reference-quality kernels for full attention with the QSA sparse indexer.
+// Rotary attention with block-sparse (QSA) key selection: prefill and flash-decode.
 // All arithmetic is fp32.
 
 #include <math.h>

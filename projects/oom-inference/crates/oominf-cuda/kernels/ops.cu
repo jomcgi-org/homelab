@@ -1,11 +1,7 @@
-// Reference-quality CUDA kernels for the oominf CUDA backend.
-//
-// These favour clarity and fp32 arithmetic over speed: they are the correctness
-// baseline that faster kernels are later checked against. Activations are fp32;
-// weights arrive as bf16 (released dense weights) or NVFP4 records.
+// Dense GEMV, normalisation, hyper-connection, recurrent and elementwise kernels.
+// Activations, state and accumulation are fp32; dense weights are bf16 as released.
 
 #include <cuda_bf16.h>
-#include <cuda_fp8.h>
 #include <stdint.h>
 
 typedef __nv_bfloat16 bf16;
@@ -72,12 +68,6 @@ extern "C" __global__ void hc_mix(const float* up, const float* normed, float* m
         acc += sigmoidf(up[j]) * normed[j];
     }
     mixed[i] = acc / C;
-}
-
-// Injection weights: inj = 2 * sigmoid(logit * inv_c).
-extern "C" __global__ void hc_inject(const float* logit, float* inj, int n, float inv_c) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) inj[i] = 2.0f * sigmoidf(logit[i] * inv_c);
 }
 
 // Combine: out[t,c,h] = res[t,c,h] + y[t,h] * inj[t,c].
@@ -295,69 +285,12 @@ extern "C" __global__ void silu_mul(const float* gate, const float* up, float* y
     if (i < n) y[i] = siluf(gate[i]) * up[i];
 }
 
-// Fused gate/up layout [n, 2I] (gate then up per row): y[n, I] = silu(g) * u.
-extern "C" __global__ void silu_mul_fused(const float* gu, float* y, int n, int I) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * I) return;
-    int r = i / I, c = i % I;
-    y[i] = siluf(gu[(size_t)r * 2 * I + c]) * gu[(size_t)r * 2 * I + I + c];
-}
-
 // moe = routed + sigmoid(gate_logit) * shared. gate_logit: [T].
 extern "C" __global__ void moe_combine(const float* routed, const float* shared,
                                        const float* gate_logit, float* out, int T, int H) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * H) return;
     out[i] = routed[i] + sigmoidf(gate_logit[i / H]) * shared[i];
-}
-
-__device__ __forceinline__ float e2m1(uint8_t code) {
-    const float mag[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
-    float v = mag[code & 7];
-    return (code & 8) ? -v : v;
-}
-
-// ModelOpt NVFP4 (group 16) to fp32: w[r, c] = e2m1(nibble) * fp8(scale[r, c/16]) * scale2,
-// read straight from an expert record: packed [rows, cols/2] (low nibble = even column) at
-// packed_off, e4m3 scales [rows, cols/16] at scale_off, and scale2 as the f32 at index
-// scale2_idx of the record's leading scalars part.
-extern "C" __global__ void dequant_nvfp4(const uint8_t* record, long long packed_off,
-                                         long long scale_off, int scale2_idx, float* out,
-                                         int rows, int cols) {
-    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= (size_t)rows * cols) return;
-    const uint8_t* packed = record + packed_off;
-    const uint8_t* scale = record + scale_off;
-    float scale2 = ((const float*)record)[scale2_idx];
-    int r = i / cols, c = i % cols;
-    uint8_t byte = packed[(size_t)r * (cols / 2) + c / 2];
-    uint8_t code = (c & 1) ? (byte >> 4) : (byte & 15);
-    __nv_fp8_e4m3 s;
-    s.__x = scale[(size_t)r * (cols / 16) + c / 16];
-    out[i] = e2m1(code) * (float(s) * scale2);
-}
-
-// Gather rows: dst[i, :] = src[idx[i], :].
-extern "C" __global__ void gather_rows(const float* src, const int* idx, float* dst, int n, int H) {
-    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= (size_t)n * H) return;
-    int r = i / H, h = i % H;
-    dst[i] = src[(size_t)idx[r] * H + h];
-}
-
-// Weighted scatter-add: dst[idx[i], :] += w[i] * src[i, :]. Rows of idx are distinct
-// within one call (one expert sees each token at most once), so no atomics are needed.
-extern "C" __global__ void scatter_add_weighted(const float* src, const int* idx, const float* w,
-                                                float* dst, int n, int H) {
-    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= (size_t)n * H) return;
-    int r = i / H, h = i % H;
-    dst[(size_t)idx[r] * H + h] += w[r] * src[i];
-}
-
-extern "C" __global__ void add_inplace(float* x, const float* y, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) x[i] += y[i];
 }
 
 extern "C" __global__ void add_out(const float* x, const float* y, float* out, int n) {

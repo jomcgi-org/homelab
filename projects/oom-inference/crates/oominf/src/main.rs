@@ -2,8 +2,8 @@ mod bench;
 mod chat;
 mod check_layer;
 mod check_model;
-mod experts;
 mod generate;
+mod load;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -50,9 +50,9 @@ enum Command {
         #[arg(long)]
         fixtures: PathBuf,
         #[command(flatten)]
-        experts: experts::ExpertArgs,
+        experts: load::ExpertArgs,
     },
-    /// Greedy decode with a time breakdown (performance baseline).
+    /// Greedy decode with expert-source statistics (performance baseline).
     Bench {
         #[arg(long)]
         model: PathBuf,
@@ -63,11 +63,11 @@ enum Command {
         prompt_file: Option<PathBuf>,
         #[arg(long, default_value_t = 32)]
         tokens: usize,
-        /// Prompt tokens per prefill step.
-        #[arg(long, default_value_t = oominf_models_qwen::PREFILL_CHUNK)]
-        prefill_chunk: usize,
+        /// Prompt tokens per prefill chunk (default: the model family's).
+        #[arg(long)]
+        prefill_chunk: Option<usize>,
         #[command(flatten)]
-        experts: experts::ExpertArgs,
+        experts: load::ExpertArgs,
     },
     /// Serve the model over OpenAI- and Anthropic-compatible HTTP APIs.
     Serve {
@@ -83,11 +83,12 @@ enum Command {
         /// Longest sequence (prompt plus generation) the KV cache is sized for.
         #[arg(long, default_value_t = 32768)]
         max_context: usize,
-        /// Prompt tokens per prefill forward pass (bounds prefill activation memory).
-        #[arg(long, default_value_t = oominf_models_qwen::PREFILL_CHUNK)]
-        prefill_chunk: usize,
+        /// Prompt tokens per prefill chunk (bounds prefill activation memory; default:
+        /// the model family's).
+        #[arg(long)]
+        prefill_chunk: Option<usize>,
         #[command(flatten)]
-        experts: experts::ExpertArgs,
+        experts: load::ExpertArgs,
     },
     /// Greedy-decode one chat turn (correctness tool).
     Generate {
@@ -98,7 +99,7 @@ enum Command {
         #[arg(long, default_value_t = 64)]
         max_tokens: usize,
         #[command(flatten)]
-        experts: experts::ExpertArgs,
+        experts: load::ExpertArgs,
     },
     /// Render a user turn with the chat template and tokenize it; with
     /// `--manifest`, check it against a reference fixture manifest.
@@ -239,24 +240,23 @@ fn main() -> Result<()> {
         } => {
             let model_name =
                 served_model_name.unwrap_or_else(|| oominf_server::default_model_name(&model));
+            let model_type = oominf_models::model_type(&oominf_format::Model::open(&model)?)?;
             let cfg = oominf_server::ServeConfig {
-                engine: oominf_server::engine::EngineConfig {
-                    model_dir: model,
-                    max_context,
-                    prefill_chunk,
-                },
+                model_dir: model.clone(),
+                model_type,
+                max_context,
                 addr: std::net::SocketAddr::new(host, port),
                 model_name,
             };
             oominf_server::serve(
                 cfg,
-                Box::new(move |gpu, files| {
-                    let source = experts::Experts::build(&experts, gpu, files)?;
-                    let summary = source.describe();
-                    Ok((
-                        Box::new(source) as Box<dyn oominf_models_qwen::ExpertSource>,
-                        summary,
-                    ))
+                Box::new(move || {
+                    load::open_model(&load::OpenArgs {
+                        model_dir: &model,
+                        max_context,
+                        prefill_chunk,
+                        experts: &experts,
+                    })
                 }),
             )?
         }

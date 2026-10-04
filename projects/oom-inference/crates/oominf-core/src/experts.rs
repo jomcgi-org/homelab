@@ -1,0 +1,114 @@
+use std::sync::Arc;
+
+use anyhow::Result;
+
+/// Supplies routed-expert records on the device. Expert tiers implement it with
+/// device slots over host memory over disk; the simplest source reads every record
+/// from the model files.
+///
+/// Kernels read every part of a record, scales included, from the record itself, so
+/// a source only hands out record addresses. Routing alone decides which experts
+/// run; a source only decides where their records come from.
+pub trait ExpertSource<B> {
+    /// Makes `experts` of `layer` device-resident and returns the device address of
+    /// each one's record, in the same order, usable by work issued afterwards.
+    /// Addresses stay valid until the next fetch.
+    fn fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Vec<u64>>;
+
+    /// Two-phase fetch: returns every record's address and whether it is usable by
+    /// work issued now. The rest become usable after
+    /// [`ExpertSource::finish_fetch`], so callers can compute with resident experts
+    /// while the others load.
+    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Staged> {
+        let addrs = self.fetch(b, layer, experts)?;
+        Ok(Staged {
+            ready: vec![true; addrs.len()],
+            addrs,
+        })
+    }
+
+    /// Completes the last [`ExpertSource::begin_fetch`]: every record it returned is
+    /// usable by work issued after this call.
+    fn finish_fetch(&mut self, _b: &B) -> Result<()> {
+        Ok(())
+    }
+
+    /// Hints that `layer` is about to route to `experts` (a prediction): the source
+    /// may start loading them toward a faster tier. A wrong hint only costs
+    /// bandwidth. Called after the previous fetch finished.
+    fn prefetch(&mut self, _b: &B, _layer: u32, _experts: &[u32]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Whether [`ExpertSource::prefetch`] hints are used (so callers can skip
+    /// computing them).
+    fn wants_prefetch(&self) -> bool {
+        false
+    }
+
+    /// Gives device memory back so other buffers (e.g. a growing KV cache) can use
+    /// it: frees at least `bytes` of cached records if possible and returns how many
+    /// bytes it freed. Called between steps, never while a fetch is open.
+    fn release_vram(&mut self, _b: &B, _bytes: usize) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Takes device memory back after it was released: grows the cache by up to
+    /// `bytes` (never beyond its configured size) and returns how many bytes it took.
+    fn reclaim_vram(&mut self, _b: &B, _bytes: usize) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Where records came from so far.
+    fn stats(&self) -> ExpertStats {
+        ExpertStats::default()
+    }
+
+    /// One line describing the source (sizes, policies).
+    fn describe(&self) -> String;
+}
+
+/// Builds a model's expert source once its dense weights and first session state are
+/// on the device, so a tiered source can size itself from what is left.
+pub type ExpertFactory<B> = Box<dyn FnOnce(&Arc<B>) -> Result<Box<dyn ExpertSource<B>>>>;
+
+/// Result of [`ExpertSource::begin_fetch`].
+pub struct Staged {
+    pub addrs: Vec<u64>,
+    /// `ready[i]`: record `i` is usable before `finish_fetch`.
+    pub ready: Vec<bool>,
+}
+
+/// Counters of an [`ExpertSource`]; subtract two snapshots for an interval.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ExpertStats {
+    pub requests: u64,
+    pub vram_hits: u64,
+    pub host_hits: u64,
+    pub disk_reads: u64,
+    /// Experts predicted for a layer, how many of those it then routed to, and how
+    /// many experts it routed to in total (prediction precision and recall).
+    pub predicted: u64,
+    pub predicted_routed: u64,
+    pub routed_after_prediction: u64,
+    /// Disk reads started by predictions, and how many of them a fetch then used.
+    pub lookahead_reads: u64,
+    pub lookahead_used: u64,
+}
+
+impl std::ops::Sub for ExpertStats {
+    type Output = ExpertStats;
+    fn sub(self, o: ExpertStats) -> ExpertStats {
+        ExpertStats {
+            requests: self.requests - o.requests,
+            vram_hits: self.vram_hits - o.vram_hits,
+            host_hits: self.host_hits - o.host_hits,
+            disk_reads: self.disk_reads - o.disk_reads,
+            predicted: self.predicted - o.predicted,
+            predicted_routed: self.predicted_routed - o.predicted_routed,
+            routed_after_prediction: self.routed_after_prediction - o.routed_after_prediction,
+            lookahead_reads: self.lookahead_reads - o.lookahead_reads,
+            lookahead_used: self.lookahead_used - o.lookahead_used,
+        }
+    }
+}

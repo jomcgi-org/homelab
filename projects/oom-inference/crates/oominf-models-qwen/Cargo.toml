@@ -7,9 +7,13 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 io-uring = "0.7"
-oominf-cuda = { path = "../oominf-cuda" }
+oominf-core = { path = "../oominf-core" }
 oominf-format = { path = "../oominf-format" }
 serde_json.workspace = true
+
+[dev-dependencies]
+oominf-cuda = { path = "../oominf-cuda" }
+oominf-tiers = { path = "../oominf-tiers" }
 
 [lints]
 workspace = true

@@ -6,25 +6,25 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail, ensure};
-use cudarc::driver::sys;
-use io_uring::{IoUring, opcode, types};
+use std::sync::Arc;
 
-/// Anonymous, page-aligned host memory registered with CUDA once, so host-to-device
-/// copies from it are true async DMA. Slots are `stride` bytes (a multiple of 4096,
+use anyhow::{Context, Result, bail, ensure};
+use io_uring::{IoUring, opcode, types};
+use oominf_core::Transfer;
+
+/// Anonymous, page-aligned host memory pinned once with the backend, so copies from
+/// it to the device are asynchronous. Slots are `stride` bytes (a multiple of 4096,
 /// as O_DIRECT requires).
-pub struct PinnedArena {
+pub struct PinnedArena<B: Transfer> {
+    b: Arc<B>,
     ptr: *mut u8,
     bytes: usize,
     stride: usize,
     slots: usize,
 }
 
-// SAFETY: the arena is plain memory; the tier serialises access to slots.
-unsafe impl Send for PinnedArena {}
-
-impl PinnedArena {
-    pub fn new(slots: usize, stride: usize) -> Result<Self> {
+impl<B: Transfer> PinnedArena<B> {
+    pub fn new(b: Arc<B>, slots: usize, stride: usize) -> Result<Self> {
         ensure!(
             stride.is_multiple_of(4096),
             "slot stride {stride} is not 4096-aligned"
@@ -45,15 +45,15 @@ impl PinnedArena {
         if ptr == libc::MAP_FAILED {
             bail!("mmap of {bytes} bytes for the host tier failed");
         }
-        // SAFETY: ptr/bytes describe the mapping above; the caller has a current
-        // CUDA context (the tier is built after the GPU).
-        let r = unsafe { sys::cuMemHostRegister_v2(ptr, bytes, sys::CU_MEMHOSTREGISTER_PORTABLE) };
-        if r != sys::cudaError_enum::CUDA_SUCCESS {
+        // SAFETY: ptr/bytes describe the mapping above, which lives until Drop
+        // unpins it.
+        if let Err(e) = unsafe { b.pin_host(ptr.cast(), bytes) } {
             // SAFETY: unmapping the mapping created above.
             unsafe { libc::munmap(ptr, bytes) };
-            bail!("cuMemHostRegister of {bytes} bytes failed: {r:?}");
+            return Err(e.context(format!("pinning {bytes} bytes for the host tier")));
         }
         Ok(PinnedArena {
+            b,
             ptr: ptr.cast(),
             bytes,
             stride,
@@ -71,17 +71,16 @@ impl PinnedArena {
         unsafe { self.ptr.add(slot * self.stride) }
     }
 
-    pub fn slot(&self, slot: usize) -> &[u8] {
-        // SAFETY: in bounds; callers do not read a slot while a disk read targets it.
-        unsafe { std::slice::from_raw_parts(self.slot_ptr(slot), self.stride) }
+    pub fn stride(&self) -> usize {
+        self.stride
     }
 }
 
-impl Drop for PinnedArena {
+impl<B: Transfer> Drop for PinnedArena<B> {
     fn drop(&mut self) {
-        // SAFETY: registered and mapped in `new`.
+        // SAFETY: pinned and mapped in `new`.
         unsafe {
-            sys::cuMemHostUnregister(self.ptr.cast());
+            self.b.unpin_host(self.ptr);
             libc::munmap(self.ptr.cast(), self.bytes);
         }
     }

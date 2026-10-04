@@ -11,11 +11,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use oominf_core::{Memory, Probe};
 use oominf_cuda::Gpu;
-use oominf_models_qwen::{Dims, Probe, QwenModel};
+use oominf_models_qwen::{Dims, QwenModel};
 
 use crate::check_layer::{STEPS, load_step, rms_rel_and_cos, step_tokens};
-use crate::experts::{ExpertArgs, Experts};
+use crate::load::{ExpertArgs, factory};
 
 struct ModelProbe<'a> {
     truth: &'a HashMap<String, Vec<f32>>,
@@ -88,15 +89,15 @@ pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Resul
     )?;
     let budget = &tolerances["w4a16/bf16_vs_fp32"];
     let tokens = step_tokens(fixtures)?;
-    let gpu = Gpu::new(0)?;
+    let gpu = Arc::new(Gpu::new(0)?);
     let t0 = std::time::Instant::now();
-    let qwen = QwenModel::load(&gpu, &model, dims, None)?;
+    let qwen = QwenModel::load(&*gpu, &model, dims, None)?;
     gpu.sync()?;
     println!("model loaded in {:.1}s", t0.elapsed().as_secs_f64());
     let vocab = qwen.vocab();
     let max_tokens: usize = tokens.iter().map(Vec::len).sum();
 
-    let mut experts = Experts::build(expert_args, &gpu, &model)?;
+    let mut experts = factory::<Gpu>(expert_args, model.clone())(&gpu)?;
     println!("{}", experts.describe());
     let mut ok = true;
     for isolate in [true, false] {
@@ -108,7 +109,7 @@ pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Resul
                 "chained (end to end)"
             }
         );
-        let mut state = qwen.new_state(&gpu, max_tokens)?;
+        let mut state = qwen.new_state(&*gpu, max_tokens)?;
         for (step, ids) in STEPS.iter().zip(&tokens) {
             let truth = load_step(&fixtures.join(format!("fp32/{step}.safetensors")))?;
             let mut probe = ModelProbe {
@@ -117,7 +118,7 @@ pub fn run(model_dir: &Path, fixtures: &Path, expert_args: &ExpertArgs) -> Resul
                 observed: Vec::new(),
             };
             let ts = std::time::Instant::now();
-            qwen.forward(&gpu, ids, &mut state, &mut experts, &mut probe, false)?;
+            qwen.forward(&*gpu, ids, &mut state, experts.as_mut(), &mut probe, false)?;
             println!(
                 "-- {step} (T={}, {:.1}s)",
                 ids.len(),

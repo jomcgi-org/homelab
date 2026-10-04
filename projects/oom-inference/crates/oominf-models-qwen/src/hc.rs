@@ -2,24 +2,24 @@
 //! combine a block's output back into every stream.
 
 use anyhow::Result;
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
+use oominf_core::{Backend, Probe, Workspace, tap};
 use oominf_format::Model;
 
-use crate::util::{bf16_concat, bf16_tensor, tap};
-use crate::{Dims, Probe};
+use crate::Dims;
+use crate::util::{bf16_concat, bf16_tensor};
 
-pub struct HyperConn {
-    norm: Bf16Buf,
+pub struct HyperConn<B: Backend> {
+    norm: B::Bf16,
     /// `input_mix_weight_down` with, when the connection combines,
     /// `block_inject_weight` stacked under it: both read the normed residual.
-    down_inject: Bf16Buf,
-    up: Bf16Buf,
+    down_inject: B::Bf16,
+    up: B::Bf16,
     combine: bool,
 }
 
-impl HyperConn {
+impl<B: Backend> HyperConn<B> {
     /// Loads `{prefix}.hc_norm.weight` etc.; `combine` loads `block_inject_weight`.
-    pub fn load(gpu: &Gpu, model: &Model, d: &Dims, prefix: &str, combine: bool) -> Result<Self> {
+    pub fn load(gpu: &B, model: &Model, d: &Dims, prefix: &str, combine: bool) -> Result<Self> {
         let r = d.residual() as u64;
         let lr = d.hc_lowrank as u64;
         let mut parts = vec![(
@@ -51,15 +51,15 @@ impl HyperConn {
     #[allow(clippy::too_many_arguments)]
     pub fn mix(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        ws: &mut Workspace,
-        residual: &Buf,
+        ws: &mut Workspace<B>,
+        residual: &B::F32,
         t: usize,
-        scratch: &mut Bf16Buf,
+        scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
         name: &str,
-    ) -> Result<(Buf, Option<Buf>)> {
+    ) -> Result<(B::F32, Option<B::F32>)> {
         let r = d.residual();
         let lr = d.hc_lowrank;
         let hc = if self.combine { d.hc } else { 0 };
@@ -111,13 +111,13 @@ impl HyperConn {
 
     /// `out = residual + block_out (x) inject`, broadcast over the streams.
     pub fn combine_into(
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        residual: &Buf,
-        block_out: &Buf,
-        inject: &Buf,
+        residual: &B::F32,
+        block_out: &B::F32,
+        inject: &B::F32,
         t: usize,
-        out: &mut Buf,
+        out: &mut B::F32,
     ) -> Result<()> {
         gpu.hc_combine(residual, block_out, inject, out, t, d.hc, d.hidden)?;
         Ok(())

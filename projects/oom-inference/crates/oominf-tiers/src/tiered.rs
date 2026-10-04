@@ -53,10 +53,8 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use cudarc::driver::{CudaEvent, CudaStream, sys};
-use oominf_cuda::{Gpu, Slice};
+use oominf_core::{Backend, ExpertSource, ExpertStats, Memory, Staged};
 use oominf_format::Model;
-use oominf_models_qwen::{ExpertSource, Staged};
 
 use crate::cache::{Place, SlotCache};
 use crate::host::{DirectReader, PinnedArena, ReadJob};
@@ -78,45 +76,13 @@ enum Target {
     Stage,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct TierStats {
-    pub requests: u64,
-    pub vram_hits: u64,
-    pub host_hits: u64,
-    pub disk_reads: u64,
-    /// Experts predicted for a layer, how many of those it then routed to, and how
-    /// many experts it routed to in total (for prediction precision and recall).
-    pub predicted: u64,
-    pub predicted_routed: u64,
-    pub routed_after_prediction: u64,
-    /// Disk reads started by predictions, and how many of them a fetch then used.
-    pub lookahead_reads: u64,
-    pub lookahead_used: u64,
-}
-
-impl std::ops::Sub for TierStats {
-    type Output = TierStats;
-    fn sub(self, o: TierStats) -> TierStats {
-        TierStats {
-            requests: self.requests - o.requests,
-            vram_hits: self.vram_hits - o.vram_hits,
-            host_hits: self.host_hits - o.host_hits,
-            disk_reads: self.disk_reads - o.disk_reads,
-            predicted: self.predicted - o.predicted,
-            predicted_routed: self.predicted_routed - o.predicted_routed,
-            routed_after_prediction: self.routed_after_prediction - o.routed_after_prediction,
-            lookahead_reads: self.lookahead_reads - o.lookahead_reads,
-            lookahead_used: self.lookahead_used - o.lookahead_used,
-        }
-    }
-}
-
 const GIB: f64 = (1u64 << 30) as f64;
 
 /// Records per chunk of the main VRAM arena (about 177 MB for Qwen 3.8 Flash).
 const CHUNK_SLOTS: usize = 64;
 
-pub struct TieredExperts {
+pub struct TieredExperts<B: Backend> {
+    b: Arc<B>,
     model: Arc<Model>,
     num_experts: u32,
     stride: usize,
@@ -124,28 +90,28 @@ pub struct TieredExperts {
     /// The main VRAM tier in chunks of `CHUNK_SLOTS` records, so whole chunks can be
     /// given back ([`ExpertSource::release_vram`]) and taken again
     /// ([`ExpertSource::reclaim_vram`]) up to `max_chunks`.
-    main_chunks: Vec<Slice<u8>>,
+    main_chunks: Vec<B::Bytes>,
     main_bases: Vec<u64>,
     max_chunks: usize,
     /// Owns the stage slots behind `stage_base`, `stride` bytes each (absent when
     /// there is no stage).
-    _stage_arena: Option<Slice<u8>>,
+    _stage_arena: Option<B::Bytes>,
     stage_base: u64,
     /// Streaming fetches fill these instead of the main VRAM tier (empty when the
     /// VRAM budget is too small to set a layer's worth aside).
     stage: SlotCache,
     host: SlotCache,
-    host_arena: PinnedArena,
+    host_arena: PinnedArena<B>,
     /// Fetch sequence number of the last device copy that read each host slot.
     host_last_copy: Vec<u64>,
-    host_stage: PinnedArena,
+    host_stage: PinnedArena<B>,
     host_stage_last_copy: Vec<u64>,
     host_stage_next: usize,
     /// Fetches with more experts than this stream through the stage.
     stream_threshold: usize,
     /// Copy-stream events of fetches whose copies may still be pending, oldest first.
-    pending: VecDeque<(u64, CudaEvent)>,
-    copy_stream: Arc<CudaStream>,
+    pending: VecDeque<(u64, B::Event)>,
+    copy_queue: B::CopyQueue,
     reader: DirectReader,
     /// Disk reads of the open fetch, per read tag: (host buffer, device address,
     /// key, VRAM cache the key was placed in).
@@ -159,13 +125,13 @@ pub struct TieredExperts {
     prediction: Option<(u32, HashSet<u32>)>,
     lookahead_inflight: Vec<u32>,
     seq: u64,
-    pub stats: TierStats,
+    pub stats: ExpertStats,
 }
 
-impl TieredExperts {
+impl<B: Backend> TieredExperts<B> {
     /// `vram_slots` and `host_slots` are record counts; see [`TieredExperts::slots_for`].
     pub fn new(
-        gpu: &Gpu,
+        b: Arc<B>,
         model: Arc<Model>,
         vram_slots: usize,
         host_slots: usize,
@@ -199,18 +165,17 @@ impl TieredExperts {
         );
         let main_slots = max_chunks * CHUNK_SLOTS;
         let main_chunks = (0..max_chunks)
-            .map(|_| gpu.stream.alloc_zeros::<u8>(CHUNK_SLOTS * stride))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let main_bases = main_chunks.iter().map(|c| gpu.device_ptr(c)).collect();
+            .map(|_| b.zeros_bytes(CHUNK_SLOTS * stride))
+            .collect::<Result<Vec<_>>>()?;
+        let main_bases = main_chunks.iter().map(|c| b.bytes_addr(c)).collect();
         let stage_arena = if stage_slots > 0 {
-            Some(gpu.stream.alloc_zeros::<u8>(stage_slots * stride)?)
+            Some(b.zeros_bytes(stage_slots * stride)?)
         } else {
             None
         };
-        let stage_base = stage_arena.as_ref().map_or(0, |a| gpu.device_ptr(a));
-        gpu.ctx.bind_to_thread()?;
-        let host_arena = PinnedArena::new(host_slots, stride)?;
-        let host_stage = PinnedArena::new(stage_slots.max(1), stride)?;
+        let stage_base = stage_arena.as_ref().map_or(0, |a| b.bytes_addr(a));
+        let host_arena = PinnedArena::new(b.clone(), host_slots, stride)?;
+        let host_stage = PinnedArena::new(b.clone(), stage_slots.max(1), stride)?;
         let reader = DirectReader::open(&model.dir().join(oominf_format::EXPERTS_FILE))?;
         Ok(TieredExperts {
             num_experts,
@@ -230,7 +195,7 @@ impl TieredExperts {
             host_stage_next: 0,
             stream_threshold: (num_experts as usize / 8).max(1),
             pending: VecDeque::new(),
-            copy_stream: gpu.ctx.new_stream()?,
+            copy_queue: b.copy_queue()?,
             reader,
             reads: Vec::new(),
             open: false,
@@ -238,40 +203,13 @@ impl TieredExperts {
             prediction: None,
             lookahead_inflight: Vec::new(),
             seq: 0,
-            stats: TierStats::default(),
+            stats: ExpertStats::default(),
             model,
+            b,
         })
     }
 
-    /// Records that fit in `gib` GiB for this model.
-    pub fn slots_for(model: &Model, gib: f64) -> usize {
-        let stride = model
-            .index()
-            .expert_groups
-            .first()
-            .map(|g| g.schema.stride)
-            .unwrap_or(1);
-        ((gib * GIB) / stride as f64) as usize
-    }
-
-    /// Free device memory now, minus `reserve_gib`, in GiB (at least 0).
-    pub fn free_vram_gib(gpu: &Gpu, reserve_gib: f64) -> Result<f64> {
-        let (free, _) = gpu.ctx.mem_get_info()?;
-        Ok((free as f64 / GIB - reserve_gib).max(0.0))
-    }
-
-    /// `MemAvailable` from `/proc/meminfo`, minus `reserve_gib`, in GiB (at least 0).
-    pub fn available_host_gib(reserve_gib: f64) -> Result<f64> {
-        let info = std::fs::read_to_string("/proc/meminfo")?;
-        let kib: f64 = info
-            .lines()
-            .find_map(|l| l.strip_prefix("MemAvailable:"))
-            .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
-            .context("MemAvailable missing from /proc/meminfo")?;
-        Ok((kib / (1u64 << 20) as f64 - reserve_gib).max(0.0))
-    }
-
-    pub fn describe(&self) -> String {
+    fn summary(&self) -> String {
         format!(
             "tiered experts: VRAM {} + {} stage slots ({:.1} GiB, {}), host {} slots ({:.1} GiB pinned, {})",
             self.vram.capacity(),
@@ -306,7 +244,7 @@ impl TieredExperts {
                 break;
             }
             let (_, ev) = self.pending.pop_front().unwrap();
-            ev.synchronize()?;
+            self.b.event_wait(&ev)?;
         }
         Ok(())
     }
@@ -314,7 +252,7 @@ impl TieredExperts {
     /// Enqueues the copy of host slot `host_slot` to device address `dst` on the
     /// copy stream.
     fn copy_host(&mut self, host_slot: usize, dst: u64) -> Result<()> {
-        enqueue_copy(&self.copy_stream, dst, &self.host_arena, host_slot)?;
+        enqueue_copy(&*self.b, &self.copy_queue, dst, &self.host_arena, host_slot)?;
         self.host_last_copy[host_slot] = self.seq;
         Ok(())
     }
@@ -394,31 +332,57 @@ impl TieredExperts {
     }
 }
 
-/// Enqueues one record copy from a host slot to device address `dst` on `stream`.
-fn enqueue_copy(
-    stream: &CudaStream,
+/// Records that fit in `gib` GiB for this model.
+pub fn slots_for(model: &Model, gib: f64) -> usize {
+    let stride = model
+        .index()
+        .expert_groups
+        .first()
+        .map(|g| g.schema.stride)
+        .unwrap_or(1);
+    ((gib * GIB) / stride as f64) as usize
+}
+
+/// Free device memory now, minus `reserve_gib`, in GiB (at least 0).
+pub fn free_vram_gib(b: &impl Memory, reserve_gib: f64) -> Result<f64> {
+    let (free, _) = b.mem_info()?;
+    Ok((free as f64 / GIB - reserve_gib).max(0.0))
+}
+
+/// `MemAvailable` from `/proc/meminfo`, minus `reserve_gib`, in GiB (at least 0).
+pub fn available_host_gib(reserve_gib: f64) -> Result<f64> {
+    let info = std::fs::read_to_string("/proc/meminfo")?;
+    let kib: f64 = info
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .context("MemAvailable missing from /proc/meminfo")?;
+    Ok((kib / (1u64 << 20) as f64 - reserve_gib).max(0.0))
+}
+
+/// Enqueues one record copy from a host slot to device address `dst` on `queue`.
+fn enqueue_copy<B: Backend>(
+    b: &B,
+    queue: &B::CopyQueue,
     dst: u64,
-    arena: &PinnedArena,
+    arena: &PinnedArena<B>,
     host_slot: usize,
 ) -> Result<()> {
     // SAFETY: dst is a slot of the VRAM arena that no kernel ordered before the copy
-    // reads (KernelReadsValid); the source is a registered host slot that is not
+    // reads (KernelReadsValid); the source is a pinned host slot that is not
     // overwritten until this fetch's copy event completes (CopySourceValid).
-    unsafe {
-        cudarc::driver::result::memcpy_htod_async(dst, arena.slot(host_slot), stream.cu_stream())?;
-    }
-    Ok(())
+    unsafe { b.copy_to_device(queue, dst, arena.slot_ptr(host_slot), arena.stride()) }
 }
 
-impl ExpertSource for TieredExperts {
-    fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
-        let staged = self.begin_fetch(gpu, layer, experts)?;
-        self.finish_fetch(gpu)?;
+impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
+    fn fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
+        let staged = self.begin_fetch(b, layer, experts)?;
+        self.finish_fetch(b)?;
         Ok(staged.addrs)
     }
 
-    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
-        self.finish_fetch(gpu)?;
+    fn begin_fetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<Staged> {
+        self.finish_fetch(b)?;
         self.finish_lookahead(layer, experts)?;
         self.seq += 1;
         let keys: Vec<u32> = experts
@@ -505,23 +469,17 @@ impl ExpertSource for TieredExperts {
         }
 
         // Refills wait for every kernel enqueued so far (KernelReadsValid).
-        let after = gpu
-            .stream
-            .record_event(Some(sys::CUevent_flags::CU_EVENT_DISABLE_TIMING))?;
-        self.copy_stream.wait(&after)?;
+        let after = self.b.record_compute()?;
+        self.b.copies_wait(&self.copy_queue, &after)?;
         self.open = true;
         for (src, dst) in promotions {
             // SAFETY: both are slots of the VRAM arena; the source is only refilled by
             // later copies on this same stream, and the destination is read only by
             // kernels ordered after finish_fetch.
             unsafe {
-                cudarc::driver::result::memcpy_dtod_async(
-                    dst,
-                    src,
-                    self.stride,
-                    self.copy_stream.cu_stream(),
-                )?;
-            }
+                self.b
+                    .copy_on_device(&self.copy_queue, dst, src, self.stride)?
+            };
         }
 
         // Host side of each fill: host hits copy now, the rest read from disk.
@@ -577,8 +535,8 @@ impl ExpertSource for TieredExperts {
         self.lookahead
     }
 
-    fn prefetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<()> {
-        self.finish_fetch(gpu)?;
+    fn prefetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
+        self.finish_fetch(b)?;
         self.finish_lookahead(u32::MAX, &[])?;
         let keys: HashSet<u32> = experts
             .iter()
@@ -626,8 +584,8 @@ impl ExpertSource for TieredExperts {
     /// Retires main VRAM chunks from the top until `bytes` are freed, keeping at
     /// least one layer's worth of slots. KernelReadsValid: every copy and kernel that
     /// could read a retired slot has completed before its chunk is freed.
-    fn release_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
-        self.finish_fetch(gpu)?;
+    fn release_vram(&mut self, b: &B, bytes: usize) -> Result<usize> {
+        self.finish_fetch(b)?;
         let floor = self.num_experts as usize;
         let mut freed = 0;
         let mut synced = false;
@@ -638,8 +596,8 @@ impl ExpertSource for TieredExperts {
             }
             if !synced {
                 self.wait_copies(u64::MAX)?;
-                self.copy_stream.synchronize()?;
-                gpu.sync()?;
+                self.b.copies_sync(&self.copy_queue)?;
+                self.b.sync()?;
                 synced = true;
             }
             self.vram.shrink(keep);
@@ -651,14 +609,14 @@ impl ExpertSource for TieredExperts {
     }
 
     /// Appends empty main chunks while `bytes` allow, up to the configured size.
-    fn reclaim_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
+    fn reclaim_vram(&mut self, _b: &B, bytes: usize) -> Result<usize> {
         let chunk_bytes = CHUNK_SLOTS * self.stride;
         let mut taken = 0;
         while taken + chunk_bytes <= bytes && self.main_chunks.len() < self.max_chunks {
-            let Ok(chunk) = gpu.stream.alloc_zeros::<u8>(chunk_bytes) else {
+            let Ok(chunk) = self.b.zeros_bytes(chunk_bytes) else {
                 break;
             };
-            self.main_bases.push(gpu.device_ptr(&chunk));
+            self.main_bases.push(self.b.bytes_addr(&chunk));
             self.main_chunks.push(chunk);
             self.vram.grow(self.main_chunks.len() * CHUNK_SLOTS);
             taken += chunk_bytes;
@@ -666,15 +624,16 @@ impl ExpertSource for TieredExperts {
         Ok(taken)
     }
 
-    fn finish_fetch(&mut self, gpu: &Gpu) -> Result<()> {
+    fn finish_fetch(&mut self, _b: &B) -> Result<()> {
         if !self.open {
             return Ok(());
         }
         self.open = false;
         let reads = std::mem::take(&mut self.reads);
         let seq = self.seq;
-        let (stream, host, host_last, stage, stage_last) = (
-            &self.copy_stream,
+        let (b, queue, host, host_last, stage, stage_last) = (
+            &*self.b,
+            &self.copy_queue,
             &self.host_arena,
             &mut self.host_last_copy,
             &self.host_stage,
@@ -684,11 +643,11 @@ impl ExpertSource for TieredExperts {
             let (src, dst, _, _) = reads[tag];
             match src {
                 Src::Host(hs) => {
-                    enqueue_copy(stream, dst, host, hs)?;
+                    enqueue_copy(b, queue, dst, host, hs)?;
                     host_last[hs] = seq;
                 }
                 Src::Stage(ss) => {
-                    enqueue_copy(stream, dst, stage, ss)?;
+                    enqueue_copy(b, queue, dst, stage, ss)?;
                     stage_last[ss] = seq;
                 }
             }
@@ -699,20 +658,21 @@ impl ExpertSource for TieredExperts {
             self.forget_reads();
             return Err(e);
         }
-        let done = self
-            .copy_stream
-            .record_event(Some(sys::CUevent_flags::CU_EVENT_DISABLE_TIMING))?;
-        gpu.stream.wait(&done)?;
+        let done = self.b.record_copies(&self.copy_queue)?;
+        self.b.compute_wait(&done)?;
         self.pending.push_back((self.seq, done));
         // Drop completed events so the queue stays short.
-        while self.pending.len() > 1 {
-            let complete = unsafe { sys::cuEventQuery(self.pending[0].1.cu_event()) }
-                == sys::cudaError_enum::CUDA_SUCCESS;
-            if !complete {
-                break;
-            }
+        while self.pending.len() > 1 && self.b.event_done(&self.pending[0].1)? {
             self.pending.pop_front();
         }
         Ok(())
+    }
+
+    fn stats(&self) -> ExpertStats {
+        self.stats
+    }
+
+    fn describe(&self) -> String {
+        self.summary()
     }
 }

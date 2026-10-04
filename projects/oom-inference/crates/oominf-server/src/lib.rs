@@ -24,12 +24,18 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
-use crate::engine::{EngineConfig, EngineHandle, ExpertFactory};
+use crate::engine::{EngineHandle, ModelLoader};
+use crate::parse::ParserFactory;
 use crate::sampling::SamplingParams;
 use crate::template::ChatTemplate;
 
 pub struct ServeConfig {
-    pub engine: EngineConfig,
+    /// Converted model directory (chat template, tokenizer, generation defaults).
+    pub model_dir: std::path::PathBuf,
+    /// The model family, which selects the output parser.
+    pub model_type: String,
+    /// Longest sequence (prompt plus generation) a request may reach.
+    pub max_context: usize,
     pub addr: SocketAddr,
     pub model_name: String,
 }
@@ -40,6 +46,8 @@ pub struct App {
     pub template: ChatTemplate,
     pub model_name: String,
     pub max_context: usize,
+    /// Parses generated text into reasoning, content and tool calls.
+    pub parser: ParserFactory,
     /// Sampling defaults from the model's `generation_config.json`.
     pub defaults: SamplingParams,
     /// Token ids that end a turn.
@@ -56,6 +64,7 @@ impl App {
         template: ChatTemplate,
         model_name: String,
         max_context: usize,
+        parser: ParserFactory,
         defaults: SamplingParams,
         stop_ids: Vec<u32>,
     ) -> Self {
@@ -64,6 +73,7 @@ impl App {
             template,
             model_name,
             max_context,
+            parser,
             defaults,
             stop_ids,
             started: unix_now(),
@@ -163,19 +173,19 @@ async fn health(State(app): State<Arc<App>>) -> Response {
 /// Builds the app and starts the engine; the returned app turns ready once the
 /// model has loaded. Load failures are returned through the join handle.
 pub fn build(
-    engine_cfg: EngineConfig,
-    model_name: String,
-    experts: ExpertFactory,
+    cfg: &ServeConfig,
+    loader: ModelLoader,
 ) -> Result<(Arc<App>, tokio::task::JoinHandle<Result<String>>)> {
-    let template = ChatTemplate::load(&engine_cfg.model_dir)?;
-    let (defaults, stop_ids) = generation_defaults(&engine_cfg.model_dir, &template)?;
-    let max_context = engine_cfg.max_context;
-    let (engine, ready) = engine::start(engine_cfg, experts);
+    let template = ChatTemplate::load(&cfg.model_dir)?;
+    let (defaults, stop_ids) = generation_defaults(&cfg.model_dir, &template)?;
+    let parser = parse::parser_for(&cfg.model_type)?;
+    let (engine, ready) = engine::start(loader, cfg.max_context);
     let app = Arc::new(App::new(
         engine,
         template,
-        model_name,
-        max_context,
+        cfg.model_name.clone(),
+        cfg.max_context,
+        parser,
         defaults,
         stop_ids,
     ));
@@ -189,12 +199,12 @@ pub fn build(
 }
 
 /// Serves until interrupted.
-pub fn serve(cfg: ServeConfig, experts: ExpertFactory) -> Result<()> {
+pub fn serve(cfg: ServeConfig, loader: ModelLoader) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        let (app, loaded) = build(cfg.engine, cfg.model_name, experts)?;
+        let (app, loaded) = build(&cfg, loader)?;
         let listener = tokio::net::TcpListener::bind(cfg.addr)
             .await
             .with_context(|| format!("bind {}", cfg.addr))?;

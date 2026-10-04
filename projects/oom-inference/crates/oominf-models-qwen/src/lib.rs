@@ -1,4 +1,4 @@
-//! Qwen 3.8 Flash (`qwen4_exp`) on the oominf CUDA backend.
+//! Qwen 3.8 Flash (`qwen4_exp`) on any oominf [`Backend`](oominf_core::Backend).
 //!
 //! The residual stream is `[T, hc * hidden]` fp32. Each decoder layer mixes the
 //! `hc` streams down to one block input, runs the token mixer (Gated DeltaNet on
@@ -14,12 +14,13 @@ pub mod layer;
 pub mod model;
 pub mod moe;
 pub mod ple;
+mod session;
 mod util;
 
 pub use gdn::GdnState;
 pub use layer::{DecoderLayer, LayerState, StepInput};
 pub use model::{PREFILL_CHUNK, QwenModel, SeqState};
-pub use moe::{DiskExperts, ExpertSource, Staged};
+pub use session::{MODEL_TYPE, Options, open};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
@@ -119,29 +120,4 @@ impl Dims {
     pub fn residual(&self) -> usize {
         self.hc * self.hidden
     }
-}
-
-/// Observes and optionally substitutes named stage tensors (fp32, row-major).
-///
-/// `observe` receives every stage the layer computes; returning `Some` from
-/// `substitute` replaces that stage's value before the layer continues, which lets
-/// a harness test each stage on exact reference inputs.
-pub trait Probe {
-    fn wants(&self, _stage: &str) -> bool {
-        true
-    }
-    fn observe(&mut self, stage: &str, data: Vec<f32>);
-    fn substitute(&mut self, _stage: &str) -> Option<Vec<f32>> {
-        None
-    }
-}
-
-/// A probe that does nothing.
-pub struct NoProbe;
-
-impl Probe for NoProbe {
-    fn wants(&self, _stage: &str) -> bool {
-        false
-    }
-    fn observe(&mut self, _stage: &str, _data: Vec<f32>) {}
 }

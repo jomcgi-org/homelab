@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use oominf_models_qwen::{DiskExperts, ExpertSource};
-use oominf_server::engine::EngineConfig;
+use oominf_server::ServeConfig;
 use oominf_server::template::{ChatTemplate, TemplateOptions};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -76,22 +75,30 @@ fn real_template_renders_tools_and_tool_history() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn gpu_smoke() {
-    let cfg = EngineConfig {
-        model_dir: model_dir(),
+    let dir = model_dir();
+    let files = Arc::new(oominf_format::Model::open(&dir).unwrap());
+    let cfg = ServeConfig {
+        model_dir: dir,
+        model_type: oominf_models::model_type(&files).unwrap(),
         max_context: 4096,
-        prefill_chunk: 2048,
+        addr: "127.0.0.1:0".parse().unwrap(),
+        model_name: "smoke".into(),
     };
-    let (app, loaded) = oominf_server::build(
-        cfg,
-        "smoke".into(),
-        Box::new(|_, files| {
-            Ok((
-                Box::new(DiskExperts::new(files.clone())) as Box<dyn ExpertSource>,
-                "disk experts".into(),
-            ))
-        }),
-    )
-    .unwrap();
+    let loader = Box::new(move || {
+        let gpu = Arc::new(oominf_cuda::Gpu::new(0)?);
+        let opts = oominf_models::Options {
+            max_context: 4096,
+            prefill_chunk: None,
+        };
+        let disk = files.clone();
+        oominf_models::open(
+            gpu,
+            files,
+            &opts,
+            Box::new(move |_| Ok(Box::new(oominf_tiers::DiskExperts::new(disk)))),
+        )
+    });
+    let (app, loaded) = oominf_server::build(&cfg, loader).unwrap();
     loaded.await.unwrap().unwrap();
     let body = json!({"messages": [{"role": "user", "content": "Say hi."}], "max_tokens": 8, "temperature": 0,
                       "chat_template_kwargs": {"enable_thinking": false}});

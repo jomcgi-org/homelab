@@ -3,9 +3,10 @@
 
 use std::time::Instant;
 
+use oominf_core::{Linear, Memory};
 use oominf_cuda::Gpu;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let gpu = Gpu::new(0)?;
     // (name, N, K): GDN in_proj, attention in_proj, o/out proj, hc up/down, router,
     // shared expert, lm_head.
@@ -21,9 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("shared.down", 2560, 640),
         ("lm_head", 248320, 2560),
     ];
-    let mut scratch = gpu.upload_u16(&[0u16; 16])?;
+    let mut scratch = gpu.upload_bf16(&[0u16; 16])?;
     for (name, n, k) in shapes {
-        let w = gpu.upload_u16(
+        let w = gpu.upload_bf16(
             &(0..n * k)
                 .map(|i| 0x3c00 + (i % 97) as u16)
                 .collect::<Vec<_>>(),

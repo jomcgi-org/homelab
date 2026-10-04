@@ -1,76 +1,22 @@
-//! `oominf bench`: greedy decode with tier statistics and the host time spent in the
-//! expert source, the baseline every performance change is measured against.
+//! `oominf bench`: greedy decode with expert-source statistics, the baseline every
+//! performance change is measured against.
 //!
 //! Decode runs in two equal phases: the first starts from cold expert tiers (they
-//! fill as it goes), the second measures the warmed steady state.
+//! fill as it goes), the second measures the warmed steady state. The prompt then
+//! runs again on a fresh sequence to measure prefill from warm tiers.
 
 use std::path::Path;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use anyhow::Result;
-use oominf_cuda::{Buf, Gpu};
-use oominf_models_qwen::{Dims, ExpertSource, NoProbe, QwenModel, SeqState, Staged};
-use oominf_tiers::TierStats;
+use anyhow::{Context, Result};
+use oominf_core::{ExpertStats, Model, Session};
 
 use crate::chat::Chat;
-use crate::experts::{ExpertArgs, Experts};
-
-/// Wraps an expert source and accounts the host time spent inside it (waiting for
-/// disk reads and enqueueing copies). Copies and kernels overlap on the device, so
-/// the end-to-end ms/token is the number that matters.
-struct Timed {
-    inner: Experts,
-    time: Duration,
-    calls: usize,
-}
-
-impl ExpertSource for Timed {
-    fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
-        let t = Instant::now();
-        let r = self.inner.fetch(gpu, layer, experts)?;
-        self.time += t.elapsed();
-        self.calls += experts.len();
-        Ok(r)
-    }
-
-    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
-        let t = Instant::now();
-        let r = self.inner.begin_fetch(gpu, layer, experts)?;
-        self.time += t.elapsed();
-        self.calls += experts.len();
-        Ok(r)
-    }
-
-    fn finish_fetch(&mut self, gpu: &Gpu) -> Result<()> {
-        let t = Instant::now();
-        self.inner.finish_fetch(gpu)?;
-        self.time += t.elapsed();
-        Ok(())
-    }
-
-    fn wants_prefetch(&self) -> bool {
-        self.inner.wants_prefetch()
-    }
-
-    fn prefetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<()> {
-        let t = Instant::now();
-        self.inner.prefetch(gpu, layer, experts)?;
-        self.time += t.elapsed();
-        Ok(())
-    }
-
-    fn release_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
-        self.inner.release_vram(gpu, bytes)
-    }
-
-    fn reclaim_vram(&mut self, gpu: &Gpu, bytes: usize) -> Result<usize> {
-        self.inner.reclaim_vram(gpu, bytes)
-    }
-}
+use crate::generate::argmax;
+use crate::load::{ExpertArgs, OpenArgs, open_model};
 
 /// Prediction precision and recall, and how many lookahead reads a fetch used.
-fn prediction_line(s: &TierStats) -> String {
+fn prediction_line(s: &ExpertStats) -> String {
     if s.predicted == 0 {
         return String::new();
     }
@@ -84,157 +30,107 @@ fn prediction_line(s: &TierStats) -> String {
     )
 }
 
-fn tier_line(s: Option<TierStats>, tokens: usize) -> String {
-    match s {
-        Some(s) if s.requests > 0 => {
-            let per = |n: u64| n as f64 / tokens as f64;
-            format!(
-                "; per token: {:.1} VRAM hits, {:.1} host hits, {:.1} disk reads (VRAM hit rate {:.1}%, host+VRAM {:.1}%)",
-                per(s.vram_hits),
-                per(s.host_hits),
-                per(s.disk_reads),
-                100.0 * s.vram_hits as f64 / s.requests as f64,
-                100.0 * (s.vram_hits + s.host_hits) as f64 / s.requests as f64
-            ) + &prediction_line(&s)
-        }
-        _ => String::new(),
+/// Where records came from, per `unit` (`"token"`) or in total.
+fn tier_line(s: ExpertStats, tokens: usize, unit: &str) -> String {
+    if s.requests == 0 {
+        return String::new();
     }
+    let per = |n: u64| n as f64 / tokens as f64;
+    format!(
+        "; {unit}: {:.1} records, {:.1} VRAM hits, {:.1} host hits, {:.1} disk reads (VRAM hit rate {:.1}%, host+VRAM {:.1}%)",
+        per(s.requests),
+        per(s.vram_hits),
+        per(s.host_hits),
+        per(s.disk_reads),
+        100.0 * s.vram_hits as f64 / s.requests as f64,
+        100.0 * (s.vram_hits + s.host_hits) as f64 / s.requests as f64
+    ) + &prediction_line(&s)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decode_phase(
     name: &str,
-    gpu: &Gpu,
-    qwen: &QwenModel,
-    state: &mut SeqState,
-    experts: &mut Timed,
-    logits: &mut Buf,
+    model: &dyn Model,
+    session: &mut dyn Session,
+    logits: &mut Vec<f32>,
     tokens: usize,
 ) -> Result<()> {
-    experts.time = Duration::ZERO;
-    experts.calls = 0;
-    let before = experts.inner.stats();
+    let before = model.expert_stats();
     let t = Instant::now();
     for _ in 0..tokens {
-        let row = gpu.download(logits)?;
-        let next = row
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(i, _)| i as u32)
-            .unwrap();
-        *logits = qwen.forward(gpu, &[next], state, experts, &mut NoProbe, true)?;
+        *logits = session.step(&[argmax(logits)])?;
     }
-    gpu.sync()?;
-    let total = t.elapsed().as_secs_f64();
-    let per = total / tokens as f64 * 1e3;
-    let load = experts.time.as_secs_f64() / tokens as f64 * 1e3;
-    let stats = match (experts.inner.stats(), before) {
-        (Some(a), Some(b)) => Some(a - b),
-        _ => None,
-    };
+    let per = t.elapsed().as_secs_f64() / tokens as f64 * 1e3;
     println!(
-        "{name}: {tokens} tokens, {per:.1} ms/token ({:.2} tok/s); host time in expert source {load:.1} ms/token ({} records/token){}",
+        "{name}: {tokens} tokens, {per:.1} ms/token ({:.2} tok/s){}",
         1e3 / per,
-        experts.calls / tokens,
-        tier_line(stats, tokens)
+        tier_line(model.expert_stats() - before, tokens, "per token")
     );
     Ok(())
 }
 
-/// Prefills `ids` layer by layer in `chunk`-token slices; last row of logits.
-fn prefill(
-    gpu: &Gpu,
-    qwen: &QwenModel,
+fn timed_prefill(
+    name: &str,
+    model: &dyn Model,
+    session: &mut dyn Session,
     ids: &[u32],
-    chunk: usize,
-    state: &mut SeqState,
-    experts: &mut dyn ExpertSource,
-) -> Result<Buf> {
-    qwen.prefill(gpu, ids, chunk, state, experts, &|| false)?
-        .ok_or_else(|| anyhow::anyhow!("prefill cancelled"))
+) -> Result<Vec<f32>> {
+    let before = model.expert_stats();
+    let t = Instant::now();
+    let logits = session
+        .prefill(ids, &|| false)?
+        .context("prefill cancelled")?;
+    println!(
+        "{name} {} tokens: {:.2}s{}",
+        ids.len(),
+        t.elapsed().as_secs_f64(),
+        tier_line(model.expert_stats() - before, 1, "in total")
+    );
+    Ok(logits)
 }
 
 pub fn run(
     model_dir: &Path,
     prompt: &str,
     tokens: usize,
-    prefill_chunk: usize,
+    prefill_chunk: Option<usize>,
     expert_args: &ExpertArgs,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
-    let model = Arc::new(oominf_format::Model::open(model_dir)?);
-    let dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
-    let gpu = Gpu::new(0)?;
-    let qwen = QwenModel::load(&gpu, &model, dims, None)?;
-    // Sequence state first, so automatic tier sizing sees the VRAM that is left.
-    let mut state = qwen.new_state(&gpu, ids.len() + 2 * tokens + 1)?;
+    let max_context = ids.len() + 2 * tokens + 1;
     let t = Instant::now();
-    let inner = Experts::build(expert_args, &gpu, &model)?;
+    let model = open_model(&OpenArgs {
+        model_dir,
+        max_context,
+        prefill_chunk,
+        experts: expert_args,
+    })?;
     println!(
-        "{} (set up in {:.1}s)",
-        inner.describe(),
+        "{} (loaded in {:.1}s)",
+        model.describe(),
         t.elapsed().as_secs_f64()
     );
-    let mut experts = Timed {
-        inner,
-        time: Duration::ZERO,
-        calls: 0,
-    };
-    let before = experts.inner.stats();
-    let t = Instant::now();
-    let mut logits = prefill(&gpu, &qwen, &ids, prefill_chunk, &mut state, &mut experts)?;
-    gpu.sync()?;
-    let stats = match (experts.inner.stats(), before) {
-        (Some(a), Some(b)) => Some(a - b),
-        _ => None,
-    };
-    println!(
-        "prefill {} tokens: {:.2}s (host time in expert source {:.2}s over {} records){}",
-        ids.len(),
-        t.elapsed().as_secs_f64(),
-        experts.time.as_secs_f64(),
-        experts.calls,
-        tier_line(stats, 1).replace("per token", "in total")
-    );
+    let mut session = model.new_session(max_context)?;
+    let mut logits = timed_prefill("prefill", &*model, &mut *session, &ids)?;
     decode_phase(
         "decode (cold tiers)",
-        &gpu,
-        &qwen,
-        &mut state,
-        &mut experts,
+        &*model,
+        &mut *session,
         &mut logits,
         tokens,
     )?;
     decode_phase(
         "decode (warm tiers)",
-        &gpu,
-        &qwen,
-        &mut state,
-        &mut experts,
+        &*model,
+        &mut *session,
         &mut logits,
         tokens,
     )?;
-    println!("after decode: {}", experts.inner.describe());
+    println!("after decode: {}", model.describe());
     // The same prompt again on a fresh sequence: prefill from warm tiers.
-    drop(state);
-    let mut state = qwen.new_state(&gpu, ids.len() + 1)?;
-    qwen.reclaim_vram(&gpu, &state, &mut experts)?;
-    println!("fresh sequence: {}", experts.inner.describe());
-    let before = experts.inner.stats();
-    let t = Instant::now();
-    prefill(&gpu, &qwen, &ids, prefill_chunk, &mut state, &mut experts)?;
-    gpu.sync()?;
-    let stats = match (experts.inner.stats(), before) {
-        (Some(a), Some(b)) => Some(a - b),
-        _ => None,
-    };
-    println!(
-        "prefill {} tokens (warm tiers): {:.2}s{}",
-        ids.len(),
-        t.elapsed().as_secs_f64(),
-        tier_line(stats, 1).replace("per token", "in total")
-    );
+    drop(session);
+    let mut session = model.new_session(ids.len() + 1)?;
+    println!("fresh sequence: {}", model.describe());
+    timed_prefill("prefill (warm tiers)", &*model, &mut *session, &ids)?;
     Ok(())
 }

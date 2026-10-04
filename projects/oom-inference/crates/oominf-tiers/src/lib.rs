@@ -1,15 +1,19 @@
-//! Expert storage tiers for oominf: VRAM slots over a pinned host tier over disk.
+//! Expert storage tiers: device slots over a pinned host tier over disk, for any
+//! backend and any model whose experts are stored as records.
 //!
-//! [`TieredExperts`] implements `oominf_models_qwen::ExpertSource`. Placement is
-//! GPU-free ([`cache::SlotCache`] plus a [`policy::Policy`]), so the same code also
-//! replays recorded routing traces (`cargo run -p oominf-tiers --example replay`).
+//! [`TieredExperts`] and [`DiskExperts`] implement
+//! [`ExpertSource`](oominf_core::ExpertSource). Placement is device-free
+//! ([`cache::SlotCache`] plus a [`policy::Policy`]), so the same code also replays
+//! recorded routing traces (`cargo run -p oominf-tiers --example replay`).
 
 pub mod cache;
+mod disk;
 pub mod host;
 pub mod policy;
 mod tiered;
 
-pub use tiered::{TierStats, TieredExperts};
+pub use disk::DiskExperts;
+pub use tiered::{TieredExperts, available_host_gib, free_vram_gib, slots_for};
 
 /// A recorded decode routing trace: raw little-endian `u16` `[steps, layers, top_k]`.
 pub fn load_trace(

@@ -785,8 +785,10 @@ dependencies = [
  "anyhow",
  "clap",
  "oominf-convert",
+ "oominf-core",
  "oominf-cuda",
  "oominf-format",
+ "oominf-models",
  "oominf-models-qwen",
  "oominf-server",
  "oominf-tiers",
@@ -805,11 +807,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oominf-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "oominf-cuda"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "cudarc",
- "thiserror",
+ "oominf-core",
 ]
 
 [[package]]
@@ -824,13 +834,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "oominf-models"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "oominf-core",
+ "oominf-format",
+ "oominf-models-qwen",
+ "serde_json",
+]
+
+[[package]]
 name = "oominf-models-qwen"
 version = "0.0.0"
 dependencies = [
  "anyhow",
  "io-uring",
+ "oominf-core",
  "oominf-cuda",
  "oominf-format",
+ "oominf-tiers",
  "serde_json",
 ]
 
@@ -842,9 +865,11 @@ dependencies = [
  "axum",
  "minijinja",
  "minijinja-contrib",
+ "oominf-core",
  "oominf-cuda",
  "oominf-format",
- "oominf-models-qwen",
+ "oominf-models",
+ "oominf-tiers",
  "serde",
  "serde_json",
  "tokenizers",
@@ -858,12 +883,10 @@ name = "oominf-tiers"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "cudarc",
  "io-uring",
  "libc",
- "oominf-cuda",
+ "oominf-core",
  "oominf-format",
- "oominf-models-qwen",
 ]
 
 [[package]]

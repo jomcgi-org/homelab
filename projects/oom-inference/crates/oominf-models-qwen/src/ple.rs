@@ -21,14 +21,14 @@ use std::sync::Mutex;
 use io_uring::{IoUring, opcode, types};
 
 use anyhow::{Context, Result, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
+use oominf_core::{Backend, Probe, Workspace, tap};
 use oominf_format::{Model, TensorFile};
 
+use crate::Dims;
 use crate::layer::StepInput;
-use crate::util::{bf16_concat, bf16_tensor, tap};
-use crate::{Dims, Probe};
+use crate::util::{bf16_concat, bf16_tensor};
 
-pub struct Ple {
+pub struct Ple<B: Backend> {
     ngram_size: usize,
     heads_per_ngram: usize,
     eos: u32,
@@ -44,20 +44,20 @@ pub struct Ple {
     rows: Mutex<RowReads>,
     scale: f32,
     /// `key_proj` then `value_proj` stacked (both read the embedding): one GEMM.
-    kv_proj: Bf16Buf,
-    norm_key: Bf16Buf,
-    norm_query: Bf16Buf,
-    norm_conv: Bf16Buf,
-    conv: Bf16Buf,
+    kv_proj: B::Bf16,
+    norm_key: B::Bf16,
+    norm_query: B::Bf16,
+    norm_conv: B::Bf16,
+    conv: B::Bf16,
     conv_kernel: usize,
     conv_dilation: usize,
     embed_dim: usize,
 }
 
 /// PLE short-conv state and n-gram token context carried across steps.
-pub struct PleState {
+pub struct PleState<B: Backend> {
     /// `[hc * hidden, (conv_kernel - 1) * dilation]` previous conv inputs, oldest first.
-    pub conv: Buf,
+    pub conv: B::F32,
     /// The last `ngram_size - 1` tokens, oldest first (EOS before any input).
     pub tokens: Vec<u32>,
 }
@@ -135,8 +135,8 @@ struct RowReads {
 /// Submission queue depth for row reads.
 const ROW_QUEUE_DEPTH: u32 = 256;
 
-impl Ple {
-    pub fn load(gpu: &Gpu, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
+impl<B: Backend> Ple<B> {
+    pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let p = format!("model.language_model.layers.{layer}.ple.");
         let u = |k: &str| -> Result<usize> {
             d.text[k]
@@ -254,7 +254,7 @@ impl Ple {
         })
     }
 
-    pub fn new_state(&self, gpu: &Gpu, d: &Dims) -> Result<PleState> {
+    pub fn new_state(&self, gpu: &B, d: &Dims) -> Result<PleState<B>> {
         Ok(PleState {
             conv: gpu.zeros(d.residual() * (self.conv_kernel - 1) * self.conv_dilation)?,
             tokens: vec![self.eos; self.ngram_size - 1],
@@ -262,7 +262,7 @@ impl Ple {
     }
 
     /// Hashed table rows of the next step: `token_ids` following `state`'s context.
-    fn step_rows(&self, state: &PleState, token_ids: &[u32]) -> Vec<i64> {
+    fn step_rows(&self, state: &PleState<B>, token_ids: &[u32]) -> Vec<i64> {
         ngram_ids(
             &state.tokens,
             token_ids,
@@ -358,16 +358,16 @@ impl Ple {
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        ws: &mut Workspace,
-        residual: &Buf,
+        ws: &mut Workspace<B>,
+        residual: &B::F32,
         t: usize,
         step: &StepInput,
-        state: &mut PleState,
-        scratch: &mut Bf16Buf,
+        state: &mut PleState<B>,
+        scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         ensure!(step.token_ids.len() == t, "PLE needs one token id per row");
         let (h, r, ed) = (d.hidden, d.residual(), self.embed_dim);
 

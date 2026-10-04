@@ -9,9 +9,7 @@ anyhow.workspace = true
 axum = "0.8.9"
 minijinja = { version = "2.24.0", features = ["loop_controls", "preserve_order"] }
 minijinja-contrib = { version = "2.24.0", features = ["pycompat"] }
-oominf-cuda = { path = "../oominf-cuda" }
-oominf-format = { path = "../oominf-format" }
-oominf-models-qwen = { path = "../oominf-models-qwen" }
+oominf-core = { path = "../oominf-core" }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }
@@ -22,4 +20,8 @@ tokio-stream = "0.1.19"
 workspace = true
 
 [dev-dependencies]
+oominf-cuda = { path = "../oominf-cuda" }
+oominf-format = { path = "../oominf-format" }
+oominf-models = { path = "../oominf-models" }
+oominf-tiers = { path = "../oominf-tiers" }
 tower = { version = "0.5.3", features = ["util"] }

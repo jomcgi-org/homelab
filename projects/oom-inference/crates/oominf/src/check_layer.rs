@@ -8,8 +8,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use oominf_convert::safetensors::read_file;
+use oominf_core::{Memory, Probe};
 use oominf_cuda::Gpu;
-use oominf_models_qwen::{DecoderLayer, Dims, DiskExperts, Probe, StepInput};
+use oominf_models_qwen::{DecoderLayer, Dims, StepInput};
+use oominf_tiers::DiskExperts;
 
 pub(crate) const STEPS: [&str; 4] = ["prefill", "decode-1", "decode-2", "decode-3"];
 
@@ -133,7 +135,7 @@ pub fn run(model_dir: &Path, fixtures: &Path, layer: u32, mode: &str) -> Result<
     let gpu = Gpu::new(0)?;
     let start = std::time::Instant::now();
     let dl = DecoderLayer::load(&gpu, &model, &dims, layer)?;
-    let mut experts = DiskExperts::new(model.clone());
+    let mut experts = DiskExperts::<Gpu>::new(model.clone());
     gpu.sync()?;
     println!(
         "layer {layer} loaded in {:.1}s; mode {mode}; truth = HF fp32; budget* = worst HF bf16 vs fp32 over steps",
