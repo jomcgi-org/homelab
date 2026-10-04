@@ -38,13 +38,11 @@ describe("public fact proxies", () => {
     "does not cache an exhausted or missing origin policy",
     async (handler) => {
       const setHeaders = vi.fn();
-      const fetch = vi
-        .fn()
-        .mockResolvedValue({
-          ok: true,
-          headers: new Headers({ "cache-control": "no-store" }),
-          json: async () => [],
-        });
+      const fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({ "cache-control": "no-store" }),
+        json: async () => [],
+      });
       await handler({
         fetch,
         setHeaders,
