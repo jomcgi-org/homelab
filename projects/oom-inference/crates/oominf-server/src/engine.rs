@@ -201,30 +201,25 @@ impl Engine {
         }
     }
 
-    /// Feeds `ids` in prefill-sized chunks and returns the last row of logits, or
-    /// `None` if the client went away.
+    /// Prefills `ids` (layer by layer, in prefill-sized chunks) and returns the last
+    /// row of logits, or `None` if the client went away.
     fn feed(
         &mut self,
         ids: &[u32],
         state: &mut SeqState,
         events: &mpsc::Sender<Event>,
     ) -> Result<Option<Vec<f32>>> {
-        let mut logits = Vec::new();
-        for chunk in ids.chunks(self.cfg.prefill_chunk.max(1)) {
-            if events.is_closed() {
-                return Ok(None);
-            }
-            let out = self.model.forward(
-                &self.gpu,
-                chunk,
-                state,
-                self.experts.as_mut(),
-                &mut NoProbe,
-                true,
-            )?;
-            logits = self.gpu.download(&out)?;
-        }
-        Ok(Some(logits))
+        let out = self.model.prefill(
+            &self.gpu,
+            ids,
+            self.cfg.prefill_chunk,
+            state,
+            self.experts.as_mut(),
+            &|| events.is_closed(),
+        )?;
+        out.map(|o| self.gpu.download(&o))
+            .transpose()
+            .map_err(Into::into)
     }
 
     fn serve(&mut self, job: Job) -> Result<()> {

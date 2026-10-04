@@ -71,6 +71,11 @@ impl SlotCache {
         Some(Place::Miss(slot, evicted))
     }
 
+    /// Whether a slot is free, so placing a new key would evict nothing.
+    pub fn has_free(&self) -> bool {
+        !self.free.is_empty()
+    }
+
     /// Drops `key` (e.g. its fill failed).
     pub fn forget(&mut self, key: u32) {
         if let Some(slot) = self.slot_of.remove(&key) {

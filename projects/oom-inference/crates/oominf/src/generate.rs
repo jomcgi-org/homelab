@@ -6,9 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use oominf_cuda::Gpu;
-use oominf_models_qwen::{Dims, NoProbe, QwenModel};
+use oominf_models_qwen::{Dims, NoProbe, PREFILL_CHUNK, QwenModel};
 
 use crate::chat::Chat;
 use crate::experts::{ExpertArgs, Experts};
@@ -38,11 +38,16 @@ pub fn run(
         ids.len()
     );
 
+    // Sequence state first, so automatic tier sizing sees the VRAM that is left.
+    let mut state = qwen.new_state(&gpu, ids.len() + max_tokens)?;
     let mut experts = Experts::build(expert_args, &gpu, &model)?;
     eprintln!("{}", experts.describe());
-    let mut state = qwen.new_state(&gpu, ids.len() + max_tokens)?;
     let t1 = Instant::now();
-    let mut logits = qwen.forward(&gpu, &ids, &mut state, &mut experts, &mut NoProbe, true)?;
+    let mut logits = qwen
+        .prefill(&gpu, &ids, PREFILL_CHUNK, &mut state, &mut experts, &|| {
+            false
+        })?
+        .context("prefill cancelled")?;
     eprintln!("prefill {:.2}s", t1.elapsed().as_secs_f64());
     let t2 = Instant::now();
     let mut out = Vec::new();
