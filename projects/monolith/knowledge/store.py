@@ -516,11 +516,17 @@ class KnowledgeStore:
             # Fall back to note_id lookup to handle path migrations (e.g.
             # notes moved from their original vault path into _processed/).
             existing_note = self.session.execute(
-                select(Note).where(Note.path == path)
+                select(Note)
+                .where(Note.path == path)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             ).scalar_one_or_none()
             if existing_note is None:
                 existing_note = self.session.execute(
-                    select(Note).where(Note.note_id == note_id)
+                    select(Note)
+                    .where(Note.note_id == note_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
                 ).scalar_one_or_none()
 
             existing_scope: str | None = None

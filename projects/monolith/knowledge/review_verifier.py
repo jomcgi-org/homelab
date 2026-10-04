@@ -421,7 +421,9 @@ class GitHubVerifier:
         body = self._get(f"/repos/{repo}/commits/{sha}/check-runs?per_page=100")
         runs = body.get("check_runs")
         total = body.get("total_count")
-        if not isinstance(runs, list) or not isinstance(total, int):
+        if not isinstance(runs, list) or type(total) is not int or total < 0:
+            raise SourceUnavailable("malformed_response")
+        if total < len(runs) or (total and not runs):
             raise SourceUnavailable("malformed_response")
         if total > MAX_CHECK_RUNS or total > len(runs):
             raise _Unsupported("more check runs than one response establishes")
@@ -433,6 +435,15 @@ class GitHubVerifier:
             raise SourceUnavailable("check runs are not tied to the SHA")
         if not runs:
             return None
+        if any(
+            run.get("status") not in {"completed", "in_progress", "queued"}
+            or (
+                run.get("status") == "completed"
+                and not isinstance(run.get("conclusion"), str)
+            )
+            for run in runs
+        ):
+            raise SourceUnavailable("malformed_response")
         if any(
             run.get("status") == "completed" and run.get("conclusion") not in _GOOD
             for run in runs
@@ -449,14 +460,16 @@ class GitHubVerifier:
         body = self._get(f"/repos/{repo}/commits/{sha}/status?per_page=100")
         statuses = body.get("statuses")
         total = body.get("total_count")
-        if not isinstance(statuses, list) or not isinstance(total, int):
+        if not isinstance(statuses, list) or type(total) is not int or total < 0:
             raise SourceUnavailable("malformed_response")
-        if not statuses:
-            return None
+        if total < len(statuses) or (total and not statuses):
+            raise SourceUnavailable("malformed_response")
         if total > MAX_CHECK_RUNS or total > len(statuses):
             raise _Unsupported("more commit statuses than one response establishes")
         if not str(body.get("sha", "")).startswith(sha.lower()):
             raise SourceUnavailable("commit statuses are not tied to the SHA")
+        if not statuses:
+            return None
         states = {
             status.get("state") if isinstance(status, dict) else None
             for status in statuses

@@ -451,6 +451,9 @@ OPERATIONAL_GATES = [
     "TODO: run the pilot.",
     "Follow-up: enable the CronWorkflow.",
     "Deployment has not been verified yet.",
+    "A pilot is still needed.",
+    "We are waiting on live verification.",
+    "The rollout requires a pilot.",
 ]
 
 
@@ -484,6 +487,30 @@ def test_failed_check_run_outranks_an_incomplete_run():
     assert "are failure, not pending" in verdict.reason
     verdict, _ = verify(routes, f"Checks are failing at {HEAD}")
     assert verdict.status == "success"
+
+
+@pytest.mark.parametrize(
+    "malformed", ["missing-status", "missing-conclusion", "missing-statuses"]
+)
+def test_malformed_checks_cannot_establish_a_claim(malformed):
+    body = runs("success")
+    statuses = combined()
+    term = "passed"
+    if malformed == "missing-status":
+        del body["check_runs"][0]["status"]
+        term = "pending"
+    elif malformed == "missing-conclusion":
+        del body["check_runs"][0]["conclusion"]
+        term = "failing"
+    else:
+        statuses["total_count"] = 1
+    routes = {
+        f"/repos/{REPO}/commits/{HEAD}/check-runs?per_page=100": body,
+        status_path(HEAD): statuses,
+    }
+    verdict, _ = verify(routes, f"Checks {term} at {HEAD}")
+    assert verdict.status == "unavailable"
+    assert verdict.observed_at is None
 
 
 def association_routes():

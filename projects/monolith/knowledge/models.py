@@ -407,14 +407,15 @@ _REVISION_EXEMPT = frozenset(
 def _bump_note_revision(mapper, connection, target) -> None:
     """Advance ``revision`` on any ORM update that touches the claim itself."""
     changed = {attr.key for attr in inspect(target).attrs if attr.history.has_changes()}
-    # An explicit bump_revision already advanced it for this flush.
-    if "revision" not in changed and changed - _REVISION_EXEMPT:
-        target.revision = (target.revision or 0) + 1
+    if "revision" in changed or changed - _REVISION_EXEMPT:
+        # Database arithmetic serializes concurrent stale ORM writers. A local
+        # integer increment could overwrite a newer retelling's revision.
+        target.revision = Note.revision + 1
 
 
 def bump_revision(note: "Note") -> None:
     """Record evidence that changes no persisted column (a duplicate retelling)."""
-    note.revision = (note.revision or 0) + 1
+    note.revision = Note.revision + 1
 
 
 class Chunk(SQLModel, table=True):
@@ -647,6 +648,24 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     resolved_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
+
+
+@event.listens_for(Dispute, "before_insert")
+@event.listens_for(Dispute, "before_update")
+def _serialize_open_dispute(mapper, connection, target) -> None:
+    """Put contested evidence in the same serialization order as note review.
+
+    The UPDATE takes the note row lock before the dispute is visible and
+    advances revision in the caller's transaction. A renewal holding that
+    lock completes before this dispute, or reads the dispute and new revision
+    after it commits. Neither path can renew over an intervening dispute.
+    """
+    if target.state in {"open", "resolution_failed"}:
+        connection.execute(
+            Note.__table__.update()
+            .where(Note.note_id == target.note_id)
+            .values(revision=Note.revision + 1)
+        )
 
 
 ReviewStatus = Literal["success", "failed", "unavailable", "unsupported"]
