@@ -680,4 +680,32 @@ impl Gpu {
         };
         Ok(())
     }
+
+    /// Copies rows `[first, first + n)` of a `[_, h]` matrix into `dst`.
+    pub fn copy_rows(
+        &self,
+        src: &Buf,
+        first: usize,
+        n: usize,
+        h: usize,
+        dst: &mut Buf,
+    ) -> Result<()> {
+        self.check(
+            src.len() >= (first + n) * h && dst.len() >= n * h,
+            "copy_rows sizes",
+        )?;
+        let f = self.func("copy_rows")?;
+        let (f32_, n32, h32) = (first as i32, n as i32, h as i32);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(src)
+                .arg(dst)
+                .arg(&f32_)
+                .arg(&n32)
+                .arg(&h32)
+                .launch(grid(n * h, 256))?
+        };
+        Ok(())
+    }
 }

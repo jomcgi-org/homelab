@@ -315,3 +315,9 @@ extern "C" __global__ void add_out(const float* x, const float* y, float* out, i
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = x[i] + y[i];
 }
+
+// dst[0..n*H] = src rows [first, first + n) of width H.
+extern "C" __global__ void copy_rows(const float* src, float* dst, int first, int n, int H) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < (size_t)n * H) dst[i] = src[(size_t)first * H + i];
+}
