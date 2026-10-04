@@ -4,32 +4,45 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 POLICY_VERSION = "v1"
 STANDARD = "standard-90d/v1"
 VOLATILE = "volatile-24h/v1"
 MAX_INTERVAL = timedelta(days=90)
-_SUBJECT = re.compile(
-    r"\b(pr|pull request|issue|job|workflow|check[s]?)\b", re.IGNORECASE
-)
-_STATE = re.compile(
-    r"\b(open|closed|merged|draft|ready|pending|running|queued|failed|passing|"
-    r"passed|green|red|head|sha|status|state|outstanding|blocked|cancelled|"
-    r"approved|rejected|reopened|stopped|succeeded|success|failure|complete|"
-    r"completed|finished|healthy|unhealthy|todo|in-progress)\b",
+_INSTANCE = re.compile(
+    r"\b(?:pr|pull request|pull|issue)s?[ \t]*#?\d+\b|(?<![\w/&])#\d{1,7}\b|"
+    r"\b[\w.-]+/[\w.-]+#\d{1,7}\b|"
+    r"\bgithub\.com/[\w.-]+/[\w.-]+/(?:pull|issues)/\d+|"
+    r"\b(?:workflow[ \t]+)?(?:run|job)(?:[ \t]+id)?[ \t]*#?\d{4,}\b",
     re.IGNORECASE,
 )
+_SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+_STATE = re.compile(
+    r"\b(open|opened|closed|merged|draft|ready|pending|running|queued|failed|"
+    r"failing|passing|passed|green|red|head|outstanding|blocked|cancelled|"
+    r"approved|rejected|reopened|stopped|succeeded|success|failure|complete|"
+    r"completed|finished|todo|in-progress)\b",
+    re.IGNORECASE,
+)
+_SENTENCE = re.compile(r"(?<=[.!?;])[ \t]+|\n+")
 _PROVENANCE_SECTION = re.compile(
     r"^#{1,6}[ \t]+(?:evidence|provenance|sources?|references?)[ \t]*:?[ \t]*$"
     r".*?(?=^#{1,6}[ \t]+\S|\Z)",
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
 )
-_GATE = re.compile(
-    r"\b(acceptance|validation|operational|live|rollout)\b.{0,100}"
-    r"\b(outstanding|remaining|pending|gate|unverified|requires|required)\b|"
-    r"\b(outstanding|remaining|pending)\b.{0,100}\b(acceptance|validation|gate)\b",
-    re.IGNORECASE | re.DOTALL,
-)
+
+
+def sentences(text: str) -> list[str]:
+    return [part for part in _SENTENCE.split(text) if part.strip()]
+
+
+def has_instance(sentence: str) -> bool:
+    """A concrete subject: PR/issue number, run/job id, or a commit SHA."""
+    return _INSTANCE.search(sentence) is not None or any(
+        any(c.isdigit() for c in token) and any(c in "abcdef" for c in token)
+        for token in _SHA.findall(sentence)
+    )
 
 
 def utc(value: object) -> datetime | None:
@@ -49,15 +62,20 @@ def utc(value: object) -> datetime | None:
 def classify(*, title: str, content: str | None, now: datetime) -> str:
     """Classify the persisted claim, never an extractor-supplied policy name.
 
-    Evidence and provenance sections cite the PRs, jobs and checks a durable
-    claim was observed through; only the title and claim body say what the
-    claim asserts, so only they decide volatility.
+    A claim is volatile only when a concrete instance (a PR or issue number, a
+    run or job id, a commit SHA) is asserted in a current state within one
+    sentence. A durable rule that merely mentions PRs, checks or gates names no
+    instance and stays standard. Evidence and provenance sections cite the PRs
+    and jobs a claim was observed through, so only the title and claim body
+    decide.
     """
     claim = _PROVENANCE_SECTION.sub("", content or "")
-    text = f"{title}\n{claim}"
     return (
         VOLATILE
-        if (_SUBJECT.search(text) and _STATE.search(text)) or _GATE.search(text)
+        if any(
+            has_instance(part) and _STATE.search(part)
+            for part in sentences(f"{title}\n{claim}")
+        )
         else STANDARD
     )
 
@@ -181,73 +199,180 @@ def result_current(result: dict, *, now: datetime) -> bool:
     )
 
 
+class ReviewCommit(NamedTuple):
+    """Result of a renewal attempt; ``reason`` names why it was refused."""
+
+    renewed: bool
+    reason: str
+
+    def __bool__(self) -> bool:
+        return self.renewed
+
+
+# Retry timing after a non-success outcome: unavailable backs off exponentially
+# to a cap, failed holds for a day. Unsupported has no retry time and waits for
+# a new revision (see review_admission._blocked).
+BACKOFF_BASE = timedelta(minutes=5)
+BACKOFF_CAP = timedelta(hours=6)
+FAILED_RETRY = timedelta(hours=24)
+
+
+def backoff(attempts: int) -> timedelta:
+    return min(BACKOFF_BASE * 2 ** min(max(attempts - 1, 0), 16), BACKOFF_CAP)
+
+
+def latest_outcome(session, note_id: str):
+    from sqlmodel import select
+
+    from knowledge.models import ReviewOutcome
+
+    return session.exec(
+        select(ReviewOutcome)
+        .where(ReviewOutcome.note_id == note_id)
+        .order_by(ReviewOutcome.id.desc())
+        .limit(1)
+    ).first()
+
+
+def record_outcome(
+    session,
+    *,
+    note_id: str,
+    revision: int,
+    status: str,
+    reason: str,
+    now: datetime,
+    evidence: list[str] | None = None,
+    evidence_observed_at: datetime | None = None,
+):
+    """Add a durable outcome row to the caller's transaction (no commit).
+
+    Attempts count consecutive non-success rows at the same revision, and the
+    retry time follows the status: success none, unsupported none (waits for a
+    revision), failed a day, unavailable an exponential backoff.
+    """
+    from knowledge.models import ReviewOutcome
+
+    previous = latest_outcome(session, note_id)
+    attempts = (
+        previous.attempts + 1
+        if previous is not None
+        and previous.status == status
+        and previous.note_revision == revision
+        and status != "success"
+        else 1
+    )
+    next_attempt = {
+        "unavailable": now + backoff(attempts),
+        "failed": now + FAILED_RETRY,
+    }.get(status)
+    row = ReviewOutcome(
+        note_id=note_id,
+        status=status,
+        reason=reason[:500],
+        note_revision=revision,
+        attempts=attempts,
+        evidence=list(evidence or []),
+        evidence_observed_at=utc(evidence_observed_at),
+        attempted_at=utc(now),
+        next_attempt_at=next_attempt,
+    )
+    session.add(row)
+    return row
+
+
 def commit_successful_review(
     session,
     *,
     note_id: str,
+    expected_revision: int,
     expected_content_hash: str,
     evidence: list[str],
     evidence_observed_at: datetime,
     now: datetime,
-) -> bool:
-    """Reserved extension point: the only operation permitted to renew a lease.
+) -> ReviewCommit:
+    """The only operation permitted to renew a lease, inside the caller's transaction.
 
-    Slice 2 must supply authoritative, predicate-specific evidence and harden
-    revision/dispute races with durable review records before wiring admission.
-    This core deliberately has no caller or verifier. It preserves observed_at.
-    An unavailable/failed check must never call this function.
+    It never commits or rolls back the caller's transaction: the renewal and
+    its durable outcome row are added to ``session`` so the caller decides when
+    both become visible together. A refusal is also recorded (as ``failed``
+    with the reason) so a race leaves a trace, and renews nothing. The row is
+    locked, and the caller's captured revision must still match: content_hash
+    alone cannot see a duplicate retelling, supersession or dispute that
+    arrived after the evidence was read. A volatile policy is sticky.
+    An unavailable, failed or unsupported check never reaches this function.
     """
-    from sqlalchemy.exc import OperationalError
     from sqlmodel import select
 
     from knowledge.models import Note
     from knowledge.store import open_dispute_note_ids
 
     observed = utc(evidence_observed_at)
-    if not evidence or observed is None or observed > utc(now):
-        return False
-    try:
-        with session.begin_nested():
-            note = session.exec(
-                select(Note)
-                .where(Note.note_id == note_id)
-                .with_for_update()
-                .limit(1)
-                .execution_options(populate_existing=True)
-            ).first()
-            if (
-                note is None
-                or note.content_hash != expected_content_hash
-                or note.deleted_at is not None
-                or note.verification_state in {"disputed", "invalidated"}
-                or (note.valid_until is not None and utc(note.valid_until) <= utc(now))
-                or note_id in open_dispute_note_ids(session, [note_id])
-                or (
-                    utc(note.last_reviewed_at) is not None
-                    and observed <= utc(note.last_reviewed_at)
-                )
-                or (
-                    utc(note.observed_at) is not None
-                    and observed < utc(note.observed_at)
-                )
-            ):
-                return False
-            note.review_policy = classify(
-                title=note.title, content=note.content, now=now
-            )
-            note.last_reviewed_at = observed
-            note.review_after = deadline(
-                observed_at=note.observed_at,
-                last_reviewed_at=observed,
-                policy=note.review_policy,
-                now=now,
-            )
-            session.flush()
-        session.commit()
-    except OperationalError:
-        session.rollback()
-        raise
-    except Exception:
-        session.rollback()
-        raise
-    return True
+    clock = utc(now)
+
+    def refuse(reason: str) -> ReviewCommit:
+        # Recorded at the revision the review read, not the current one: a
+        # note that moved on since is not held back by a race it already won.
+        record_outcome(
+            session,
+            note_id=note_id,
+            revision=expected_revision,
+            status="failed",
+            reason=reason,
+            now=clock,
+            evidence=evidence,
+            evidence_observed_at=observed,
+        )
+        return ReviewCommit(False, reason)
+
+    if not evidence:
+        return refuse("no_evidence")
+    if observed is None or observed > clock:
+        return refuse("invalid_evidence_time")
+    note = session.exec(
+        select(Note)
+        .where(Note.note_id == note_id)
+        .with_for_update()
+        .limit(1)
+        .execution_options(populate_existing=True)
+    ).first()
+    if note is None or note.deleted_at is not None:
+        return refuse("note_missing")
+    if note.revision != expected_revision or note.content_hash != expected_content_hash:
+        return refuse("revision_changed")
+    if note.verification_state in {"disputed", "invalidated"} or note_id in (
+        open_dispute_note_ids(session, [note_id])
+    ):
+        return refuse("disputed_or_invalidated")
+    if note.valid_until is not None and utc(note.valid_until) <= clock:
+        return refuse("superseded_or_expired")
+    reviewed = utc(note.last_reviewed_at)
+    if reviewed is not None and observed <= reviewed:
+        return refuse("duplicate_or_older_review")
+    original = utc(note.observed_at)
+    if original is not None and observed < original:
+        return refuse("evidence_older_than_observation")
+    classified = classify(title=note.title, content=note.content, now=clock)
+    note.review_policy = (
+        VOLATILE if VOLATILE in {note.review_policy, classified} else STANDARD
+    )
+    note.last_reviewed_at = observed
+    note.review_after = deadline(
+        observed_at=note.observed_at,
+        last_reviewed_at=observed,
+        policy=note.review_policy,
+        now=clock,
+    )
+    session.add(note)
+    session.flush()
+    record_outcome(
+        session,
+        note_id=note_id,
+        revision=note.revision,
+        status="success",
+        reason="verified",
+        now=clock,
+        evidence=evidence,
+        evidence_observed_at=observed,
+    )
+    return ReviewCommit(True, "verified")

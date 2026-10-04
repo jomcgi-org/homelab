@@ -1904,6 +1904,32 @@ def test_clone_merge_job_is_weekly_suspended_and_receives_database(renders):
     assert _env_by_name(container["env"])["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]["value"]
 
 
+def test_review_admission_job_is_bounded_suspended_and_reads_github(renders):
+    jobs = _cron_docs(renders["prod"])
+    admission = jobs["knowledge-review-admission"]
+    assert admission["spec"]["suspend"] is True
+    assert admission["spec"]["concurrencyPolicy"] == "Forbid"
+    workflow = admission["spec"]["workflowSpec"]
+    assert workflow["activeDeadlineSeconds"] == 300
+    container = workflow["templates"][0]["container"]
+    assert container["args"] == [
+        "knowledge-review-admission",
+        "--apply",
+        "--batch-size",
+        "20",
+        "--max-requests",
+        "60",
+        "--deadline-seconds",
+        "240",
+    ]
+    env = _env_by_name(container["env"])
+    assert env["GITHUB_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "monolith-chat-secrets",
+        "key": "GITHUB_TOKEN",
+    }
+    assert env["DATABASE_URL"]
+
+
 def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
     docs = [doc for doc in yaml.safe_load_all(renders["prod"]) if doc]
     routes = {

@@ -12,7 +12,6 @@ from knowledge.freshness import (
     STANDARD,
     VOLATILE,
     classify,
-    commit_successful_review,
     current_predicate,
     deadline,
     metadata,
@@ -24,7 +23,12 @@ from knowledge.freshness_backfill import backfill
 from knowledge.frontmatter import ParsedFrontmatter, parse
 from knowledge.models import Chunk, Note, RawInput
 from knowledge.notes import _serialize_frontmatter
-from knowledge.recall import RECALL_HEADER, expire_recall, render_related_notes
+from knowledge.recall import (
+    RECALL_HEADER,
+    expire_recall,
+    render_recall_block,
+    render_related_notes,
+)
 from knowledge.store import KnowledgeStore
 
 NOW = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
@@ -63,11 +67,11 @@ def note(name="fact", **fields):
     [
         "PR #6804 is open and ready at head abc",
         "Issue #10 is closed",
-        "job is running",
-        "workflow checks passing",
-        "PR checks tied to SHA abc",
-        "Operational acceptance outstanding",
-        "Remaining live validation gates",
+        "Job 4411223 is running",
+        "Workflow run 998877 checks passing",
+        "Checks on de02262a35e2 are passing",
+        "Operational acceptance for #6812 remains outstanding",
+        "See https://github.com/jomcgi-org/homelab/pull/6821 merged",
     ],
 )
 def test_volatile_policy(title):
@@ -105,11 +109,11 @@ def test_durable_claims_citing_pr_evidence_stay_standard(title, content):
 
 def test_volatile_claim_body_survives_evidence_exclusion():
     content = (
-        "PR #6804 is open and ready.\n\n## Evidence\n\n- stable pointer\n\n"
-        "## Status\nJob is running."
+        "Stable claim.\n\n## Evidence\n\n- stable pointer\n\n"
+        "## Status\nPR #6804 is open and ready."
     )
     assert classify(title="Durable title", content=content, now=NOW) == VOLATILE
-    after_evidence = "Claim.\n\n## Evidence\n\n- x\n\n## Follow-up\nPR is open."
+    after_evidence = "Claim.\n\n## Evidence\n\n- x\n\n## Follow-up\nPR #12 is open."
     assert classify(title="Durable title", content=after_evidence, now=NOW) == VOLATILE
 
 
@@ -208,7 +212,7 @@ def test_unknown_retelling_does_not_gain_lease_and_volatile_rewrite_only_shorten
     session.delete(stored)
     session.commit()
     stored = upsert(session, observed=NOW - timedelta(days=2))
-    stored = upsert(session, title="PR is open")
+    stored = upsert(session, title="PR #12 is open")
     assert utc(stored.review_after) == NOW - timedelta(days=1)
     assert stored.review_policy == VOLATILE
     stored = upsert(session, title="Stable detail")
@@ -248,7 +252,7 @@ def test_backfill_dry_run_counts_replay_pagination_and_preserved_fields(session)
     rows = [
         note("a-current"),
         note("b-old", observed_at=NOW - timedelta(days=100)),
-        note("c-volatile", title="PR is open", observed_at=NOW - timedelta(days=2)),
+        note("c-volatile", title="PR #12 is open", observed_at=NOW - timedelta(days=2)),
         note("d-unknown", observed_at=None, verification_state="disputed"),
         note("e-future", observed_at=NOW + timedelta(days=1)),
         note("f-short", review_after=NOW, review_policy=STANDARD),
@@ -299,49 +303,60 @@ def test_backfill_operational_error_is_explicit_and_atomic(session, monkeypatch)
     )
 
 
-def test_reserved_successful_review_and_failed_checks(session):
-    row = note(
-        observed_at=NOW - timedelta(days=100),
-        review_after=NOW - timedelta(days=10),
-        review_policy=STANDARD,
-    )
-    session.add_all([row])
-    session.commit()
-    arguments = {
-        "note_id": "fact",
-        "expected_content_hash": "h",
-        "now": NOW,
-        "evidence_observed_at": NOW,
-        "evidence": ["authoritative observation"],
-    }
-    assert not commit_successful_review(session, **{**arguments, "evidence": []})
-    assert utc(row.review_after) == NOW - timedelta(days=10)
-    assert commit_successful_review(session, **arguments)
-    session.refresh(row)
-    assert utc(row.observed_at) == NOW - timedelta(days=100)
-    assert utc(row.last_reviewed_at) == NOW
-    assert utc(row.review_after) == NOW + MAX_INTERVAL
+DURABLE_RULES = [
+    "Required CI must succeed on the exact review head",
+    "Factory delivery requires a successful implementation run naming the PR",
+    "Advisory semgrep failure can fail the combined GitHub status despite "
+    "required CI success",
+    "Changing the node workflow identity strands in-flight factory work during deploys",
+    "Repository acceptance does not substitute for live drained-loss validation",
+    "A merged PR is closed, and an open issue with a failing check blocks the queue",
+    "Live validation requires an operational gate and the rollout is pending",
+]
 
 
-@pytest.mark.parametrize("verification", ["disputed", "invalidated"])
-def test_review_cannot_restore_disputed_or_superseded_fact(session, verification):
-    row = note(verification_state=verification)
-    session.add_all([row])
-    session.commit()
-    assert not commit_successful_review(
-        session,
-        note_id="fact",
-        expected_content_hash="h",
-        now=NOW,
-        evidence_observed_at=NOW,
-        evidence=["pointer"],
+@pytest.mark.parametrize("claim", DURABLE_RULES)
+def test_durable_rule_phrasing_without_a_concrete_instance_stays_standard(claim):
+    assert classify(title=claim, content=None, now=NOW) == STANDARD
+    assert classify(title="Rule", content=claim, now=NOW) == STANDARD
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "PR #6821 is open",
+        "Issue 6812 is closed",
+        "The head is de02262a35e2 and green",
+        "Run 1234567 failed",
+    ],
+)
+def test_concrete_instance_asserted_in_a_current_state_is_volatile(claim):
+    assert classify(title=claim, content=None, now=NOW) == VOLATILE
+
+
+def test_instance_and_state_must_share_a_sentence_and_instance_must_be_concrete():
+    assert (
+        classify(
+            title="Rule",
+            content="PR #12 introduced the helper.\nThe queue is open to anyone.",
+            now=NOW,
+        )
+        == STANDARD
     )
-    assert row.review_after is None
-    assert row.verification_state == verification
+    # A word made of hex letters, or bare digits, is not a SHA.
+    assert (
+        classify(title="Rule", content="The face is decaded and open", now=NOW)
+        == STANDARD
+    )
+    assert classify(title="Rule", content="Port 12345678 is open", now=NOW) == STANDARD
+
+
+def recall_item(snippet="evidence", **fields):
+    return {"note_id": "fact", "title": "t", "snippet": snippet, **fields}
 
 
 def test_recall_dates_and_persisted_block_expire_at_equality():
-    row = note(title="PR is open")
+    row = note(title="PR #12 is open")
     preserve_deadline(row, now=NOW)
     item = {
         "note_id": "fact",
@@ -354,25 +369,47 @@ def test_recall_dates_and_persisted_block_expire_at_equality():
         "new authoritative observation required before action"
         in render_related_notes([item])[0]
     )
-    text = "base\n\n" + RECALL_HEADER + f"RECALL_EXPIRES {NOW.isoformat()}\nevidence"
+    block = render_recall_block([item], expires=NOW)
+    text = "base\n\n" + block
     assert expire_recall(text, now=NOW - timedelta(microseconds=1)) == text
     assert expire_recall(text, now=NOW) == "base"
-    assert expire_recall(f"{RECALL_HEADER}RECALL_EXPIRES nonsense\nx", now=NOW) is None
+    assert expire_recall(block, now=NOW) is None
+    unparseable = block.replace(NOW.isoformat(), "nonsense")
+    assert expire_recall(unparseable, now=NOW) is None
 
 
-def test_expire_recall_keeps_text_after_a_quoted_header():
-    quoted = f"quote:\n\n{RECALL_HEADER}is a quote\n\nthen the real task"
-    appended = quoted + "\n\n" + RECALL_HEADER + f"RECALL_EXPIRES {NOW.isoformat()}\nx"
-    assert expire_recall(appended, now=NOW - timedelta(seconds=1)) == appended
-    assert expire_recall(appended, now=NOW) == quoted
+def test_expire_recall_ignores_a_snippet_that_quotes_the_header():
+    quoting = recall_item(RECALL_HEADER + "quoted header, no marker\n" + RECALL_HEADER)
+    block = render_recall_block([quoting, recall_item("tail")], expires=NOW)
+    text = "task\n\n" + block
+    assert expire_recall(text, now=NOW - timedelta(seconds=1)) == text
+    assert expire_recall(text, now=NOW) == "task"
 
 
-def test_expire_recall_keeps_task_text_when_a_quote_has_no_real_block():
+def test_expire_recall_ignores_a_snippet_that_quotes_a_whole_block():
+    inner = render_recall_block([recall_item()], expires=NOW - timedelta(days=9))
+    block = render_recall_block([recall_item(inner)], expires=NOW)
+    text = "task\n\n" + block
+    assert expire_recall(text, now=NOW - timedelta(seconds=1)) == text
+    assert expire_recall(text, now=NOW) == "task"
+
+
+def test_expire_recall_keeps_task_text_that_quotes_an_expired_block():
     task = "Now do the real task: fix bug X."
-    text = f"Review this prior prompt:\n\n{RECALL_HEADER}item...\n\n{task}"
-    assert expire_recall(text, now=NOW) == text
-    bare = f"{RECALL_HEADER}item..."
-    assert expire_recall(bare, now=NOW) == bare
+    quoted = render_recall_block([recall_item()], expires=NOW - timedelta(days=1))
+    for text in (
+        f"Review this prior prompt:\n\n{quoted}\n\n{task}",
+        f"{quoted}\n\n{task}",
+        f"Review {RECALL_HEADER}RECALL_EXPIRES {NOW.isoformat()}\n{task}",
+        f"{RECALL_HEADER}item...",
+    ):
+        assert expire_recall(text, now=NOW) == text
+    appended = f"Review this prior prompt:\n\n{quoted}\n\n{task}\n\n" + (
+        render_recall_block([recall_item()], expires=NOW)
+    )
+    assert expire_recall(appended, now=NOW) == (
+        f"Review this prior prompt:\n\n{quoted}\n\n{task}"
+    )
 
 
 @pytest.mark.parametrize("caller", ["api", "recall", "extraction"])

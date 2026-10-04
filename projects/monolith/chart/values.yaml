@@ -454,6 +454,33 @@ jobs:
           memory: 256Mi
         limits:
           memory: 512Mi
+    # Evidence-backed renewal of due volatile facts against GitHub. One batch of
+    # at most 20 notes and 60 requests per run, 15-minute cadence, Forbid so runs
+    # never overlap. Lands suspended until the scoped pilot in
+    # knowledge/README.md; enabling it is a values-only change.
+    - name: knowledge-review-admission
+      args:
+        [
+          "knowledge-review-admission",
+          "--apply",
+          "--batch-size",
+          "20",
+          "--max-requests",
+          "60",
+          "--deadline-seconds",
+          "240",
+        ]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: true
+      githubToken: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
     # Weekly clone hygiene, Sunday 03:45 UTC, before daily retention at 04:15.
     # Land suspended until the separate enablement values PR for #6719.
     - name: knowledge-merge-clones
