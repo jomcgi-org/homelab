@@ -12,7 +12,10 @@ use crate::hc::HyperConn;
 use crate::layer::{DecoderLayer, LayerState, StepInput};
 use crate::moe::ExpertSource;
 use crate::util::{bf16_tensor, tap};
-use crate::{Dims, Probe};
+use crate::{Dims, NoProbe, Probe};
+
+/// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
+pub const PREFILL_CHUNK: usize = 512;
 
 pub struct QwenModel {
     pub dims: Dims,
@@ -116,23 +119,11 @@ impl QwenModel {
         })
     }
 
-    /// Runs `token_ids` through the model and returns logits `[t, vocab]` (or only
-    /// the last row with `last_only`). Stages are tapped as `{stage}.{layer}` plus
-    /// `residual_in`, `mixer_out` and `logits`.
-    pub fn forward(
-        &self,
-        gpu: &Gpu,
-        token_ids: &[u32],
-        state: &mut SeqState,
-        experts: &mut dyn ExpertSource,
-        probe: &mut dyn Probe,
-        last_only: bool,
-    ) -> Result<Buf> {
+    /// Embeds `token_ids` (repeated over the hc streams) into `x`.
+    fn embed_into(&self, gpu: &Gpu, token_ids: &[u32], x: &mut Buf) -> Result<()> {
         let d = &self.dims;
-        let (t, h) = (token_ids.len(), d.hidden);
-        ensure!(t > 0, "empty step");
-        // Embedding, repeated over the hc streams.
-        let mut host = Vec::with_capacity(t * d.residual());
+        let h = d.hidden;
+        let mut host = Vec::with_capacity(token_ids.len() * d.residual());
         for &id in token_ids {
             ensure!((id as usize) < self.vocab, "token id {id} out of vocab");
             let row = &self.embed[id as usize * h..(id as usize + 1) * h];
@@ -140,42 +131,28 @@ impl QwenModel {
                 host.extend(row.iter().map(|&w| bf16_to_f32(w)));
             }
         }
-        let mut x = state
-            .ws
-            .borrow_mut()
-            .take(gpu, "model.embed", t * d.residual())?;
-        gpu.upload_into(&host, &mut x)?;
-        tap(gpu, probe, "residual_in", &mut x)?;
-        // Name the current residual is given back under once a layer has consumed it;
-        // layer outputs then alternate between two stable "layer.out" buffers.
-        let mut x_name = "model.embed";
+        gpu.upload_into(&host, x)?;
+        Ok(())
+    }
 
-        let step = StepInput {
-            token_ids,
-            start_pos: state.pos,
-        };
-        for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
-            let mut lp = LayerProbe {
-                inner: probe,
-                layer: layer.layer,
-            };
-            let next = layer.forward(gpu, d, &x, t, &step, st, experts, &mut lp)?;
-            // Hand the previous residual back so the next layer reuses it.
-            state
-                .ws
-                .borrow_mut()
-                .give(x_name, std::mem::replace(&mut x, next));
-            x_name = "layer.out";
-        }
-        state.pos += t;
-
-        let mut ws_guard = state.ws.borrow_mut();
-        let ws: &mut Workspace = &mut ws_guard;
+    /// Final hyper-connection mixer and `lm_head` over the residual `x` of `t`
+    /// tokens: logits `[t, vocab]`, or only the last row with `last_only`.
+    #[allow(clippy::too_many_arguments)]
+    fn head(
+        &self,
+        gpu: &Gpu,
+        ws: &mut Workspace,
+        x: &Buf,
+        t: usize,
+        probe: &mut dyn Probe,
+        last_only: bool,
+    ) -> Result<Buf> {
+        let d = &self.dims;
+        let h = d.hidden;
         let mut scratch = ws.take_bf16(gpu, "gemm.scratch", t * d.residual())?;
         let (mut mixed, _) =
             self.final_mixer
-                .mix(gpu, d, ws, &x, t, &mut scratch, probe, "final_hc")?;
-        ws.give(x_name, x);
+                .mix(gpu, d, ws, x, t, &mut scratch, probe, "final_hc")?;
         tap(gpu, probe, "mixer_out", &mut mixed)?;
         let rows = if last_only { 1 } else { t };
         let input = if last_only && t > 1 {
@@ -209,5 +186,117 @@ impl QwenModel {
             tap(gpu, probe, "logits", &mut logits)?;
         }
         Ok(logits)
+    }
+
+    /// Runs `token_ids` through the model as one step and returns logits `[t, vocab]`
+    /// (or only the last row with `last_only`). Stages are tapped as
+    /// `{stage}.{layer}` plus `residual_in`, `mixer_out` and `logits`.
+    pub fn forward(
+        &self,
+        gpu: &Gpu,
+        token_ids: &[u32],
+        state: &mut SeqState,
+        experts: &mut dyn ExpertSource,
+        probe: &mut dyn Probe,
+        last_only: bool,
+    ) -> Result<Buf> {
+        let d = &self.dims;
+        let t = token_ids.len();
+        ensure!(t > 0, "empty step");
+        let mut x = state
+            .ws
+            .borrow_mut()
+            .take(gpu, "model.embed", t * d.residual())?;
+        self.embed_into(gpu, token_ids, &mut x)?;
+        tap(gpu, probe, "residual_in", &mut x)?;
+        // Name the current residual is given back under once a layer has consumed it;
+        // layer outputs then alternate between two stable "layer.out" buffers.
+        let mut x_name = "model.embed";
+
+        let step = StepInput {
+            token_ids,
+            start_pos: state.pos,
+        };
+        for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
+            let mut lp = LayerProbe {
+                inner: probe,
+                layer: layer.layer,
+            };
+            let next = layer.forward(gpu, d, &x, t, &step, st, experts, &mut lp)?;
+            // Hand the previous residual back so the next layer reuses it.
+            state
+                .ws
+                .borrow_mut()
+                .give(x_name, std::mem::replace(&mut x, next));
+            x_name = "layer.out";
+        }
+        state.pos += t;
+
+        let mut ws = state.ws.borrow_mut();
+        let logits = self.head(gpu, &mut ws, &x, t, probe, last_only)?;
+        ws.give(x_name, x);
+        Ok(logits)
+    }
+
+    /// Prefills a prompt layer by layer: every `chunk`-token slice of `token_ids`
+    /// runs through layer 0, then through layer 1, and so on, so each layer's
+    /// routed experts load about once per prompt instead of once per chunk.
+    /// Within a layer the chunks run in order with that layer's state carried, so
+    /// the result equals running the chunks one after another through the whole
+    /// model. Returns the last row of logits, or `None` if `cancelled()` turned true
+    /// (checked between layers); the state is then partially advanced and must be
+    /// discarded.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prefill(
+        &self,
+        gpu: &Gpu,
+        token_ids: &[u32],
+        chunk: usize,
+        state: &mut SeqState,
+        experts: &mut dyn ExpertSource,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<Buf>> {
+        let chunk = chunk.max(1);
+        if cancelled() {
+            return Ok(None);
+        }
+        if token_ids.len() <= chunk {
+            return self
+                .forward(gpu, token_ids, state, experts, &mut NoProbe, true)
+                .map(Some);
+        }
+        let d = &self.dims;
+        let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
+        // Residuals of every chunk live across layers (about 40 KB per token).
+        let mut xs = Vec::with_capacity(chunks.len());
+        for c in &chunks {
+            let mut x = gpu.uninit(c.len() * d.residual())?;
+            self.embed_into(gpu, c, &mut x)?;
+            xs.push(x);
+        }
+        for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
+            if cancelled() {
+                return Ok(None);
+            }
+            let mut pos = state.pos;
+            for (c, x) in chunks.iter().zip(xs.iter_mut()) {
+                let step = StepInput {
+                    token_ids: c,
+                    start_pos: pos,
+                };
+                let next = layer.forward(gpu, d, x, c.len(), &step, st, experts, &mut NoProbe)?;
+                // The chunk keeps the new residual; its old buffer goes back to the
+                // workspace as the next chunk's "layer.out".
+                let old = std::mem::replace(x, next);
+                state.ws.borrow_mut().give("layer.out", old);
+                pos += c.len();
+            }
+        }
+        state.pos += token_ids.len();
+        let last = xs.last().expect("at least one chunk");
+        let t = chunks.last().map_or(0, |c| c.len());
+        let mut ws = state.ws.borrow_mut();
+        self.head(gpu, &mut ws, last, t, &mut NoProbe, true)
+            .map(Some)
     }
 }

@@ -108,7 +108,26 @@ fn decode_phase(
     Ok(())
 }
 
-pub fn run(model_dir: &Path, prompt: &str, tokens: usize, expert_args: &ExpertArgs) -> Result<()> {
+/// Prefills `ids` layer by layer in `chunk`-token slices; last row of logits.
+fn prefill(
+    gpu: &Gpu,
+    qwen: &QwenModel,
+    ids: &[u32],
+    chunk: usize,
+    state: &mut SeqState,
+    experts: &mut dyn ExpertSource,
+) -> Result<Buf> {
+    qwen.prefill(gpu, ids, chunk, state, experts, &|| false)?
+        .ok_or_else(|| anyhow::anyhow!("prefill cancelled"))
+}
+
+pub fn run(
+    model_dir: &Path,
+    prompt: &str,
+    tokens: usize,
+    prefill_chunk: usize,
+    expert_args: &ExpertArgs,
+) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
     let model = Arc::new(oominf_format::Model::open(model_dir)?);
@@ -129,15 +148,21 @@ pub fn run(model_dir: &Path, prompt: &str, tokens: usize, expert_args: &ExpertAr
         time: Duration::ZERO,
         calls: 0,
     };
+    let before = experts.inner.stats();
     let t = Instant::now();
-    let mut logits = qwen.forward(&gpu, &ids, &mut state, &mut experts, &mut NoProbe, true)?;
+    let mut logits = prefill(&gpu, &qwen, &ids, prefill_chunk, &mut state, &mut experts)?;
     gpu.sync()?;
+    let stats = match (experts.inner.stats(), before) {
+        (Some(a), Some(b)) => Some(a - b),
+        _ => None,
+    };
     println!(
-        "prefill {} tokens: {:.2}s (host time in expert source {:.2}s over {} records)",
+        "prefill {} tokens: {:.2}s (host time in expert source {:.2}s over {} records){}",
         ids.len(),
         t.elapsed().as_secs_f64(),
         experts.time.as_secs_f64(),
-        experts.calls
+        experts.calls,
+        tier_line(stats, 1).replace("per token", "in total")
     );
     decode_phase(
         "decode (cold tiers)",
@@ -162,7 +187,7 @@ pub fn run(model_dir: &Path, prompt: &str, tokens: usize, expert_args: &ExpertAr
     let mut state = qwen.new_state(&gpu, ids.len() + 1)?;
     let before = experts.inner.stats();
     let t = Instant::now();
-    qwen.forward(&gpu, &ids, &mut state, &mut experts, &mut NoProbe, true)?;
+    prefill(&gpu, &qwen, &ids, prefill_chunk, &mut state, &mut experts)?;
     gpu.sync()?;
     let stats = match (experts.inner.stats(), before) {
         (Some(a), Some(b)) => Some(a - b),

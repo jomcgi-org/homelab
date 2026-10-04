@@ -58,8 +58,14 @@ enum Command {
         model: PathBuf,
         #[arg(long, default_value = "Write a short story about a lighthouse keeper.")]
         prompt: String,
+        /// Read the prompt from a file instead (e.g. a long document).
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
         #[arg(long, default_value_t = 32)]
         tokens: usize,
+        /// Prompt tokens per prefill step.
+        #[arg(long, default_value_t = oominf_models_qwen::PREFILL_CHUNK)]
+        prefill_chunk: usize,
         #[command(flatten)]
         experts: experts::ExpertArgs,
     },
@@ -78,7 +84,7 @@ enum Command {
         #[arg(long, default_value_t = 32768)]
         max_context: usize,
         /// Prompt tokens per prefill forward pass (bounds prefill activation memory).
-        #[arg(long, default_value_t = 256)]
+        #[arg(long, default_value_t = oominf_models_qwen::PREFILL_CHUNK)]
         prefill_chunk: usize,
         #[command(flatten)]
         experts: experts::ExpertArgs,
@@ -211,9 +217,17 @@ fn main() -> Result<()> {
         Command::Bench {
             model,
             prompt,
+            prompt_file,
             tokens,
+            prefill_chunk,
             experts,
-        } => bench::run(&model, &prompt, tokens, &experts)?,
+        } => {
+            let prompt = match prompt_file {
+                Some(p) => std::fs::read_to_string(p)?,
+                None => prompt,
+            };
+            bench::run(&model, &prompt, tokens, prefill_chunk, &experts)?
+        }
         Command::Serve {
             model,
             host,
