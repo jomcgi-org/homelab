@@ -109,16 +109,18 @@ def _cache_response(
                 detail="Knowledge snapshot expired; retry",
                 headers={"Cache-Control": "no-store"},
             )
-        cache_control = public_cache_control(notes, now=now, default=cache_control)
+        cache_control = public_cache_control(
+            notes, now=served_at, default=cache_control
+        )
         etag = _record_etag(
             etag,
             sorted((note.note_id, _as_utc(note.review_after)) for note in notes),
         )
+    # No explicit Date header here: uvicorn sends a single Date (request
+    # start) and proxies plus Cloudflare start the TTL at receipt, so the
+    # lease above is measured from serve time and each hop dates its own
+    # response instead of forwarding upstream Date/Age as a new lease basis.
     headers = {"Cache-Control": cache_control, "ETag": etag}
-    if now is not None:
-        # Preserve this date through proxies so a cached upstream response
-        # cannot receive a new lease when it is wrapped in another response.
-        headers["Date"] = format_datetime(_as_utc(now), usegmt=True)
     latest = _as_utc(last_modified)
     if latest is not None:
         headers["Last-Modified"] = format_datetime(latest, usegmt=True)
