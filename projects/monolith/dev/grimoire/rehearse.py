@@ -69,7 +69,10 @@ def main():
                 use_loopback_requests(context)
                 context.tracing.start(screenshots=True, snapshots=True, sources=True)
                 page = context.new_page()
-                page.on("pageerror", lambda error: report["errors"].append(str(error)))
+                page.on(
+                    "pageerror",
+                    lambda error: report["errors"].append(error.stack or str(error)),
+                )
                 page.on(
                     "console",
                     lambda message: (
