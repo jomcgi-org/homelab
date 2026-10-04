@@ -274,12 +274,18 @@ __device__ __forceinline__ float e2m1(uint8_t code) {
     return (code & 8) ? -v : v;
 }
 
-// ModelOpt NVFP4 (group 16) to fp32: w[r, c] = e2m1(nibble) * fp8(scale[r, c/16]) * scale2.
-// packed: [rows, cols/2] (low nibble = even column). scale: [rows, cols/16] e4m3.
-extern "C" __global__ void dequant_nvfp4(const uint8_t* packed, const uint8_t* scale, float scale2,
-                                         float* out, int rows, int cols) {
+// ModelOpt NVFP4 (group 16) to fp32: w[r, c] = e2m1(nibble) * fp8(scale[r, c/16]) * scale2,
+// read straight from an expert record: packed [rows, cols/2] (low nibble = even column) at
+// packed_off, e4m3 scales [rows, cols/16] at scale_off, and scale2 as the f32 at index
+// scale2_idx of the record's leading scalars part.
+extern "C" __global__ void dequant_nvfp4(const uint8_t* record, long long packed_off,
+                                         long long scale_off, int scale2_idx, float* out,
+                                         int rows, int cols) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= (size_t)rows * cols) return;
+    const uint8_t* packed = record + packed_off;
+    const uint8_t* scale = record + scale_off;
+    float scale2 = ((const float*)record)[scale2_idx];
     int r = i / cols, c = i % cols;
     uint8_t byte = packed[(size_t)r * (cols / 2) + c / 2];
     uint8_t code = (c & 1) ? (byte >> 4) : (byte & 15);
