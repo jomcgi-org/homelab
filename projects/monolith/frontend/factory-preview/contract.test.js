@@ -39,12 +39,32 @@ describe("same-commit factory server-load fixtures", () => {
               headers: {
                 "content-type": "application/json",
                 etag: '"synthetic"',
+                "cache-control":
+                  scenario === "live"
+                    ? "public, max-age=13, s-maxage=13, must-revalidate"
+                    : "no-store",
               },
             });
           },
         });
         expect(unexpected).toEqual([]);
-        expect(headers["cache-control"]).toContain("public");
+        if (
+          ["context", "chapter", "search"].includes(view) &&
+          scenario !== "error"
+        ) {
+          expect(headers["cache-control"]).toBe(
+            scenario === "live"
+              ? "public, max-age=13, s-maxage=13, must-revalidate"
+              : "no-store",
+          );
+          expect(headers["cloudflare-cdn-cache-control"]).toBe(
+            scenario === "live"
+              ? "public, max-age=13, must-revalidate"
+              : "no-store",
+          );
+        } else {
+          expect(headers["cache-control"]).toContain("public");
+        }
         if (scenario === "error") {
           expect(
             typeof data.unavailable === "boolean"
@@ -76,6 +96,19 @@ describe("same-commit factory server-load fixtures", () => {
     expect(
       decodeSearchIndex(payloads()["/slop/factory/search-index"]),
     ).toHaveLength(26);
+  });
+  it("context refuses to cache fact fixtures without an upstream policy", async () => {
+    let headers;
+    const endpoints = payloads("live");
+    await context({
+      url: new URL("https://fixture.invalid/slop/factory/context"),
+      setHeaders: (value) => {
+        headers = value;
+      },
+      fetch: async (url) => new Response(JSON.stringify(endpoints[url])),
+    });
+    expect(headers["cache-control"]).toBe("no-store");
+    expect(headers["cloudflare-cdn-cache-control"]).toBe("no-store");
   });
 });
 

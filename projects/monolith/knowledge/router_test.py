@@ -1182,9 +1182,13 @@ class TestPublicGraphEndpoint:
         node_ids = {n["id"] for n in body["nodes"]}
         assert node_ids == {"pub-A"}
 
-    def test_public_graph_cache_headers(self, real_session):
-        """Public graph carries the same CDN cache directives as /graph."""
-        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
+    def test_public_graph_cache_headers(self, real_session, monkeypatch):
+        """Public graph bounds browser/shared lifetimes and forbids stale facts."""
+        note = _seed_public_note(
+            real_session, note_id="pub-A", title="Pub A", type="atom"
+        )
+        now = note.observed_at.replace(tzinfo=timezone.utc)
+        monkeypatch.setattr("knowledge.public_router._now", lambda: now)
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -1194,8 +1198,7 @@ class TestPublicGraphEndpoint:
             app.dependency_overrides.clear()
 
         cc = res.headers.get("cache-control", "")
-        assert "s-maxage=3600" in cc
-        assert "stale-while-revalidate=86400" in cc
+        assert cc == "public, max-age=3600, s-maxage=3600, must-revalidate"
         # Conditional GET prerequisites: a stable ETag and a Last-Modified.
         assert res.headers["etag"]
         assert res.headers["last-modified"]
