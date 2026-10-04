@@ -16,6 +16,20 @@ use crate::util::bf16_tensor;
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
 pub const PREFILL_CHUNK: usize = 512;
 
+/// Workspace buffers sized for prefill (fetch groups, sequence-length step buffers,
+/// fp32 KV shadows) that decode steps do not need.
+const PREFILL_ONLY_BUFFERS: &[&str] = &[
+    "attn.shadow_k",
+    "attn.shadow_v",
+    "attn.shadow_rows",
+    "attn.mask",
+    "attn.idx_scores",
+    "moe.h",
+    "moe.y",
+    "moe.g",
+    "moe.u",
+];
+
 /// Most prompt tokens whose routed experts one prefill fetch loads and runs as one
 /// step: enough assignments per expert for tensor-core tiles, bounded so the
 /// group's activations at the MoE fit beside the expert tiers.
@@ -479,8 +493,15 @@ impl<B: Backend> QwenModel<B> {
         let group = token_ids.len().min(PREFILL_FETCH_TOKENS);
         let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
         let held = group * (2 * r + d.hidden + moe);
-        let attn = self.step_bytes(chunk.min(token_ids.len()), state.pos + token_ids.len());
-        let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>() + attn;
+        let total = state.pos + token_ids.len();
+        let attn = self.step_bytes(chunk.min(token_ids.len()), total);
+        let shadow = self
+            .layers
+            .iter()
+            .map(|l| l.shadow_bytes(total))
+            .max()
+            .unwrap_or(0);
+        let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>() + attn + shadow;
         self.reserve_kv(gpu, state, state.pos + token_ids.len(), transient, experts)?;
         let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
         let mut xs = Vec::with_capacity(chunks.len());
@@ -496,6 +517,7 @@ impl<B: Backend> QwenModel<B> {
                 return Ok(None);
             }
             let mut pos = state.pos;
+            layer.begin_prefill(gpu, st, total)?;
             let groups = chunks.len().div_ceil(per_fetch);
             for (gi, (cs, xs)) in chunks
                 .chunks(per_fetch)
@@ -541,15 +563,20 @@ impl<B: Backend> QwenModel<B> {
                     state.ws.borrow_mut().give("layer.out", old);
                 }
             }
+            layer.end_prefill(st);
         }
         state.pos += token_ids.len();
         state.rewindable = None;
         let last = xs.last().expect("at least one chunk");
         let t = chunks.last().map_or(0, |c| c.len());
         self.keep_hidden(gpu, state, last, t - 1, 1)?;
-        let mut ws = state.ws.borrow_mut();
-        self.head(gpu, &mut ws, last, t, &mut NoProbe, true)
-            .map(Some)
+        let logits = self.head(gpu, &mut state.ws.borrow_mut(), last, t, &mut NoProbe, true)?;
+        // Give prefill-only memory back to the expert tier for decode: the residuals,
+        // the fp32 KV shadows and the grow-only buffers sized for fetch groups.
+        drop(xs);
+        state.ws.borrow_mut().release(PREFILL_ONLY_BUFFERS);
+        self.reclaim_vram(gpu, state, experts)?;
+        Ok(Some(logits))
     }
 
     /// Drops the last `n` tokens of the last step, which must have run with

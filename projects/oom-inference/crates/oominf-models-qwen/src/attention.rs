@@ -131,6 +131,10 @@ pub struct AttnState<B: Backend> {
     pub cap: usize,
     /// Most tokens the sequence may ever hold.
     pub max_tokens: usize,
+    /// During a layer-major prefill over a compressed cache: exact fp32 copies of
+    /// the layer's keys and values (fp32 rows, [`KvFormat::F32`] layout) that
+    /// prefill attention reads instead of re-decoding cached tiles in every block.
+    pub shadow: Option<(B::Bytes, B::Bytes)>,
 }
 
 impl<B: Backend> Attention<B> {
@@ -186,7 +190,55 @@ impl<B: Backend> Attention<B> {
             len: 0,
             cap,
             max_tokens,
+            shadow: None,
         })
+    }
+
+    /// Bytes of the fp32 shadow [`Self::begin_shadow`] holds for `tokens` tokens (0
+    /// for an fp32 cache, which needs none).
+    pub fn shadow_bytes(&self, tokens: usize) -> usize {
+        match self.kv {
+            KvFormat::F32 => 0,
+            _ => 2 * tokens * self.a.kv_heads * KvFormat::F32.row_bytes(true, self.a.head_dim),
+        }
+    }
+
+    /// Before this layer prefills up to `tokens` tokens over a compressed cache:
+    /// takes fp32 shadow buffers from `ws` and fills them with the tokens already
+    /// cached (decoded once), so prefill attention reads exact fp32 rows for the new
+    /// tokens and decoded rows for earlier ones, each decoded at most once.
+    pub fn begin_shadow(
+        &self,
+        gpu: &B,
+        ws: &mut Workspace<B>,
+        state: &mut AttnState<B>,
+        tokens: usize,
+    ) -> Result<()> {
+        if self.kv == KvFormat::F32 {
+            return Ok(());
+        }
+        let (kvh, hd) = (self.a.kv_heads, self.a.head_dim);
+        let n = tokens * kvh * KvFormat::F32.row_bytes(true, hd);
+        let mut k = ws.take_bytes_at_least(gpu, "attn.shadow_k", n)?;
+        let mut v = ws.take_bytes_at_least(gpu, "attn.shadow_v", n)?;
+        if state.len > 0 {
+            let mut rows = ws.take(gpu, "attn.shadow_rows", state.len * kvh * hd)?;
+            for (key, cache, shadow) in [(true, &state.k, &mut k), (false, &state.v, &mut v)] {
+                gpu.kv_read(cache, &mut rows, self.kv, key, state.len, kvh, hd)?;
+                gpu.kv_append(&rows, shadow, KvFormat::F32, key, 0, state.len, kvh, hd)?;
+            }
+            ws.give("attn.shadow_rows", rows);
+        }
+        state.shadow = Some((k, v));
+        Ok(())
+    }
+
+    /// After the layer's prefill: gives the shadow buffers back to `ws`.
+    pub fn end_shadow(&self, ws: &mut Workspace<B>, state: &mut AttnState<B>) {
+        if let Some((k, v)) = state.shadow.take() {
+            ws.give_bytes("attn.shadow_k", k);
+            ws.give_bytes("attn.shadow_v", v);
+        }
     }
 
     /// Bytes of the k and v caches and element counts of the raw indexer key and
@@ -455,18 +507,26 @@ impl<B: Backend> Attention<B> {
         tap(gpu, probe, "attn.k_rope", &mut k)?;
         gpu.kv_append(&k, &mut state.k, self.kv, true, start, t, kvh, hd)?;
         gpu.kv_append(&v, &mut state.v, self.kv, false, start, t, kvh, hd)?;
+        if let Some((sk, sv)) = state.shadow.as_mut() {
+            gpu.kv_append(&k, sk, KvFormat::F32, true, start, t, kvh, hd)?;
+            gpu.kv_append(&v, sv, KvFormat::F32, false, start, t, kvh, hd)?;
+        }
         ws.give("attn.k", k);
         ws.give("attn.v", v);
         state.len = kv_len;
 
         // Masked attention, gate, output projection.
         let mut attn = ws.take(gpu, "attn.core", t * nh * hd)?;
+        let (kc, vc, format) = match &state.shadow {
+            Some((sk, sv)) => (sk, sv, KvFormat::F32),
+            None => (&state.k, &state.v, self.kv),
+        };
         gpu.attention(
             ws,
             &q,
-            &state.k,
-            &state.v,
-            self.kv,
+            kc,
+            vc,
+            format,
             &mask,
             &mut attn,
             t,
