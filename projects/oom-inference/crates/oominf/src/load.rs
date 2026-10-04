@@ -53,10 +53,12 @@ pub struct ExpertArgs {
 /// Runtime choices for a model's sequences, beyond where experts come from.
 #[derive(clap::Args, Debug, Clone)]
 pub struct CacheArgs {
-    /// How attention layers store their KV cache: `fp32` (exact), or compressed
-    /// TurboQuant-style at `tq4`, `tq3` or mixed `k<bits>v<bits>` (e.g. `k4v3`).
-    /// Compression is lossy: judge it with `oominf score`.
-    #[arg(long, default_value = "fp32", value_parser = oominf_core::KvFormat::parse)]
+    /// How attention layers store their KV cache: compressed TurboQuant-style as
+    /// `k<bits>v<bits>` or `tq<bits>` (2 to 8 bits per coordinate), or `fp32` (exact).
+    /// The default `k8v6` measured inside fp32's own rounding noise at 32k-95k tokens
+    /// while keeping about 3x less KV memory (#6830); other modes are lossy to
+    /// different degrees: judge them with `oominf score`.
+    #[arg(long, default_value = "k8v6", value_parser = oominf_core::KvFormat::parse)]
     pub kv_cache: oominf_core::KvFormat,
 }
 
