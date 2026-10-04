@@ -22,6 +22,8 @@ pub struct Options {
     /// CPU threads computing host-resident experts of decode-sized steps (0: copy
     /// every routed record to the device).
     pub host_threads: usize,
+    /// How attention layers store their KV cache.
+    pub kv: oominf_core::KvFormat,
 }
 
 struct Inner<B: Backend> {
@@ -49,7 +51,9 @@ pub fn open<B: Backend>(
     experts: ExpertFactory<B>,
 ) -> Result<Box<dyn Model>> {
     let config = std::fs::read_to_string(files.dir().join("config.json")).context("config.json")?;
-    let mut model = QwenModel::load(&*b, &files, Dims::from_config(&config)?, None)?;
+    let mut dims = Dims::from_config(&config)?;
+    dims.kv = opts.kv;
+    let mut model = QwenModel::load(&*b, &files, dims, None)?;
     if opts.host_threads > 0 {
         model.set_host_experts(Arc::new(oominf_cpu::HostExperts::new(opts.host_threads)?));
     }

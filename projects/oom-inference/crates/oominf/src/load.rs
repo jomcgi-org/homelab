@@ -50,6 +50,16 @@ pub struct ExpertArgs {
     pub host_threads: Option<usize>,
 }
 
+/// Runtime choices for a model's sequences, beyond where experts come from.
+#[derive(clap::Args, Debug, Clone)]
+pub struct CacheArgs {
+    /// How attention layers store their KV cache: `fp32` (exact), or compressed
+    /// TurboQuant-style at `tq4`, `tq3` or mixed `k<bits>v<bits>` (e.g. `k4v3`).
+    /// Compression is lossy: judge it with `oominf score`.
+    #[arg(long, default_value = "fp32", value_parser = oominf_core::KvFormat::parse)]
+    pub kv_cache: oominf_core::KvFormat,
+}
+
 impl ExpertArgs {
     /// CPU threads computing host-resident experts (0 when host compute is off).
     pub fn host_threads(&self) -> usize {
@@ -116,6 +126,7 @@ pub struct OpenArgs<'a> {
     /// Prompt tokens per prefill chunk (`None`: the model family's default).
     pub prefill_chunk: Option<usize>,
     pub experts: &'a ExpertArgs,
+    pub cache: &'a CacheArgs,
 }
 
 /// Loads a converted model on the CUDA device with the selected expert source.
@@ -126,6 +137,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
         max_context: args.max_context,
         prefill_chunk: args.prefill_chunk,
         host_threads: args.experts.host_threads(),
+        kv: args.cache.kv_cache,
     };
     let experts = factory::<Gpu>(args.experts, files.clone());
     oominf_models::open(gpu, files, &opts, experts)

@@ -12,6 +12,7 @@ below.
 | Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
 | Speculative decoding | greedy decoding with MTP drafts produces the same tokens as one-token steps | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored` |
 | Expert kernel | the tensor-core NVFP4 kernel matches an f64 reference on random records, and its throughput | `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture` |
+| KV cache formats | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32 | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
 | GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
 
 ## Reference fixtures
@@ -78,3 +79,16 @@ fixtures at `$F`:
     oominf check-model --model $M --fixtures $F/model
 
 Each exits non-zero when a gate fails.
+
+## Outcome scoring (lossy modes)
+
+`oominf score` teacher-forces the last `--tail` tokens of a long document
+(plain-text tokenization) and writes each position's logits (`--out`) or compares
+them with a reference run (`--against`): KL divergence, top-1 agreement and
+perplexity. The reference file binds token-id and checkpoint checksums.
+
+At long context this model is very sensitive to rounding: fp32 against fp32 with
+only the prefill chunk size changed gives a mean KL of about 0.03 and about 90%
+top-1 agreement on a 32k-token document, because discrete expert routing
+amplifies rounding-level differences through the layers. Judge a lossy mode
+against that band (several equivalent fp32 runs), not against a single reference.

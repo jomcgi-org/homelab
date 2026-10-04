@@ -4,6 +4,7 @@ mod check_layer;
 mod check_model;
 mod generate;
 mod load;
+mod score;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -51,6 +52,8 @@ enum Command {
         fixtures: PathBuf,
         #[command(flatten)]
         experts: load::ExpertArgs,
+        #[command(flatten)]
+        cache: load::CacheArgs,
     },
     /// Greedy decode with expert-source statistics (performance baseline).
     Bench {
@@ -71,6 +74,33 @@ enum Command {
         draft: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
+        #[command(flatten)]
+        cache: load::CacheArgs,
+    },
+    /// Teacher-forced next-token distributions over a long document's tail, written
+    /// for a later comparison or compared with a reference run (precision modes).
+    Score {
+        #[arg(long)]
+        model: PathBuf,
+        /// The document (rendered as one user message).
+        #[arg(long)]
+        prompt_file: PathBuf,
+        /// Tokens at the end of the document to score.
+        #[arg(long, default_value_t = 256)]
+        tail: usize,
+        /// Write each scored position's logits here.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Compare with logits written by an earlier run.
+        #[arg(long)]
+        against: Option<PathBuf>,
+        /// Prompt tokens per prefill chunk (default: the model family's).
+        #[arg(long)]
+        prefill_chunk: Option<usize>,
+        #[command(flatten)]
+        experts: load::ExpertArgs,
+        #[command(flatten)]
+        cache: load::CacheArgs,
     },
     /// Serve the model over OpenAI- and Anthropic-compatible HTTP APIs.
     Serve {
@@ -95,13 +125,18 @@ enum Command {
         draft: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
+        #[command(flatten)]
+        cache: load::CacheArgs,
     },
     /// Greedy-decode one chat turn (correctness tool).
     Generate {
         #[arg(long)]
         model: PathBuf,
-        #[arg(long)]
-        prompt: String,
+        #[arg(long, required_unless_present = "prompt_file")]
+        prompt: Option<String>,
+        /// Read the prompt from a file instead (e.g. a long document).
+        #[arg(long, conflicts_with = "prompt")]
+        prompt_file: Option<PathBuf>,
         #[arg(long, default_value_t = 64)]
         max_tokens: usize,
         /// Draft tokens per decode step (speculative decoding); 0 disables it.
@@ -109,6 +144,8 @@ enum Command {
         draft: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
+        #[command(flatten)]
+        cache: load::CacheArgs,
     },
     /// Render a user turn with the chat template and tokenize it; with
     /// `--manifest`, check it against a reference fixture manifest.
@@ -219,8 +256,9 @@ fn main() -> Result<()> {
             model,
             fixtures,
             experts,
+            cache,
         } => {
-            if !check_model::run(&model, &fixtures, &experts)? {
+            if !check_model::run(&model, &fixtures, &experts, &cache)? {
                 bail!("logits less faithful than the reference's bf16 run");
             }
         }
@@ -232,13 +270,43 @@ fn main() -> Result<()> {
             prefill_chunk,
             draft,
             experts,
+            cache,
         } => {
             let prompt = match prompt_file {
                 Some(p) => std::fs::read_to_string(p)?,
                 None => prompt,
             };
-            bench::run(&model, &prompt, tokens, prefill_chunk, draft, &experts)?
+            bench::run(
+                &model,
+                &prompt,
+                tokens,
+                prefill_chunk,
+                draft,
+                &experts,
+                &cache,
+            )?
         }
+        Command::Score {
+            model,
+            prompt_file,
+            tail,
+            out,
+            against,
+            prefill_chunk,
+            experts,
+            cache,
+        } => score::run(
+            &model,
+            &std::fs::read_to_string(prompt_file)?,
+            &score::Options {
+                tail,
+                out: out.as_deref(),
+                against: against.as_deref(),
+                prefill_chunk,
+            },
+            &experts,
+            &cache,
+        )?,
         Command::Serve {
             model,
             host,
@@ -248,6 +316,7 @@ fn main() -> Result<()> {
             prefill_chunk,
             draft,
             experts,
+            cache,
         } => {
             let model_name =
                 served_model_name.unwrap_or_else(|| oominf_server::default_model_name(&model));
@@ -268,6 +337,7 @@ fn main() -> Result<()> {
                         max_context,
                         prefill_chunk,
                         experts: &experts,
+                        cache: &cache,
                     })
                 }),
             )?
@@ -275,10 +345,18 @@ fn main() -> Result<()> {
         Command::Generate {
             model,
             prompt,
+            prompt_file,
             max_tokens,
             draft,
             experts,
-        } => generate::run(&model, &prompt, max_tokens, draft, &experts)?,
+            cache,
+        } => {
+            let prompt = match prompt_file {
+                Some(p) => std::fs::read_to_string(p)?,
+                None => prompt.unwrap_or_default(),
+            };
+            generate::run(&model, &prompt, max_tokens, draft, &experts, &cache)?
+        }
         Command::Tokenize {
             model,
             prompt,

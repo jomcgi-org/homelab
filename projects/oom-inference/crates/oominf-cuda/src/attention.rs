@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use cudarc::driver::sys::CUfunction_attribute;
-use cudarc::driver::{CudaView, CudaViewMut, LaunchConfig, PushKernelArg};
-use oominf_core::{Attention, Workspace};
+use cudarc::driver::{CudaView, CudaViewMut, DevicePtr, LaunchConfig, PushKernelArg};
+use oominf_core::{Attention, Elementwise, KvFormat, Memory, Workspace};
 
 use crate::{Buf, Dev, Gpu, grid};
 
@@ -167,18 +167,104 @@ impl Attention for Gpu {
         Ok(())
     }
 
+    fn kv_append(
+        &self,
+        src: &Buf,
+        cache: &mut Dev<u8>,
+        format: KvFormat,
+        key: bool,
+        start: usize,
+        t: usize,
+        kv_heads: usize,
+        d: usize,
+    ) -> Result<()> {
+        let (bits, row) = (format.bits(key), format.row_bytes(key, d));
+        let rows = t * kv_heads;
+        self.check(
+            kv_row_shape(d, bits)
+                && src.len() >= rows * d
+                && cache.len() >= (start * kv_heads + rows) * row,
+            "kv_append sizes",
+        )?;
+        if rows == 0 {
+            return Ok(());
+        }
+        let f = self.func("kv_append")?;
+        let levels = self.kv_codebooks(format)?;
+        let (row0, d32, b32) = ((start * kv_heads) as i64, d as i32, bits as i32);
+        let cfg = LaunchConfig {
+            grid_dim: (rows as u32, 1, 1),
+            block_dim: (d as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(src)
+                .arg(cache)
+                .arg(&row0)
+                .arg(&d32)
+                .arg(&b32)
+                .arg(&levels)
+                .launch(cfg)?
+        };
+        Ok(())
+    }
+
+    fn kv_read(
+        &self,
+        cache: &Dev<u8>,
+        dst: &mut Buf,
+        format: KvFormat,
+        key: bool,
+        len: usize,
+        kv_heads: usize,
+        d: usize,
+    ) -> Result<()> {
+        let (bits, row) = (format.bits(key), format.row_bytes(key, d));
+        let rows = len * kv_heads;
+        self.check(
+            kv_row_shape(d, bits) && dst.len() >= rows * d && cache.len() >= rows * row,
+            "kv_read sizes",
+        )?;
+        if rows == 0 {
+            return Ok(());
+        }
+        let f = self.func("kv_read")?;
+        let levels = self.kv_codebooks(format)?;
+        let (d32, b32) = (d as i32, bits as i32);
+        let cfg = LaunchConfig {
+            grid_dim: (rows as u32, 1, 1),
+            block_dim: (d as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(cache)
+                .arg(dst)
+                .arg(&d32)
+                .arg(&b32)
+                .arg(&levels)
+                .launch(cfg)?
+        };
+        Ok(())
+    }
+
     /// Attention of `t` queries over `kv_len` cached keys under `mask` (`[t, kv_len]`
     /// bytes). Up to [`DECODE_MAX_TOKENS`] query tokens with `d == 256` (decode and
     /// draft verification) take the GQA flash-decode path one token at a time (split
     /// over keys, merged online-softmax partials), which keeps the GPU busy for a
-    /// handful of queries; longer steps use `attn_prefill`.
+    /// handful of queries; longer steps use `attn_prefill`. A rotated (Turbo) cache
+    /// gets rotated queries, and the output is rotated back.
     #[allow(clippy::too_many_arguments)]
     fn attention(
         &self,
         ws: &mut Workspace<Gpu>,
         q: &Buf,
-        k: &Buf,
-        v: &Buf,
+        k: &Dev<u8>,
+        v: &Dev<u8>,
+        format: KvFormat,
         mask: &Dev<u8>,
         out: &mut Buf,
         t: usize,
@@ -188,31 +274,60 @@ impl Attention for Gpu {
         kv_len: usize,
         scale: f32,
     ) -> Result<()> {
+        let bits = (
+            format.bits(true),
+            format.bits(false),
+            self.kv_codebooks(format)?,
+        );
+        let rotated = format != KvFormat::F32;
+        let q_rot = if rotated {
+            let mut r = ws.take(self, "attn.q_rot", t * heads * d)?;
+            self.copy_range(q, 0, &mut r, 0, t * heads * d)?;
+            self.kv_rotate(&mut r, t * heads, d, false)?;
+            Some(r)
+        } else {
+            None
+        };
+        let qq = q_rot.as_ref().unwrap_or(q);
         let g = heads / kv_heads;
         // The decode kernel is instantiated for the GQA group size the models use.
         if t > DECODE_MAX_TOKENS || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
-            return self.attn_prefill(
-                q, k, v, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
-            );
-        }
-        let row = heads * d;
-        for i in 0..t {
-            self.flash_decode(
-                ws,
-                &q.0.slice(i * row..(i + 1) * row),
-                k,
-                v,
-                &mask.0.slice(i * kv_len..(i + 1) * kv_len),
-                &mut out.0.slice_mut(i * row..(i + 1) * row),
-                heads,
-                kv_heads,
-                d,
-                kv_len,
-                scale,
+            self.attn_prefill(
+                qq, k, v, bits, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
             )?;
+        } else {
+            let row = heads * d;
+            for i in 0..t {
+                self.flash_decode(
+                    ws,
+                    &qq.0.slice(i * row..(i + 1) * row),
+                    k,
+                    v,
+                    bits,
+                    &mask.0.slice(i * kv_len..(i + 1) * kv_len),
+                    &mut out.0.slice_mut(i * row..(i + 1) * row),
+                    heads,
+                    kv_heads,
+                    d,
+                    kv_len,
+                    scale,
+                )?;
+            }
+        }
+        if let Some(r) = q_rot {
+            ws.give("attn.q_rot", r);
+            self.kv_rotate(out, t * heads, d, true)?;
         }
         Ok(())
     }
+}
+
+/// Whether rows of `d` coordinates can be stored at `bits` (0: fp32): one block of
+/// `d` threads per row, and a power-of-two `d` for the rotation.
+fn kv_row_shape(d: usize, bits: u8) -> bool {
+    d.is_multiple_of(32)
+        && d <= 256
+        && (bits == 0 || (d.is_power_of_two() && (2..=8).contains(&bits)))
 }
 
 /// Most query tokens that take the flash-decode path, one token at a time.
@@ -225,8 +340,9 @@ impl Gpu {
         &self,
         ws: &mut Workspace<Gpu>,
         q: &CudaView<f32>,
-        k: &Buf,
-        v: &Buf,
+        k: &Dev<u8>,
+        v: &Dev<u8>,
+        (kb, vb, levels): (u8, u8, u64),
         mask: &CudaView<u8>,
         out: &mut CudaViewMut<f32>,
         heads: usize,
@@ -262,6 +378,9 @@ impl Gpu {
                 .arg(&kv32)
                 .arg(&c32)
                 .arg(&scale)
+                .arg(&(kb as i32))
+                .arg(&(vb as i32))
+                .arg(&levels)
                 .launch(cfg)?
         };
         let f = self.func("attn_decode_combine")?;
@@ -298,14 +417,51 @@ const ATTN_SMEM_BYTES: usize =
     4 * (ATTN_ROWS * 260 + 16 * 260 + 16 * 256 + ATTN_ROWS * 16 + 3 * ATTN_ROWS);
 
 impl Gpu {
+    /// Device address of the KV codebooks for `format` (0 for fp32, which reads none),
+    /// uploading them on first use.
+    fn kv_codebooks(&self, format: KvFormat) -> Result<u64> {
+        if format == KvFormat::F32 {
+            return Ok(0);
+        }
+        let mut table = self.kv_codebooks.lock().unwrap();
+        if table.is_none() {
+            *table = Some(self.upload_f32(KvFormat::codebooks())?);
+        }
+        let buf = table.as_ref().expect("uploaded above");
+        Ok(buf.0.device_ptr(&self.stream).0)
+    }
+
+    /// Rotates `rows` rows of `d` coordinates of `x` in place into (or, `inverse`,
+    /// out of) the space of a Turbo KV cache.
+    fn kv_rotate(&self, x: &mut Buf, rows: usize, d: usize, inverse: bool) -> Result<()> {
+        self.check(kv_row_shape(d, 4) && x.len() >= rows * d, "kv_rotate sizes")?;
+        let f = self.func("kv_rotate")?;
+        let (d32, inv) = (d as i32, i32::from(inverse));
+        let cfg = LaunchConfig {
+            grid_dim: (rows as u32, 1, 1),
+            block_dim: (d as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(x)
+                .arg(&d32)
+                .arg(&inv)
+                .launch(cfg)?
+        };
+        Ok(())
+    }
+
     /// Masked GQA attention of `t` queries over the first `kv_len` cache rows with an
     /// online softmax (no `[t, heads, kv]` score matrix). Needs `d <= 256`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn attn_prefill(
         &self,
         q: &Buf,
-        k: &Buf,
-        v: &Buf,
+        k: &Dev<u8>,
+        v: &Dev<u8>,
+        (kb, vb, levels): (u8, u8, u64),
         mask: &Dev<u8>,
         out: &mut Buf,
         t: usize,
@@ -356,6 +512,9 @@ impl Gpu {
                 .arg(&a[5])
                 .arg(&scale)
                 .arg(&tq32)
+                .arg(&(kb as i32))
+                .arg(&(vb as i32))
+                .arg(&levels)
                 .launch(cfg)?
         };
         Ok(())

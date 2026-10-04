@@ -87,6 +87,27 @@ impl Memory for Gpu {
         Ok(self.stream.clone_dtoh(&buf.0)?)
     }
 
+    fn copy_bytes(
+        &self,
+        src: &Dev<u8>,
+        src_off: usize,
+        dst: &mut Dev<u8>,
+        dst_off: usize,
+        n: usize,
+    ) -> Result<()> {
+        self.check(
+            src.len() >= src_off + n && dst.len() >= dst_off + n,
+            "copy_bytes sizes",
+        )?;
+        if n > 0 {
+            self.stream.memcpy_dtod(
+                &src.0.slice(src_off..src_off + n),
+                &mut dst.0.slice_mut(dst_off..dst_off + n),
+            )?;
+        }
+        Ok(())
+    }
+
     fn upload_i32(&self, host: &[i32]) -> Result<Dev<i32>> {
         Ok(Dev(self.stream.clone_htod(host)?))
     }

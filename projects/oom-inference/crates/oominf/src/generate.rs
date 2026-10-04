@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use oominf_core::{argmax, decode_step};
 
 use crate::chat::Chat;
-use crate::load::{ExpertArgs, OpenArgs, open_model};
+use crate::load::{CacheArgs, ExpertArgs, OpenArgs, open_model};
 
 pub fn run(
     model_dir: &Path,
@@ -17,6 +17,7 @@ pub fn run(
     max_tokens: usize,
     draft: usize,
     expert_args: &ExpertArgs,
+    cache: &CacheArgs,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
@@ -32,6 +33,7 @@ pub fn run(
         max_context,
         prefill_chunk: None,
         experts: expert_args,
+        cache,
     })?;
     eprintln!(
         "loaded in {:.1}s: {}; prompt {} tokens",

@@ -63,6 +63,16 @@ pub trait Memory {
     fn uninit_bytes(&self, n: usize) -> Result<Self::Bytes>;
     fn zeros_bytes(&self, n: usize) -> Result<Self::Bytes>;
     fn download_bytes(&self, buf: &Self::Bytes) -> Result<Vec<u8>>;
+    /// `dst[dst_off .. dst_off + n] = src[src_off .. src_off + n]` (bytes), ordered
+    /// after the compute issued so far.
+    fn copy_bytes(
+        &self,
+        src: &Self::Bytes,
+        src_off: usize,
+        dst: &mut Self::Bytes,
+        dst_off: usize,
+        n: usize,
+    ) -> Result<()>;
 
     fn upload_i32(&self, host: &[i32]) -> Result<Self::I32>;
     fn download_i32(&self, buf: &Self::I32) -> Result<Vec<i32>>;
@@ -382,15 +392,44 @@ pub trait Attention: Memory + Sized {
         topk: usize,
         kv_stride: usize,
     ) -> Result<()>;
-    /// Grouped-query attention of `t` queries over `kv_len` cached keys under
-    /// `mask`, fp32 softmax; scratch comes from `ws`.
+    /// Appends `t` tokens of keys or values `src` (`[t, kv_heads, d]`) to a cache
+    /// stored as `format` (its key or value half per `key`), at token `start`.
+    #[allow(clippy::too_many_arguments)]
+    fn kv_append(
+        &self,
+        src: &Self::F32,
+        cache: &mut Self::Bytes,
+        format: KvFormat,
+        key: bool,
+        start: usize,
+        t: usize,
+        kv_heads: usize,
+        d: usize,
+    ) -> Result<()>;
+    /// The first `len` tokens of a cache as fp32 `[len, kv_heads, d]`: exact for
+    /// [`KvFormat::F32`], decoded otherwise.
+    #[allow(clippy::too_many_arguments)]
+    fn kv_read(
+        &self,
+        cache: &Self::Bytes,
+        dst: &mut Self::F32,
+        format: KvFormat,
+        key: bool,
+        len: usize,
+        kv_heads: usize,
+        d: usize,
+    ) -> Result<()>;
+    /// Grouped-query attention of `t` queries over `kv_len` cached keys and values
+    /// (stored as `format`, written by [`Attention::kv_append`]) under `mask`, fp32
+    /// softmax; scratch comes from `ws`.
     #[allow(clippy::too_many_arguments)]
     fn attention(
         &self,
         ws: &mut crate::Workspace<Self>,
         q: &Self::F32,
-        k: &Self::F32,
-        v: &Self::F32,
+        k: &Self::Bytes,
+        v: &Self::Bytes,
+        format: KvFormat,
         mask: &Self::Bytes,
         out: &mut Self::F32,
         t: usize,
@@ -400,6 +439,215 @@ pub trait Attention: Memory + Sized {
         kv_len: usize,
         scale: f32,
     ) -> Result<()>;
+}
+
+/// How an attention cache stores keys and values.
+///
+/// [`KvFormat::Turbo`] follows TurboQuant: every head vector is rotated by a fixed
+/// randomized Walsh-Hadamard transform, which spreads its energy evenly over the
+/// coordinates and preserves dot products, then each block of 32 coordinates keeps
+/// an fp16 scale (its RMS) and a Lloyd-Max codebook index per coordinate for a unit
+/// Gaussian. Attention rotates queries the same way and un-rotates its output, so
+/// no step outside the backend sees rotated vectors. Lossy: judge it by outcome
+/// (`oominf score`), not against the per-layer reference budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KvFormat {
+    /// Keys and values as computed, fp32.
+    F32,
+    /// Rotated, `k_bits` / `v_bits` (2 to 8) per coordinate plus a 16-bit scale per
+    /// 32 coordinates.
+    Turbo { k_bits: u8, v_bits: u8 },
+}
+
+impl KvFormat {
+    /// Bits per coordinate of keys (`key`) or values; 0 for fp32.
+    pub fn bits(self, key: bool) -> u8 {
+        match self {
+            KvFormat::F32 => 0,
+            KvFormat::Turbo { k_bits, v_bits } => {
+                if key {
+                    k_bits
+                } else {
+                    v_bits
+                }
+            }
+        }
+    }
+
+    /// Bytes of one cached head vector of `d` coordinates: fp32 values, or the
+    /// block scales (padded to 16 bytes) and `bits` 32-bit bit-plane words per
+    /// block of 32.
+    pub fn row_bytes(self, key: bool, d: usize) -> usize {
+        match self.bits(key) as usize {
+            0 => 4 * d,
+            b => (d / 32 * 2).next_multiple_of(16) + d / 32 * b * 4,
+        }
+    }
+
+    /// Parses `fp32`, `tq<b>` (keys and values at `b` bits) or `k<b>v<b>`.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let bits = |t: &str| -> anyhow::Result<u8> {
+            match t.parse::<u8>() {
+                Ok(b @ 2..=8) => Ok(b),
+                _ => anyhow::bail!("KV cache bits must be 2 to 8, got {t:?}"),
+            }
+        };
+        if s == "fp32" {
+            return Ok(KvFormat::F32);
+        }
+        if let Some(b) = s.strip_prefix("tq") {
+            let b = bits(b)?;
+            return Ok(KvFormat::Turbo {
+                k_bits: b,
+                v_bits: b,
+            });
+        }
+        if let Some((k, v)) = s.strip_prefix('k').and_then(|r| r.split_once('v')) {
+            return Ok(KvFormat::Turbo {
+                k_bits: bits(k)?,
+                v_bits: bits(v)?,
+            });
+        }
+        anyhow::bail!("unknown KV cache format {s:?} (fp32, tq4, k6v4, ...)")
+    }
+
+    /// Lloyd-Max codebooks for a unit Gaussian at 2 to 8 bits, ascending, concatenated:
+    /// the `2^b` levels for `b` bits start at [`KvFormat::codebook_offset`]. Computed
+    /// once (deterministic f64 iteration); backends upload the table.
+    pub fn codebooks() -> &'static [f32] {
+        static TABLE: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+        TABLE.get_or_init(|| (2..=8).flat_map(lloyd_max_gaussian).collect())
+    }
+
+    /// Index of the first level for `bits` in [`KvFormat::codebooks`].
+    pub fn codebook_offset(bits: u8) -> usize {
+        (1usize << bits) - 4
+    }
+}
+
+/// The `2^bits` Lloyd-Max levels for a unit Gaussian: alternately place thresholds
+/// halfway between levels and move each level to the mean of its cell, until no
+/// level moves by more than 1e-12.
+fn lloyd_max_gaussian(bits: u8) -> Vec<f32> {
+    let n = 1usize << bits;
+    let pdf = |x: f64| (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    // Upper-tail probability Q(x) = P(X > x), from erfc (Numerical Recipes erfcc,
+    // fractional error below 1.2e-7), symmetric so tails keep their precision.
+    let q = |x: f64| {
+        let z = x.abs() / std::f64::consts::SQRT_2;
+        let t = 1.0 / (1.0 + 0.5 * z);
+        let erfc = t
+            * (-z * z - 1.26551223
+                + t * (1.00002368
+                    + t * (0.37409196
+                        + t * (0.09678418
+                            + t * (-0.18628806
+                                + t * (0.27886807
+                                    + t * (-1.13520398
+                                        + t * (1.48851587
+                                            + t * (-0.82215223 + t * 0.17087277)))))))))
+                .exp();
+        if x >= 0.0 {
+            0.5 * erfc
+        } else {
+            1.0 - 0.5 * erfc
+        }
+    };
+    let span = 4.0 + bits as f64 * 0.25;
+    let mut c: Vec<f64> = (0..n)
+        .map(|i| -span + 2.0 * span * (i as f64 + 0.5) / n as f64)
+        .collect();
+    for _ in 0..200_000 {
+        let edge = |i: usize| -> f64 {
+            match i {
+                0 => f64::NEG_INFINITY,
+                i if i == n => f64::INFINITY,
+                i => 0.5 * (c[i - 1] + c[i]),
+            }
+        };
+        let mut moved = 0f64;
+        let next: Vec<f64> = (0..n)
+            .map(|i| {
+                let (a, b) = (edge(i), edge(i + 1));
+                let (pa, pb) = (
+                    if a.is_finite() { pdf(a) } else { 0.0 },
+                    if b.is_finite() { pdf(b) } else { 0.0 },
+                );
+                let mass = q(a) - q(b);
+                let m = if mass > 0.0 { (pa - pb) / mass } else { c[i] };
+                moved = moved.max((m - c[i]).abs());
+                m
+            })
+            .collect();
+        c = next;
+        if moved < 1e-12 {
+            break;
+        }
+    }
+    c.into_iter().map(|v| v as f32).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KvFormat;
+
+    #[test]
+    fn codebooks_match_known_lloyd_max_levels() {
+        let t = KvFormat::codebooks();
+        assert_eq!(t.len(), (2..=8).map(|b| 1usize << b).sum::<usize>());
+        let level = |bits: u8, i: usize| t[KvFormat::codebook_offset(bits) + i];
+        // Max (1960): 3 bits 0.2451, 0.7560, 1.3440, 2.1520; 4 bits 0.1284 ... 2.7326.
+        for (bits, known) in [
+            (3u8, &[0.2451f32, 0.7560, 1.3440, 2.1520][..]),
+            (
+                4,
+                &[
+                    0.1284, 0.3881, 0.6568, 0.9424, 1.2562, 1.6181, 2.0690, 2.7326,
+                ][..],
+            ),
+        ] {
+            let half = 1usize << (bits - 1);
+            for (i, &k) in known.iter().enumerate() {
+                assert!(
+                    (level(bits, half + i) - k).abs() < 2e-3,
+                    "{bits}-bit level {i}"
+                );
+                assert!(
+                    (level(bits, half - 1 - i) + k).abs() < 2e-3,
+                    "{bits}-bit level -{i}"
+                );
+            }
+        }
+        for bits in 2..=8u8 {
+            let n = 1usize << bits;
+            let l = &t[KvFormat::codebook_offset(bits)..][..n];
+            assert!(
+                l.windows(2).all(|w| w[0] < w[1]),
+                "{bits}-bit levels ascend"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_formats() {
+        assert_eq!(KvFormat::parse("fp32").unwrap(), KvFormat::F32);
+        assert_eq!(
+            KvFormat::parse("k6v4").unwrap(),
+            KvFormat::Turbo {
+                k_bits: 6,
+                v_bits: 4
+            }
+        );
+        assert!(KvFormat::parse("tq9").is_err());
+        assert_eq!(
+            KvFormat::Turbo {
+                k_bits: 4,
+                v_bits: 4
+            }
+            .row_bytes(true, 256),
+            16 + 8 * 16
+        );
+    }
 }
 
 /// Byte layout of an NVFP4 expert record: part offsets and the index of each

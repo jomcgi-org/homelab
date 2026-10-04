@@ -86,6 +86,8 @@ pub struct Gpu {
     gemv_partial: Mutex<Option<Buf>>,
     /// One self-resetting ticket per GEMV row tile (all zero between launches).
     gemv_tickets: Mutex<Option<CudaSlice<u32>>>,
+    /// [`oominf_core::KvFormat::codebooks`] on the device, uploaded on first use.
+    kv_codebooks: Mutex<Option<Buf>>,
 }
 
 pub(crate) fn grid(n: usize, block: u32) -> LaunchConfig {
@@ -117,6 +119,7 @@ impl Gpu {
             funcs: Mutex::new(HashMap::new()),
             gemv_partial: Mutex::new(None),
             gemv_tickets: Mutex::new(None),
+            kv_codebooks: Mutex::new(None),
         })
     }
 

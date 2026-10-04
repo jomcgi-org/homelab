@@ -13,6 +13,7 @@ use crate::backend::{DeviceBuffer, Memory};
 pub struct Workspace<B: Memory> {
     f32s: HashMap<&'static str, B::F32>,
     bf16s: HashMap<&'static str, B::Bf16>,
+    bytes: HashMap<&'static str, B::Bytes>,
 }
 
 impl<B: Memory> Default for Workspace<B> {
@@ -20,6 +21,7 @@ impl<B: Memory> Default for Workspace<B> {
         Workspace {
             f32s: HashMap::new(),
             bf16s: HashMap::new(),
+            bytes: HashMap::new(),
         }
     }
 }
@@ -33,6 +35,7 @@ impl<B: Memory> Workspace<B> {
     pub fn bytes(&self) -> usize {
         self.f32s.values().map(|b| b.len() * 4).sum::<usize>()
             + self.bf16s.values().map(|b| b.len() * 2).sum::<usize>()
+            + self.bytes.values().map(|b| b.len()).sum::<usize>()
     }
 
     pub fn take(&mut self, b: &B, name: &'static str, n: usize) -> Result<B::F32> {
@@ -73,5 +76,18 @@ impl<B: Memory> Workspace<B> {
 
     pub fn give_bf16(&mut self, name: &'static str, buf: B::Bf16) {
         self.bf16s.insert(name, buf);
+    }
+
+    /// A byte buffer of at least `n` bytes (grows, never shrinks), contents
+    /// unspecified.
+    pub fn take_bytes_at_least(&mut self, b: &B, name: &'static str, n: usize) -> Result<B::Bytes> {
+        match self.bytes.remove(name) {
+            Some(buf) if buf.len() >= n.max(1) => Ok(buf),
+            _ => b.uninit_bytes(n.max(1)),
+        }
+    }
+
+    pub fn give_bytes(&mut self, name: &'static str, buf: B::Bytes) {
+        self.bytes.insert(name, buf);
     }
 }

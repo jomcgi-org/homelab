@@ -303,6 +303,16 @@ impl<B: Backend> QwenModel<B> {
         Ok(logits)
     }
 
+    /// The largest sequence-length-dependent step buffers any layer allocates for a
+    /// step of `t` tokens over `kv_len` (layers run one at a time).
+    fn step_bytes(&self, t: usize, kv_len: usize) -> usize {
+        self.layers
+            .iter()
+            .map(|l| l.step_bytes(t, kv_len))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Makes the KV caches hold `tokens`. When the growth plus `transient` bytes
     /// (other allocations the step is about to make) plus workspace headroom would
     /// not fit in free device memory, asks `experts` to give memory back first.
@@ -426,8 +436,10 @@ impl<B: Backend> QwenModel<B> {
 
     /// Prefills a prompt layer by layer: every `chunk`-token slice of `token_ids`
     /// runs through layer 0, then through layer 1, and so on. Within a layer the
-    /// chunks run in order with that layer's state carried, so the result equals
-    /// running the chunks one after another through the whole model.
+    /// chunks run in order with that layer's state carried, so the result matches
+    /// running the chunks one after another through the whole model up to
+    /// floating-point summation order (grouped routing and expert steps change GEMM
+    /// shapes, not the computation).
     ///
     /// A prompt of more than one chunk: each layer runs the token mixer of up to
     /// [`PREFILL_FETCH_TOKENS`] tokens of chunks, routes them, and fetches the union
@@ -467,7 +479,8 @@ impl<B: Backend> QwenModel<B> {
         let group = token_ids.len().min(PREFILL_FETCH_TOKENS);
         let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
         let held = group * (2 * r + d.hidden + moe);
-        let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>();
+        let attn = self.step_bytes(chunk.min(token_ids.len()), state.pos + token_ids.len());
+        let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>() + attn;
         self.reserve_kv(gpu, state, state.pos + token_ids.len(), transient, experts)?;
         let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
         let mut xs = Vec::with_capacity(chunks.len());

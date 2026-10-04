@@ -68,7 +68,11 @@ in `TESTING.md`. Defaults:
   three bf16 terms, and the products accumulate in fp32.
 - Dense weights: bf16 as released. Decode GEMVs read fp32 activations directly;
   prefill GEMMs round activations to bf16 for tensor cores.
-- Residual stream, norms, softmax, recurrent state and KV cache: fp32.
+- Residual stream, norms, softmax, recurrent state and KV cache: fp32. A
+  compressed KV cache (`--kv-cache`, `KvFormat::Turbo`: TurboQuant-style rotation
+  plus 2 to 8-bit Lloyd-Max codebooks per coordinate) is opt-in; it is lossy, so
+  it is judged by outcome (`oominf score`, retrieval, tasks) against fp32 rather
+  than by the per-layer budgets.
 - MTP experts (the draft head): bf16 as released, fp32 activations and
   accumulation.
 
