@@ -57,7 +57,12 @@ describe("authenticated invitation acceptance", () => {
             provider_invitation_id: "provider-secret",
           }),
     );
-    const data = await load(event(fetch));
+    const request = event(fetch);
+    const data = await load(request);
+    expect(request.setHeaders).toHaveBeenCalledWith({
+      "cache-control": "private, no-store",
+      "referrer-policy": "same-origin",
+    });
     expect(data.matches).toBe(true);
     expect(JSON.stringify(data)).not.toContain(token);
     expect(JSON.stringify(data)).not.toContain("provider-secret");

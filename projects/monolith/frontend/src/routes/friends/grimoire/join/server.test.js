@@ -63,8 +63,9 @@ describe("public invitation landing", () => {
     expect(html).not.toContain('src="');
     expect(html).not.toContain("_app/");
     expect(html).not.toContain("otel");
+    expect(html).toContain('<meta name="referrer" content="same-origin">');
     expect(result.headers.get("cache-control")).toContain("no-store");
-    expect(result.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(result.headers.get("referrer-policy")).toBe("same-origin");
     expect(result.headers.get("content-security-policy")).toContain(
       "default-src 'none'",
     );
@@ -128,6 +129,30 @@ describe("public invitation landing", () => {
     expect(request.fetch).not.toHaveBeenCalled();
     expect(request.cookies.set).not.toHaveBeenCalled();
   });
+
+  it.each(["cancel", "enroll"])(
+    "requires an exact same-origin Origin for the native %s form",
+    async (action) => {
+      for (const origin of [
+        "null",
+        "https://evil.test",
+        "https://friends.jomcgi.dev:8443",
+        undefined,
+      ]) {
+        const request = event({ action }, { form: true, origin });
+        if (origin === undefined) request.request.headers.delete("origin");
+        const result = await POST(request);
+        expect(result.status).toBe(403);
+        expect(request.fetch).not.toHaveBeenCalled();
+        expect(request.cookies.set).not.toHaveBeenCalled();
+        expect(request.cookies.delete).not.toHaveBeenCalled();
+        expect(result.headers.get("referrer-policy")).toBe("same-origin");
+        expect(await result.text()).toContain(
+          '<meta name="referrer" content="same-origin">',
+        );
+      }
+    },
+  );
 
   it("resumes from the cookie, ignoring an alternate token in inspect", async () => {
     const request = event({ action: "inspect", token: "S".repeat(43) });
@@ -228,7 +253,10 @@ describe("public invitation landing", () => {
     const result = await POST(request);
     expect(request.cookies.delete).toHaveBeenCalled();
     expect(request.fetch).not.toHaveBeenCalled();
-    expect(await result.text()).toContain("Invitation closed");
+    const html = await result.text();
+    expect(html).toContain("Invitation closed");
+    expect(html).toContain('<meta name="referrer" content="same-origin">');
+    expect(result.headers.get("referrer-policy")).toBe("same-origin");
     expect(result.headers.has("location")).toBe(false);
   });
 

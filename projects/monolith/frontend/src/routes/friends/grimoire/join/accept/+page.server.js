@@ -16,7 +16,8 @@ import {
 export async function load({ fetch, cookies, setHeaders }) {
   setHeaders({
     "cache-control": "private, no-store",
-    "referrer-policy": "no-referrer",
+    // Preserve native Accept/Close form origins for SvelteKit's CSRF checks.
+    "referrer-policy": "same-origin",
   });
   if (!linksEnabled()) return { error: JOIN_UNAVAILABLE };
   try {

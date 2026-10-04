@@ -82,7 +82,11 @@ export async function handle({ event, resolve }) {
   ) {
     response.headers.set("cache-control", "private, no-store");
     response.headers.set("cloudflare-cdn-cache-control", "no-store");
-    response.headers.set("referrer-policy", "no-referrer");
+    // Native form POSTs need their same-origin Origin for CSRF checks.
+    // no-referrer makes navigation POST Origin null (Fetch section 3.2).
+    // same-origin still omits referrers to other origins; invitation fragments
+    // are cleared by the standalone landing before it sends any request.
+    response.headers.set("referrer-policy", "same-origin");
     response.headers.delete("etag");
   }
 
