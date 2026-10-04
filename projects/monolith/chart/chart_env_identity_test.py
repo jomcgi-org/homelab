@@ -1986,11 +1986,13 @@ def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
     dispatch = next(
         route for name, route in routes.items() if name.endswith("-friends-assets")
     )
-    # The unauthenticated root route only redirects. It cannot serve bytes,
+    # The unauthenticated root route only redirects or returns a static 404.
+    # It cannot serve upstream bytes,
     # including if a caller supplies a forged Referer or Cookie header.
-    assert len(dispatch["spec"]["rules"]) == 2
+    assert len(dispatch["spec"]["rules"]) == 3
     assert dispatch["metadata"]["name"] not in policies
-    for rule in dispatch["spec"]["rules"]:
+    _assert_friends_assets_not_found(docs, dispatch)
+    for rule in dispatch["spec"]["rules"][:-1]:
         assert "backendRefs" not in rule
         filters = {entry["type"]: entry for entry in rule["filters"]}
         assert set(filters) == {"RequestRedirect", "ResponseHeaderModifier"}
@@ -2083,6 +2085,46 @@ def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
         ]
 
 
+def _assert_friends_assets_not_found(docs, dispatch):
+    """The final, less-specific rule cannot poison the URL's valid redirects."""
+    rule = dispatch["spec"]["rules"][-1]
+    assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/_app"}}]
+    assert "backendRefs" not in rule
+    # Envoy Gateway 1.8.3 stops processing filters at a direct response.
+    # A header modifier after ExtensionRef renders, but silently loses headers.
+    assert [entry["type"] for entry in rule["filters"]] == [
+        "ResponseHeaderModifier",
+        "ExtensionRef",
+    ]
+    filters = {entry["type"]: entry for entry in rule["filters"]}
+    assert set(filters) == {"ExtensionRef", "ResponseHeaderModifier"}
+    name = dispatch["metadata"]["name"] + "-not-found"
+    assert filters["ExtensionRef"]["extensionRef"] == {
+        "group": "gateway.envoyproxy.io",
+        "kind": "HTTPRouteFilter",
+        "name": name,
+    }
+    headers = filters["ResponseHeaderModifier"]["responseHeaderModifier"]["set"]
+    assert {h["name"]: h["value"] for h in headers} == {
+        "Cache-Control": "no-store",
+        "Cloudflare-CDN-Cache-Control": "no-store",
+        "Vary": "Referer",
+    }
+    response = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "HTTPRouteFilter" and doc["metadata"]["name"] == name
+    )
+    assert response["apiVersion"] == "gateway.envoyproxy.io/v1alpha1"
+    assert response["spec"] == {
+        "directResponse": {
+            "statusCode": 404,
+            "contentType": "text/plain",
+            "body": {"type": "Inline", "inline": "Not Found"},
+        }
+    }
+
+
 @pytest.mark.parametrize(
     "moving,grimoire", [(True, False), (False, True), (False, False)]
 )
@@ -2099,20 +2141,25 @@ def test_disabled_friends_app_has_no_asset_dispatch(tmp_path, moving, grimoire):
         )
     )
     rendered = _render("monolith", [Path(os.environ["DEPLOY_VALUES"]), override])
+    docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
     dispatch = next(
         (
             doc
-            for doc in yaml.safe_load_all(rendered)
-            if doc
-            and doc["kind"] == "HTTPRoute"
+            for doc in docs
+            if doc["kind"] == "HTTPRoute"
             and doc["metadata"]["name"].endswith("-friends-assets")
         ),
         None,
     )
     if not moving and not grimoire:
         assert dispatch is None
+        assert not any(
+            doc["metadata"]["name"].endswith("-friends-assets-not-found")
+            for doc in docs
+        )
         return
-    assert len(dispatch["spec"]["rules"]) == 1
+    assert len(dispatch["spec"]["rules"]) == 2
+    _assert_friends_assets_not_found(docs, dispatch)
     rule = dispatch["spec"]["rules"][0]
     redirect = next(
         f["requestRedirect"] for f in rule["filters"] if f["type"] == "RequestRedirect"
