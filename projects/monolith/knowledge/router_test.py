@@ -1005,6 +1005,7 @@ def _seed_public_note(
     tags=None,
     aliases=None,
     path=None,
+    verification_state="legacy",
 ):
     """Insert a public_api.knowledge_notes view row (a plain SQLite table here)."""
     now = datetime.now(timezone.utc)
@@ -1022,6 +1023,7 @@ def _seed_public_note(
         observed_at=now,
         review_after=now + timedelta(days=1),
         review_policy="standard-90d/v1",
+        verification_state=verification_state,
     )
     session.add(note)
     session.commit()
@@ -1056,6 +1058,12 @@ def _seed_public_entity(session, *, slug="monolith", kind="project"):
 class TestPublicEntitiesEndpoint:
     def test_lists_entities_with_public_note_counts_and_cache(self, real_session):
         entity = _seed_public_entity(real_session)
+        _seed_public_note(
+            real_session, note_id="verified-note", verification_state="verified"
+        )
+        _seed_public_note(
+            real_session, note_id="disputed-note", verification_state="disputed"
+        )
         now = datetime.now(timezone.utc)
         real_session.add_all(
             [
