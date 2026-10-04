@@ -364,7 +364,7 @@ def test_admission_renews_only_what_github_confirms_and_records_every_outcome(se
     assert status["gone"][0] == "failed" and status["gone"][1].startswith("not found")
     assert status["free"] == (
         "unsupported",
-        "state 'outstanding' is not verifiable from GitHub",
+        "acceptance gate is not verifiable from GitHub",
     )
     assert status["down"] == ("unavailable", "ReadTimeout")
     session.expire_all()
@@ -372,6 +372,24 @@ def test_admission_renews_only_what_github_confirms_and_records_every_outcome(se
     for untouched in (changed, gone, free_text, unavailable):
         assert untouched.last_reviewed_at is None
         assert utc(untouched.review_after) == NOW - timedelta(days=1)
+
+
+def test_admission_does_not_renew_a_claim_with_an_uncovered_reference(session):
+    row = add(session, volatile(title="PR #1 and PR #2 are open"))
+    original_deadline = utc(row.review_after)
+    github = Github()
+    github.issues = {2: "open"}
+    result = admit(session, github, Clock())
+    assert result["unsupported"] == 1 and result["renewed"] == 0
+    outcome = outcomes(session, row.note_id)[0]
+    assert (outcome.status, outcome.reason) == (
+        "unsupported",
+        "reference #1 is not covered by a verifiable predicate",
+    )
+    assert github.calls == []
+    session.expire_all()
+    assert row.last_reviewed_at is None
+    assert utc(row.review_after) == original_deadline
 
 
 def test_admission_is_idempotent_and_blocked_outcomes_do_not_flood(session):
