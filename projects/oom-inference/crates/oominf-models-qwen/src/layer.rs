@@ -5,39 +5,37 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
-use oominf_cuda::{Buf, Gpu, Workspace};
+use oominf_core::{Backend, ExpertSource, Probe, Workspace, tap};
 use oominf_format::Model;
 
 use crate::attention::{Attention, AttnState};
 use crate::gdn::{Gdn, GdnState};
 use crate::hc::HyperConn;
-use crate::moe::{ExpertSource, Moe};
+use crate::moe::Moe;
 use crate::ple::{Ple, PleState};
-use crate::util::tap;
-use crate::{Dims, LayerKind, Probe};
+use crate::{Dims, LayerKind};
 
-#[allow(clippy::large_enum_variant)] // shrinks once Attention has weights
-pub enum Mixer {
-    Gdn(Gdn),
-    Attention(Attention),
+pub enum Mixer<B: Backend> {
+    Gdn(Gdn<B>),
+    Attention(Attention<B>),
 }
 
-pub struct DecoderLayer {
+pub struct DecoderLayer<B: Backend> {
     pub layer: u32,
-    attn_hc: HyperConn,
-    mixer: Mixer,
-    ple: Option<Ple>,
-    mlp_hc: HyperConn,
-    moe: Moe,
+    attn_hc: HyperConn<B>,
+    mixer: Mixer<B>,
+    ple: Option<Ple<B>>,
+    mlp_hc: HyperConn<B>,
+    moe: Moe<B>,
 }
 
 /// Per-layer state carried across steps.
-pub struct LayerState {
-    pub gdn: Option<GdnState>,
-    pub attn: Option<AttnState>,
-    pub ple: Option<PleState>,
+pub struct LayerState<B: Backend> {
+    pub gdn: Option<GdnState<B>>,
+    pub attn: Option<AttnState<B>>,
+    pub ple: Option<PleState<B>>,
     /// Scratch buffers, shared by every layer of a sequence (layers run one at a time).
-    pub ws: Rc<RefCell<Workspace>>,
+    pub ws: Rc<RefCell<Workspace<B>>>,
 }
 
 /// What a step needs to know beyond activations.
@@ -48,8 +46,8 @@ pub struct StepInput<'a> {
     pub start_pos: usize,
 }
 
-impl DecoderLayer {
-    pub fn load(gpu: &Gpu, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
+impl<B: Backend> DecoderLayer<B> {
+    pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let p = format!("model.language_model.layers.{layer}");
         let kind = d
             .layer_kinds
@@ -74,18 +72,18 @@ impl DecoderLayer {
         })
     }
 
-    pub fn new_state(&self, gpu: &Gpu, d: &Dims, max_tokens: usize) -> Result<LayerState> {
+    pub fn new_state(&self, gpu: &B, d: &Dims, max_tokens: usize) -> Result<LayerState<B>> {
         self.new_state_shared(gpu, d, max_tokens, Rc::new(RefCell::new(Workspace::new())))
     }
 
     /// Like [`Self::new_state`], with a workspace shared across layers.
     pub fn new_state_shared(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
         max_tokens: usize,
-        ws: Rc<RefCell<Workspace>>,
-    ) -> Result<LayerState> {
+        ws: Rc<RefCell<Workspace<B>>>,
+    ) -> Result<LayerState<B>> {
         Ok(LayerState {
             ws,
             gdn: match self.mixer {
@@ -104,7 +102,7 @@ impl DecoderLayer {
     }
 
     /// Bytes [`Self::grow_kv`] would allocate for this layer to hold `tokens`.
-    pub fn kv_growth_bytes(&self, state: &LayerState, tokens: usize) -> usize {
+    pub fn kv_growth_bytes(&self, state: &LayerState<B>, tokens: usize) -> usize {
         match (&self.mixer, &state.attn) {
             (Mixer::Attention(a), Some(st)) => a.growth_bytes(st, tokens),
             _ => 0,
@@ -112,7 +110,7 @@ impl DecoderLayer {
     }
 
     /// Grows this layer's KV cache (if it has one) to hold `tokens`.
-    pub fn grow_kv(&self, gpu: &Gpu, state: &mut LayerState, tokens: usize) -> Result<()> {
+    pub fn grow_kv(&self, gpu: &B, state: &mut LayerState<B>, tokens: usize) -> Result<()> {
         match (&self.mixer, state.attn.as_mut()) {
             (Mixer::Attention(a), Some(st)) => a.grow(gpu, st, tokens),
             _ => Ok(()),
@@ -123,18 +121,18 @@ impl DecoderLayer {
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        residual: &Buf,
+        residual: &B::F32,
         t: usize,
         step: &StepInput,
-        state: &mut LayerState,
-        experts: &mut dyn ExpertSource,
+        state: &mut LayerState<B>,
+        experts: &mut dyn ExpertSource<B>,
         probe: &mut dyn Probe,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         let ws_rc = state.ws.clone();
         let mut ws_guard = ws_rc.borrow_mut();
-        let ws: &mut Workspace = &mut ws_guard;
+        let ws: &mut Workspace<B> = &mut ws_guard;
         let r = d.residual();
         let mut scratch = ws.take_bf16(
             gpu,

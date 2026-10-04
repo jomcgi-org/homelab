@@ -8,8 +8,10 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 oominf-convert = { path = "../oominf-convert" }
+oominf-core = { path = "../oominf-core" }
 oominf-cuda = { path = "../oominf-cuda" }
 oominf-format = { path = "../oominf-format" }
+oominf-models = { path = "../oominf-models" }
 oominf-models-qwen = { path = "../oominf-models-qwen" }
 oominf-server = { path = "../oominf-server" }
 oominf-tiers = { path = "../oominf-tiers" }

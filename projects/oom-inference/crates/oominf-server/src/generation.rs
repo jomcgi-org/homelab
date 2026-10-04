@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::App;
 use crate::engine::{Event, FinishReason, Job};
-use crate::parse::{OutputParser, Piece, QwenParser, StopMatcher, ToolSchemas};
+use crate::parse::{OutputParser, Piece, StopMatcher, ToolSchemas};
 use crate::sampling::SamplingParams;
 use crate::template::{Detokenizer, TemplateOptions};
 
@@ -85,8 +85,7 @@ pub fn start(app: &Arc<App>, req: GenRequest) -> Result<mpsc::Receiver<Output>, 
             ))
         })
         .collect();
-    let in_reasoning = text.trim_end_matches('\n').ends_with("<think>");
-    let mut parser: Box<dyn OutputParser> = Box::new(QwenParser::new(in_reasoning, schemas));
+    let mut parser: Box<dyn OutputParser> = (app.parser)(&text, schemas);
 
     let (ev_tx, mut ev_rx) = mpsc::channel(256);
     app.engine

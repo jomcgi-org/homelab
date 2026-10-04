@@ -25,6 +25,7 @@ import contextlib
 import gc
 import hashlib
 import json
+import os
 import platform
 import time
 from pathlib import Path
@@ -37,7 +38,8 @@ from transformers import AutoTokenizer, DynamicCache
 from transformers.models.qwen4_exp import modeling_qwen4_exp as hf
 from transformers.models.qwen4_exp.configuration_qwen4_exp import Qwen4ExpConfig
 
-DEFAULT_MODEL = "/var/lib/longhorn/nvme-02/freetoken/models/flash-next-nvfp4"
+# The release checkpoint (safetensors) defaults to $OOMINF_RELEASE_CHECKPOINT.
+DEFAULT_MODEL = os.environ.get("OOMINF_RELEASE_CHECKPOINT")
 DEFAULT_OUT = "/disks/nvme-02/src/oominf-data/fixtures/qwen38-flash"
 
 # Fixed workload. The user message goes through the checkpoint's own chat template; decode tokens
@@ -977,7 +979,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--model", type=Path, default=Path(DEFAULT_MODEL))
+    ap.add_argument(
+        "--model",
+        type=Path,
+        default=Path(DEFAULT_MODEL) if DEFAULT_MODEL else None,
+        required=DEFAULT_MODEL is None,
+        help="release checkpoint directory (default: $OOMINF_RELEASE_CHECKPOINT)",
+    )
     ap.add_argument("--out", type=Path, default=Path(DEFAULT_OUT))
     ap.add_argument("--layers", type=int, nargs="+", default=[0])
     ap.add_argument(

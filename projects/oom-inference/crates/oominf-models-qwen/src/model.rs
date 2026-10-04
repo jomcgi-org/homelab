@@ -5,26 +5,25 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
+use oominf_core::{Backend, ExpertSource, NoProbe, Probe, Workspace, tap};
 use oominf_format::Model;
 
+use crate::Dims;
 use crate::hc::HyperConn;
 use crate::layer::{DecoderLayer, LayerState, StepInput};
-use crate::moe::ExpertSource;
-use crate::util::{bf16_tensor, tap};
-use crate::{Dims, NoProbe, Probe};
+use crate::util::bf16_tensor;
 
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
 pub const PREFILL_CHUNK: usize = 512;
 
-pub struct QwenModel {
+pub struct QwenModel<B: Backend> {
     pub dims: Dims,
     vocab: usize,
     /// `embed_tokens` kept on the host as bf16 words; a step gathers its rows.
     embed: Vec<u16>,
-    layers: Vec<DecoderLayer>,
-    final_mixer: HyperConn,
-    lm_head: Bf16Buf,
+    layers: Vec<DecoderLayer<B>>,
+    final_mixer: HyperConn<B>,
+    lm_head: B::Bf16,
 }
 
 /// Device memory a step's workspace may need on top of what it already holds (a
@@ -37,12 +36,12 @@ pub const WORKSPACE_HEADROOM: usize = 3 << 29;
 const RECLAIM_SLACK: usize = 512 << 20;
 
 /// Everything carried across steps of one sequence.
-pub struct SeqState {
-    pub layers: Vec<LayerState>,
+pub struct SeqState<B: Backend> {
+    pub layers: Vec<LayerState<B>>,
     /// Tokens processed so far (the next step's start position).
     pub pos: usize,
     /// Scratch buffers shared by every layer.
-    pub ws: Rc<RefCell<Workspace>>,
+    pub ws: Rc<RefCell<Workspace<B>>>,
 }
 
 /// Renames a layer's stages to `{stage}.{layer}` for a model-level probe.
@@ -67,10 +66,10 @@ fn bf16_to_f32(w: u16) -> f32 {
     f32::from_bits((w as u32) << 16)
 }
 
-impl QwenModel {
+impl<B: Backend> QwenModel<B> {
     /// Loads every layer's dense weights onto the GPU (experts stay on disk and come
     /// through an [`ExpertSource`]). `layers` limits how many decoder layers load.
-    pub fn load(gpu: &Gpu, model: &Model, dims: Dims, layers: Option<usize>) -> Result<Self> {
+    pub fn load(gpu: &B, model: &Model, dims: Dims, layers: Option<usize>) -> Result<Self> {
         let vocab = dims.text["vocab_size"]
             .as_u64()
             .context("config text_config.vocab_size")? as usize;
@@ -115,7 +114,7 @@ impl QwenModel {
         self.vocab
     }
 
-    pub fn new_state(&self, gpu: &Gpu, max_tokens: usize) -> Result<SeqState> {
+    pub fn new_state(&self, gpu: &B, max_tokens: usize) -> Result<SeqState<B>> {
         let ws = Rc::new(RefCell::new(Workspace::new()));
         Ok(SeqState {
             layers: self
@@ -129,7 +128,7 @@ impl QwenModel {
     }
 
     /// Embeds `token_ids` (repeated over the hc streams) into `x`.
-    fn embed_into(&self, gpu: &Gpu, token_ids: &[u32], x: &mut Buf) -> Result<()> {
+    fn embed_into(&self, gpu: &B, token_ids: &[u32], x: &mut B::F32) -> Result<()> {
         let d = &self.dims;
         let h = d.hidden;
         let mut host = Vec::with_capacity(token_ids.len() * d.residual());
@@ -149,13 +148,13 @@ impl QwenModel {
     #[allow(clippy::too_many_arguments)]
     fn head(
         &self,
-        gpu: &Gpu,
-        ws: &mut Workspace,
-        x: &Buf,
+        gpu: &B,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
         t: usize,
         probe: &mut dyn Probe,
         last_only: bool,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         let d = &self.dims;
         let h = d.hidden;
         let mut scratch = ws.take_bf16(gpu, "gemm.scratch", t * d.residual())?;
@@ -202,11 +201,11 @@ impl QwenModel {
     /// not fit in free device memory, asks `experts` to give memory back first.
     pub fn reserve_kv(
         &self,
-        gpu: &Gpu,
-        state: &mut SeqState,
+        gpu: &B,
+        state: &mut SeqState<B>,
         tokens: usize,
         transient: usize,
-        experts: &mut dyn ExpertSource,
+        experts: &mut dyn ExpertSource<B>,
     ) -> Result<()> {
         let need: usize = self
             .layers
@@ -218,7 +217,7 @@ impl QwenModel {
             return Ok(());
         }
         gpu.sync()?;
-        let (free, _) = gpu.ctx.mem_get_info()?;
+        let (free, _) = gpu.mem_info()?;
         let headroom = WORKSPACE_HEADROOM.saturating_sub(state.ws.borrow().bytes());
         let want = need + transient + headroom;
         if free < want {
@@ -235,12 +234,12 @@ impl QwenModel {
     /// was dropped.
     pub fn reclaim_vram(
         &self,
-        gpu: &Gpu,
-        state: &SeqState,
-        experts: &mut dyn ExpertSource,
+        gpu: &B,
+        state: &SeqState<B>,
+        experts: &mut dyn ExpertSource<B>,
     ) -> Result<()> {
         gpu.sync()?;
-        let (free, _) = gpu.ctx.mem_get_info()?;
+        let (free, _) = gpu.mem_info()?;
         let keep = WORKSPACE_HEADROOM.saturating_sub(state.ws.borrow().bytes()) + RECLAIM_SLACK;
         if free > keep {
             experts.reclaim_vram(gpu, free - keep)?;
@@ -253,13 +252,13 @@ impl QwenModel {
     /// `{stage}.{layer}` plus `residual_in`, `mixer_out` and `logits`.
     pub fn forward(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         token_ids: &[u32],
-        state: &mut SeqState,
-        experts: &mut dyn ExpertSource,
+        state: &mut SeqState<B>,
+        experts: &mut dyn ExpertSource<B>,
         probe: &mut dyn Probe,
         last_only: bool,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         let d = &self.dims;
         let t = token_ids.len();
         ensure!(t > 0, "empty step");
@@ -310,13 +309,13 @@ impl QwenModel {
     #[allow(clippy::too_many_arguments)]
     pub fn prefill(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         token_ids: &[u32],
         chunk: usize,
-        state: &mut SeqState,
-        experts: &mut dyn ExpertSource,
+        state: &mut SeqState<B>,
+        experts: &mut dyn ExpertSource<B>,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<Option<Buf>> {
+    ) -> Result<Option<B::F32>> {
         let chunk = chunk.max(1);
         if cancelled() {
             return Ok(None);

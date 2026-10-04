@@ -1,14 +1,16 @@
-//! Per-layer embedding (PLE) kernels: `impl Gpu` launch wrappers for `kernels/ple.cu`.
+//! Quantised embedding rows and per-stream gating: `kernels/ple.cu`.
 
-use cudarc::driver::{CudaSlice, LaunchConfig, PushKernelArg};
+use anyhow::Result;
+use cudarc::driver::{LaunchConfig, PushKernelArg};
+use oominf_core::Lookup;
 
-use crate::{Bf16Buf, Buf, Gpu, Result, grid};
+use crate::{Buf, Dev, Gpu, grid};
 
-impl Gpu {
+impl Lookup for Gpu {
     /// FP8 E4M3 bytes to fp32, times a per-table `scale`.
-    pub fn fp8_dequant_scaled(
+    fn fp8_dequant_scaled(
         &self,
-        rows: &CudaSlice<u8>,
+        rows: &Dev<u8>,
         scale: f32,
         out: &mut Buf,
         n: usize,
@@ -33,7 +35,7 @@ impl Gpu {
 
     /// PLE key/query gate: `gated[t, c, :] = sigmoid(signed_sqrt(<key, query> / sqrt(h))) * value[t, :]`.
     #[allow(clippy::too_many_arguments)]
-    pub fn ple_gate(
+    fn ple_gate(
         &self,
         key: &Buf,
         query: &Buf,
@@ -66,46 +68,6 @@ impl Gpu {
                 .arg(&h32)
                 .arg(&inv)
                 .launch(cfg)?
-        };
-        Ok(())
-    }
-
-    /// `out = gated + silu(dilated_causal_conv(x))` per channel with a rolling
-    /// `[d, (k - 1) * dil]` state, oldest first.
-    #[allow(clippy::too_many_arguments)]
-    pub fn dilated_conv_silu_add(
-        &self,
-        x: &Buf,
-        state: &mut Buf,
-        w: &Bf16Buf,
-        gated: &Buf,
-        out: &mut Buf,
-        t: usize,
-        d: usize,
-        k: usize,
-        dil: usize,
-    ) -> Result<()> {
-        let s = (k - 1) * dil;
-        self.check(s <= 32, "dilated conv state longer than 32")?;
-        self.check(
-            state.len() >= d * s && w.len() >= d * k && out.len() >= t * d,
-            "dilated_conv_silu_add sizes",
-        )?;
-        let f = self.func("dilated_conv_silu_add")?;
-        let (t32, d32, k32, dil32) = (t as i32, d as i32, k as i32, dil as i32);
-        unsafe {
-            self.stream
-                .launch_builder(&f)
-                .arg(x)
-                .arg(state)
-                .arg(w)
-                .arg(gated)
-                .arg(out)
-                .arg(&t32)
-                .arg(&d32)
-                .arg(&k32)
-                .arg(&dil32)
-                .launch(grid(d, 128))?
         };
         Ok(())
     }

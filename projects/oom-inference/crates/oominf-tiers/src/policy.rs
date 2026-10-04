@@ -56,15 +56,29 @@ pub struct Lrfu {
     order: BTreeSet<(OrdF64, u32)>,
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
+/// An `f64` ordered by `total_cmp`, so it can key ordered collections.
+#[derive(Clone, Copy)]
 struct OrdF64(f64);
-impl Eq for OrdF64 {}
-#[allow(clippy::derive_ord_xor_partial_ord)]
+
 impl Ord for OrdF64 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.total_cmp(&other.0)
     }
 }
+
+impl PartialOrd for OrdF64 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for OrdF64 {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for OrdF64 {}
 
 impl Lrfu {
     pub fn new(half_life: f64) -> Self {

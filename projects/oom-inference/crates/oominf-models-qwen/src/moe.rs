@@ -1,158 +1,50 @@
 //! Sparse MoE: router, shared expert and NVFP4 routed experts (W4A16 in fp32).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Nvfp4Record, Slice, Workspace};
+use oominf_core::{Backend, ExpertSource, Nvfp4Record, Probe, View, Workspace, tap};
 use oominf_format::Model;
 
-use crate::util::{bf16_concat, bf16_tensor, tap};
-use crate::{Dims, Probe};
-
-/// Byte offsets of one projection's parts inside an expert record.
-#[derive(Clone, Copy)]
-struct ProjParts {
-    weight: usize,
-    scale: usize,
-    rows: usize,
-    cols: usize,
-}
-
-/// Supplies routed-expert records on the device. The tiering engine implements this
-/// with VRAM slots, a host tier and disk; [`DiskExperts`] reads straight from the
-/// model files.
-///
-/// Kernels read every part of a record, `weight_scale_2` included, from the record
-/// itself, so a source only hands out record addresses.
-pub trait ExpertSource {
-    /// Makes `experts` of `layer` device-resident and returns the raw device address
-    /// of each one's record, in the same order, usable by work enqueued afterwards.
-    /// Addresses stay valid until the next fetch.
-    fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>>;
-
-    /// Two-phase fetch: returns every record's address and whether it is usable by
-    /// work enqueued now. The rest become usable after [`ExpertSource::finish_fetch`],
-    /// so callers can compute with resident experts while the others load.
-    fn begin_fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Staged> {
-        let addrs = self.fetch(gpu, layer, experts)?;
-        Ok(Staged {
-            ready: vec![true; addrs.len()],
-            addrs,
-        })
-    }
-
-    /// Completes the last [`ExpertSource::begin_fetch`]: every record it returned is
-    /// usable by work enqueued after this call.
-    fn finish_fetch(&mut self, _gpu: &Gpu) -> Result<()> {
-        Ok(())
-    }
-
-    /// Hints that `layer` is about to route to `experts` (a prediction): the source
-    /// may start loading them toward a faster tier. Routing alone decides what runs;
-    /// a wrong hint only costs bandwidth. Called after the previous fetch finished.
-    fn prefetch(&mut self, _gpu: &Gpu, _layer: u32, _experts: &[u32]) -> Result<()> {
-        Ok(())
-    }
-
-    /// Whether [`ExpertSource::prefetch`] hints are used (so callers can skip
-    /// computing them).
-    fn wants_prefetch(&self) -> bool {
-        false
-    }
-
-    /// Gives device memory back so other buffers (e.g. a growing KV cache) can use
-    /// it: frees at least `bytes` of cached records if possible and returns how many
-    /// bytes it freed. Called between steps, never while a fetch is open.
-    fn release_vram(&mut self, _gpu: &Gpu, _bytes: usize) -> Result<usize> {
-        Ok(0)
-    }
-
-    /// Takes device memory back after it was released: grows the cache by up to
-    /// `bytes` (never beyond its configured size) and returns how many bytes it took.
-    fn reclaim_vram(&mut self, _gpu: &Gpu, _bytes: usize) -> Result<usize> {
-        Ok(0)
-    }
-}
-
-/// Result of [`ExpertSource::begin_fetch`].
-pub struct Staged {
-    pub addrs: Vec<u64>,
-    /// `ready[i]`: record `i` is usable before `finish_fetch`.
-    pub ready: Vec<bool>,
-}
-
-/// Reads every requested record from disk and uploads it (no caching).
-pub struct DiskExperts {
-    model: Arc<Model>,
-    host: Vec<u8>,
-    held: Vec<Slice<u8>>,
-}
-
-impl DiskExperts {
-    pub fn new(model: Arc<Model>) -> Self {
-        DiskExperts {
-            model,
-            host: Vec::new(),
-            held: Vec::new(),
-        }
-    }
-}
-
-impl ExpertSource for DiskExperts {
-    fn fetch(&mut self, gpu: &Gpu, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
-        self.held.clear();
-        for &expert in experts {
-            let (_, stride) = self.model.record_location(layer, expert)?;
-            self.host.resize(stride as usize, 0);
-            self.model.read_record(layer, expert, &mut self.host)?;
-            self.held.push(gpu.upload_bytes(&self.host)?);
-        }
-        Ok(self.held.iter().map(|b| gpu.device_ptr(b)).collect())
-    }
-}
+use crate::Dims;
+use crate::util::{bf16_concat, bf16_tensor};
 
 /// Index of each projection's `weight_scale_2` in the record's leading scalars part
 /// (gate.ws2, gate.in, up.ws2, up.in, down.ws2, down.in).
 const SCALE2_IDX: [usize; 3] = [0, 2, 4];
 
-/// Per-step routing tables of the fused path. They are small (a few KiB), so each
-/// layer keeps its own; the large activation buffers come from the sequence
-/// workspace, shared by every layer.
-struct Tables {
+/// Per-step routing tables. They are small (a few KiB), so each layer keeps its own;
+/// the large activation buffers come from the sequence workspace, shared by every
+/// layer.
+struct Tables<B: Backend> {
     /// `off[n_e + 1] ++ assign_tok[A] ++ slot_assign[A]`.
-    meta: Slice<i32>,
+    meta: B::I32,
     /// Record address of each expert of the step.
-    recs: Slice<u64>,
+    recs: B::U64,
 }
 
 /// Steps where some expert has at least this many assignments use the tiled
 /// (shared-memory) kernels; smaller steps use the warp-per-row kernels.
 const TILED_MIN_ASSIGNMENTS: usize = 32;
 
-pub struct Moe {
+pub struct Moe<B: Backend> {
     layer: u32,
     geo: Nvfp4Record,
-    /// Use the slow reference path (oracle); defaults from `OOMINF_MOE_REFERENCE`.
-    reference: AtomicBool,
-    tables: Mutex<Tables>,
-    router: Bf16Buf,
+    tables: Mutex<Tables<B>>,
+    router: B::Bf16,
     /// This layer's router stacked over the next layer's (`[2 * experts, hidden]`):
     /// one decode GEMV routes this layer and predicts the next (absent for the last
     /// layer).
-    router_pair: Option<Bf16Buf>,
-    shared_gate: Bf16Buf,
-    shared_up: Bf16Buf,
-    shared_down: Bf16Buf,
-    shared_gate_logit: Bf16Buf,
-    gate: ProjParts,
-    up: ProjParts,
-    down: ProjParts,
+    router_pair: Option<B::Bf16>,
+    shared_gate: B::Bf16,
+    shared_up: B::Bf16,
+    shared_down: B::Bf16,
+    shared_gate_logit: B::Bf16,
 }
 
-impl Moe {
-    pub fn load(gpu: &Gpu, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
+impl<B: Backend> Moe<B> {
+    pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let p = format!("model.language_model.layers.{layer}.mlp.");
         let h = d.hidden as u64;
         let group = model
@@ -168,7 +60,8 @@ impl Moe {
             "layer {layer} has {} experts",
             group.num_experts
         );
-        let proj = |name: &str| -> Result<ProjParts> {
+        // (weight offset, scale offset, rows, columns) of one projection.
+        let proj = |name: &str| -> Result<(usize, usize, usize, usize)> {
             let part = |n: &str| {
                 group
                     .schema
@@ -177,92 +70,75 @@ impl Moe {
             };
             let w = part(&format!("{name}.weight"))?;
             let s = part(&format!("{name}.weight_scale"))?;
-            Ok(ProjParts {
-                weight: w.offset as usize,
-                scale: s.offset as usize,
-                rows: w.shape[0] as usize,
-                cols: 2 * w.shape[1] as usize,
-            })
+            Ok((
+                w.offset as usize,
+                s.offset as usize,
+                w.shape[0] as usize,
+                2 * w.shape[1] as usize,
+            ))
         };
         let (gate, up, down) = (proj("gate")?, proj("up")?, proj("down")?);
         ensure!(
-            gate.rows == d.moe_inter && gate.cols == d.hidden && down.rows == d.hidden,
+            gate.2 == d.moe_inter && gate.3 == d.hidden && down.2 == d.hidden,
             "expert shapes do not match config"
         );
-        let si = d.shared_inter as u64;
-        let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
         ensure!(
-            down.cols == gate.rows,
+            down.3 == gate.2,
             "expert down input does not match gate output"
         );
         let geo = Nvfp4Record {
-            hidden: gate.cols,
-            inter: gate.rows,
-            gate_weight: gate.weight,
-            gate_scale: gate.scale,
-            up_weight: up.weight,
-            up_scale: up.scale,
-            down_weight: down.weight,
-            down_scale: down.scale,
+            hidden: gate.3,
+            inter: gate.2,
+            gate_weight: gate.0,
+            gate_scale: gate.1,
+            up_weight: up.0,
+            up_scale: up.1,
+            down_weight: down.0,
+            down_scale: down.1,
             scale2: SCALE2_IDX,
         };
-        let tables = Tables {
-            meta: gpu.upload_i32(&[0; 64])?,
-            recs: gpu
-                .ctx
-                .default_stream()
-                .alloc_zeros::<u64>(64)
-                .map_err(oominf_cuda::Error::from)?,
+        let si = d.shared_inter as u64;
+        let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
+        let next = format!("model.language_model.layers.{}.mlp.gate.weight", layer + 1);
+        let router_pair = match model.tensor(&next) {
+            Some(_) => Some(bf16_concat(
+                gpu,
+                model,
+                &[
+                    (format!("{p}gate.weight"), vec![d.experts as u64, h]),
+                    (next, vec![d.experts as u64, h]),
+                ],
+            )?),
+            None => None,
         };
         Ok(Moe {
             layer,
             geo,
-            reference: AtomicBool::new(
-                std::env::var_os("OOMINF_MOE_REFERENCE").is_some_and(|v| v != "0"),
-            ),
-            tables: Mutex::new(tables),
+            tables: Mutex::new(Tables {
+                meta: gpu.upload_i32(&[0; 64])?,
+                recs: gpu.zeros_u64(64)?,
+            }),
             router: w("gate.weight", &[d.experts as u64, h])?,
-            router_pair: {
-                let next = format!("model.language_model.layers.{}.mlp.gate.weight", layer + 1);
-                match model.tensor(&next) {
-                    Some(_) => Some(bf16_concat(
-                        gpu,
-                        model,
-                        &[
-                            (format!("{p}gate.weight"), vec![d.experts as u64, h]),
-                            (next, vec![d.experts as u64, h]),
-                        ],
-                    )?),
-                    None => None,
-                }
-            },
+            router_pair,
             shared_gate: w("shared_expert.gate_proj.weight", &[si, h])?,
             shared_up: w("shared_expert.up_proj.weight", &[si, h])?,
             shared_down: w("shared_expert.down_proj.weight", &[h, si])?,
             shared_gate_logit: w("shared_expert_gate.weight", &[1, h])?,
-            gate,
-            up,
-            down,
         })
-    }
-
-    /// Switches between the fused path and the slow reference path (oracle).
-    pub fn set_reference(&self, on: bool) {
-        self.reference.store(on, Ordering::Relaxed);
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        ws: &mut Workspace,
-        x: &Buf,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
         t: usize,
-        experts: &mut dyn ExpertSource,
-        scratch: &mut Bf16Buf,
+        experts: &mut dyn ExpertSource<B>,
+        scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         let (h, e, k) = (d.hidden, d.experts, d.top_k);
 
         // Decode with a source that uses hints: route this layer and predict the
@@ -296,7 +172,7 @@ impl Moe {
         let mut weights = gpu.zeros(rows * k)?;
         gpu.router_topk(&logits, &mut ids, &mut weights, rows, e, k)?;
         tap(gpu, probe, "topk_weights", &mut weights)?;
-        let mut ids_host = gpu.download(&ids)?;
+        let mut ids_host = gpu.download_i32(&ids)?;
         let predicted = pair.map(|_| {
             let mut v: Vec<u32> = ids_host
                 .split_off(k)
@@ -320,12 +196,7 @@ impl Moe {
 
         // Start loading the routed experts so their copies overlap the shared expert
         // and the resident experts' compute.
-        let reference = self.reference.load(Ordering::Relaxed);
-        let plan = if reference {
-            None
-        } else {
-            Some(self.begin_routed(gpu, d, t, &ids_host, experts)?)
-        };
+        let plan = self.begin_routed(gpu, d, t, &ids_host, experts)?;
 
         // Shared expert.
         let si = d.shared_inter;
@@ -350,13 +221,7 @@ impl Moe {
         )?;
         tap(gpu, probe, "shared_gate_logit", &mut gate_logit)?;
 
-        let mut routed = match plan {
-            None => {
-                let weights_host = gpu.download(&weights)?;
-                self.routed_reference(gpu, d, x, t, &ids_host, &weights_host, experts)?
-            }
-            Some(plan) => self.finish_routed(gpu, d, ws, x, t, plan, &weights, experts)?,
-        };
+        let mut routed = self.finish_routed(gpu, d, ws, x, t, plan, &weights, experts)?;
         tap(gpu, probe, "routed_out", &mut routed)?;
         if let Some(p) = predicted {
             experts.prefetch(gpu, self.layer + 1, &p)?;
@@ -367,73 +232,15 @@ impl Moe {
         Ok(out)
     }
 
-    /// Reference routed-expert path: per expert, dequantise to fp32 matrices and run
-    /// fp32 cuBLAS GEMMs. Slow; kept as an oracle (`OOMINF_MOE_REFERENCE=1`).
-    #[allow(clippy::too_many_arguments)]
-    fn routed_reference(
-        &self,
-        gpu: &Gpu,
-        d: &Dims,
-        x: &Buf,
-        t: usize,
-        ids_host: &[i32],
-        weights: &[f32],
-        experts: &mut dyn ExpertSource,
-    ) -> Result<Buf> {
-        let (h, e, k) = (d.hidden, d.experts, d.top_k);
-        let mut by_expert: BTreeMap<u32, (Vec<i32>, Vec<f32>)> = BTreeMap::new();
-        for tok in 0..t {
-            for slot in 0..k {
-                let ex = ids_host[tok * k + slot];
-                if ex < 0 || ex as usize >= e {
-                    bail!("router picked expert {ex}");
-                }
-                let entry = by_expert.entry(ex as u32).or_default();
-                entry.0.push(tok as i32);
-                entry.1.push(weights[tok * k + slot]);
-            }
-        }
-        let (gi, gh) = (self.gate.rows, self.gate.cols);
-        let (dr, dc) = (self.down.rows, self.down.cols);
-        let mut w_gate = gpu.zeros(gi * gh)?;
-        let mut w_up = gpu.zeros(gi * gh)?;
-        let mut w_down = gpu.zeros(dr * dc)?;
-        let mut routed = gpu.zeros(t * h)?;
-        let distinct: Vec<u32> = by_expert.keys().copied().collect();
-        let records = experts.fetch(gpu, self.layer, &distinct)?;
-        for ((toks, wts), &rec) in by_expert.values().zip(&records) {
-            let n = toks.len();
-            let (g_, u_, d_) = (self.gate, self.up, self.down);
-            let [s_gate, s_up, s_down] = SCALE2_IDX;
-            gpu.dequant_nvfp4(rec, g_.weight, g_.scale, s_gate, &mut w_gate, gi, gh)?;
-            gpu.dequant_nvfp4(rec, u_.weight, u_.scale, s_up, &mut w_up, gi, gh)?;
-            gpu.dequant_nvfp4(rec, d_.weight, d_.scale, s_down, &mut w_down, dr, dc)?;
-            let idx = gpu.upload_i32(toks)?;
-            let wv = gpu.upload_f32(wts)?;
-            let mut xs = gpu.zeros(n * h)?;
-            gpu.gather_rows(x, &idx, &mut xs, n, h)?;
-            let mut g = gpu.zeros(n * gi)?;
-            gpu.gemm_f32(&xs, &w_gate, &mut g, n, gi, gh)?;
-            let mut u = gpu.zeros(n * gi)?;
-            gpu.gemm_f32(&xs, &w_up, &mut u, n, gi, gh)?;
-            let mut act = gpu.zeros(n * gi)?;
-            gpu.silu_mul(&g, &u, &mut act, n * gi)?;
-            let mut y = gpu.zeros(n * h)?;
-            gpu.gemm_f32(&act, &w_down, &mut y, n, h, gi)?;
-            gpu.scatter_add_weighted(&y, &idx, &wv, &mut routed, n, h)?;
-        }
-        Ok(routed)
-    }
-
     /// Groups the step's assignments by expert, resident experts first, and starts
     /// fetching their records.
     fn begin_routed(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
         t: usize,
         ids_host: &[i32],
-        experts: &mut dyn ExpertSource,
+        experts: &mut dyn ExpertSource<B>,
     ) -> Result<RoutedPlan> {
         let (e, k) = (d.experts, d.top_k);
         // Group assignment slots (t * k + s) by expert.
@@ -463,23 +270,23 @@ impl Moe {
         })
     }
 
-    /// Fused routed-expert path: per group (resident experts, then the ones that had
-    /// to load) one gate/up and one down launch, then one deterministic slot-order
-    /// combine, reading NVFP4 records in place. An assignment's output depends only
-    /// on its own inputs and the kernel choice, which is made once per step, so the
-    /// grouping never changes results.
+    /// Per group (resident experts, then the ones that had to load) one gate/up and
+    /// one down launch, then one deterministic slot-order combine, reading NVFP4
+    /// records in place. An assignment's output depends only on its own inputs and the
+    /// kernel choice, which is made once per step, so the grouping never changes
+    /// results.
     #[allow(clippy::too_many_arguments)]
     fn finish_routed(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        ws: &mut Workspace,
-        x: &Buf,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
         t: usize,
         plan: RoutedPlan,
-        weights: &Buf,
-        experts: &mut dyn ExpertSource,
-    ) -> Result<Buf> {
+        weights: &B::F32,
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<B::F32> {
         let (h, k) = (d.hidden, d.top_k);
         let a_total = t * k;
         let n_e = plan.lists.len();
@@ -499,8 +306,8 @@ impl Moe {
 
         let it = self.geo.inter;
         let mut tables = self.tables.lock().unwrap();
-        gpu.write_into(&meta, &mut tables.meta)?;
-        gpu.write_into(&plan.recs, &mut tables.recs)?;
+        gpu.write_i32(&meta, &mut tables.meta)?;
+        gpu.write_u64(&plan.recs, &mut tables.recs)?;
         // Every element is written before it is read: h and y cover all assignments,
         // and g and u only feed the tiled path, which writes them first.
         let mut buf = Act {
@@ -536,7 +343,7 @@ impl Moe {
                 max_n,
             )?;
         }
-        let slot_assign = tables.meta.slice(n_e + 1 + a_total..n_e + 1 + 2 * a_total);
+        let slot_assign = View::new(&tables.meta, n_e + 1 + a_total, a_total);
         let mut routed = gpu.zeros(t * h)?;
         gpu.moe_combine_slots(&buf.y, &slot_assign, weights, &mut routed, t, h, k)?;
         ws.give("moe.h", buf.h);
@@ -554,10 +361,10 @@ impl Moe {
     #[allow(clippy::too_many_arguments)]
     fn run_group(
         &self,
-        gpu: &Gpu,
-        tables: &Tables,
-        buf: &mut Act,
-        x: &Buf,
+        gpu: &B,
+        tables: &Tables<B>,
+        buf: &mut Act<B>,
+        x: &B::F32,
         (lo, hi): (usize, usize),
         n_e: usize,
         a_total: usize,
@@ -565,9 +372,9 @@ impl Moe {
         max_n: usize,
     ) -> Result<()> {
         let geo = &self.geo;
-        let recs = tables.recs.slice(lo..hi);
-        let off = tables.meta.slice(lo..hi + 1);
-        let assign = tables.meta.slice(n_e + 1..n_e + 1 + a_total);
+        let recs = View::new(&tables.recs, lo, hi - lo);
+        let off = View::new(&tables.meta, lo, hi - lo + 1);
+        let assign = View::new(&tables.meta, n_e + 1, a_total);
         let n = hi - lo;
         match &mut buf.gu {
             Some((g, u)) => {
@@ -592,14 +399,14 @@ impl Moe {
     }
 }
 
-/// Activation buffers of one fused step, borrowed from the sequence workspace.
-struct Act {
+/// Activation buffers of one step, borrowed from the sequence workspace.
+struct Act<B: Backend> {
     /// SwiGLU activations `[A, inter]`.
-    h: Buf,
+    h: B::F32,
     /// Per-assignment down outputs `[A, hidden]`.
-    y: Buf,
+    y: B::F32,
     /// Gate and up outputs `[A, inter]` (tiled path only).
-    gu: Option<(Buf, Buf)>,
+    gu: Option<(B::F32, B::F32)>,
 }
 
 /// A step's routed experts in launch order (resident first) with their

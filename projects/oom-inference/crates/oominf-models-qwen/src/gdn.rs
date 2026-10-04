@@ -1,32 +1,32 @@
 //! Gated DeltaNet, the token mixer of linear-attention layers.
 
 use anyhow::Result;
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
+use oominf_core::{Backend, Probe, Workspace, tap, tap_cols};
 use oominf_format::Model;
 
-use crate::util::{bf16_concat, bf16_tensor, tap, tap_cols};
-use crate::{Dims, Probe};
+use crate::Dims;
+use crate::util::{bf16_concat, bf16_tensor};
 
-pub struct Gdn {
+pub struct Gdn<B: Backend> {
     /// `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` stacked: one GEMM.
-    in_proj: Bf16Buf,
-    conv: Bf16Buf,
-    a_log: Bf16Buf,
-    dt_bias: Bf16Buf,
-    norm: Bf16Buf,
-    out: Bf16Buf,
+    in_proj: B::Bf16,
+    conv: B::Bf16,
+    a_log: B::Bf16,
+    dt_bias: B::Bf16,
+    norm: B::Bf16,
+    out: B::Bf16,
 }
 
 /// Recurrent GDN state carried across steps.
-pub struct GdnState {
+pub struct GdnState<B: Backend> {
     /// `[conv_dim, conv_kernel]` last inputs, oldest first.
-    pub conv: Buf,
+    pub conv: B::F32,
     /// `[v_heads, head_k, head_v]`.
-    pub recurrent: Buf,
+    pub recurrent: B::F32,
 }
 
-impl GdnState {
-    pub fn new(gpu: &Gpu, d: &Dims) -> Result<Self> {
+impl<B: Backend> GdnState<B> {
+    pub fn new(gpu: &B, d: &Dims) -> Result<Self> {
         Ok(GdnState {
             conv: gpu.zeros(d.conv_dim() * d.conv_kernel)?,
             recurrent: gpu.zeros(d.v_heads * d.head_k * d.head_v)?,
@@ -34,8 +34,8 @@ impl GdnState {
     }
 }
 
-impl Gdn {
-    pub fn load(gpu: &Gpu, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
+impl<B: Backend> Gdn<B> {
+    pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let la = format!("model.language_model.layers.{layer}.linear_attn.");
         let (h, kd, vd, cd, hv) = (
             d.hidden as u64,
@@ -69,15 +69,15 @@ impl Gdn {
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        ws: &mut Workspace,
-        x: &Buf,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
         t: usize,
-        state: &mut GdnState,
-        scratch: &mut Bf16Buf,
+        state: &mut GdnState<B>,
+        scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         let w = self;
         let (cd, vd, hv, h) = (d.conv_dim(), d.value_dim(), d.v_heads, d.hidden);
         let n = cd + vd + 2 * hv;

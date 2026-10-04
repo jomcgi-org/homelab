@@ -19,12 +19,12 @@
 //! the memory to the expert tiers.
 
 use anyhow::{Context, Result, ensure};
-use oominf_cuda::{Bf16Buf, Buf, Gpu, Workspace};
+use oominf_core::{Backend, DeviceBuffer, Probe, Workspace, tap};
 use oominf_format::Model;
 
+use crate::Dims;
 use crate::layer::StepInput;
-use crate::util::{bf16_concat, bf16_tensor, tap};
-use crate::{Dims, Probe};
+use crate::util::{bf16_concat, bf16_tensor};
 
 #[derive(Debug, Clone)]
 struct AttnDims {
@@ -91,16 +91,16 @@ fn rope_inv_freq(t: &serde_json::Value, rotary_dim: usize) -> Result<Vec<f32>> {
         .collect())
 }
 
-pub struct Attention {
+pub struct Attention<B: Backend> {
     a: AttnDims,
     /// `index_qk_proj`, `q_proj` (query and gate), `k_proj`, `v_proj` stacked: one GEMM.
-    in_proj: Bf16Buf,
-    o_proj: Bf16Buf,
-    q_norm: Bf16Buf,
-    k_norm: Bf16Buf,
-    idx_q_norm: Bf16Buf,
-    idx_k_norm: Bf16Buf,
-    inv_freq: Buf,
+    in_proj: B::Bf16,
+    o_proj: B::Bf16,
+    q_norm: B::Bf16,
+    k_norm: B::Bf16,
+    idx_q_norm: B::Bf16,
+    idx_k_norm: B::Bf16,
+    inv_freq: B::F32,
 }
 
 /// Tokens of KV cache a fresh sequence starts with; it doubles on demand up to the
@@ -109,17 +109,17 @@ const INITIAL_KV_TOKENS: usize = 2048;
 
 /// KV cache and indexer raw-key cache for one attention layer. Buffers hold `cap`
 /// tokens and grow by reallocation (see [`Attention::grow`]).
-pub struct AttnState {
+pub struct AttnState<B: Backend> {
     /// `[cap, kv_heads, head_dim]`, post-norm, post-RoPE.
-    pub k: Buf,
+    pub k: B::F32,
     /// `[cap, kv_heads, head_dim]`.
-    pub v: Buf,
+    pub v: B::F32,
     /// `[cap, index_head_dim]` raw indexer keys (pre-norm, pre-RoPE).
-    pub idx_keys: Buf,
+    pub idx_keys: B::F32,
     /// `[cap / ratio, index_head_dim]` pooled, normed, RoPE'd block keys; the
     /// first `blocks` are valid. Blocks never change once complete, so each step only
     /// computes the ones it completes.
-    pub block_keys: Buf,
+    pub block_keys: B::F32,
     pub blocks: usize,
     pub len: usize,
     /// Tokens the buffers currently hold.
@@ -128,8 +128,8 @@ pub struct AttnState {
     pub max_tokens: usize,
 }
 
-impl Attention {
-    pub fn load(gpu: &Gpu, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
+impl<B: Backend> Attention<B> {
+    pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
         let a = AttnDims::from_text(&d.text)?;
         let p = format!("model.language_model.layers.{layer}.self_attn.");
         let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
@@ -158,7 +158,7 @@ impl Attention {
         })
     }
 
-    pub fn new_state(&self, gpu: &Gpu, _d: &Dims, max_tokens: usize) -> Result<AttnState> {
+    pub fn new_state(&self, gpu: &B, _d: &Dims, max_tokens: usize) -> Result<AttnState<B>> {
         let cap = self.capacity_for(INITIAL_KV_TOKENS.min(max_tokens).max(1), 0, max_tokens);
         let (kv, ik, bk) = self.buffer_lens(cap);
         Ok(AttnState {
@@ -193,7 +193,7 @@ impl Attention {
 
     /// Bytes of fresh buffers that [`Attention::grow`] would allocate to hold
     /// `tokens`, or 0 when they already fit.
-    pub fn growth_bytes(&self, state: &AttnState, tokens: usize) -> usize {
+    pub fn growth_bytes(&self, state: &AttnState<B>, tokens: usize) -> usize {
         if tokens <= state.cap {
             return 0;
         }
@@ -204,7 +204,7 @@ impl Attention {
     /// Grows the caches to hold `tokens`, keeping their contents. Kernels read the
     /// buffers by address at launch, so a reallocation between steps is invisible to
     /// them.
-    pub fn grow(&self, gpu: &Gpu, state: &mut AttnState, tokens: usize) -> Result<()> {
+    pub fn grow(&self, gpu: &B, state: &mut AttnState<B>, tokens: usize) -> Result<()> {
         if tokens <= state.cap {
             return Ok(());
         }
@@ -217,7 +217,7 @@ impl Attention {
         let cap = self.capacity_for(tokens, state.cap, state.max_tokens);
         let (kv, ik, bk) = self.buffer_lens(cap);
         let kv_w = a.kv_heads * a.head_dim;
-        let moved = |old: &Buf, n: usize, len: usize| -> Result<Buf> {
+        let moved = |old: &B::F32, n: usize, len: usize| -> Result<B::F32> {
             let mut new = gpu.zeros(len)?;
             if n > 0 {
                 gpu.copy_range(old, 0, &mut new, 0, n)?;
@@ -237,16 +237,16 @@ impl Attention {
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         d: &Dims,
-        ws: &mut Workspace,
-        x: &Buf,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
         t: usize,
         step: &StepInput,
-        state: &mut AttnState,
-        scratch: &mut Bf16Buf,
+        state: &mut AttnState<B>,
+        scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
-    ) -> Result<Buf> {
+    ) -> Result<B::F32> {
         let a = &self.a;
         let h = d.hidden;
         let start = step.start_pos;
@@ -360,7 +360,7 @@ impl Attention {
         }
         self.tap_block_scores(gpu, probe, &mut idx_scores, t, start, kv_len)?;
         // qsa_mask writes every mask byte.
-        let mut mask = unsafe { gpu.stream.alloc::<u8>(t * kv_len)? };
+        let mut mask = gpu.uninit_bytes(t * kv_len)?;
         gpu.qsa_mask(
             &idx_scores,
             &mut mask,
@@ -372,7 +372,7 @@ impl Attention {
         )?;
         ws.give("attn.idx_scores", idx_scores);
         if probe.wants("indexer.mask") {
-            let m = gpu.download(&mask)?;
+            let m = gpu.download_bytes(&mask)?;
             probe.observe("indexer.mask", m.into_iter().map(f32::from).collect());
         }
         if let Some(sub) = probe.substitute("indexer.mask") {
@@ -412,7 +412,7 @@ impl Attention {
 
         // Masked attention, gate, output projection.
         let mut attn = ws.take(gpu, "attn.core", t * nh * hd)?;
-        gpu.attn_decode_or_masked(
+        gpu.attention(
             ws,
             &q,
             &state.k,
@@ -443,9 +443,9 @@ impl Attention {
     /// selection can be tested on exact reference scores.
     fn tap_block_scores(
         &self,
-        gpu: &Gpu,
+        gpu: &B,
         probe: &mut dyn Probe,
-        scores: &mut Buf,
+        scores: &mut B::F32,
         t: usize,
         start: usize,
         kv_len: usize,
@@ -455,7 +455,7 @@ impl Attention {
         let (w, stride) = (kv_len / ratio, kv_len / ratio + 1);
         let visible = |i: usize| (start + i + 1) / ratio;
         if probe.wants(stage) {
-            let raw = gpu.download(scores)?;
+            let raw = gpu.download_f32(scores)?;
             let mut padded = vec![0f32; t * w];
             for i in 0..t {
                 let nb = visible(i);
@@ -465,7 +465,7 @@ impl Attention {
         }
         if let Some(sub) = probe.substitute(stage) {
             ensure!(sub.len() == t * w, "{stage} substitute has wrong length");
-            let mut raw = gpu.download(scores)?;
+            let mut raw = gpu.download_f32(scores)?;
             for i in 0..t {
                 let nb = visible(i);
                 raw[i * stride..i * stride + nb].copy_from_slice(&sub[i * w..i * w + nb]);
@@ -477,7 +477,7 @@ impl Attention {
 
     /// Taps the caches in the reference layout (`state.k` / `state.v` as
     /// `[kv_heads, kv_len, head_dim]`), writing substitutes back.
-    fn tap_state(&self, gpu: &Gpu, state: &mut AttnState, probe: &mut dyn Probe) -> Result<()> {
+    fn tap_state(&self, gpu: &B, state: &mut AttnState<B>, probe: &mut dyn Probe) -> Result<()> {
         let a = &self.a;
         let (len, kvh, hd) = (state.len, a.kv_heads, a.head_dim);
         for (name, cache) in [("state.k", &mut state.k), ("state.v", &mut state.v)] {
@@ -487,7 +487,7 @@ impl Attention {
             let mut view = gpu.zeros(len * kvh * hd)?;
             gpu.swap01(cache, &mut view, len, kvh, hd)?;
             if probe.wants(name) {
-                probe.observe(name, gpu.download(&view)?);
+                probe.observe(name, gpu.download_f32(&view)?);
             }
             if let Some(sub) = probe.substitute(name) {
                 ensure!(

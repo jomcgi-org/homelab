@@ -86,6 +86,7 @@ fn app(script: Vec<&'static str>, finish: FinishReason) -> Arc<App> {
         template,
         "test-model".into(),
         4096,
+        oominf_server::parse::parser_for("qwen4_exp").unwrap(),
         SamplingParams::default(),
         vec![id("<|im_end|>")],
     );
@@ -390,6 +391,7 @@ async fn not_ready_returns_503() {
         template,
         "m".into(),
         64,
+        oominf_server::parse::parser_for("qwen4_exp").unwrap(),
         SamplingParams::default(),
         vec![0],
     ));

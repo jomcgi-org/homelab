@@ -1,8 +1,7 @@
 //! Replays a recorded routing trace through the real tier placement code (no GPU):
 //! VRAM hit rate per policy and size, and disk reads per token behind a host tier.
 //!
-//!     cargo run --release -p oominf-tiers --example replay -- \
-//!         /disks/nvme-02/src/oominf-data/iobench/trace-routedump1.u16
+//!     cargo run --release -p oominf-tiers --example replay -- <trace.u16>
 
 use std::collections::HashSet;
 

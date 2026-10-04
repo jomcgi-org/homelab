@@ -1,5 +1,5 @@
 [package]
-name = "oominf-cuda"
+name = "oominf-models"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 oominf-core = { path = "../oominf-core" }
-cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "cublas", "nvrtc", "cuda-13000", "dynamic-loading"] }
+oominf-format = { path = "../oominf-format" }
+oominf-models-qwen = { path = "../oominf-models-qwen" }
+serde_json.workspace = true
 
 [lints]
 workspace = true

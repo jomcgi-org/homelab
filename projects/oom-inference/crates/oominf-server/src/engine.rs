@@ -1,32 +1,17 @@
-//! The engine thread: owns the GPU, the model, the expert source and the cached
-//! sequence, and runs one generation at a time.
+//! The engine thread: owns the model and the cached sequence, and runs one
+//! generation at a time.
 
-use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use oominf_cuda::Gpu;
-use oominf_format::Model;
-use oominf_models_qwen::{Dims, ExpertSource, NoProbe, QwenModel, SeqState};
+use oominf_core::{Model, Session};
 use tokio::sync::mpsc;
 
 use crate::sampling::{Sampler, SamplingParams};
 
-/// Builds the expert source on the engine thread; returns it with a description
-/// for the startup log.
-pub type ExpertFactory =
-    Box<dyn FnOnce(&Gpu, &Arc<Model>) -> Result<(Box<dyn ExpertSource>, String)> + Send>;
-
-#[derive(Debug, Clone)]
-pub struct EngineConfig {
-    pub model_dir: PathBuf,
-    /// Longest sequence (prompt plus generation) the KV cache is sized for.
-    pub max_context: usize,
-    /// Prompt tokens per prefill forward pass.
-    pub prefill_chunk: usize,
-}
+/// Loads the model; runs on the engine thread, which then owns it.
+pub type ModelLoader = Box<dyn FnOnce() -> Result<Box<dyn Model>> + Send>;
 
 pub struct Job {
     pub prompt: Vec<u32>,
@@ -121,18 +106,18 @@ impl EngineHandle {
     }
 }
 
-/// Starts the engine thread. `ready` receives the startup summary once the model
-/// is loaded, or the load error.
+/// Starts the engine thread for sequences of up to `max_context` tokens. `ready`
+/// receives the startup summary once the model is loaded, or the load error.
 pub fn start(
-    cfg: EngineConfig,
-    experts: ExpertFactory,
+    loader: ModelLoader,
+    max_context: usize,
 ) -> (EngineHandle, std_mpsc::Receiver<Result<String>>) {
     let (jobs_tx, jobs_rx) = std_mpsc::channel::<Job>();
     let (ready_tx, ready_rx) = std_mpsc::channel();
     std::thread::Builder::new()
         .name("oominf-engine".into())
         .spawn(move || {
-            let engine = match Engine::load(&cfg, experts) {
+            let engine = match Engine::load(loader, max_context) {
                 Ok((engine, summary)) => {
                     let _ = ready_tx.send(Ok(summary));
                     engine
@@ -148,43 +133,28 @@ pub fn start(
     (EngineHandle::new(jobs_tx), ready_rx)
 }
 
+type Seq = Box<dyn Session>;
+
 struct Engine {
-    gpu: Gpu,
-    model: QwenModel,
-    experts: Box<dyn ExpertSource>,
-    cache: Box<dyn PrefixCache<SeqState>>,
-    /// A fresh state allocated at load, so expert tiers are sized around it.
-    spare: Option<SeqState>,
-    cfg: EngineConfig,
+    model: Box<dyn Model>,
+    cache: Box<dyn PrefixCache<Seq>>,
+    max_context: usize,
 }
 
 impl Engine {
-    fn load(cfg: &EngineConfig, experts: ExpertFactory) -> Result<(Self, String)> {
+    fn load(loader: ModelLoader, max_context: usize) -> Result<(Self, String)> {
         let t = Instant::now();
-        let files = Arc::new(Model::open(&cfg.model_dir)?);
-        let dims = Dims::from_config(
-            &std::fs::read_to_string(cfg.model_dir.join("config.json")).context("config.json")?,
-        )?;
-        let gpu = Gpu::new(0)?;
-        let model = QwenModel::load(&gpu, &files, dims, None)?;
-        // Allocate the sequence state first: the expert tiers take what is left.
-        let spare = model.new_state(&gpu, cfg.max_context)?;
-        gpu.sync()?;
-        let (experts, tiers) = experts(&gpu, &files)?;
-        gpu.sync()?;
+        let model = loader()?;
         let summary = format!(
-            "model loaded in {:.1}s; {tiers}; max context {} tokens",
+            "model loaded in {:.1}s; {}; max context {max_context} tokens",
             t.elapsed().as_secs_f64(),
-            cfg.max_context
+            model.describe(),
         );
         Ok((
             Engine {
-                gpu,
                 model,
-                experts,
                 cache: Box::new(LastSequence::default()),
-                spare: Some(spare),
-                cfg: cfg.clone(),
+                max_context,
             },
             summary,
         ))
@@ -201,29 +171,8 @@ impl Engine {
         }
     }
 
-    /// Prefills `ids` (layer by layer, in prefill-sized chunks) and returns the last
-    /// row of logits, or `None` if the client went away.
-    fn feed(
-        &mut self,
-        ids: &[u32],
-        state: &mut SeqState,
-        events: &mpsc::Sender<Event>,
-    ) -> Result<Option<Vec<f32>>> {
-        let out = self.model.prefill(
-            &self.gpu,
-            ids,
-            self.cfg.prefill_chunk,
-            state,
-            self.experts.as_mut(),
-            &|| events.is_closed(),
-        )?;
-        out.map(|o| self.gpu.download(&o))
-            .transpose()
-            .map_err(Into::into)
-    }
-
     fn serve(&mut self, job: Job) -> Result<()> {
-        let max_context = self.cfg.max_context;
+        let max_context = self.max_context;
         anyhow::ensure!(!job.prompt.is_empty(), "empty prompt");
         anyhow::ensure!(
             job.prompt.len() < max_context,
@@ -235,19 +184,9 @@ impl Engine {
         let (mut ids, mut state, cached_logits) = match self.cache.take(&job.prompt) {
             Some(c) => (c.ids, c.state, Some(c.logits)),
             None => {
-                // Free the stale sequence (and let the frees land) before
-                // allocating its replacement.
+                // Free the stale sequence before starting its replacement.
                 self.cache.clear();
-                self.gpu.sync()?;
-                let state = match self.spare.take() {
-                    Some(s) => s,
-                    None => self.model.new_state(&self.gpu, max_context)?,
-                };
-                // The dropped sequence may have grown its caches at the tiers'
-                // expense: give the memory back to the experts.
-                self.model
-                    .reclaim_vram(&self.gpu, &state, self.experts.as_mut())?;
-                (Vec::new(), state, None)
+                (Vec::new(), self.model.new_session(max_context)?, None)
             }
         };
         let cached = ids.len();
@@ -271,7 +210,7 @@ impl Engine {
         let mut logits = if fresh.is_empty() {
             cached_logits.context("cached sequence has no logits")?
         } else {
-            match self.feed(fresh, &mut state, &job.events)? {
+            match state.prefill(fresh, &|| job.events.is_closed())? {
                 Some(l) => {
                     ids.extend_from_slice(fresh);
                     l
@@ -296,15 +235,7 @@ impl Engine {
             if n + 1 == max_tokens {
                 break;
             }
-            let out = self.model.forward(
-                &self.gpu,
-                &[next],
-                &mut state,
-                self.experts.as_mut(),
-                &mut NoProbe,
-                true,
-            )?;
-            logits = self.gpu.download(&out)?;
+            logits = state.step(&[next])?;
             ids.push(next);
         }
         self.cache.put(CachedSeq { ids, state, logits });

@@ -29,6 +29,21 @@ pub trait OutputParser: Send {
 /// Tool schemas by function name, used to type parameter values.
 pub type ToolSchemas = Map<String, Value>;
 
+/// Builds a parser for one generation from the rendered prompt and the request's
+/// tool schemas.
+pub type ParserFactory = fn(prompt: &str, schemas: ToolSchemas) -> Box<dyn OutputParser>;
+
+/// The output parser of a model family, by `model_type`.
+pub fn parser_for(model_type: &str) -> anyhow::Result<ParserFactory> {
+    match model_type {
+        "qwen4_exp" => Ok(|prompt, schemas| {
+            let in_reasoning = prompt.trim_end_matches('\n').ends_with("<think>");
+            Box::new(QwenParser::new(in_reasoning, schemas))
+        }),
+        other => anyhow::bail!("no output parser for model_type {other:?}"),
+    }
+}
+
 /// Qwen 3.x: `<think>...</think>` reasoning, then content, with tool calls as
 /// `<tool_call><function=NAME><parameter=P>value</parameter>...</function></tool_call>`.
 pub struct QwenParser {
