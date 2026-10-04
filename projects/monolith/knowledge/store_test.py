@@ -153,6 +153,40 @@ class TestUpsertNote:
         assert notes[0].path == "_processed/foo.md"
         assert notes[0].content_hash == "h2"
 
+    def test_upsert_carries_revision_forward_so_it_never_resets(self, store, session):
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        note = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        assert note.revision == 0
+        # A reindex of identical content and a move into _processed/ both
+        # replace the row; the counter still advances.
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        _upsert(store, note_id="rev", path="_processed/rev.md", content_hash="h1")
+        _upsert(store, note_id="rev", path="_processed/rev.md", content_hash="h2")
+        note = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        assert note.revision == 3
+
+    def test_a_review_captured_before_a_reindex_cannot_renew(self, store, session):
+        from knowledge.freshness import commit_successful_review
+
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        captured = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        revision, content_hash = captured.revision, captured.content_hash
+        # Retelling then same-content reindex: the old reset-to-zero let (0, h1)
+        # pass both checks.
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        _upsert(store, note_id="rev", path="_processed/rev.md", content_hash="h1")
+        result = commit_successful_review(
+            session,
+            note_id="rev",
+            expected_revision=revision,
+            expected_content_hash=content_hash,
+            evidence=["PR #1 is open"],
+            evidence_observed_at=now,
+            now=now,
+        )
+        assert not result.renewed and result.reason == "revision_changed"
+
     def test_upsert_preserves_published_at(self, store, session):
         _upsert(store, note_id="published", path="published.md", content_hash="h1")
         note = session.exec(select(Note).where(Note.note_id == "published")).one()
