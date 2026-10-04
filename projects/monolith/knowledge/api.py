@@ -18,7 +18,7 @@ from knowledge.extraction import (
     ExtractionOutputInvalid,
 )
 from knowledge.freshness import VOLATILE as VOLATILE_REVIEW_POLICY
-from knowledge.freshness import result_current
+from knowledge.freshness import current_predicate, result_current
 from knowledge.freshness import state as freshness_state
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.recall import (
@@ -56,6 +56,7 @@ __all__ = [
     "build_repo_diff_prompt",
     "count_gaps_review_queue",
     "count_notes_review_queue",
+    "current_predicate",
     "defer_audit_if_over_budget",
     "defer_recall",
     "enqueue_extraction",
@@ -335,7 +336,6 @@ def search_public_chunks(
 
     from sqlmodel import select
 
-    from knowledge.freshness import current_predicate
     from knowledge.public_models import PublicChunk, PublicNote
 
     distance = PublicChunk.embedding.cosine_distance(query_embedding)

@@ -42,8 +42,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from knowledge.freshness import current_predicate
-from knowledge.http_cache import _as_utc
+from knowledge.api import current_predicate
 from sqlalchemy import DateTime, bindparam, column, func, select, table, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -110,6 +109,15 @@ _public_notes = table(
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize SQLite's naive dates and Postgres' aware dates for comparison."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _monotonic() -> float:
