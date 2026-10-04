@@ -954,11 +954,26 @@ class KnowledgeStore:
             "valid_until": _iso_or_none(row.valid_until),
             "observed_at": _iso_or_none(row.observed_at),
             **self._freshness_metadata(row),
+            "last_review_outcome": self._last_review_outcome(row.note_id),
             "disputed": (
                 row.note_id in disputed_note_ids or row.verification_state == "disputed"
             ),
             "provenance": provenance_by_note.get(row.note_id, []),
             "entities": entities_by_note.get(row.note_id, []),
+        }
+
+    def _last_review_outcome(self, note_id: str) -> dict | None:
+        """Why a due fact is still due: the latest durable review outcome."""
+        from knowledge.freshness import latest_outcome
+
+        outcome = latest_outcome(self.session, note_id)
+        if outcome is None:
+            return None
+        return {
+            "status": outcome.status,
+            "reason": outcome.reason,
+            "attempted_at": _iso_or_none(outcome.attempted_at),
+            "next_attempt_at": _iso_or_none(outcome.next_attempt_at),
         }
 
     def _freshness_metadata(self, note) -> dict:

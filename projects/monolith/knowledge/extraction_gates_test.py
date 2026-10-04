@@ -238,6 +238,8 @@ def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
     assert existing.review_after.replace(tzinfo=timezone.utc) == observed + timedelta(
         days=90
     )
+    # The retelling is newer evidence: it moves the revision a review captured.
+    assert existing.revision == 1
     # Exact replay retains both deadline and original evidence age.
     apply_extraction(
         session,
@@ -346,6 +348,9 @@ def test_supersession_wins_over_duplicate_gate(session, monkeypatch):
 
     assert result["rejected"] == []
     assert result["atoms"] == ["current-alias-rule"]
+    session.refresh(existing)
+    assert existing.verification_state == "invalidated"
+    assert existing.revision == 1
 
 
 def test_duplicate_search_excludes_invalidated_notes(session, monkeypatch):
