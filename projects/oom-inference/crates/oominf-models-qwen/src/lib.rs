@@ -11,12 +11,14 @@ pub mod attention;
 pub mod gdn;
 pub mod hc;
 pub mod layer;
+pub mod model;
 pub mod moe;
 pub mod ple;
 mod util;
 
 pub use gdn::GdnState;
 pub use layer::{DecoderLayer, LayerState, StepInput};
+pub use model::{QwenModel, SeqState};
 pub use moe::{DiskExperts, ExpertSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

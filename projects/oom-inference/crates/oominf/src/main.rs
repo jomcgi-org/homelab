@@ -1,4 +1,6 @@
+mod chat;
 mod check_layer;
+mod generate;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -37,6 +39,25 @@ enum Command {
     Verify { model: PathBuf },
     /// Summarise a converted model.
     Inspect { model: PathBuf },
+    /// Greedy-decode one chat turn (correctness tool).
+    Generate {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long, default_value_t = 64)]
+        max_tokens: usize,
+    },
+    /// Render a user turn with the chat template and tokenize it; with
+    /// `--manifest`, check it against a reference fixture manifest.
+    Tokenize {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+    },
     /// Run one decoder layer on the GPU against reference fixtures.
     CheckLayer {
         /// Converted model directory.
@@ -130,6 +151,52 @@ fn main() -> Result<()> {
         } => {
             if !check_layer::run(&model, &fixtures, layer, &mode)? {
                 bail!("isolated stages over budget");
+            }
+        }
+        Command::Generate {
+            model,
+            prompt,
+            max_tokens,
+        } => generate::run(&model, &prompt, max_tokens)?,
+        Command::Tokenize {
+            model,
+            prompt,
+            manifest,
+        } => {
+            let chat = chat::Chat::load(&model)?;
+            let m: Option<serde_json::Value> = manifest
+                .map(|p| -> Result<_> { Ok(serde_json::from_slice(&std::fs::read(p)?)?) })
+                .transpose()?;
+            let user = match (&prompt, &m) {
+                (Some(p), _) => p.clone(),
+                (None, Some(m)) => m["prompt"]["user_message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                (None, None) => bail!("give --prompt or --manifest"),
+            };
+            let text = chat.render_user(&user)?;
+            let ids = chat.encode(&text)?;
+            println!("{} tokens: {ids:?}", ids.len());
+            if let Some(m) = m {
+                let want_text = m["prompt"]["templated"].as_str().unwrap_or_default();
+                let want: Vec<u32> = m["prompt"]["token_ids"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_u64())
+                            .map(|v| v as u32)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "template matches manifest: {}; token ids match: {}",
+                    text == want_text,
+                    ids == want
+                );
+                if text != want_text || ids != want {
+                    bail!("tokenization differs from the reference");
+                }
             }
         }
         Command::Inspect { model } => {
