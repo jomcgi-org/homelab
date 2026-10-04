@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 import typer
+
 from core.log import configure_logging as _configure_shared_logging
 
 logger = logging.getLogger("monolith.jobs")
@@ -78,10 +79,11 @@ def _price_turns_backfill_core(
     cost stay NULL (see create_turn). Only the columns pricing needs are read,
     never the diff or artifact blobs.
     """
-    from factory.execution.models import AgentSession, AgentTurn
-    from shared.pricing import list_price_usd
     from sqlalchemy import update
     from sqlmodel import Session, select
+
+    from factory.execution.models import AgentSession, AgentTurn
+    from shared.pricing import list_price_usd
 
     priced_count = 0
     skipped_unknown_model = 0
@@ -152,11 +154,12 @@ def _price_raws_backfill_core(
     engine, chunk_size: int = 500
 ) -> RawPricingBackfillReport:
     """Price collector raws in bounded pages using database JSON merge updates."""
-    from knowledge.models import RawInput
-    from shared.pricing import price_usage
     from sqlalchemy import func, literal, update
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlmodel import Session, select
+
+    from knowledge.models import RawInput
+    from shared.pricing import price_usage
 
     priced_count = 0
     skipped_unknown_model = 0
@@ -388,9 +391,10 @@ def publish_facts(
     scope, redaction, dispute status) and flips visibility to public, or unflips
     when policy stops holding. Runs every 15 minutes by default (see chart values).
     """
+    from sqlmodel import Session
+
     from core.db import get_engine
     from knowledge.publish import apply as publish_apply
-    from sqlmodel import Session
 
     configure_logging()
     engine = get_engine()
@@ -403,8 +407,9 @@ def publish_facts(
 
 def _run_chat_public_purge(name: str, purge, dry_run: bool) -> None:
     """Run one chat_public purge core in a transaction; dry-run rolls back."""
-    from core.db import get_engine
     from sqlmodel import Session
+
+    from core.db import get_engine
 
     configure_logging()
     with Session(get_engine()) as session:
@@ -482,9 +487,10 @@ def knowledge_review_backfill(
     pending_only: bool = typer.Option(False, "--pending-only"),
 ) -> None:
     """Report policy/freshness counts, or apply bounded evidence-age backfill."""
+    from sqlmodel import Session
+
     from core.db import get_engine
     from knowledge.freshness_backfill import backfill
-    from sqlmodel import Session
 
     with Session(get_engine()) as session:
         result = backfill(
@@ -506,9 +512,10 @@ def knowledge_review_backfill(
 @app.command("seed-entities")
 def seed_knowledge_entities() -> None:
     """Upsert the knowledge entity manifest and link referenced issue numbers."""
+    from sqlmodel import Session
+
     from core.db import get_engine
     from knowledge.entities import link_issue_entities, seed_entities
-    from sqlmodel import Session
 
     configure_logging()
     logger.info("seed-entities: starting")
@@ -537,9 +544,10 @@ def backfill_knowledge_entities(
     if dry_run == apply_changes:
         raise typer.BadParameter("choose exactly one of --dry-run or --apply")
 
+    from sqlmodel import Session
+
     from core.db import get_engine
     from knowledge.entities import backfill_links
-    from sqlmodel import Session
 
     configure_logging()
     logger.info("backfill-entities: starting dry_run=%s", dry_run)
@@ -675,8 +683,9 @@ def worldcup_sim() -> None:
     This is the one-shot form of the ``worldcup.refresh`` scheduled job; it
     opens its own session to mirror the scheduler's handler contract.
     """
-    from core.db import get_engine
     from sqlmodel import Session
+
+    from core.db import get_engine
     from worldcup.jobs import refresh_handler
 
     configure_logging()
@@ -731,9 +740,10 @@ def factory_public_snapshot() -> None:
     walkthrough, one session's full record) into public_api tables the public
     router reads with plain SQL. Needs only DATABASE_URL. The writer commits its
     own transaction."""
-    from core.db import get_engine
-    from factory.publication import write_public_snapshot
     from sqlmodel import Session
+
+    from factory.publication import write_public_snapshot
+    from core.db import get_engine
 
     configure_logging()
     logger.info("factory-public-snapshot: starting")
@@ -766,9 +776,10 @@ def agent_activity_snapshot() -> None:
     whole tool-call list, so it takes seconds; the public route used to do it
     per request. This job does it once per cadence and upserts the single
     public_api.agent_activity_snapshot row the route reads."""
+    from sqlmodel import Session
+
     from core.db import get_engine
     from factory.publication import write_agent_activity_snapshot
-    from sqlmodel import Session
 
     configure_logging()
     started = time.monotonic()
@@ -788,13 +799,14 @@ def agent_activity_snapshot() -> None:
 @app.command("snapshot-merged-prs")
 def snapshot_merged_prs() -> None:
     """Snapshot the last 90 days of merged GitHub pull requests."""
+    from sqlalchemy import func
+    from sqlmodel import Session, select
+
     from core.db import get_engine
     from core.github import fetch_issue_states, fetch_merged_pull_requests
     from observability.factory_goals import list_active_goals
     from observability.merged_prs import MergedPR
     from observability.merged_prs_writer import upsert_goal_issues, write_snapshot
-    from sqlalchemy import func
-    from sqlmodel import Session, select
 
     configure_logging()
     cutoff = datetime.now(timezone.utc) - timedelta(days=90)
@@ -831,9 +843,10 @@ def hikes_scrape_walks() -> None:
     suspended (manual-only): trigger this by hand when the corpus needs a
     refresh.
     """
+    from sqlmodel import Session
+
     from core.db import get_engine
     from hikes.jobs import scrape_walks_handler
-    from sqlmodel import Session
 
     configure_logging()
     logger.info("hikes-scrape-walks: starting")
@@ -850,8 +863,9 @@ def stars_load_climatology() -> None:
     annual CERRA/ERA5 backfill, so the CronWorkflow ships suspended
     (manual-only): trigger this by hand after the backfill is regenerated.
     """
-    from core.db import get_engine
     from sqlmodel import Session
+
+    from core.db import get_engine
     from stars.grid import load_climatology_handler
 
     configure_logging()
@@ -869,8 +883,9 @@ def _run_job(name: str, import_path: str, handler_name: str) -> None:
     run it to completion. Each command below is a thin wrapper so Typer still
     sees a distinct, documented subcommand per job.
     """
-    from core.db import get_engine
     from sqlmodel import Session
+
+    from core.db import get_engine
 
     handler = getattr(importlib.import_module(import_path), handler_name)
     configure_logging()
@@ -972,8 +987,9 @@ def stars_load_grid() -> None:
 def stars_refresh() -> None:
     """Refresh stars forecasts and materialize the public read snapshot."""
     _run_job("stars-refresh", "stars.jobs", "refresh_handler")
-    from core.db import get_engine
     from sqlmodel import Session
+
+    from core.db import get_engine
     from stars.materialize import materialize_handler
 
     logger.info("stars-materialize: starting")
