@@ -768,7 +768,7 @@ def association_routes():
 def test_checks_sha_must_be_associated_with_the_named_pr_and_share_budget():
     fake = Fake(association_routes())
     verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), max_requests=5)
-    title = f"PR #1 checks are passed at {HEAD}"
+    title = f"PR #1 checks passed at {HEAD}"
     first = verifier.verify(title=title, content=None)
     assert first.status == "success"
     assert verifier.requests == 5
@@ -801,7 +801,7 @@ def test_checks_sha_must_be_associated_with_the_named_pr_and_share_budget():
 )
 def test_unestablished_pr_sha_relationship_cannot_verify(path, response, expected):
     routes = {**association_routes(), f"/repos/{REPO}/{path}": response}
-    verdict, fake = verify(routes, f"PR #1 checks are passed at {HEAD}")
+    verdict, fake = verify(routes, f"PR #1 checks passed at {HEAD}")
     assert verdict.status == expected
     assert not any("check-runs" in path for path in fake.calls)
 
@@ -810,7 +810,7 @@ def test_sha_association_request_obeys_the_shared_budget():
     fake = Fake(association_routes())
     verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), max_requests=2)
     with pytest.raises(BudgetExhausted):
-        verifier.verify(title=f"PR #1 checks are passed at {HEAD}", content=None)
+        verifier.verify(title=f"PR #1 checks passed at {HEAD}", content=None)
     assert verifier.requests == 2
     assert len(fake.calls) == 2
 
@@ -828,7 +828,7 @@ def test_malformed_non_scalar_state_is_unavailable(field):
         routes[status_path(HEAD)]["statuses"] = [{"state": {}}]
     else:
         routes[f"/repos/{REPO}/pulls/1"]["state"] = []
-    verdict, _ = verify(routes, f"PR #1 checks are passed at {HEAD}")
+    verdict, _ = verify(routes, f"PR #1 checks passed at {HEAD}")
     assert verdict.status == "unavailable"
 
 

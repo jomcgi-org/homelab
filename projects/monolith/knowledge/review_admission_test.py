@@ -548,7 +548,7 @@ def test_admission_does_not_renew_extra_wording_in_a_state_sentence(session, tit
 )
 def test_admission_does_not_renew_unestablished_checks(session, case):
     sha = "de02262a35e221804ead81d6e7fe15fa87b416e8"
-    title = f"PR #1 checks are passed at {sha}"
+    title = f"PR #1 checks passed at {sha}"
     if case == "pending-with-failure":
         title = f"Checks are pending at {sha}"
     elif case.startswith("missing-") and case != "missing":
