@@ -18,6 +18,18 @@ _INSTANCE = re.compile(
     re.IGNORECASE,
 )
 _SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+# All-letter hex needs explicit check-claim context to distinguish a commit
+# from durable prose. Supported standalone check templates still expire in 24h.
+_CHECK_TERM = (
+    r"(?:passing|passed|green|succeeded|success|failing|failed|failure|red|"
+    r"pending|running|queued)"
+)
+_LETTER_SHA = r"(?-i:[a-f]{7,40})"
+_LETTER_SHA_CHECK = re.compile(
+    rf"\bchecks[ \t]+(?:(?:are[ \t]+)?{_CHECK_TERM}[ \t]+at[ \t]+{_LETTER_SHA}"
+    rf"|at[ \t]+{_LETTER_SHA}[ \t]+are[ \t]+{_CHECK_TERM})\b",
+    re.IGNORECASE | re.ASCII,
+)
 _STATE = re.compile(
     r"\b(open|opened|closed|merged|draft|ready|pending|running|queued|failed|"
     r"failing|passing|passed|green|red|head|outstanding|blocked|cancelled|"
@@ -66,9 +78,13 @@ def sentences(text: str) -> list[str]:
 
 def has_instance(sentence: str) -> bool:
     """A concrete subject: PR/issue number, run/job id, or a commit SHA."""
-    return _INSTANCE.search(sentence) is not None or any(
-        any(c.isdigit() for c in token) and any(c in "abcdef" for c in token)
-        for token in _SHA.findall(sentence)
+    return (
+        _INSTANCE.search(sentence) is not None
+        or _LETTER_SHA_CHECK.search(sentence) is not None
+        or any(
+            any(c.isdigit() for c in token) and any(c in "abcdef" for c in token)
+            for token in _SHA.findall(sentence)
+        )
     )
 
 
