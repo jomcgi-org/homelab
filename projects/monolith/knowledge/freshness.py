@@ -38,7 +38,14 @@ _OUTSTANDING_GATE = re.compile(
     r"waiting[ \t]+(?:for|on)|must[ \t]+verify|"
     r"(?:needs?|requires?)[ \t]+(?:(?:a|an|the|live|operational)[ \t]+)*"
     r"(?:pilot|validation|verification|approval|rollout)|"
-    r"(?:pilot|validation|approval|verification)[^.!?;\n]*\b(?:required|needed)|"
+    r"(?:needs?[ \t]+to|must|required[ \t]+to)[ \t]+"
+    r"(?:run|perform|complete|conduct|verify|finish|execute|enable)[ \t]+"
+    r"(?:(?:a|an|the|live|operational|deployment)[ \t]+)*"
+    r"(?:pilot|validation|verification|approval|rollout|CronWorkflow)|"
+    r"(?:needs?[ \t]+to|must|required[ \t]+to)[ \t]+verify[ \t]+"
+    r"(?:after|following)[ \t]+(?:deploy|deployment|rollout)|"
+    r"(?:pilot|validation|approval|verification)[^.!?;\n]*\b"
+    r"(?:required|needed|necessary|mandatory)|"
     r"(?:has|have)[ \t]+not[ \t]+been[ \t]+verified|not[ \t]+yet[ \t]+verified)\b"
     r"|\b(?:todo|follow-up)[ \t]*:",
     re.IGNORECASE,

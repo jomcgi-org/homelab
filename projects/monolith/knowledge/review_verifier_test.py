@@ -456,6 +456,13 @@ OPERATIONAL_GATES = [
     "A pilot is still needed.",
     "We are waiting on live verification.",
     "The rollout requires a pilot.",
+    "We need to run a pilot.",
+    "The live pilot is necessary before enabling.",
+    "We need to perform operational validation.",
+    "We must complete the live verification.",
+    "We are required to conduct a pilot.",
+    "The deployment verification is mandatory.",
+    "We need to verify after deploy.",
 ]
 
 
