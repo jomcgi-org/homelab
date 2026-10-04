@@ -120,6 +120,21 @@ impl<B: Backend> Session for QwenSession<B> {
         self.state.pos
     }
 
+    fn save(&self, w: &mut dyn std::io::Write) -> Result<()> {
+        crate::snapshot::save(&self.inner.model, &*self.inner.b, &self.state, w)
+    }
+
+    fn load(&mut self, r: &mut dyn std::io::Read) -> Result<()> {
+        let inner = &self.inner;
+        crate::snapshot::load(
+            &inner.model,
+            &*inner.b,
+            &mut self.state,
+            r,
+            inner.experts.borrow_mut().as_mut(),
+        )
+    }
+
     fn prefill(
         &mut self,
         tokens: &[u32],

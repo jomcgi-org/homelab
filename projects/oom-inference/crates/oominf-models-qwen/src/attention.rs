@@ -275,6 +275,18 @@ impl<B: Backend> Attention<B> {
         state.blocks = state.blocks.min(state.len / self.a.ratio);
     }
 
+    /// What `state` holds now: bytes of cached keys and of values, and elements of
+    /// raw indexer keys and of block keys.
+    pub fn cache_extent(&self, state: &AttnState<B>) -> (usize, usize, usize, usize) {
+        let (kvh, hd) = (self.a.kv_heads, self.a.head_dim);
+        (
+            state.len * kvh * self.kv.row_bytes(true, hd),
+            state.len * kvh * self.kv.row_bytes(false, hd),
+            state.len * self.a.idx_dim,
+            state.blocks * self.a.idx_dim,
+        )
+    }
+
     /// Bytes of the per-step buffers that grow with the sequence (selection mask
     /// and block scores) for a step of `t` queries over `kv_len` keys.
     pub fn step_bytes(&self, t: usize, kv_len: usize) -> usize {
