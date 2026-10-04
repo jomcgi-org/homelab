@@ -34,7 +34,7 @@ const docs = JSON.parse(
     process.env.PYTHON || "python3",
     [
       "-c",
-      'import json,sys,yaml; print(json.dumps([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ["HTTPRoute","SecurityPolicy"]]))',
+      'import json,sys,yaml; print(json.dumps([d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] in ["HTTPRoute","HTTPRouteFilter","SecurityPolicy"]]))',
     ],
     { input: rendered, encoding: "utf8" },
   ),
@@ -43,6 +43,11 @@ const dispatch = docs.find(
   (d) => d.metadata.name === "monolith-friends-assets",
 );
 const records = [];
+// Deliberately URL-only, like Cloudflare's cache key ignoring Vary: Referer.
+// Model default negative caching so a denied request can poison a valid one
+// if the rendered route loses no-store. This is not a live CDN test.
+const negativeCache = new Map();
+const dispatchChecks = [];
 let handler, origin;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, origin);
@@ -81,25 +86,52 @@ const server = createServer(async (req, res) => {
     return res.end();
   }
   if (path === "/_app" || path.startsWith("/_app/")) {
+    if (negativeCache.has(req.url)) {
+      res.statusCode = 404;
+      res.setHeader("x-fixture-cache", "HIT");
+      return res.end(negativeCache.get(req.url));
+    }
     // Use rendered matches/targets, substituting only the local test origin.
     const referer = (req.headers.referer || "").replace(
       origin,
       "https://friends.jomcgi.dev",
     );
     const rule = dispatch.spec.rules.find((r) =>
-      new RegExp(r.matches[0].headers[0].value).test(referer),
+      (r.matches[0].headers || []).every((h) =>
+        new RegExp(h.value).test(referer),
+      ),
     );
     if (!rule) {
       res.statusCode = 404;
+      negativeCache.set(req.url, "No dispatch match");
       return res.end("No dispatch match");
     }
-    const redirect = rule.filters.find(
-      (f) => f.type === "RequestRedirect",
-    ).requestRedirect;
     for (const h of rule.filters.find(
       (f) => f.type === "ResponseHeaderModifier",
     ).responseHeaderModifier.set)
       res.setHeader(h.name, h.value);
+    const extension = rule.filters.find((f) => f.type === "ExtensionRef");
+    if (extension) {
+      const response = docs.find(
+        (d) =>
+          d.kind === "HTTPRouteFilter" &&
+          d.metadata.name === extension.extensionRef.name,
+      ).spec.directResponse;
+      res.statusCode = response.statusCode;
+      res.setHeader("content-type", response.contentType);
+      const controls = ["cache-control", "cloudflare-cdn-cache-control"].map(
+        (name) => String(res.getHeader(name) || ""),
+      );
+      if (
+        response.statusCode === 404 &&
+        !controls.some((h) => h.includes("no-store"))
+      )
+        negativeCache.set(req.url, response.body.inline);
+      return res.end(response.body.inline);
+    }
+    const redirect = rule.filters.find(
+      (f) => f.type === "RequestRedirect",
+    ).requestRedirect;
     res.setHeader(
       "location",
       origin +
@@ -277,7 +309,33 @@ try {
       maxRedirects: 0,
     });
     assert.equal(r.status(), 404);
+    assert.equal(r.headers()["cache-control"], "no-store");
+    assert.equal(r.headers()["cloudflare-cdn-cache-control"], "no-store");
+    assert.equal(r.headers().vary, "Referer");
+    assert.equal(r.headers().location, undefined);
+    assert.equal(await r.text(), "Not Found");
+    dispatchChecks.push({ referer, status: r.status(), headers: r.headers() });
+    // EXACTLY the same URL, no cache-busting query, after every denial. Both
+    // lanes must still dispatch, including changing apps on the same asset.
+    for (const app of ["grimoire", "moving"]) {
+      const valid = await request.request.get(origin + asset, {
+        headers: { Referer: origin + "/" + app },
+        maxRedirects: 0,
+      });
+      assert.equal(valid.status(), 302);
+      assert.equal(valid.headers().location, origin + "/" + app + asset);
+      assert.equal(valid.headers()["cache-control"], "no-store");
+      assert.equal(valid.headers()["cloudflare-cdn-cache-control"], "no-store");
+      assert.equal(valid.headers().vary, "Referer");
+      assert.equal(valid.headers()["x-fixture-cache"], undefined);
+      dispatchChecks.push({
+        app,
+        status: valid.status(),
+        headers: valid.headers(),
+      });
+    }
   }
+  assert.equal(negativeCache.size, 0);
   const redirected = await request.request.get(origin + asset + "?fixture=1", {
     headers: { Referer: origin + "/grimoire?next=https://evil.invalid/" },
     maxRedirects: 0,
@@ -311,6 +369,7 @@ try {
     JSON.stringify(
       {
         results,
+        dispatchChecks,
         totalRequests: records.length,
         auth: "Fixture-only independent-lane deny/allow checks passed; real Envoy OIDC untested.",
       },
@@ -327,6 +386,7 @@ try {
           "Local built-adapter browser/route test. Auth is an explicit test double, not live OIDC verification.",
         sha: process.env.FACTORY_PREVIEW_SHA || null,
         results,
+        dispatchChecks,
         requests: records,
       },
       null,
