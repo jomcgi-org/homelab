@@ -5,8 +5,9 @@ outside any database transaction, then records each outcome (and, on success,
 the renewal) in its own short transaction. Bounds: a batch cap, a request
 budget shared through the verifier's response cache, and a wall-clock deadline.
 Concurrency is one worker; the CronWorkflow uses ``Forbid`` and each renewal
-locks the row and rechecks the revision captured here, so a second runner or a
-concurrent write cannot double-renew or renew over newer evidence.
+locks the row and rechecks the revision captured here, so a concurrent write
+cannot be renewed over. A second runner holding later evidence may renew again,
+which is harmless because the new lease starts from that newer evidence.
 
 Admission is idempotent because every attempt leaves a ``ReviewOutcome`` whose
 retry time gates the next one: ``unsupported`` waits for a new revision,

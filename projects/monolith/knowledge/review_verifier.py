@@ -38,6 +38,10 @@ _RUN = re.compile(
     r"\b(?:workflow[ \t]+)?(?:run|job)(?:[ \t]+id)?[ \t]*#?\d{4,}\b", re.IGNORECASE
 )
 _CHECK_WORD = re.compile(r"\b(checks?|ci|check[- ]runs?)\b", re.IGNORECASE)
+_GATE_WORDS = re.compile(
+    r"\b(remaining|remains?|awaiting|live validation|acceptance|gates?)\b",
+    re.IGNORECASE,
+)
 _NEGATION = re.compile(
     r"\b(not|never|no longer|isn't|wasn't|aren't|weren't|without|unmerged|"
     r"unless|until)\b|n't\b",
@@ -153,15 +157,21 @@ def extract_predicates(
 ) -> list[Predicate]:
     """Predicates the claim asserts, or ``_Unsupported`` naming the first gap.
 
-    Mirrors the classifier: a sentence asserts something when it names a
-    concrete instance and a current state. Sentences without that assert
-    nothing the lease depends on.
+    Fails closed: a renewal extends the whole note, so every sentence that
+    states a state or an acceptance gate must produce a predicate tied to a
+    concrete instance. A state claim that refers back to an earlier sentence
+    ("Its checks are failing") or a gate written as its own sentence cannot be
+    verified, so the whole claim is unsupported rather than partly renewed.
     """
     claim = _PROVENANCE_SECTION.sub("", content or "")
     predicates: list[Predicate] = []
     for sentence in sentences(f"{title}\n{claim}"):
-        if not (has_instance(sentence) and _STATE.search(sentence)):
+        if _GATE_WORDS.search(sentence):
+            raise _Unsupported("acceptance gate is not verifiable from GitHub")
+        if not _STATE.search(sentence):
             continue
+        if not has_instance(sentence):
+            raise _Unsupported("state claim names no concrete instance")
         if _NEGATION.search(sentence):
             raise _Unsupported("negated or conditional state claim")
         refs = _refs(sentence, default_repo)
@@ -334,7 +344,26 @@ class GitHubVerifier:
         sha = p.sha
         if sha is None:
             sha = self._pull(p.repo, p.number)["head"]["sha"]
-        body = self._get(f"/repos/{p.repo}/commits/{sha}/check-runs?per_page=100")
+        outcomes = [
+            outcome
+            for outcome in (self._check_runs(p.repo, sha), self._statuses(p.repo, sha))
+            if outcome is not None
+        ]
+        if not outcomes:
+            raise _Mismatch(f"no checks exist for {sha[:12]}")
+        # Failure outranks pending; success needs every source to be success.
+        if "failure" in outcomes:
+            actual = "failure"
+        elif "pending" in outcomes:
+            actual = "pending"
+        else:
+            actual = "success"
+        if actual != p.expected:
+            raise _Mismatch(f"checks at {sha[:12]} are {actual}, not {p.expected}")
+        return f"checks at {sha[:12]} are {actual}"
+
+    def _check_runs(self, repo: str, sha: str) -> str | None:
+        body = self._get(f"/repos/{repo}/commits/{sha}/check-runs?per_page=100")
         runs = body.get("check_runs")
         total = body.get("total_count")
         if not isinstance(runs, list) or not isinstance(total, int):
@@ -348,16 +377,35 @@ class GitHubVerifier:
         ):
             raise SourceUnavailable("check runs are not tied to the SHA")
         if not runs:
-            raise _Mismatch(f"no check runs exist for {sha[:12]}")
+            return None
         if any(run.get("status") != "completed" for run in runs):
-            actual = "pending"
-        elif all(run.get("conclusion") in _GOOD for run in runs):
-            actual = "success"
-        else:
-            actual = "failure"
-        if actual != p.expected:
-            raise _Mismatch(f"checks at {sha[:12]} are {actual}, not {p.expected}")
-        return f"checks at {sha[:12]} are {actual}"
+            return "pending"
+        if all(run.get("conclusion") in _GOOD for run in runs):
+            return "success"
+        return "failure"
+
+    def _statuses(self, repo: str, sha: str) -> str | None:
+        """The combined commit status: where a required gate such as pr-checks lives."""
+        body = self._get(f"/repos/{repo}/commits/{sha}/status?per_page=100")
+        statuses = body.get("statuses")
+        total = body.get("total_count")
+        if not isinstance(statuses, list) or not isinstance(total, int):
+            raise SourceUnavailable("malformed_response")
+        if not statuses:
+            return None
+        if total > MAX_CHECK_RUNS or total > len(statuses):
+            raise _Unsupported("more commit statuses than one response establishes")
+        if not str(body.get("sha", "")).startswith(sha.lower()):
+            raise SourceUnavailable("commit statuses are not tied to the SHA")
+        states = {
+            status.get("state") if isinstance(status, dict) else None
+            for status in statuses
+        }
+        if not states <= {"success", "pending", "failure", "error"}:
+            raise SourceUnavailable("malformed_response")
+        if states & {"failure", "error"}:
+            return "failure"
+        return "pending" if "pending" in states else "success"
 
 
 def httpx_fetcher(client, *, token: str = "") -> Fetch:

@@ -436,6 +436,46 @@ def test_unsupported_and_failed_wait_for_a_new_revision_or_their_hold(session):
     assert admit(session, github, clock)["unsupported"] == 1
 
 
+def test_unsupported_outcome_waits_for_a_new_revision_even_across_a_reindex(session):
+    from knowledge.frontmatter import ParsedFrontmatter
+    from knowledge.store import KnowledgeStore
+
+    store = KnowledgeStore(session=session, now=NOW)
+
+    def reindex(title, content_hash):
+        store.upsert_note(
+            note_id="n1",
+            path="n1.md",
+            content_hash=content_hash,
+            title=title,
+            metadata=ParsedFrontmatter(
+                title=title, observed_at=NOW - timedelta(days=2)
+            ),
+            chunks=[{"index": 0, "section_header": "", "text": "x"}],
+            vectors=[[0.0] * 1024],
+            links=[],
+            content="Tracked work.",
+        )
+
+    reindex("Issue #1 is blocked", "h1")
+    row = session.exec(select(Note).where(Note.note_id == "n1")).one()
+    row.review_after = NOW - timedelta(days=1)
+    session.add(row)
+    session.commit()
+    github, clock = Github(), Clock()
+    assert admit(session, github, clock)["unsupported"] == 1
+    assert admit(session, github, clock)["candidates"] == 0
+    # The note is edited into a verifiable form: the replaced row's revision
+    # moved past the one the outcome was recorded at, so it is admitted again.
+    reindex("Issue #1 is open", "h2")
+    row = session.exec(select(Note).where(Note.note_id == "n1")).one()
+    row.review_after = NOW - timedelta(days=1)
+    session.add(row)
+    session.commit()
+    github.issues = {1: "open"}
+    assert admit(session, github, clock)["candidates"] == 1
+
+
 def test_unsupported_notes_never_starve_verifiable_ones(session):
     blocked = [
         volatile(f"free{n}", n, title=f"Issue #{n} is blocked") for n in range(30)

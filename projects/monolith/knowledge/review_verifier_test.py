@@ -68,6 +68,16 @@ def runs(*conclusions, sha=HEAD, status="completed"):
     }
 
 
+def combined(state=None, sha=HEAD):
+    """The combined commit status: where a commit-status gate like pr-checks lives."""
+    statuses = [{"state": state}] if state else []
+    return {"state": state or "pending", "sha": sha, "total_count": len(statuses), "statuses": statuses}
+
+
+def status_path(sha):
+    return f"/repos/{REPO}/commits/{sha}/status?per_page=100"
+
+
 def verify(routes, title, content=None, **options):
     fake = Fake(routes)
     verifier = GitHubVerifier(fake, repo=REPO, clock=Clock(), **options)
@@ -136,6 +146,8 @@ def test_changed_state_is_failed_and_never_success(title, routes, reason):
 def test_head_sha_and_checks_are_tied_to_that_sha():
     routes = {
         f"/repos/{REPO}/commits/{HEAD[:7]}/check-runs?per_page=100": runs("success"),
+        status_path(HEAD[:7]): combined(),
+        status_path(HEAD): combined("success"),
         f"/repos/{REPO}/issues/6821": issue(6821, pull=True),
         f"/repos/{REPO}/pulls/6821": pull(6821),
         f"/repos/{REPO}/commits/{HEAD}/check-runs?per_page=100": runs(
@@ -160,6 +172,7 @@ def test_checks_on_a_pr_resolve_its_head_and_a_moved_head_fails():
         f"/repos/{REPO}/commits/{other}/check-runs?per_page=100": runs(
             "failure", sha=other
         ),
+        status_path(other): combined(sha=other),
     }
     assert verify(routes, "PR #7 checks are failing")[0].status == "success"
     assert verify(routes, "PR #7 checks are passing")[0].status == "failed"
@@ -170,20 +183,66 @@ def test_checks_on_a_pr_resolve_its_head_and_a_moved_head_fails():
 def test_pending_incomplete_and_empty_check_runs():
     sha = HEAD[:9]
     path = f"/repos/{REPO}/commits/{sha}/check-runs?per_page=100"
+    none = {status_path(sha): combined()}
+
+    def check(run_body, title="passing", extra=none):
+        return verify({path: run_body, **extra}, f"Checks at {sha} are {title}")[0]
+
     pending = runs("success", None, status="in_progress")
-    assert verify({path: pending}, f"Checks at {sha} are pending")[0].status == (
-        "success"
-    )
-    assert verify({path: pending}, f"Checks at {sha} are passing")[0].status == "failed"
-    assert verify({path: runs()}, f"Checks at {sha} are passing")[0].status == "failed"
+    assert check(pending, "pending").status == "success"
+    assert check(pending).status == "failed"
+    assert check(runs()).status == "failed"
     over = {"total_count": 101, "check_runs": [{"head_sha": HEAD}] * 100}
-    assert verify({path: over}, f"Checks at {sha} are passing")[0].status == (
-        "unsupported"
+    assert check(over).status == "unsupported"
+    assert check(runs("success", sha="f" * 40)).status == "unavailable"
+
+
+def test_a_commit_status_is_folded_into_checks():
+    """pr-checks is a commit status: check runs alone cannot establish success."""
+    sha = HEAD
+    path = f"/repos/{REPO}/commits/{sha}/check-runs?per_page=100"
+
+    def check(run_body, state, title):
+        routes = {path: run_body, status_path(sha): combined(state)}
+        return verify(routes, f"Checks at {sha} are {title}")[0]
+
+    # Passing runs do not make a pending or failed required status pass.
+    assert check(runs("success"), "pending", "passing").status == "failed"
+    assert check(runs("success"), "failure", "passing").status == "failed"
+    assert check(runs("success"), "error", "passing").status == "failed"
+    assert check(runs("success"), "success", "passing").status == "success"
+    # Failure outranks pending, whichever source reports it.
+    assert check(runs("success"), "failure", "failing").status == "success"
+    assert check(runs("failure"), "pending", "failing").status == "success"
+    assert check(runs("failure"), "pending", "pending").status == "failed"
+    assert check(runs("success", None, status="queued"), "failure", "pending").status == (
+        "failed"
     )
-    untied = runs("success", sha="f" * 40)
-    assert verify({path: untied}, f"Checks at {sha} are passing")[0].status == (
+    # A status-only commit (no check runs) is judged on the status alone.
+    assert check(runs(), "success", "passing").status == "success"
+    assert check(runs(), "pending", "pending").status == "success"
+    # Neither source has anything: there is nothing to verify as passing.
+    assert check(runs(), None, "passing").status == "failed"
+
+
+def test_commit_status_must_be_tied_to_the_sha_and_fully_returned():
+    sha = HEAD
+    path = f"/repos/{REPO}/commits/{sha}/check-runs?per_page=100"
+    title = f"Checks at {sha} are passing"
+    untied = combined("success", sha="f" * 40)
+    assert verify({path: runs("success"), status_path(sha): untied}, title)[0].status == (
         "unavailable"
     )
+    truncated = {**combined("success"), "total_count": 101}
+    assert verify({path: runs("success"), status_path(sha): truncated}, title)[
+        0
+    ].status == "unsupported"
+    odd = {**combined("success"), "statuses": [{"state": "weird"}]}
+    assert verify({path: runs("success"), status_path(sha): odd}, title)[0].status == (
+        "unavailable"
+    )
+    down = {path: runs("success"), status_path(sha): GitHubResponse(502, {})}
+    assert verify(down, title)[0].status == "unavailable"
 
 
 @pytest.mark.parametrize(
@@ -205,7 +264,7 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
 @pytest.mark.parametrize(
     ("title", "content", "reason"),
     [
-        ("Operational acceptance for #6812 remains outstanding", None, "outstanding"),
+        ("Operational acceptance for #6812 remains outstanding", None, "acceptance gate"),
         ("Issue #1 is blocked on #2", None, "blocked"),
         ("PR #1 is ready for review", None, "ready"),
         ("PR #1 is approved", None, "approved"),
@@ -217,6 +276,26 @@ def test_unavailable_source_is_not_a_verdict_on_the_claim(response):
         ("The head is de02262a35e2 and open", None, "head claim"),
         ("PR #1 head is open", None, "head claim"),
         ("Issue #1 is open, see abcdef1", None, "SHA assertion"),
+        # A state or gate in its own sentence is never partly verified: the
+        # renewal would extend the whole note.
+        (
+            "PR #6806 checks are passing at a24da077",
+            "Operational acceptance is still outstanding.",
+            "acceptance gate",
+        ),
+        (
+            "PR #6806 is open",
+            "Its checks are failing.",
+            "names no concrete instance",
+        ),
+        (
+            "PR #6806 is open",
+            "It is blocked on the live validation gate.",
+            "acceptance gate",
+        ),
+        ("PR #6806 is open", "Live validation remaining.", "acceptance gate"),
+        ("PR #6806 is open", "Still awaiting review.", "acceptance gate"),
+        ("Issue #1 is open", "The rollout is complete.", "names no concrete instance"),
     ],
 )
 def test_unsupported_and_free_text_gates_stay_due_with_a_reason(title, content, reason):
