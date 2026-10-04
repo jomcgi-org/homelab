@@ -66,6 +66,9 @@ enum Command {
         /// Prompt tokens per prefill chunk (default: the model family's).
         #[arg(long)]
         prefill_chunk: Option<usize>,
+        /// Draft tokens per decode step (speculative decoding); 0 disables it.
+        #[arg(long, default_value_t = 1)]
+        draft: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
     },
@@ -87,6 +90,9 @@ enum Command {
         /// the model family's).
         #[arg(long)]
         prefill_chunk: Option<usize>,
+        /// Draft tokens per decode step (speculative decoding); 0 disables it.
+        #[arg(long, default_value_t = 1)]
+        draft: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
     },
@@ -98,6 +104,9 @@ enum Command {
         prompt: String,
         #[arg(long, default_value_t = 64)]
         max_tokens: usize,
+        /// Draft tokens per decode step (speculative decoding); 0 disables it.
+        #[arg(long, default_value_t = 1)]
+        draft: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
     },
@@ -221,13 +230,14 @@ fn main() -> Result<()> {
             prompt_file,
             tokens,
             prefill_chunk,
+            draft,
             experts,
         } => {
             let prompt = match prompt_file {
                 Some(p) => std::fs::read_to_string(p)?,
                 None => prompt,
             };
-            bench::run(&model, &prompt, tokens, prefill_chunk, &experts)?
+            bench::run(&model, &prompt, tokens, prefill_chunk, draft, &experts)?
         }
         Command::Serve {
             model,
@@ -236,6 +246,7 @@ fn main() -> Result<()> {
             served_model_name,
             max_context,
             prefill_chunk,
+            draft,
             experts,
         } => {
             let model_name =
@@ -245,6 +256,7 @@ fn main() -> Result<()> {
                 model_dir: model.clone(),
                 model_type,
                 max_context,
+                draft,
                 addr: std::net::SocketAddr::new(host, port),
                 model_name,
             };
@@ -264,8 +276,9 @@ fn main() -> Result<()> {
             model,
             prompt,
             max_tokens,
+            draft,
             experts,
-        } => generate::run(&model, &prompt, max_tokens, &experts)?,
+        } => generate::run(&model, &prompt, max_tokens, draft, &experts)?,
         Command::Tokenize {
             model,
             prompt,

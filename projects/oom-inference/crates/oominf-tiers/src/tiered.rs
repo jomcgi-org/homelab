@@ -79,11 +79,16 @@ enum Target {
 const GIB: f64 = (1u64 << 30) as f64;
 
 /// Records per chunk of the main VRAM arena (about 177 MB for Qwen 3.8 Flash).
-const CHUNK_SLOTS: usize = 64;
+/// Records read per batch when preloading the host tier.
+const PRELOAD_BATCH: usize = 64;
+
+pub const CHUNK_SLOTS: usize = 64;
 
 pub struct TieredExperts<B: Backend> {
     b: Arc<B>,
     model: Arc<Model>,
+    /// The expert groups (layers) this source serves.
+    layers: Vec<u32>,
     num_experts: u32,
     stride: usize,
     vram: SlotCache,
@@ -129,24 +134,34 @@ pub struct TieredExperts<B: Backend> {
 }
 
 impl<B: Backend> TieredExperts<B> {
-    /// `vram_slots` and `host_slots` are record counts; see [`TieredExperts::slots_for`].
+    /// Serves the expert groups whose records have layout `layout` (all records of
+    /// one layout share a size). `vram_slots` and `host_slots` are record counts; see
+    /// [`slots_for`].
     pub fn new(
         b: Arc<B>,
         model: Arc<Model>,
+        layout: &str,
         vram_slots: usize,
         host_slots: usize,
         vram_policy: Box<dyn Policy>,
         host_policy: Box<dyn Policy>,
     ) -> Result<Self> {
-        let groups = &model.index().expert_groups;
-        let first = groups.first().context("model has no expert groups")?;
+        let groups: Vec<_> = model
+            .index()
+            .expert_groups
+            .iter()
+            .filter(|g| g.schema.layout == layout)
+            .collect();
+        let first = groups
+            .first()
+            .with_context(|| format!("model has no {layout} expert groups"))?;
         let stride = first.schema.stride as usize;
         let num_experts = first.num_experts;
         ensure!(
             groups
                 .iter()
                 .all(|g| g.schema.stride as usize == stride && g.num_experts == num_experts),
-            "expert groups differ in stride or expert count"
+            "{layout} expert groups differ in stride or expert count"
         );
         ensure!(
             vram_slots > 0 && host_slots > 0,
@@ -177,7 +192,9 @@ impl<B: Backend> TieredExperts<B> {
         let host_arena = PinnedArena::new(b.clone(), host_slots, stride)?;
         let host_stage = PinnedArena::new(b.clone(), stage_slots.max(1), stride)?;
         let reader = DirectReader::open(&model.dir().join(oominf_format::EXPERTS_FILE))?;
+        let layers = groups.iter().map(|g| g.layer).collect();
         Ok(TieredExperts {
+            layers,
             num_experts,
             stride,
             vram: SlotCache::new(main_slots, vram_policy),
@@ -207,6 +224,43 @@ impl<B: Backend> TieredExperts<B> {
             model,
             b,
         })
+    }
+
+    /// Reads every record this source serves into the host tier when it can hold
+    /// them all (e.g. a small group such as a draft head's experts, which no prompt
+    /// warms). Returns how many records were read.
+    pub fn preload_host(&mut self) -> Result<usize> {
+        let total = self.layers.len() * self.num_experts as usize;
+        if self.host.capacity() < total {
+            return Ok(0);
+        }
+        let mut read = 0;
+        let ne = self.num_experts;
+        let keys: Vec<u32> = self
+            .layers
+            .iter()
+            .flat_map(|&l| (0..ne).map(move |e| l * ne + e))
+            .collect();
+        for batch in keys.chunks(PRELOAD_BATCH) {
+            let mut jobs = Vec::with_capacity(batch.len());
+            for &key in batch {
+                let Some(Place::Miss(hs, _)) = self.host.place(key, &|_| false) else {
+                    continue;
+                };
+                let (l, e) = (key / self.num_experts, key % self.num_experts);
+                let (offset, stride) = self.model.record_location(l, e)?;
+                jobs.push(ReadJob {
+                    offset,
+                    dst: self.host_arena.slot_ptr(hs),
+                    len: stride as usize,
+                    tag: jobs.len(),
+                });
+            }
+            read += jobs.len();
+            self.reader.submit(jobs)?;
+            self.reader.drain(|_| Ok(()))?;
+        }
+        Ok(read)
     }
 
     fn summary(&self) -> String {
@@ -332,14 +386,14 @@ impl<B: Backend> TieredExperts<B> {
     }
 }
 
-/// Records that fit in `gib` GiB for this model.
-pub fn slots_for(model: &Model, gib: f64) -> usize {
+/// Records of layout `layout` that fit in `gib` GiB for this model.
+pub fn slots_for(model: &Model, layout: &str, gib: f64) -> usize {
     let stride = model
         .index()
         .expert_groups
-        .first()
-        .map(|g| g.schema.stride)
-        .unwrap_or(1);
+        .iter()
+        .find(|g| g.schema.layout == layout)
+        .map_or(1, |g| g.schema.stride);
     ((gib * GIB) / stride as f64) as usize
 }
 

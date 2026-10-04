@@ -21,11 +21,13 @@ fn layer_major_prefill_matches_chunked_forward() {
         Dims::from_config(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
     let gpu = Arc::new(Gpu::new(0).unwrap());
     let model = QwenModel::load(&*gpu, &files, dims, None).unwrap();
-    let vram = oominf_tiers::slots_for(&files, 3.0);
-    let host = oominf_tiers::slots_for(&files, 6.0);
+    let layout = "nvfp4-modelopt-g16";
+    let vram = oominf_tiers::slots_for(&files, layout, 3.0);
+    let host = oominf_tiers::slots_for(&files, layout, 6.0);
     let mut experts = TieredExperts::new(
         gpu.clone(),
         files.clone(),
+        layout,
         vram,
         host,
         policy::parse("lru").unwrap(),

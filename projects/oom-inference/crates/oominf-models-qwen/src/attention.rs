@@ -130,8 +130,18 @@ pub struct AttnState<B: Backend> {
 
 impl<B: Backend> Attention<B> {
     pub fn load(gpu: &B, model: &Model, d: &Dims, layer: u32) -> Result<Self> {
+        Self::load_prefixed(
+            gpu,
+            model,
+            d,
+            &format!("model.language_model.layers.{layer}.self_attn."),
+        )
+    }
+
+    /// Loads the attention whose weights are named `{prefix}q_proj.weight` etc.
+    pub fn load_prefixed(gpu: &B, model: &Model, d: &Dims, prefix: &str) -> Result<Self> {
         let a = AttnDims::from_text(&d.text)?;
-        let p = format!("model.language_model.layers.{layer}.self_attn.");
+        let p = prefix;
         let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
         let (h, hd) = (d.hidden as u64, a.head_dim as u64);
         let (nh, kvh) = (a.heads as u64, a.kv_heads as u64);
@@ -193,6 +203,19 @@ impl<B: Backend> Attention<B> {
 
     /// Bytes of fresh buffers that [`Attention::grow`] would allocate to hold
     /// `tokens`, or 0 when they already fit.
+    /// Forgets every cached token (the buffers stay allocated).
+    pub fn reset(&self, state: &mut AttnState<B>) {
+        state.len = 0;
+        state.blocks = 0;
+    }
+
+    /// Keeps only the first `len` cached tokens. Block keys that covered a dropped
+    /// token are recomputed when their block completes again.
+    pub fn rewind(&self, state: &mut AttnState<B>, len: usize) {
+        state.len = state.len.min(len);
+        state.blocks = state.blocks.min(state.len / self.a.ratio);
+    }
+
     pub fn growth_bytes(&self, state: &AttnState<B>, tokens: usize) -> usize {
         if tokens <= state.cap {
             return 0;

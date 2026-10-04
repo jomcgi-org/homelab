@@ -8,11 +8,13 @@
 
 pub mod cache;
 mod disk;
+mod grouped;
 pub mod host;
 pub mod policy;
 mod tiered;
 
 pub use disk::DiskExperts;
+pub use grouped::{GroupedExperts, PolicyPair, tiered_for_model};
 pub use tiered::{TieredExperts, available_host_gib, free_vram_gib, slots_for};
 
 /// A recorded decode routing trace: raw little-endian `u16` `[steps, layers, top_k]`.

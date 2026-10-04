@@ -36,6 +36,9 @@ pub struct ServeConfig {
     pub model_type: String,
     /// Longest sequence (prompt plus generation) a request may reach.
     pub max_context: usize,
+    /// Draft tokens per decode step when the model can draft (0 disables
+    /// speculative decoding).
+    pub draft: usize,
     pub addr: SocketAddr,
     pub model_name: String,
 }
@@ -179,7 +182,7 @@ pub fn build(
     let template = ChatTemplate::load(&cfg.model_dir)?;
     let (defaults, stop_ids) = generation_defaults(&cfg.model_dir, &template)?;
     let parser = parse::parser_for(&cfg.model_type)?;
-    let (engine, ready) = engine::start(loader, cfg.max_context);
+    let (engine, ready) = engine::start(loader, cfg.max_context, cfg.draft);
     let app = Arc::new(App::new(
         engine,
         template,

@@ -68,12 +68,14 @@ pub fn convert(
     let mut dense = Vec::new();
     let mut tables = Vec::new();
     let mut per_layer: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut fused: BTreeMap<u32, usize> = BTreeMap::new();
     let mut summary = Summary::default();
     for name in ckpt.names() {
         match adapter.classify(name) {
             Class::Dense => dense.push(name),
             Class::Table => tables.push(name),
             Class::Expert { layer } => *per_layer.entry(layer).or_default() += 1,
+            Class::FusedExperts { layer } => *fused.entry(layer).or_default() += 1,
             Class::Skip => summary.skipped += 1,
         }
     }
@@ -130,6 +132,30 @@ pub fn convert(
         writer.add_expert_group(layer, adapter.num_experts(), schema, |expert, record| {
             adapter
                 .fill_record(&ckpt, &fill_schema, layer, expert, record)
+                .map_err(|e| oominf_format::Error::Usage(format!("{e:#}")))
+        })?;
+        summary.expert_layers += 1;
+    }
+
+    for (&layer, &n) in &fused {
+        if opts
+            .expert_layers
+            .as_ref()
+            .is_some_and(|r| !r.contains(&layer))
+        {
+            summary.excluded += n;
+            continue;
+        }
+        let schema = adapter.fused_expert_schema(&ckpt, layer)?;
+        log(&format!(
+            "stacked experts layer {layer} ({} records x {} bytes)",
+            adapter.num_experts(),
+            schema.stride
+        ));
+        let fill_schema = schema.clone();
+        writer.add_expert_group(layer, adapter.num_experts(), schema, |expert, record| {
+            adapter
+                .fill_fused_record(&ckpt, &fill_schema, layer, expert, record)
                 .map_err(|e| oominf_format::Error::Usage(format!("{e:#}")))
         })?;
         summary.expert_layers += 1;

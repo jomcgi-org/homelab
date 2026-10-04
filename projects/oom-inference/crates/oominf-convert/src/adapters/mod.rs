@@ -14,7 +14,13 @@ use crate::safetensors::Checkpoint;
 pub enum Class {
     Dense,
     Table,
-    Expert { layer: u32 },
+    Expert {
+        layer: u32,
+    },
+    /// One tensor holding a whole layer's experts, stacked along its first axis.
+    FusedExperts {
+        layer: u32,
+    },
     Skip,
 }
 
@@ -36,6 +42,24 @@ pub trait Adapter {
     ) -> Result<()>;
     /// Source tensors per expert, used to check every one was consumed.
     fn expert_tensor_count(&self) -> usize;
+    /// Record schema for a layer whose experts come stacked in [`Class::FusedExperts`]
+    /// tensors.
+    fn fused_expert_schema(&self, ckpt: &Checkpoint, layer: u32) -> Result<RecordSchema> {
+        let _ = ckpt;
+        bail!("layer {layer}: this adapter has no fused expert groups")
+    }
+    /// Copies one expert's slices of the stacked tensors into a zeroed record.
+    fn fill_fused_record(
+        &self,
+        ckpt: &Checkpoint,
+        schema: &RecordSchema,
+        layer: u32,
+        expert: u32,
+        record: &mut [u8],
+    ) -> Result<()> {
+        let _ = (ckpt, schema, expert, record);
+        bail!("layer {layer}: this adapter has no fused expert groups")
+    }
 }
 
 pub fn for_config(config: &Value) -> Result<Box<dyn Adapter>> {

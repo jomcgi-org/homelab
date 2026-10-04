@@ -417,6 +417,17 @@ pub struct Nvfp4Record {
     pub scale2: [usize; 3],
 }
 
+/// Byte offsets of the parts of a bf16 expert record (weights as released,
+/// row-major): gate and up `[inter, hidden]`, down `[hidden, inter]`.
+#[derive(Debug, Clone, Copy)]
+pub struct Bf16Record {
+    pub hidden: usize,
+    pub inter: usize,
+    pub gate_weight: usize,
+    pub up_weight: usize,
+    pub down_weight: usize,
+}
+
 /// Routing and routed-expert compute on quantised records read in place.
 ///
 /// Expert groups are described by `recs` (record addresses, one per expert),
@@ -444,6 +455,28 @@ pub trait Experts: Memory {
         x: &Self::F32,
         h: &mut Self::F32,
         geo: &Nvfp4Record,
+    ) -> Result<()>;
+    /// [`Experts::moe_gate_up`] over bf16 records (decode-sized steps).
+    #[allow(clippy::too_many_arguments)]
+    fn moe_gate_up_bf16(
+        &self,
+        recs: &View<Self::U64>,
+        off: &View<Self::I32>,
+        assign_tok: &View<Self::I32>,
+        n_experts: usize,
+        x: &Self::F32,
+        h: &mut Self::F32,
+        geo: &Bf16Record,
+    ) -> Result<()>;
+    /// [`Experts::moe_down`] over bf16 records (decode-sized steps).
+    fn moe_down_bf16(
+        &self,
+        recs: &View<Self::U64>,
+        off: &View<Self::I32>,
+        n_experts: usize,
+        h: &Self::F32,
+        y: &mut Self::F32,
+        geo: &Bf16Record,
     ) -> Result<()>;
     /// `y[a] = h[a] . Wd^T` for every assignment.
     fn moe_down(

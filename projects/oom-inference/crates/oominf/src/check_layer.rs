@@ -173,6 +173,7 @@ pub fn run(model_dir: &Path, fixtures: &Path, layer: u32, mode: &str) -> Result<
             let si = StepInput {
                 token_ids: ids,
                 start_pos: pos,
+                checkpoint: false,
             };
             dl.forward(
                 &gpu,

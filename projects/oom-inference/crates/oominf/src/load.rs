@@ -8,7 +8,7 @@ use anyhow::Result;
 use oominf_core::{Backend, ExpertFactory, ExpertSource, Model};
 use oominf_cuda::Gpu;
 use oominf_format::Model as Files;
-use oominf_tiers::{DiskExperts, TieredExperts, policy};
+use oominf_tiers::{DiskExperts, policy};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ExpertArgs {
@@ -63,16 +63,13 @@ pub fn factory<B: Backend>(args: &ExpertArgs, files: Arc<Files>) -> ExpertFactor
                     "off" => false,
                     other => anyhow::bail!("unknown --lookahead {other:?} (on, off)"),
                 };
-                let mut tiered = TieredExperts::new(
-                    b.clone(),
-                    files.clone(),
-                    oominf_tiers::slots_for(&files, vram),
-                    oominf_tiers::slots_for(&files, host),
-                    policy::parse(&args.vram_policy)?,
-                    policy::parse(&args.host_policy)?,
-                )?;
-                tiered.lookahead = lookahead;
-                Box::new(tiered)
+                let policies = || -> Result<_> {
+                    Ok((
+                        policy::parse(&args.vram_policy)?,
+                        policy::parse(&args.host_policy)?,
+                    ))
+                };
+                oominf_tiers::tiered_for_model(b, &files, vram, host, lookahead, &policies)?
             }
             other => anyhow::bail!("unknown --experts {other:?} (tiered, disk)"),
         })
