@@ -79,11 +79,14 @@ as authorization.
 ## Temporal review policy (v1)
 
 Every ordinary write computes a server-side review policy from the persisted
-title and claim body. A claim is volatile (`volatile-24h/v1`) only when a
+title and claim body. A claim is volatile (`volatile-24h/v1`) when a
 concrete instance is asserted in a current state within one sentence: a PR or
 issue (`PR #6821`, `owner/repo#12`, a GitHub URL), a run or job id, or a commit
 SHA, together with a state term such as open, merged, passing, head or
-outstanding. A durable rule that only mentions PRs, checks, gates or rollouts
+outstanding. Outstanding operational work, such as a required live pilot,
+waiting for a rollout or an unverified deployment, is also volatile without
+a concrete instance. The classifier and verifier share that vocabulary.
+A durable rule that only mentions PRs, checks, gates or rollouts
 ("Required CI must succeed on the exact review head") names no instance and is
 standard. `## Evidence`, `## Provenance`, `## Sources` and `## References`
 sections are excluded: a durable claim that cites a PR as evidence stays
@@ -110,12 +113,15 @@ evidence-backed review (below) renews a deadline.
 `Note.revision` is a monotonic counter advanced by every ORM update that
 changes the claim or its support (content, confidence, state, validity,
 a duplicate retelling through `bump_revision`) and by supersession. The review
-lease, reindex stamp and layout columns do not move it. `content_hash` alone
+lease and layout-only changes do not move it. Every store upsert, including
+reindex, advances it. `content_hash` alone
 cannot see a retelling, so a review captures the revision at admission.
 
 `review_verifier.GitHubVerifier` verifies only what a GitHub response
 establishes: issue or PR open and closed, PR merged and draft, a PR head SHA,
 and check runs tied to one exact SHA (a PR's own head is resolved and recorded).
+Checks at an explicit SHA naming a PR also require a valid PR and GitHub's
+commit-to-PR association. Completed failed runs outrank incomplete runs.
 Each sentence asserting an instance in a state yields predicates; every other
 term (a workflow run or job, ready, blocked, approved, a free-text acceptance
 gate, a negated claim, an unnamed SHA, another repository, more than five

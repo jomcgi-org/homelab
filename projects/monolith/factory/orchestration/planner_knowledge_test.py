@@ -1088,3 +1088,42 @@ def test_followup_refresh_fails_closed_at_equality():
         ]
         is True
     )
+
+
+@pytest.mark.parametrize(
+    ("state", "disputed", "expected"),
+    [
+        ("invalidated", False, "invalidated"),
+        ("disputed", False, "disputed"),
+        ("verified", True, "disputed"),
+    ],
+)
+def test_followup_invalidated_or_disputed_is_distinct_from_review_due(
+    state, disputed, expected
+):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+    followups = [
+        {
+            "knowledge": {
+                "notes": [
+                    _followup_note(
+                        "not-due",
+                        verification_state=state,
+                        disputed=disputed,
+                        observed_at=(now - timedelta(hours=1)).isoformat(),
+                        review_after=(now + timedelta(hours=1)).isoformat(),
+                        review_policy="volatile-24h/v1",
+                        freshness="current",
+                        stale=False,
+                    )
+                ]
+            }
+        }
+    ]
+    refreshed = conductor_context._refresh_followup_notes(followups, now=now)
+    note = refreshed[0]["knowledge"]["notes"][0]
+    assert note["stale"] is True
+    assert note["freshness"] == expected
+    assert note["review_after"] == (now + timedelta(hours=1)).isoformat()

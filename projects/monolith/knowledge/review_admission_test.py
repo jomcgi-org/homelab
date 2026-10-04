@@ -410,6 +410,103 @@ def test_admission_does_not_renew_a_partially_named_subset(session):
     assert utc(row.review_after) == original_deadline
 
 
+@pytest.mark.parametrize(
+    "gate",
+    [
+        "Live pilot is still required before enabling.",
+        "Still needs a live pilot.",
+        "Operational validation is outstanding.",
+        "Must verify after deploy.",
+        "Blocked on Joe's approval.",
+        "Waiting for the rollout.",
+        "TODO: run the pilot.",
+        "Follow-up: enable the CronWorkflow.",
+        "Deployment has not been verified yet.",
+    ],
+)
+def test_admission_does_not_renew_an_operational_gate(session, gate):
+    row = add(session, volatile(title="PR #1 is merged.", content=gate))
+    original = utc(row.review_after)
+    github = Github()
+    result = admit(session, github, Clock())
+    assert result["unsupported"] == 1 and result["renewed"] == 0
+    assert "acceptance gate" in outcomes(session, row.note_id)[0].reason
+    assert github.calls == []
+    session.refresh(row)
+    assert row.last_reviewed_at is None
+    assert utc(row.review_after) == original
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "pending-with-failure",
+        "unassociated",
+        "missing",
+        "issue",
+        "malformed",
+        "unavailable",
+    ],
+)
+def test_admission_does_not_renew_unestablished_checks(session, case):
+    sha = "de02262a35e221804ead81d6e7fe15fa87b416e8"
+    title = f"PR #1 checks passed at {sha}"
+    if case == "pending-with-failure":
+        title = f"Checks are pending at {sha}"
+    row = add(session, volatile(title=title))
+    original = utc(row.review_after)
+    paths = {
+        f"/repos/{REPO}/issues/1": GitHubResponse(
+            200, {"number": 1, "state": "open", "pull_request": {}}
+        ),
+        f"/repos/{REPO}/pulls/1": GitHubResponse(
+            200,
+            {
+                "number": 1,
+                "state": "open",
+                "merged": False,
+                "draft": False,
+                "head": {"sha": sha},
+            },
+        ),
+        f"/repos/{REPO}/commits/{sha}/pulls?per_page=100": GitHubResponse(200, []),
+        f"/repos/{REPO}/commits/{sha}/check-runs?per_page=100": GitHubResponse(
+            200,
+            {
+                "total_count": 2,
+                "check_runs": [
+                    {"head_sha": sha, "status": "completed", "conclusion": "failure"},
+                    {"head_sha": sha, "status": "in_progress", "conclusion": None},
+                ],
+            },
+        ),
+        f"/repos/{REPO}/commits/{sha}/status?per_page=100": GitHubResponse(
+            200, {"total_count": 0, "statuses": []}
+        ),
+    }
+    if case == "missing":
+        paths[f"/repos/{REPO}/issues/1"] = GitHubResponse(404, {})
+    elif case == "issue":
+        paths[f"/repos/{REPO}/issues/1"] = GitHubResponse(
+            200, {"number": 1, "state": "open"}
+        )
+    elif case in {"malformed", "unavailable"}:
+        paths[f"/repos/{REPO}/commits/{sha}/pulls?per_page=100"] = GitHubResponse(
+            200 if case == "malformed" else 503, {}
+        )
+    result = admit(session, paths.__getitem__, Clock())
+    assert result["renewed"] == 0
+    expected = (
+        "unsupported"
+        if case == "issue"
+        else ("unavailable" if case in {"malformed", "unavailable"} else "failed")
+    )
+    assert outcomes(session, row.note_id)[0].status == expected
+    session.refresh(row)
+    assert row.last_reviewed_at is None
+    assert utc(row.review_after) == original
+
+
 def test_admission_is_idempotent_and_blocked_outcomes_do_not_flood(session):
     rows = seed_mixed(session)
     github = Github()

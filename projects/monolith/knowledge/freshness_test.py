@@ -117,6 +117,26 @@ def test_volatile_claim_body_survives_evidence_exclusion():
     assert classify(title="Durable title", content=after_evidence, now=NOW) == VOLATILE
 
 
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Live pilot is still required before enabling.",
+        "Still needs a live pilot.",
+        "Operational validation is outstanding.",
+        "Must verify after deploy.",
+        "Blocked on Joe's approval.",
+        "Waiting for the rollout.",
+        "TODO: run the pilot.",
+        "Follow-up: enable the CronWorkflow.",
+        "Deployment has not been verified yet.",
+    ],
+)
+def test_outstanding_operational_gate_is_volatile_without_an_instance(claim):
+    assert classify(title=claim, content=None, now=NOW) == VOLATILE
+    assert classify(title="Status", content=claim, now=NOW) == VOLATILE
+    assert classify(title="Rule", content=f"## Evidence\n{claim}", now=NOW) == STANDARD
+
+
 def test_maximum_uses_elapsed_utc_and_supplied_only_shortens():
     observed = NOW.astimezone(timezone(timedelta(hours=-7)))
     assert (

@@ -45,6 +45,14 @@ describe("describeFreshness", () => {
     );
   });
 
+  it("crosses the deadline at equality without a new detail payload", () => {
+    const deadline = Date.parse(base.review_after);
+    expect(describeFreshness(base, deadline - 1).state).toBe("current");
+    expect(describeFreshness(base, deadline).state).toBe("due");
+    expect(describeFreshness(base, deadline + 1).state).toBe("due");
+    expect(base.freshness).toBe("current");
+  });
+
   it("explains why a due fact is still due and flags volatile facts", () => {
     const view = describeFreshness(
       {

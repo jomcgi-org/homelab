@@ -188,7 +188,15 @@ def _refresh_followup_notes(
                         if updated.get(key) is None and value is not None
                     }
                 )
-                if updated.get("stale"):
+                if note.get("verification_state") == "invalidated":
+                    updated["stale"] = True
+                    updated["freshness"] = "invalidated"
+                elif (
+                    note.get("disputed") or note.get("verification_state") == "disputed"
+                ):
+                    updated["stale"] = True
+                    updated["freshness"] = "disputed"
+                elif updated.get("stale"):
                     updated["freshness"] = (
                         "due"
                         if updated.get("review_after") is not None

@@ -31,6 +31,16 @@ _PROVENANCE_SECTION = re.compile(
     r".*?(?=^#{1,6}[ \t]+\S|\Z)",
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
 )
+# Outstanding work is volatile even when it names no GitHub instance. Keep
+# this vocabulary shared with the verifier: lifecycle evidence cannot clear it.
+_OUTSTANDING_GATE = re.compile(
+    r"\b(still[ \t]+(?:required|needs?)|outstanding|blocked[ \t]+on|"
+    r"waiting[ \t]+for|must[ \t]+verify|"
+    r"(?:pilot|validation|approval|verification)[^.!?;\n]*\brequired|"
+    r"(?:has|have)[ \t]+not[ \t]+been[ \t]+verified|not[ \t]+yet[ \t]+verified)\b"
+    r"|\b(?:todo|follow-up)[ \t]*:",
+    re.IGNORECASE,
+)
 
 
 def sentences(text: str) -> list[str]:
@@ -62,9 +72,10 @@ def utc(value: object) -> datetime | None:
 def classify(*, title: str, content: str | None, now: datetime) -> str:
     """Classify the persisted claim, never an extractor-supplied policy name.
 
-    A claim is volatile only when a concrete instance (a PR or issue number, a
-    run or job id, a commit SHA) is asserted in a current state within one
-    sentence. A durable rule that merely mentions PRs, checks or gates names no
+    A claim is volatile when outstanding operational work is asserted, or a
+    concrete instance (a PR or issue number, a run or job id, a commit SHA) is
+    asserted in a current state within one sentence. A durable rule that
+    merely mentions PRs, checks or gates names no
     instance and stays standard. Evidence and provenance sections cite the PRs
     and jobs a claim was observed through, so only the title and claim body
     decide.
@@ -73,7 +84,8 @@ def classify(*, title: str, content: str | None, now: datetime) -> str:
     return (
         VOLATILE
         if any(
-            has_instance(part) and _STATE.search(part)
+            _OUTSTANDING_GATE.search(part)
+            or (has_instance(part) and _STATE.search(part))
             for part in sentences(f"{title}\n{claim}")
         )
         else STANDARD
