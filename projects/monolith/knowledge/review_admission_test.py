@@ -514,6 +514,11 @@ def test_admission_does_not_renew_a_free_text_follow_on(session, content):
         "PR #6821 is open, 待部署",
         "PR #6821 is open, не развернут",
         "PR #6821 is open 🚧",
+        "PR #6821 has to be merged",
+        "PR #6821 is to be merged",
+        "PR #6821 is being merged",
+        "PR #6821 has to be closed",
+        "Issue #6812 is to be closed",
     ],
 )
 def test_admission_does_not_renew_extra_wording_in_a_state_sentence(session, title):

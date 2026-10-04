@@ -57,15 +57,15 @@ _OPERATIONAL_ANY = re.compile(
 # Glue words that may surround a verifiable predicate. Anything else left
 # after references, SHAs, state terms and check words are stripped is a claim
 # about something GitHub cannot establish, so the sentence is unsupported.
+# "to", "be" and "being" are deliberately absent: "has to be merged" and "is
+# being merged" state an obligation or a transition, not the state itself.
 _FILLER = frozenset(
     {
         "is",
         "are",
         "was",
         "were",
-        "be",
         "been",
-        "being",
         "has",
         "have",
         "had",
@@ -77,7 +77,6 @@ _FILLER = frozenset(
         "or",
         "now",
         "for",
-        "to",
         "of",
         "on",
         "in",
