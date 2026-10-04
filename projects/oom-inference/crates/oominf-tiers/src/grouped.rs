@@ -18,6 +18,8 @@ pub struct GroupedExperts<B> {
     route: Vec<usize>,
     /// Source whose two-phase fetch is open.
     open: Option<usize>,
+    /// Source whose stage-ahead reads may still be in flight.
+    staging: Option<usize>,
 }
 
 impl<B> GroupedExperts<B> {
@@ -27,6 +29,7 @@ impl<B> GroupedExperts<B> {
             sources,
             route,
             open: None,
+            staging: None,
         }
     }
 
@@ -66,6 +69,25 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
 
     fn wants_prefetch(&self) -> bool {
         self.sources.iter().any(|s| s.wants_prefetch())
+    }
+
+    fn stage_ahead(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
+        self.finish_stage_ahead(b)?;
+        let (i, s) = self.source(layer)?;
+        s.stage_ahead(b, layer, experts)?;
+        self.staging = Some(i);
+        Ok(())
+    }
+
+    fn finish_stage_ahead(&mut self, b: &B) -> Result<()> {
+        match self.staging.take() {
+            Some(i) => self.sources[i].finish_stage_ahead(b),
+            None => Ok(()),
+        }
+    }
+
+    fn stages_ahead(&self) -> bool {
+        self.sources.iter().any(|s| s.stages_ahead())
     }
 
     fn release_vram(&mut self, b: &B, bytes: usize) -> Result<usize> {

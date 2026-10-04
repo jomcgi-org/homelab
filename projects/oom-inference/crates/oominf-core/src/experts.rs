@@ -53,6 +53,27 @@ pub trait ExpertSource<B> {
         false
     }
 
+    /// Starts loading `experts` of `layer` (a prediction) into device memory ahead of
+    /// that layer's next large fetch, as prefill does one layer ahead while the
+    /// current layer computes. Records of the last fetched layer stay where they are.
+    /// A wrong prediction only costs bandwidth: the fetch still loads what routing
+    /// picks. Called after the previous fetch finished.
+    fn stage_ahead(&mut self, _b: &B, _layer: u32, _experts: &[u32]) -> Result<()> {
+        Ok(())
+    }
+
+    /// Waits for the disk reads [`ExpertSource::stage_ahead`] started and queues
+    /// their device copies. Call it while the device is busy; the next fetch does it
+    /// otherwise.
+    fn finish_stage_ahead(&mut self, _b: &B) -> Result<()> {
+        Ok(())
+    }
+
+    /// Whether [`ExpertSource::stage_ahead`] is used (so callers can skip predicting).
+    fn stages_ahead(&self) -> bool {
+        false
+    }
+
     /// Gives device memory back so other buffers (e.g. a growing KV cache) can use
     /// it: frees at least `bytes` of cached records if possible and returns how many
     /// bytes it freed. Called between steps, never while a fetch is open.
@@ -90,6 +111,51 @@ pub struct Staged {
     pub host: Vec<Option<usize>>,
 }
 
+/// Records already on the device, as returned by a finished fetch of one layer:
+/// lets several steps of that layer use one fetch (prefill fetches the union of
+/// its chunks' experts once).
+pub struct Fetched {
+    layer: u32,
+    addrs: std::collections::HashMap<u32, u64>,
+}
+
+impl Fetched {
+    /// `addrs[i]` is the record of `experts[i]` of `layer`.
+    pub fn new(layer: u32, experts: &[u32], addrs: &[u64]) -> Self {
+        Fetched {
+            layer,
+            addrs: experts.iter().copied().zip(addrs.iter().copied()).collect(),
+        }
+    }
+}
+
+impl<B> ExpertSource<B> for Fetched {
+    fn fetch(&mut self, _b: &B, layer: u32, experts: &[u32]) -> Result<Vec<u64>> {
+        anyhow::ensure!(
+            layer == self.layer,
+            "fetched records are for layer {}, not {layer}",
+            self.layer
+        );
+        experts
+            .iter()
+            .map(|e| {
+                self.addrs
+                    .get(e)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("expert {e} of layer {layer} was not fetched"))
+            })
+            .collect()
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} fetched records of layer {}",
+            self.addrs.len(),
+            self.layer
+        )
+    }
+}
+
 /// Counters of an [`ExpertSource`]; subtract two snapshots for an interval.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ExpertStats {
@@ -107,6 +173,10 @@ pub struct ExpertStats {
     /// Disk reads started by predictions, and how many of them a fetch then used.
     pub lookahead_reads: u64,
     pub lookahead_used: u64,
+    /// Records loaded toward the device by [`ExpertSource::stage_ahead`], and how
+    /// many of them the next fetch of their layer then used.
+    pub staged: u64,
+    pub staged_used: u64,
 }
 
 impl std::ops::Add for ExpertStats {
@@ -123,6 +193,8 @@ impl std::ops::Add for ExpertStats {
             routed_after_prediction: self.routed_after_prediction + o.routed_after_prediction,
             lookahead_reads: self.lookahead_reads + o.lookahead_reads,
             lookahead_used: self.lookahead_used + o.lookahead_used,
+            staged: self.staged + o.staged,
+            staged_used: self.staged_used + o.staged_used,
         }
     }
 }
@@ -141,6 +213,8 @@ impl std::ops::Sub for ExpertStats {
             routed_after_prediction: self.routed_after_prediction - o.routed_after_prediction,
             lookahead_reads: self.lookahead_reads - o.lookahead_reads,
             lookahead_used: self.lookahead_used - o.lookahead_used,
+            staged: self.staged - o.staged,
+            staged_used: self.staged_used - o.staged_used,
         }
     }
 }

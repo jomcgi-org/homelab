@@ -31,6 +31,18 @@ fn prediction_line(s: &ExpertStats) -> String {
     )
 }
 
+/// Records staged ahead of their layer's fetch, and how many it used.
+fn staged_line(s: &ExpertStats) -> String {
+    if s.staged == 0 {
+        return String::new();
+    }
+    format!(
+        "; staged ahead {} ({:.1}% used)",
+        s.staged,
+        100.0 * s.staged_used as f64 / s.staged as f64
+    )
+}
+
 /// Where records came from, per `unit` (`"token"`) or in total.
 fn tier_line(s: ExpertStats, tokens: usize, unit: &str) -> String {
     if s.requests == 0 {
@@ -47,6 +59,7 @@ fn tier_line(s: ExpertStats, tokens: usize, unit: &str) -> String {
         100.0 * s.vram_hits as f64 / s.requests as f64,
         100.0 * (s.vram_hits + s.host_hits) as f64 / s.requests as f64
     ) + &prediction_line(&s)
+        + &staged_line(&s)
 }
 
 /// Generates at least `tokens` tokens greedily from `next` (the last generated,

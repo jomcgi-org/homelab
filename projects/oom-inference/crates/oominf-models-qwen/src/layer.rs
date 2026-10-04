@@ -5,13 +5,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
-use oominf_core::{Backend, ExpertSource, Probe, Workspace, tap};
+use oominf_core::{Backend, ExpertSource, NoProbe, Probe, Workspace, tap};
 use oominf_format::Model;
 
 use crate::attention::{Attention, AttnState};
 use crate::gdn::{Gdn, GdnState};
 use crate::hc::HyperConn;
-use crate::moe::Moe;
+use crate::moe::{Moe, Routing};
 use crate::ple::{Ple, PleState};
 use crate::{Dims, LayerKind};
 
@@ -36,6 +36,20 @@ pub struct LayerState<B: Backend> {
     pub ple: Option<PleState<B>>,
     /// Scratch buffers, shared by every layer of a sequence (layers run one at a time).
     pub ws: Rc<RefCell<Workspace<B>>>,
+}
+
+/// A layer's activations at its MoE ([`DecoderLayer::pre_moe`]): the residual
+/// after the token mixer, the MoE input and the hyper-connection weights that
+/// combine the MoE output back in.
+pub struct PreMoe<B: Backend> {
+    res1: B::F32,
+    mixed: B::F32,
+    inject: B::F32,
+}
+
+/// Bf16 scratch elements a layer step of `t` tokens needs.
+fn scratch_len(d: &Dims, t: usize) -> usize {
+    t * d.residual().max(d.conv_dim()).max(d.scratch_cols)
 }
 
 /// What a step needs to know beyond activations.
@@ -188,15 +202,99 @@ impl<B: Backend> DecoderLayer<B> {
         experts: &mut dyn ExpertSource<B>,
         probe: &mut dyn Probe,
     ) -> Result<B::F32> {
+        let pre = self.pre_moe(gpu, d, residual, t, step, state, probe)?;
+        let ws_rc = state.ws.clone();
+        let mut ws = ws_rc.borrow_mut();
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
+        let moe_out =
+            self.moe
+                .forward(gpu, d, &mut ws, &pre.mixed, t, experts, &mut scratch, probe)?;
+        ws.give_bf16("gemm.scratch", scratch);
+        drop(ws);
+        self.post_moe(gpu, d, pre, &moe_out, t, state, probe)
+    }
+
+    /// Routes `pre` (from [`Self::pre_moe`]) with this layer's router.
+    pub fn route(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        pre: &PreMoe<B>,
+        t: usize,
+        state: &LayerState<B>,
+    ) -> Result<Routing<B>> {
+        let mut ws = state.ws.borrow_mut();
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
+        let routing = self.moe.route(gpu, d, &pre.mixed, t, &mut scratch);
+        ws.give_bf16("gemm.scratch", scratch);
+        routing
+    }
+
+    /// The next layer's experts predicted for `pre` (see [`Moe::predict_next`]).
+    pub fn predict_next(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        pre: &PreMoe<B>,
+        t: usize,
+        state: &LayerState<B>,
+    ) -> Result<Vec<u32>> {
+        let mut ws = state.ws.borrow_mut();
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
+        let next = self.moe.predict_next(gpu, d, &pre.mixed, t, &mut scratch);
+        ws.give_bf16("gemm.scratch", scratch);
+        next
+    }
+
+    /// Finishes the layer for `pre` routed by `routing` (from [`Self::route`]),
+    /// with records from `experts`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        pre: PreMoe<B>,
+        routing: Routing<B>,
+        t: usize,
+        state: &mut LayerState<B>,
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<B::F32> {
+        let ws_rc = state.ws.clone();
+        let mut ws = ws_rc.borrow_mut();
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
+        let moe_out = self.moe.apply(
+            gpu,
+            d,
+            &mut ws,
+            &pre.mixed,
+            t,
+            routing,
+            experts,
+            &mut scratch,
+        )?;
+        ws.give_bf16("gemm.scratch", scratch);
+        drop(ws);
+        self.post_moe(gpu, d, pre, &moe_out, t, state, &mut NoProbe)
+    }
+
+    /// The layer up to its MoE: PLE, the token mixer and the hyper-connections into
+    /// the MoE.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pre_moe(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        residual: &B::F32,
+        t: usize,
+        step: &StepInput,
+        state: &mut LayerState<B>,
+        probe: &mut dyn Probe,
+    ) -> Result<PreMoe<B>> {
         let ws_rc = state.ws.clone();
         let mut ws_guard = ws_rc.borrow_mut();
         let ws: &mut Workspace<B> = &mut ws_guard;
         let r = d.residual();
-        let mut scratch = ws.take_bf16(
-            gpu,
-            "gemm.scratch",
-            t * r.max(d.conv_dim()).max(d.scratch_cols),
-        )?;
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
 
         let mut with_ple = None;
         if let Some(ple) = &self.ple {
@@ -258,17 +356,40 @@ impl<B: Backend> DecoderLayer<B> {
             self.mlp_hc
                 .mix(gpu, d, ws, &res1, t, &mut scratch, probe, "mlp_hc")?;
         let inject = inject.context("MLP hyper-connection without combine")?;
-        let moe_out = self
-            .moe
-            .forward(gpu, d, ws, &mixed, t, experts, &mut scratch, probe)?;
+        ws.give_bf16("gemm.scratch", scratch);
+        Ok(PreMoe {
+            res1,
+            mixed,
+            inject,
+        })
+    }
+
+    /// The layer output from `pre` and the MoE output.
+    #[allow(clippy::too_many_arguments)]
+    fn post_moe(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        pre: PreMoe<B>,
+        moe_out: &B::F32,
+        t: usize,
+        state: &mut LayerState<B>,
+        probe: &mut dyn Probe,
+    ) -> Result<B::F32> {
+        let mut ws = state.ws.borrow_mut();
+        let PreMoe {
+            res1,
+            mixed,
+            inject,
+        } = pre;
         ws.give("hc.mixed", mixed);
         // The layer output is handed to the caller; the model gives the previous
         // residual back under the same name so two buffers alternate.
-        let mut out = ws.take(gpu, "layer.out", t * r)?;
-        HyperConn::combine_into(gpu, d, &res1, &moe_out, &inject, t, &mut out)?;
+        let mut out = ws.take(gpu, "layer.out", t * d.residual())?;
+        HyperConn::combine_into(gpu, d, &res1, moe_out, &inject, t, &mut out)?;
         ws.give("hc.inject", inject);
         ws.give("layer.res1", res1);
-        ws.give_bf16("gemm.scratch", scratch);
+        drop(ws);
         tap(gpu, probe, "layer_out", &mut out)?;
         if let Some(g) = state.gdn.as_mut() {
             tap(gpu, probe, "state.conv", &mut g.conv)?;

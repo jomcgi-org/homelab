@@ -2,10 +2,11 @@
 //! and `lm_head`.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, DeviceBuffer, ExpertSource, NoProbe, Probe, Workspace, tap};
+use oominf_core::{Backend, DeviceBuffer, ExpertSource, Fetched, NoProbe, Probe, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
@@ -15,6 +16,10 @@ use crate::util::bf16_tensor;
 
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
 pub const PREFILL_CHUNK: usize = 512;
+
+/// Most prompt tokens whose routed experts one prefill fetch loads (bounds the
+/// activations held at the MoE while the fetch is assembled).
+pub const PREFILL_FETCH_TOKENS: usize = 4096;
 
 pub struct QwenModel<B: Backend> {
     pub dims: Dims,
@@ -420,13 +425,17 @@ impl<B: Backend> QwenModel<B> {
     }
 
     /// Prefills a prompt layer by layer: every `chunk`-token slice of `token_ids`
-    /// runs through layer 0, then through layer 1, and so on, so each layer's
-    /// routed experts load about once per prompt instead of once per chunk.
-    /// Within a layer the chunks run in order with that layer's state carried, so
-    /// the result equals running the chunks one after another through the whole
-    /// model. Returns the last row of logits, or `None` if `cancelled()` turned true
-    /// (checked between layers); the state is then partially advanced and must be
-    /// discarded.
+    /// runs through layer 0, then through layer 1, and so on. Within a layer the
+    /// chunks run in order with that layer's state carried, so the result equals
+    /// running the chunks one after another through the whole model.
+    ///
+    /// A prompt of more than one chunk: each layer runs the token mixer of up to
+    /// [`PREFILL_FETCH_TOKENS`] tokens of chunks, routes them, and fetches the union
+    /// of their experts once; it then predicts the next layer's experts from the
+    /// same MoE inputs and has the source stage them while this layer's experts
+    /// compute. Returns the last row of
+    /// logits, or `None` if `cancelled()` turned true (checked between layers); the
+    /// state is then partially advanced and must be discarded.
     #[allow(clippy::too_many_arguments)]
     pub fn prefill(
         &self,
@@ -438,42 +447,82 @@ impl<B: Backend> QwenModel<B> {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<B::F32>> {
         let chunk = chunk.max(1);
+        ensure!(!token_ids.is_empty(), "empty prompt");
         if cancelled() {
             return Ok(None);
         }
+        // One chunk runs as a plain step: with little compute per layer to hide
+        // copies behind, staging ahead costs more (its imprecise prediction copies
+        // unused records) than it saves.
         if token_ids.len() <= chunk {
             return self
                 .forward(gpu, token_ids, state, experts, &mut NoProbe, true)
                 .map(Some);
         }
         let d = &self.dims;
-        let residuals = token_ids.len() * d.residual() * std::mem::size_of::<f32>();
-        self.reserve_kv(gpu, state, state.pos + token_ids.len(), residuals, experts)?;
+        let r = d.residual();
+        // Residuals of every chunk live across layers (about 40 KB per token); the
+        // activations at the MoE of one fetch's chunks live until it computes.
+        let held = token_ids.len().min(PREFILL_FETCH_TOKENS) * (2 * r + d.hidden);
+        let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>();
+        self.reserve_kv(gpu, state, state.pos + token_ids.len(), transient, experts)?;
         let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
-        // Residuals of every chunk live across layers (about 40 KB per token).
         let mut xs = Vec::with_capacity(chunks.len());
         for c in &chunks {
             let mut x = gpu.uninit(c.len() * d.residual())?;
             self.embed_into(gpu, c, &mut x)?;
             xs.push(x);
         }
+        let per_fetch = (PREFILL_FETCH_TOKENS / chunk).max(1);
+        let stage = experts.stages_ahead();
         for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
             if cancelled() {
                 return Ok(None);
             }
             let mut pos = state.pos;
-            for (c, x) in chunks.iter().zip(xs.iter_mut()) {
-                let step = StepInput {
-                    token_ids: c,
-                    start_pos: pos,
-                    checkpoint: false,
-                };
-                let next = layer.forward(gpu, d, x, c.len(), &step, st, experts, &mut NoProbe)?;
-                // The chunk keeps the new residual; its old buffer goes back to the
-                // workspace as the next chunk's "layer.out".
-                let old = std::mem::replace(x, next);
-                state.ws.borrow_mut().give("layer.out", old);
-                pos += c.len();
+            for (cs, xs) in chunks.chunks(per_fetch).zip(xs.chunks_mut(per_fetch)) {
+                let mut pres = Vec::with_capacity(cs.len());
+                for (c, x) in cs.iter().zip(xs.iter()) {
+                    let step = StepInput {
+                        token_ids: c,
+                        start_pos: pos,
+                        checkpoint: false,
+                    };
+                    pres.push(layer.pre_moe(gpu, d, x, c.len(), &step, st, &mut NoProbe)?);
+                    pos += c.len();
+                }
+                // Experts staged for this layer finish reading from disk while the
+                // device runs the previous layer's experts and the mixers above.
+                experts.finish_stage_ahead(gpu)?;
+                let mut routings = Vec::with_capacity(cs.len());
+                let mut union = BTreeSet::new();
+                let mut predicted = BTreeSet::new();
+                for (c, pre) in cs.iter().zip(&pres) {
+                    let routing = layer.route(gpu, d, pre, c.len(), st)?;
+                    union.extend(routing.experts());
+                    routings.push(routing);
+                    if stage {
+                        predicted.extend(layer.predict_next(gpu, d, pre, c.len(), st)?);
+                    }
+                }
+                let union: Vec<u32> = union.into_iter().collect();
+                let addrs = experts.fetch(gpu, layer.layer, &union)?;
+                if !predicted.is_empty() {
+                    let predicted: Vec<u32> = predicted.into_iter().collect();
+                    experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
+                }
+                let mut fetched = Fetched::new(layer.layer, &union, &addrs);
+                for ((c, x), (pre, routing)) in cs
+                    .iter()
+                    .zip(xs.iter_mut())
+                    .zip(pres.into_iter().zip(routings))
+                {
+                    let next = layer.finish(gpu, d, pre, routing, c.len(), st, &mut fetched)?;
+                    // The chunk keeps the new residual; its old buffer goes back to the
+                    // workspace as the next chunk's "layer.out".
+                    let old = std::mem::replace(x, next);
+                    state.ws.borrow_mut().give("layer.out", old);
+                }
             }
         }
         state.pos += token_ids.len();
