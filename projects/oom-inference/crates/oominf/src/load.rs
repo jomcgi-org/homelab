@@ -144,3 +144,11 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     let experts = factory::<Gpu>(args.experts, files.clone());
     oominf_models::open(gpu, files, &opts, experts)
 }
+
+/// Checksum of the files that identify a converted checkpoint (its index lists
+/// every tensor's checksum).
+pub fn checkpoint_id(model_dir: &Path) -> Result<String> {
+    let mut bytes = std::fs::read(model_dir.join(oominf_format::INDEX_NAME))?;
+    bytes.extend(std::fs::read(model_dir.join("config.json"))?);
+    Ok(oominf_format::checksum(&bytes))
+}

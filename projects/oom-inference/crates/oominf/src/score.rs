@@ -39,14 +39,6 @@ fn read_u32(r: &mut impl Read) -> Result<u32> {
     Ok(u32::from_le_bytes(b))
 }
 
-/// Checksum of the files that identify a converted checkpoint (its index lists
-/// every tensor's checksum).
-fn checkpoint_id(model_dir: &Path) -> Result<String> {
-    let mut bytes = std::fs::read(model_dir.join(oominf_format::INDEX_NAME))?;
-    bytes.extend(std::fs::read(model_dir.join("config.json"))?);
-    Ok(oominf_format::checksum(&bytes))
-}
-
 /// Running comparison against a reference run.
 #[derive(Default)]
 struct Against {
@@ -103,7 +95,7 @@ pub fn run(
         "tail": tail,
         "tokens": ids.len(),
         "tokens_xxh3": tokens_id,
-        "checkpoint_xxh3": checkpoint_id(model_dir)?,
+        "checkpoint_xxh3": crate::load::checkpoint_id(model_dir)?,
         "kv_cache": format!("{:?}", cache.kv_cache),
     });
     let mut writer = out

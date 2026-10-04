@@ -15,6 +15,7 @@ pub mod model;
 pub mod moe;
 pub mod ple;
 mod session;
+pub mod snapshot;
 mod util;
 
 pub use gdn::GdnState;

@@ -84,6 +84,7 @@ async fn gpu_smoke() {
         draft: 1,
         addr: "127.0.0.1:0".parse().unwrap(),
         model_name: "smoke".into(),
+        prefix_store: None,
     };
     let loader = Box::new(move || {
         let gpu = Arc::new(oominf_cuda::Gpu::new(0)?);

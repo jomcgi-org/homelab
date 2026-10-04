@@ -41,6 +41,17 @@ pub trait Session {
         anyhow::ensure!(n == 0, "this model cannot rewind");
         Ok(())
     }
+    /// Writes this sequence's state (between steps) so [`Session::load`] can
+    /// resume it in another session of the same model.
+    fn save(&self, w: &mut dyn std::io::Write) -> Result<()> {
+        let _ = w;
+        anyhow::bail!("this model cannot save sequences")
+    }
+    /// Restores a state written by [`Session::save`] into this fresh session.
+    fn load(&mut self, r: &mut dyn std::io::Read) -> Result<()> {
+        let _ = r;
+        anyhow::bail!("this model cannot load sequences")
+    }
     /// Up to `k` tokens the model predicts will follow `next`, the token it is about
     /// to be fed (speculative decoding); empty when the model has no draft head.
     fn draft(&mut self, next: u32, k: usize) -> Result<Vec<u32>> {

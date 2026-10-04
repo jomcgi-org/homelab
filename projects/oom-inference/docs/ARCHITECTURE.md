@@ -137,6 +137,28 @@ trades are how engines drift from the model they claim to run.
   measured on the MTP experts, more device slots barely shorten drafting while
   every slot taken from the main tiers costs decode hits.
 
+## Prefix store
+
+The server keeps the last sequence on the device and resumes a request that
+extends it (multi-turn chat, agent loops). With `--prefix-store-dir`, a sequence
+evicted from the device (a request that does not extend it, or shutdown) is saved
+to disk (`Session::save`: per GDN layer its recurrent and conv state, per
+attention layer its cached K/V rows, indexer and block keys, per PLE layer its
+conv state and n-gram tokens, the draft head's input row, plus the last logits).
+A later request whose prompt extends a saved sequence restores it into a fresh
+session instead of prefilling. Entries are verified against their exact token
+ids, the checkpoint and KV-format identity and a checksum; the directory is
+bounded by a byte budget (least recently used first) and a time to live; host
+memory caching comes from the page cache. Saving copies the state to the host on
+the engine thread and writes the file on a writer thread.
+
+**Why.** Agents come back to long contexts minutes or hours later. Restoring a
+32k-token conversation took 0.9 s (5 s after a server restart, with cold expert
+tiers) against 28 s of prefill. The GDN layers' recurrent state cannot rewind,
+so an entry resumes only prompts that extend all of its tokens; reusing a shared
+prefix with a different continuation needs a snapshot taken at the prefix
+boundary (#6840).
+
 ## Speculative decoding
 
 The checkpoint's multi-token-prediction head drafts the next token from the last

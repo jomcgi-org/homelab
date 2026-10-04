@@ -11,6 +11,7 @@ pub mod generation;
 pub mod openai;
 pub mod parse;
 pub mod sampling;
+pub mod store;
 pub mod template;
 
 use std::net::SocketAddr;
@@ -41,6 +42,8 @@ pub struct ServeConfig {
     pub draft: usize,
     pub addr: SocketAddr,
     pub model_name: String,
+    /// Persistent prefix store (`None`: only the live sequence is reused).
+    pub prefix_store: Option<store::StoreConfig>,
 }
 
 /// Shared state of the HTTP handlers.
@@ -182,7 +185,8 @@ pub fn build(
     let template = ChatTemplate::load(&cfg.model_dir)?;
     let (defaults, stop_ids) = generation_defaults(&cfg.model_dir, &template)?;
     let parser = parse::parser_for(&cfg.model_type)?;
-    let (engine, ready) = engine::start(loader, cfg.max_context, cfg.draft);
+    let (engine, ready) =
+        engine::start(loader, cfg.max_context, cfg.draft, cfg.prefix_store.clone());
     let app = Arc::new(App::new(
         engine,
         template,

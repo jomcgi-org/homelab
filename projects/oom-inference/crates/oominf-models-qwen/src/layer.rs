@@ -182,6 +182,15 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    /// What this layer's attention cache holds (see [`Attention::cache_extent`]);
+    /// zeros without attention.
+    pub fn cache_extent(&self, state: &AttnState<B>) -> (usize, usize, usize, usize) {
+        match &self.mixer {
+            Mixer::Attention(a) => a.cache_extent(state),
+            Mixer::Gdn(_) => (0, 0, 0, 0),
+        }
+    }
+
     /// Bytes of the fp32 KV shadow a layer-major prefill of up to `tokens` tokens
     /// holds while this layer runs (0 without attention or with an fp32 cache).
     pub fn shadow_bytes(&self, tokens: usize) -> usize {

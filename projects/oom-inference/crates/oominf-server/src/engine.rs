@@ -9,6 +9,7 @@ use oominf_core::{Model, Session, decode_step};
 use tokio::sync::mpsc;
 
 use crate::sampling::{Sampler, SamplingParams};
+use crate::store::{PrefixStore, StoreConfig};
 
 /// Loads the model; runs on the engine thread, which then owns it.
 pub type ModelLoader = Box<dyn FnOnce() -> Result<Box<dyn Model>> + Send>;
@@ -45,11 +46,22 @@ pub enum Event {
 /// Reuses model state across requests. Recurrent layers cannot be rewound, so
 /// a cached state is reusable only when the new prompt extends its tokens.
 pub trait PrefixCache<S> {
-    /// Removes and returns a cached sequence whose tokens prefix `prompt`.
-    fn take(&mut self, prompt: &[u32]) -> Option<CachedSeq<S>>;
+    /// Removes and returns a cached sequence whose tokens prefix `prompt`;
+    /// `new_session` makes a fresh session for a cache that restores saved state.
+    fn take(
+        &mut self,
+        prompt: &[u32],
+        new_session: &mut dyn FnMut() -> Result<S>,
+    ) -> Option<CachedSeq<S>>;
     fn put(&mut self, seq: CachedSeq<S>);
-    /// Releases every cached sequence (and the device memory it holds).
+    /// Releases every cached sequence (and the device memory it holds); a
+    /// persistent cache may save it first.
     fn clear(&mut self);
+    /// Releases every cached sequence without saving it (its state may be
+    /// half-updated after a failed request).
+    fn discard(&mut self) {
+        self.clear();
+    }
 }
 
 pub struct CachedSeq<S> {
@@ -68,8 +80,15 @@ impl<S> Default for LastSequence<S> {
     }
 }
 
+impl<S> LastSequence<S> {
+    /// Removes the cached sequence, whatever it holds.
+    pub fn take_all(&mut self) -> Option<CachedSeq<S>> {
+        self.0.take()
+    }
+}
+
 impl<S> PrefixCache<S> for LastSequence<S> {
-    fn take(&mut self, prompt: &[u32]) -> Option<CachedSeq<S>> {
+    fn take(&mut self, prompt: &[u32], _: &mut dyn FnMut() -> Result<S>) -> Option<CachedSeq<S>> {
         // An identical prompt needs the cached logits; a longer one only the state.
         let ok = self.0.as_ref().is_some_and(|c| {
             !c.ids.is_empty()
@@ -114,13 +133,14 @@ pub fn start(
     loader: ModelLoader,
     max_context: usize,
     draft: usize,
+    store: Option<StoreConfig>,
 ) -> (EngineHandle, std_mpsc::Receiver<Result<String>>) {
     let (jobs_tx, jobs_rx) = std_mpsc::channel::<Job>();
     let (ready_tx, ready_rx) = std_mpsc::channel();
     std::thread::Builder::new()
         .name("oominf-engine".into())
         .spawn(move || {
-            let engine = match Engine::load(loader, max_context, draft) {
+            let engine = match Engine::load(loader, max_context, draft, store) {
                 Ok((engine, summary)) => {
                     let _ = ready_tx.send(Ok(summary));
                     engine
@@ -157,18 +177,33 @@ struct Engine {
 }
 
 impl Engine {
-    fn load(loader: ModelLoader, max_context: usize, draft: usize) -> Result<(Self, String)> {
+    fn load(
+        loader: ModelLoader,
+        max_context: usize,
+        draft: usize,
+        store: Option<StoreConfig>,
+    ) -> Result<(Self, String)> {
         let t = Instant::now();
         let model = loader()?;
+        let (cache, stored): (Box<dyn PrefixCache<Seq>>, String) = match store {
+            Some(cfg) => {
+                let dir = cfg.dir.display().to_string();
+                (
+                    Box::new(PrefixStore::open(cfg)?),
+                    format!("; prefix store {dir}"),
+                )
+            }
+            None => (Box::new(LastSequence::default()), String::new()),
+        };
         let summary = format!(
-            "model loaded in {:.1}s; {}; max context {max_context} tokens; draft {draft} tokens per step",
+            "model loaded in {:.1}s; {}; max context {max_context} tokens; draft {draft} tokens per step{stored}",
             t.elapsed().as_secs_f64(),
             model.describe(),
         );
         Ok((
             Engine {
                 model,
-                cache: Box::new(LastSequence::default()),
+                cache,
                 max_context,
                 draft,
             },
@@ -180,8 +215,8 @@ impl Engine {
         while let Ok(job) = jobs.recv() {
             let events = job.events.clone();
             if let Err(e) = self.serve(job) {
-                // The cached state may be half-updated: drop it.
-                self.cache = Box::new(LastSequence::default());
+                // The cached state may be half-updated: drop it unsaved.
+                self.cache.discard();
                 let _ = events.blocking_send(Event::Failed(format!("{e:#}")));
             }
         }
@@ -197,7 +232,11 @@ impl Engine {
         );
         let max_tokens = job.max_tokens.min(max_context - job.prompt.len());
 
-        let (mut ids, mut state, cached_logits) = match self.cache.take(&job.prompt) {
+        let model = &self.model;
+        let restored = self
+            .cache
+            .take(&job.prompt, &mut || model.new_session(max_context));
+        let (mut ids, mut state, cached_logits) = match restored {
             Some(c) => (c.ids, c.state, Some(c.logits)),
             None => {
                 // Free the stale sequence before starting its replacement.
@@ -312,6 +351,10 @@ impl Engine {
 mod tests {
     use super::*;
 
+    fn no_session() -> Result<()> {
+        anyhow::bail!("a last-sequence cache never makes sessions")
+    }
+
     fn seq(ids: &[u32], logits: &[f32]) -> CachedSeq<()> {
         CachedSeq {
             ids: ids.to_vec(),
@@ -324,19 +367,25 @@ mod tests {
     fn last_sequence_reuses_only_exact_extensions() {
         let mut c = LastSequence::default();
         c.put(seq(&[1, 2, 3], &[0.5]));
-        assert!(c.take(&[1, 9, 3, 4]).is_none());
-        assert!(c.take(&[1, 2]).is_none());
-        assert_eq!(c.take(&[1, 2, 3, 4]).map(|s| s.ids), Some(vec![1, 2, 3]));
-        assert!(c.take(&[1, 2, 3, 4]).is_none(), "taking empties the cache");
+        assert!(c.take(&[1, 9, 3, 4], &mut no_session).is_none());
+        assert!(c.take(&[1, 2], &mut no_session).is_none());
+        assert_eq!(
+            c.take(&[1, 2, 3, 4], &mut no_session).map(|s| s.ids),
+            Some(vec![1, 2, 3])
+        );
+        assert!(
+            c.take(&[1, 2, 3, 4], &mut no_session).is_none(),
+            "taking empties the cache"
+        );
     }
 
     #[test]
     fn identical_prompt_needs_cached_logits() {
         let mut c = LastSequence::default();
         c.put(seq(&[1, 2], &[]));
-        assert!(c.take(&[1, 2]).is_none());
+        assert!(c.take(&[1, 2], &mut no_session).is_none());
         c.put(seq(&[1, 2], &[0.1, 0.2]));
-        assert!(c.take(&[1, 2]).is_some());
+        assert!(c.take(&[1, 2], &mut no_session).is_some());
     }
 
     /// A model over 8 tokens whose logits after `x` peak at `(x + 1) % 8`, and
@@ -442,7 +491,7 @@ mod tests {
     }
 
     fn engine(draft: usize) -> EngineHandle {
-        let (handle, ready) = start(Box::new(|| Ok(Box::new(Counting))), 1024, draft);
+        let (handle, ready) = start(Box::new(|| Ok(Box::new(Counting))), 1024, draft, None);
         ready.recv().unwrap().unwrap();
         handle
     }

@@ -123,6 +123,19 @@ enum Command {
         /// Draft tokens per decode step (speculative decoding); 0 disables it.
         #[arg(long, default_value_t = 1)]
         draft: usize,
+        /// Save sequences evicted from the device here, and resume later requests
+        /// that extend one instead of prefilling (off when unset).
+        #[arg(long)]
+        prefix_store_dir: Option<PathBuf>,
+        /// Disk budget of the prefix store.
+        #[arg(long, default_value_t = 200.0)]
+        prefix_store_gib: f64,
+        /// Prefix store entries unused for longer are deleted.
+        #[arg(long, default_value_t = 72.0)]
+        prefix_store_ttl_hours: f64,
+        /// Shorter sequences are not saved (they prefill in moments).
+        #[arg(long, default_value_t = 1024)]
+        prefix_store_min_tokens: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
         #[command(flatten)]
@@ -315,9 +328,23 @@ fn main() -> Result<()> {
             max_context,
             prefill_chunk,
             draft,
+            prefix_store_dir,
+            prefix_store_gib,
+            prefix_store_ttl_hours,
+            prefix_store_min_tokens,
             experts,
             cache,
         } => {
+            let prefix_store = match prefix_store_dir {
+                Some(dir) => Some(oominf_server::store::StoreConfig {
+                    dir,
+                    budget_bytes: (prefix_store_gib * (1u64 << 30) as f64) as u64,
+                    ttl: std::time::Duration::from_secs_f64(prefix_store_ttl_hours * 3600.0),
+                    min_tokens: prefix_store_min_tokens,
+                    identity: format!("{} kv={:?}", load::checkpoint_id(&model)?, cache.kv_cache),
+                }),
+                None => None,
+            };
             let model_name =
                 served_model_name.unwrap_or_else(|| oominf_server::default_model_name(&model));
             let model_type = oominf_models::model_type(&oominf_format::Model::open(&model)?)?;
@@ -328,6 +355,7 @@ fn main() -> Result<()> {
                 draft,
                 addr: std::net::SocketAddr::new(host, port),
                 model_name,
+                prefix_store,
             };
             oominf_server::serve(
                 cfg,

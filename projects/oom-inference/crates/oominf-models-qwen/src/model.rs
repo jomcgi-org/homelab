@@ -85,12 +85,12 @@ pub struct SeqState<B: Backend> {
     pub ws: Rc<RefCell<Workspace<B>>>,
     /// With an MTP head: the final residual rows of the last step, and which row is
     /// the sequence's last token (the draft head's input).
-    hidden: Option<B::F32>,
-    hidden_row: usize,
+    pub(crate) hidden: Option<B::F32>,
+    pub(crate) hidden_row: usize,
     /// The MTP layer's attention state (its draft chain).
     mtp: Option<LayerState<B>>,
     /// Start and length of the last step if it can be rewound.
-    rewindable: Option<(usize, usize)>,
+    pub(crate) rewindable: Option<(usize, usize)>,
 }
 
 /// Renames a layer's stages to `{stage}.{layer}` for a model-level probe.
@@ -216,6 +216,11 @@ impl<B: Backend> QwenModel<B> {
             rewindable: None,
             ws,
         })
+    }
+
+    /// The decoder layers, in order.
+    pub(crate) fn layers(&self) -> &[DecoderLayer<B>] {
+        &self.layers
     }
 
     /// Whether the model can propose draft tokens ([`Self::draft`]).
