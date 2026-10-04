@@ -12,9 +12,7 @@
 //! out_c  = v_c + silu(dilated_conv(norm_conv(v)_c))
 //! ```
 //!
-//! Only the rows a step needs are read, all at once through io_uring. A caller that
-//! knows the next step's tokens early calls [`Ple::prefetch`] so the reads overlap
-//! earlier layers; [`Ple::forward`] then only waits for them.
+//! Only the rows a step needs are read, all at once through io_uring.
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -277,15 +275,6 @@ impl Ple {
         )
     }
 
-    /// Starts reading the table rows the step `token_ids` will need, so `forward`
-    /// only waits for them. Optional: `forward` reads whatever was not prefetched.
-    pub fn prefetch(&self, state: &PleState, token_ids: &[u32]) -> Result<()> {
-        let ids = self.step_rows(state, token_ids);
-        let mut r = self.rows.lock().unwrap();
-        self.wait_rows(&mut r)?;
-        self.start_rows(&mut r, ids)
-    }
-
     /// Queues reads of `ids` into `r.buf` (no reads may be in flight).
     fn start_rows(&self, r: &mut RowReads, ids: Vec<i64>) -> Result<()> {
         debug_assert_eq!(r.inflight, 0);
@@ -355,15 +344,11 @@ impl Ple {
         Ok(())
     }
 
-    /// The FP8 rows for `ids`, row after row: the prefetched batch when it matches,
-    /// otherwise read now.
+    /// The FP8 rows for `ids`, row after row.
     fn gather_rows(&self, ids: Vec<i64>) -> Result<Vec<u8>> {
         let mut r = self.rows.lock().unwrap();
+        self.start_rows(&mut r, ids)?;
         self.wait_rows(&mut r)?;
-        if r.ids != ids {
-            self.start_rows(&mut r, ids)?;
-            self.wait_rows(&mut r)?;
-        }
         r.ids.clear();
         Ok(std::mem::take(&mut r.buf))
     }
