@@ -19,6 +19,11 @@ _STATE = re.compile(
     r"completed|finished|healthy|unhealthy|todo|in-progress)\b",
     re.IGNORECASE,
 )
+_PROVENANCE_SECTION = re.compile(
+    r"^#{1,6}[ \t]+(?:evidence|provenance|sources?|references?)[ \t]*:?[ \t]*$"
+    r".*?(?=^#{1,6}[ \t]+\S|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
 _GATE = re.compile(
     r"\b(acceptance|validation|operational|live|rollout)\b.{0,100}"
     r"\b(outstanding|remaining|pending|gate|unverified|requires|required)\b|"
@@ -42,8 +47,14 @@ def utc(value: object) -> datetime | None:
 
 
 def classify(*, title: str, content: str | None, now: datetime) -> str:
-    """Classify the persisted claim, never an extractor-supplied policy name."""
-    text = f"{title}\n{content or ''}"
+    """Classify the persisted claim, never an extractor-supplied policy name.
+
+    Evidence and provenance sections cite the PRs, jobs and checks a durable
+    claim was observed through; only the title and claim body say what the
+    claim asserts, so only they decide volatility.
+    """
+    claim = _PROVENANCE_SECTION.sub("", content or "")
+    text = f"{title}\n{claim}"
     return (
         VOLATILE
         if (_SUBJECT.search(text) and _STATE.search(text)) or _GATE.search(text)

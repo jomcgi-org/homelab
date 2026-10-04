@@ -210,9 +210,17 @@ def expire_recall(text: str | None, *, now: datetime) -> str | None:
     Legacy blocks without a deadline fail closed. Previously sent transcripts
     remain dated history, with an explicit warning in the snapshot itself.
     """
-    if text is None or RECALL_HEADER not in text:
+    if text is None:
         return text
-    prefix, block = text.split(RECALL_HEADER, 1)
+    # The appended block is always last, so a task message that quotes the
+    # header keeps its own text after the quote.
+    separator = f"\n\n{RECALL_HEADER}"
+    if separator in text:
+        prefix, _, block = text.rpartition(separator)
+    elif text.startswith(RECALL_HEADER):
+        prefix, block = "", text[len(RECALL_HEADER) :]
+    else:
+        return text
     marker = next(
         (
             line.removeprefix("RECALL_EXPIRES ")

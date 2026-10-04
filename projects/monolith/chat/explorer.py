@@ -146,30 +146,27 @@ async def _expand_node(
                 "edge_type": link.get("edge_type", "link"),
             },
         )
-        if target:
-            deps.emitter.emit(
-                "node_discovered",
-                {
-                    "note_id": target["note_id"],
-                    "title": target["title"],
-                    "type": target["type"],
-                    "tags": target.get("tags", []),
-                    "snippet": "",
-                    "edges": [],
-                    **{key: target.get(key) for key in _FRESHNESS_KEYS},
-                },
-            )
-            edge_label = link.get("edge_type", "link")
-            lines.append(
-                f"- {target['title']} ({edge_label}; "
-                f"observed: {target.get('observed_at')}, "
-                f"freshness: {target.get('freshness')}, "
-                f"review after: {target.get('review_after')})"
-            )
-            if target.get("requires_authoritative_observation"):
-                lines.append("New authoritative observation required before action.")
-        else:
-            lines.append(f"- {target_id} (unresolved)")
+        deps.emitter.emit(
+            "node_discovered",
+            {
+                "note_id": target["note_id"],
+                "title": target["title"],
+                "type": target["type"],
+                "tags": target.get("tags", []),
+                "snippet": "",
+                "edges": [],
+                **{key: target.get(key) for key in _FRESHNESS_KEYS},
+            },
+        )
+        edge_label = link.get("edge_type", "link")
+        lines.append(
+            f"- {target['title']} ({edge_label}; "
+            f"observed: {target.get('observed_at')}, "
+            f"freshness: {target.get('freshness')}, "
+            f"review after: {target.get('review_after')})"
+        )
+        if target.get("requires_authoritative_observation"):
+            lines.append("New authoritative observation required before action.")
 
     return f"Edges from {note_id}:\n" + "\n".join(lines)
 
