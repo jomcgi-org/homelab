@@ -441,9 +441,10 @@ jobs:
         limits:
           memory: 512Mi
     # Evidence-age backfill is bounded and replayable. Unknown rows stay due.
-    # Perpetual catch-up for notes written without a policy by pre-migration pods;
-    # a no-op (no rows locked) once none are pending. See knowledge/README.md.
+    # Opt in only after an operator-approved dry run. Once enabled, catches up
+    # notes from pre-migration pods; no-op when drained. See knowledge/README.md.
     - name: knowledge-review-backfill
+      suspend: true
       args: ["knowledge-review-backfill", "--apply", "--pending-only"]
       schedule: "*/5 * * * *"
       concurrencyPolicy: Forbid
