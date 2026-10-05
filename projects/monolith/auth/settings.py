@@ -20,6 +20,8 @@ class AuthSettings:
     authentik_agent_audience: str = ""
     cloudflare_access_jwks_url: str = ""
     cloudflare_access_issuer: str = ""
+    # Only the Grimoire audience opts into the IdP's protected user-type claim.
+    allow_username_identity: bool = False
 
     @classmethod
     def from_env(cls) -> AuthSettings:

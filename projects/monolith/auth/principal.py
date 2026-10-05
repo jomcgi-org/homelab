@@ -35,6 +35,9 @@ class Principal:
     issuer: str = ""
     display_name: str | None = None
     email_verified: bool = False
+    username: str | None = None
+    user_type: str | None = None
+    delegation_claim_present: bool = False
 
     def has_group(self, name: str) -> bool:
         return name in self.groups

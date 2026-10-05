@@ -709,6 +709,35 @@ spec:
               value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_INVITATION_LINKS_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
+            - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
+              value: {{ .Values.platformAuth.managementEnabled | quote }}
+            - name: PLATFORM_AUTH_ENROLLMENT_ENABLED
+              value: {{ .Values.platformAuth.enrollmentEnabled | quote }}
+            - name: PLATFORM_AUTH_ENFORCEMENT_ENABLED
+              value: {{ .Values.platformAuth.enforcementEnabled | quote }}
+            {{- if or .Values.platformAuth.managementEnabled .Values.platformAuth.enrollmentEnabled .Values.platformAuth.enforcementEnabled }}
+            {{- if not .Values.cfIngress.grimoire.enabled }}
+            {{- fail "platform auth requires the verified Grimoire OIDC browser audience" }}
+            {{- end }}
+            - name: PLATFORM_AUTH_LOGIN_ISSUER
+              value: {{ .Values.cfIngress.grimoire.issuer | quote }}
+            - name: PLATFORM_AUTH_LOGIN_AUDIENCE
+              value: {{ .Values.cfIngress.grimoire.clientID | quote }}
+            - name: PLATFORM_AUTH_LOGIN_JWKS_URL
+              value: {{ printf "%s/application/o/grimoire/jwks/" .Values.grimoire.authentikBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.platformAuth.enrollmentEnabled }}
+            {{- if not (and .Values.platformAuth.managementEnabled .Values.platformAuth.enforcementEnabled) }}
+            {{- fail "platform enrollment requires management and enforcement; bootstrap existing users and grants first" }}
+            {{- end }}
+            {{- if .Values.grimoire.invitationLinks.enrollmentEnabled }}
+            {{- fail "platform enrollment cannot coexist with cross-flow Authentik invitation integration" }}
+            {{- end }}
+            - name: PLATFORM_AUTH_ENROLLMENT_ISSUER
+              value: {{ .Values.cfIngress.grimoire.issuer | quote }}
+            - name: PLATFORM_AUTH_ENROLLMENT_JWKS_URL
+              value: {{ printf "%s/application/o/grimoire/jwks/" .Values.grimoire.authentikBaseUrl | quote }}
+            {{- end }}
             - name: GRIMOIRE_INVITATION_ENROLLMENT_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enrollmentEnabled | quote }}
             {{- if .Values.grimoire.invitationLinks.enrollmentEnabled }}
@@ -967,6 +996,16 @@ spec:
               value: {{ .Values.grimoire.play.enabled | quote }}
             - name: GRIMOIRE_INVITATION_LINKS_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
+            - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
+              value: {{ .Values.platformAuth.managementEnabled | quote }}
+            - name: PLATFORM_AUTH_ENROLLMENT_ENABLED
+              value: {{ .Values.platformAuth.enrollmentEnabled | quote }}
+            - name: PLATFORM_AUTH_ENROLLMENT_FLOW_URL
+              {{- if .Values.platformAuth.enrollmentEnabled }}
+              value: {{ required "platform enrollment flow URL is required" .Values.platformAuth.enrollmentFlowUrl | quote }}
+              {{- else }}
+              value: ""
+              {{- end }}
             {{- if .Values.frontend.qwenApiBase }}
             # FreeToken (Qwen on node-4) over the Tailscale egress Service, for
             # the private /qwen chat page.

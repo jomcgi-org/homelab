@@ -1,0 +1,300 @@
+version: 1
+metadata:
+  name: homelab - platform enrollment (opt-in)
+entries:
+  - model: authentik_flows.flow
+    id: enrollment
+    identifiers:
+      slug: platform-enrollment
+    attrs:
+      name: Platform enrollment
+      title: Join the platform
+      designation: enrollment
+      authentication: none
+  - model: authentik_stages_prompt.prompt
+    id: invitation-token
+    identifiers:
+      name: platform-invitation-token
+    attrs:
+      field_key: platform_invitation_token
+      label: Invitation code
+      type: password
+      required: true
+      order: 0
+  - model: authentik_stages_prompt.prompt
+    id: username
+    identifiers:
+      name: platform-username
+    attrs:
+      field_key: username
+      label: Username (or your existing username when signed in)
+      type: text
+      required: true
+      order: 1
+  - model: authentik_policies_expression.expressionpolicy
+    id: validate
+    identifiers:
+      name: platform-validate-invitation
+    attrs:
+      expression: |
+        import hashlib
+        import os
+        import re
+        import requests
+        from uuid import UUID
+        from authentik.core.models import User
+        from authentik.core.middleware import SESSION_KEY_IMPERSONATE_USER
+        plan = request.context.get("flow_plan")
+        data = request.context.get("prompt_data", {})
+        from authentik.flows.models import Flow
+        if not plan or not Flow.objects.filter(pk=plan.flow_pk, slug="platform-enrollment").exists():
+            return False
+        if request.http_request.session.get(SESSION_KEY_IMPERSONATE_USER):
+            return False
+        token = data.pop("platform_invitation_token", "")
+        username = str(data.get("username", "")).strip().lower()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token) or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{2,31}", username):
+            ak_message("Enter your invitation code and a username of 3 to 32 characters.")
+            return False
+        try:
+            response = requests.post(os.environ["PLATFORM_AUTH_API_URL"] + "/enrollment/validate", json={"token": token}, timeout=5)
+            if response.status_code != 200:
+                ak_message("This invitation is unavailable. Ask the administrator for a new one.")
+                return False
+            info = response.json()
+            invitation_id = str(UUID(info["invitation_id"]))
+        except Exception:
+            ak_message("Enrollment is temporarily unavailable. Try again.")
+            return False
+        path = "platform/invitations/" + invitation_id
+        existing = User.objects.filter(username__iexact=username).first()
+        signed_in = request.http_request.user
+        if not signed_in.is_anonymous:
+            if not signed_in.is_active or signed_in.type not in ("internal", "external") or signed_in.username != username:
+                return False
+            existing = signed_in
+        elif existing:
+            # Only an inactive account created by this exact flow/invitation
+            # can resume. Never overwrite an active or unrelated account.
+            if existing.is_active or existing.path != path or existing.type != "external":
+                ak_message("That username already exists. Sign in with that account first.")
+                return False
+            if info["status"] == "accepted" and not info["activation_pending"]:
+                ak_message("Registration already finished. Sign in or ask the administrator for a reset.")
+                return False
+        if info["status"] == "accepted" and (existing is None or existing.uid != info["accepted_subject"]):
+            return False
+        plan.context["platform_invitation_id"] = invitation_id
+        plan.context["platform_invitation_digest"] = hashlib.sha256(token.encode()).hexdigest()
+        plan.context["platform_username"] = username
+        plan.context["platform_existing"] = existing is not None
+        plan.context["user_path"] = path
+        plan.context["user_type"] = "external"
+        plan.context.pop("groups", None)
+        if existing:
+            plan.context["pending_user"] = existing
+        else:
+            plan.context.pop("pending_user", None)
+        data.clear()
+        data["username"] = username
+        return True
+  - model: authentik_stages_prompt.promptstage
+    id: invitation
+    identifiers:
+      name: platform-invitation
+    attrs:
+      fields: [!KeyOf invitation-token, !KeyOf username]
+      validation_policies: [!KeyOf validate]
+  - model: authentik_stages_prompt.prompt
+    id: password
+    identifiers:
+      name: platform-password
+    attrs:
+      field_key: password
+      label: Password
+      type: password
+      required: true
+      order: 0
+  - model: authentik_stages_prompt.prompt
+    id: password-repeat
+    identifiers:
+      name: platform-password-repeat
+    attrs:
+      field_key: password_repeat
+      label: Repeat password
+      type: password
+      required: true
+      order: 1
+  - model: authentik_policies_expression.expressionpolicy
+    id: details-validation
+    identifiers:
+      name: platform-validate-details
+    attrs:
+      expression: |
+        plan = request.context.get("flow_plan")
+        data = request.context.get("prompt_data", {})
+        if not plan or not plan.context.get("platform_invitation_id") or plan.context.get("platform_existing"):
+            return False
+        password = data.get("password", "")
+        if not isinstance(password, str) or not 12 <= len(password) <= 128 or password != data.get("password_repeat"):
+            ak_message("Use a matching password of 12 to 128 characters.")
+            return False
+        data.clear()
+        data.update(username=plan.context["platform_username"], name=plan.context["platform_username"], password=password)
+        return True
+  - model: authentik_stages_prompt.promptstage
+    id: details
+    identifiers:
+      name: platform-details
+    attrs:
+      fields: [!KeyOf password, !KeyOf password-repeat]
+      validation_policies: [!KeyOf details-validation]
+  - model: authentik_policies_expression.expressionpolicy
+    id: new-account
+    identifiers:
+      name: platform-needs-account
+    attrs:
+      expression: |
+        plan = request.context.get("flow_plan")
+        return bool(plan and plan.context.get("platform_invitation_id") and not plan.context.get("platform_existing"))
+  - model: authentik_stages_user_write.userwritestage
+    id: write
+    identifiers:
+      name: platform-create-user
+    attrs:
+      user_creation_mode: always_create
+      create_users_as_inactive: true
+      create_users_group: null
+      user_type: external
+      user_path_template: platform/invitations
+  - model: authentik_stages_prompt.prompt
+    id: finish
+    identifiers:
+      name: platform-finish
+    attrs:
+      field_key: finish
+      label: Finish account registration
+      type: static
+      order: 0
+  - model: authentik_policies_expression.expressionpolicy
+    id: complete
+    identifiers:
+      name: platform-complete-registration
+    attrs:
+      expression: |
+        import os
+        import time
+        import jwt
+        import requests
+        from uuid import UUID, uuid4
+        from authentik.flows.models import Flow
+        from authentik.providers.oauth2.models import OAuth2Provider, SubModes
+        plan = request.context.get("flow_plan")
+        if not plan or not Flow.objects.filter(pk=plan.flow_pk, slug="platform-enrollment").exists():
+            return False
+        user = plan.context.get("pending_user")
+        if user and user.pk:
+            user.refresh_from_db()
+        invitation_id = str(UUID(plan.context["platform_invitation_id"]))
+        if not user or not user.pk or user.type not in ("internal", "external") or user.username != plan.context["platform_username"]:
+            return False
+        if user.is_active:
+            if request.http_request.user.pk != user.pk or request.http_request.user.is_anonymous:
+                return False
+        elif user.path != "platform/invitations/" + invitation_id or user.type != "external":
+            return False
+        provider = OAuth2Provider.objects.get(name="grimoire")
+        if provider.sub_mode != SubModes.HASHED_USER_ID or not provider.signing_key:
+            return False
+        instant = int(time.time())
+        claims = {"iss": os.environ["PLATFORM_AUTH_ENROLLMENT_ISSUER"], "sub": user.uid,
+            "aud": "platform-registration", "iat": instant, "nbf": instant, "exp": instant + 60,
+            "jti": str(uuid4()), "username": user.username, "email": user.email or None,
+            "invitation_bound": True, "phase": "completed", "invitation_id": invitation_id,
+            "invitation_digest": plan.context["platform_invitation_digest"]}
+        receipt = jwt.encode(claims,
+            provider.signing_key.private_key, algorithm="RS256",
+            headers={"kid": provider.signing_key.kid, "typ": "platform-registration+jwt"})
+        try:
+            response = requests.post(os.environ["PLATFORM_AUTH_API_URL"] + "/enrollment/complete", json={"receipt": receipt}, timeout=5)
+            if response.status_code != 200:
+                ak_message("Registration could not finish. Retry, or ask the administrator.")
+                return False
+        except Exception:
+            ak_message("Registration is temporarily unavailable. Try again.")
+            return False
+        if not user.is_active and not response.json().get("activation_pending"):
+            ak_message("This account needs an administrator reset.")
+            return False
+        claims.update(phase="activated", jti=str(uuid4()))
+        acknowledgement = jwt.encode(claims, provider.signing_key.private_key, algorithm="RS256",
+            headers={"kid": provider.signing_key.kid, "typ": "platform-registration+jwt"})
+        from django.db import transaction
+        try:
+            # An unacknowledged HTTP failure must not leave a newly activated
+            # identity whose old invitation can later bypass an admin disable.
+            # If the platform commits the acknowledgement but its response is
+            # lost, fail closed and leave manual repair to the administrator.
+            with transaction.atomic():
+                if not user.is_active:
+                    user.is_active = True
+                    user.save(update_fields=["is_active"])
+                response = requests.post(os.environ["PLATFORM_AUTH_API_URL"] + "/enrollment/acknowledge", json={"receipt": acknowledgement}, timeout=5)
+                if response.status_code != 200:
+                    raise RuntimeError("Activation acknowledgement unavailable")
+        except Exception:
+            user.refresh_from_db()
+            ak_message("Registration could not finish. Retry, or ask the administrator for a reset.")
+            return False
+        plan.context["prompt_data"] = {}
+        plan.context["redirect"] = "https://friends.jomcgi.dev/grimoire/platform/profile"
+        request.context.get("prompt_data", {}).clear()
+        return True
+  - model: authentik_stages_prompt.promptstage
+    id: completion
+    identifiers:
+      name: platform-completion
+    attrs:
+      fields: [!KeyOf finish]
+      validation_policies: [!KeyOf complete]
+  - model: authentik_stages_user_login.userloginstage
+    id: login
+    identifiers:
+      name: platform-login
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf invitation
+      order: 0
+  - model: authentik_flows.flowstagebinding
+    id: details-binding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf details
+      order: 10
+  - model: authentik_flows.flowstagebinding
+    id: write-binding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf write
+      order: 20
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf details-binding
+      policy: !KeyOf new-account
+      order: 0
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf write-binding
+      policy: !KeyOf new-account
+      order: 0
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf completion
+      order: 30
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf login
+      order: 40

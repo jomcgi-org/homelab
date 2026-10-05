@@ -98,3 +98,13 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+py_test(
+    name = "platform_enrollment_test",
+    srcs = ["platform_enrollment_test.py"],
+    data = ["Chart.lock", "Chart.yaml", "values.yaml", "@multitool//tools/helm"] + glob([
+        "templates/**/*", "charts/**/*", "blueprints/*.yaml", "optional/*.yaml",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = ["@pip//cryptography", "@pip//pyjwt", "@pip//pytest", "@pip//pyyaml"],
+)

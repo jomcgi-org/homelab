@@ -106,6 +106,36 @@ async def test_valid_human_token_maps_all_identity_facts():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "opt_in,user_type,email,expected",
+    [
+        (True, "external", None, PrincipalKind.HUMAN),
+        (True, "internal", None, PrincipalKind.HUMAN),
+        (True, "service_account", None, PrincipalKind.WORKLOAD),
+        (True, "service_account", "bot@example.test", PrincipalKind.WORKLOAD),
+        (True, "internal_service_account", None, PrincipalKind.WORKLOAD),
+        (True, None, None, PrincipalKind.WORKLOAD),
+        (False, "external", None, PrincipalKind.WORKLOAD),
+    ],
+)
+async def test_username_identity_requires_scoped_opt_in_and_protected_user_type(
+    opt_in, user_type, email, expected
+):
+    key, jwk = _key_and_jwk()
+    fetch, _ = _fetcher({"keys": [jwk]})
+    verifier = AuthentikStandingVerifier(
+        _settings(allow_username_identity=opt_in), fetch=fetch
+    )
+    principal = await verifier.verify(
+        _token(
+            key, email=email, preferred_username="player", platform_user_type=user_type
+        )
+    )
+    assert principal.kind is expected
+    assert principal.username == "player"
+
+
+@pytest.mark.asyncio
 async def test_valid_service_account_without_email_is_workload():
     private_key, jwk = _key_and_jwk()
     fetch, _ = _fetcher({"keys": [jwk]})
