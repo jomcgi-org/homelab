@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { replaceState } from "./navigation.js";
 import { load } from "../src/routes/public/blog/[slug]/+page.server.js";
 import fixture from "./fixtures/blog-page.json";
 import recording from "./fixtures/qwen-replay.json";
@@ -59,5 +60,29 @@ describe("typed fixture shape", () => {
     { ...fixture, toc: [{ ...fixture.toc[0], children: ["invalid"] }] },
   ])("rejects malformed server data", (value) => {
     expect(() => assertBlogPage(value)).toThrow(TypeError);
+  });
+});
+
+describe("fixture navigation", () => {
+  it("snapshots proxy state before calling native History", () => {
+    const copied = [];
+    vi.stubGlobal("location", new URL("https://preview.invalid/pr/42/sha/"));
+    vi.stubGlobal("history", {
+      replaceState: (state) => copied.push(structuredClone(state)),
+    });
+    try {
+      replaceState("#section", new Proxy({ section: "one" }, {}));
+      expect(copied).toStrictEqual([{ section: "one" }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("rejects routes outside this artifact", () => {
+    vi.stubGlobal("location", new URL("https://preview.invalid/pr/42/sha/"));
+    try {
+      expect(() => replaceState("/outside", {})).toThrow("Fixture navigation");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

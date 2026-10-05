@@ -7,5 +7,6 @@ py_test(
         "publish.py",
         "publish_test.py",
     ],
+    imports = ["."],
     main = "publish_test.py",
 )
