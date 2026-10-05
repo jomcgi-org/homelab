@@ -195,6 +195,9 @@ pub fn load<B: Backend>(
         state.hidden = Some(gpu.upload_f32(&row)?);
         state.hidden_row = 0;
     }
+    // The draft head's cache is not saved: it restarts at the restored position.
+    state.hidden_tokens.clear();
+    state.mtp_end = 0;
     state.pos = pos;
     state.rewindable = None;
     Ok(())

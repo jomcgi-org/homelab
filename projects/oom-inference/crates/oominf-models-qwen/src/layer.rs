@@ -165,12 +165,19 @@ impl<B: Backend> DecoderLayer<B> {
         Ok(())
     }
 
-    /// Forgets every token this layer's attention cached (for a draft chain that
-    /// restarts each step).
-    pub fn reset_attention(&self, state: &mut LayerState<B>) {
+    /// Forgets every token this layer's attention cached; the next one cached is at
+    /// position `base`.
+    pub fn reset_attention_at(&self, state: &mut LayerState<B>, base: usize) {
         if let (Mixer::Attention(a), Some(st)) = (&self.mixer, state.attn.as_mut()) {
             a.reset(st);
+            st.base = base;
         }
+    }
+
+    /// The position of this layer's first cached token and how many it holds
+    /// (`None` without attention).
+    pub fn attention_extent(&self, state: &LayerState<B>) -> Option<(usize, usize)> {
+        state.attn.as_ref().map(|st| (st.base, st.len))
     }
 
     /// Bytes of this layer's sequence-length-dependent step buffers for a step of

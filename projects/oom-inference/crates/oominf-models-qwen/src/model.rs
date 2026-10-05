@@ -99,12 +99,17 @@ struct Mtp<B: Backend> {
     fc_embedding: Weight<B>,
     fc_hidden: Weight<B>,
     mixer: HyperConn<B>,
-    /// `[hc]` ones: adds one row to every stream through the combine kernel.
+    /// `[MTP_STEP, hc]` ones: adds a row to every stream through the combine kernel.
     ones: B::F32,
 }
 
 /// Longest draft chain a sequence supports.
 pub const MAX_DRAFT: usize = 8;
+
+/// Most positions a draft call appends to the MTP cache, and per MTP step (a step's
+/// routed experts must fit the draft head's small VRAM tier).
+const MTP_CATCHUP: usize = MAX_DRAFT + 1;
+const MTP_STEP: usize = 4;
 
 /// Device memory a step's workspace may need on top of what it already holds (a
 /// prefill chunk's activations and MoE scratch), kept free when caches grow.
@@ -126,8 +131,12 @@ pub struct SeqState<B: Backend> {
     /// the sequence's last token (the draft head's input).
     pub(crate) hidden: Option<B::F32>,
     pub(crate) hidden_row: usize,
-    /// The MTP layer's attention state (its draft chain).
+    /// The tokens of those rows (empty when unknown, e.g. after a restore).
+    pub(crate) hidden_tokens: Vec<u32>,
+    /// The MTP layer's attention state, and the position its committed entries end
+    /// at (draft-chain entries beyond it are dropped at the next draft).
     mtp: Option<LayerState<B>>,
+    pub(crate) mtp_end: usize,
     /// Start and length of the last step if it can be rewound.
     pub(crate) rewindable: Option<(usize, usize)>,
 }
@@ -206,7 +215,7 @@ impl<B: Backend> QwenModel<B> {
                 fc_embedding: weight(gpu, model, "mtp.fc_embedding.weight", &[hu, hu], &dims)?,
                 fc_hidden: weight(gpu, model, "mtp.fc_hidden.weight", &[hu, hu], &dims)?,
                 mixer: HyperConn::load(gpu, model, &dims, "mtp.hyper_connection_mixer", false)?,
-                ones: gpu.upload_f32(&vec![1.0; dims.hc])?,
+                ones: gpu.upload_f32(&vec![1.0; MTP_STEP * dims.hc])?,
             })
         } else {
             None
@@ -243,15 +252,17 @@ impl<B: Backend> QwenModel<B> {
             pos: 0,
             hidden: None,
             hidden_row: 0,
+            hidden_tokens: Vec::new(),
             mtp: match &self.mtp {
                 Some(m) => {
                     Some(
                         m.layer
-                            .new_state_shared(gpu, &self.dims, MAX_DRAFT, ws.clone())?,
+                            .new_state_shared(gpu, &self.dims, max_tokens, ws.clone())?,
                     )
                 }
                 None => None,
             },
+            mtp_end: 0,
             rewindable: None,
             ws,
         })
@@ -267,16 +278,17 @@ impl<B: Backend> QwenModel<B> {
         self.mtp.is_some()
     }
 
-    /// Keeps rows `[first, first + rows)` of the residual `x` as the draft head's
-    /// input, the last of them being the sequence's last token.
+    /// Keeps rows `[first, first + rows)` of the residual `x`, the hidden states of
+    /// `tokens`, as the draft head's input, the last being the sequence's last token.
     fn keep_hidden(
         &self,
         gpu: &B,
         state: &mut SeqState<B>,
         x: &B::F32,
         first: usize,
-        rows: usize,
+        tokens: &[u32],
     ) -> Result<()> {
+        let rows = tokens.len();
         if self.mtp.is_none() {
             return Ok(());
         }
@@ -289,6 +301,7 @@ impl<B: Backend> QwenModel<B> {
         gpu.copy_range(x, first * r, &mut buf, 0, rows * r)?;
         state.hidden = Some(buf);
         state.hidden_row = rows - 1;
+        state.hidden_tokens = tokens.to_vec();
         Ok(())
     }
 
@@ -488,7 +501,7 @@ impl<B: Backend> QwenModel<B> {
             x_name = "layer.out";
         }
         state.pos += t;
-        self.keep_hidden(gpu, state, &x, 0, t)?;
+        self.keep_hidden(gpu, state, &x, 0, token_ids)?;
 
         let mut ws = state.ws.borrow_mut();
         let logits = self.head(gpu, &mut ws, &x, t, probe, last_only)?;
@@ -756,7 +769,7 @@ impl<B: Backend> QwenModel<B> {
             return Ok(Some(None));
         }
         let t = chunks.last().map_or(0, |c| c.len());
-        self.keep_hidden(gpu, state, last, t - 1, 1)?;
+        self.keep_hidden(gpu, state, last, t - 1, &token_ids[token_ids.len() - 1..])?;
         let logits = self.head(gpu, &mut state.ws.borrow_mut(), last, t, &mut NoProbe, true)?;
         // Give prefill-only memory back to the expert tier for decode: the residuals,
         // the fp32 KV shadows, the grow-only buffers sized for fetch groups and FP8
@@ -785,6 +798,7 @@ impl<B: Backend> QwenModel<B> {
         }
         state.pos = start + keep;
         state.hidden_row = keep - 1;
+        state.hidden_tokens.truncate(keep);
         // Rewinding replays from the step's start, so a later rewind within the kept
         // rows is still exact.
         state.rewindable = Some((start, keep));
@@ -794,6 +808,13 @@ impl<B: Backend> QwenModel<B> {
     /// Up to `k` tokens predicted to follow `next`, the token the sequence will be
     /// fed next, from the last token's final residual (empty without an MTP head or
     /// before the first step).
+    ///
+    /// The MTP layer keeps its own attention cache across calls, as in the reference
+    /// serving implementation's draft-extend: entry `p` fuses the final residual at
+    /// position `p` with the embedding of the token at `p + 1`, at RoPE position
+    /// `p`. Each call first appends the entries the last step made final (its
+    /// accepted tokens, the last one paired with `next`), then drafts from the last
+    /// entry's output; draft-chain entries are dropped at the next call.
     pub fn draft(
         &self,
         gpu: &B,
@@ -802,97 +823,173 @@ impl<B: Backend> QwenModel<B> {
         k: usize,
         experts: &mut dyn ExpertSource<B>,
     ) -> Result<Vec<u32>> {
-        let (Some(mtp), Some(hidden), Some(mst)) =
-            (&self.mtp, state.hidden.as_ref(), state.mtp.as_mut())
+        let (Some(mtp), Some(_), Some(_)) = (&self.mtp, state.hidden.as_ref(), state.mtp.as_ref())
         else {
             return Ok(Vec::new());
         };
+        let k = k.min(MAX_DRAFT);
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let d = &self.dims;
+        let r = d.residual();
+        let rows = state.hidden_row + 1;
+        let pos = state.pos;
+        let first = pos - rows;
+        // Entries before `first` need residuals no longer kept: catch up from the
+        // committed end when it lies within the kept rows, else restart the cache.
+        let mut lo = pos.saturating_sub(MTP_CATCHUP).max(first);
+        if state.hidden_tokens.len() != rows {
+            lo = pos - 1;
+        }
+        let mst = state.mtp.as_mut().expect("checked above");
+        let from = match mtp.layer.attention_extent(mst) {
+            Some((base, len))
+                if state.mtp_end >= lo.max(base) && state.mtp_end < pos && len > 0 =>
+            {
+                mtp.layer.rewind(gpu, d, mst, 0, state.mtp_end - base)?;
+                state.mtp_end
+            }
+            _ => {
+                mtp.layer.reset_attention_at(mst, lo);
+                lo
+            }
+        };
+        // Catch up positions `from..pos` in small steps (each step's routed experts
+        // must fit the draft head's VRAM tier).
+        let mut last: Option<B::F32> = None;
+        let mut p = from;
+        while p < pos {
+            let end = (p + MTP_STEP).min(pos);
+            let tokens: Vec<u32> = (p..end)
+                .map(|q| {
+                    if q + 1 < pos {
+                        state.hidden_tokens[q + 1 - first]
+                    } else {
+                        next
+                    }
+                })
+                .collect();
+            let m = end - p;
+            let mut x = state.ws.borrow_mut().take(gpu, "mtp.x", m * r)?;
+            let hidden = state.hidden.as_ref().expect("checked above");
+            gpu.copy_range(hidden, (p - first) * r, &mut x, 0, m * r)?;
+            let out = self.mtp_rows(gpu, state, &x, &tokens, p, experts)?;
+            let mut ws = state.ws.borrow_mut();
+            ws.give("mtp.x", x);
+            let mut row = ws.take(gpu, "mtp.row", r)?;
+            gpu.copy_range(&out, (m - 1) * r, &mut row, 0, r)?;
+            ws.give("layer.out", out);
+            if let Some(old) = last.replace(row) {
+                ws.give("mtp.row", old);
+            }
+            p = end;
+        }
+        state.mtp_end = pos;
+        let mut x = last.expect("at least the last position is caught up");
+        let mut drafts = Vec::with_capacity(k);
+        for s in 0..k {
+            let token = self.mtp_token(gpu, state, &x)?;
+            drafts.push(token);
+            if s + 1 == k {
+                break;
+            }
+            // The chain continues from this entry's output at the next position.
+            let out = self.mtp_rows(gpu, state, &x, &[token], pos + s, experts)?;
+            let old = std::mem::replace(&mut x, out);
+            state.ws.borrow_mut().give("mtp.row", old);
+        }
+        state.ws.borrow_mut().give("mtp.row", x);
+        Ok(drafts)
+    }
+
+    /// Runs the MTP layer over `tokens.len()` rows starting at position `pos`: row
+    /// `i` fuses residual row `x[i]` with the embedding of `tokens[i]`. Returns the
+    /// layer's output rows.
+    fn mtp_rows(
+        &self,
+        gpu: &B,
+        state: &mut SeqState<B>,
+        x: &B::F32,
+        tokens: &[u32],
+        pos: usize,
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<B::F32> {
+        let mtp = self.mtp.as_ref().context("no MTP head")?;
         let d = &self.dims;
         let (h, r, hc) = (d.hidden, d.residual(), d.hc);
-        let k = k.min(MAX_DRAFT);
-        mtp.layer.reset_attention(mst);
-        let mut ws = state.ws.borrow_mut();
-        let mut x = ws.take(gpu, "mtp.x", r)?;
-        gpu.copy_range(hidden, state.hidden_row * r, &mut x, 0, r)?;
-        let mut drafts = Vec::with_capacity(k);
-        let mut token = next;
-        for s in 0..k {
+        let m = tokens.len();
+        let mut host = Vec::with_capacity(m * h);
+        for &token in tokens {
             ensure!(
                 (token as usize) < self.vocab,
                 "token id {token} out of vocab"
             );
-            let row: Vec<f32> = self.embed[token as usize * h..(token as usize + 1) * h]
-                .iter()
-                .map(|&w| bf16_to_f32(w))
-                .collect();
-            let mut scratch = ws.take_bf16(gpu, "gemm.scratch", r)?;
-            let mut e = ws.take(gpu, "mtp.e", h)?;
-            gpu.upload_into(&row, &mut e)?;
-            let mut e_n = ws.take(gpu, "mtp.e_n", h)?;
-            gpu.rmsnorm_groups(&e, &mtp.norm_embedding, &mut e_n, 1, h, h, d.eps, 1.0)?;
-            let mut fe = ws.take(gpu, "mtp.fe", h)?;
-            gpu.gemm_w(&e_n, &mtp.fc_embedding, &mut fe, &mut scratch, 1, h, h)?;
-            let mut x_n = ws.take(gpu, "mtp.x_n", r)?;
-            gpu.rmsnorm_groups(&x, &mtp.norm_hidden, &mut x_n, 1, r, r, d.eps, 1.0)?;
-            // fc_hidden applies to each stream: the residual is `hc` rows of `hidden`.
-            let mut fx = ws.take(gpu, "mtp.fx", r)?;
-            gpu.gemm_w(&x_n, &mtp.fc_hidden, &mut fx, &mut scratch, hc, h, h)?;
-            let mut fused = ws.take(gpu, "mtp.fused", r)?;
-            gpu.hc_combine(&fx, &fe, &mtp.ones, &mut fused, 1, hc, h)?;
-            for (name, b) in [
-                ("mtp.e", e),
-                ("mtp.e_n", e_n),
-                ("mtp.fe", fe),
-                ("mtp.x_n", x_n),
-                ("mtp.fx", fx),
-            ] {
-                ws.give(name, b);
-            }
-            ws.give_bf16("gemm.scratch", scratch);
-            drop(ws);
-            let step = StepInput {
-                token_ids: std::slice::from_ref(&token),
-                start_pos: s,
-                checkpoint: false,
-            };
-            let out = mtp
-                .layer
-                .forward(gpu, d, &fused, 1, &step, mst, experts, &mut NoProbe)?;
-            ws = state.ws.borrow_mut();
-            ws.give("mtp.fused", fused);
-            let mut scratch = ws.take_bf16(gpu, "gemm.scratch", r)?;
-            let (mixed, _) = mtp.mixer.mix(
-                gpu,
-                d,
-                &mut ws,
-                &out,
-                1,
-                &mut scratch,
-                &mut NoProbe,
-                "mtp_hc",
-            )?;
-            let mut logits = ws.take(gpu, "mtp.logits", self.vocab)?;
-            gpu.gemm_w(
-                &mixed,
-                &self.lm_head,
-                &mut logits,
-                &mut scratch,
-                1,
-                self.vocab,
-                h,
-            )?;
-            ws.give("hc.mixed", mixed);
-            ws.give_bf16("gemm.scratch", scratch);
-            let host = gpu.download_f32(&logits)?;
-            ws.give("mtp.logits", logits);
-            token = oominf_core::argmax(&host);
-            drafts.push(token);
-            // The next draft starts from this one's residual; the previous buffer goes
-            // back for the layer's next output.
-            let old = std::mem::replace(&mut x, out);
-            ws.give("layer.out", old);
+            let row = &self.embed[token as usize * h..(token as usize + 1) * h];
+            host.extend(row.iter().map(|&w| bf16_to_f32(w)));
         }
-        ws.give("mtp.x", x);
-        Ok(drafts)
+        let mut ws = state.ws.borrow_mut();
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", m * r)?;
+        let mut e = ws.take(gpu, "mtp.e", m * h)?;
+        gpu.upload_into(&host, &mut e)?;
+        let mut e_n = ws.take(gpu, "mtp.e_n", m * h)?;
+        gpu.rmsnorm_groups(&e, &mtp.norm_embedding, &mut e_n, m, h, h, d.eps, 1.0)?;
+        let mut fe = ws.take(gpu, "mtp.fe", m * h)?;
+        gpu.gemm_w(&e_n, &mtp.fc_embedding, &mut fe, &mut scratch, m, h, h)?;
+        let mut x_n = ws.take(gpu, "mtp.x_n", m * r)?;
+        gpu.rmsnorm_groups(x, &mtp.norm_hidden, &mut x_n, m, r, r, d.eps, 1.0)?;
+        // fc_hidden applies to each stream: a residual row is `hc` rows of `hidden`.
+        let mut fx = ws.take(gpu, "mtp.fx", m * r)?;
+        gpu.gemm_w(&x_n, &mtp.fc_hidden, &mut fx, &mut scratch, m * hc, h, h)?;
+        let mut fused = ws.take(gpu, "mtp.fused", m * r)?;
+        gpu.hc_combine(&fx, &fe, &mtp.ones, &mut fused, m, hc, h)?;
+        for (name, b) in [
+            ("mtp.e", e),
+            ("mtp.e_n", e_n),
+            ("mtp.fe", fe),
+            ("mtp.x_n", x_n),
+            ("mtp.fx", fx),
+        ] {
+            ws.give(name, b);
+        }
+        ws.give_bf16("gemm.scratch", scratch);
+        drop(ws);
+        let step = StepInput {
+            token_ids: tokens,
+            start_pos: pos,
+            checkpoint: false,
+        };
+        let mst = state.mtp.as_mut().context("no MTP state")?;
+        let out = mtp
+            .layer
+            .forward(gpu, d, &fused, m, &step, mst, experts, &mut NoProbe)?;
+        state.ws.borrow_mut().give("mtp.fused", fused);
+        Ok(out)
+    }
+
+    /// The draft head's greedy token from one MTP output row.
+    fn mtp_token(&self, gpu: &B, state: &mut SeqState<B>, x: &B::F32) -> Result<u32> {
+        let mtp = self.mtp.as_ref().context("no MTP head")?;
+        let d = &self.dims;
+        let mut ws = state.ws.borrow_mut();
+        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", d.residual())?;
+        let (mixed, _) =
+            mtp.mixer
+                .mix(gpu, d, &mut ws, x, 1, &mut scratch, &mut NoProbe, "mtp_hc")?;
+        let mut logits = ws.take(gpu, "mtp.logits", self.vocab)?;
+        gpu.gemm_w(
+            &mixed,
+            &self.lm_head,
+            &mut logits,
+            &mut scratch,
+            1,
+            self.vocab,
+            d.hidden,
+        )?;
+        ws.give("hc.mixed", mixed);
+        ws.give_bf16("gemm.scratch", scratch);
+        let host = gpu.download_f32(&logits)?;
+        ws.give("mtp.logits", logits);
+        Ok(oominf_core::argmax(&host))
     }
 }
