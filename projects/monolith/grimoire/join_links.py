@@ -12,7 +12,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from uuid import uuid4
 
-from auth.api import Principal
+from auth.api import (
+    Principal,
+    find_application_user_by_username,
+    platform_enforcement_enabled,
+)
 from core.db import get_session
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -179,9 +183,13 @@ def issue_link(
         or len(email) > 320
     ):
         raise HTTPException(400, "Enter the player's email or @username.")
-    recipient = session.exec(
-        select(AppUser).where(AppUser.email == email, AppUser.issuer.is_not(None))
-    ).first()
+    if email.startswith("@") and platform_enforcement_enabled():
+        app_id = find_application_user_by_username(session, "grimoire", email[1:])
+        recipient = session.get(AppUser, app_id) if app_id else None
+    else:
+        recipient = session.exec(
+            select(AppUser).where(AppUser.email == email, AppUser.issuer.is_not(None))
+        ).first()
     if recipient is None:
         if not allow_enrollment or not can_administer_accounts:
             raise HTTPException(

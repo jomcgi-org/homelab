@@ -51,9 +51,11 @@ its enforcement switch is enabled. Creating a game requires a separate grant;
 the lobby reflects that grant. The application-user link is committed with
 synchronization of the existing issuer/subject record, preserving memberships.
 For users without email, the legacy `AppUser.email` column stores `@username` as
-a login label. Registered-player invitations accept email or this label, then
-bind redemption to the stable app user ID. Legacy email-only rows require the
-existing trusted mailbox rule and cannot be claimed through an unverified email.
+a login label. Registered-player invitations accept email or `@username`; in enforced mode
+username lookup uses the platform account and stable application mapping, even
+when contact email is present. Redemption binds to the stable app user ID.
+Unbound legacy email-only rows require explicit repair in enforced mode; optional
+contact email cannot claim them. Disabled mode retains the existing mailbox rule.
 
 ## Invitation-required native enrollment
 

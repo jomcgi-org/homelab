@@ -32,6 +32,14 @@ def bind_application_user(session, principal, application, application_user_id):
     return bind(session, principal, application, application_user_id)
 
 
+def find_application_user_by_username(session, application, username):
+    if not platform_enforcement_enabled():
+        return None
+    from auth.platform.service import find_application_user_by_username as find
+
+    return find(session, application, username)
+
+
 __all__ = [
     "AuthError",
     "AuthErrorReason",
@@ -46,6 +54,7 @@ __all__ = [
     "bind_application_user",
     "current_principal",
     "get_default_resolver",
+    "find_application_user_by_username",
     "get_principal",
     "platform_enforcement_enabled",
     "require_application_permission",
