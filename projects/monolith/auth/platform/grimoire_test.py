@@ -20,6 +20,9 @@ from auth.platform.service import command
 
 def test_optional_email_cannot_claim_an_unbound_legacy_account(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATFORM_AUTH_ENFORCEMENT_ENABLED", "true")
+    for table in SQLModel.metadata.tables.values():
+        if table.schema == "grimoire":
+            monkeypatch.setattr(table, "schema", None)
     engine = create_engine(
         f"sqlite:///{tmp_path / 'legacy.db'}",
         execution_options={"schema_translate_map": {"grimoire": None}},
