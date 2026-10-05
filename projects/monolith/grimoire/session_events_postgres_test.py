@@ -336,7 +336,7 @@ def test_journal_routes_apply_postgres_audience_predicate(lane, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from grimoire.access import get_authenticated_email
+    from grimoire.access import get_authenticated_email, get_game_creator_email
     from grimoire.router import router
 
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
@@ -378,6 +378,7 @@ def test_journal_routes_apply_postgres_audience_predicate(lane, monkeypatch):
 
     app.dependency_overrides[get_session] = database
     app.dependency_overrides[get_authenticated_email] = lambda: player_email
+    app.dependency_overrides[get_game_creator_email] = lambda: player_email
     try:
         with TestClient(app) as client:
             for suffix in (f"/sessions/{lane.session_id}/journal", "/journal"):
