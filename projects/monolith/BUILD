@@ -127,7 +127,6 @@ _BACKEND_SRCS = glob(
         "agent/**/*.py",
         "agent_sessions/**/*.py",
         "app/**/*.py",
-        "auth/**/*.py",
         "core/**/*.py",
         "factory/**/*.py",
         "framework/**/*.py",
@@ -1648,8 +1647,7 @@ py_library(
             "agent/**/*.py",
             "agent_sessions/**/*.py",
             "app/**/*.py",
-            "auth/**/*.py",
-            "core/**/*.py",
+                "core/**/*.py",
             "factory/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
@@ -2053,8 +2051,7 @@ py_library(
     srcs = glob(
         [
             "app/**/*.py",
-            "auth/**/*.py",
-            "core/**/*.py",
+                "core/**/*.py",
             "framework/**/*.py",
             "knowledge/**/*.py",
             "shared/**/*.py",
@@ -2114,8 +2111,7 @@ py_venv_binary(
     srcs = glob(
         [
             "app/**/*.py",
-            "auth/**/*.py",
-            "core/**/*.py",
+                "core/**/*.py",
             "framework/**/*.py",
             "knowledge/**/*.py",
             "shared/**/*.py",
