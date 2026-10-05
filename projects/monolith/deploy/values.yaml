@@ -352,6 +352,11 @@ agents:
 # vLLM (free, keyless): "qwen3.6-27b" +
 # "http://inference.inference.svc.cluster.local:8080/v1/chat/completions".
 grimoire:
+  # Registered-player pilot (#6858). Account enrollment remains disabled;
+  # this path requires no Authentik invitation credential or permission grant.
+  invitationLinks:
+    enabled: true
+    enrollmentEnabled: false
   enabled: true
   play:
     enabled: true
