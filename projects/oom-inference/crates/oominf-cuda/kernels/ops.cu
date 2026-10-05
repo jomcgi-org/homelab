@@ -82,28 +82,37 @@ extern "C" __global__ void hc_combine(const float* res, const float* y, const fl
     out[i] = res[i] + y[(size_t)t * H + h] * inj[t * C + c];
 }
 
-// Depthwise causal conv1d + SiLU with a rolling state, one thread per channel.
-// x: [T, D] pre-conv inputs. state: [D, K] last K inputs, oldest first (updated in
-// place). w: [D, K]. out[t,d] = silu(sum_j w[d,j] * window[j]) where the window is the
-// last K inputs including x[t].
+// Depthwise causal conv1d + SiLU with a rolling state.
+// x: [T, D] pre-conv inputs. state: [D, K] last K inputs, oldest first. w: [D, K].
+// out[t,d] = silu(sum_j w[d,j] * window[j]) where the window is the last K inputs
+// including x[t] (inputs before the step come from the state). One thread per (t, d):
+// each window sums in the same order as a token-by-token pass.
 // x rows are x_stride floats apart (x_stride >= D), so x can be a column range of a
-// fused projection.
-extern "C" __global__ void causal_conv_silu(const float* x, int x_stride, float* state,
+// fused projection. causal_conv_state then rolls the state forward (a separate
+// launch: every window of this step reads the old state first).
+extern "C" __global__ void causal_conv_silu(const float* x, int x_stride, const float* state,
                                             const bf16* w, float* out, int T, int D, int K) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)T * D) return;
+    int t = i / D, d = i % D;
+    float acc = 0.0f;
+    for (int j = 0; j < K; j++) {
+        int src = t - (K - 1) + j;  // input index; negative reads the state
+        float v = src >= 0 ? x[(size_t)src * x_stride + d] : state[(size_t)d * K + K + src];
+        acc += __bfloat162float(w[(size_t)d * K + j]) * v;
+    }
+    out[i] = siluf(acc);
+}
+
+// state[d] = the last K inputs after a T-token step (see causal_conv_silu).
+extern "C" __global__ void causal_conv_state(const float* x, int x_stride, float* state, int T,
+                                             int D, int K) {
     int d = blockIdx.x * blockDim.x + threadIdx.x;
     if (d >= D) return;
     float win[8];
-    float wd[8];
     for (int j = 0; j < K; j++) {
-        win[j] = state[(size_t)d * K + j];
-        wd[j] = __bfloat162float(w[(size_t)d * K + j]);
-    }
-    for (int t = 0; t < T; t++) {
-        for (int j = 0; j + 1 < K; j++) win[j] = win[j + 1];
-        win[K - 1] = x[(size_t)t * x_stride + d];
-        float acc = 0.0f;
-        for (int j = 0; j < K; j++) acc += wd[j] * win[j];
-        out[(size_t)t * D + d] = siluf(acc);
+        int src = T - K + j;
+        win[j] = src >= 0 ? x[(size_t)src * x_stride + d] : state[(size_t)d * K + K + src];
     }
     for (int j = 0; j < K; j++) state[(size_t)d * K + j] = win[j];
 }
@@ -141,16 +150,20 @@ extern "C" __global__ void gdn_gates(const float* a, const float* b, int ab_stri
 #define GDN_LANES 4
 #define GDN_PART (GDN_DK / GDN_LANES)
 // Gated delta rule, token by token (exact recurrence; prefill and decode alike).
-// One block per value head, GDN_LANES adjacent lanes per value column j: lane l of the
-// group holds S[l*32:(l+1)*32, j] in registers (no spills), and the partial dot
-// products are combined with shuffles inside the group.
+// Value columns of the state evolve independently, so a head's columns are split
+// over blockDim.x / GDN_LANES columns per block (grid (Hv, Dv / columns)): enough
+// blocks to fill the GPU, each column computed exactly as with one block per head.
+// GDN_LANES adjacent lanes per value column j: lane l of the group holds
+// S[l*32:(l+1)*32, j] in registers (no spills), and the partial dot products are
+// combined with shuffles inside the group.
 // qkv: [T, stride] conv output with q at 0, k at Hk*Dk, v at 2*Hk*Dk (q, k already
 // L2-normalised). state: [Hv, Dk, Dv] fp32, updated in place. out: [T, Hv, Dv].
 extern "C" __global__ void __launch_bounds__(512)
 gdn_recurrent(const float* qkv, const float* g, const float* beta, float* state, float* out, int T,
               int stride, int Hk, int Hv, int Dv, float scale) {
     int h = blockIdx.x;
-    int j = threadIdx.x / GDN_LANES, part = threadIdx.x % GDN_LANES;
+    int j = blockIdx.y * (blockDim.x / GDN_LANES) + threadIdx.x / GDN_LANES;
+    int part = threadIdx.x % GDN_LANES;
     int kh = h / (Hv / Hk);
     int k0 = part * GDN_PART;
     __shared__ float qs[GDN_DK], ks[GDN_DK];
@@ -160,9 +173,9 @@ gdn_recurrent(const float* qkv, const float* g, const float* beta, float* state,
     for (int k = 0; k < GDN_PART; k++) S[k] = st[(size_t)(k0 + k) * Dv + j];
     for (int t = 0; t < T; t++) {
         const float* row = qkv + (size_t)t * stride;
-        if (threadIdx.x < GDN_DK) {
-            qs[threadIdx.x] = row[kh * GDN_DK + threadIdx.x] * scale;
-            ks[threadIdx.x] = row[Hk * GDN_DK + kh * GDN_DK + threadIdx.x];
+        for (int i = threadIdx.x; i < GDN_DK; i += blockDim.x) {
+            qs[i] = row[kh * GDN_DK + i] * scale;
+            ks[i] = row[Hk * GDN_DK + kh * GDN_DK + i];
         }
         __syncthreads();
         float v = row[2 * Hk * GDN_DK + h * Dv + j];
