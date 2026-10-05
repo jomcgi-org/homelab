@@ -208,18 +208,24 @@ fn matches_f64_reference() -> Result<()> {
 #[test]
 #[ignore = "needs a GPU"]
 fn prefill_throughput() -> Result<()> {
-    // One layer's gate projection for 4096 tokens: 512 experts, top-10, 80 each.
+    // One layer's gate projection (640 x 2560) and down projection (2560 x 640) for
+    // a fetch group: 512 experts, top-10, at 40 (2048-token group) and 80
+    // (4096-token group) assignments per expert.
     let gpu = Gpu::new(0)?;
     let mut rng = Rng(7);
-    let (n, k, experts, per) = (640, 2560, 512, 80);
-    let recs = Records::random(&mut rng, experts, n, k);
-    let x: Vec<f32> = (0..4096 * k).map(|_| rng.unit()).collect();
-    let secs = run(&gpu, &recs, &x, &vec![per; experts], &mut rng, 20)?.secs;
-    let flops = 2.0 * (experts * per * n * k) as f64;
-    println!(
-        "moe_tiled {n}x{k}, {experts} experts x {per}: {:.3} ms, {:.1} TFLOP/s",
-        secs * 1e3,
-        flops / secs / 1e12
-    );
+    let experts = 512;
+    for (n, k) in [(640, 2560), (2560, 640)] {
+        let recs = Records::random(&mut rng, experts, n, k);
+        for per in [40, 80] {
+            let x: Vec<f32> = (0..experts * per * k / 10).map(|_| rng.unit()).collect();
+            let secs = run(&gpu, &recs, &x, &vec![per; experts], &mut rng, 20)?.secs;
+            let flops = 2.0 * (experts * per * n * k) as f64;
+            println!(
+                "moe_tiled {n}x{k}, {experts} experts x {per}: {:.3} ms, {:.1} TFLOP/s",
+                secs * 1e3,
+                flops / secs / 1e12
+            );
+        }
+    }
     Ok(())
 }
