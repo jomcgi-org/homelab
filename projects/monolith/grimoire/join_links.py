@@ -172,7 +172,12 @@ def issue_link(
 ) -> IssuedLink:
     _owner_lock(session, campaign_id, owner)
     email = email.strip().lower()
-    if not re.fullmatch(r"(?:[^\s@]+@[^\s@]+\.[^\s@]+|@[a-z0-9][a-z0-9_.-]{2,31})", email) or len(email) > 320:
+    if (
+        not re.fullmatch(
+            r"(?:[^\s@]+@[^\s@]+\.[^\s@]+|@[a-z0-9][a-z0-9_.-]{2,31})", email
+        )
+        or len(email) > 320
+    ):
         raise HTTPException(400, "Enter the player's email or @username.")
     recipient = session.exec(
         select(AppUser).where(AppUser.email == email, AppUser.issuer.is_not(None))

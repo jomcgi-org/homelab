@@ -179,7 +179,12 @@ class AuthentikStandingVerifier:
             else None
         )
         user_type = claims.get("platform_user_type")
-        if user_type not in ("internal", "external", "service_account", "internal_service_account"):
+        if user_type not in (
+            "internal",
+            "external",
+            "service_account",
+            "internal_service_account",
+        ):
             user_type = None
         if user_type in ("service_account", "internal_service_account"):
             kind = PrincipalKind.WORKLOAD
