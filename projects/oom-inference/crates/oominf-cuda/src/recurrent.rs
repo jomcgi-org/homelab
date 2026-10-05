@@ -32,9 +32,21 @@ impl Recurrent for Gpu {
                 .launch_builder(&f)
                 .arg(&xp)
                 .arg(&s32)
-                .arg(state)
+                .arg(&*state)
                 .arg(w)
                 .arg(out)
+                .arg(&t32)
+                .arg(&d32)
+                .arg(&k32)
+                .launch(grid(t * d, 256))?
+        };
+        let f = self.func("causal_conv_state")?;
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(&xp)
+                .arg(&s32)
+                .arg(state)
                 .arg(&t32)
                 .arg(&d32)
                 .arg(&k32)
@@ -105,9 +117,11 @@ impl Recurrent for Gpu {
         let scale = 1.0 / (dk as f32).sqrt();
         let (t32, s32, hk32, hv32, dv32) =
             (t as i32, stride as i32, hk as i32, hv as i32, dv as i32);
+        // GDN_COLS value columns per block: Hv * Dv / GDN_COLS blocks fill the GPU
+        // where one block per head left most SMs idle on a serial recurrence.
         let cfg = LaunchConfig {
-            grid_dim: (hv as u32, 1, 1),
-            block_dim: (4 * dv as u32, 1, 1),
+            grid_dim: (hv as u32, (dv / GDN_COLS) as u32, 1),
+            block_dim: (4 * GDN_COLS as u32, 1, 1),
             shared_mem_bytes: 0,
         };
         unsafe {
@@ -169,3 +183,7 @@ impl Recurrent for Gpu {
         Ok(())
     }
 }
+
+/// Value columns per `gdn_recurrent` block (4 lanes each). Measured on a 32k
+/// prefill: 16 beat 8, 32 and 128 (one block per head).
+const GDN_COLS: usize = 16;
