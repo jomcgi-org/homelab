@@ -95,6 +95,8 @@ pub struct DirectReader {
     jobs: Vec<ReadJob>,
     next: usize,
     inflight: usize,
+    /// An error from [`DirectReader::poll`], returned by the next `drain`.
+    failed: Option<anyhow::Error>,
 }
 
 // SAFETY: the destinations are slots of a pinned arena owned by the same tier, which
@@ -122,6 +124,7 @@ impl DirectReader {
             jobs: Vec::new(),
             next: 0,
             inflight: 0,
+            failed: None,
         })
     }
 
@@ -150,7 +153,7 @@ impl DirectReader {
     /// can start its device copy while the rest read). On error the batch is
     /// abandoned after every submitted read has finished.
     pub fn drain(&mut self, mut done: impl FnMut(usize) -> Result<()>) -> Result<()> {
-        let mut first_err = None;
+        let mut first_err = self.failed.take();
         while self.busy() {
             self.ring.submit_and_wait(1)?;
             let cq: Vec<(u64, i32)> = self
@@ -184,6 +187,43 @@ impl DirectReader {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Like [`DirectReader::drain`] for the reads that have completed so far,
+    /// without waiting for the rest (and refilling the ring). An error abandons the
+    /// batch as in `drain`, which then returns it.
+    pub fn poll(&mut self, mut done: impl FnMut(usize) -> Result<()>) -> Result<()> {
+        if self.failed.is_some() || !self.busy() {
+            return Ok(());
+        }
+        let cq: Vec<(u64, i32)> = self
+            .ring
+            .completion()
+            .map(|c| (c.user_data(), c.result()))
+            .collect();
+        for (i, res) in cq {
+            self.inflight -= 1;
+            let j = &self.jobs[i as usize];
+            if self.failed.is_some() {
+                continue;
+            }
+            if res < 0 || res as usize != j.len {
+                self.failed = Some(anyhow::anyhow!(
+                    "O_DIRECT read of {} bytes at {} returned {res}",
+                    j.len,
+                    j.offset
+                ));
+                self.next = self.jobs.len();
+            } else if let Err(e) = done(j.tag) {
+                self.failed = Some(e);
+                self.next = self.jobs.len();
+            }
+        }
+        if self.failed.is_none() {
+            self.push()?;
+            self.ring.submit()?;
+        }
+        Ok(())
     }
 
     /// Pushes queued jobs into free submission slots.

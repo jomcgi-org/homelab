@@ -125,16 +125,25 @@ trades are how engines drift from the model they claim to run.
   experts. It runs layer by layer: a layer's token mixer runs over every chunk,
   the union of their routed experts is fetched once and runs as one step (up to
   2048 tokens, about 40 per expert, enough for tensor-core tiles), and the next
-  layer's experts, predicted by its router on this layer's MoE inputs, are
-  staged while this layer's experts compute (stage-ahead), borrowing the main
-  tier's coldest slots while the stage holds the computing layer. Prompts of one
+  layer's experts, predicted by its router on the layer's first group (stacked
+  with this layer's router, so the prediction arrives with the routing), are
+  staged while the rest of this layer computes (stage-ahead), borrowing the main
+  tier's coldest slots while the stage holds the computing layer. Staging copies
+  wait only for kernels queued before the computing layer started (only those
+  read the slots they overwrite), and their disk reads land as they complete.
+  The host runs one group ahead of the device: a group's mixers and routing are
+  queued before the previous group's routing is collected (an asynchronous
+  download) and its experts fetched, and small uploads go through pinned
+  staging buffers, so neither drains the device's queue. Prompts of one
   chunk skip this: with little compute per layer to hide copies behind, the less
   precise prediction costs more than it saves. Prompts longer than 128k tokens,
   or whose residuals (about 40 KB per token, held across layers) do not fit
   beside the prompt's cache and the expert tier's floor, run in the fewest equal
   windows that fit, each window through every layer. Each extra window sweeps
-  every layer's experts through VRAM again (about 4.5 s on a 4090).
-  Between prefills the stage is a
+  every layer's experts through VRAM again (about 4.5 s on a 4090). With
+  61 GB of RAM the host tier holds about 40 GB of the 73 GB of experts, so a
+  warm prefill still reads about 19 GB from disk; in the later layers those reads
+  outlast a layer's compute (#6866). Between prefills the stage is a
   decode victim cache: an evicted record is copied there device to device, so a
   later miss on it is a promotion. When a prefill ends, its prefill-only buffers
   (residuals, KV shadows, fetch-group buffers) are freed and the memory is

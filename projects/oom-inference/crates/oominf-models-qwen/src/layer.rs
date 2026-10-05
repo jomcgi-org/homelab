@@ -11,7 +11,7 @@ use oominf_format::Model;
 use crate::attention::{Attention, AttnState};
 use crate::gdn::{Gdn, GdnState};
 use crate::hc::HyperConn;
-use crate::moe::{Moe, Routing};
+use crate::moe::{HostIds, Moe, PendingRoute, Routing};
 use crate::ple::{Ple, PleState};
 use crate::{Dims, LayerKind};
 
@@ -259,7 +259,7 @@ impl<B: Backend> DecoderLayer<B> {
 
     /// The MoE inputs of `pres` (from [`Self::pre_moe`], `lens[i]` tokens each) in one
     /// `[sum(lens), hidden]` buffer, so their routed experts run as one step. The
-    /// buffer is the workspace's grow-only `"layer.moe_in"`; give it back after
+    /// buffer is the workspace's grow-only `name`; give it back after
     /// [`Self::finish`].
     pub fn moe_input(
         &self,
@@ -268,13 +268,11 @@ impl<B: Backend> DecoderLayer<B> {
         pres: &[PreMoe<B>],
         lens: &[usize],
         state: &LayerState<B>,
+        name: &'static str,
     ) -> Result<B::F32> {
         let h = d.hidden;
         let n = lens.iter().sum::<usize>() * h;
-        let mut x = state
-            .ws
-            .borrow_mut()
-            .take_at_least(gpu, "layer.moe_in", n)?;
+        let mut x = state.ws.borrow_mut().take_at_least(gpu, name, n)?;
         let mut at = 0;
         for (pre, &t) in pres.iter().zip(lens) {
             gpu.copy_range(&pre.mixed, 0, &mut x, at * h, t * h)?;
@@ -283,42 +281,41 @@ impl<B: Backend> DecoderLayer<B> {
         Ok(x)
     }
 
-    /// Routes `t` tokens of MoE input `x` (from [`Self::moe_input`]) with this
-    /// layer's router.
-    pub fn route(
+    /// Queues routing of `t` tokens of MoE input `x` (from [`Self::moe_input`]); see
+    /// [`Moe::route_start`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_start(
         &self,
         gpu: &B,
         d: &Dims,
         x: &B::F32,
         t: usize,
         state: &LayerState<B>,
-    ) -> Result<Routing<B>> {
+        with_next: bool,
+        host: &mut HostIds<'_, B>,
+    ) -> Result<PendingRoute<B>> {
         let mut ws = state.ws.borrow_mut();
         let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
-        let routing = self.moe.route(gpu, d, x, t, &mut scratch);
+        let pending = self
+            .moe
+            .route_start(gpu, d, x, t, &mut scratch, with_next, host);
         ws.give_bf16("gemm.scratch", scratch);
-        routing
+        pending
     }
 
-    /// The next layer's experts predicted for `t` tokens of MoE input `x` (see
-    /// [`Moe::predict_next`]).
-    pub fn predict_next(
+    /// Collects routing queued by [`Self::route_start`]; see [`Moe::route_finish`].
+    pub fn route_finish(
         &self,
         gpu: &B,
         d: &Dims,
-        x: &B::F32,
-        t: usize,
-        state: &LayerState<B>,
-    ) -> Result<Vec<u32>> {
-        let mut ws = state.ws.borrow_mut();
-        let mut scratch = ws.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
-        let next = self.moe.predict_next(gpu, d, x, t, &mut scratch);
-        ws.give_bf16("gemm.scratch", scratch);
-        next
+        pending: PendingRoute<B>,
+        host: &HostIds<'_, B>,
+    ) -> Result<(Routing<B>, Vec<u32>)> {
+        self.moe.route_finish(gpu, d, pending, host)
     }
 
     /// Finishes the layer for `pres` (`lens[i]` tokens each) whose MoE input `x`
-    /// (from [`Self::moe_input`]) is routed by `routing` (from [`Self::route`]),
+    /// (from [`Self::moe_input`]) is routed by `routing` (from [`Self::route_finish`]),
     /// with records from `experts`: their routed experts run as one step. Writes each
     /// chunk's layer output over its residual in `outs` (which [`Self::pre_moe`] no
     /// longer needs), so residuals living across layers are not reallocated among

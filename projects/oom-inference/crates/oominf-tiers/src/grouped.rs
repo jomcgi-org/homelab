@@ -72,7 +72,6 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
     }
 
     fn stage_ahead(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
-        self.finish_stage_ahead(b)?;
         let (i, s) = self.source(layer)?;
         s.stage_ahead(b, layer, experts)?;
         self.staging = Some(i);
@@ -80,7 +79,9 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
     }
 
     fn finish_stage_ahead(&mut self, b: &B) -> Result<()> {
-        match self.staging.take() {
+        // Polled repeatedly while a stage-ahead's reads land; the staging source
+        // finishes it at its own next fetch.
+        match self.staging {
             Some(i) => self.sources[i].finish_stage_ahead(b),
             None => Ok(()),
         }
