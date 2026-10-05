@@ -38,6 +38,8 @@ const PREFILL_ONLY_BUFFERS: &[&str] = &[
     "moe.y",
     "moe.g",
     "moe.u",
+    "layer.moe_in",
+    "layer.moe_part",
 ];
 
 /// Most prompt tokens whose routed experts one prefill fetch loads and runs as one
@@ -615,7 +617,7 @@ impl<B: Backend> QwenModel<B> {
                 experts.finish_stage_ahead(gpu)?;
                 let lens: Vec<usize> = cs.iter().map(|c| c.len()).collect();
                 let t = lens.iter().sum();
-                let moe_in = layer.moe_input(gpu, d, &pres, &lens)?;
+                let moe_in = layer.moe_input(gpu, d, &pres, &lens, st)?;
                 let routing = layer.route(gpu, d, &moe_in, t, st)?;
                 let mut union: Vec<u32> = routing.experts().collect();
                 union.sort_unstable();
@@ -631,13 +633,8 @@ impl<B: Backend> QwenModel<B> {
                     }
                 }
                 let mut fetched = Fetched::new(layer.layer, &union, &addrs);
-                let outs = layer.finish(gpu, d, pres, &lens, &moe_in, routing, st, &mut fetched)?;
-                for (x, next) in xs.iter_mut().zip(outs) {
-                    // The chunk keeps the new residual; its old buffer goes back to the
-                    // workspace as the next chunk's "layer.out".
-                    let old = std::mem::replace(x, next);
-                    state.ws.borrow_mut().give("layer.out", old);
-                }
+                layer.finish(gpu, d, pres, &lens, &moe_in, routing, st, &mut fetched, xs)?;
+                state.ws.borrow_mut().give("layer.moe_in", moe_in);
             }
             layer.end_prefill(st);
         }

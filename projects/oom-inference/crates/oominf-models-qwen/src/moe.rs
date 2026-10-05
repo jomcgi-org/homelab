@@ -9,6 +9,7 @@ use oominf_cpu::{HostExperts, Job, Pending};
 use oominf_format::Model;
 
 use crate::Dims;
+use crate::model::PREFILL_FETCH_TOKENS;
 use crate::util::{bf16_concat, bf16_tensor};
 
 /// Index of each projection's `weight_scale_2` in the record's leading scalars part
@@ -199,9 +200,16 @@ impl<B: Backend> Moe<B> {
         Ok(Moe {
             layer,
             geo,
+            // Sized for the largest step (a prefill fetch group) up front: grown
+            // mid-prefill, 48 small long-lived buffers among the step's temporaries
+            // pin pool blocks the allocator cannot trim (about 1 GB at 256k tokens).
             tables: Mutex::new(Tables {
-                meta: gpu.upload_i32(&[0; 64])?,
-                recs: gpu.zeros_u64(64)?,
+                meta: gpu.upload_i32(&vec![
+                    0;
+                    (d.experts + 1 + 2 * PREFILL_FETCH_TOKENS * d.top_k)
+                        .next_power_of_two()
+                ])?,
+                recs: gpu.zeros_u64(d.experts.next_power_of_two())?,
             }),
             router: w("gate.weight", &[d.experts as u64, h])?,
             router_pair,

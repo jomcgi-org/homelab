@@ -258,16 +258,23 @@ impl<B: Backend> DecoderLayer<B> {
     }
 
     /// The MoE inputs of `pres` (from [`Self::pre_moe`], `lens[i]` tokens each) in one
-    /// `[sum(lens), hidden]` buffer, so their routed experts run as one step.
+    /// `[sum(lens), hidden]` buffer, so their routed experts run as one step. The
+    /// buffer is the workspace's grow-only `"layer.moe_in"`; give it back after
+    /// [`Self::finish`].
     pub fn moe_input(
         &self,
         gpu: &B,
         d: &Dims,
         pres: &[PreMoe<B>],
         lens: &[usize],
+        state: &LayerState<B>,
     ) -> Result<B::F32> {
         let h = d.hidden;
-        let mut x = gpu.uninit(lens.iter().sum::<usize>() * h)?;
+        let n = lens.iter().sum::<usize>() * h;
+        let mut x = state
+            .ws
+            .borrow_mut()
+            .take_at_least(gpu, "layer.moe_in", n)?;
         let mut at = 0;
         for (pre, &t) in pres.iter().zip(lens) {
             gpu.copy_range(&pre.mixed, 0, &mut x, at * h, t * h)?;
@@ -312,8 +319,10 @@ impl<B: Backend> DecoderLayer<B> {
 
     /// Finishes the layer for `pres` (`lens[i]` tokens each) whose MoE input `x`
     /// (from [`Self::moe_input`]) is routed by `routing` (from [`Self::route`]),
-    /// with records from `experts`: their routed experts run as one step. Returns
-    /// each chunk's layer output.
+    /// with records from `experts`: their routed experts run as one step. Writes each
+    /// chunk's layer output over its residual in `outs` (which [`Self::pre_moe`] no
+    /// longer needs), so residuals living across layers are not reallocated among
+    /// the step's temporaries, which would fragment the allocator.
     #[allow(clippy::too_many_arguments)]
     pub fn finish(
         &self,
@@ -325,7 +334,8 @@ impl<B: Backend> DecoderLayer<B> {
         routing: Routing<B>,
         state: &mut LayerState<B>,
         experts: &mut dyn ExpertSource<B>,
-    ) -> Result<Vec<B::F32>> {
+        outs: &mut [B::F32],
+    ) -> Result<()> {
         let h = d.hidden;
         let total = lens.iter().sum();
         let ws_rc = state.ws.clone();
@@ -335,16 +345,17 @@ impl<B: Backend> DecoderLayer<B> {
             .moe
             .apply(gpu, d, &mut ws, x, total, routing, experts, &mut scratch)?;
         ws.give_bf16("gemm.scratch", scratch);
+        let mut part =
+            ws.take_at_least(gpu, "layer.moe_part", lens.iter().max().unwrap_or(&1) * h)?;
         drop(ws);
-        let mut outs = Vec::with_capacity(pres.len());
         let mut at = 0;
-        for (pre, &t) in pres.into_iter().zip(lens) {
-            let mut part = gpu.uninit(t * h)?;
+        for ((pre, &t), out) in pres.into_iter().zip(lens).zip(outs.iter_mut()) {
             gpu.copy_range(&moe_out, at * h, &mut part, 0, t * h)?;
-            outs.push(self.post_moe(gpu, d, pre, &part, t, state, &mut NoProbe)?);
+            self.post_moe_into(gpu, d, pre, &part, t, state, &mut NoProbe, out)?;
             at += t;
         }
-        Ok(outs)
+        state.ws.borrow_mut().give("layer.moe_part", part);
+        Ok(())
     }
 
     /// The layer up to its MoE: PLE, the token mixer and the hyper-connections into
@@ -446,6 +457,29 @@ impl<B: Backend> DecoderLayer<B> {
         state: &mut LayerState<B>,
         probe: &mut dyn Probe,
     ) -> Result<B::F32> {
+        // The layer output is handed to the caller; the model gives the previous
+        // residual back under the same name so two buffers alternate.
+        let mut out = state
+            .ws
+            .borrow_mut()
+            .take(gpu, "layer.out", t * d.residual())?;
+        self.post_moe_into(gpu, d, pre, moe_out, t, state, probe, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Self::post_moe`] into `out` (`t` residual rows).
+    #[allow(clippy::too_many_arguments)]
+    fn post_moe_into(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        pre: PreMoe<B>,
+        moe_out: &B::F32,
+        t: usize,
+        state: &mut LayerState<B>,
+        probe: &mut dyn Probe,
+        out: &mut B::F32,
+    ) -> Result<()> {
         let mut ws = state.ws.borrow_mut();
         let PreMoe {
             res1,
@@ -453,18 +487,15 @@ impl<B: Backend> DecoderLayer<B> {
             inject,
         } = pre;
         ws.give("hc.mixed", mixed);
-        // The layer output is handed to the caller; the model gives the previous
-        // residual back under the same name so two buffers alternate.
-        let mut out = ws.take(gpu, "layer.out", t * d.residual())?;
-        HyperConn::combine_into(gpu, d, &res1, moe_out, &inject, t, &mut out)?;
+        HyperConn::combine_into(gpu, d, &res1, moe_out, &inject, t, out)?;
         ws.give("hc.inject", inject);
         ws.give("layer.res1", res1);
         drop(ws);
-        tap(gpu, probe, "layer_out", &mut out)?;
+        tap(gpu, probe, "layer_out", out)?;
         if let Some(g) = state.gdn.as_mut() {
             tap(gpu, probe, "state.conv", &mut g.conv)?;
             tap(gpu, probe, "state.recurrent", &mut g.recurrent)?;
         }
-        Ok(out)
+        Ok(())
     }
 }
