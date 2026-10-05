@@ -21,14 +21,26 @@ filegroup(
 
 filegroup(
     name = "boundary_sources",
-    srcs = glob(["**/*.py"], exclude = ["**/*_test.py", "**/test_*.py"]),
+    srcs = glob(
+        ["**/*.py"],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+        ],
+    ),
     visibility = ["//projects/monolith:__pkg__"],
 )
 
 # Tier-independent identity verification. No platform persistence or routers.
 py_library(
     name = "auth",
-    srcs = glob(["*.py"], exclude = ["*_test.py", "module.py"]),
+    srcs = glob(
+        ["*.py"],
+        exclude = [
+            "*_test.py",
+            "module.py",
+        ],
+    ),
     imports = [".."],
     visibility = ["//projects/monolith:__subpackages__"],
     deps = [
@@ -43,7 +55,10 @@ py_library(
 # Private module only. Public and agents binaries depend on :auth instead.
 py_library(
     name = "platform_auth",
-    srcs = ["module.py"] + glob(["platform/**/*.py"], exclude = ["**/*_test.py"]),
+    srcs = ["module.py"] + glob(
+        ["platform/**/*.py"],
+        exclude = ["**/*_test.py"],
+    ),
     imports = [".."],
     visibility = ["//projects/monolith:__pkg__"],
     deps = [
