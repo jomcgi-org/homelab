@@ -2,10 +2,12 @@
 
 from uuid import uuid4
 
+import pytest
 from core.db import get_session
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from grimoire.access import get_authenticated_identity
+from grimoire.accounts import sync_user
 from grimoire.models import AppUser, Campaign, CampaignInvitation, CampaignMember
 from grimoire.router import router
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -14,6 +16,40 @@ from auth.api import Authority, Principal, PrincipalKind
 from auth.platform.enrollment import Completion, activate
 from auth.platform.models import PlatformApplicationUser, PlatformInvitation, now
 from auth.platform.service import command
+
+
+def test_optional_email_cannot_claim_an_unbound_legacy_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLATFORM_AUTH_ENFORCEMENT_ENABLED", "true")
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'legacy.db'}",
+        execution_options={"schema_translate_map": {"grimoire": None}},
+    )
+    SQLModel.metadata.create_all(engine, tables=[AppUser.__table__])
+    principal = Principal(
+        subject="new-player",
+        issuer="https://idp.test/grimoire/",
+        email="victim@example.test",
+        email_verified=True,
+        username="player",
+        user_type="external",
+        authority=Authority.STANDING,
+        kind=PrincipalKind.HUMAN,
+        groups=(),
+        actor=(),
+        scope=(),
+    )
+    with Session(engine) as session:
+        legacy = AppUser(email=principal.email)
+        session.add(legacy)
+        session.commit()
+        legacy_id = legacy.id
+        with pytest.raises(HTTPException) as denied:
+            sync_user(session, principal)
+        assert denied.value.status_code == 409
+        preserved = session.get(AppUser, legacy_id)
+        assert preserved.issuer is None and preserved.subject is None
+        assert len(session.exec(select(AppUser)).all()) == 1
+    engine.dispose()
 
 
 def test_username_login_preserves_campaign_ids_and_rechecks_grants(
