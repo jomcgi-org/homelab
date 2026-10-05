@@ -1,6 +1,7 @@
 """RULER-style synthetic long-context retrieval (Hsieh et al., 2024), generated locally.
 
-Haystacks are RULER's repeated "noise" sentences, sized with the model's tokenizer so each
+Haystacks are a random window of Paul Graham's essays (RULER's harder setting, `essay`) or
+RULER's repeated "noise" sentences (`noise`), sized with the model's tokenizer so each
 prompt lands at a requested context length. Variants:
   single      one needle; return its value
   multikey    the target needle among distractor needles with other keys
@@ -10,11 +11,12 @@ Generation is seeded by (variant, length, index, seed), so every arm sees identi
 """
 
 import random
+import re
 import string
 
 from tokenizers import Tokenizer
 
-from .base import Item, Task
+from .base import Item, Task, parquet_rows
 
 NOISE = "The grass is green. The sky is blue. The sun is yellow. Here we go. There and back again."
 NIAH_PROMPT = (
@@ -51,6 +53,7 @@ class Ruler(Task):
         g = parser.add_argument_group("ruler")
         g.add_argument("--ruler-tokenizer", help="model tokenizer.json, used to size haystacks (required for ruler)")
         g.add_argument("--ruler-lengths", default="8192,32768", help="comma-separated context lengths in tokens")
+        g.add_argument("--ruler-haystack", default="essay", choices=("essay", "noise"), help="filler text")
         g.add_argument("--ruler-variants", default=",".join(VARIANTS), help=f"subset of {','.join(VARIANTS)}")
         g.add_argument("--ruler-per-length", type=int, default=10, help="prompts per variant per length")
         g.add_argument("--ruler-distractors", type=int, default=8, help="distractor needles for multikey")
@@ -61,7 +64,13 @@ class Ruler(Task):
         if not args.ruler_tokenizer:
             raise SystemExit("ruler needs --ruler-tokenizer (the model's tokenizer.json)")
         tok = Tokenizer.from_file(args.ruler_tokenizer)
-        noise_tokens = len(tok.encode(" ".join([NOISE] * 100)).ids) / 100
+        if args.ruler_haystack == "essay":
+            text = " ".join(r["text"] for r in parquet_rows("baber/paul_graham_essays", "essays.parquet"))
+            sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text).strip())
+        else:
+            sentences = [NOISE]
+        counts = [len(e.ids) for e in tok.encode_batch(sentences)]
+        filler = (sentences, counts)
         lengths = [int(x) for x in args.ruler_lengths.split(",") if x.strip()]
         variants = [v.strip() for v in args.ruler_variants.split(",") if v.strip()]
         for v in variants:
@@ -72,10 +81,10 @@ class Ruler(Task):
             for variant in variants:
                 for i in range(args.ruler_per_length):
                     rng = random.Random(f"{variant}-{length}-{i}-{args.ruler_seed}")
-                    items.append(self._make(tok, noise_tokens, rng, variant, length, i, args))
+                    items.append(self._make(tok, filler, rng, variant, length, i, args))
         return items
 
-    def _make(self, tok, noise_tokens, rng, variant, length, index, args):
+    def _make(self, tok, filler, rng, variant, length, index, args):
         if variant == "vt":
             value = str(rng.randint(10_000, 99_999))
             names = [_word(rng, 5).upper() for _ in range(args.ruler_hops + 1)]
@@ -103,13 +112,26 @@ class Ruler(Task):
 
         budget = length - TEMPLATE_SLACK - len(tok.encode(question.replace("{context}", "")).ids)
         budget -= sum(len(tok.encode(n).ids) for n in needles)
-        n_noise = max(1, int(budget / noise_tokens))
-        context = self._haystack(rng, needles, n_noise, keep_order=ordered)
-        # One correction pass: tokenization of the joined text differs slightly from the estimate.
-        over = len(tok.encode(question.replace("{context}", context)).ids) - (length - TEMPLATE_SLACK)
-        if over > 0:
-            n_noise = max(1, n_noise - int(over / noise_tokens) - 1)
-            context = self._haystack(random.Random(rng.random()), needles, n_noise, keep_order=ordered)
+        sentences, counts = filler
+        start = rng.randrange(len(sentences))
+        chosen, used = [], 0
+        while used < budget:
+            i = (start + len(chosen)) % len(sentences)
+            chosen.append(i)
+            used += counts[i]
+        slots = rng.sample(range(len(chosen) + 1), len(needles))
+        if ordered:
+            slots.sort()
+        # Joined text tokenizes slightly differently from the per-sentence counts: trim the
+        # tail until the prompt fits.
+        while True:
+            context = self._haystack([sentences[i] for i in chosen], needles, slots)
+            over = len(tok.encode(question.replace("{context}", context)).ids) - (length - TEMPLATE_SLACK)
+            if over <= 0:
+                break
+            while over > 0 and len(chosen) > 1:
+                over -= counts[chosen.pop()]
+            slots = [min(s, len(chosen)) for s in slots]
         prompt = question.replace("{context}", context)
         return Item(
             id=f"{variant}-{length}-{index}",
@@ -119,19 +141,16 @@ class Ruler(Task):
         )
 
     @staticmethod
-    def _haystack(rng, needles, n_noise, keep_order):
-        """Noise sentences with needles at random depths (chains keep their order)."""
-        slots = rng.sample(range(n_noise + 1), len(needles))
-        if keep_order:
-            slots.sort()
+    def _haystack(filler, needles, slots):
+        """Filler sentences with needle j inserted before sentence slots[j]."""
         at = {}
         for slot, needle in zip(slots, needles):
             at.setdefault(slot, []).append(needle)
         parts = []
-        for i in range(n_noise + 1):
+        for i in range(len(filler) + 1):
             parts.extend(at.get(i, []))
-            if i < n_noise:
-                parts.append(NOISE)
+            if i < len(filler):
+                parts.append(filler[i])
         return " ".join(parts)
 
     def score(self, item, content):

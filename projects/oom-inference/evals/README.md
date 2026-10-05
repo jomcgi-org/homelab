@@ -65,7 +65,7 @@ Reasoning tokens dominate thinking-mode tasks.
 | `aime26`, `aime25` | 30 | MathArena; card: 98.75 pass@1 over 8 samples, thinking, max 130k |
 | `gpqa_diamond` | 198 | ungated mirror with shuffled choices; Qwen card: 91.7 (bf16 base) |
 | `mmlu_pro` | 12,032 | `--mmlu-pro-categories` to subset |
-| `ruler` | generated | single, multikey, multivalue needles and variable tracking at `--ruler-lengths` |
+| `ruler` | generated | single, multikey, multivalue needles and variable tracking at `--ruler-lengths`, in Paul Graham essays (`--ruler-haystack essay`, default) or RULER's repeated noise sentences (`noise`, easy) |
 
 Published scores come from other engines and harnesses (prompts, system prompt, answer
 extraction, sample counts), so they are a sanity check, not an A/B arm. Compare arms run
