@@ -285,6 +285,14 @@ extern "C" __global__ void silu_mul(const float* gate, const float* up, float* y
     if (i < n) y[i] = siluf(gate[i]) * up[i];
 }
 
+// SwiGLU on stacked rows: y[r, i] = silu(gu[r, i]) * gu[r, n + i], gu: [rows, 2n].
+extern "C" __global__ void silu_mul_rows(const float* gu, float* y, int rows, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * n) return;
+    int r = i / n, c = i % n;
+    y[i] = siluf(gu[(size_t)r * 2 * n + c]) * gu[(size_t)r * 2 * n + n + c];
+}
+
 // moe = routed + sigmoid(gate_logit) * shared. gate_logit: [T].
 extern "C" __global__ void moe_combine(const float* routed, const float* shared,
                                        const float* gate_logit, float* out, int T, int H) {

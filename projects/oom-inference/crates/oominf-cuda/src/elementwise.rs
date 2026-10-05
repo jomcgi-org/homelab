@@ -53,6 +53,25 @@ impl Elementwise for Gpu {
         Ok(())
     }
 
+    fn silu_mul_rows(&self, gu: &Buf, y: &mut Buf, rows: usize, n: usize) -> Result<()> {
+        self.check(
+            gu.len() >= rows * 2 * n && y.len() >= rows * n,
+            "silu_mul_rows sizes",
+        )?;
+        let f = self.func("silu_mul_rows")?;
+        let (r32, n32) = (rows as i32, n as i32);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(gu)
+                .arg(y)
+                .arg(&r32)
+                .arg(&n32)
+                .launch(grid(rows * n, 256))?
+        };
+        Ok(())
+    }
+
     /// `x *= sigmoid(gate)`.
     fn mul_sigmoid(&self, x: &mut Buf, gate: &Buf, n: usize) -> Result<()> {
         let f = self.func("mul_sigmoid")?;

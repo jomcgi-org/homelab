@@ -213,6 +213,61 @@ impl Memory for Gpu {
 impl Transfer for Gpu {
     type CopyQueue = CopyQueue;
     type Event = Event;
+    type Download = crate::staging::Download;
+
+    fn download_start_i32(&self, src: &Dev<i32>, n: usize) -> Result<Self::Download> {
+        ensure!(
+            n > 0 && n <= src.0.len(),
+            "download_start_i32: {n} of {}",
+            src.0.len()
+        );
+        let view = src.0.slice(0..n);
+        let (ptr, _guard) = view.device_ptr(&self.stream);
+        // SAFETY: `ptr` is `n` valid elements on this stream.
+        unsafe {
+            self.staging
+                .lock()
+                .unwrap()
+                .download(&self.stream, ptr, n * 4)
+        }
+    }
+
+    fn download_start_f32(&self, src: &Buf, n: usize) -> Result<Self::Download> {
+        ensure!(
+            n > 0 && n <= src.0.len(),
+            "download_start_f32: {n} of {}",
+            src.0.len()
+        );
+        let view = src.0.slice(0..n);
+        let (ptr, _guard) = view.device_ptr(&self.stream);
+        // SAFETY: `ptr` is `n` valid elements on this stream.
+        unsafe {
+            self.staging
+                .lock()
+                .unwrap()
+                .download(&self.stream, ptr, n * 4)
+        }
+    }
+
+    fn download_wait_i32(&self, pending: Self::Download) -> Result<Vec<i32>> {
+        let bytes = self.staging.lock().unwrap().finish(pending)?;
+        Ok(bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| i32::from_le_bytes(*c))
+            .collect())
+    }
+
+    fn download_wait_f32(&self, pending: Self::Download) -> Result<Vec<f32>> {
+        let bytes = self.staging.lock().unwrap().finish(pending)?;
+        Ok(bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
+            .collect())
+    }
 
     fn copy_queue(&self) -> Result<CopyQueue> {
         Ok(CopyQueue(self.ctx.new_stream()?))

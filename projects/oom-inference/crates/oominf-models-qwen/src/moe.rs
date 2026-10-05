@@ -67,8 +67,9 @@ pub struct Moe<B: Backend> {
     /// one decode GEMV routes this layer and predicts the next (absent for the last
     /// layer).
     router_pair: Option<B::Bf16>,
-    shared_gate: B::Bf16,
-    shared_up: B::Bf16,
+    /// The shared expert's gate over its up projection (`[2 * shared_inter,
+    /// hidden]`): one GEMM for both.
+    shared_gate_up: B::Bf16,
     shared_down: B::Bf16,
     shared_gate_logit: B::Bf16,
     /// Computes host-resident experts of decode-sized steps on the CPU (absent:
@@ -213,8 +214,14 @@ impl<B: Backend> Moe<B> {
             }),
             router: w("gate.weight", &[d.experts as u64, h])?,
             router_pair,
-            shared_gate: w("shared_expert.gate_proj.weight", &[si, h])?,
-            shared_up: w("shared_expert.up_proj.weight", &[si, h])?,
+            shared_gate_up: bf16_concat(
+                gpu,
+                model,
+                &[
+                    (format!("{p}shared_expert.gate_proj.weight"), vec![si, h]),
+                    (format!("{p}shared_expert.up_proj.weight"), vec![si, h]),
+                ],
+            )?,
             shared_down: w("shared_expert.down_proj.weight", &[h, si])?,
             shared_gate_logit: w("shared_expert_gate.weight", &[1, h])?,
             host: None,
@@ -273,7 +280,19 @@ impl<B: Backend> Moe<B> {
         let mut weights = gpu.zeros(rows * k)?;
         gpu.router_topk(&logits, &mut ids, &mut weights, rows, e, k)?;
         tap(gpu, probe, "topk_weights", &mut weights)?;
-        let mut ids_host = gpu.download_i32(&ids)?;
+        // The picks and (for experts computed on the host) the MoE input go down
+        // together; the shared expert, which does not depend on the routing, is
+        // queued before the host waits, so the device computes it while the host
+        // plans the routed experts.
+        let ids_pending = gpu.download_start_i32(&ids, rows * k)?;
+        let host_ok = self.host.is_some() && t <= PAIR_MAX_TOKENS;
+        let x_pending = if host_ok {
+            Some(gpu.download_start_f32(x, t * h)?)
+        } else {
+            None
+        };
+        let (shared, gate_logit) = self.shared(gpu, d, x, t, scratch, probe)?;
+        let mut ids_host = gpu.download_wait_i32(ids_pending)?;
         let predicted = pair.map(|_| {
             let rows: Vec<Vec<i32>> = ids_host.chunks(k).map(<[i32]>::to_vec).collect();
             ids_host = rows.iter().step_by(2).flatten().copied().collect();
@@ -310,11 +329,8 @@ impl<B: Backend> Moe<B> {
         // Start loading the routed experts so their copies overlap the shared expert
         // and the resident experts' compute; host-resident experts the source leaves
         // in host memory start on the CPU now.
-        let host_ok = self.host.is_some() && t <= PAIR_MAX_TOKENS;
         let plan = self.begin_routed(gpu, d, t, &ids_host, experts, host_ok)?;
-        let host_work = self.start_host(gpu, d, x, t, &plan)?;
-
-        let (shared, gate_logit) = self.shared(gpu, d, x, t, scratch, probe)?;
+        let host_work = self.start_host(gpu, d, x_pending, t, &plan)?;
 
         let mut routed =
             self.finish_routed(gpu, d, ws, x, t, plan, host_work, &weights, experts)?;
@@ -463,12 +479,10 @@ impl<B: Backend> Moe<B> {
         probe: &mut dyn Probe,
     ) -> Result<(B::F32, B::F32)> {
         let (h, si) = (d.hidden, d.shared_inter);
-        let mut sg = gpu.zeros(t * si)?;
-        gpu.gemm_bf16(x, &self.shared_gate, &mut sg, scratch, t, si, h)?;
-        let mut su = gpu.zeros(t * si)?;
-        gpu.gemm_bf16(x, &self.shared_up, &mut su, scratch, t, si, h)?;
-        let mut sact = gpu.zeros(t * si)?;
-        gpu.silu_mul(&sg, &su, &mut sact, t * si)?;
+        let mut gu = gpu.uninit(t * 2 * si)?;
+        gpu.gemm_bf16(x, &self.shared_gate_up, &mut gu, scratch, t, 2 * si, h)?;
+        let mut sact = gpu.uninit(t * si)?;
+        gpu.silu_mul_rows(&gu, &mut sact, t, si)?;
         let mut shared = gpu.zeros(t * h)?;
         gpu.gemm_bf16(&sact, &self.shared_down, &mut shared, scratch, t, h, si)?;
         tap(gpu, probe, "shared_out", &mut shared)?;
@@ -547,14 +561,15 @@ impl<B: Backend> Moe<B> {
         &self,
         gpu: &B,
         d: &Dims,
-        x: &B::F32,
+        x: Option<B::Download>,
         t: usize,
         plan: &RoutedPlan,
     ) -> Result<Option<Pending>> {
         let (Some(pool), true) = (&self.host, plan.hosted > 0) else {
             return Ok(None);
         };
-        let mut xs = gpu.download_f32(x)?;
+        let x = x.context("host-computed experts without their input")?;
+        let mut xs = gpu.download_wait_f32(x)?;
         xs.truncate(t * d.hidden);
         let k = d.top_k;
         let range = plan.resident..plan.resident + plan.hosted;
