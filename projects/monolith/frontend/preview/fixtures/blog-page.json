@@ -1,0 +1,33 @@
+{
+  "slug": "125b-on-a-4090",
+  "title": "Serving larger-than-memory MoE models",
+  "date": "2026-01-01",
+  "summary": "Synthetic fixture for the 4090 blog layout. No measured results.",
+  "tags": ["synthetic", "preview"],
+  "html": "<p>Synthetic fixture content for layout testing. All timings and graph statements in this preview are invented.</p>\n<h2 id=\"1-the-synthetic-setup\">1. The synthetic setup</h2>\n<p>A fictional local model reads a made-up incident report. The preview exercises the production blog and replay components without any service connection.</p>\n<h3 id=\"11-a-bounded-input\">1.1 A bounded input</h3>\n<p>The fixture uses a fixed clock and a short deterministic stream.</p>\n<h2 id=\"2-what-to-inspect\">2. What to inspect</h2>\n<p>Check the title, playback controls, article link, section index and day or night scheme at phone and desktop widths.</p>\n",
+  "preamble": "<p>Synthetic fixture content for layout testing. All timings and graph statements in this preview are invented.</p>\n",
+  "sections": [
+    "<h2 id=\"1-the-synthetic-setup\">1. The synthetic setup</h2>\n<p>A fictional local model reads a made-up incident report. The preview exercises the production blog and replay components without any service connection.</p>\n<h3 id=\"11-a-bounded-input\">1.1 A bounded input</h3>\n<p>The fixture uses a fixed clock and a short deterministic stream.</p>\n",
+    "<h2 id=\"2-what-to-inspect\">2. What to inspect</h2>\n<p>Check the title, playback controls, article link, section index and day or night scheme at phone and desktop widths.</p>\n"
+  ],
+  "toc": [
+    {
+      "depth": 2,
+      "text": "1. The synthetic setup",
+      "id": "1-the-synthetic-setup",
+      "children": [
+        {
+          "depth": 3,
+          "text": "1.1 A bounded input",
+          "id": "11-a-bounded-input"
+        }
+      ]
+    },
+    {
+      "depth": 2,
+      "text": "2. What to inspect",
+      "id": "2-what-to-inspect",
+      "children": []
+    }
+  ]
+}

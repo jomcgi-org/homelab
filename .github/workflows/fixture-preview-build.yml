@@ -1,0 +1,69 @@
+name: Fixture preview build
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - projects/monolith/frontend/**
+      - .github/workflows/fixture-preview-*.yml
+      - bazel/tools/previews/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - bazel/patches/**
+
+# This job runs PR code on a fresh hosted runner. No secret, remote-cache,
+# deployment or repository-write credential is supplied to PR scripts.
+permissions:
+  contents: read
+
+concurrency:
+  group: fixture-preview-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Install the existing frozen workspace dependencies
+        run: |
+          npm install --global pnpm@10.34.5
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Validate the same-commit server-load contract and build
+        working-directory: projects/monolith/frontend
+        run: |
+          pnpm exec vitest run --config preview/vitest.config.js
+          pnpm exec vite build --config preview/vite.config.js
+      - name: Install the browser test runner
+        run: |
+          python3 -m venv /tmp/fixture-browser
+          /tmp/fixture-browser/bin/pip install playwright==1.63.0
+          /tmp/fixture-browser/bin/playwright install --with-deps chromium
+      - name: Check the exact publish artifact at phone and desktop widths
+        run: |
+          /tmp/fixture-browser/bin/python projects/monolith/frontend/preview/browser_check.py \
+            --artifact projects/monolith/frontend/fixture-preview \
+            --output fixture-preview-evidence
+      - name: Upload browser evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fixture-preview-evidence-${{ github.event.pull_request.head.sha }}
+          path: fixture-preview-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload only the tested static output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fixture-preview-${{ github.event.pull_request.head.sha }}
+          path: projects/monolith/frontend/fixture-preview/
+          if-no-files-found: error
+          retention-days: 14

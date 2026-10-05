@@ -1,0 +1,11 @@
+/* Google Fonts google/fonts blob 78ad61cf65a390c517248f46d325a1e9b88d367d.
+ * Vendored unchanged under the SIL Open Font License, included in this build.
+ * Browser tests load this font locally; there is no Google Fonts request.
+ */
+@font-face {
+  font-family: "Schibsted Grotesk";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("./fonts/SchibstedGrotesk.ttf") format("truetype");
+}

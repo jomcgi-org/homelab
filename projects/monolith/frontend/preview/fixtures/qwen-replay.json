@@ -1,0 +1,75 @@
+{
+  "version": 3,
+  "recordedAt": "2026-01-01T00:00:00.000Z",
+  "build": "synthetic-fixture",
+  "model": "Synthetic model",
+  "hardware": "Synthetic hardware",
+  "thinking": false,
+  "sampleIntervalMs": 200,
+  "conditions": "Entirely synthetic. Timings are invented for UI testing.",
+  "telemetry": {
+    "routing": false,
+    "stats": false
+  },
+  "source": {
+    "url": "#synthetic-source"
+  },
+  "document": {
+    "pages": 8,
+    "sections": [
+      {
+        "from": 1,
+        "label": "Synthetic report"
+      },
+      {
+        "from": 5,
+        "label": "Fixture appendix"
+      }
+    ]
+  },
+  "review": {},
+  "turns": [
+    {
+      "title": "Synthetic inference",
+      "prompt": "Render the invented fixture graph. No external service is involved.",
+      "events": [
+        {
+          "at": 1000,
+          "content": "{\"type\":\"summary\",\"label\":\"Synthetic fixture boundary\",\"detail\":\"This invented report shows a fictional handoff between a worker and a local queue.\",\"pages\":[1],\"basis\":\"inferred\"}\n",
+          "reasoning": ""
+        },
+        {
+          "at": 1500,
+          "content": "{\"type\":\"node\",\"id\":\"n1\",\"label\":\"Fixture controller\",\"boundary\":\"evaluation\",\"role\":\"controller\",\"detail\":\"Assigns deterministic synthetic work\",\"pages\":[1],\"basis\":\"reported\"}\n",
+          "reasoning": ""
+        },
+        {
+          "at": 2000,
+          "content": "{\"type\":\"node\",\"id\":\"n2\",\"label\":\"Fixture worker\",\"boundary\":\"shared\",\"role\":\"process\",\"detail\":\"Processes invented report pages\",\"pages\":[2],\"basis\":\"reported\"}\n",
+          "reasoning": ""
+        },
+        {
+          "at": 2500,
+          "content": "{\"type\":\"edge\",\"from\":\"n1\",\"to\":\"n2\",\"label\":\"Assigns synthetic report work\",\"kind\":\"action\",\"detail\":\"The fixture controller sends a fixed report to the worker.\",\"pages\":[2],\"basis\":\"reported\"}\n",
+          "reasoning": ""
+        }
+      ],
+      "progress": [
+        {
+          "at": 0,
+          "stage": "prefill"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 1000,
+        "completion_tokens": 200,
+        "cached_tokens": 0
+      },
+      "metrics": {
+        "ttftMs": 1000,
+        "tokensPerSecond": 100
+      },
+      "durationMs": 3000
+    }
+  ]
+}
