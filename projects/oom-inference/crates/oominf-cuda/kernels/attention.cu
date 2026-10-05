@@ -391,13 +391,13 @@ mask_union_compact(const uint8_t* mask, int* sel, int T, int TQ, int n, int kv_s
         if (j < n)
             for (int r = 0; r < rows; r++) any |= m[(size_t)r * kv_stride + j] != 0;
         unsigned incl = qsa_block_scan(any, scan);
-        if (any) out[base + incl] = j;  // 1 + base + (incl - 1)
+        if (any && base + incl < sel_stride) out[base + incl] = j;  // 1 + base + (incl - 1)
         if (threadIdx.x == blockDim.x - 1) total = incl;
         __syncthreads();
         base += total;
         __syncthreads();  // every thread has read `total` before the next round
     }
-    if (threadIdx.x == 0) out[0] = base;
+    if (threadIdx.x == 0) out[0] = min(base, (unsigned)sel_stride - 1);
 }
 
 // Masked GQA attention for several query tokens, flash style: one block owns one KV
@@ -682,4 +682,156 @@ extern "C" __global__ void attn_decode_combine(const float* part, float* out, in
         den += w * pr[FD_D + 1];
     }
     out[(size_t)h * FD_D + d] = num / den;
+}
+
+// Sparse prefill attention for many query tokens, G = 12 heads per KV head, D = 256:
+// one block per (token, KV head) over that token's own selected positions (`sel`: per
+// token, count then positions, stride sel_stride; mask_union_compact with TQ = 1), so
+// work follows each token's selection rather than a union with its neighbours. Each of
+// the SP_WARPS warps takes an even share of the list, four keys at a time: lane `l`
+// owns elements l, l + 32, ... of the K/V rows, the four partial dots of a head
+// reduce together (6 shuffles rather than 20), and the online softmax rescales once
+// per four keys. The warps' partials merge in shared memory. fp32 throughout.
+// q: [T, H, D] (H = 12 Hkv); out: [T, H, D]. Grid (T, Hkv), block 32 * SP_WARPS.
+#define SP_WARPS 4
+#define SP_KB 4
+
+// Sum over the warp of v[0..3]; returns the total of key `sp_key(lane)` (lanes whose
+// bits 4, 3 are (b4, b3) hold key 2 * b4 + b3).
+__device__ __forceinline__ float sp_reduce4(float v0, float v1, float v2, float v3, int lane) {
+    bool hi = lane & 16;
+    // xor 16: the lower half keeps keys 0, 1; the upper half keys 2, 3.
+    float a = (hi ? v2 : v0) + __shfl_xor_sync(0xffffffff, hi ? v0 : v2, 16);
+    float b = (hi ? v3 : v1) + __shfl_xor_sync(0xffffffff, hi ? v1 : v3, 16);
+    bool mid = lane & 8;
+    // xor 8: keep the first or second of the pair.
+    float c = (mid ? b : a) + __shfl_xor_sync(0xffffffff, mid ? a : b, 8);
+    c += __shfl_xor_sync(0xffffffff, c, 4);
+    c += __shfl_xor_sync(0xffffffff, c, 2);
+    c += __shfl_xor_sync(0xffffffff, c, 1);
+    return c;
+}
+
+extern "C" __global__ void __launch_bounds__(32 * SP_WARPS)
+attn_sparse_g12(const float* q, const uint8_t* k, const uint8_t* v, const int* sel,
+                int sel_stride, float* out, int Hkv, float scale, int kb, int vb,
+                const float* levels) {
+    constexpr int G = 12;
+    __shared__ float qs[G * FD_D];
+    __shared__ float lvk[256], lvv[256];
+    // Partials of two warps at a time while merging: (acc[D], m, l) per head.
+    __shared__ float mp[2][G][FD_D + 2];
+    kv_levels_load(lvk, levels, kb);
+    kv_levels_load(lvv, levels, vb);
+    size_t krow = kv_row_bytes(FD_D, kb), vrow = kv_row_bytes(FD_D, vb);
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int t = blockIdx.x, kvh = blockIdx.y, H = Hkv * G;
+    const float* qt = q + ((size_t)t * H + kvh * G) * FD_D;
+    for (int i = threadIdx.x; i < G * FD_D; i += blockDim.x) qs[i] = qt[i];
+    __syncthreads();
+    const int* ts = sel + (size_t)t * sel_stride;
+    int count = ts[0];
+    int share = (count + SP_WARPS - 1) / SP_WARPS;
+    int i0 = min(count, warp * share), i1 = min(count, i0 + share);
+    float acc[G][8], m[G], l[G];
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+        m[g] = -INFINITY;
+        l[g] = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 8; i++) acc[g][i] = 0.0f;
+    }
+    for (int i = i0; i < i1; i += SP_KB) {
+        float kk[SP_KB][8], vv[SP_KB][8];
+#pragma unroll
+        for (int b = 0; b < SP_KB; b++) {
+            int j = i + b < i1 ? ts[1 + i + b] : -1;
+            const uint8_t* kr = k + ((size_t)max(j, 0) * Hkv + kvh) * krow;
+            const uint8_t* vr = v + ((size_t)max(j, 0) * Hkv + kvh) * vrow;
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                kk[b][e] = j >= 0 ? kv_value(kr, e * 32 + lane, FD_D, kb, lvk) : 0.0f;
+                vv[b][e] = j >= 0 ? kv_value(vr, e * 32 + lane, FD_D, vb, lvv) : 0.0f;
+            }
+        }
+        int valid = min(SP_KB, i1 - i);
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+            float d[SP_KB];
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) d[b] = 0.0f;
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                float qv = qs[g * FD_D + e * 32 + lane];
+#pragma unroll
+                for (int b = 0; b < SP_KB; b++) d[b] += qv * kk[b][e];
+            }
+            float mine = sp_reduce4(d[0], d[1], d[2], d[3], lane) * scale;
+            float s[SP_KB];
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) {
+                // Lane 8 * b (bits 4, 3 = b) holds key b's score.
+                s[b] = __shfl_sync(0xffffffff, mine, (b >> 1) * 16 + (b & 1) * 8);
+                if (b >= valid) s[b] = -INFINITY;
+            }
+            float mn = m[g];
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) mn = fmaxf(mn, s[b]);
+            float corr = expf(m[g] - mn), e[SP_KB], sum = 0.0f;
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) {
+                e[b] = expf(s[b] - mn);
+                sum += e[b];
+            }
+            l[g] = l[g] * corr + sum;
+            m[g] = mn;
+#pragma unroll
+            for (int x = 0; x < 8; x++) {
+                float a = acc[g][x] * corr;
+#pragma unroll
+                for (int b = 0; b < SP_KB; b++) a += e[b] * vv[b][x];
+                acc[g][x] = a;
+            }
+        }
+    }
+    // Merge: warps 2, 3 hand their partials to warps 0, 1, then warp 1 to warp 0.
+    for (int half = SP_WARPS / 2; half >= 1; half /= 2) {
+        if (warp >= half && warp < 2 * half) {
+            int slot = warp - half;
+#pragma unroll
+            for (int g = 0; g < G; g++) {
+#pragma unroll
+                for (int x = 0; x < 8; x++) mp[slot][g][x * 32 + lane] = acc[g][x];
+                if (lane == 0) {
+                    mp[slot][g][FD_D] = m[g];
+                    mp[slot][g][FD_D + 1] = l[g];
+                }
+            }
+        }
+        __syncthreads();
+        if (warp < half) {
+#pragma unroll
+            for (int g = 0; g < G; g++) {
+                float mo = mp[warp][g][FD_D], lo = mp[warp][g][FD_D + 1];
+                float mn = fmaxf(m[g], mo);
+                float ca = mn == -INFINITY ? 0.0f : expf(m[g] - mn);
+                float cb = mn == -INFINITY ? 0.0f : expf(mo - mn);
+                l[g] = l[g] * ca + lo * cb;
+                m[g] = mn;
+#pragma unroll
+                for (int x = 0; x < 8; x++)
+                    acc[g][x] = acc[g][x] * ca + mp[warp][g][x * 32 + lane] * cb;
+            }
+        }
+        __syncthreads();
+    }
+    if (warp == 0) {
+        float* ot = out + ((size_t)t * H + kvh * G) * FD_D;
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+            float inv = 1.0f / l[g];
+#pragma unroll
+            for (int x = 0; x < 8; x++) ot[g * FD_D + x * 32 + lane] = acc[g][x] * inv;
+        }
+    }
 }

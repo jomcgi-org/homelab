@@ -12,7 +12,7 @@ below.
 | Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
 | Speculative decoding | greedy decoding with MTP drafts produces the same tokens as one-token steps | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored` |
 | Expert kernel | the tensor-core NVFP4 kernel matches an f64 reference on random records, and its throughput | `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture` |
-| KV cache formats | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32 | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
+| KV cache formats and attention | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32; prefill-sized attention under sparse masks matches an f64 reference | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
 | Sequence snapshots | a saved and restored sequence continues with bit-identical logits and drafts | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test snapshot -- --ignored` |
 | GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
 

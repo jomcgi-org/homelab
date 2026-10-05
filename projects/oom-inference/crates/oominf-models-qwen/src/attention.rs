@@ -289,10 +289,11 @@ impl<B: Backend> Attention<B> {
     }
 
     /// Bytes of the per-step buffers that grow with the sequence (selection mask,
-    /// block scores, and the backend's per-group key lists of about one `i32` per
-    /// key per 4 queries) for a step of `t` queries over `kv_len` keys.
+    /// block scores, and the backend's per-query key lists of up to `block_topk *
+    /// ratio + ratio` `i32` positions) for a step of `t` queries over `kv_len` keys.
     pub fn step_bytes(&self, t: usize, kv_len: usize) -> usize {
-        2 * t * (kv_len + 1) + t * (kv_len / self.a.ratio + 1) * std::mem::size_of::<f32>()
+        let listed = (self.a.block_topk * self.a.ratio + self.a.ratio).min(kv_len) + 1;
+        t * kv_len + t * (kv_len / self.a.ratio + 1) * std::mem::size_of::<f32>() + 4 * t * listed
     }
 
     pub fn growth_bytes(&self, state: &AttnState<B>, tokens: usize) -> usize {
@@ -490,7 +491,10 @@ impl<B: Backend> Attention<B> {
             m.truncate(t * kv_len);
             probe.observe("indexer.mask", m.into_iter().map(f32::from).collect());
         }
+        // qsa_mask keeps `block_topk` complete blocks and the incomplete tail.
+        let mut max_visible = a.block_topk * a.ratio + a.ratio;
         if let Some(sub) = probe.substitute("indexer.mask") {
+            max_visible = kv_len;
             ensure!(
                 sub.len() == t * kv_len,
                 "indexer.mask substitute has wrong length"
@@ -548,6 +552,7 @@ impl<B: Backend> Attention<B> {
             kvh,
             hd,
             kv_len,
+            max_visible,
             1.0 / (hd as f32).sqrt(),
         )?;
         ws.give("attn.q", q);
