@@ -108,6 +108,7 @@ fn attention_error(gpu: &Gpu, format: KvFormat, t: usize, kv_len: usize) -> Resu
             kvh,
             d,
             kv_len,
+            kv_len,
             1.0 / 16.0,
         )?;
         gpu.download_f32(&out)
@@ -168,7 +169,8 @@ fn decode_attention_timing() -> Result<()> {
             let mut ws = oominf_core::Workspace::new();
             let mut run = || {
                 gpu.attention(
-                    &mut ws, &q, &kc, &vc, f, &mask, &mut out, 1, heads, kvh, d, kv_len, 0.0625,
+                    &mut ws, &q, &kc, &vc, f, &mask, &mut out, 1, heads, kvh, d, kv_len, kv_len,
+                    0.0625,
                 )
             };
             run()?;
@@ -184,5 +186,96 @@ fn decode_attention_timing() -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// Prefill-sized attention under sparse masks (each query keeps a random tenth of
+/// the positions up to its own, plus itself) matches an f64 reference, on an fp32
+/// cache and with `max_visible` at the largest row count.
+#[test]
+#[ignore = "needs a GPU"]
+fn sparse_attention_matches_reference() -> Result<()> {
+    let gpu = Gpu::new(0)?;
+    let (heads, kvh, d, kv_len, t) = (24, 2, 256, 3000, 37);
+    let g = heads / kvh;
+    let start = kv_len - t;
+    let q = gaussian(t * heads * d, 11);
+    let k = gaussian(kv_len * kvh * d, 13);
+    let v = gaussian(kv_len * kvh * d, 17);
+    let mut state = 23u64;
+    let mut mask = vec![0u8; t * kv_len];
+    for i in 0..t {
+        for j in 0..=start + i {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            mask[i * kv_len + j] = u8::from(j == start + i || (state >> 33).is_multiple_of(10));
+        }
+    }
+    let max_visible = (0..t)
+        .map(|i| {
+            mask[i * kv_len..(i + 1) * kv_len]
+                .iter()
+                .filter(|&&m| m != 0)
+                .count()
+        })
+        .max()
+        .unwrap();
+    let f = KvFormat::F32;
+    let mut kc = gpu.zeros_bytes(kv_len * kvh * f.row_bytes(true, d))?;
+    let mut vc = gpu.zeros_bytes(kv_len * kvh * f.row_bytes(false, d))?;
+    gpu.kv_append(&gpu.upload_f32(&k)?, &mut kc, f, true, 0, kv_len, kvh, d)?;
+    gpu.kv_append(&gpu.upload_f32(&v)?, &mut vc, f, false, 0, kv_len, kvh, d)?;
+    let mut out = gpu.zeros(t * heads * d)?;
+    let mut ws = oominf_core::Workspace::new();
+    let scale = 1.0 / 16.0;
+    gpu.attention(
+        &mut ws,
+        &gpu.upload_f32(&q)?,
+        &kc,
+        &vc,
+        f,
+        &gpu.upload_bytes(&mask)?,
+        &mut out,
+        t,
+        heads,
+        kvh,
+        d,
+        kv_len,
+        max_visible,
+        scale,
+    )?;
+    let got = gpu.download_f32(&out)?;
+    let mut worst = 0f64;
+    for i in 0..t {
+        for h in 0..heads {
+            let qr = &q[(i * heads + h) * d..][..d];
+            let kvhh = h / g;
+            let scores: Vec<(usize, f64)> = (0..kv_len)
+                .filter(|&j| mask[i * kv_len + j] != 0)
+                .map(|j| {
+                    let kr = &k[(j * kvh + kvhh) * d..][..d];
+                    let s: f64 = qr.iter().zip(kr).map(|(&a, &b)| a as f64 * b as f64).sum();
+                    (j, s * scale as f64)
+                })
+                .collect();
+            let m = scores
+                .iter()
+                .map(|&(_, s)| s)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let den: f64 = scores.iter().map(|&(_, s)| (s - m).exp()).sum();
+            for c in 0..d {
+                let num: f64 = scores
+                    .iter()
+                    .map(|&(j, s)| (s - m).exp() * v[(j * kvh + kvhh) * d + c] as f64)
+                    .sum();
+                let want = num / den;
+                let err = (got[(i * heads + h) * d + c] as f64 - want).abs();
+                worst = worst.max(err);
+            }
+        }
+    }
+    println!("sparse attention: max abs error {worst:.2e} (max_visible {max_visible})");
+    assert!(worst < 1e-4, "max abs error {worst:.2e}");
     Ok(())
 }

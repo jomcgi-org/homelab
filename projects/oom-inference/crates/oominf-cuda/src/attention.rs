@@ -257,8 +257,10 @@ impl Attention for Gpu {
     /// bytes). Up to [`DECODE_MAX_TOKENS`] query tokens with `d == 256` (decode and
     /// draft verification) take the GQA flash-decode path one token at a time (split
     /// over keys, merged online-softmax partials), which keeps the GPU busy for a
-    /// handful of queries; longer steps use `attn_prefill`. A rotated (Turbo) cache
-    /// gets rotated queries, and the output is rotated back.
+    /// handful of queries. Longer steps with that shape use `attn_sparse_g12`, one
+    /// block per query token over its own selected keys; other shapes use
+    /// `attn_prefill`. A rotated (Turbo) cache gets rotated queries, and the output
+    /// is rotated back.
     #[allow(clippy::too_many_arguments)]
     fn attention(
         &self,
@@ -274,6 +276,7 @@ impl Attention for Gpu {
         kv_heads: usize,
         d: usize,
         kv_len: usize,
+        max_visible: usize,
         scale: f32,
     ) -> Result<()> {
         let bits = (
@@ -293,9 +296,24 @@ impl Attention for Gpu {
         let qq = q_rot.as_ref().unwrap_or(q);
         let g = heads / kv_heads;
         // The decode kernel is instantiated for the GQA group size the models use.
-        if t > DECODE_MAX_TOKENS || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
+        if d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
             self.attn_prefill(
                 ws, qq, k, v, bits, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
+            )?;
+        } else if t > DECODE_MAX_TOKENS {
+            self.attn_sparse(
+                ws,
+                qq,
+                k,
+                v,
+                bits,
+                mask,
+                out,
+                t,
+                kv_heads,
+                kv_len,
+                max_visible,
+                scale,
             )?;
         } else {
             let row = heads * d;
@@ -468,6 +486,75 @@ impl Gpu {
                 .arg(&inv)
                 .launch(cfg)?
         };
+        Ok(())
+    }
+
+    /// `attn_sparse_g12` for `t` queries (12 heads per KV head, d 256): per query the
+    /// positions its mask row sets, listed by `mask_union_compact` (one row per
+    /// group) in the workspace's `"attn.sel_prefill"`, then one block per (query, KV
+    /// head) over its list.
+    #[allow(clippy::too_many_arguments)]
+    fn attn_sparse(
+        &self,
+        ws: &mut Workspace<Gpu>,
+        q: &Buf,
+        k: &Dev<u8>,
+        v: &Dev<u8>,
+        (kb, vb, levels): (u8, u8, u64),
+        mask: &Dev<u8>,
+        out: &mut Buf,
+        t: usize,
+        kv_heads: usize,
+        kv_len: usize,
+        max_visible: usize,
+        scale: f32,
+    ) -> Result<()> {
+        self.check(mask.len() >= t * kv_len, "attn_sparse sizes")?;
+        let sel_stride = max_visible.min(kv_len) + 1;
+        let mut sel = ws.take_bytes_at_least(self, "attn.sel_prefill", 4 * t * sel_stride)?;
+        let (t32, one, n32, sel32) = (t as i32, 1i32, kv_len as i32, sel_stride as i32);
+        let fu = self.func("mask_union_compact")?;
+        let cfg = LaunchConfig {
+            grid_dim: (t as u32, 1, 1),
+            block_dim: (1024, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&fu)
+                .arg(mask)
+                .arg(&mut sel)
+                .arg(&t32)
+                .arg(&one)
+                .arg(&n32)
+                .arg(&n32)
+                .arg(&sel32)
+                .launch(cfg)?
+        };
+        let f = self.func("attn_sparse_g12")?;
+        let kvh32 = kv_heads as i32;
+        let cfg = LaunchConfig {
+            grid_dim: (t as u32, kv_heads as u32, 1),
+            block_dim: (128, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(q)
+                .arg(k)
+                .arg(v)
+                .arg(&sel)
+                .arg(&sel32)
+                .arg(out)
+                .arg(&kvh32)
+                .arg(&scale)
+                .arg(&(kb as i32))
+                .arg(&(vb as i32))
+                .arg(&levels)
+                .launch(cfg)?
+        };
+        ws.give_bytes("attn.sel_prefill", sel);
         Ok(())
     }
 

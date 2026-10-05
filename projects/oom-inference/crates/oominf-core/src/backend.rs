@@ -421,7 +421,9 @@ pub trait Attention: Memory + Sized {
     ) -> Result<()>;
     /// Grouped-query attention of `t` queries over `kv_len` cached keys and values
     /// (stored as `format`, written by [`Attention::kv_append`]) under `mask`, fp32
-    /// softmax; scratch comes from `ws`.
+    /// softmax; scratch comes from `ws`. No row of `mask` sets more than
+    /// `max_visible` keys (`kv_len` when unknown); sparse selections let a backend
+    /// list each query's keys in that much space.
     #[allow(clippy::too_many_arguments)]
     fn attention(
         &self,
@@ -437,6 +439,7 @@ pub trait Attention: Memory + Sized {
         kv_heads: usize,
         d: usize,
         kv_len: usize,
+        max_visible: usize,
         scale: f32,
     ) -> Result<()>;
 }

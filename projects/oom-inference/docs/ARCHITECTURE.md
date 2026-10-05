@@ -87,6 +87,12 @@ layer's keys and values (one layer at a time, about 0.4 GB at 95k tokens), so
 prefill attention reads fp32 rows instead of re-decoding cached tiles in every
 block and runs at fp32 speed; decode reads the compressed cache.
 
+Attention follows each query's QSA selection (at most 2,048 keys): decode splits
+one token's list over warps, and prefill runs one block per (token, KV head)
+over that token's own list. Grouping tokens to share key tiles does not pay:
+adjacent tokens share few selected keys (a key in a 4-token group's union is
+seen by about 1.2 of them), so shared tiles mostly compute masked-out scores.
+
 Reproducibility: experts computed on the CPU round differently from the GPU, and
 which ones run there depends on cache timing. With an exact cache that rarely
 changes a token; a compressed cache can turn it into a different codebook index,
