@@ -239,6 +239,7 @@ filegroup(
         "//bazel/tools/js:repo_docs",
         "//bazel/tools/oci:repo_docs",
         "//projects:repo_docs",
+        "//projects/monolith/auth:repo_docs",
         "//projects/design-system:repo_docs",
         "//projects/embervm/deploy:repo_docs",
         "//projects/embervm/dev/apple:repo_docs",
@@ -485,30 +486,10 @@ py_venv_binary(
 # change under grimoire/ invalidates grimoire's tests, not all 354. The
 # The packages in the agent/chat/home import cycle share one
 # target because Bazel deps must be acyclic; everything else is a DAG.
-py_library(
+alias(
     name = "pkg_auth",
-    srcs = glob(
-        [
-            "auth/**/*.py",
-        ],
-        exclude = [
-            "auth/platform/**",
-            "auth/module.py",
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/auth:auth",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_sdk",
-        # PyJWT is currently locked transitively through mcp and semgrep.
-        "@pip//pyjwt",
-        "@pip//starlette",
-    ],
 )
 
 py_library(
@@ -1722,6 +1703,7 @@ py_library(
     data = ["knowledge/entities.yaml"],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_platform_auth",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -1887,8 +1869,6 @@ py3_image(
 # stays in full. The pip deps mirror :monolith_backend wholesale: a missing
 # wheel would crash the public binary at startup, so trimming is a follow-up.
 _PUBLIC_PRUNE_EXCLUDE = [
-    "auth/platform/**",
-    "auth/module.py",
     # Standard excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
     "**/test_*.py",
@@ -2002,8 +1982,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
 # pip dependencies mirror :monolith_backend wholesale for now. Trimming wheels
 # is separate from enforcing the Python source boundary.
 _AGENTS_PRUNE_EXCLUDE = [
-    "auth/platform/**",
-    "auth/module.py",
     # Standard production excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
     "**/test_*.py",
@@ -2093,6 +2071,7 @@ py_library(
     ],  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         "//projects/monolith/agent_kubernetes",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -2203,6 +2182,7 @@ py_library(
     ),  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//boto3",
@@ -2333,28 +2313,15 @@ monolith_domain_images(
     main = "app/main_domain.py",
 )
 
-py_library(
+alias(
     name = "pkg_platform_auth",
-    srcs = glob(["auth/platform/**/*.py"], exclude = ["**/*_test.py"]) + ["auth/module.py"],
-    imports = ["."],
+    actual = "//projects/monolith/auth:platform_auth",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_auth",
-        ":pkg_core",
-        ":pkg_framework",
-        "@pip//fastapi",
-        "@pip//fastmcp",
-        "@pip//pydantic",
-        "@pip//pyjwt",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-        "@pip//starlette",
-    ],
 )
 
 py_test(
     name = "platform_auth_service_test",
-    srcs = ["auth/platform/service_test.py"],
+    srcs = ["//projects/monolith/auth:platform/service_test.py"],
     imports = ["."],
     deps = [
         ":pkg_platform_auth",
@@ -2369,7 +2336,7 @@ py_test(
 
 py_test(
     name = "auth_verifier_test",
-    srcs = ["auth/verifier_test.py"],
+    srcs = ["//projects/monolith/auth:verifier_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -2383,7 +2350,7 @@ py_test(
 
 py_test(
     name = "auth_plumbing_test",
-    srcs = ["auth/plumbing_test.py"],
+    srcs = ["//projects/monolith/auth:plumbing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -9746,12 +9713,12 @@ bdd_test(
 
 bdd_test(
     name = "platform_auth_postgres_test",
-    srcs = ["auth/platform/postgres_test.py"],
+    srcs = ["//projects/monolith/auth:platform/postgres_test.py"],
 )
 
 py_test(
     name = "platform_auth_grimoire_test",
-    srcs = ["auth/platform/grimoire_test.py"],
+    srcs = ["//projects/monolith/auth:platform/grimoire_test.py"],
     imports = ["."],
     deps = [":pkg_platform_auth", ":pkg_grimoire", "@pip//pytest", "@pip//fastapi", "@pip//httpx", "@pip//sqlmodel"],
 )
