@@ -42,9 +42,12 @@ def sync_user(session: Session, principal: Principal) -> AppUser:
     if email_user is not None and (user is None or email_user.id != user.id):
         # Legacy email-only rows were explicitly provisioned by a DM. Only a
         # verified mailbox may claim one; never merge two established identities.
+        # Platform enrollment treats email as optional contact data, so that
+        # mode requires explicit repair of an unbound legacy row instead.
         if (
             user is None
             and email_user.issuer is None
+            and not platform_enforcement_enabled()
             and (
                 principal.email_verified
                 or principal.issuer == os.getenv("AUTH_CLOUDFLARE_ACCESS_ISSUER")
