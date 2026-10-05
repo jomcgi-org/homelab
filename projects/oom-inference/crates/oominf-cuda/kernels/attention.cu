@@ -493,33 +493,29 @@ attn_prefill(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* 
                     dot[i] += qv.w * kv4.w;
                 }
             }
+            // Online softmax in registers: a row's 16 keys are 16 adjacent lanes.
             int j = js[kk];
 #pragma unroll
             for (int i = 0; i < 3; i++) {
                 int r = rg * 3 + i, t = t0 + r / G;
                 bool ok = r < R && t < T && j >= 0 && mask[(size_t)t * kv_stride + j];
-                ps[r * ATTN_KT + kk] = ok ? dot[i] * scale : -INFINITY;
-            }
-        }
-        __syncthreads();
-        if (tid < R) {
-            float* pr = ps + tid * ATTN_KT;
-            float mt = -INFINITY;
-            for (int i = 0; i < ATTN_KT; i++) mt = fmaxf(mt, pr[i]);
-            float mo = rm[tid], mn = fmaxf(mo, mt);
-            if (mn == -INFINITY) {
-                rc[tid] = 1.0f;
-                for (int i = 0; i < ATTN_KT; i++) pr[i] = 0.0f;
-            } else {
-                float corr = expf(mo - mn), sum = 0.0f;
-                for (int i = 0; i < ATTN_KT; i++) {
-                    float e = pr[i] == -INFINITY ? 0.0f : expf(pr[i] - mn);
-                    pr[i] = e;
-                    sum += e;
+                float s = ok ? dot[i] * scale : -INFINITY;
+                float mt = s;
+#pragma unroll
+                for (int o = 8; o > 0; o >>= 1) mt = fmaxf(mt, __shfl_xor_sync(0xffffffff, mt, o, 16));
+                float mo = rm[r], mn = fmaxf(mo, mt);
+                float e = mn == -INFINITY || s == -INFINITY ? 0.0f : expf(s - mn);
+                float sum = e;
+#pragma unroll
+                for (int o = 8; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o, 16);
+                ps[r * ATTN_KT + kk] = e;
+                if (kk == 0) {
+                    // Every lane of the row read `rm[r]` before the shuffles above.
+                    float corr = mn == -INFINITY ? 1.0f : expf(mo - mn);
+                    rl[r] = rl[r] * corr + sum;
+                    rm[r] = mn;
+                    rc[r] = corr;
                 }
-                rl[tid] = rl[tid] * corr + sum;
-                rm[tid] = mn;
-                rc[tid] = corr;
             }
         }
         __syncthreads();
