@@ -119,6 +119,10 @@ pub trait Elementwise: Memory {
     /// `y = silu(gate) * up`.
     fn silu_mul(&self, gate: &Self::F32, up: &Self::F32, y: &mut Self::F32, n: usize)
     -> Result<()>;
+    /// SwiGLU on stacked rows: `y[r, i] = silu(gu[r, i]) * gu[r, n + i]` for `gu`
+    /// `[rows, 2n]` (gate then up, as one GEMM over stacked weights writes them).
+    fn silu_mul_rows(&self, gu: &Self::F32, y: &mut Self::F32, rows: usize, n: usize)
+    -> Result<()>;
     /// `x *= sigmoid(gate)`.
     fn mul_sigmoid(&self, x: &mut Self::F32, gate: &Self::F32, n: usize) -> Result<()>;
     /// Rows `[first, first + n)` of a `[_, h]` matrix into `dst`.
@@ -823,6 +827,8 @@ pub trait Transfer: Memory {
     /// An ordered queue of copies that runs concurrently with compute.
     type CopyQueue;
     type Event;
+    /// A download started by [`Transfer::download_start_i32`] or `_f32`.
+    type Download;
 
     fn copy_queue(&self) -> Result<Self::CopyQueue>;
     /// Makes `len` bytes of host memory at `ptr` usable as a source of asynchronous
@@ -855,6 +861,15 @@ pub trait Transfer: Memory {
     /// `dst` must be pinned with [`Transfer::pin_host`], hold `n` elements and stay
     /// unread and valid until the copy completes.
     unsafe fn download_async(&self, src: &Self::I32, dst: *mut i32, n: usize) -> Result<()>;
+    /// Queues, after the compute issued so far, a copy of the first `n` elements of
+    /// `src` to the host; [`Transfer::download_wait_i32`] waits and returns them, so
+    /// the host can queue more work first.
+    fn download_start_i32(&self, src: &Self::I32, n: usize) -> Result<Self::Download>;
+    /// As [`Transfer::download_start_i32`] for `f32` (see
+    /// [`Transfer::download_wait_f32`]).
+    fn download_start_f32(&self, src: &Self::F32, n: usize) -> Result<Self::Download>;
+    fn download_wait_i32(&self, pending: Self::Download) -> Result<Vec<i32>>;
+    fn download_wait_f32(&self, pending: Self::Download) -> Result<Vec<f32>>;
     /// Enqueues a device-to-device copy of `len` bytes.
     ///
     /// # Safety

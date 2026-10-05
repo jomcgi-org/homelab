@@ -11,6 +11,7 @@ below.
 | Whole-model chain | all layers, final mixer and logits match the reference end to end | `oominf check-model` |
 | Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
 | Speculative decoding | greedy decoding with MTP drafts produces the same tokens as one-token steps | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored` |
+| Decode GEMV | `gemm_bf16` with up to 4 rows matches an f64 reference; throughput on the model's dense shapes past L2 (large ones about 85% of DRAM bandwidth) | `cargo test --release -p oominf-cuda --test gemv -- --ignored --nocapture` |
 | Expert kernel | the tensor-core NVFP4 kernel matches an f64 reference on random records, and its throughput | `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture` |
 | KV cache formats and attention | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32; prefill-sized attention under sparse masks matches an f64 reference | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
 | Sequence snapshots | a saved and restored sequence continues with bit-identical logits and drafts | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test snapshot -- --ignored` |
