@@ -134,7 +134,7 @@ def rehearse_join_links(browser, output, report, contexts, use_loopback_requests
     def issue(email):
         article = open_owner()
         links = article.get_by_role("region", name="Single-use campaign links")
-        links.get_by_label("Player's email", exact=True).fill(email)
+        links.get_by_label("Player's email or @username", exact=True).fill(email)
         links.get_by_role("button", name="Create invitation link", exact=True).click()
         private_link = links.get_by_label("Private invitation link", exact=True)
         expect(private_link).to_be_visible()
