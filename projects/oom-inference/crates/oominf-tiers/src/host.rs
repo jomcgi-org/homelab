@@ -2,7 +2,7 @@
 //! (on its own thread) that fills them from `experts.bin` with O_DIRECT (no page
 //! cache).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -148,16 +148,16 @@ impl DirectReader {
         self.outstanding > 0
     }
 
-    /// Queues `jobs` for the worker, without waiting.
+    /// Queues `jobs` for the worker, without waiting (behind any still in flight;
+    /// tags must be distinct among the reads outstanding).
     pub fn submit(&mut self, jobs: Vec<ReadJob>) -> Result<()> {
-        ensure!(!self.busy(), "previous read batch not drained");
         for j in &jobs {
             ensure!(
                 j.offset.is_multiple_of(4096) && j.len.is_multiple_of(4096),
                 "unaligned O_DIRECT read"
             );
         }
-        self.outstanding = jobs.len();
+        self.outstanding += jobs.len();
         self.jobs
             .as_ref()
             .expect("worker running")
@@ -178,6 +178,32 @@ impl DirectReader {
             self.complete(report, &mut first_err, &mut done);
         }
         match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Like [`DirectReader::drain`], but waits only until every read tagged in
+    /// `need` has completed; the others stay in flight. `done` sees every read that
+    /// completes meanwhile.
+    pub fn wait_for(
+        &mut self,
+        need: &HashSet<usize>,
+        mut done: impl FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        let mut err = self.failed.take();
+        let mut left = need.len();
+        while left > 0 && self.outstanding > 0 {
+            let report = self
+                .done
+                .recv()
+                .map_err(|_| anyhow::anyhow!("read worker stopped"))?;
+            if need.contains(&report.0) {
+                left -= 1;
+            }
+            self.complete(report, &mut err, &mut done);
+        }
+        match err {
             Some(e) => Err(e),
             None => Ok(()),
         }
