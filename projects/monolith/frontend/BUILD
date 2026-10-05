@@ -364,7 +364,10 @@ js_library(
     name = "fixture_preview_src",
     srcs = glob(
         ["preview/**"],
-        exclude = ["preview/**/*.py", "preview/__pycache__/**"],
+        exclude = [
+            "preview/**/*.py",
+            "preview/__pycache__/**",
+        ],
     ) + [
         "package.json",
         "src/lib/public/components/SchemeToggle.svelte",
@@ -383,18 +386,22 @@ js_library(
         "src/routes/public/blog/blog.js",
     ],
     deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@sveltejs/vite-plugin-svelte",
         ":node_modules/svelte",
         ":node_modules/vite",
-        ":node_modules/@rollup/rollup-linux-x64-gnu",
-        ":node_modules/@esbuild/linux-x64",
     ],
 )
 
 js_run_binary(
     name = "fixture_preview",
     srcs = [":fixture_preview_src"],
-    args = ["build", "--config", "preview/vite.config.js"],
+    args = [
+        "build",
+        "--config",
+        "preview/vite.config.js",
+    ],
     chdir = package_name(),
     out_dirs = ["fixture-preview"],
     tool = ":vite",
@@ -407,12 +414,16 @@ build_test(
 
 vitest_bin.vitest_test(
     name = "fixture_contract_test",
-    args = ["run", "--config", "preview/vitest.config.js"],
+    args = [
+        "run",
+        "--config",
+        "preview/vitest.config.js",
+    ],
     chdir = package_name(),
     data = [
-        ":fixture_preview_src",
-        ":src",
         "test/app-environment-stub.js",
+        ":fixture_preview_src",
         ":node_modules/vitest",
+        ":src",
     ],
 )
