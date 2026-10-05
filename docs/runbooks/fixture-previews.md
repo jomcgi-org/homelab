@@ -100,6 +100,13 @@ code, downloads the successful run's static artifact as data, validates its
 repository/workflow/PR/head association through GitHub, and rejects stale or
 closed PRs. Artifact metadata cannot choose a command, checkout, branch or PR.
 
+The dedicated state branch stores the desired aggregate of last validated passing
+builds. State advances before deployment; if deployment fails, a later
+reconciliation can publish those validated bytes. It is not a transactional record
+of what is currently live. Cleanup removes served files and current branch-tree
+entries, while parent-linked Git history retains historical public fixture bytes.
+The branch is not a secret store and its history is not purged by the TTL.
+
 The aggregate site preserves active previews at `pr/<number>/<sha>/` with a
 stable `pr/<number>/` link. One serialized workflow handles both publication and
 cleanup. It validates file types, size/count limits, paths and the restrictive
