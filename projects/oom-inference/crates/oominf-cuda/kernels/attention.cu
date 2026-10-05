@@ -248,12 +248,42 @@ __device__ __forceinline__ unsigned qsa_key(float f) {
 // nb <= topk. mask: [T, kv_stride] bytes, 1 where key position j (j <= p) is kept.
 // The k-th largest score is found by an 8-bit radix select over its float key, so a
 // query costs O(nb) rather than O(nb^2). Dynamic shared memory: kv_stride/ratio + 1
-// bytes for the per-block keep flags. blockDim.x == 256.
-extern "C" __global__ void __launch_bounds__(256)
+// bytes for the per-block keep flags. blockDim.x == QSA_MASK_THREADS: lanes that hit the
+// same histogram bin add once per warp (most keys share their top digits), and the
+// first `k` equal keys are found with a block-wide prefix count instead of a serial
+// walk, so a decode step's few queries do not idle the GPU.
+#define QSA_MASK_THREADS 1024
+
+// Inclusive block-wide sum of `v` over threads in index order (QSA_MASK_THREADS
+// threads, 32 warps); `scratch` holds 32 values.
+__device__ unsigned qsa_block_scan(unsigned v, unsigned* scratch) {
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int o = 1; o < 32; o <<= 1) {
+        unsigned n = __shfl_up_sync(0xffffffff, v, o);
+        if (lane >= o) v += n;
+    }
+    if (lane == 31) scratch[warp] = v;
+    __syncthreads();
+    if (warp == 0) {
+        unsigned w = scratch[lane];
+        for (int o = 1; o < 32; o <<= 1) {
+            unsigned n = __shfl_up_sync(0xffffffff, w, o);
+            if (lane >= o) w += n;
+        }
+        scratch[lane] = w;
+    }
+    __syncthreads();
+    unsigned before = warp ? scratch[warp - 1] : 0;
+    __syncthreads();
+    return v + before;
+}
+
+extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
 qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int topk,
          int kv_stride) {
     extern __shared__ uint8_t keep[];
     __shared__ unsigned hist[256];
+    __shared__ unsigned scan[32];
     __shared__ unsigned s_prefix, s_k;
     int t = blockIdx.x;
     int p = start + t;
@@ -262,11 +292,23 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
     if (nb > topk) {
         unsigned prefix = 0, pmask = 0, k = topk;
         for (int shift = 24; shift >= 0; shift -= 8) {
-            hist[threadIdx.x] = 0;
+            if (threadIdx.x < 256) hist[threadIdx.x] = 0;
             __syncthreads();
-            for (int b = threadIdx.x; b < nb; b += blockDim.x) {
-                unsigned key = qsa_key(sc[b]);
-                if ((key & pmask) == prefix) atomicAdd(&hist[(key >> shift) & 255u], 1u);
+            for (int b0 = 0; b0 < nb; b0 += blockDim.x) {
+                int b = b0 + threadIdx.x;
+                bool in = false;
+                unsigned bin = 0;
+                if (b < nb) {
+                    unsigned key = qsa_key(sc[b]);
+                    in = (key & pmask) == prefix;
+                    bin = (key >> shift) & 255u;
+                }
+                // One atomic per distinct bin per warp.
+                unsigned active = __ballot_sync(0xffffffff, in);
+                if (in) {
+                    unsigned same = __match_any_sync(active, bin);
+                    if ((threadIdx.x & 31) == __ffs(same) - 1) atomicAdd(&hist[bin], __popc(same));
+                }
             }
             __syncthreads();
             if (threadIdx.x == 0) {
@@ -286,16 +328,18 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
             pmask |= 255u << shift;
         }
         // `prefix` is now the k-th largest key exactly; keep everything above it, then
-        // the first `k` equal keys in block order.
-        for (int b = threadIdx.x; b < nb; b += blockDim.x) keep[b] = qsa_key(sc[b]) > prefix;
-        __syncthreads();
-        if (threadIdx.x == 0) {
-            unsigned taken = 0;
-            for (int b = 0; b < nb && taken < k; b++)
-                if (qsa_key(sc[b]) == prefix) {
-                    keep[b] = 1;
-                    taken++;
-                }
+        // the first `k` equal keys in block order: each thread owns a contiguous slice,
+        // and a prefix count of equal keys tells it how many come before its slice.
+        int per = (nb + blockDim.x - 1) / blockDim.x;
+        int lo = min(nb, (int)threadIdx.x * per), hi = min(nb, lo + per);
+        unsigned eq = 0;
+        for (int b = lo; b < hi; b++) eq += qsa_key(sc[b]) == prefix;
+        unsigned taken = qsa_block_scan(eq, scan) - eq;
+        for (int b = lo; b < hi; b++) {
+            unsigned key = qsa_key(sc[b]);
+            bool kept = key > prefix;
+            if (key == prefix) kept = taken++ < k;
+            keep[b] = kept;
         }
     } else {
         for (int b = threadIdx.x; b < nb; b += blockDim.x) keep[b] = 1;
@@ -306,6 +350,24 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
         int b = j / ratio;
         m[j] = j <= p && (b >= nb || keep[b]);
     }
+}
+
+// The positions j < n with mask[j] set, in order: sel[0] = count, sel[1..] = positions.
+// One block of QSA_MASK_THREADS threads; each owns a contiguous slice, and a prefix
+// count places its positions. Decode attention splits this list evenly over warps, so
+// clustered selections (sinks, recent tokens) do not leave one warp with all the work.
+extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
+mask_compact(const uint8_t* mask, int* sel, int n) {
+    __shared__ unsigned scan[32];
+    int per = (n + blockDim.x - 1) / blockDim.x;
+    int lo = min(n, (int)threadIdx.x * per), hi = min(n, lo + per);
+    unsigned c = 0;
+    for (int j = lo; j < hi; j++) c += mask[j] != 0;
+    unsigned incl = qsa_block_scan(c, scan);
+    unsigned at = incl - c;
+    for (int j = lo; j < hi; j++)
+        if (mask[j]) sel[1 + at++] = j;
+    if (threadIdx.x == blockDim.x - 1) sel[0] = incl;
 }
 
 // Masked GQA attention for several query tokens, flash style: one block owns one KV
@@ -492,20 +554,19 @@ extern "C" __global__ void copy_range(const float* src, size_t src_off, float* d
     if (i < n) dst[dst_off + i] = src[src_off + i];
 }
 
-// Flash-decode for one query token (T = 1), GQA-aware. Each warp owns a contiguous
-// chunk of `chunk` keys and all G = H / Hkv query heads that share KV head
-// blockIdx.y, so each K/V row is read once per group. Per (warp, head) it keeps an
+// Flash-decode for one query token (T = 1), GQA-aware, over the selected positions
+// listed by mask_compact. Each warp owns an even share of the list and all G = H / Hkv
+// query heads that share KV head blockIdx.y, so each K/V row is read once per group. Per (warp, head) it keeps an
 // online-softmax partial (max m, sum l, unnormalised acc[D]); attn_decode_combine
 // merges the partials. D is 256: lane `l` owns elements l, l + 32, ..., so global
 // and shared loads are both conflict-free. G is a compile-time constant so the
-// accumulators stay in registers. Masked keys are skipped.
+// accumulators stay in registers.
 // part: [Hkv, P, G, D + 2] with P = gridDim.x * warps per block.
 #define FD_D 256
 template <int G>
 __device__ void attn_decode_partial_impl(const float* q, const uint8_t* k, const uint8_t* v,
-                                         const uint8_t* mask, float* part, int Hkv,
-                                         int kv_len, int chunk, float scale, int kb, int vb,
-                                         const float* levels) {
+                                         const int* sel, float* part, int Hkv, float scale,
+                                         int kb, int vb, const float* levels) {
     __shared__ float qs[G * FD_D];
     __shared__ float lvk[256], lvv[256];
     kv_levels_load(lvk, levels, kb);
@@ -527,10 +588,12 @@ __device__ void attn_decode_partial_impl(const float* q, const uint8_t* k, const
 #pragma unroll
         for (int i = 0; i < 8; i++) acc[g][i] = 0.0f;
     }
-    int j0 = p * chunk;
-    int j1 = min(kv_len, j0 + chunk);
-    for (int j = j0; j < j1; j++) {
-        if (!mask[j]) continue;
+    // This warp's share of the selected positions (`sel`: count, then positions).
+    int count = sel[0];
+    int chunk = (count + P - 1) / P;
+    int i0 = min(count, p * chunk), i1 = min(count, i0 + chunk);
+    for (int i = i0; i < i1; i++) {
+        int j = sel[1 + i];
         const uint8_t* kr = k + ((size_t)j * Hkv + kvh) * krow;
         const uint8_t* vr = v + ((size_t)j * Hkv + kvh) * vrow;
         float kk[8], vv[8];
@@ -569,10 +632,9 @@ __device__ void attn_decode_partial_impl(const float* q, const uint8_t* k, const
 }
 
 extern "C" __global__ void __launch_bounds__(256)
-attn_decode_partial_g12(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* mask,
-                        float* part, int Hkv, int kv_len, int chunk, float scale, int kb, int vb,
-                        const float* levels) {
-    attn_decode_partial_impl<12>(q, k, v, mask, part, Hkv, kv_len, chunk, scale, kb, vb, levels);
+attn_decode_partial_g12(const float* q, const uint8_t* k, const uint8_t* v, const int* sel,
+                        float* part, int Hkv, float scale, int kb, int vb, const float* levels) {
+    attn_decode_partial_impl<12>(q, k, v, sel, part, Hkv, scale, kb, vb, levels);
 }
 
 // Merges flash-decode partials: out[h, d] = sum_p e^(m_p - M) acc_p[d] / sum_p e^(m_p - M) l_p.

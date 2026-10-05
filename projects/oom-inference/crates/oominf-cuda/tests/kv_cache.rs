@@ -141,3 +141,48 @@ fn attention_on_compressed_cache() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "needs a GPU"]
+fn decode_attention_timing() -> Result<()> {
+    let gpu = Gpu::new(0)?;
+    let (heads, kvh, d, kv_len) = (24, 2, 256, 95_000);
+    let q = gpu.upload_f32(&gaussian(heads * d, 3))?;
+    let k = gaussian(kv_len * kvh * d, 5);
+    let v = gaussian(kv_len * kvh * d, 7);
+    for (name, keep) in [("dense", 1usize), ("2%", 50)] {
+        let mask: Vec<u8> = (0..kv_len).map(|j| u8::from(j % keep == 0)).collect();
+        let mask = gpu.upload_bytes(&mask)?;
+        for f in [
+            KvFormat::F32,
+            KvFormat::Turbo {
+                k_bits: 8,
+                v_bits: 6,
+            },
+        ] {
+            let mut kc = gpu.zeros_bytes(kv_len * kvh * f.row_bytes(true, d))?;
+            let mut vc = gpu.zeros_bytes(kv_len * kvh * f.row_bytes(false, d))?;
+            gpu.kv_append(&gpu.upload_f32(&k)?, &mut kc, f, true, 0, kv_len, kvh, d)?;
+            gpu.kv_append(&gpu.upload_f32(&v)?, &mut vc, f, false, 0, kv_len, kvh, d)?;
+            let mut out = gpu.zeros(heads * d)?;
+            let mut ws = oominf_core::Workspace::new();
+            let mut run = || {
+                gpu.attention(
+                    &mut ws, &q, &kc, &vc, f, &mask, &mut out, 1, heads, kvh, d, kv_len, 0.0625,
+                )
+            };
+            run()?;
+            gpu.sync()?;
+            let t = std::time::Instant::now();
+            for _ in 0..50 {
+                run()?;
+            }
+            gpu.sync()?;
+            println!(
+                "{name} mask, {f:?}: {:.1} us per decode attention",
+                t.elapsed().as_secs_f64() / 50.0 * 1e6
+            );
+        }
+    }
+    Ok(())
+}

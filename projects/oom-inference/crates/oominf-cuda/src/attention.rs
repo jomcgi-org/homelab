@@ -149,7 +149,7 @@ impl Attention for Gpu {
         let a = [t, start, ratio, topk, kv_stride].map(|v| v as i32);
         let cfg = LaunchConfig {
             grid_dim: (t as u32, 1, 1),
-            block_dim: (256, 1, 1),
+            block_dim: (1024, 1, 1),
             shared_mem_bytes: flags as u32,
         };
         unsafe {
@@ -352,15 +352,32 @@ impl Gpu {
         scale: f32,
     ) -> Result<()> {
         let g = heads / kv_heads;
-        // Small chunks keep enough warps busy at short contexts; long contexts get
-        // larger chunks so the partial count (and the combine) stays bounded.
+        // The selected positions as a list, so warps split them evenly however the
+        // selection clusters.
+        let mut sel = ws.take_bytes_at_least(self, "attn.sel", 4 * (kv_len + 1))?;
+        let f = self.func("mask_compact")?;
+        let n32 = kv_len as i32;
+        let cfg = LaunchConfig {
+            grid_dim: (1, 1, 1),
+            block_dim: (1024, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(mask)
+                .arg(&mut sel)
+                .arg(&n32)
+                .launch(cfg)?
+        };
+        // About 16 selected keys per warp: a QSA selection keeps at most a few
+        // thousand keys however long the context.
         const WARPS: usize = 8;
-        let chunk = kv_len.div_ceil(1024).clamp(16, 1024);
-        let blocks = kv_len.div_ceil(chunk * WARPS);
-        let p = blocks * WARPS;
+        let p = kv_len.min(4096).div_ceil(16).next_multiple_of(WARPS);
+        let blocks = p / WARPS;
         let mut part = ws.take(self, "attn.fd_part", kv_heads * p * g * (d + 2))?;
         let f = self.func("attn_decode_partial_g12")?;
-        let (h32, kvh32, kv32, c32) = (heads as i32, kv_heads as i32, kv_len as i32, chunk as i32);
+        let (h32, kvh32) = (heads as i32, kv_heads as i32);
         let cfg = LaunchConfig {
             grid_dim: (blocks as u32, kv_heads as u32, 1),
             block_dim: ((WARPS * 32) as u32, 1, 1),
@@ -372,17 +389,16 @@ impl Gpu {
                 .arg(q)
                 .arg(k)
                 .arg(v)
-                .arg(mask)
+                .arg(&sel)
                 .arg(&mut part)
                 .arg(&kvh32)
-                .arg(&kv32)
-                .arg(&c32)
                 .arg(&scale)
                 .arg(&(kb as i32))
                 .arg(&(vb as i32))
                 .arg(&levels)
                 .launch(cfg)?
         };
+        ws.give_bytes("attn.sel", sel);
         let f = self.func("attn_decode_combine")?;
         let p32 = p as i32;
         let cfg = LaunchConfig {
