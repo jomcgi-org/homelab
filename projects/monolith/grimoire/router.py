@@ -41,6 +41,7 @@ from grimoire.access import (
     get_game_creator_email,
     get_grimoire_operator_email,
 )
+from grimoire.accounts import find_registered_user
 from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
 from grimoire.invitation_provider import enrollment_enabled
@@ -3182,14 +3183,11 @@ def invite_registered_player(
     session.exec(
         select(Campaign).where(Campaign.id == campaign_id).with_for_update()
     ).one()
-    recipient = session.exec(
-        select(AppUser).where(
-            AppUser.email == body.email.lower(),
-            AppUser.issuer.is_not(None),
-        )
-    ).first()
+    recipient = find_registered_user(session, body.email)
     if recipient is None:
-        raise HTTPException(404, detail="no registered player with that email")
+        raise HTTPException(
+            404, detail="no registered player with that email or username"
+        )
     existing = session.exec(
         select(CampaignMember).where(
             CampaignMember.campaign_id == campaign_id,
