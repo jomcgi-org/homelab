@@ -41,7 +41,7 @@ def evaluate(name, request):
     return context["policy"](request)
 
 
-def render(enabled):
+def render(enabled, *, management=None):
     environment = yaml.safe_load((CHART / "values.yaml").read_text())["authentik"][
         "global"
     ]["env"]
@@ -59,7 +59,7 @@ def render(enabled):
             "--set",
             f"platformEnrollment.enabled={str(enabled).lower()}",
             "--set",
-            f"platformManagement.enabled={str(enabled).lower()}",
+            f"platformManagement.enabled={str(enabled if management is None else management).lower()}",
             "--set-json",
             "authentik.global.env=" + json.dumps(environment),
         ],
@@ -76,6 +76,41 @@ def render(enabled):
         and document["kind"] == "ConfigMap"
         and document["metadata"]["name"] == "authentik-mcp-blueprints"
     )
+
+
+@pytest.mark.parametrize(
+    "enrollment,management", [(False, False), (False, True), (True, True)]
+)
+def test_keyof_references_follow_their_entry_creation(enrollment, management):
+    class KeyReference(str):
+        pass
+
+    class Loader(yaml.BaseLoader):
+        pass
+
+    Loader.add_constructor(
+        "!KeyOf", lambda loader, node: KeyReference(loader.construct_scalar(node))
+    )
+
+    def references(value):
+        if isinstance(value, KeyReference):
+            return {str(value)}
+        if isinstance(value, dict):
+            return set().union(*(references(item) for item in value.values()))
+        if isinstance(value, list):
+            return set().union(*(references(item) for item in value))
+        return set()
+
+    for name, content in render(enrollment, management=management).items():
+        created = set()
+        for entry in yaml.load(content, Loader=Loader)["entries"]:
+            assert references(entry) <= created, (
+                name,
+                entry.get("id"),
+                references(entry) - created,
+            )
+            if entry.get("id"):
+                created.add(entry["id"])
 
 
 def test_opt_in_changes_only_grimoire_profile_and_adds_separate_flow():

@@ -44,11 +44,11 @@ data:
 {{- if $.Values.platformEnrollment.enabled }}
 {{- $content = replace "return request.user.is_active and request.user.type != \"service_account\" and bool(request.user.email)" "return request.user.is_active and request.user.type in (\"internal\", \"external\") and bool(request.user.username)" $content }}
 {{- end }}
-{{- $content = printf "%s\n%s" $content ($.Files.Get "optional/platform-profile.yaml") }}
+{{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/platform-profile.yaml")) $content }}
 {{- end }}
 {{- if and $.Values.platformManagement.enabled (eq $path "blueprints/mcp-auth.yaml") }}
 {{- $content = replace "        # PLATFORM_MANAGEMENT_PROFILE" "        - !KeyOf platform-management-profile" $content }}
-{{- $content = printf "%s\n%s" $content ($.Files.Get "optional/platform-management-profile.yaml") }}
+{{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/platform-management-profile.yaml")) $content }}
 {{- end }}
 {{ $content | indent 4 }}
 {{- end }}
