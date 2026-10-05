@@ -145,6 +145,21 @@ def bind_application_user(session, principal, application, application_user_id):
     return row
 
 
+def find_application_user_by_username(session, application, username):
+    """Resolve an active account's registered app ID, never contact email."""
+    if application != "grimoire":
+        raise HTTPException(400, "Unknown platform application.")
+    return session.exec(
+        select(PlatformApplicationUser.application_user_id)
+        .join(PlatformUser)
+        .where(
+            PlatformApplicationUser.application == application,
+            PlatformUser.username == username,
+            PlatformUser.active.is_(True),
+        )
+    ).first()
+
+
 def identifier(value):
     try:
         return str(UUID(str(value)))

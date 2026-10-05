@@ -8,13 +8,25 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from grimoire.access import get_authenticated_identity
 from grimoire.accounts import sync_user
-from grimoire.models import AppUser, Campaign, CampaignInvitation, CampaignMember
+from grimoire.join_links import issue_link
+from grimoire.models import (
+    AppUser,
+    Campaign,
+    CampaignInvitation,
+    CampaignJoinLink,
+    CampaignMember,
+)
 from grimoire.router import router
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from auth.api import Authority, Principal, PrincipalKind
 from auth.platform.enrollment import Completion, activate
-from auth.platform.models import PlatformApplicationUser, PlatformInvitation, now
+from auth.platform.models import (
+    PlatformApplicationUser,
+    PlatformInvitation,
+    PlatformUser,
+    now,
+)
 from auth.platform.service import command
 
 
@@ -52,6 +64,57 @@ def test_optional_email_cannot_claim_an_unbound_legacy_account(tmp_path, monkeyp
         preserved = session.get(AppUser, legacy_id)
         assert preserved.issuer is None and preserved.subject is None
         assert len(session.exec(select(AppUser)).all()) == 1
+    engine.dispose()
+
+
+def test_username_invite_resolves_registered_identity_with_contact_email(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PLATFORM_AUTH_ENFORCEMENT_ENABLED", "true")
+    platform_tables = [
+        table
+        for table in SQLModel.metadata.sorted_tables
+        if table.schema == "platform_auth"
+    ]
+    for table in SQLModel.metadata.tables.values():
+        if table.schema == "grimoire":
+            monkeypatch.setattr(table, "schema", None)
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'username-invite.db'}",
+        execution_options={"schema_translate_map": {"platform_auth": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=platform_tables
+        + [
+            AppUser.__table__,
+            Campaign.__table__,
+            CampaignMember.__table__,
+            CampaignJoinLink.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        user = PlatformUser(
+            username="friend", email="contact@example.test", display_name="Friend"
+        )
+        owner = AppUser(
+            email="owner@example.test", issuer="https://idp.test/", subject="owner"
+        )
+        player = AppUser(email=user.email, issuer="https://idp.test/", subject="friend")
+        campaign = Campaign(name="Our game", owner_app_user_id=owner.id)
+        mapping = PlatformApplicationUser(
+            user_id=user.id, application="grimoire", application_user_id=player.id
+        )
+        session.add_all([user, owner, player, campaign, mapping])
+        session.commit()
+        link = issue_link(session, campaign.id, owner, "@friend")
+        assert session.get(CampaignJoinLink, link.id).recipient_id == player.id
+        assert link.invitee_email == "@friend"
+        user.active = False
+        session.commit()
+        with pytest.raises(HTTPException) as denied:
+            issue_link(session, campaign.id, owner, "@friend")
+        assert denied.value.status_code == 404
     engine.dispose()
 
 
