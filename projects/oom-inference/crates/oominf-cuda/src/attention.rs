@@ -295,7 +295,7 @@ impl Attention for Gpu {
         // The decode kernel is instantiated for the GQA group size the models use.
         if t > DECODE_MAX_TOKENS || d != 256 || g != 12 || !heads.is_multiple_of(kv_heads) {
             self.attn_prefill(
-                qq, k, v, bits, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
+                ws, qq, k, v, bits, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
             )?;
         } else {
             let row = heads * d;
@@ -472,10 +472,13 @@ impl Gpu {
     }
 
     /// Masked GQA attention of `t` queries over the first `kv_len` cache rows with an
-    /// online softmax (no `[t, heads, kv]` score matrix). Needs `d <= 256`.
+    /// online softmax (no `[t, heads, kv]` score matrix). Needs `d <= 256`. Each
+    /// block's key tiles are gathered from the positions its tokens may see (the
+    /// workspace's `"attn.sel_prefill"`, about `t * kv_len` bytes).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn attn_prefill(
         &self,
+        ws: &mut Workspace<Gpu>,
         q: &Buf,
         k: &Dev<u8>,
         v: &Dev<u8>,
@@ -507,10 +510,37 @@ impl Gpu {
         )?;
         // Tokens per block: as many as fill the block's query rows.
         let tq = ATTN_ROWS / g;
-        let a = [t, heads, kv_heads, d, kv_len, kv_stride].map(|v| v as i32);
-        let tq32 = tq as i32;
+        let groups = t.div_ceil(tq);
+        let sel_stride = kv_len + 1;
+        let mut sel = ws.take_bytes_at_least(self, "attn.sel_prefill", 4 * groups * sel_stride)?;
+        let (t32, tq32, n32, stride32, sel32) = (
+            t as i32,
+            tq as i32,
+            kv_len as i32,
+            kv_stride as i32,
+            sel_stride as i32,
+        );
+        let fu = self.func("mask_union_compact")?;
         let cfg = LaunchConfig {
-            grid_dim: (t.div_ceil(tq) as u32, kv_heads as u32, 1),
+            grid_dim: (groups as u32, 1, 1),
+            block_dim: (1024, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        unsafe {
+            self.stream
+                .launch_builder(&fu)
+                .arg(mask)
+                .arg(&mut sel)
+                .arg(&t32)
+                .arg(&tq32)
+                .arg(&n32)
+                .arg(&stride32)
+                .arg(&sel32)
+                .launch(cfg)?
+        };
+        let a = [t, heads, kv_heads, d, kv_len, kv_stride].map(|v| v as i32);
+        let cfg = LaunchConfig {
+            grid_dim: (groups as u32, kv_heads as u32, 1),
             block_dim: (256, 1, 1),
             shared_mem_bytes: ATTN_SMEM_BYTES as u32,
         };
@@ -533,8 +563,11 @@ impl Gpu {
                 .arg(&(kb as i32))
                 .arg(&(vb as i32))
                 .arg(&levels)
+                .arg(&sel)
+                .arg(&sel32)
                 .launch(cfg)?
         };
+        ws.give_bytes("attn.sel_prefill", sel);
         Ok(())
     }
 }

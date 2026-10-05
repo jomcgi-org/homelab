@@ -372,11 +372,41 @@ mask_compact(const uint8_t* mask, int* sel, int n) {
     if (threadIdx.x == blockDim.x - 1) sel[0] = incl;
 }
 
+// Per group of TQ consecutive query rows of `mask` ([T, kv_stride]), the key
+// positions j < n any of them may see, in order: sel[g * sel_stride] = count, then the
+// positions. Grid ceil(T / TQ), block QSA_MASK_THREADS; each round covers
+// QSA_MASK_THREADS consecutive positions (coalesced reads) and a block-wide prefix
+// count places them.
+extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
+mask_union_compact(const uint8_t* mask, int* sel, int T, int TQ, int n, int kv_stride,
+                   int sel_stride) {
+    __shared__ unsigned scan[32], total;
+    int t0 = blockIdx.x * TQ, rows = min(TQ, T - t0);
+    const uint8_t* m = mask + (size_t)t0 * kv_stride;
+    int* out = sel + (size_t)blockIdx.x * sel_stride;
+    unsigned base = 0;
+    for (int j0 = 0; j0 < n; j0 += blockDim.x) {
+        int j = j0 + threadIdx.x;
+        bool any = false;
+        if (j < n)
+            for (int r = 0; r < rows; r++) any |= m[(size_t)r * kv_stride + j] != 0;
+        unsigned incl = qsa_block_scan(any, scan);
+        if (any) out[base + incl] = j;  // 1 + base + (incl - 1)
+        if (threadIdx.x == blockDim.x - 1) total = incl;
+        __syncthreads();
+        base += total;
+        __syncthreads();  // every thread has read `total` before the next round
+    }
+    if (threadIdx.x == 0) out[0] = base;
+}
+
 // Masked GQA attention for several query tokens, flash style: one block owns one KV
 // head and TQ tokens x G query heads (the heads sharing that KV head), R = TQ * G <= 48
 // rows. Key and value tiles of 16 rows are staged in shared memory once and read by
-// every row, the online softmax keeps no score matrix, and a tile no row may see is
-// skipped. Arithmetic is fp32 throughout (dots, expf, accumulation), as the reference.
+// every row, and the online softmax keeps no score matrix. Tiles are gathered from
+// the keys any of the block's tokens may see (its `sel` list from mask_union_compact),
+// so a sparse selection costs its selected keys, not every tile they touch.
+// Arithmetic is fp32 throughout (dots, expf, accumulation), as the reference.
 // Grid (ceil(T / TQ), Hkv), block 256, dynamic shared memory ATTN_SMEM_BYTES.
 // q: [T, H, D]; k, v caches: [kv_len_max, Hkv, D]; mask: [T, kv_stride]; out: [T, H, D].
 #define ATTN_R 48
@@ -388,9 +418,10 @@ mask_compact(const uint8_t* mask, int* sel, int n) {
 extern "C" __global__ void __launch_bounds__(256)
 attn_prefill(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* mask, float* out,
              int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale, int TQ, int kb,
-             int vb, const float* levels) {
+             int vb, const float* levels, const int* sel, int sel_stride) {
     extern __shared__ __align__(16) float smem[];
     __shared__ float lvk[256], lvv[256];
+    __shared__ int js[ATTN_KT];
     kv_levels_load(lvk, levels, kb);
     kv_levels_load(lvv, levels, vb);
     size_t krow = kv_row_bytes(D, kb), vrow = kv_row_bytes(D, vb);
@@ -422,19 +453,16 @@ attn_prefill(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* 
     // Values: thread (rgo, dg) accumulates rows 12 rgo .. 12 rgo + 11, columns 4 dg .. 4 dg + 3.
     int dg = tid & 63, rgo = tid >> 6;
     float acc[12][4] = {};
-    for (int j0 = 0; j0 < kv_len; j0 += ATTN_KT) {
-        // Skip a tile no row may see (uniform across the block).
-        bool any = false;
-        if (tid < TQ * ATTN_KT) {
-            int t = t0 + tid / ATTN_KT, j = j0 + tid % ATTN_KT;
-            any = t < T && j < kv_len && mask[(size_t)t * kv_stride + j];
-        }
-        if (!__syncthreads_or(any)) continue;
+    const int* gs = sel + (size_t)blockIdx.x * sel_stride;
+    int nsel = gs[0];
+    for (int i0 = 0; i0 < nsel; i0 += ATTN_KT) {
+        if (tid < ATTN_KT) js[tid] = i0 + tid < nsel ? gs[1 + i0 + tid] : -1;
+        __syncthreads();
         for (int i = tid; i < ATTN_KT * (D / 4); i += 256) {
             int key = i / (D / 4), d = (i % (D / 4)) * 4;
-            int j = j0 + key;
+            int j = js[key];
             float4 kv4 = make_float4(0.f, 0.f, 0.f, 0.f), vv4 = kv4;
-            if (j < kv_len) {
+            if (j >= 0) {
                 size_t r = (size_t)j * Hkv + kvh;
                 const uint8_t* kr = k + r * krow;
                 const uint8_t* vr = v + r * vrow;
@@ -465,11 +493,11 @@ attn_prefill(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* 
                     dot[i] += qv.w * kv4.w;
                 }
             }
-            int j = j0 + kk;
+            int j = js[kk];
 #pragma unroll
             for (int i = 0; i < 3; i++) {
                 int r = rg * 3 + i, t = t0 + r / G;
-                bool ok = r < R && t < T && j < kv_len && mask[(size_t)t * kv_stride + j];
+                bool ok = r < R && t < T && j >= 0 && mask[(size_t)t * kv_stride + j];
                 ps[r * ATTN_KT + kk] = ok ? dot[i] * scale : -INFINITY;
             }
         }

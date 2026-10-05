@@ -288,10 +288,11 @@ impl<B: Backend> Attention<B> {
         )
     }
 
-    /// Bytes of the per-step buffers that grow with the sequence (selection mask
-    /// and block scores) for a step of `t` queries over `kv_len` keys.
+    /// Bytes of the per-step buffers that grow with the sequence (selection mask,
+    /// block scores, and the backend's per-group key lists of about one `i32` per
+    /// key per 4 queries) for a step of `t` queries over `kv_len` keys.
     pub fn step_bytes(&self, t: usize, kv_len: usize) -> usize {
-        t * kv_len + t * (kv_len / self.a.ratio + 1) * std::mem::size_of::<f32>()
+        2 * t * (kv_len + 1) + t * (kv_len / self.a.ratio + 1) * std::mem::size_of::<f32>()
     }
 
     pub fn growth_bytes(&self, state: &AttnState<B>, tokens: usize) -> usize {

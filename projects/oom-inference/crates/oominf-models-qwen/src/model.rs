@@ -34,6 +34,7 @@ const PREFILL_ONLY_BUFFERS: &[&str] = &[
     "attn.shadow_rows",
     "attn.mask",
     "attn.idx_scores",
+    "attn.sel_prefill",
     "moe.h",
     "moe.y",
     "moe.g",
