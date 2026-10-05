@@ -34,9 +34,11 @@ Use platform-owned storage for:
 - Identities: unique issuer and subject linked to one platform user. Linking an
   additional identity requires an explicit authorized operation; matching email
   never merges accounts.
-- Invitations: recipient, digest of a random capability, issuer, expiry,
-  revocation state and accepted identity. Raw capabilities are never recoverable
-  from storage. Reissuing rotates the capability and invalidates the old one.
+- Invitations: recipient, issuer, expiry, delivery state, revocation state and
+  accepted identity. Preparing an invitation stores metadata only. Delivery
+  mints a random capability and stores its digest; raw capabilities are never
+  recoverable from storage. Reissuing rotates the capability and invalidates the
+  old one.
 - Grants: platform user, registered application permission and issuing actor.
 - Audit records: authenticated actor, action, target, request ID, timestamp and
   result. Passwords, tokens, invitation capabilities and signup payloads are
@@ -109,7 +111,7 @@ and grants; it exposes no user directory or mutation of permissions.
 
 | MCP tool | Shared operation | Result |
 | --- | --- | --- |
-| `platform_invitation_issue` | Issue recipient-bound invitation with bounded expiry and idempotency key | Invitation ID, status, expiry and authenticated delivery reference |
+| `platform_invitation_issue` | Prepare recipient-bound invitation with bounded expiry and idempotency key | Invitation ID, awaiting-delivery status, expiry and authenticated delivery reference |
 | `platform_invitation_list` | List bounded, filtered invitation metadata | Paginated metadata without capabilities |
 | `platform_invitation_revoke` | Revoke an exact invitation | Current status; repeated revoke is harmless |
 | `platform_user_list` | List bounded platform users | Paginated account summaries without credentials |
@@ -126,11 +128,17 @@ cannot administer other users. Mutations require an explicit target, reason and
 bounded idempotency key; state changes and their audit entries commit together.
 User and invitation searches are bounded and return only management metadata.
 
-Issuing through MCP never returns a usable invitation link. Delivery uses an
-approved email path or an authenticated operator page which displays the raw
-link once. The reference returned by MCP authorizes neither signup nor viewing
-the capability. No tool accepts or returns a password, Authentik bearer, OIDC
-client secret, arbitrary provider operation or group-management request.
+Issuing through MCP never returns a usable invitation link. The authenticated
+delivery step rechecks recipient, expiry and revocation, then mints the capability
+and stores its digest atomically. Its original expiry is not extended. Delivery
+uses an approved email path or an operator page which displays the raw link in
+that response once. A lost response, failed email or process restart requires an
+authorized reissue which rotates the digest and invalidates any earlier token;
+the old link cannot be reconstructed. Retrying the MCP preparation command with
+the same idempotency key returns metadata and never mints another capability.
+The reference returned by MCP authorizes neither signup nor viewing the
+capability. No tool accepts or returns a password, Authentik bearer, OIDC client
+secret, arbitrary provider operation or group-management request.
 
 **Why.** The same management commands are useful from the UI, HTTP automation
 and MCP. Sharing command authorization prevents the MCP surface from becoming a
