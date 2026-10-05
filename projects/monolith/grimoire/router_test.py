@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 
-from grimoire.access import get_authenticated_email
+from grimoire.access import get_authenticated_email, get_game_creator_email
 from grimoire.models import Entity
 from grimoire.router import router
 
@@ -47,6 +47,7 @@ def client_fixture(session):
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_authenticated_email] = lambda: "dm@example.test"
+    app.dependency_overrides[get_game_creator_email] = lambda: "dm@example.test"
     yield TestClient(app)
     app.dependency_overrides.clear()
 

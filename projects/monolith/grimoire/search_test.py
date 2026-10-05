@@ -19,7 +19,7 @@ from knowledge.api import get_embedding_client
 from sqlmodel import Session, SQLModel, create_engine
 
 import grimoire.search as search_module
-from grimoire.access import get_authenticated_email
+from grimoire.access import get_authenticated_email, get_game_creator_email
 from grimoire.models import (
     AppUser,
     Campaign,
@@ -73,6 +73,7 @@ def client_fixture(session):
         return request.headers.get("X-Test-Auth-Email", "dm@example.test")
 
     app.dependency_overrides[get_authenticated_email] = authenticated_email
+    app.dependency_overrides[get_game_creator_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 
