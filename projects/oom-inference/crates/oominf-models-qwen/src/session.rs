@@ -24,6 +24,10 @@ pub struct Options {
     pub host_threads: usize,
     /// How attention layers store their KV cache.
     pub kv: oominf_core::KvFormat,
+    /// How dense weights are stored.
+    pub dense: oominf_core::DenseFormat,
+    /// Attention K/V caches in host memory rather than device memory.
+    pub kv_host: bool,
 }
 
 struct Inner<B: Backend> {
@@ -53,6 +57,8 @@ pub fn open<B: Backend>(
     let config = std::fs::read_to_string(files.dir().join("config.json")).context("config.json")?;
     let mut dims = Dims::from_config(&config)?;
     dims.kv = opts.kv;
+    dims.dense = opts.dense;
+    dims.kv_host = opts.kv_host;
     let mut model = QwenModel::load(&*b, &files, dims, None)?;
     if opts.host_threads > 0 {
         model.set_host_experts(Arc::new(oominf_cpu::HostExperts::new(opts.host_threads)?));

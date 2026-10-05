@@ -29,6 +29,8 @@ fn model(kv: KvFormat) -> Box<dyn Model> {
             prefill_chunk: oominf_models_qwen::PREFILL_CHUNK,
             host_threads: 0,
             kv,
+            dense: oominf_core::DenseFormat::Bf16,
+            kv_host: false,
         },
         Box::new(move |b| {
             let policies = || Ok((policy::parse("lru")?, policy::parse("lru")?));

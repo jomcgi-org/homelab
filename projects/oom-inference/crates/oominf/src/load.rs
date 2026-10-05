@@ -60,6 +60,22 @@ pub struct CacheArgs {
     /// different degrees: judge them with `oominf score`.
     #[arg(long, default_value = "k8v6", value_parser = oominf_core::KvFormat::parse)]
     pub kv_cache: oominf_core::KvFormat,
+    /// How dense (non-expert) weights are stored: `bf16` as in the checkpoint
+    /// (exact), or `fp8` (e4m3 with a scale per 128 weights: half the bytes, so faster
+    /// decode and more VRAM for experts; lossy, judge with `oominf score`).
+    #[arg(long, default_value = "bf16", value_parser = oominf_core::DenseFormat::parse)]
+    pub dense: oominf_core::DenseFormat,
+    /// Where attention K/V caches live: `device` memory, or `host` memory the GPU
+    /// reads over PCIe (decode reads only each token's selected rows; frees VRAM
+    /// for experts at long context; same results).
+    #[arg(long, default_value = "device", value_parser = ["device", "host"])]
+    pub kv_placement: String,
+}
+
+impl CacheArgs {
+    pub fn kv_host(&self) -> bool {
+        self.kv_placement == "host"
+    }
 }
 
 impl ExpertArgs {
@@ -140,6 +156,8 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
         prefill_chunk: args.prefill_chunk,
         host_threads: args.experts.host_threads(),
         kv: args.cache.kv_cache,
+        dense: args.cache.dense,
+        kv_host: args.cache.kv_host(),
     };
     let experts = factory::<Gpu>(args.experts, files.clone());
     oominf_models::open(gpu, files, &opts, experts)

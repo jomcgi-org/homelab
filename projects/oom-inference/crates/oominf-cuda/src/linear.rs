@@ -5,7 +5,7 @@ use cudarc::cublas::sys as blas_sys;
 use cudarc::driver::{DevicePtr, DevicePtrMut, LaunchConfig, PushKernelArg};
 use oominf_core::{Linear, Memory};
 
-use crate::{Bf16Buf, Buf, Gpu, grid};
+use crate::{Bf16Buf, Buf, Dev, Gpu, grid};
 
 impl Linear for Gpu {
     /// `y[T, N] = x[T, K] @ w[N, K]^T` with bf16 weights and fp32 accumulation and
@@ -60,10 +60,74 @@ impl Linear for Gpu {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_fp8(
+        &self,
+        x: &Buf,
+        q: &Dev<u8>,
+        scale: &Buf,
+        y: &mut Buf,
+        scratch: &mut Bf16Buf,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
+        self.check(
+            x.len() >= t * k
+                && q.len() >= n * k
+                && scale.len() >= n * k.div_ceil(oominf_core::fp8::BLOCK)
+                && y.len() >= t * n,
+            "gemm_fp8 sizes",
+        )?;
+        if t <= 4 && k.is_multiple_of(16) {
+            let (qp, _g) = q.device_ptr(&self.stream);
+            return self.gemv(x, qp, Some(scale), y, t, n, k);
+        }
+        // Larger steps (prefill) run cuBLAS on bf16 weights, dequantized once and
+        // kept: layer-major prefill reuses a layer's weights for every chunk.
+        let key = q.device_ptr(&self.stream).0;
+        let mut cache = self.fp8_cache.lock().unwrap();
+        if !cache.iter().any(|(k2, _)| *k2 == key) {
+            let mut w = self.uninit_bf16(n * k)?;
+            let f = self.func("fp8_dequantize_blocks")?;
+            let (n32, k32) = (n as i32, k as i32);
+            unsafe {
+                self.stream
+                    .launch_builder(&f)
+                    .arg(q)
+                    .arg(scale)
+                    .arg(&mut w)
+                    .arg(&n32)
+                    .arg(&k32)
+                    .launch(grid(n * k, 256))?
+            };
+            cache.push_back((key, w));
+            let mut bytes: usize = cache.iter().map(|(_, b)| b.len() * 2).sum();
+            while bytes > FP8_CACHE_BYTES && cache.len() > 1 {
+                let (_, old) = cache.pop_front().unwrap();
+                bytes -= old.len() * 2;
+            }
+        } else {
+            // Most recently used last.
+            let pos = cache.iter().position(|(k2, _)| *k2 == key).unwrap();
+            let e = cache.remove(pos).unwrap();
+            cache.push_back(e);
+        }
+        let w = &cache.back().unwrap().1;
+        self.gemm_bf16(x, w, y, scratch, t, n, k)
+    }
+
+    fn release_weight_cache(&self) {
+        self.fp8_cache.lock().unwrap().clear();
+    }
 }
 
+/// Bytes of bf16 weights [`Linear::gemm_fp8`] keeps dequantized: one layer's dense
+/// weights (about 300 MB for Qwen 3.8 Flash) and then some.
+pub(crate) const FP8_CACHE_BYTES: usize = 512 << 20;
+
 impl Gpu {
-    /// Decode GEMV, `t <= 4`, `k % 8 == 0` (see `gemv_bf16_impl` in ops.cu).
+    /// Decode GEMV, `t <= 4`, `k % 8 == 0` (see `gemv_impl` in ops.cu).
     pub(crate) fn gemv_bf16(
         &self,
         x: &Buf,
@@ -73,23 +137,46 @@ impl Gpu {
         n: usize,
         k: usize,
     ) -> Result<()> {
+        let (wp, _g) = w.device_ptr(&self.stream);
+        self.gemv(x, wp, None, y, t, n, k)
+    }
+
+    /// The decode GEMV over bf16 weights at `w` or, with `scale`, FP8 e4m3 weights
+    /// scaled per 128-weight block (then `k % 16 == 0`).
+    #[allow(clippy::too_many_arguments)]
+    fn gemv(
+        &self,
+        x: &Buf,
+        w: u64,
+        scale: Option<&Buf>,
+        y: &mut Buf,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
         const WARPS: usize = 8;
         const ROWS_PER_WARP: usize = 4;
         const SMEM: usize = 48 * 1024;
+        // K per warp step: 32 lanes x one 16-byte load (8 bf16 or 16 e4m3).
+        let step = if scale.is_some() { 512 } else { 256 };
         let row_groups = n.div_ceil(ROWS_PER_WARP);
-        let kchunks = k.div_ceil(256);
+        let kchunks = k.div_ceil(step);
         // Enough warps to saturate memory bandwidth, and x per split must fit in shared.
         let want = 2048usize.div_ceil(row_groups).clamp(1, kchunks);
         let smem_min = (t * k * 4).div_ceil(SMEM);
         let splits0 = want.max(smem_min).min(kchunks);
-        let klen = k.div_ceil(splits0).div_ceil(256) * 256;
+        let klen = k.div_ceil(splits0).div_ceil(step) * step;
         let splits = k.div_ceil(klen);
-        let name = [
-            "gemv_bf16_t1",
-            "gemv_bf16_t2",
-            "gemv_bf16_t3",
-            "gemv_bf16_t4",
-        ][t - 1];
+        let name = match (scale.is_some(), t) {
+            (false, 1) => "gemv_bf16_t1",
+            (false, 2) => "gemv_bf16_t2",
+            (false, 3) => "gemv_bf16_t3",
+            (false, _) => "gemv_bf16_t4",
+            (true, 1) => "gemv_fp8_t1",
+            (true, 2) => "gemv_fp8_t2",
+            (true, 3) => "gemv_fp8_t3",
+            (true, _) => "gemv_fp8_t4",
+        };
         let f = self.func(name)?;
         let cfg = LaunchConfig {
             grid_dim: (row_groups.div_ceil(WARPS) as u32, splits as u32, 1),
@@ -97,48 +184,32 @@ impl Gpu {
             shared_mem_bytes: (t * klen.min(k) * 4) as u32,
         };
         let (n32, k32, kl32) = (n as i32, k as i32, klen as i32);
-        if splits == 1 {
-            let null: u64 = 0;
-            unsafe {
-                self.stream
-                    .launch_builder(&f)
-                    .arg(x)
-                    .arg(w)
-                    .arg(y)
-                    .arg(&null)
-                    .arg(&null)
-                    .arg(&n32)
-                    .arg(&k32)
-                    .arg(&kl32)
-                    .launch(cfg)?
-            };
-            return Ok(());
-        }
         let mut guard = self.gemv_partial.lock().unwrap();
-        let need = splits * t * n;
-        if guard.as_ref().is_none_or(|b| b.len() < need) {
-            *guard = Some(self.uninit(need)?);
-        }
-        let partial = guard.as_mut().unwrap();
         let mut tickets = self.gemv_tickets.lock().unwrap();
-        let tiles = cfg.grid_dim.0 as usize;
-        if tickets.as_ref().is_none_or(|b| b.len() < tiles) {
-            *tickets = Some(self.stream.alloc_zeros::<u32>(tiles)?);
-        }
-        let tickets = tickets.as_mut().unwrap();
-        unsafe {
-            self.stream
-                .launch_builder(&f)
-                .arg(x)
-                .arg(w)
-                .arg(y)
-                .arg(&mut *partial)
-                .arg(&mut *tickets)
-                .arg(&n32)
-                .arg(&k32)
-                .arg(&kl32)
-                .launch(cfg)?
+        let (pp, tp) = if splits == 1 {
+            (0u64, 0u64)
+        } else {
+            let need = splits * t * n;
+            if guard.as_ref().is_none_or(|b| b.len() < need) {
+                *guard = Some(self.uninit(need)?);
+            }
+            let tiles = cfg.grid_dim.0 as usize;
+            if tickets.as_ref().is_none_or(|b| b.len() < tiles) {
+                *tickets = Some(self.stream.alloc_zeros::<u32>(tiles)?);
+            }
+            let p = guard.as_mut().unwrap().0.device_ptr_mut(&self.stream).0;
+            let tk = tickets.as_mut().unwrap().device_ptr_mut(&self.stream).0;
+            (p, tk)
         };
+        let mut b = self.stream.launch_builder(&f);
+        b.arg(x).arg(&w);
+        if let Some(sc) = scale {
+            b.arg(sc);
+        }
+        b.arg(y).arg(&pp).arg(&tp).arg(&n32).arg(&k32).arg(&kl32);
+        // SAFETY: argument types match the kernel; the partials and tickets live in
+        // the Gpu (stable addresses) and are guarded for the launch.
+        unsafe { b.launch(cfg)? };
         Ok(())
     }
 

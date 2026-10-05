@@ -21,12 +21,12 @@
 //! the memory to the expert tiers.
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, DeviceBuffer, KvFormat, Probe, Workspace, tap};
+use oominf_core::{Backend, DeviceBuffer, KvFormat, Probe, Weight, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
 use crate::layer::StepInput;
-use crate::util::{bf16_concat, bf16_tensor};
+use crate::util::{bf16_tensor, weight, weight_concat};
 
 #[derive(Debug, Clone)]
 struct AttnDims {
@@ -96,8 +96,8 @@ fn rope_inv_freq(t: &serde_json::Value, rotary_dim: usize) -> Result<Vec<f32>> {
 pub struct Attention<B: Backend> {
     a: AttnDims,
     /// `index_qk_proj`, `q_proj` (query and gate), `k_proj`, `v_proj` stacked: one GEMM.
-    in_proj: B::Bf16,
-    o_proj: B::Bf16,
+    in_proj: Weight<B>,
+    o_proj: Weight<B>,
     q_norm: B::Bf16,
     k_norm: B::Bf16,
     idx_q_norm: B::Bf16,
@@ -105,6 +105,8 @@ pub struct Attention<B: Backend> {
     inv_freq: B::F32,
     /// How the KV cache stores keys and values.
     kv: KvFormat,
+    /// K/V caches in host memory (see [`Dims::kv_host`]).
+    kv_host: bool,
 }
 
 /// Tokens of KV cache a fresh sequence starts with; it doubles on demand up to the
@@ -157,7 +159,7 @@ impl<B: Backend> Attention<B> {
         let idx_out = ((a.idx_heads + a.idx_kv_heads) * a.idx_dim) as u64;
         let inv_freq = rope_inv_freq(&d.text, a.rotary_dim)?;
         Ok(Attention {
-            in_proj: bf16_concat(
+            in_proj: weight_concat(
                 gpu,
                 model,
                 &[
@@ -166,14 +168,16 @@ impl<B: Backend> Attention<B> {
                     (format!("{p}k_proj.weight"), vec![kvh * hd, h]),
                     (format!("{p}v_proj.weight"), vec![kvh * hd, h]),
                 ],
+                d,
             )?,
-            o_proj: w("o_proj.weight", &[h, nh * hd])?,
+            o_proj: weight(gpu, model, &format!("{p}o_proj.weight"), &[h, nh * hd], d)?,
             q_norm: w("q_norm.weight", &[hd])?,
             k_norm: w("k_norm.weight", &[hd])?,
             idx_q_norm: w("indexer.q_layernorm.weight", &[a.idx_dim as u64])?,
             idx_k_norm: w("indexer.k_layernorm.weight", &[a.idx_dim as u64])?,
             inv_freq: gpu.upload_f32(&inv_freq)?,
             kv: d.kv,
+            kv_host: d.kv_host,
             a,
         })
     }
@@ -182,8 +186,8 @@ impl<B: Backend> Attention<B> {
         let cap = self.capacity_for(INITIAL_KV_TOKENS.min(max_tokens).max(1), 0, max_tokens);
         let (kb, vb, ik, bk) = self.buffer_lens(cap);
         Ok(AttnState {
-            k: gpu.zeros_bytes(kb)?,
-            v: gpu.zeros_bytes(vb)?,
+            k: self.kv_bytes(gpu, kb)?,
+            v: self.kv_bytes(gpu, vb)?,
             idx_keys: gpu.zeros(ik)?,
             block_keys: gpu.zeros(bk)?,
             blocks: 0,
@@ -302,7 +306,18 @@ impl<B: Backend> Attention<B> {
         }
         let (kb, vb, ik, bk) =
             self.buffer_lens(self.capacity_for(tokens, state.cap, state.max_tokens));
-        kb + vb + (ik + bk) * std::mem::size_of::<f32>()
+        // K/V in host memory take no device memory.
+        let kv = if self.kv_host { 0 } else { kb + vb };
+        kv + (ik + bk) * std::mem::size_of::<f32>()
+    }
+
+    /// A zeroed K or V cache buffer of `n` bytes where the caches live.
+    fn kv_bytes(&self, gpu: &B, n: usize) -> Result<B::Bytes> {
+        if self.kv_host {
+            gpu.zeros_bytes_host(n)
+        } else {
+            gpu.zeros_bytes(n)
+        }
     }
 
     /// Grows the caches to hold `tokens`, keeping their contents. Kernels read the
@@ -328,7 +343,7 @@ impl<B: Backend> Attention<B> {
             Ok(new)
         };
         let moved_bytes = |old: &B::Bytes, n: usize, len: usize| -> Result<B::Bytes> {
-            let mut new = gpu.zeros_bytes(len)?;
+            let mut new = self.kv_bytes(gpu, len)?;
             gpu.copy_bytes(old, 0, &mut new, 0, n)?;
             Ok(new)
         };
@@ -378,7 +393,7 @@ impl<B: Backend> Attention<B> {
         let (qg_w, kv_w) = (nh * hd * 2, kvh * hd);
         let n = idx_w + qg_w + 2 * kv_w;
         let mut proj = ws.take(gpu, "attn.proj", t * n)?;
-        gpu.gemm_bf16(x, &self.in_proj, &mut proj, scratch, t, n, h)?;
+        gpu.gemm_w(x, &self.in_proj, &mut proj, scratch, t, n, h)?;
         let mut idx_qk = ws.take(gpu, "attn.idx_qk", t * idx_w)?;
         gpu.copy_cols(&proj, &mut idx_qk, t, n, 0, idx_w)?;
         let mut qg = ws.take(gpu, "attn.qg", t * qg_w)?;
@@ -562,7 +577,7 @@ impl<B: Backend> Attention<B> {
         ws.give("attn.gate", gate);
         tap(gpu, probe, "attn.gated_out", &mut attn)?;
         let mut out = ws.take(gpu, "attn.out", t * h)?;
-        gpu.gemm_bf16(&attn, &self.o_proj, &mut out, scratch, t, h, nh * hd)?;
+        gpu.gemm_w(&attn, &self.o_proj, &mut out, scratch, t, h, nh * hd)?;
         ws.give("attn.core", attn);
         self.tap_state(gpu, state, probe)?;
         Ok(out)

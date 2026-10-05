@@ -341,7 +341,12 @@ fn main() -> Result<()> {
                     budget_bytes: (prefix_store_gib * (1u64 << 30) as f64) as u64,
                     ttl: std::time::Duration::from_secs_f64(prefix_store_ttl_hours * 3600.0),
                     min_tokens: prefix_store_min_tokens,
-                    identity: format!("{} kv={:?}", load::checkpoint_id(&model)?, cache.kv_cache),
+                    identity: format!(
+                        "{} kv={:?} dense={:?}",
+                        load::checkpoint_id(&model)?,
+                        cache.kv_cache,
+                        cache.dense
+                    ),
                 }),
                 None => None,
             };

@@ -21,12 +21,12 @@ use std::sync::Mutex;
 use io_uring::{IoUring, opcode, types};
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, DeviceBuffer, Probe, Workspace, tap};
+use oominf_core::{Backend, DeviceBuffer, Probe, Weight, Workspace, tap};
 use oominf_format::{Model, TensorFile};
 
 use crate::Dims;
 use crate::layer::StepInput;
-use crate::util::{bf16_concat, bf16_tensor};
+use crate::util::{bf16_tensor, weight_concat};
 
 pub struct Ple<B: Backend> {
     ngram_size: usize,
@@ -44,7 +44,7 @@ pub struct Ple<B: Backend> {
     rows: Mutex<RowReads>,
     scale: f32,
     /// `key_proj` then `value_proj` stacked (both read the embedding): one GEMM.
-    kv_proj: B::Bf16,
+    kv_proj: Weight<B>,
     norm_key: B::Bf16,
     norm_query: B::Bf16,
     norm_conv: B::Bf16,
@@ -247,13 +247,14 @@ impl<B: Backend> Ple<B> {
                 inflight: 0,
             }),
             scale,
-            kv_proj: bf16_concat(
+            kv_proj: weight_concat(
                 gpu,
                 model,
                 &[
                     (format!("{p}key_proj.weight"), vec![r, ed]),
                     (format!("{p}value_proj.weight"), vec![h, ed]),
                 ],
+                d,
             )?,
             norm_key: w("norm_key.weight", &[r])?,
             norm_query: w("norm_query.weight", &[r])?,
@@ -446,7 +447,7 @@ impl<B: Backend> Ple<B> {
         tap(gpu, probe, "ple.ngram_embed", &mut emb)?;
 
         let mut kv = ws.take(gpu, "ple.kv", t * (r + h))?;
-        gpu.gemm_bf16(&emb, &self.kv_proj, &mut kv, scratch, t, r + h, ed)?;
+        gpu.gemm_w(&emb, &self.kv_proj, &mut kv, scratch, t, r + h, ed)?;
         ws.give("ple.emb", emb);
         let mut key = ws.take(gpu, "ple.key", t * r)?;
         gpu.copy_cols(&kv, &mut key, t, r + h, 0, r)?;

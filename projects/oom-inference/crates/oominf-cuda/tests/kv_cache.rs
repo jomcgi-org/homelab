@@ -279,3 +279,56 @@ fn sparse_attention_matches_reference() -> Result<()> {
     assert!(worst < 1e-4, "max abs error {worst:.2e}");
     Ok(())
 }
+
+/// A cache in host memory (`zeros_bytes_host`) holds the same rows and gives
+/// bit-identical attention to one in device memory; host buffers allocate and free
+/// cleanly in a loop.
+#[test]
+#[ignore = "needs a GPU"]
+fn host_cache_matches_device() -> Result<()> {
+    let gpu = Gpu::new(0)?;
+    let (heads, kvh, d, kv_len, t) = (24, 2, 256, 3000, 2);
+    let f = KvFormat::Turbo {
+        k_bits: 8,
+        v_bits: 6,
+    };
+    let k = gpu.upload_f32(&gaussian(kv_len * kvh * d, 21))?;
+    let v = gpu.upload_f32(&gaussian(kv_len * kvh * d, 22))?;
+    let q = gpu.upload_f32(&gaussian(t * heads * d, 23))?;
+    let mask: Vec<u8> = (0..t * kv_len).map(|i| u8::from(i % 7 != 0)).collect();
+    let mask = gpu.upload_bytes(&mask)?;
+    let mut outs = Vec::new();
+    for host in [false, true] {
+        let alloc = |n| {
+            if host {
+                gpu.zeros_bytes_host(n)
+            } else {
+                gpu.zeros_bytes(n)
+            }
+        };
+        let mut kc = alloc(kv_len * kvh * f.row_bytes(true, d))?;
+        let mut vc = alloc(kv_len * kvh * f.row_bytes(false, d))?;
+        gpu.kv_append(&k, &mut kc, f, true, 0, kv_len, kvh, d)?;
+        gpu.kv_append(&v, &mut vc, f, false, 0, kv_len, kvh, d)?;
+        let mut out = gpu.zeros(t * heads * d)?;
+        let mut ws = oominf_core::Workspace::new();
+        gpu.attention(
+            &mut ws, &q, &kc, &vc, f, &mask, &mut out, t, heads, kvh, d, kv_len, kv_len, 0.0625,
+        )?;
+        outs.push((gpu.download_bytes(&kc)?, gpu.download_f32(&out)?));
+    }
+    assert_eq!(outs[0].0, outs[1].0, "cached rows differ");
+    let same = outs[0]
+        .1
+        .iter()
+        .zip(&outs[1].1)
+        .all(|(a, b)| a.to_bits() == b.to_bits());
+    assert!(same, "attention over a host cache differs");
+    for i in 0..50 {
+        let mut b = gpu.zeros_bytes_host(1 << 20)?;
+        gpu.copy_bytes(&gpu.upload_bytes(&[i as u8; 64])?, 0, &mut b, 0, 64)?;
+        assert_eq!(gpu.download_bytes(&b)?[..64], [i as u8; 64]);
+    }
+    gpu.sync()?;
+    Ok(())
+}

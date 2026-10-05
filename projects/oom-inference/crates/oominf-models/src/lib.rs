@@ -24,6 +24,10 @@ pub struct Options {
     pub host_threads: usize,
     /// How attention layers store their KV cache.
     pub kv: oominf_core::KvFormat,
+    /// How dense weights are stored.
+    pub dense: oominf_core::DenseFormat,
+    /// Attention K/V caches in host memory rather than device memory.
+    pub kv_host: bool,
 }
 
 /// The `model_type` of a converted model directory.
@@ -56,6 +60,8 @@ pub fn open<B: Backend>(
                     .unwrap_or(oominf_models_qwen::PREFILL_CHUNK),
                 host_threads: opts.host_threads,
                 kv: opts.kv,
+                dense: opts.dense,
+                kv_host: opts.kv_host,
             },
             experts,
         ),

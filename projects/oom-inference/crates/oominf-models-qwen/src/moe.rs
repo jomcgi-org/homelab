@@ -4,13 +4,15 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
-use oominf_core::{Backend, Bf16Record, ExpertSource, Nvfp4Record, Probe, View, Workspace, tap};
+use oominf_core::{
+    Backend, Bf16Record, ExpertSource, Nvfp4Record, Probe, View, Weight, Workspace, tap,
+};
 use oominf_cpu::{HostExperts, Job, Pending};
 use oominf_format::Model;
 
 use crate::Dims;
 use crate::model::PREFILL_FETCH_TOKENS;
-use crate::util::{bf16_concat, bf16_tensor};
+use crate::util::{exact_weight, exact_weight_concat, weight, weight_concat};
 
 /// Index of each projection's `weight_scale_2` in the record's leading scalars part
 /// (gate.ws2, gate.in, up.ws2, up.in, down.ws2, down.in).
@@ -62,16 +64,16 @@ pub struct Moe<B: Backend> {
     layer: u32,
     geo: Geometry,
     tables: Mutex<Tables<B>>,
-    router: B::Bf16,
+    router: Weight<B>,
     /// This layer's router stacked over the next layer's (`[2 * experts, hidden]`):
     /// one decode GEMV routes this layer and predicts the next (absent for the last
     /// layer).
-    router_pair: Option<B::Bf16>,
+    router_pair: Option<Weight<B>>,
     /// The shared expert's gate over its up projection (`[2 * shared_inter,
     /// hidden]`): one GEMM for both.
-    shared_gate_up: B::Bf16,
-    shared_down: B::Bf16,
-    shared_gate_logit: B::Bf16,
+    shared_gate_up: Weight<B>,
+    shared_down: Weight<B>,
+    shared_gate_logit: Weight<B>,
     /// Computes host-resident experts of decode-sized steps on the CPU (absent:
     /// every routed record is copied to the device).
     host: Option<Arc<HostExperts>>,
@@ -186,9 +188,8 @@ impl<B: Backend> Moe<B> {
             other => bail!("unsupported expert layout {other}"),
         };
         let si = d.shared_inter as u64;
-        let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{p}{n}"), s);
         let router_pair = match next_router {
-            Some(next) => Some(bf16_concat(
+            Some(next) => Some(exact_weight_concat(
                 gpu,
                 model,
                 &[
@@ -212,18 +213,35 @@ impl<B: Backend> Moe<B> {
                 ])?,
                 recs: gpu.zeros_u64(d.experts.next_power_of_two())?,
             }),
-            router: w("gate.weight", &[d.experts as u64, h])?,
+            router: exact_weight(
+                gpu,
+                model,
+                &format!("{p}gate.weight"),
+                &[d.experts as u64, h],
+            )?,
             router_pair,
-            shared_gate_up: bf16_concat(
+            shared_gate_up: weight_concat(
                 gpu,
                 model,
                 &[
                     (format!("{p}shared_expert.gate_proj.weight"), vec![si, h]),
                     (format!("{p}shared_expert.up_proj.weight"), vec![si, h]),
                 ],
+                d,
             )?,
-            shared_down: w("shared_expert.down_proj.weight", &[h, si])?,
-            shared_gate_logit: w("shared_expert_gate.weight", &[1, h])?,
+            shared_down: weight(
+                gpu,
+                model,
+                &format!("{p}shared_expert.down_proj.weight"),
+                &[h, si],
+                d,
+            )?,
+            shared_gate_logit: exact_weight(
+                gpu,
+                model,
+                &format!("{p}shared_expert_gate.weight"),
+                &[1, h],
+            )?,
             host: None,
             stride: group.schema.stride as usize,
         })
@@ -266,7 +284,7 @@ impl<B: Backend> Moe<B> {
             (t, e)
         };
         let mut logits = gpu.zeros(rows * e)?;
-        gpu.gemm_bf16(
+        gpu.gemm_w(
             x,
             pair.unwrap_or(&self.router),
             &mut logits,
@@ -370,7 +388,7 @@ impl<B: Backend> Moe<B> {
             "routing download larger than its buffer"
         );
         let mut logits = gpu.zeros(rows * e)?;
-        gpu.gemm_bf16(
+        gpu.gemm_w(
             x,
             pair.unwrap_or(&self.router),
             &mut logits,
@@ -480,14 +498,14 @@ impl<B: Backend> Moe<B> {
     ) -> Result<(B::F32, B::F32)> {
         let (h, si) = (d.hidden, d.shared_inter);
         let mut gu = gpu.uninit(t * 2 * si)?;
-        gpu.gemm_bf16(x, &self.shared_gate_up, &mut gu, scratch, t, 2 * si, h)?;
+        gpu.gemm_w(x, &self.shared_gate_up, &mut gu, scratch, t, 2 * si, h)?;
         let mut sact = gpu.uninit(t * si)?;
         gpu.silu_mul_rows(&gu, &mut sact, t, si)?;
         let mut shared = gpu.zeros(t * h)?;
-        gpu.gemm_bf16(&sact, &self.shared_down, &mut shared, scratch, t, h, si)?;
+        gpu.gemm_w(&sact, &self.shared_down, &mut shared, scratch, t, h, si)?;
         tap(gpu, probe, "shared_out", &mut shared)?;
         let mut gate_logit = gpu.zeros(t)?;
-        gpu.gemm_bf16(
+        gpu.gemm_w(
             x,
             &self.shared_gate_logit,
             &mut gate_logit,

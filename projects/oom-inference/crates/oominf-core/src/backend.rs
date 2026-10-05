@@ -62,6 +62,12 @@ pub trait Memory {
     fn upload_bytes(&self, host: &[u8]) -> Result<Self::Bytes>;
     fn uninit_bytes(&self, n: usize) -> Result<Self::Bytes>;
     fn zeros_bytes(&self, n: usize) -> Result<Self::Bytes>;
+    /// Like [`Memory::zeros_bytes`], but kept in host memory that the device reads
+    /// and writes in place over the bus (no device memory used): for large buffers
+    /// read sparsely, such as a decode-time KV cache.
+    fn zeros_bytes_host(&self, n: usize) -> Result<Self::Bytes> {
+        self.zeros_bytes(n)
+    }
     fn download_bytes(&self, buf: &Self::Bytes) -> Result<Vec<u8>>;
     /// `dst[dst_off .. dst_off + n] = src[src_off .. src_off + n]` (bytes), ordered
     /// after the compute issued so far.
@@ -93,7 +99,80 @@ pub trait Memory {
 }
 
 /// Matrix products with fp32 accumulation.
+/// How dense (non-expert) weight matrices are stored on the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DenseFormat {
+    /// As the checkpoint stores them (exact).
+    Bf16,
+    /// FP8 e4m3 with one f32 scale per 128 weights of a row (half the bytes; lossy).
+    Fp8,
+}
+
+impl DenseFormat {
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "bf16" => Ok(DenseFormat::Bf16),
+            "fp8" => Ok(DenseFormat::Fp8),
+            other => Err(format!("unknown dense format {other:?} (bf16, fp8)")),
+        }
+    }
+}
+
+/// A dense weight matrix `[n, k]` on the device, in its [`DenseFormat`].
+pub enum Weight<B: Memory> {
+    Bf16(B::Bf16),
+    /// e4m3 bytes `[n, k]` and one scale per [`crate::fp8::BLOCK`] weights of a row:
+    /// `w[r, c] = scale[r * k.div_ceil(BLOCK) + c / BLOCK] * q[r, c]`.
+    Fp8 {
+        q: B::Bytes,
+        scale: B::F32,
+    },
+}
+
 pub trait Linear: Memory {
+    /// `y[t, n] = x[t, k] @ w[n, k]^T` for a [`Weight`] in either format.
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_w(
+        &self,
+        x: &Self::F32,
+        w: &Weight<Self>,
+        y: &mut Self::F32,
+        scratch: &mut Self::Bf16,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        match w {
+            Weight::Bf16(w) => self.gemm_bf16(x, w, y, scratch, t, n, k),
+            Weight::Fp8 { q, scale } => self.gemm_fp8(x, q, scale, y, scratch, t, n, k),
+        }
+    }
+
+    /// As [`Linear::gemm_bf16`] with FP8 e4m3 weights `q` scaled per block by
+    /// `scale` (see [`Weight::Fp8`]).
+    /// Larger `t` may dequantize the weights to bf16 into a cache the backend keeps
+    /// until [`Linear::release_weight_cache`].
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_fp8(
+        &self,
+        x: &Self::F32,
+        q: &Self::Bytes,
+        scale: &Self::F32,
+        y: &mut Self::F32,
+        scratch: &mut Self::Bf16,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()>;
+
+    /// Frees dequantized weights kept for [`Linear::gemm_fp8`] (e.g. when a
+    /// prefill ends and the memory goes back to the expert tier). The cache is keyed
+    /// by the weights' device address: call this before freeing FP8 weights.
+    fn release_weight_cache(&self) {}
+
     /// `y[t, n] = x[t, k] @ w[n, k]^T` with bf16 weights and fp32 output. Small `t`
     /// reads the fp32 activations directly; larger `t` may round them to bf16 into
     /// `scratch` (at least `t * k` elements) for tensor cores.
