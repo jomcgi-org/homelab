@@ -934,6 +934,12 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
         Ok(freed)
     }
 
+    fn releasable_vram(&self) -> usize {
+        // `release_vram` keeps at least one chunk and `num_experts` slots.
+        let min = (self.num_experts as usize).div_ceil(CHUNK_SLOTS).max(1);
+        self.main_chunks.len().saturating_sub(min) * CHUNK_SLOTS * self.stride
+    }
+
     /// Appends empty main chunks while `bytes` allow, up to the configured size.
     fn reclaim_vram(&mut self, _b: &B, bytes: usize) -> Result<usize> {
         let chunk_bytes = CHUNK_SLOTS * self.stride;

@@ -194,12 +194,13 @@ impl<B: Backend> Attention<B> {
         })
     }
 
-    /// Bytes of the fp32 shadow [`Self::begin_shadow`] holds for `tokens` tokens (0
-    /// for an fp32 cache, which needs none).
+    /// Bytes of the fp32 shadow [`Self::begin_shadow`] holds for `tokens` tokens,
+    /// with the rows it decodes from the cache to fill it (0 for an fp32 cache,
+    /// which needs none).
     pub fn shadow_bytes(&self, tokens: usize) -> usize {
         match self.kv {
             KvFormat::F32 => 0,
-            _ => 2 * tokens * self.a.kv_heads * KvFormat::F32.row_bytes(true, self.a.head_dim),
+            _ => 3 * tokens * self.a.kv_heads * KvFormat::F32.row_bytes(true, self.a.head_dim),
         }
     }
 

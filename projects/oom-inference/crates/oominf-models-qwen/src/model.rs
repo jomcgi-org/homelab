@@ -16,6 +16,16 @@ use crate::util::bf16_tensor;
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
 pub const PREFILL_CHUNK: usize = 512;
 
+/// Longest stretch of a prompt prefilled layer by layer at once. Residuals of every
+/// token in it live across layers (about 40 KB per token), so longer prompts, or
+/// prompts whose residuals do not fit beside their cache, run window by window.
+/// Each window sweeps every layer's experts through VRAM again (about 4.5 s for
+/// Qwen 3.8 Flash on a 4090), so windows are as long as memory allows.
+pub const PREFILL_WINDOW_TOKENS: usize = 128 * 1024;
+
+/// Windows are not split below this for lack of memory.
+const PREFILL_MIN_WINDOW_TOKENS: usize = 8 * 1024;
+
 /// Workspace buffers sized for prefill (fetch groups, sequence-length step buffers,
 /// fp32 KV shadows) that decode steps do not need.
 const PREFILL_ONLY_BUFFERS: &[&str] = &[
@@ -343,12 +353,7 @@ impl<B: Backend> QwenModel<B> {
         transient: usize,
         experts: &mut dyn ExpertSource<B>,
     ) -> Result<()> {
-        let need: usize = self
-            .layers
-            .iter()
-            .zip(&state.layers)
-            .map(|(l, s)| l.kv_growth_bytes(s, tokens))
-            .sum();
+        let need = self.kv_growth_bytes(state, tokens);
         if need == 0 && transient == 0 {
             return Ok(());
         }
@@ -363,6 +368,15 @@ impl<B: Backend> QwenModel<B> {
             l.grow_kv(gpu, s, tokens)?;
         }
         Ok(())
+    }
+
+    /// Device memory the caches of `state` need to grow to `tokens`.
+    fn kv_growth_bytes(&self, state: &SeqState<B>, tokens: usize) -> usize {
+        self.layers
+            .iter()
+            .zip(&state.layers)
+            .map(|(l, s)| l.kv_growth_bytes(s, tokens))
+            .sum()
     }
 
     /// Offers `experts` the device memory a fresh `state` does not need (free memory
@@ -464,9 +478,11 @@ impl<B: Backend> QwenModel<B> {
     /// [`PREFILL_FETCH_TOKENS`] tokens of chunks, routes them, and fetches the union
     /// of their experts once; it then predicts the next layer's experts from the
     /// same MoE inputs and has the source stage them while this layer's experts
-    /// compute. Returns the last row of
-    /// logits, or `None` if `cancelled()` turned true (checked between layers); the
-    /// state is then partially advanced and must be discarded.
+    /// compute. A prompt longer than [`PREFILL_WINDOW_TOKENS`] runs window by
+    /// window (each window through every layer), so the residuals held across
+    /// layers are bounded by the window. Returns the last row of logits, or `None`
+    /// if `cancelled()` turned true (checked between layers); the state is then
+    /// partially advanced and must be discarded.
     #[allow(clippy::too_many_arguments)]
     pub fn prefill(
         &self,
@@ -477,8 +493,76 @@ impl<B: Backend> QwenModel<B> {
         experts: &mut dyn ExpertSource<B>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Option<B::F32>> {
-        let chunk = chunk.max(1);
         ensure!(!token_ids.is_empty(), "empty prompt");
+        // The fewest equal windows (each costs a sweep through every layer's
+        // experts) whose buffers fit beside the whole prompt's cache.
+        let end = state.pos + token_ids.len();
+        gpu.sync()?;
+        let (free, _) = gpu.mem_info()?;
+        let room = (free + experts.releasable_vram())
+            .saturating_sub(self.kv_growth_bytes(state, end))
+            .saturating_sub(WORKSPACE_HEADROOM.saturating_sub(state.ws.borrow().bytes()))
+            .saturating_sub(RECLAIM_SLACK);
+        let mut n = token_ids.len().div_ceil(PREFILL_WINDOW_TOKENS);
+        while token_ids.len().div_ceil(n) > PREFILL_MIN_WINDOW_TOKENS
+            && self.prefill_bytes(token_ids.len().div_ceil(n), end, chunk) > room
+        {
+            n += 1;
+        }
+        let windows: Vec<&[u32]> = token_ids.chunks(token_ids.len().div_ceil(n)).collect();
+        // Every window but the last reserves the whole prompt's cache and keeps the
+        // prefill buffers, so the expert tier is not shrunk and regrown per window.
+        for w in &windows[..windows.len() - 1] {
+            if self
+                .prefill_window(gpu, w, chunk, state, experts, cancelled, Some(end))?
+                .is_none()
+            {
+                return Ok(None);
+            }
+        }
+        let last = windows[windows.len() - 1];
+        Ok(self
+            .prefill_window(gpu, last, chunk, state, experts, cancelled, None)?
+            .flatten())
+    }
+
+    /// Device memory a layer-major prefill of `t` tokens ending at `total` holds
+    /// beyond the caches. Residuals of every chunk live across layers (about 40 KB
+    /// per token); one fetch group's activations at the MoE live until it computes,
+    /// and its routed experts run as one step (`top_k` rows of hidden + 3 x inter
+    /// each); attention buffers and one layer's fp32 KV shadow.
+    fn prefill_bytes(&self, t: usize, total: usize, chunk: usize) -> usize {
+        let d = &self.dims;
+        let r = d.residual();
+        let group = t.min(PREFILL_FETCH_TOKENS);
+        let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
+        let held = group * (2 * r + d.hidden + moe);
+        let attn = self.step_bytes(chunk.min(t), total);
+        let shadow = self
+            .layers
+            .iter()
+            .map(|l| l.shadow_bytes(total))
+            .max()
+            .unwrap_or(0);
+        (t * r + held) * std::mem::size_of::<f32>() + attn + shadow
+    }
+
+    /// [`Self::prefill`] of at most one window: `None` if cancelled, else the
+    /// window's last row of logits. With `more`, the end of the whole prompt, the
+    /// window is not the last: it reserves the cache up to `more`, keeps the
+    /// prefill buffers and returns `Some(None)`.
+    #[allow(clippy::too_many_arguments)]
+    fn prefill_window(
+        &self,
+        gpu: &B,
+        token_ids: &[u32],
+        chunk: usize,
+        state: &mut SeqState<B>,
+        experts: &mut dyn ExpertSource<B>,
+        cancelled: &dyn Fn() -> bool,
+        more: Option<usize>,
+    ) -> Result<Option<Option<B::F32>>> {
+        let chunk = chunk.max(1);
         if cancelled() {
             return Ok(None);
         }
@@ -488,26 +572,13 @@ impl<B: Backend> QwenModel<B> {
         if token_ids.len() <= chunk {
             return self
                 .forward(gpu, token_ids, state, experts, &mut NoProbe, true)
-                .map(Some);
+                .map(|l| Some(Some(l)));
         }
         let d = &self.dims;
-        let r = d.residual();
-        // Residuals of every chunk live across layers (about 40 KB per token); one
-        // fetch group's activations at the MoE live until it computes, and its
-        // routed experts run as one step (`top_k` rows of hidden + 3 x inter each).
-        let group = token_ids.len().min(PREFILL_FETCH_TOKENS);
-        let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
-        let held = group * (2 * r + d.hidden + moe);
         let total = state.pos + token_ids.len();
-        let attn = self.step_bytes(chunk.min(token_ids.len()), total);
-        let shadow = self
-            .layers
-            .iter()
-            .map(|l| l.shadow_bytes(total))
-            .max()
-            .unwrap_or(0);
-        let transient = (token_ids.len() * r + held) * std::mem::size_of::<f32>() + attn + shadow;
-        self.reserve_kv(gpu, state, state.pos + token_ids.len(), transient, experts)?;
+        let transient = self.prefill_bytes(token_ids.len(), total, chunk);
+        let reserve = more.unwrap_or(total).max(total);
+        self.reserve_kv(gpu, state, reserve, transient, experts)?;
         let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
         let mut xs = Vec::with_capacity(chunks.len());
         for c in &chunks {
@@ -573,6 +644,9 @@ impl<B: Backend> QwenModel<B> {
         state.pos += token_ids.len();
         state.rewindable = None;
         let last = xs.last().expect("at least one chunk");
+        if more.is_some() {
+            return Ok(Some(None));
+        }
         let t = chunks.last().map_or(0, |c| c.len());
         self.keep_hidden(gpu, state, last, t - 1, 1)?;
         let logits = self.head(gpu, &mut state.ws.borrow_mut(), last, t, &mut NoProbe, true)?;
@@ -581,7 +655,7 @@ impl<B: Backend> QwenModel<B> {
         drop(xs);
         state.ws.borrow_mut().release(PREFILL_ONLY_BUFFERS);
         self.reclaim_vram(gpu, state, experts)?;
-        Ok(Some(logits))
+        Ok(Some(Some(logits)))
     }
 
     /// Drops the last `n` tokens of the last step, which must have run with

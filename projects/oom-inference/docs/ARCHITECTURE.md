@@ -123,7 +123,12 @@ trades are how engines drift from the model they claim to run.
   staged while this layer's experts compute (stage-ahead), borrowing the main
   tier's coldest slots while the stage holds the computing layer. Prompts of one
   chunk skip this: with little compute per layer to hide copies behind, the less
-  precise prediction costs more than it saves. Between prefills the stage is a
+  precise prediction costs more than it saves. Prompts longer than 128k tokens,
+  or whose residuals (about 40 KB per token, held across layers) do not fit
+  beside the prompt's cache and the expert tier's floor, run in the fewest equal
+  windows that fit, each window through every layer. Each extra window sweeps
+  every layer's experts through VRAM again (about 4.5 s on a 4090).
+  Between prefills the stage is a
   decode victim cache: an evicted record is copied there device to device, so a
   later miss on it is a promotion. When a prefill ends, its prefill-only buffers
   (residuals, KV shadows, fetch-group buffers) are freed and the memory is

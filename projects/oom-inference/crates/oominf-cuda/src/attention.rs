@@ -137,12 +137,14 @@ impl Attention for Gpu {
         kv_stride: usize,
     ) -> Result<()> {
         let flags = kv_stride / ratio + 1;
+        // Keep flags as bits; the kernel's static shared memory takes about 1.2 KB.
+        let flag_bytes = flags.div_ceil(32) * 4;
         self.check(
             scores.len() >= t * flags && mask.len() >= t * kv_stride && start + t <= kv_stride,
             "qsa_mask sizes",
         )?;
         self.check(
-            flags <= 48 * 1024,
+            flag_bytes <= 46 * 1024,
             "qsa_mask: context too long for shared flags",
         )?;
         let f = self.func("qsa_mask")?;
@@ -150,7 +152,7 @@ impl Attention for Gpu {
         let cfg = LaunchConfig {
             grid_dim: (t as u32, 1, 1),
             block_dim: (1024, 1, 1),
-            shared_mem_bytes: flags as u32,
+            shared_mem_bytes: flag_bytes as u32,
         };
         unsafe {
             self.stream

@@ -81,6 +81,11 @@ pub trait ExpertSource<B> {
         Ok(0)
     }
 
+    /// How much device memory [`Self::release_vram`] could free now.
+    fn releasable_vram(&self) -> usize {
+        0
+    }
+
     /// Takes device memory back after it was released: grows the cache by up to
     /// `bytes` (never beyond its configured size) and returns how many bytes it took.
     fn reclaim_vram(&mut self, _b: &B, _bytes: usize) -> Result<usize> {
