@@ -204,6 +204,14 @@ class ArchiveTests(unittest.TestCase):
                 )
         publish.validate_html(HTML.replace(b"<head>", b"<head> \t\n\f\r"))
 
+    def test_csp_rejects_non_browser_whitespace_in_directives(self):
+        for char in ["\u00a0", "\u2000", "\v"]:
+            weakened = char + publish.CSP.replace("; ", "; " + char)
+            with self.subTest(char=char), self.assertRaises(publish.Unsafe):
+                publish.validate_html(
+                    HTML.replace(publish.CSP.encode(), weakened.encode())
+                )
+
 
 class ProvenanceTests(unittest.TestCase):
     def test_exact_successful_pr_head_and_rerun(self):
@@ -293,6 +301,14 @@ class AggregateTests(unittest.TestCase):
             10,
         )
         publish.finish_site(self.state, self.files)
+
+    def test_generated_indexes_have_the_same_early_csp(self):
+        for path in [
+            "site/index.html",
+            "site/pr/42/index.html",
+            "site/pr/43/index.html",
+        ]:
+            publish.validate_html(self.files[path])
 
     def test_add_second_pr_preserves_first(self):
         self.assertEqual(self.files[f"site/pr/42/{A}/asset.js"], b"42")

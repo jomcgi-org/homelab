@@ -122,6 +122,7 @@ def check(root, output):
                         exact=True,
                     ).first.wait_for()
                     assert slider.input_value() == "3000"
+                    assert page.locator(".graph-node").count() == 2
                     assert page.get_by_role(
                         "button", name="Replay", exact=True
                     ).is_visible()
