@@ -129,6 +129,20 @@ impl<B: Backend> Session for QwenSession<B> {
         self.state.pos
     }
 
+    fn plan_checkpoints(&mut self, positions: &[usize]) {
+        self.state.plan = positions.to_vec();
+    }
+
+    fn checkpoints(&self) -> Vec<usize> {
+        self.state.checkpoints.iter().map(|c| c.pos).collect()
+    }
+
+    fn rewind_to(&mut self, pos: usize) -> Result<()> {
+        self.inner
+            .model
+            .rewind_to(&*self.inner.b, &mut self.state, pos)
+    }
+
     fn save(&self, w: &mut dyn std::io::Write) -> Result<()> {
         crate::snapshot::save(&self.inner.model, &*self.inner.b, &self.state, w)
     }

@@ -198,12 +198,29 @@ bounded by a byte budget (least recently used first) and a time to live; host
 memory caching comes from the page cache. Saving copies the state to the host on
 the engine thread and writes the file on a writer thread.
 
-**Why.** Agents come back to long contexts minutes or hours later. Restoring a
-32k-token conversation took 0.9 s (5 s after a server restart, with cold expert
-tiers) against 28 s of prefill. The GDN layers' recurrent state cannot rewind,
-so an entry resumes only prompts that extend all of its tokens; reusing a shared
-prefix with a different continuation needs a snapshot taken at the prefix
-boundary (#6840).
+**Prefix checkpoints.** The GDN layers' recurrent state cannot rewind, so a
+sequence alone can only serve prompts that extend all of its tokens. To serve the
+same documents with a different question, a prefill keeps checkpoints: the
+server plans positions at the starts of the first and last user messages (found
+by rendering the template with a marker in that message and matching the token
+prefix) and at powers of two from 8k tokens. Layer-major prefill ends a chunk at
+each one and copies every GDN and PLE layer's recurrent state on the device as
+the layer passes it (about 0.11 GB per checkpoint, counted in the prefill's
+memory), then brings the copies to host memory when the prefill ends
+(`crates/oominf-models-qwen/src/checkpoint.rs`). A prompt that shares only a
+prefix with the live sequence or a stored entry resumes at the longest
+checkpoint inside that prefix (`Session::rewind_to`: attention caches are
+truncated, recurrent state restored) and prefills only the rest; entries save
+their checkpoints with them. Rewinding is exact: a rewound sequence fed a new
+continuation matches, bit for bit, one that prefilled just the prefix and then
+the continuation (`tests/checkpoint.rs`).
+
+**Why.** Agents come back to long contexts minutes or hours later, and the same
+documents get several questions. Restoring a 32k-token conversation took 0.9 s
+(5 s after a server restart, with cold expert tiers) against 28 s of prefill. A
+new question on the same 32k-token documents (max-perf config): first token
+after 0.64 s from the live sequence's checkpoint and 0.95 s from a stored entry,
+against 13.1 s of prefill (#6859).
 
 ## Speculative decoding
 

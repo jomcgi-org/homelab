@@ -16,6 +16,9 @@ pub type ModelLoader = Box<dyn FnOnce() -> Result<Box<dyn Model>> + Send>;
 
 pub struct Job {
     pub prompt: Vec<u32>,
+    /// Prompt positions worth a prefix checkpoint (e.g. where the last user message
+    /// starts), so a later prompt sharing that prefix resumes there.
+    pub reuse_at: Vec<usize>,
     pub sampling: SamplingParams,
     pub max_tokens: usize,
     /// Token ids that end generation (not emitted).
@@ -64,6 +67,62 @@ pub trait PrefixCache<S> {
     }
 }
 
+/// What a cached sequence offers a prompt that shares only part of its tokens.
+pub trait Resume {
+    /// Positions [`Resume::rewind_to`] can return to, ascending.
+    fn checkpoints(&self) -> Vec<usize>;
+    fn rewind_to(&mut self, pos: usize) -> Result<()>;
+}
+
+impl Resume for () {
+    fn checkpoints(&self) -> Vec<usize> {
+        Vec::new()
+    }
+    fn rewind_to(&mut self, _: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Resume for Box<dyn Session> {
+    fn checkpoints(&self) -> Vec<usize> {
+        Session::checkpoints(&**self)
+    }
+    fn rewind_to(&mut self, pos: usize) -> Result<()> {
+        Session::rewind_to(&mut **self, pos)
+    }
+}
+
+/// How many tokens of `prompt` a sequence of `ids` (with or without the logits
+/// after them, with prefix `checkpoints`) can serve: all of `ids` when the prompt
+/// extends them, else the longest checkpoint inside the shared prefix that leaves
+/// at least one prompt token to feed. `None` when nothing is reusable.
+pub fn reusable(
+    ids: &[u32],
+    has_logits: bool,
+    checkpoints: &[usize],
+    prompt: &[u32],
+) -> Option<usize> {
+    if !ids.is_empty() && prompt.starts_with(ids) && (prompt.len() > ids.len() || has_logits) {
+        return Some(ids.len());
+    }
+    let shared = ids.iter().zip(prompt).take_while(|(a, b)| a == b).count();
+    checkpoints
+        .iter()
+        .copied()
+        .filter(|&p| p > 0 && p <= shared && p < prompt.len())
+        .max()
+}
+
+/// Returns `seq` to the first `pos` of its tokens (`pos` from [`reusable`]).
+pub fn resume_at<S: Resume>(mut seq: CachedSeq<S>, pos: usize) -> Result<CachedSeq<S>> {
+    if pos < seq.ids.len() {
+        seq.state.rewind_to(pos)?;
+        seq.ids.truncate(pos);
+        seq.logits.clear();
+    }
+    Ok(seq)
+}
+
 pub struct CachedSeq<S> {
     pub ids: Vec<u32>,
     pub state: S,
@@ -87,15 +146,22 @@ impl<S> LastSequence<S> {
     }
 }
 
-impl<S> PrefixCache<S> for LastSequence<S> {
+impl<S: Resume> PrefixCache<S> for LastSequence<S> {
     fn take(&mut self, prompt: &[u32], _: &mut dyn FnMut() -> Result<S>) -> Option<CachedSeq<S>> {
-        // An identical prompt needs the cached logits; a longer one only the state.
-        let ok = self.0.as_ref().is_some_and(|c| {
-            !c.ids.is_empty()
-                && prompt.starts_with(&c.ids)
-                && (prompt.len() > c.ids.len() || !c.logits.is_empty())
-        });
-        if ok { self.0.take() } else { None }
+        // An identical prompt needs the cached logits; a longer one only the state;
+        // one that shares only a prefix, a checkpoint inside it.
+        let pos = self
+            .0
+            .as_ref()
+            .and_then(|c| reusable(&c.ids, !c.logits.is_empty(), &c.state.checkpoints(), prompt))?;
+        let seq = self.0.take()?;
+        match resume_at(seq, pos) {
+            Ok(seq) => Some(seq),
+            Err(e) => {
+                eprintln!("oominf: cannot rewind the cached sequence: {e:#}");
+                None
+            }
+        }
     }
 
     fn put(&mut self, seq: CachedSeq<S>) {
@@ -157,6 +223,24 @@ pub fn start(
 }
 
 type Seq = Box<dyn Session>;
+
+/// Prompts shorter than this are not worth a checkpoint (they prefill in moments).
+const MIN_CHECKPOINT: usize = 1024;
+
+/// Prefix checkpoints for a prefill of prompt positions `from..to`: the request's
+/// reuse points (message starts) and powers of two from 8k tokens (documents and
+/// question in one message), each costing about 0.1 GB of host memory.
+fn checkpoint_plan(reuse_at: &[usize], from: usize, to: usize) -> Vec<usize> {
+    let mut plan: Vec<usize> = reuse_at
+        .iter()
+        .copied()
+        .chain((13..20).map(|k| 1usize << k))
+        .filter(|&p| p > from && p < to && p >= MIN_CHECKPOINT)
+        .collect();
+    plan.sort_unstable();
+    plan.dedup();
+    plan
+}
 
 /// Caches `seq`; the session must hold exactly its tokens.
 fn keep(cache: &mut dyn PrefixCache<Seq>, seq: CachedSeq<Seq>) {
@@ -265,6 +349,7 @@ impl Engine {
         }
 
         let fresh = &job.prompt[cached..];
+        state.plan_checkpoints(&checkpoint_plan(&job.reuse_at, cached, job.prompt.len()));
         let mut logits = if fresh.is_empty() {
             cached_logits.context("cached sequence has no logits")?
         } else {
@@ -380,6 +465,62 @@ mod tests {
     }
 
     #[test]
+    fn reusable_prefers_extension_then_longest_checkpoint_in_the_shared_prefix() {
+        let ids = [1, 2, 3, 4, 5, 6];
+        // An extension reuses everything; an identical prompt only with logits.
+        assert_eq!(
+            reusable(&ids, false, &[2, 4], &[1, 2, 3, 4, 5, 6, 7]),
+            Some(6)
+        );
+        assert_eq!(reusable(&ids, true, &[], &ids), Some(6));
+        // Diverging after 5 tokens: the longest checkpoint at or before 5.
+        assert_eq!(reusable(&ids, false, &[2, 4], &[1, 2, 3, 4, 5, 9]), Some(4));
+        assert_eq!(reusable(&ids, false, &[2, 4], &[1, 2, 3, 8]), Some(2));
+        // A checkpoint must leave a token to feed, and nothing shared is nothing.
+        assert_eq!(reusable(&ids, false, &[2, 4], &[1, 2]), None);
+        assert_eq!(reusable(&ids, false, &[2, 4], &[9, 2, 3]), None);
+    }
+
+    /// A sequence with checkpoints that records where it was rewound to.
+    struct Ckpts(Vec<usize>, Option<usize>);
+
+    impl Resume for Ckpts {
+        fn checkpoints(&self) -> Vec<usize> {
+            self.0.clone()
+        }
+        fn rewind_to(&mut self, pos: usize) -> Result<()> {
+            self.1 = Some(pos);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn last_sequence_rewinds_to_a_checkpoint_for_a_diverging_prompt() {
+        let mut c = LastSequence::default();
+        c.put(CachedSeq {
+            ids: vec![1, 2, 3, 4, 5, 6],
+            state: Ckpts(vec![2, 4], None),
+            logits: vec![0.5],
+        });
+        let s = c
+            .take(&[1, 2, 3, 4, 7, 8], &mut || anyhow::bail!("no sessions"))
+            .unwrap();
+        assert_eq!(s.ids, vec![1, 2, 3, 4]);
+        assert_eq!(s.state.1, Some(4));
+        assert!(s.logits.is_empty(), "logits after a rewind are unknown");
+    }
+
+    #[test]
+    fn checkpoint_plan_keeps_reuse_points_and_powers_of_two_inside_the_prefill() {
+        assert_eq!(
+            checkpoint_plan(&[500, 3000, 9000], 0, 20_000),
+            vec![3000, 8192, 9000, 16_384]
+        );
+        // Positions already cached or at the end are not planned.
+        assert_eq!(checkpoint_plan(&[3000], 3000, 8192), Vec::<usize>::new());
+    }
+
+    #[test]
     fn identical_prompt_needs_cached_logits() {
         let mut c = LastSequence::default();
         c.put(seq(&[1, 2], &[]));
@@ -469,6 +610,7 @@ mod tests {
         handle
             .submit(Job {
                 prompt: prompt.to_vec(),
+                reuse_at: Vec::new(),
                 sampling: SamplingParams {
                     temperature: 0.0,
                     ..Default::default()

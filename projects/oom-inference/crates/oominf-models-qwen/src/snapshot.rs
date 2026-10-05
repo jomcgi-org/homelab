@@ -5,9 +5,11 @@
 //! layer its conv and recurrent state; per attention layer the cached keys and
 //! values (in the cache's [`oominf_core::KvFormat`]), raw indexer keys and pooled
 //! block keys; per PLE layer its conv state and last n-gram tokens; the draft
-//! head's input row. Rewind checkpoints are not kept (a restored sequence cannot
-//! rewind its last step), nor is the draft head's attention, which every draft
-//! restarts.
+//! head's input row; and the sequence's prefix checkpoints (each layer's recurrent
+//! state at earlier positions, [`crate::checkpoint`]), so a restored sequence can
+//! also serve a prompt sharing only one of those prefixes. Step rewind state is not
+//! kept (a restored sequence cannot rewind its last step), nor is the draft head's
+//! attention, which restarts at the restored position.
 //!
 //! Layout: `u32` header length, a JSON header (sizes and scalars), then the
 //! buffers in header order, little-endian.
@@ -20,7 +22,7 @@ use serde_json::{Value, json};
 
 use crate::{QwenModel, SeqState};
 
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 
 /// Writes `state` to `w`.
 pub fn save<B: Backend>(
@@ -71,6 +73,21 @@ pub fn save<B: Backend>(
         }
         layers.push(Value::Object(entry));
     }
+    let mut checkpoints = Vec::new();
+    for c in &state.checkpoints {
+        let mut ple_tokens = Vec::new();
+        for l in &c.layers {
+            if let Some((conv, rec)) = &l.gdn {
+                blobs.push(f32s(conv.clone()));
+                blobs.push(f32s(rec.clone()));
+            }
+            if let Some((conv, tokens)) = &l.ple {
+                blobs.push(f32s(conv.clone()));
+                ple_tokens.push(tokens.clone());
+            }
+        }
+        checkpoints.push(json!({"pos": c.pos, "ple_tokens": ple_tokens}));
+    }
     let hidden = match &state.hidden {
         Some(h) => {
             let mut row = gpu.uninit(r)?;
@@ -85,6 +102,7 @@ pub fn save<B: Backend>(
         "pos": state.pos,
         "hidden": hidden,
         "layers": layers,
+        "checkpoints": checkpoints,
         "blobs": blobs.iter().map(Vec::len).collect::<Vec<_>>(),
     });
     let h = serde_json::to_vec(&header)?;
@@ -189,6 +207,44 @@ pub fn load<B: Backend>(
             gpu.upload_into(&to_f32(next(Some(p.conv.len() * 4))?), &mut p.conv)?;
             p.tokens = serde_json::from_value(meta["tokens"].clone())?;
         }
+    }
+    // Checkpoints: per layer, as the live layers' state sizes.
+    state.checkpoints.clear();
+    for c in header["checkpoints"]
+        .as_array()
+        .context("snapshot checkpoints")?
+    {
+        let cpos = c["pos"].as_u64().context("checkpoint pos")? as usize;
+        ensure!(cpos < pos, "checkpoint {cpos} beyond the sequence ({pos})");
+        let mut ple_tokens = c["ple_tokens"]
+            .as_array()
+            .context("checkpoint PLE tokens")?
+            .iter()
+            .map(|t| serde_json::from_value::<Vec<u32>>(t.clone()))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter();
+        let mut snaps = Vec::with_capacity(state.layers.len());
+        for st in &state.layers {
+            let gdn = match &st.gdn {
+                Some(g) => Some((
+                    to_f32(next(Some(g.conv.len() * 4))?),
+                    to_f32(next(Some(g.recurrent.len() * 4))?),
+                )),
+                None => None,
+            };
+            let ple = match &st.ple {
+                Some(p) => Some((
+                    to_f32(next(Some(p.conv.len() * 4))?),
+                    ple_tokens.next().context("checkpoint PLE tokens")?,
+                )),
+                None => None,
+            };
+            snaps.push(crate::checkpoint::LayerSnap { gdn, ple });
+        }
+        state.checkpoints.push(crate::checkpoint::Checkpoint {
+            pos: cpos,
+            layers: snaps,
+        });
     }
     if header["hidden"] == true {
         let row = to_f32(next(Some(model.dims.residual() * 4))?);

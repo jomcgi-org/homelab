@@ -15,6 +15,7 @@ below.
 | Decode GEMV | `gemm_bf16` (up to 4 rows) and FP8 `gemm_fp8` (GEMV and the dequantize-then-cuBLAS path) match f64 references; throughput on the model's dense shapes past L2 | `cargo test --release -p oominf-cuda --test gemv -- --ignored --nocapture` |
 | KV cache formats and attention | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32; prefill-sized attention under sparse masks matches an f64 reference; a cache in host memory gives bit-identical attention | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
 | Sequence snapshots | a saved and restored sequence continues with bit-identical logits and drafts | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test snapshot -- --ignored` |
+| Prefix checkpoints | a sequence rewound to a prefill checkpoint and fed a new continuation matches prefix-then-continuation bit for bit, also after save and load | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test checkpoint -- --ignored` |
 | GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
 
 ## Reference fixtures
