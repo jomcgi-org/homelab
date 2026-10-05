@@ -1501,6 +1501,12 @@ architecture, identity limitations, and catalogue refresh behavior are documente
 
 ### Current authentication trust boundary
 
+The next platform enrollment and access boundary is recorded in
+[auth/architecture.md](auth/architecture.md). Joe's 2026-10-05 direction requires
+a platform invitation before account creation, Authentik-backed identity,
+separate application permissions and shared HTTP/MCP management commands. That
+module is not implemented or enabled; the current mechanisms below remain live.
+
 **Status: Accepted for the current source boundary.** This record describes
 mechanisms present at the current task head. The future delegation design in
 #4940 remains gated. The deployment values declare both standing issuers and
@@ -1779,6 +1785,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
 | The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
 | Proposed graph envelopes are preflighted inside the planner turn | section 4, planner preview | #6650 | implemented in repository behind `swarm.factoryPlannerPreviewEnabled=false`, with no production planner binding or serving route; binding provisioning, enablement and the 72-hour rejected-run/cost comparison remain live checks |
