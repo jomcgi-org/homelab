@@ -101,6 +101,10 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
         Ok(freed)
     }
 
+    fn releasable_vram(&self) -> usize {
+        self.sources.iter().map(|s| s.releasable_vram()).sum()
+    }
+
     fn reclaim_vram(&mut self, b: &B, bytes: usize) -> Result<usize> {
         let mut taken = 0;
         for s in &mut self.sources {

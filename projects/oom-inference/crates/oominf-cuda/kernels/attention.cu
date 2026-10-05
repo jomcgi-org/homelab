@@ -247,8 +247,8 @@ __device__ __forceinline__ unsigned qsa_key(float f) {
 // (equal scores go to the lower block index) and the incomplete tail; every block when
 // nb <= topk. mask: [T, kv_stride] bytes, 1 where key position j (j <= p) is kept.
 // The k-th largest score is found by an 8-bit radix select over its float key, so a
-// query costs O(nb) rather than O(nb^2). Dynamic shared memory: kv_stride/ratio + 1
-// bytes for the per-block keep flags. blockDim.x == QSA_MASK_THREADS: lanes that hit the
+// query costs O(nb) rather than O(nb^2). Dynamic shared memory: the per-block keep
+// flags as bits, (kv_stride/ratio + 1) / 32 words rounded up. blockDim.x == QSA_MASK_THREADS: lanes that hit the
 // same histogram bin add once per warp (most keys share their top digits), and the
 // first `k` equal keys are found with a block-wide prefix count instead of a serial
 // walk, so a decode step's few queries do not idle the GPU.
@@ -281,7 +281,7 @@ __device__ unsigned qsa_block_scan(unsigned v, unsigned* scratch) {
 extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
 qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int topk,
          int kv_stride) {
-    extern __shared__ uint8_t keep[];
+    extern __shared__ unsigned keep[];
     __shared__ unsigned hist[256];
     __shared__ unsigned scan[32];
     __shared__ unsigned s_prefix, s_k;
@@ -289,6 +289,8 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
     int p = start + t;
     int nb = (p + 1) / ratio;
     const float* sc = scores + (size_t)t * (kv_stride / ratio + 1);
+    for (int w = threadIdx.x; w < (nb + 31) / 32; w += blockDim.x) keep[w] = 0;
+    __syncthreads();
     if (nb > topk) {
         unsigned prefix = 0, pmask = 0, k = topk;
         for (int shift = 24; shift >= 0; shift -= 8) {
@@ -339,16 +341,16 @@ qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int to
             unsigned key = qsa_key(sc[b]);
             bool kept = key > prefix;
             if (key == prefix) kept = taken++ < k;
-            keep[b] = kept;
+            if (kept) atomicOr(&keep[b >> 5], 1u << (b & 31));
         }
     } else {
-        for (int b = threadIdx.x; b < nb; b += blockDim.x) keep[b] = 1;
+        for (int b = threadIdx.x; b < nb; b += blockDim.x) atomicOr(&keep[b >> 5], 1u << (b & 31));
     }
     __syncthreads();
     uint8_t* m = mask + (size_t)t * kv_stride;
     for (int j = threadIdx.x; j < kv_stride; j += blockDim.x) {
         int b = j / ratio;
-        m[j] = j <= p && (b >= nb || keep[b]);
+        m[j] = j <= p && (b >= nb || (keep[b >> 5] >> (b & 31)) & 1u);
     }
 }
 
