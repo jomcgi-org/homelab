@@ -1647,7 +1647,7 @@ py_library(
             "agent/**/*.py",
             "agent_sessions/**/*.py",
             "app/**/*.py",
-                "core/**/*.py",
+            "core/**/*.py",
             "factory/**/*.py",
             "framework/**/*.py",
             "artifact/**/*.py",
@@ -2051,7 +2051,7 @@ py_library(
     srcs = glob(
         [
             "app/**/*.py",
-                "core/**/*.py",
+            "core/**/*.py",
             "framework/**/*.py",
             "knowledge/**/*.py",
             "shared/**/*.py",
@@ -2111,7 +2111,7 @@ py_venv_binary(
     srcs = glob(
         [
             "app/**/*.py",
-                "core/**/*.py",
+            "core/**/*.py",
             "framework/**/*.py",
             "knowledge/**/*.py",
             "shared/**/*.py",
@@ -2390,13 +2390,13 @@ _IMPORT_BOUNDARY_DOMAINS = [
 ]
 
 _IMPORT_BOUNDARY_SRCS = glob(
-    [domain + "/**/*.py" for domain in _IMPORT_BOUNDARY_DOMAINS],
+    [domain + "/**/*.py" for domain in _IMPORT_BOUNDARY_DOMAINS if domain != "auth"],
     exclude = [
         "**/*_test.py",
         "**/test_*.py",
         "*/tests/**/*.py",
     ],
-)
+) + ["//projects/monolith/auth:boundary_sources"]
 
 # Capture Bazel's exact source selection independently of the test runfiles.
 # The test compares this manifest to what it can actually discover at runtime,

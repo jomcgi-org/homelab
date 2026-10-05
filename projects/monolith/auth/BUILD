@@ -19,6 +19,12 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+filegroup(
+    name = "boundary_sources",
+    srcs = glob(["**/*.py"], exclude = ["**/*_test.py", "**/test_*.py"]),
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Tier-independent identity verification. No platform persistence or routers.
 py_library(
     name = "auth",
