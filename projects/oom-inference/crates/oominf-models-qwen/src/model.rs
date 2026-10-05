@@ -73,7 +73,7 @@ struct Queued<B: Backend> {
 /// Most prompt tokens whose routed experts one prefill fetch loads and runs as one
 /// step: enough assignments per expert for tensor-core tiles, bounded so the
 /// group's activations at the MoE fit beside the expert tiers.
-pub const PREFILL_FETCH_TOKENS: usize = 2048;
+pub const PREFILL_FETCH_TOKENS: usize = 4096;
 
 pub struct QwenModel<B: Backend> {
     pub dims: Dims,
@@ -712,7 +712,20 @@ impl<B: Backend> QwenModel<B> {
             xs.push(x);
         }
         let per_fetch = (PREFILL_FETCH_TOKENS / chunk).max(1);
-        let groups = chunks.len().div_ceil(per_fetch);
+        // Fetch groups of up to `per_fetch` chunks, each ending at a checkpoint too:
+        // the state there then depends only on the tokens before it (the MoE of a
+        // group runs as one step), so resuming from it matches prefilling that
+        // prefix alone, bit for bit.
+        let mut bounds = vec![0usize];
+        let mut end = 0;
+        for (ci, c) in chunks.iter().enumerate() {
+            end += c.len();
+            let full = ci + 1 - bounds[bounds.len() - 1] == per_fetch;
+            if full || cuts.contains(&end) || ci + 1 == chunks.len() {
+                bounds.push(ci + 1);
+            }
+        }
+        let groups = bounds.len() - 1;
         let stage = experts.stages_ahead();
         // Routing picks download into pinned memory: two buffers, so one group's can
         // be read while the next group's download is queued.
@@ -732,7 +745,7 @@ impl<B: Backend> QwenModel<B> {
             let mut pos = state.pos;
             layer.begin_prefill(gpu, &mut state.layers[li], total)?;
             for gi in 0..groups {
-                let (lo, hi) = (gi * per_fetch, ((gi + 1) * per_fetch).min(chunks.len()));
+                let (lo, hi) = (bounds[gi], bounds[gi + 1]);
                 let st = &mut state.layers[li];
                 let mut pres = Vec::with_capacity(hi - lo);
                 for ci in lo..hi {
