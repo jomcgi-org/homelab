@@ -10,7 +10,8 @@ use oominf_format::Model;
 
 use crate::Dims;
 use crate::hc::HyperConn;
-use crate::layer::{DecoderLayer, LayerState, StepInput};
+use crate::layer::{DecoderLayer, LayerState, PreMoe, StepInput};
+use crate::moe::{HostIds, PendingRoute};
 use crate::util::bf16_tensor;
 
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
@@ -40,8 +41,27 @@ const PREFILL_ONLY_BUFFERS: &[&str] = &[
     "moe.g",
     "moe.u",
     "layer.moe_in",
+    "layer.moe_in_b",
     "layer.moe_part",
 ];
+
+/// The two MoE input buffers prefill alternates between: a group's stays in use
+/// until the next group's mixers are queued and its own experts run.
+const MOE_IN: [&str; 2] = ["layer.moe_in", "layer.moe_in_b"];
+
+/// A prefill fetch group whose mixers and routing are queued: chunks `lo..hi` of
+/// layer `li`, group `gi`, routing picks downloading into host buffer `slot`.
+struct Queued<B: Backend> {
+    li: usize,
+    gi: usize,
+    lo: usize,
+    hi: usize,
+    pres: Vec<PreMoe<B>>,
+    lens: Vec<usize>,
+    moe_in: B::F32,
+    route: PendingRoute<B>,
+    slot: usize,
+}
 
 /// Most prompt tokens whose routed experts one prefill fetch loads and runs as one
 /// step: enough assignments per expert for tensor-core tiles, bounded so the
@@ -529,17 +549,68 @@ impl<B: Backend> QwenModel<B> {
             .flatten())
     }
 
+    /// The back half of a prefill fetch group queued by [`Self::prefill_window`]:
+    /// collects its routing, fetches the union of its experts (staging the next
+    /// layer after the layer's first group, from the prediction that came with its
+    /// routing) and runs them, writing the chunks' layer outputs over `xs[lo..hi]`.
+    #[allow(clippy::too_many_arguments)]
+    fn prefill_finish_group(
+        &self,
+        gpu: &B,
+        state: &mut SeqState<B>,
+        xs: &mut [B::F32],
+        q: Queued<B>,
+        hosts: &[HostIds<'_, B>; 2],
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<()> {
+        let d = &self.dims;
+        let layer = &self.layers[q.li];
+        // Staged reads that have landed get their device copies queued while the
+        // device runs the work queued above.
+        experts.finish_stage_ahead(gpu)?;
+        let (routing, predicted) = layer.route_finish(gpu, d, q.route, &hosts[q.slot])?;
+        let mut union: Vec<u32> = routing.experts().collect();
+        union.sort_unstable();
+        union.dedup();
+        let addrs = experts.fetch(gpu, layer.layer, &union)?;
+        // Stage the next layer once, from the layer's first group: a group covers most
+        // of a layer's experts, so its prediction is as good as a later one's, and the
+        // copies then overlap the rest of this layer (the later groups' fetches do not
+        // wait for them). Staging again for every group would block on the previous
+        // group's reads and copies.
+        if q.gi == 0 && !predicted.is_empty() {
+            experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
+        }
+        let mut fetched = Fetched::new(layer.layer, &union, &addrs);
+        let st = &mut state.layers[q.li];
+        let outs = &mut xs[q.lo..q.hi];
+        layer.finish(
+            gpu,
+            d,
+            q.pres,
+            &q.lens,
+            &q.moe_in,
+            routing,
+            st,
+            &mut fetched,
+            outs,
+        )?;
+        state.ws.borrow_mut().give(MOE_IN[q.slot], q.moe_in);
+        Ok(())
+    }
+
     /// Device memory a layer-major prefill of `t` tokens ending at `total` holds
     /// beyond the caches. Residuals of every chunk live across layers (about 40 KB
-    /// per token); one fetch group's activations at the MoE live until it computes,
-    /// and its routed experts run as one step (`top_k` rows of hidden + 3 x inter
-    /// each); attention buffers and one layer's fp32 KV shadow.
+    /// per token); two fetch groups' activations at the MoE live until they compute
+    /// (the pipeline queues one group while the previous runs), and a group's routed
+    /// experts run as one step (`top_k` rows of hidden + 3 x inter each); attention
+    /// buffers and one layer's fp32 KV shadow.
     fn prefill_bytes(&self, t: usize, total: usize, chunk: usize) -> usize {
         let d = &self.dims;
         let r = d.residual();
         let group = t.min(PREFILL_FETCH_TOKENS);
         let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
-        let held = group * (2 * r + d.hidden + moe);
+        let held = group * (2 * (2 * r + d.hidden) + moe);
         let attn = self.step_bytes(chunk.min(t), total);
         let shadow = self
             .layers
@@ -590,55 +661,84 @@ impl<B: Backend> QwenModel<B> {
             xs.push(x);
         }
         let per_fetch = (PREFILL_FETCH_TOKENS / chunk).max(1);
+        let groups = chunks.len().div_ceil(per_fetch);
         let stage = experts.stages_ahead();
-        for (layer, st) in self.layers.iter().zip(state.layers.iter_mut()) {
+        // Routing picks download into pinned memory: two buffers, so one group's can
+        // be read while the next group's download is queued.
+        let picks = 2 * (per_fetch * chunk).min(token_ids.len()) * d.top_k;
+        let mut hosts = [HostIds::new(gpu, picks)?, HostIds::new(gpu, picks)?];
+        // A one-deep pipeline over (layer, group): a group's mixers and routing are
+        // queued before the previous group's routing is collected and its experts
+        // fetched and run, so the device works through the queue while the host
+        // plans. A layer's first group reads the previous layer's output for the same
+        // chunks, so with one group per layer each group finishes before the next.
+        let mut back: Option<Queued<B>> = None;
+        let mut item = 0usize;
+        for (li, layer) in self.layers.iter().enumerate() {
             if cancelled() {
                 return Ok(None);
             }
             let mut pos = state.pos;
-            layer.begin_prefill(gpu, st, total)?;
-            let groups = chunks.len().div_ceil(per_fetch);
-            for (gi, (cs, xs)) in chunks
-                .chunks(per_fetch)
-                .zip(xs.chunks_mut(per_fetch))
-                .enumerate()
-            {
-                let mut pres = Vec::with_capacity(cs.len());
-                for (c, x) in cs.iter().zip(xs.iter()) {
+            layer.begin_prefill(gpu, &mut state.layers[li], total)?;
+            for gi in 0..groups {
+                let (lo, hi) = (gi * per_fetch, ((gi + 1) * per_fetch).min(chunks.len()));
+                let st = &mut state.layers[li];
+                let mut pres = Vec::with_capacity(hi - lo);
+                for ci in lo..hi {
                     let step = StepInput {
-                        token_ids: c,
+                        token_ids: chunks[ci],
                         start_pos: pos,
                         checkpoint: false,
                     };
-                    pres.push(layer.pre_moe(gpu, d, x, c.len(), &step, st, &mut NoProbe)?);
-                    pos += c.len();
+                    let t = chunks[ci].len();
+                    pres.push(layer.pre_moe(gpu, d, &xs[ci], t, &step, st, &mut NoProbe)?);
+                    pos += t;
                 }
-                // Experts staged for this layer finish reading from disk while the
-                // device runs the previous layer's experts and the mixers above.
-                experts.finish_stage_ahead(gpu)?;
-                let lens: Vec<usize> = cs.iter().map(|c| c.len()).collect();
+                let lens: Vec<usize> = chunks[lo..hi].iter().map(|c| c.len()).collect();
                 let t = lens.iter().sum();
-                let moe_in = layer.moe_input(gpu, d, &pres, &lens, st)?;
-                let routing = layer.route(gpu, d, &moe_in, t, st)?;
-                let mut union: Vec<u32> = routing.experts().collect();
-                union.sort_unstable();
-                union.dedup();
-                let addrs = experts.fetch(gpu, layer.layer, &union)?;
-                // Stage the next layer once, from the layer's last group: a group covers
-                // most of a layer's experts, and staging again for every group would
-                // block on the previous group's reads and copies while the device idles.
-                if stage && gi + 1 == groups {
-                    let predicted = layer.predict_next(gpu, d, &moe_in, t, st)?;
-                    if !predicted.is_empty() {
-                        experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
-                    }
+                let slot = item % 2;
+                let moe_in = layer.moe_input(gpu, d, &pres, &lens, st, MOE_IN[slot])?;
+                // The layer's first group also predicts the next layer, to stage it while
+                // the rest of this layer computes.
+                let route = layer.route_start(
+                    gpu,
+                    d,
+                    &moe_in,
+                    t,
+                    st,
+                    stage && gi == 0,
+                    &mut hosts[slot],
+                )?;
+                if gi + 1 == groups {
+                    // The fp32 shadow serves this layer's mixers, all queued now.
+                    layer.end_prefill(st);
                 }
-                let mut fetched = Fetched::new(layer.layer, &union, &addrs);
-                layer.finish(gpu, d, pres, &lens, &moe_in, routing, st, &mut fetched, xs)?;
-                state.ws.borrow_mut().give("layer.moe_in", moe_in);
+                let queued = Queued {
+                    li,
+                    gi,
+                    lo,
+                    hi,
+                    pres,
+                    lens,
+                    moe_in,
+                    route,
+                    slot,
+                };
+                item += 1;
+                let ready = if groups == 1 {
+                    Some(queued)
+                } else {
+                    back.replace(queued)
+                };
+                if let Some(q) = ready {
+                    self.prefill_finish_group(gpu, state, &mut xs, q, &hosts, experts)?;
+                }
             }
-            layer.end_prefill(st);
         }
+        if let Some(q) = back.take() {
+            self.prefill_finish_group(gpu, state, &mut xs, q, &hosts, experts)?;
+        }
+        drop(hosts);
         state.pos += token_ids.len();
         state.rewindable = None;
         let last = xs.last().expect("at least one chunk");

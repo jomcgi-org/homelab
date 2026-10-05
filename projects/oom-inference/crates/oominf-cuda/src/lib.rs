@@ -27,6 +27,7 @@ mod lookup;
 mod memory;
 mod norm;
 mod recurrent;
+mod staging;
 
 pub use memory::{CopyQueue, Event};
 
@@ -76,6 +77,8 @@ pub type Buf = Dev<f32>;
 pub type Bf16Buf = Dev<u16>;
 
 pub struct Gpu {
+    /// Pinned buffers for small uploads; first, so it drops before the context.
+    staging: Mutex<staging::Staging>,
     ctx: Arc<CudaContext>,
     stream: Arc<CudaStream>,
     blas: CudaBlas,
@@ -112,6 +115,7 @@ impl Gpu {
             .map(|(_, ptx)| ctx.load_module(cudarc::nvrtc::Ptx::from_src(*ptx)))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Gpu {
+            staging: Mutex::new(staging::Staging::new(ctx.clone())),
             ctx,
             stream,
             blas,

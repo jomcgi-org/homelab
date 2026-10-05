@@ -847,6 +847,14 @@ pub trait Transfer: Memory {
         src: *const u8,
         len: usize,
     ) -> Result<()>;
+    /// Enqueues, after the compute issued so far, a copy of the first `n` elements
+    /// of `src` into pinned host memory at `dst`; [`Transfer::record_compute`] then
+    /// [`Transfer::event_wait`] tell when it has landed.
+    ///
+    /// # Safety
+    /// `dst` must be pinned with [`Transfer::pin_host`], hold `n` elements and stay
+    /// unread and valid until the copy completes.
+    unsafe fn download_async(&self, src: &Self::I32, dst: *mut i32, n: usize) -> Result<()>;
     /// Enqueues a device-to-device copy of `len` bytes.
     ///
     /// # Safety

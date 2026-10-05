@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, ensure};
-use cudarc::driver::{CudaEvent, CudaStream, DevicePtr, sys};
+use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, DevicePtr, DevicePtrMut, DeviceRepr, sys};
 use oominf_core::{Memory, Transfer};
 
 use crate::{Bf16Buf, Buf, Dev, Gpu};
@@ -14,6 +14,52 @@ pub struct CopyQueue(Arc<CudaStream>);
 pub struct Event(CudaEvent);
 
 const NO_TIMING: Option<sys::CUevent_flags> = Some(sys::CUevent_flags::CU_EVENT_DISABLE_TIMING);
+
+impl Gpu {
+    /// Queues a copy of `host` into `dst[offset..]` on the compute stream: small
+    /// copies through the pinned staging ring (the host does not wait for the
+    /// stream), large ones from pageable memory.
+    fn htod_at<T: DeviceRepr>(
+        &self,
+        host: &[T],
+        dst: &mut CudaSlice<T>,
+        offset: usize,
+    ) -> Result<()> {
+        ensure!(
+            offset + host.len() <= dst.len(),
+            "upload of {} at {offset} into {}",
+            host.len(),
+            dst.len()
+        );
+        if host.is_empty() {
+            return Ok(());
+        }
+        let bytes = std::mem::size_of_val(host);
+        let mut view = dst.slice_mut(offset..offset + host.len());
+        if bytes > crate::staging::STAGING_MAX {
+            return Ok(self.stream.memcpy_htod(host, &mut view)?);
+        }
+        let (ptr, _guard) = view.device_ptr_mut(&self.stream);
+        // SAFETY: `host` is plain data of `bytes` bytes; `ptr` is the view's device
+        // memory, written in stream order.
+        unsafe {
+            let src = std::slice::from_raw_parts(host.as_ptr().cast::<u8>(), bytes);
+            self.staging
+                .lock()
+                .unwrap()
+                .upload(&self.stream, ptr, src)?;
+        }
+        Ok(())
+    }
+
+    /// A new device buffer holding `host` (see [`Gpu::htod_at`]).
+    fn htod_new<T: DeviceRepr>(&self, host: &[T]) -> Result<CudaSlice<T>> {
+        // SAFETY: every element is written by the upload before anything reads it.
+        let mut dst = unsafe { self.stream.alloc::<T>(host.len().max(1))? };
+        self.htod_at(host, &mut dst, 0)?;
+        Ok(dst)
+    }
+}
 
 impl Memory for Gpu {
     type F32 = Buf;
@@ -37,12 +83,12 @@ impl Memory for Gpu {
     }
 
     fn upload_f32(&self, host: &[f32]) -> Result<Buf> {
-        Ok(Dev(self.stream.clone_htod(host)?))
+        Ok(Dev(self.htod_new(host)?))
     }
 
     fn upload_into(&self, host: &[f32], dst: &mut Buf) -> Result<()> {
         ensure!(host.len() == dst.0.len(), "upload_into length");
-        Ok(self.stream.memcpy_htod(host, &mut dst.0)?)
+        self.htod_at(host, &mut dst.0, 0)
     }
 
     fn write_f32_at(&self, host: &[f32], dst: &mut Buf, offset: usize) -> Result<()> {
@@ -52,9 +98,7 @@ impl Memory for Gpu {
             host.len(),
             dst.0.len()
         );
-        Ok(self
-            .stream
-            .memcpy_htod(host, &mut dst.0.slice_mut(offset..offset + host.len()))?)
+        self.htod_at(host, &mut dst.0, offset)
     }
 
     fn download_f32(&self, buf: &Buf) -> Result<Vec<f32>> {
@@ -62,7 +106,7 @@ impl Memory for Gpu {
     }
 
     fn upload_bf16(&self, host: &[u16]) -> Result<Bf16Buf> {
-        Ok(Dev(self.stream.clone_htod(host)?))
+        Ok(Dev(self.htod_new(host)?))
     }
 
     fn uninit_bf16(&self, n: usize) -> Result<Bf16Buf> {
@@ -71,7 +115,7 @@ impl Memory for Gpu {
     }
 
     fn upload_bytes(&self, host: &[u8]) -> Result<Dev<u8>> {
-        Ok(Dev(self.stream.clone_htod(host)?))
+        Ok(Dev(self.htod_new(host)?))
     }
 
     fn uninit_bytes(&self, n: usize) -> Result<Dev<u8>> {
@@ -109,7 +153,7 @@ impl Memory for Gpu {
     }
 
     fn upload_i32(&self, host: &[i32]) -> Result<Dev<i32>> {
-        Ok(Dev(self.stream.clone_htod(host)?))
+        Ok(Dev(self.htod_new(host)?))
     }
 
     fn download_i32(&self, buf: &Dev<i32>) -> Result<Vec<i32>> {
@@ -122,9 +166,7 @@ impl Memory for Gpu {
                 .stream
                 .alloc_zeros::<i32>(host.len().next_power_of_two())?;
         }
-        Ok(self
-            .stream
-            .memcpy_htod(host, &mut dst.0.slice_mut(0..host.len()))?)
+        self.htod_at(host, &mut dst.0, 0)
     }
 
     fn zeros_u64(&self, n: usize) -> Result<Dev<u64>> {
@@ -137,9 +179,7 @@ impl Memory for Gpu {
                 .stream
                 .alloc_zeros::<u64>(host.len().next_power_of_two())?;
         }
-        Ok(self
-            .stream
-            .memcpy_htod(host, &mut dst.0.slice_mut(0..host.len()))?)
+        self.htod_at(host, &mut dst.0, 0)
     }
 
     fn bytes_addr(&self, buf: &Dev<u8>) -> u64 {
@@ -209,6 +249,23 @@ impl Transfer for Gpu {
         unsafe {
             let src = std::slice::from_raw_parts(src, len);
             cudarc::driver::result::memcpy_htod_async(dst, src, queue.0.cu_stream())?;
+        }
+        Ok(())
+    }
+
+    unsafe fn download_async(&self, src: &Dev<i32>, dst: *mut i32, n: usize) -> Result<()> {
+        ensure!(
+            n <= src.0.len(),
+            "download_async: {n} elements of {}",
+            src.0.len()
+        );
+        // SAFETY: the caller keeps `dst` pinned, sized and unread until the copy
+        // completes; the source is valid device memory on this stream.
+        unsafe {
+            let dst = std::slice::from_raw_parts_mut(dst, n);
+            let view = src.0.slice(0..n);
+            let (ptr, _guard) = view.device_ptr(&self.stream);
+            cudarc::driver::result::memcpy_dtoh_async(dst, ptr, self.stream.cu_stream())?;
         }
         Ok(())
     }

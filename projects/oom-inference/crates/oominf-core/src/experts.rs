@@ -62,9 +62,10 @@ pub trait ExpertSource<B> {
         Ok(())
     }
 
-    /// Waits for the disk reads [`ExpertSource::stage_ahead`] started and queues
-    /// their device copies. Call it while the device is busy; the next fetch does it
-    /// otherwise.
+    /// Queues the device copies of the disk reads [`ExpertSource::stage_ahead`]
+    /// started that have completed, without waiting for the rest. Call it often
+    /// while the device is busy, so copies overlap compute; the staged layer's
+    /// fetch waits for whatever is left.
     fn finish_stage_ahead(&mut self, _b: &B) -> Result<()> {
         Ok(())
     }

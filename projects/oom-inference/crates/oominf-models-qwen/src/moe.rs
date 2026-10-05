@@ -328,50 +328,88 @@ impl<B: Backend> Moe<B> {
         Ok(out)
     }
 
-    /// Routes `t` tokens of `x` (`[t, hidden]`) with this layer's router alone:
-    /// the experts each token picks (`[t, k]`, on the host) and their weights.
-    pub fn route(
+    /// Queues routing for `t` tokens of `x` (`[t, hidden]`): this layer's router
+    /// (with `with_next` and a next layer, the stacked routers, so the next layer's
+    /// prediction comes in the same download), top-k, and an asynchronous download
+    /// of the picks into `host`. [`Moe::route_finish`] collects it, so the host can
+    /// queue more work before waiting.
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_start(
         &self,
         gpu: &B,
         d: &Dims,
         x: &B::F32,
         t: usize,
         scratch: &mut B::Bf16,
-    ) -> Result<Routing<B>> {
+        with_next: bool,
+        host: &mut HostIds<'_, B>,
+    ) -> Result<PendingRoute<B>> {
         let (h, e, k) = (d.hidden, d.experts, d.top_k);
-        let mut logits = gpu.zeros(t * e)?;
-        gpu.gemm_bf16(x, &self.router, &mut logits, scratch, t, e, h)?;
-        let mut ids = gpu.upload_i32(&vec![0i32; t * k])?;
-        let mut weights = gpu.zeros(t * k)?;
-        gpu.router_topk(&logits, &mut ids, &mut weights, t, e, k)?;
-        Ok(Routing {
-            ids: gpu.download_i32(&ids)?,
+        let pair = self.router_pair.as_ref().filter(|_| with_next);
+        // With the pair, per token the logits are `[own (e) | next (e)]` and top-k
+        // rows alternate own, next.
+        let rows = if pair.is_some() { 2 * t } else { t };
+        ensure!(
+            rows * k <= host.buf.len(),
+            "routing download larger than its buffer"
+        );
+        let mut logits = gpu.zeros(rows * e)?;
+        gpu.gemm_bf16(
+            x,
+            pair.unwrap_or(&self.router),
+            &mut logits,
+            scratch,
+            t,
+            rows / t * e,
+            h,
+        )?;
+        let mut ids = gpu.upload_i32(&vec![0i32; rows * k])?;
+        let mut weights = gpu.zeros(rows * k)?;
+        gpu.router_topk(&logits, &mut ids, &mut weights, rows, e, k)?;
+        let weights = if pair.is_some() {
+            let mut own = gpu.uninit(t * k)?;
+            gpu.copy_cols(&weights, &mut own, t, 2 * k, 0, k)?;
+            own
+        } else {
+            weights
+        };
+        // SAFETY: `host` is pinned, holds `rows * k` elements, and is read only after
+        // `route_finish` waits for `done`; `ids` lives in the pending route until then.
+        unsafe { gpu.download_async(&ids, host.buf.as_mut_ptr(), rows * k)? };
+        Ok(PendingRoute {
+            ids,
             weights,
+            t,
+            paired: pair.is_some(),
+            done: gpu.record_compute()?,
         })
     }
 
-    /// The next layer's experts predicted for `t` tokens of `x` (its router applied
-    /// to this layer's input), distinct and sorted; empty for the last layer.
-    pub fn predict_next(
+    /// Waits for a [`Moe::route_start`] download in `host`: the routing, and the
+    /// next layer's predicted experts (distinct, sorted; empty without the pair).
+    pub fn route_finish(
         &self,
         gpu: &B,
         d: &Dims,
-        x: &B::F32,
-        t: usize,
-        scratch: &mut B::Bf16,
-    ) -> Result<Vec<u32>> {
-        let Some(pair) = &self.router_pair else {
-            return Ok(Vec::new());
-        };
-        let (h, e, k) = (d.hidden, d.experts, d.top_k);
-        // Per token the logits are `[own (e) | next (e)]`; top-k rows alternate.
-        let mut logits = gpu.zeros(2 * t * e)?;
-        gpu.gemm_bf16(x, pair, &mut logits, scratch, t, 2 * e, h)?;
-        let mut ids = gpu.upload_i32(&vec![0i32; 2 * t * k])?;
-        let mut weights = gpu.zeros(2 * t * k)?;
-        gpu.router_topk(&logits, &mut ids, &mut weights, 2 * t, e, k)?;
-        let ids = gpu.download_i32(&ids)?;
-        let mut next: Vec<u32> = ids
+        pending: PendingRoute<B>,
+        host: &HostIds<'_, B>,
+    ) -> Result<(Routing<B>, Vec<u32>)> {
+        let k = d.top_k;
+        gpu.event_wait(&pending.done)?;
+        drop(pending.ids);
+        if !pending.paired {
+            let ids = host.buf[..pending.t * k].to_vec();
+            return Ok((
+                Routing {
+                    ids,
+                    weights: pending.weights,
+                },
+                Vec::new(),
+            ));
+        }
+        let rows = &host.buf[..2 * pending.t * k];
+        let ids = rows.chunks(k).step_by(2).flatten().copied().collect();
+        let mut next: Vec<u32> = rows
             .chunks(k)
             .skip(1)
             .step_by(2)
@@ -380,7 +418,13 @@ impl<B: Backend> Moe<B> {
             .collect();
         next.sort_unstable();
         next.dedup();
-        Ok(next)
+        Ok((
+            Routing {
+                ids,
+                weights: pending.weights,
+            },
+            next,
+        ))
     }
 
     /// The MoE output for `t` tokens of `x` routed by `routing` (from
@@ -684,6 +728,40 @@ impl<B: Backend> Moe<B> {
 pub struct Routing<B: Backend> {
     ids: Vec<i32>,
     weights: B::F32,
+}
+
+/// Routing queued by [`Moe::route_start`], not yet collected.
+pub struct PendingRoute<B: Backend> {
+    /// The device picks, kept until their download lands.
+    ids: B::I32,
+    weights: B::F32,
+    t: usize,
+    paired: bool,
+    done: B::Event,
+}
+
+/// Pinned host memory that routing picks download into asynchronously. Dropping
+/// it waits for the device, so no copy can still be writing into it.
+pub struct HostIds<'a, B: Backend> {
+    gpu: &'a B,
+    buf: Box<[i32]>,
+}
+
+impl<'a, B: Backend> HostIds<'a, B> {
+    pub fn new(gpu: &'a B, n: usize) -> Result<Self> {
+        let mut buf = vec![0i32; n.max(1)].into_boxed_slice();
+        // SAFETY: the buffer outlives its registration (unpinned in Drop).
+        unsafe { gpu.pin_host(buf.as_mut_ptr().cast(), buf.len() * 4)? };
+        Ok(Self { gpu, buf })
+    }
+}
+
+impl<B: Backend> Drop for HostIds<'_, B> {
+    fn drop(&mut self) {
+        let _ = self.gpu.sync();
+        // SAFETY: pinned in `new`; the device has finished every copy into it.
+        unsafe { self.gpu.unpin_host(self.buf.as_mut_ptr().cast()) };
+    }
 }
 
 impl<B: Backend> Routing<B> {
