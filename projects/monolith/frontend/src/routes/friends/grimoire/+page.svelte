@@ -210,8 +210,8 @@
                 <form method="POST" action="?/invite">
                   <input type="hidden" name="campaign_id" value={campaign.id} />
                   <label
-                    >Registered player's email <input
-                      type="email"
+                    >Registered player's email or @username <input
+                      type="text"
                       name="email"
                       required
                       maxlength="320"
@@ -239,21 +239,23 @@
     {/each}
   </section>
 
-  <section aria-labelledby="create-heading">
-    <h2 id="create-heading">Start a campaign</h2>
-    <p>You will be its owner and first DM.</p>
-    <form method="POST" action="?/create">
-      <label
-        >Campaign name <input
-          name="name"
-          required
-          maxlength="120"
-          placeholder="The next adventure"
-        /></label
-      >
-      <button>Create campaign</button>
-    </form>
-  </section>
+  {#if data.can_create_game !== false}
+    <section aria-labelledby="create-heading">
+      <h2 id="create-heading">Start a campaign</h2>
+      <p>You will be its owner and first DM.</p>
+      <form method="POST" action="?/create">
+        <label
+          >Campaign name <input
+            name="name"
+            required
+            maxlength="120"
+            placeholder="The next adventure"
+          /></label
+        >
+        <button>Create campaign</button>
+      </form>
+    </section>
+  {/if}
 </main>
 
 <style>

@@ -2,15 +2,18 @@
 
 import os
 from functools import lru_cache
+from typing import Annotated
 
 from auth.api import (
-    AuthSettings,
     AuthentikStandingVerifier,
     Authority,
+    AuthSettings,
     Principal,
     PrincipalKind,
     get_default_resolver,
     get_principal,
+    platform_enforcement_enabled,
+    require_application_permission,
 )
 from auth.dependencies import resolve_authorization
 from auth.errors import AuthError, AuthErrorReason
@@ -31,13 +34,14 @@ def grimoire_verifier() -> AuthentikStandingVerifier:
             authentik_issuer=os.getenv("GRIMOIRE_AUTH_ISSUER", ""),
             authentik_audience=os.getenv("GRIMOIRE_AUTH_AUDIENCE", ""),
             jwks_cache_ttl_s=300,
+            allow_username_identity=platform_enforcement_enabled(),
         )
     )
 
 
 async def get_authenticated_identity(
     request: Request,
-    principal: Principal = Depends(get_principal),
+    principal: Annotated[Principal, Depends(get_principal)],
 ) -> Principal:
     """Return a verified human identity whose proxy projection is consistent.
 
@@ -70,14 +74,17 @@ async def get_authenticated_identity(
     if (
         principal.authority is not Authority.STANDING
         or principal.kind is not PrincipalKind.HUMAN
-        or principal.email is None
+        or (
+            principal.email is None
+            and not (platform_enforcement_enabled() and principal.username)
+        )
     ):
         raise HTTPException(
             status_code=403,
             detail="verified human identity required",
         )
 
-    email = principal.email.strip().lower()
+    email = (principal.email or f"@{principal.username}").strip().lower()
     if not email or len(email) > 320:
         raise HTTPException(status_code=403, detail="verified email required")
 
@@ -93,21 +100,37 @@ async def get_authenticated_identity(
     return principal
 
 
-async def get_authenticated_email(
-    principal: Principal = Depends(get_authenticated_identity),
-    session: Session = Depends(get_session),
+def get_authenticated_email(
+    principal: Annotated[Principal, Depends(get_authenticated_identity)],
+    session: Annotated[Session, Depends(get_session)],
 ) -> str:
     """Return the normalized email of a verified human principal."""
-    email = principal.email
+    email = principal.email or (
+        f"@{principal.username}"
+        if platform_enforcement_enabled() and principal.username
+        else None
+    )
     if email is None:  # Kept explicit for type narrowing after the dependency.
         raise HTTPException(status_code=403, detail="verified email required")
     if principal.issuer:
+        if platform_enforcement_enabled():
+            require_application_permission(session, principal, "grimoire.access")
         return sync_user(session, principal).email
     return email.strip().lower()
 
 
+def get_game_creator_email(
+    principal: Annotated[Principal, Depends(get_authenticated_identity)],
+    email: Annotated[str, Depends(get_authenticated_email)],
+    session: Annotated[Session, Depends(get_session)],
+) -> str:
+    if platform_enforcement_enabled():
+        require_application_permission(session, principal, "grimoire.create_game")
+    return email
+
+
 async def get_grimoire_operator_email(
-    principal: Principal = Depends(get_authenticated_identity),
+    principal: Annotated[Principal, Depends(get_authenticated_identity)],
 ) -> str:
     """Require the existing standing operators-group authorization rule."""
     if principal.authority is not Authority.STANDING or not principal.has_group(

@@ -1902,6 +1902,16 @@ swarm:
 # "OPENROUTER_API_KEY"), Kyverno-cloned into monolith-workflows; the extract job
 # skips cleanly if the key is absent. S3 endpoint/creds reuse the shared
 # SeaweedFS block emitted alongside stars.
+platformAuth:
+  # Disabled merges create empty private tables only. Activation requires review
+  # and explicit imports/grants for existing players before enforcing access.
+  managementEnabled: false
+  enrollmentEnabled: false
+  enforcementEnabled: false
+  # Login and completion use the Grimoire signing key's public JWKS. No API
+  # credential or OIDC client secret is used to create accounts or invitations.
+  enrollmentFlowUrl: ""
+
 grimoire:
   invitationLinks:
     enabled: false

@@ -2,7 +2,7 @@
 
 import os
 
-from auth.api import Principal
+from auth.api import Principal, bind_application_user, platform_enforcement_enabled
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -11,7 +11,20 @@ from grimoire.models import AppUser
 
 
 def sync_user(session: Session, principal: Principal) -> AppUser:
-    email = (principal.email or "").strip().lower()
+    # @username is a namespaced legacy login label, never a verified mailbox.
+    # Existing issuer/subject rows and their campaign IDs remain authoritative.
+    email = (
+        (
+            principal.email
+            or (
+                f"@{principal.username}"
+                if platform_enforcement_enabled() and principal.username
+                else ""
+            )
+        )
+        .strip()
+        .lower()
+    )
     if not principal.issuer or not principal.subject or not email or len(email) > 320:
         raise HTTPException(403, "verified identity required")
     user = session.exec(
@@ -50,6 +63,8 @@ def sync_user(session: Session, principal: Principal) -> AppUser:
     user.display_name = (principal.display_name or email)[:200]
     session.add(user)
     try:
+        if platform_enforcement_enabled():
+            bind_application_user(session, principal, "grimoire", user.id)
         session.commit()
     except IntegrityError as exc:
         session.rollback()

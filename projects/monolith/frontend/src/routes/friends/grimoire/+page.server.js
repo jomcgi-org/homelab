@@ -113,9 +113,11 @@ export const actions = {
     if (
       typeof email !== "string" ||
       email.trim().length > 320 ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+      !/^(?:[^\s@]+@[^\s@]+\.[^\s@]+|@[a-z0-9][a-z0-9_.-]{2,31})$/.test(
+        email.trim(),
+      )
     ) {
-      throw new JoinLinkError("Enter the player's email address.");
+      throw new JoinLinkError("Enter the player's email or @username.");
     }
     const enrollment = data.get("allow_enrollment");
     if (enrollment !== null && enrollment !== "on")

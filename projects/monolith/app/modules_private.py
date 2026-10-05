@@ -13,6 +13,7 @@ binary's file set. The public registry lives in app/modules_public.py.
 from __future__ import annotations
 
 import agent.module
+import auth.module
 import factory.module
 import artifact.module
 import campsites.module
@@ -58,6 +59,7 @@ ALL_MODULES: tuple[Module, ...] = (
     ember_public.module.MODULE,
     moving.module.MODULE,
     updates.module.MODULE,
+    auth.module.MODULE,
     # MCP-only domains (no HTTP routes of their own). Placed here so MCP tool
     # registration order matches the historical app/main.py import order
     # (knowledge, agent, cluster, sandbox); route order is unaffected because

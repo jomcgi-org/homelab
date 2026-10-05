@@ -172,6 +172,23 @@ class AuthentikStandingVerifier:
         # to whatever claim those blueprints guarantee rather than inferring from
         # email absence once it exists.
         kind = PrincipalKind.HUMAN if email is not None else PrincipalKind.WORKLOAD
+        username_claim = claims.get("preferred_username")
+        username = (
+            username_claim
+            if isinstance(username_claim, str) and 1 <= len(username_claim) <= 150
+            else None
+        )
+        user_type = claims.get("platform_user_type")
+        if user_type not in ("internal", "external", "service_account", "internal_service_account"):
+            user_type = None
+        if user_type in ("service_account", "internal_service_account"):
+            kind = PrincipalKind.WORKLOAD
+        if self._settings.allow_username_identity and username is not None:
+            # This opt-in uses an IdP model field, not an editable user attribute.
+            if user_type in ("internal", "external"):
+                kind = PrincipalKind.HUMAN
+            elif user_type in ("service_account", "internal_service_account"):
+                kind = PrincipalKind.WORKLOAD
         return Principal(
             subject=subject,
             issuer=claims["iss"],
@@ -185,6 +202,9 @@ class AuthentikStandingVerifier:
             email=email,
             kind=kind,
             authority=Authority.STANDING,
+            username=username,
+            user_type=user_type,
+            delegation_claim_present="act" in claims,
         )
 
 

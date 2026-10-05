@@ -492,6 +492,8 @@ py_library(
             "auth/**/*.py",
         ],
         exclude = [
+            "auth/platform/**",
+            "auth/module.py",
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
@@ -1885,6 +1887,8 @@ py3_image(
 # stays in full. The pip deps mirror :monolith_backend wholesale: a missing
 # wheel would crash the public binary at startup, so trimming is a follow-up.
 _PUBLIC_PRUNE_EXCLUDE = [
+    "auth/platform/**",
+    "auth/module.py",
     # Standard excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
     "**/test_*.py",
@@ -1998,6 +2002,8 @@ _PUBLIC_PRUNE_EXCLUDE = [
 # pip dependencies mirror :monolith_backend wholesale for now. Trimming wheels
 # is separate from enforcing the Python source boundary.
 _AGENTS_PRUNE_EXCLUDE = [
+    "auth/platform/**",
+    "auth/module.py",
     # Standard production excludes (mirror :monolith_backend / :main).
     "**/*_test.py",
     "**/test_*.py",
@@ -2325,6 +2331,40 @@ monolith_domain_images(
     extra_env = {"REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson"},
     extra_tars = [":repo_docs_manifest_layer"],
     main = "app/main_domain.py",
+)
+
+py_library(
+    name = "pkg_platform_auth",
+    srcs = glob(["auth/platform/**/*.py"], exclude = ["**/*_test.py"]) + ["auth/module.py"],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//pydantic",
+        "@pip//pyjwt",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//starlette",
+    ],
+)
+
+py_test(
+    name = "platform_auth_service_test",
+    srcs = ["auth/platform/service_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_platform_auth",
+        "@pip//cryptography",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
 )
 
 py_test(
@@ -9702,4 +9742,16 @@ py_test(
 bdd_test(
     name = "grimoire_join_links_postgres_test",
     srcs = ["grimoire/join_links_postgres_test.py"],
+)
+
+bdd_test(
+    name = "platform_auth_postgres_test",
+    srcs = ["auth/platform/postgres_test.py"],
+)
+
+py_test(
+    name = "platform_auth_grimoire_test",
+    srcs = ["auth/platform/grimoire_test.py"],
+    imports = ["."],
+    deps = [":pkg_platform_auth", ":pkg_grimoire", "@pip//pytest", "@pip//fastapi", "@pip//httpx", "@pip//sqlmodel"],
 )

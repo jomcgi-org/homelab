@@ -3,6 +3,16 @@
 grimoireLinkEnrollment:
   enabled: false
 
+platformEnrollment:
+  # Disabled by default. Changes only the Grimoire provider/profile and adds
+  # a separate invitation-required flow; no management API grants or secrets.
+  enabled: false
+
+platformManagement:
+  # Adds a protected account-type claim to the existing human management and
+  # Grimoire login audiences. No group, permission or flow gate changes.
+  enabled: false
+
 # The Ember OIDC provider remains intentionally unconfigured here. ADR 032
 # requires Ember's object-authorization matrix to land before SSO is admitted.
 
@@ -51,6 +61,11 @@ authentik:
     # secret, so the PostgreSQL connection settings must be supplied here too.
     # Without these values authentik falls back to localhost:5432.
     env:
+      - name: PLATFORM_AUTH_API_URL
+        # Populate only in the reviewed activation alongside platformEnrollment.
+        value: ""
+      - name: PLATFORM_AUTH_ENROLLMENT_ISSUER
+        value: ""
       - name: GRIMOIRE_OIDC_CLIENT_SECRET
         valueFrom:
           secretKeyRef:

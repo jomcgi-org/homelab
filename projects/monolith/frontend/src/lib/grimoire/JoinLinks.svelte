@@ -50,18 +50,18 @@
 <section aria-label="Single-use campaign links">
   <h4>Invite a player with a link</h4>
   <p>
-    Each link is for one email and can be accepted once. Share it privately with
-    that player.
+    Each link is for one registered player and can be accepted once. Share it
+    privately with that player.
   </p>
   <form method="POST" action="?/createLink" onsubmit={submit}>
     <input type="hidden" name="campaign_id" value={campaign.id} />
     <label
-      >Player's email <input
-        type="email"
+      >Player's email or @username <input
+        type="text"
         name="email"
         required
         maxlength="320"
-        autocomplete="email"
+        autocomplete="off"
       /></label
     >
     {#if isAdmin && canEnroll}

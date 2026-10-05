@@ -38,6 +38,7 @@ from grimoire import aliases, library
 from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
+    get_game_creator_email,
     get_grimoire_operator_email,
 )
 from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
@@ -307,7 +308,7 @@ def _get_or_create_user(session: Session, email: str) -> AppUser:
 @router.post("/campaigns", response_model=CampaignView)
 def create_campaign(
     body: CampaignCreateRequest,
-    email: str = Depends(get_authenticated_email),
+    email: str = Depends(get_game_creator_email),
     session: Session = Depends(get_session),
 ) -> Campaign:
     user = _request_user(session, email) or _get_or_create_user(session, email)
@@ -3081,6 +3082,7 @@ class LobbyView(BaseModel):
     can_administer_accounts: bool
     invitation_links_enabled: bool = False
     invitation_enrollment_enabled: bool = False
+    can_create_game: bool = True
     user: LobbyUserView
     campaigns: list[LobbyCampaignView]
     invitations: list[InvitationView]
@@ -3142,7 +3144,16 @@ def get_lobby(
         )
         .order_by(CampaignInvitation.created_at)
     ).all()
+    from auth.api import platform_enforcement_enabled, require_application_permission
+
+    can_create = True
+    if platform_enforcement_enabled():
+        try:
+            require_application_permission(session, principal, "grimoire.create_game")
+        except HTTPException:
+            can_create = False
     return LobbyView(
+        can_create_game=can_create,
         invitation_links_enabled=links_enabled(),
         invitation_enrollment_enabled=enrollment_enabled(),
         can_administer_accounts=principal.has_group("operators"),

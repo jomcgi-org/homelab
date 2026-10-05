@@ -1,0 +1,9 @@
+  - model: authentik_providers_oauth2.scopemapping
+    id: platform-profile
+    identifiers:
+      name: platform-profile
+    attrs:
+      scope_name: profile
+      expression: |
+        return {"preferred_username": request.user.username, "platform_user_type": request.user.type,
+            "groups": list(request.user.ak_groups.values_list("name", flat=True))}

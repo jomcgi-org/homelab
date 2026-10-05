@@ -58,6 +58,7 @@ MONOLITH_DOMAINS = [
     "ember_public",
     "moving",
     "updates",
+    "auth",
     "agent",
     "cluster",
     "sandbox",
