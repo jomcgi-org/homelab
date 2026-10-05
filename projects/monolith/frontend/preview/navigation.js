@@ -6,5 +6,7 @@ export function replaceState(url, state) {
   ) {
     throw new Error("Fixture navigation must stay on this page");
   }
-  history.replaceState(state, "", target);
+  // Svelte's page.state is a Proxy, which native History cannot clone.
+  // The bounded fixture router supports JSON state only.
+  history.replaceState(JSON.parse(JSON.stringify(state)), "", target);
 }
