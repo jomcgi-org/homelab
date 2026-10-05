@@ -65,6 +65,11 @@ pub struct CacheArgs {
     /// decode and more VRAM for experts; lossy, judge with `oominf score`).
     #[arg(long, default_value = "bf16", value_parser = oominf_core::DenseFormat::parse)]
     pub dense: oominf_core::DenseFormat,
+    /// Activation precision of the prefill routed-expert GEMM: `exact` (fp32 as three
+    /// exact bf16 terms) or `bf16` (activations rounded to bf16, one tensor-core pass:
+    /// faster prefill; lossy, judge with `oominf score`). Decode is unaffected.
+    #[arg(long, default_value = "exact", value_parser = oominf_core::ExpertPrecision::parse)]
+    pub expert_precision: oominf_core::ExpertPrecision,
     /// Where attention K/V caches live: `device` memory, or `host` memory the GPU
     /// reads over PCIe (decode reads only each token's selected rows; frees VRAM
     /// for experts at long context; same results).
@@ -157,6 +162,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
         host_threads: args.experts.host_threads(),
         kv: args.cache.kv_cache,
         dense: args.cache.dense,
+        expert_precision: args.cache.expert_precision,
         kv_host: args.cache.kv_host(),
     };
     let experts = factory::<Gpu>(args.experts, files.clone());

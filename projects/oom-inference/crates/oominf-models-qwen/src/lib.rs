@@ -58,6 +58,9 @@ pub struct Dims {
     pub kv: oominf_core::KvFormat,
     /// How dense weights are stored (a runtime choice, bf16 unless set).
     pub dense: oominf_core::DenseFormat,
+    /// Activation precision of the prefill expert GEMM (a runtime choice, exact
+    /// unless set).
+    pub expert_precision: oominf_core::ExpertPrecision,
     /// Attention K/V caches live in host memory, read over the bus (a runtime
     /// choice, device memory unless set); the indexer's keys stay on the device.
     pub kv_host: bool,
@@ -112,6 +115,7 @@ impl Dims {
             text: t.clone(),
             kv: oominf_core::KvFormat::F32,
             dense: oominf_core::DenseFormat::Bf16,
+            expert_precision: oominf_core::ExpertPrecision::Exact,
             kv_host: false,
         })
     }

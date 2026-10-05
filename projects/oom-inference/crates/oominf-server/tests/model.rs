@@ -94,6 +94,7 @@ async fn gpu_smoke() {
             host_threads: 0,
             kv: oominf_core::KvFormat::F32,
             dense: oominf_core::DenseFormat::Bf16,
+            expert_precision: oominf_core::ExpertPrecision::Exact,
             kv_host: false,
         };
         let disk = files.clone();

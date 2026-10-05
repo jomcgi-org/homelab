@@ -14,9 +14,9 @@ mod probe;
 mod workspace;
 
 pub use backend::{
-    Attention, Backend, Bf16Record, DenseFormat, DeviceBuffer, Elementwise, Experts,
-    HyperConnection, KvFormat, Linear, Lookup, Memory, Norm, Nvfp4Record, Recurrent, Transfer,
-    View, Weight,
+    Attention, Backend, Bf16Record, DenseFormat, DeviceBuffer, Elementwise, ExpertPrecision,
+    Experts, HyperConnection, KvFormat, Linear, Lookup, Memory, Norm, Nvfp4Record, Recurrent,
+    Transfer, View, Weight,
 };
 pub use decode::{Decoded, argmax, decode_step};
 pub use experts::{ExpertFactory, ExpertSource, ExpertStats, Fetched, Staged};

@@ -30,6 +30,7 @@ fn model(kv: KvFormat) -> Box<dyn Model> {
             host_threads: 0,
             kv,
             dense: oominf_core::DenseFormat::Bf16,
+            expert_precision: oominf_core::ExpertPrecision::Exact,
             kv_host: false,
         },
         Box::new(move |b| {

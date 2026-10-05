@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail, ensure};
 use oominf_core::{
-    Backend, Bf16Record, ExpertSource, Nvfp4Record, Probe, View, Weight, Workspace, tap,
+    Backend, Bf16Record, ExpertPrecision, ExpertSource, Nvfp4Record, Probe, View, Weight,
+    Workspace, tap,
 };
 use oominf_cpu::{HostExperts, Job, Pending};
 use oominf_format::Model;
@@ -63,6 +64,7 @@ pub struct Moe<B: Backend> {
     /// The expert group (and tier key) this MoE routes into.
     layer: u32,
     geo: Geometry,
+    precision: ExpertPrecision,
     tables: Mutex<Tables<B>>,
     router: Weight<B>,
     /// This layer's router stacked over the next layer's (`[2 * experts, hidden]`):
@@ -202,6 +204,7 @@ impl<B: Backend> Moe<B> {
         Ok(Moe {
             layer,
             geo,
+            precision: d.expert_precision,
             // Sized for the largest step (a prefill fetch group) up front: grown
             // mid-prefill, 48 small long-lived buffers among the step's temporaries
             // pin pool blocks the allocator cannot trim (about 1 GB at 256k tokens).
@@ -740,12 +743,12 @@ impl<B: Backend> Moe<B> {
                 let gate = (geo.gate_weight, geo.gate_scale, geo.scale2[0]);
                 let up = (geo.up_weight, geo.up_scale, geo.scale2[1]);
                 let down = (geo.down_weight, geo.down_scale, geo.scale2[2]);
-                let rows = Some(&assign);
-                gpu.moe_tiled(&recs, &off, rows, n, max_n, x, g, it, hd, gate)?;
-                gpu.moe_tiled(&recs, &off, rows, n, max_n, x, u, it, hd, up)?;
+                let (rows, p) = (Some(&assign), self.precision);
+                gpu.moe_tiled(&recs, &off, rows, n, max_n, x, g, it, hd, gate, p)?;
+                gpu.moe_tiled(&recs, &off, rows, n, max_n, x, u, it, hd, up, p)?;
                 gpu.moe_swiglu_range(g, u, &mut buf.h, a0 * it, a1 * it)?;
                 gpu.moe_tiled(
-                    &recs, &off, None, n, max_n, &buf.h, &mut buf.y, hd, it, down,
+                    &recs, &off, None, n, max_n, &buf.h, &mut buf.y, hd, it, down, p,
                 )?;
             }
             (Geometry::Nvfp4(geo), None) => {
