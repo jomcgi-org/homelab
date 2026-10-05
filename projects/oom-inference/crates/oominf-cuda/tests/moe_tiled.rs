@@ -1,11 +1,11 @@
-//! `moe_tiled` (tensor-core NVFP4 grouped GEMM) against an f64 reference on random
-//! records, plus its throughput at the prefill shape. Needs a GPU:
+//! `moe_tiled` (tensor-core NVFP4 grouped GEMM) at both activation precisions against
+//! an f64 reference on random records, plus its throughput at the prefill shape. Needs a GPU:
 //! `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture`.
 
 use std::time::Instant;
 
 use anyhow::Result;
-use oominf_core::{Experts, Memory, View};
+use oominf_core::{ExpertPrecision, Experts, Memory, View};
 use oominf_cuda::Gpu;
 
 /// Deterministic xorshift64*.
@@ -111,6 +111,7 @@ fn run(
     counts: &[usize],
     rng: &mut Rng,
     launches: usize,
+    precision: ExpertPrecision,
 ) -> Result<Run> {
     let tokens = x.len() / recs.k;
     let mut off = vec![0i32];
@@ -145,6 +146,7 @@ fn run(
             recs.n,
             recs.k,
             (recs.w_off, recs.s_off, 0),
+            precision,
         )
     };
     call(&mut y)?;
@@ -163,13 +165,26 @@ fn run(
     })
 }
 
-fn check(n: usize, k: usize, counts: &[usize]) -> Result<()> {
+/// `v` rounded to the nearest bf16 (ties to even), as the device rounds it.
+fn bf16_round(v: f32) -> f32 {
+    let b = v.to_bits();
+    f32::from_bits((b + 0x7fff + ((b >> 16) & 1)) & 0xffff_0000)
+}
+
+/// Checks against an f64 reference of the precision's activations: fp32 for `Exact`,
+/// each activation rounded to bf16 for `Bf16` (so both must be exact GEMMs with fp32
+/// accumulation over what they claim to compute).
+fn check(n: usize, k: usize, counts: &[usize], precision: ExpertPrecision) -> Result<()> {
     let gpu = Gpu::new(0)?;
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (n * k) as u64);
     let recs = Records::random(&mut rng, counts.len(), n, k);
     let tokens = 64;
     let x: Vec<f32> = (0..tokens * k).map(|_| 2.0 * rng.unit()).collect();
-    let Run { y, rows, off, .. } = run(&gpu, &recs, &x, counts, &mut rng, 0)?;
+    let Run { y, rows, off, .. } = run(&gpu, &recs, &x, counts, &mut rng, 0, precision)?;
+    let x: Vec<f32> = match precision {
+        ExpertPrecision::Exact => x,
+        ExpertPrecision::Bf16 => x.iter().map(|&v| bf16_round(v)).collect(),
+    };
     let mut worst = 0f64;
     for e in 0..counts.len() {
         for a in off[e] as usize..off[e + 1] as usize {
@@ -186,7 +201,7 @@ fn check(n: usize, k: usize, counts: &[usize]) -> Result<()> {
             }
         }
     }
-    println!("N={n} K={k} counts={counts:?}: worst error / sum|x*w| = {worst:.3e}");
+    println!("{precision:?} N={n} K={k} counts={counts:?}: worst error / sum|x*w| = {worst:.3e}");
     // fp32 accumulation over K terms: well within K * 2^-24 of the magnitude.
     assert!(
         worst < 2e-6,
@@ -199,9 +214,11 @@ fn check(n: usize, k: usize, counts: &[usize]) -> Result<()> {
 #[ignore = "needs a GPU"]
 fn matches_f64_reference() -> Result<()> {
     // Partial tiles in both dimensions, an empty expert, and both expert shapes.
-    check(200, 96, &[1, 0, 37, 70])?;
-    check(640, 2560, &[3, 33, 64])?;
-    check(2560, 640, &[17, 40])?;
+    for p in [ExpertPrecision::Exact, ExpertPrecision::Bf16] {
+        check(200, 96, &[1, 0, 37, 70], p)?;
+        check(640, 2560, &[3, 33, 64], p)?;
+        check(2560, 640, &[17, 40], p)?;
+    }
     Ok(())
 }
 
@@ -218,13 +235,15 @@ fn prefill_throughput() -> Result<()> {
         let recs = Records::random(&mut rng, experts, n, k);
         for per in [40, 80] {
             let x: Vec<f32> = (0..experts * per * k / 10).map(|_| rng.unit()).collect();
-            let secs = run(&gpu, &recs, &x, &vec![per; experts], &mut rng, 20)?.secs;
-            let flops = 2.0 * (experts * per * n * k) as f64;
-            println!(
-                "moe_tiled {n}x{k}, {experts} experts x {per}: {:.3} ms, {:.1} TFLOP/s",
-                secs * 1e3,
-                flops / secs / 1e12
-            );
+            for p in [ExpertPrecision::Exact, ExpertPrecision::Bf16] {
+                let secs = run(&gpu, &recs, &x, &vec![per; experts], &mut rng, 20, p)?.secs;
+                let flops = 2.0 * (experts * per * n * k) as f64;
+                println!(
+                    "moe_tiled {p:?} {n}x{k}, {experts} experts x {per}: {:.3} ms, {:.1} TFLOP/s",
+                    secs * 1e3,
+                    flops / secs / 1e12
+                );
+            }
         }
     }
     Ok(())

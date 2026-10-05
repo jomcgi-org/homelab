@@ -87,7 +87,7 @@ layer's keys and values (one layer at a time, about 0.4 GB at 95k tokens), so
 prefill attention reads fp32 rows instead of re-decoding cached tiles in every
 block and runs at fp32 speed; decode reads the compressed cache.
 
-Two more runtime choices trade differently:
+Three more runtime choices trade differently:
 
 - `--dense fp8` stores the dense (non-expert) weights as FP8 e4m3, one scale per
   128 weights, quantized on the host at load (routers stay bf16): half the bytes,
@@ -98,6 +98,12 @@ Two more runtime choices trade differently:
   routers), while retrieval and the long-context task set still pass (#6865).
   Prefill dequantizes each weight to bf16 once per layer (a 512 MB cache freed
   when the prefill ends). Off by default.
+- `--expert-precision bf16` rounds the prefill expert GEMM's activations to bf16
+  (one tensor-core pass, standard W4A16) instead of splitting them into three
+  exact bf16 terms. The kernel then runs 2.2x faster and warm 32k prefill drops
+  from 16.2 s to 14.0 s. Against the exact reference: KL 0.058 / 92.1% top-1 at
+  32k and 0.035 / 91.2% at 95k, about at the rounding floor, and `check-model`
+  stays inside the HF bf16 budget (#6838). Decode is unaffected. Off by default.
 - `--kv-placement host` keeps attention K/V caches in host memory the GPU reads
   over PCIe (managed memory preferring the host); the indexer's keys stay on the
   device, so decode reads only each token's selected rows. Results are identical

@@ -171,13 +171,17 @@ extern "C" __global__ void moe_combine_slots(const float* y, const int* slot_ass
 // result instead of every weight. Each fp32 activation is split into three bf16 terms
 // (hi + mid + lo == x exactly), every bf16 x bf16 product is exact in fp32, and the
 // mma accumulates in fp32: an fp32 GEMM in another summation order, three tensor-core
-// passes instead of fp32 FMAs.
+// passes instead of fp32 FMAs. moe_tiled_bf16 keeps only the hi term (activations rounded
+// to bf16, standard W4A16): one pass, lossy, opt-in.
 //
-// Block tile: 128 weight rows x 32 assignments, K steps of 32; four warps, each owning
-// 32 rows (4 n8 tiles) x 32 assignments (2 m16 tiles). Grid (ceil(N/128),
-// ceil(max_n/32), n_experts), block 128. x: [*, K]; y: [A, N].
+// Block tile: 128 weight rows x 64 assignments, K steps of 32; eight warps, each owning
+// 32 rows (4 n8 tiles) x 32 assignments (2 m16 tiles), so each decoded weight feeds 64
+// assignments without growing per-thread accumulators. Warps whose 32 assignments are
+// all past the expert's end skip their MMAs. Grid (ceil(N/128), ceil(max_n/64),
+// n_experts), block 256. x: [*, K]; y: [A, N].
 #define MMA_BN 128
-#define MMA_BM 32
+#define MMA_BM 64
+#define MMA_THREADS 256
 #define MMA_STRIDE 40  // bf16 per shared row: 32 + 8 padding keeps fragment loads conflict-free
 
 __device__ __forceinline__ uint16_t moe_bf16_bits(float v) {
@@ -197,11 +201,13 @@ __device__ __forceinline__ void moe_mma_bf16(float c[4], const uint32_t a[4], co
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-extern "C" __global__ void __launch_bounds__(128)
-moe_tiled(const unsigned long long* recs, const int* off, const int* rows, const float* x,
-          float* y, int N, int K, long long w_off, long long s_off, int s2_idx) {
+template <int TERMS>
+__device__ __forceinline__ void moe_tiled_impl(const unsigned long long* recs, const int* off,
+                                               const int* rows, const float* x, float* y, int N,
+                                               int K, long long w_off, long long s_off,
+                                               int s2_idx) {
     __shared__ __align__(16) uint16_t ws[MMA_BN][MMA_STRIDE];
-    __shared__ __align__(16) uint16_t xs[3][MMA_BM][MMA_STRIDE];
+    __shared__ __align__(16) uint16_t xs[TERMS][MMA_BM][MMA_STRIDE];
     int e = blockIdx.z;
     int a_begin = off[e] + blockIdx.y * MMA_BM;
     int a_end = off[e + 1];
@@ -213,96 +219,100 @@ moe_tiled(const unsigned long long* recs, const int* off, const int* rows, const
     const uint8_t* wp = rec + w_off;
     const uint8_t* sp = rec + s_off;
     int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    // Warp tile: 32 weight rows (warp & 3) x 32 assignments (warp >> 2).
+    int wr = warp & 3, wm = warp >> 2;
+    bool active = wm * 32 < nt;  // warp-uniform: skip MMAs on an empty half
     int g = lane >> 2, q = lane & 3;
     float acc[2][4][4] = {};
-    // Weight decode: thread tid owns weight row r0 + tid.
-    int wrow = r0 + tid;
-    // Activation loads: two float4 per thread, assignment idx >> 3, k (idx & 7) * 4.
+    // Weight decode: thread tid decodes sixteen-weight group tid >> 7 of row r0 + tid % 128.
+    int wrow = r0 + (tid & 127);
+    int grp = tid >> 7;
+    // Activation loads: 64 assignments x 32 floats per K step, two float4 per thread.
     const float* xrow[2];
 #pragma unroll
     for (int i = 0; i < 2; i++) {
-        int t = (tid + i * 128) >> 3;
+        int t = (tid + i * MMA_THREADS) >> 3;
         xrow[i] = t < nt ? x + (size_t)(rows ? rows[a_begin + t] : a_begin + t) * K : nullptr;
     }
     for (int k0 = 0; k0 < K; k0 += 32) {
+        uint32_t packed[8];
+        if (wrow < N) {
+            size_t row = (size_t)wrow;
+            int gi = (k0 >> 4) + grp;
+            float w[16];
+            moe_decode16(wp + row * (K / 2) + gi * 8, sp[row * (K / 16) + gi], 1.0f, w);
 #pragma unroll
-        for (int grp = 0; grp < 2; grp++) {
-            uint32_t packed[8];
-            if (wrow < N) {
-                size_t row = (size_t)wrow;
-                int gi = (k0 >> 4) + grp;
-                float w[16];
-                moe_decode16(wp + row * (K / 2) + gi * 8, sp[row * (K / 16) + gi], 1.0f, w);
+            for (int n = 0; n < 8; n++)
+                packed[n] = uint32_t(moe_bf16_bits(w[2 * n])) |
+                            (uint32_t(moe_bf16_bits(w[2 * n + 1])) << 16);
+        } else {
 #pragma unroll
-                for (int n = 0; n < 8; n++)
-                    packed[n] = uint32_t(moe_bf16_bits(w[2 * n])) |
-                                (uint32_t(moe_bf16_bits(w[2 * n + 1])) << 16);
-            } else {
-#pragma unroll
-                for (int n = 0; n < 8; n++) packed[n] = 0;
-            }
-            uint4* dst = reinterpret_cast<uint4*>(&ws[tid][grp * 16]);
-            dst[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
-            dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
+            for (int n = 0; n < 8; n++) packed[n] = 0;
         }
+        uint4* dst = reinterpret_cast<uint4*>(&ws[tid & 127][grp * 16]);
+        dst[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
+        dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
 #pragma unroll
         for (int i = 0; i < 2; i++) {
-            int idx = tid + i * 128, t = idx >> 3, kq = (idx & 7) * 4;
+            int idx = tid + i * MMA_THREADS, t = idx >> 3, kq = (idx & 7) * 4;
             float4 v = xrow[i] ? *reinterpret_cast<const float4*>(xrow[i] + k0 + kq)
                                : make_float4(0.f, 0.f, 0.f, 0.f);
             float vals[4] = {v.x, v.y, v.z, v.w};
-            uint16_t parts[3][4];
+            uint16_t parts[TERMS][4];
 #pragma unroll
             for (int c = 0; c < 4; c++) {
-                uint16_t hi = moe_bf16_bits(vals[c]);
-                float r = vals[c] - moe_bf16_value(hi);
-                uint16_t mid = moe_bf16_bits(r);
-                uint16_t lo = moe_bf16_bits(r - moe_bf16_value(mid));
-                parts[0][c] = hi;
-                parts[1][c] = mid;
-                parts[2][c] = lo;
+                float r = vals[c];
+#pragma unroll
+                for (int p = 0; p < TERMS; p++) {
+                    parts[p][c] = moe_bf16_bits(r);
+                    r -= moe_bf16_value(parts[p][c]);
+                }
             }
 #pragma unroll
-            for (int p = 0; p < 3; p++)
+            for (int p = 0; p < TERMS; p++)
                 *reinterpret_cast<uint2*>(&xs[p][t][kq]) =
                     make_uint2(uint32_t(parts[p][0]) | (uint32_t(parts[p][1]) << 16),
                                uint32_t(parts[p][2]) | (uint32_t(parts[p][3]) << 16));
         }
         __syncthreads();
+        if (active) {
 #pragma unroll
-        for (int kk = 0; kk < 32; kk += 16) {
-            uint32_t b[4][2];
+            for (int kk = 0; kk < 32; kk += 16) {
+                uint32_t b[4][2];
 #pragma unroll
-            for (int j = 0; j < 4; j++) {
-                const uint16_t* wr = &ws[warp * 32 + j * 8 + g][kk + q * 2];
-                b[j][0] = *reinterpret_cast<const uint32_t*>(wr);
-                b[j][1] = *reinterpret_cast<const uint32_t*>(wr + 8);
-            }
+                for (int j = 0; j < 4; j++) {
+                    const uint16_t* w = &ws[wr * 32 + j * 8 + g][kk + q * 2];
+                    b[j][0] = *reinterpret_cast<const uint32_t*>(w);
+                    b[j][1] = *reinterpret_cast<const uint32_t*>(w + 8);
+                }
 #pragma unroll
-            for (int p = 0; p < 3; p++) {
+                for (int p = 0; p < TERMS; p++) {
 #pragma unroll
-                for (int m = 0; m < 2; m++) {
-                    const uint16_t* x0 = &xs[p][m * 16 + g][kk + q * 2];
-                    const uint16_t* x8 = &xs[p][m * 16 + g + 8][kk + q * 2];
-                    uint32_t a[4] = {*reinterpret_cast<const uint32_t*>(x0),
-                                     *reinterpret_cast<const uint32_t*>(x8),
-                                     *reinterpret_cast<const uint32_t*>(x0 + 8),
-                                     *reinterpret_cast<const uint32_t*>(x8 + 8)};
+                    for (int m = 0; m < 2; m++) {
+                        int t0 = wm * 32 + m * 16 + g;
+                        const uint16_t* x0 = &xs[p][t0][kk + q * 2];
+                        const uint16_t* x8 = &xs[p][t0 + 8][kk + q * 2];
+                        uint32_t a[4] = {*reinterpret_cast<const uint32_t*>(x0),
+                                         *reinterpret_cast<const uint32_t*>(x8),
+                                         *reinterpret_cast<const uint32_t*>(x0 + 8),
+                                         *reinterpret_cast<const uint32_t*>(x8 + 8)};
 #pragma unroll
-                    for (int j = 0; j < 4; j++) moe_mma_bf16(acc[m][j], a, b[j]);
+                        for (int j = 0; j < 4; j++) moe_mma_bf16(acc[m][j], a, b[j]);
+                    }
                 }
             }
         }
         __syncthreads();
     }
+    if (!active) return;
 #pragma unroll
     for (int m = 0; m < 2; m++) {
 #pragma unroll
         for (int j = 0; j < 4; j++) {
-            int r = r0 + warp * 32 + j * 8 + q * 2;
+            int r = r0 + wr * 32 + j * 8 + q * 2;
 #pragma unroll
             for (int h = 0; h < 2; h++) {
-                int t = m * 16 + g + h * 8;
+                int t = wm * 32 + m * 16 + g + h * 8;
                 if (t >= nt) continue;
                 float* out = y + (size_t)(a_begin + t) * N;
                 if (r < N) out[r] = acc[m][j][2 * h] * s2;
@@ -310,6 +320,18 @@ moe_tiled(const unsigned long long* recs, const int* off, const int* rows, const
             }
         }
     }
+}
+
+extern "C" __global__ void __launch_bounds__(MMA_THREADS)
+moe_tiled(const unsigned long long* recs, const int* off, const int* rows, const float* x,
+          float* y, int N, int K, long long w_off, long long s_off, int s2_idx) {
+    moe_tiled_impl<3>(recs, off, rows, x, y, N, K, w_off, s_off, s2_idx);
+}
+
+extern "C" __global__ void __launch_bounds__(MMA_THREADS)
+moe_tiled_bf16(const unsigned long long* recs, const int* off, const int* rows, const float* x,
+               float* y, int N, int K, long long w_off, long long s_off, int s2_idx) {
+    moe_tiled_impl<1>(recs, off, rows, x, y, N, K, w_off, s_off, s2_idx);
 }
 
 // h[a, j] = silu(g[a, j]) * u[a, j].

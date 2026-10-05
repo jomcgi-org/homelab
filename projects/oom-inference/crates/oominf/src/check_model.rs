@@ -83,6 +83,7 @@ pub fn run(
     let mut dims = Dims::from_config(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
     dims.kv = cache.kv_cache;
     dims.dense = cache.dense;
+    dims.expert_precision = cache.expert_precision;
     dims.kv_host = cache.kv_host();
     let tolerances: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixtures.join("tolerances.json")).context("tolerances.json")?,

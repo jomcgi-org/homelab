@@ -118,6 +118,25 @@ impl DenseFormat {
     }
 }
 
+/// Activation precision of the tiled (prefill) routed-expert GEMM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpertPrecision {
+    /// fp32 activations as three exact bf16 terms: an fp32 GEMM (exact).
+    Exact,
+    /// Activations rounded to bf16, one tensor-core pass (standard W4A16; lossy).
+    Bf16,
+}
+
+impl ExpertPrecision {
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "exact" => Ok(ExpertPrecision::Exact),
+            "bf16" => Ok(ExpertPrecision::Bf16),
+            other => Err(format!("unknown expert precision {other:?} (exact, bf16)")),
+        }
+    }
+}
+
 /// A dense weight matrix `[n, k]` on the device, in its [`DenseFormat`].
 pub enum Weight<B: Memory> {
     Bf16(B::Bf16),
@@ -827,7 +846,7 @@ pub trait Experts: Memory {
     ) -> Result<()>;
     /// Tiled grouped GEMM for large steps: `y[a] = x[row(a)] . W^T` for one
     /// projection `(weight offset, scale offset, scale2 index)`, with
-    /// `row(a) = rows[a]`, or `a` without `rows`.
+    /// `row(a) = rows[a]`, or `a` without `rows`; activations at `precision`.
     #[allow(clippy::too_many_arguments)]
     fn moe_tiled(
         &self,
@@ -841,6 +860,7 @@ pub trait Experts: Memory {
         n: usize,
         k: usize,
         proj: (usize, usize, usize),
+        precision: ExpertPrecision,
     ) -> Result<()>;
     /// `h[i] = silu(g[i]) * u[i]` for `i` in `[start, end)`.
     fn moe_swiglu_range(

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
-use oominf_core::{Bf16Record, Experts, Nvfp4Record, View};
+use oominf_core::{Bf16Record, ExpertPrecision, Experts, Nvfp4Record, View};
 
 use crate::{Buf, Dev, Gpu, cview, grid};
 
@@ -223,6 +223,7 @@ impl Experts for Gpu {
         n: usize,
         k: usize,
         proj: (usize, usize, usize),
+        precision: ExpertPrecision,
     ) -> Result<()> {
         let (recs, off) = (cview(recs), cview(off));
         let rows = rows.map(cview);
@@ -230,14 +231,17 @@ impl Experts for Gpu {
             k.is_multiple_of(32),
             "moe_tiled: K must be a multiple of 32",
         )?;
-        let f = self.func("moe_tiled")?;
+        let f = self.func(match precision {
+            ExpertPrecision::Exact => "moe_tiled",
+            ExpertPrecision::Bf16 => "moe_tiled_bf16",
+        })?;
         let cfg = LaunchConfig {
             grid_dim: (
                 n.div_ceil(128) as u32,
-                max_per_expert.div_ceil(32) as u32,
+                max_per_expert.div_ceil(64) as u32,
                 n_experts as u32,
             ),
-            block_dim: (128, 1, 1),
+            block_dim: (256, 1, 1),
             shared_mem_bytes: 0,
         };
         let (n32, k32) = (n as i32, k as i32);

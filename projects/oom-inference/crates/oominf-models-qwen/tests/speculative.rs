@@ -76,6 +76,7 @@ fn speculative_greedy_matches_one_token_steps() {
             host_threads: 8,
             kv: oominf_core::KvFormat::F32,
             dense: oominf_core::DenseFormat::Bf16,
+            expert_precision: oominf_core::ExpertPrecision::Exact,
             kv_host: false,
         },
         Box::new(move |b| {
