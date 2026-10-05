@@ -149,7 +149,11 @@ acceptance, including new/existing players, interruptions, expiry, revoke,
 concurrency, wrong identity/campaign denial and no access expansion. A native
 flow render or a policy unit test is not an authenticated browser rehearsal.
 
-Current production remains the registered-player campaign pilot: monolith chart
-`0.647.2`, single-use campaign links on, new-account signup off. This implementation
-changes no production feature values and does not claim platform signup is ready
-for UI testing before activation and real acceptance on #6858.
+The disabled implementation shipped in #6867 as monolith `0.649.9`, with
+migration `20261005060000` applied and all seven platform tables empty.
+The first activation stage enables private operator management and protected
+identity claims. Enrollment and enforcement remain off until the operator has
+explicitly imported its signed identity and received the two Grimoire grants.
+A fresh Authentik login is required to obtain the new claims. Registered-player
+campaign links remain enabled throughout. Subsequent signup activation and
+real browser acceptance remain tracked on #6858.

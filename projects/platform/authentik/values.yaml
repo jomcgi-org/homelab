@@ -9,9 +9,9 @@ platformEnrollment:
   enabled: false
 
 platformManagement:
-  # Adds a protected account-type claim to the existing human management and
-  # Grimoire login audiences. No group, permission or flow gate changes.
-  enabled: false
+  # Adds protected account-type claims for explicit operator bootstrap before
+  # enrollment/enforcement. No group, permission or flow gate changes.
+  enabled: true
 
 # The Ember OIDC provider remains intentionally unconfigured here. ADR 032
 # requires Ember's object-authorization matrix to land before SSO is admitted.

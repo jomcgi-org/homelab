@@ -351,6 +351,14 @@ agents:
 # on a fresh book instead, set extractModel/extractBaseUrl to the in-cluster Qwen
 # vLLM (free, keyless): "qwen3.6-27b" +
 # "http://inference.inference.svc.cluster.local:8080/v1/chat/completions".
+# Operator bootstrap precedes enrollment and enforcement to preserve existing
+# Grimoire access. Requires a fresh login for the protected account-type claim.
+platformAuth:
+  managementEnabled: true
+  enrollmentEnabled: false
+  enforcementEnabled: false
+  enrollmentFlowUrl: ""
+
 grimoire:
   # Registered-player pilot (#6858). Account enrollment remains disabled;
   # this path requires no Authentik invitation credential or permission grant.
