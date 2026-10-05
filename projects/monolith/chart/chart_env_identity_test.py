@@ -2133,10 +2133,17 @@ def test_disabled_friends_app_has_no_asset_dispatch(tmp_path, moving, grimoire):
     override.write_text(
         yaml.safe_dump(
             {
+                # This test disables OIDC lanes, so platform management cannot
+                # inherit the production Grimoire audience prerequisite.
+                "platformAuth": {
+                    "managementEnabled": False,
+                    "enrollmentEnabled": False,
+                    "enforcementEnabled": False,
+                },
                 "cfIngress": {
                     "friends": {"enabled": moving},
                     "grimoire": {"enabled": grimoire},
-                }
+                },
             }
         )
     )
