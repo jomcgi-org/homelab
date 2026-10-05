@@ -109,7 +109,9 @@ Three more runtime choices trade differently:
   device, so decode reads only each token's selected rows. Results are identical
   to device placement. It frees the cache's VRAM for experts: decode is 4%
   slower at 32k and 9% faster at 95k, prefill 4-6% slower (each layer's fp32
-  shadow is read over PCIe) (#6856). Off by default.
+  shadow is read over PCIe) (#6856). With `--dense fp8` the expert tier already
+  has the VRAM and host placement is slower at every length measured (32k-95k).
+  Off by default.
 
 Attention follows each query's QSA selection (at most 2,048 keys): decode splits
 one token's list over warps, and prefill runs one block per (token, KV head)
