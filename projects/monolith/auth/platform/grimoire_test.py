@@ -16,7 +16,7 @@ from grimoire.models import (
     CampaignJoinLink,
     CampaignMember,
 )
-from grimoire.router import router
+from grimoire.router import InviteRequest, invite_registered_player, router
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from auth.api import Authority, Principal, PrincipalKind
@@ -91,6 +91,7 @@ def test_username_invite_resolves_registered_identity_with_contact_email(
             Campaign.__table__,
             CampaignMember.__table__,
             CampaignJoinLink.__table__,
+            CampaignInvitation.__table__,
         ],
     )
     with Session(engine) as session:
@@ -105,8 +106,18 @@ def test_username_invite_resolves_registered_identity_with_contact_email(
         mapping = PlatformApplicationUser(
             user_id=user.id, application="grimoire", application_user_id=player.id
         )
-        session.add_all([user, owner, player, campaign, mapping])
+        membership = CampaignMember(
+            campaign_id=campaign.id, app_user_id=owner.id, role="dm"
+        )
+        session.add_all([user, owner, player, campaign, mapping, membership])
         session.commit()
+        invitation = invite_registered_player(
+            campaign.id,
+            InviteRequest(email="@friend"),
+            email=owner.email,
+            session=session,
+        )
+        assert session.get(CampaignInvitation, invitation.id).invitee_id == player.id
         link = issue_link(session, campaign.id, owner, "@friend")
         assert session.get(CampaignJoinLink, link.id).recipient_id == player.id
         assert link.invitee_email == "@friend"

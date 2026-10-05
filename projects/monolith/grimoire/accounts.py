@@ -2,12 +2,28 @@
 
 import os
 
-from auth.api import Principal, bind_application_user, platform_enforcement_enabled
+from auth.api import (
+    Principal,
+    bind_application_user,
+    find_application_user_by_username,
+    platform_enforcement_enabled,
+)
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from grimoire.models import AppUser
+
+
+def find_registered_user(session: Session, label: str) -> AppUser | None:
+    label = label.strip().lower()
+    if label.startswith("@") and platform_enforcement_enabled():
+        app_id = find_application_user_by_username(session, "grimoire", label[1:])
+        user = session.get(AppUser, app_id) if app_id else None
+        return user if user is not None and user.issuer is not None else None
+    return session.exec(
+        select(AppUser).where(AppUser.email == label, AppUser.issuer.is_not(None))
+    ).first()
 
 
 def sync_user(session: Session, principal: Principal) -> AppUser:
