@@ -129,6 +129,8 @@ pub struct AttnState<B: Backend> {
     pub block_keys: B::F32,
     pub blocks: usize,
     pub len: usize,
+    /// Sequence position of cache entry 0 (RoPE positions are `base + index`).
+    pub base: usize,
     /// Tokens the buffers currently hold.
     pub cap: usize,
     /// Most tokens the sequence may ever hold.
@@ -192,6 +194,7 @@ impl<B: Backend> Attention<B> {
             block_keys: gpu.zeros(bk)?,
             blocks: 0,
             len: 0,
+            base: 0,
             cap,
             max_tokens,
             shadow: None,
@@ -377,12 +380,15 @@ impl<B: Backend> Attention<B> {
     ) -> Result<B::F32> {
         let a = &self.a;
         let h = d.hidden;
-        let start = step.start_pos;
+        // `pos` is the sequence position (RoPE), `start` the cache index.
+        let pos = step.start_pos;
         ensure!(
-            start == state.len,
-            "attention step starts at {start}, cache holds {}",
-            state.len
+            pos == state.base + state.len,
+            "attention step starts at {pos}, cache holds {} from {}",
+            state.len,
+            state.base
         );
+        let start = state.len;
         let kv_len = start + t;
         self.grow(gpu, state, kv_len)?;
         let (nh, kvh, hd) = (a.heads, a.kv_heads, a.head_dim);
@@ -426,7 +432,7 @@ impl<B: Backend> Attention<B> {
         )?;
         ws.give("attn.iq_raw", iq_raw);
         tap(gpu, probe, "indexer.q_normed", &mut iq)?;
-        gpu.rope_rotate_half(&mut iq, t, a.idx_heads, a.idx_dim, rd, inv, start, 1)?;
+        gpu.rope_rotate_half(&mut iq, t, a.idx_heads, a.idx_dim, rd, inv, pos, 1)?;
         tap(gpu, probe, "indexer.q_rope", &mut iq)?;
         gpu.copy_at(
             &ik_raw,
@@ -463,7 +469,16 @@ impl<B: Backend> Attention<B> {
                 1.0,
             )?;
             ws.give("attn.blk_pooled", pooled);
-            gpu.rope_rotate_half(&mut normed, nb_new, 1, id, rd, inv, b0 * a.ratio, a.ratio)?;
+            gpu.rope_rotate_half(
+                &mut normed,
+                nb_new,
+                1,
+                id,
+                rd,
+                inv,
+                state.base + b0 * a.ratio,
+                a.ratio,
+            )?;
             gpu.copy_at(&normed, &mut state.block_keys, b0 * id, nb_new * id)?;
             ws.give("attn.blk_normed", normed);
             state.blocks = nblocks;
@@ -534,8 +549,8 @@ impl<B: Backend> Attention<B> {
         ws.give("attn.k_raw", k_raw);
         tap(gpu, probe, "attn.q_normed", &mut q)?;
         tap(gpu, probe, "attn.k_normed", &mut k)?;
-        gpu.rope_rotate_half(&mut q, t, nh, hd, rd, inv, start, 1)?;
-        gpu.rope_rotate_half(&mut k, t, kvh, hd, rd, inv, start, 1)?;
+        gpu.rope_rotate_half(&mut q, t, nh, hd, rd, inv, pos, 1)?;
+        gpu.rope_rotate_half(&mut k, t, kvh, hd, rd, inv, pos, 1)?;
         tap(gpu, probe, "attn.q_rope", &mut q)?;
         tap(gpu, probe, "attn.k_rope", &mut k)?;
         gpu.kv_append(&k, &mut state.k, self.kv, true, start, t, kvh, hd)?;
