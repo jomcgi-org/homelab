@@ -160,6 +160,16 @@ pub struct TieredExperts<B: Backend> {
     /// Streaming fetches fill these instead of the main VRAM tier (empty when the
     /// VRAM budget is too small to set a layer's worth aside).
     stage: SlotCache,
+    // The readers come before the host buffers they fill: fields drop in order, and a
+    // reader joins its worker (finishing any read in flight) when dropped.
+    /// Reads for stage-ahead and preloading.
+    reader: DirectReader,
+    /// A fetch's own reads, on a separate ring: a prefill fetch that misses on disk
+    /// waits for its few records, not for the next layer's whole stage-ahead batch.
+    fetch_reader: DirectReader,
+    /// Lookahead reads (decode), tagged by key: a fetch waits only for those of its
+    /// own experts; the rest land in the background.
+    lookahead_reader: DirectReader,
     host: SlotCache,
     host_arena: PinnedArena<B>,
     /// The last device copy that read each host slot.
@@ -182,11 +192,6 @@ pub struct TieredExperts<B: Backend> {
     /// number of the open (or last) batch.
     ahead_pending: VecDeque<(u64, B::Event)>,
     ahead_batch: u64,
-    /// Reads for stage-ahead, lookahead and preloading.
-    reader: DirectReader,
-    /// A fetch's own reads, on a separate ring: a prefill fetch that misses on disk
-    /// waits for its few records, not for the next layer's whole stage-ahead batch.
-    fetch_reader: DirectReader,
     /// Disk reads of the open stage-ahead and of the open fetch, per read tag: (host
     /// buffer, device address, key, VRAM cache the key was placed in).
     ahead_reads: Vec<Read>,
@@ -202,9 +207,12 @@ pub struct TieredExperts<B: Backend> {
     /// admission).
     host_seen: HashMap<u32, u64>,
     /// The last prediction: its layer and keys, and the keys whose disk reads it
-    /// started (in flight until the next fetch drains them).
+    /// started.
     prediction: Option<(u32, HashSet<u32>)>,
-    lookahead_inflight: Vec<u32>,
+    lookahead_issued: Vec<u32>,
+    /// Keys whose lookahead reads have not landed yet: pinned in the host tier, and
+    /// waited for by a fetch that routes them.
+    lookahead_inflight: HashSet<u32>,
     /// Stage-ahead copies or reads were queued that `finish_stage_ahead` has not
     /// completed yet.
     ahead_open: bool,
@@ -284,6 +292,7 @@ impl<B: Backend> TieredExperts<B> {
         // device waits for, do not queue behind a whole layer of them.
         let reader = DirectReader::open(&experts_file, AHEAD_READ_DEPTH)?;
         let fetch_reader = DirectReader::open(&experts_file, FETCH_READ_DEPTH)?;
+        let lookahead_reader = DirectReader::open(&experts_file, AHEAD_READ_DEPTH)?;
         let layers = groups.iter().map(|g| g.layer).collect();
         Ok(TieredExperts {
             layers,
@@ -311,6 +320,7 @@ impl<B: Backend> TieredExperts<B> {
             ahead_batch: 0,
             reader,
             fetch_reader,
+            lookahead_reader,
             ahead_reads: Vec::new(),
             fetch_reads: Vec::new(),
             open: false,
@@ -318,7 +328,8 @@ impl<B: Backend> TieredExperts<B> {
             host_compute: 0,
             host_seen: HashMap::new(),
             prediction: None,
-            lookahead_inflight: Vec::new(),
+            lookahead_issued: Vec::new(),
+            lookahead_inflight: HashSet::new(),
             ahead_open: false,
             ahead_done: None,
             ahead_keys: None,
@@ -478,18 +489,38 @@ impl<B: Backend> TieredExperts<B> {
         Ok(())
     }
 
-    /// Waits for the lookahead reads (their records are host-resident from then on)
-    /// and scores the last prediction against `experts`, the routing of `layer`.
+    /// Waits for the lookahead reads of `layer`'s routed `experts` (their records are
+    /// host-resident from then on; other lookahead reads keep landing in the
+    /// background), or with `layer == u32::MAX` for every lookahead read, and scores
+    /// the last prediction against the routing.
     fn finish_lookahead(&mut self, layer: u32, experts: &[u32]) -> Result<()> {
-        if !self.lookahead_inflight.is_empty()
-            && let Err(e) = self.reader.drain(|_| Ok(()))
-        {
-            for k in self.lookahead_inflight.drain(..) {
+        let inflight = &mut self.lookahead_inflight;
+        let landed = |tag: usize| {
+            inflight.remove(&(tag as u32));
+            Ok(())
+        };
+        let waited = if layer == u32::MAX {
+            self.lookahead_reader.drain(landed)
+        } else {
+            let need: HashSet<usize> = experts
+                .iter()
+                .map(|&e| (layer * self.num_experts + e) as usize)
+                .filter(|k| self.lookahead_inflight.contains(&(*k as u32)))
+                .collect();
+            let inflight = &mut self.lookahead_inflight;
+            self.lookahead_reader.wait_for(&need, |tag| {
+                inflight.remove(&(tag as u32));
+                Ok(())
+            })
+        };
+        if let Err(e) = waited {
+            // Nothing is reused while reads are in flight: finish them all first.
+            let _ = self.lookahead_reader.drain(|_| Ok(()));
+            for k in self.lookahead_inflight.drain() {
                 self.host.forget(k);
             }
             return Err(e);
         }
-        let inflight = std::mem::take(&mut self.lookahead_inflight);
         if let Some((pl, keys)) = self.prediction.take()
             && pl == layer
         {
@@ -499,8 +530,11 @@ impl<B: Backend> TieredExperts<B> {
                 .collect();
             self.stats.routed_after_prediction += routed.len() as u64;
             self.stats.predicted_routed += keys.intersection(&routed).count() as u64;
-            self.stats.lookahead_used +=
-                inflight.iter().filter(|k| routed.contains(k)).count() as u64;
+            self.stats.lookahead_used += self
+                .lookahead_issued
+                .iter()
+                .filter(|k| routed.contains(k))
+                .count() as u64;
         }
         Ok(())
     }
@@ -906,9 +940,10 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
                 }
                 continue;
             }
+            let reading = &self.lookahead_inflight;
             let place = self
                 .host
-                .place(key, &pinned)
+                .place(key, &|k| pinned(k) || reading.contains(&k))
                 .context("host expert tier is smaller than one layer's routed experts")?;
             match place {
                 Place::Hit(hs) => {
@@ -946,7 +981,12 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
     fn prefetch(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
         self.finish_fetch(b)?;
         self.finish_staging()?;
-        self.finish_lookahead(u32::MAX, &[])?;
+        // Earlier lookahead reads that have landed no longer need pinning.
+        let inflight = &mut self.lookahead_inflight;
+        self.lookahead_reader.poll(|tag| {
+            inflight.remove(&(tag as u32));
+            Ok(())
+        })?;
         let keys: HashSet<u32> = experts
             .iter()
             .filter(|&&e| e < self.num_experts)
@@ -955,6 +995,7 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
         self.stats.predicted += keys.len() as u64;
         if self.lookahead {
             let mut jobs = Vec::new();
+            self.lookahead_issued.clear();
             for &key in &keys {
                 if self.vram.peek(key).is_some()
                     || self.stage.peek(key).is_some()
@@ -962,7 +1003,9 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
                 {
                     continue;
                 }
-                let Some(Place::Miss(hs, _)) = self.host.place(key, &|_| false) else {
+                let reading = &self.lookahead_inflight;
+                let Some(Place::Miss(hs, _)) = self.host.place(key, &|k| reading.contains(&k))
+                else {
                     continue;
                 };
                 self.wait_copies(self.host_last_copy[hs])?;
@@ -972,15 +1015,17 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
                     offset,
                     dst: self.host_arena.slot_ptr(hs),
                     len: stride as usize,
-                    tag: jobs.len(),
+                    tag: key as usize,
                 });
-                self.lookahead_inflight.push(key);
+                self.lookahead_inflight.insert(key);
+                self.lookahead_issued.push(key);
             }
             self.stats.lookahead_reads += jobs.len() as u64;
             if !jobs.is_empty()
-                && let Err(e) = self.reader.submit(jobs)
+                && let Err(e) = self.lookahead_reader.submit(jobs)
             {
-                for k in self.lookahead_inflight.drain(..) {
+                for k in self.lookahead_issued.drain(..) {
+                    self.lookahead_inflight.remove(&k);
                     self.host.forget(k);
                 }
                 return Err(e);
