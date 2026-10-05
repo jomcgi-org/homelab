@@ -2,6 +2,7 @@
 // Activations, state and accumulation are fp32; dense weights are bf16 as released.
 
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 #include <stdint.h>
 
 typedef __nv_bfloat16 bf16;
@@ -319,10 +320,13 @@ extern "C" __global__ void copy_rows(const float* src, float* dst, int first, in
 // [splits, T, N]; the last block to finish a row tile (an atomic ticket per tile in
 // `tickets`, reset after use) sums them in split order, so results are deterministic.
 // K must be a multiple of 8; klen (K per split) a multiple of 256 except the last.
+// With FP8, W is e4m3 bytes (16 per lane per load, inside one 128-weight block)
+// scaled per block by `scale` [N, ceil(K / 128)]: K a multiple of 16, klen of 512.
 #define GEMV_R 4
-template <int T>
-__device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* partial,
-                               unsigned* tickets, int N, int K, int klen) {
+template <int T, bool FP8>
+__device__ void gemv_impl(const float* x, const void* Wv, const float* scale, float* y,
+                          float* partial, unsigned* tickets, int N, int K, int klen) {
+    constexpr int PER = FP8 ? 16 : 8;  // weights per lane per load
     extern __shared__ float xs[];
     int split = blockIdx.y;
     int k0 = split * klen;
@@ -340,32 +344,46 @@ __device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* p
     for (int t = 0; t < T; t++)
 #pragma unroll
         for (int r = 0; r < GEMV_R; r++) acc[t][r] = 0.0f;
-    for (int kb = lane * 8; row0 < N && kb < kl; kb += 256) {
-        float xv[T][8];
+    for (int kb = lane * PER; row0 < N && kb < kl; kb += 32 * PER) {
+        float xv[T][PER];
 #pragma unroll
-        for (int t = 0; t < T; t++) {
-            float4 a = *(const float4*)(xs + t * kl + kb);
-            float4 b = *(const float4*)(xs + t * kl + kb + 4);
-            xv[t][0] = a.x; xv[t][1] = a.y; xv[t][2] = a.z; xv[t][3] = a.w;
-            xv[t][4] = b.x; xv[t][5] = b.y; xv[t][6] = b.z; xv[t][7] = b.w;
-        }
+        for (int t = 0; t < T; t++)
+#pragma unroll
+            for (int j = 0; j < PER; j += 4) {
+                float4 a = *(const float4*)(xs + t * kl + kb + j);
+                xv[t][j] = a.x; xv[t][j + 1] = a.y; xv[t][j + 2] = a.z; xv[t][j + 3] = a.w;
+            }
 #pragma unroll
         for (int r = 0; r < GEMV_R; r++) {
             int n = row0 + r;
             if (n >= N) break;
-            uint4 raw = __ldg((const uint4*)(W + (size_t)n * K + k0 + kb));
-            const __nv_bfloat162* w2 = (const __nv_bfloat162*)&raw;
-            float w[8];
+            float w[PER];
+            if constexpr (FP8) {
+                const uint8_t* W = (const uint8_t*)Wv;
+                uint4 raw = __ldg((const uint4*)(W + (size_t)n * K + k0 + kb));
+                const __nv_fp8x2_e4m3* w2 = (const __nv_fp8x2_e4m3*)&raw;
+                float sc = __ldg(&scale[(size_t)n * ((K + 127) / 128) + (k0 + kb) / 128]);
 #pragma unroll
-            for (int i = 0; i < 4; i++) {
-                float2 f = __bfloat1622float2(w2[i]);
-                w[2 * i] = f.x;
-                w[2 * i + 1] = f.y;
+                for (int i = 0; i < 8; i++) {
+                    float2 f = float2(w2[i]);
+                    w[2 * i] = f.x * sc;
+                    w[2 * i + 1] = f.y * sc;
+                }
+            } else {
+                const bf16* W = (const bf16*)Wv;
+                uint4 raw = __ldg((const uint4*)(W + (size_t)n * K + k0 + kb));
+                const __nv_bfloat162* w2 = (const __nv_bfloat162*)&raw;
+#pragma unroll
+                for (int i = 0; i < 4; i++) {
+                    float2 f = __bfloat1622float2(w2[i]);
+                    w[2 * i] = f.x;
+                    w[2 * i + 1] = f.y;
+                }
             }
 #pragma unroll
             for (int t = 0; t < T; t++)
 #pragma unroll
-                for (int i = 0; i < 8; i++) acc[t][r] += xv[t][i] * w[i];
+                for (int i = 0; i < PER; i++) acc[t][r] += xv[t][i] * w[i];
         }
     }
 #pragma unroll
@@ -408,10 +426,24 @@ __device__ void gemv_bf16_impl(const float* x, const bf16* W, float* y, float* p
     if (threadIdx.x == 0) tickets[blockIdx.x] = 0;
 }
 
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t1(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<1>(x, W, y, partial, tickets, N, K, klen); }
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t2(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<2>(x, W, y, partial, tickets, N, K, klen); }
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t3(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<3>(x, W, y, partial, tickets, N, K, klen); }
-extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t4(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_bf16_impl<4>(x, W, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t1(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<1, false>(x, W, nullptr, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t2(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<2, false>(x, W, nullptr, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t3(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<3, false>(x, W, nullptr, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_bf16_t4(const float* x, const bf16* W, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<4, false>(x, W, nullptr, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_fp8_t1(const float* x, const uint8_t* W, const float* scale, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<1, true>(x, W, scale, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_fp8_t2(const float* x, const uint8_t* W, const float* scale, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<2, true>(x, W, scale, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_fp8_t3(const float* x, const uint8_t* W, const float* scale, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<3, true>(x, W, scale, y, partial, tickets, N, K, klen); }
+extern "C" __global__ void __launch_bounds__(256) gemv_fp8_t4(const float* x, const uint8_t* W, const float* scale, float* y, float* partial, unsigned* tickets, int N, int K, int klen) { gemv_impl<4, true>(x, W, scale, y, partial, tickets, N, K, klen); }
+
+// bf16 W[r, c] = scale[r, c / 128] * e4m3 q[r, c], for a cuBLAS GEMM over FP8 weights.
+extern "C" __global__ void fp8_dequantize_blocks(const uint8_t* q, const float* scale, bf16* W, int N, int K) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)N * K) return;
+    size_t r = i / K, c = i % K;
+    __nv_fp8_e4m3 v;
+    v.__x = q[i];
+    W[i] = __float2bfloat16(float(v) * scale[r * ((K + 127) / 128) + c / 128]);
+}
 
 // Inverse of copy_cols: dst[r, col .. col + cols] = src[r, :] for rows of `stride`.
 extern "C" __global__ void put_cols(const float* src, float* dst, int rows, int stride, int col,

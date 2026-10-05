@@ -75,6 +75,8 @@ fn speculative_greedy_matches_one_token_steps() {
             prefill_chunk: oominf_models_qwen::PREFILL_CHUNK,
             host_threads: 8,
             kv: oominf_core::KvFormat::F32,
+            dense: oominf_core::DenseFormat::Bf16,
+            kv_host: false,
         },
         Box::new(move |b| {
             let policies = || Ok((policy::parse("lru")?, policy::parse("lru")?));

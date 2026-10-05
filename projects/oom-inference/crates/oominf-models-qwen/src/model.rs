@@ -5,14 +5,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, DeviceBuffer, ExpertSource, Fetched, NoProbe, Probe, Workspace, tap};
+use oominf_core::{
+    Backend, DeviceBuffer, ExpertSource, Fetched, NoProbe, Probe, Weight, Workspace, tap,
+};
 use oominf_format::Model;
 
 use crate::Dims;
 use crate::hc::HyperConn;
 use crate::layer::{DecoderLayer, LayerState, PreMoe, StepInput};
 use crate::moe::{HostIds, PendingRoute};
-use crate::util::bf16_tensor;
+use crate::util::{bf16_tensor, weight};
 
 /// Prompt tokens per prefill chunk by default: bounds prefill workspace VRAM.
 pub const PREFILL_CHUNK: usize = 512;
@@ -45,6 +47,10 @@ const PREFILL_ONLY_BUFFERS: &[&str] = &[
     "layer.moe_part",
 ];
 
+/// Device memory an FP8-weight backend keeps for bf16 copies of a layer's dense
+/// weights during prefill (`oominf_cuda`'s cache holds up to 512 MB).
+const FP8_WEIGHT_CACHE_BYTES: usize = 512 << 20;
+
 /// The two MoE input buffers prefill alternates between: a group's stays in use
 /// until the next group's mixers are queued and its own experts run.
 const MOE_IN: [&str; 2] = ["layer.moe_in", "layer.moe_in_b"];
@@ -75,7 +81,7 @@ pub struct QwenModel<B: Backend> {
     embed: Vec<u16>,
     layers: Vec<DecoderLayer<B>>,
     final_mixer: HyperConn<B>,
-    lm_head: B::Bf16,
+    lm_head: Weight<B>,
     /// The multi-token-prediction head, when the checkpoint has one.
     mtp: Option<Mtp<B>>,
 }
@@ -90,8 +96,8 @@ struct Mtp<B: Backend> {
     layer: DecoderLayer<B>,
     norm_embedding: B::Bf16,
     norm_hidden: B::Bf16,
-    fc_embedding: B::Bf16,
-    fc_hidden: B::Bf16,
+    fc_embedding: Weight<B>,
+    fc_hidden: Weight<B>,
     mixer: HyperConn<B>,
     /// `[hc]` ones: adds one row to every stream through the combine kernel.
     ones: B::F32,
@@ -197,8 +203,8 @@ impl<B: Backend> QwenModel<B> {
                 layer: DecoderLayer::load_mtp(gpu, model, &dims, mtp_group)?,
                 norm_embedding: bf16_tensor(gpu, model, "mtp.pre_fc_norm_embedding.weight", &[hu])?,
                 norm_hidden: bf16_tensor(gpu, model, "mtp.pre_fc_norm_hidden.weight", &[ru])?,
-                fc_embedding: bf16_tensor(gpu, model, "mtp.fc_embedding.weight", &[hu, hu])?,
-                fc_hidden: bf16_tensor(gpu, model, "mtp.fc_hidden.weight", &[hu, hu])?,
+                fc_embedding: weight(gpu, model, "mtp.fc_embedding.weight", &[hu, hu], &dims)?,
+                fc_hidden: weight(gpu, model, "mtp.fc_hidden.weight", &[hu, hu], &dims)?,
                 mixer: HyperConn::load(gpu, model, &dims, "mtp.hyper_connection_mixer", false)?,
                 ones: gpu.upload_f32(&vec![1.0; dims.hc])?,
             })
@@ -214,7 +220,7 @@ impl<B: Backend> QwenModel<B> {
                 "model.language_model.hyper_connection_mixer",
                 false,
             )?,
-            lm_head: bf16_tensor(gpu, model, "lm_head.weight", &[vocab as u64, h])?,
+            lm_head: weight(gpu, model, "lm_head.weight", &[vocab as u64, h], &dims)?,
             vocab,
             embed,
             layers,
@@ -331,7 +337,7 @@ impl<B: Backend> QwenModel<B> {
             mixed
         };
         let mut logits = gpu.uninit(rows * self.vocab)?;
-        gpu.gemm_bf16(
+        gpu.gemm_w(
             &input,
             &self.lm_head,
             &mut logits,
@@ -618,7 +624,11 @@ impl<B: Backend> QwenModel<B> {
             .map(|l| l.shadow_bytes(total))
             .max()
             .unwrap_or(0);
-        (t * r + held) * std::mem::size_of::<f32>() + attn + shadow
+        let dense_cache = match d.dense {
+            oominf_core::DenseFormat::Bf16 => 0,
+            oominf_core::DenseFormat::Fp8 => FP8_WEIGHT_CACHE_BYTES,
+        };
+        (t * r + held) * std::mem::size_of::<f32>() + attn + shadow + dense_cache
     }
 
     /// [`Self::prefill`] of at most one window: `None` if cancelled, else the
@@ -644,9 +654,9 @@ impl<B: Backend> QwenModel<B> {
         // copies behind, staging ahead costs more (its imprecise prediction copies
         // unused records) than it saves.
         if token_ids.len() <= chunk {
-            return self
-                .forward(gpu, token_ids, state, experts, &mut NoProbe, true)
-                .map(|l| Some(Some(l)));
+            let logits = self.forward(gpu, token_ids, state, experts, &mut NoProbe, true);
+            gpu.release_weight_cache();
+            return logits.map(|l| Some(Some(l)));
         }
         let d = &self.dims;
         let total = state.pos + token_ids.len();
@@ -749,9 +759,11 @@ impl<B: Backend> QwenModel<B> {
         self.keep_hidden(gpu, state, last, t - 1, 1)?;
         let logits = self.head(gpu, &mut state.ws.borrow_mut(), last, t, &mut NoProbe, true)?;
         // Give prefill-only memory back to the expert tier for decode: the residuals,
-        // the fp32 KV shadows and the grow-only buffers sized for fetch groups.
+        // the fp32 KV shadows, the grow-only buffers sized for fetch groups and FP8
+        // dense weights dequantized for prefill GEMMs.
         drop(xs);
         state.ws.borrow_mut().release(PREFILL_ONLY_BUFFERS);
+        gpu.release_weight_cache();
         self.reclaim_vram(gpu, state, experts)?;
         Ok(Some(Some(logits)))
     }
@@ -819,12 +831,12 @@ impl<B: Backend> QwenModel<B> {
             let mut e_n = ws.take(gpu, "mtp.e_n", h)?;
             gpu.rmsnorm_groups(&e, &mtp.norm_embedding, &mut e_n, 1, h, h, d.eps, 1.0)?;
             let mut fe = ws.take(gpu, "mtp.fe", h)?;
-            gpu.gemm_bf16(&e_n, &mtp.fc_embedding, &mut fe, &mut scratch, 1, h, h)?;
+            gpu.gemm_w(&e_n, &mtp.fc_embedding, &mut fe, &mut scratch, 1, h, h)?;
             let mut x_n = ws.take(gpu, "mtp.x_n", r)?;
             gpu.rmsnorm_groups(&x, &mtp.norm_hidden, &mut x_n, 1, r, r, d.eps, 1.0)?;
             // fc_hidden applies to each stream: the residual is `hc` rows of `hidden`.
             let mut fx = ws.take(gpu, "mtp.fx", r)?;
-            gpu.gemm_bf16(&x_n, &mtp.fc_hidden, &mut fx, &mut scratch, hc, h, h)?;
+            gpu.gemm_w(&x_n, &mtp.fc_hidden, &mut fx, &mut scratch, hc, h, h)?;
             let mut fused = ws.take(gpu, "mtp.fused", r)?;
             gpu.hc_combine(&fx, &fe, &mtp.ones, &mut fused, 1, hc, h)?;
             for (name, b) in [
@@ -860,7 +872,7 @@ impl<B: Backend> QwenModel<B> {
                 "mtp_hc",
             )?;
             let mut logits = ws.take(gpu, "mtp.logits", self.vocab)?;
-            gpu.gemm_bf16(
+            gpu.gemm_w(
                 &mixed,
                 &self.lm_head,
                 &mut logits,

@@ -87,6 +87,24 @@ layer's keys and values (one layer at a time, about 0.4 GB at 95k tokens), so
 prefill attention reads fp32 rows instead of re-decoding cached tiles in every
 block and runs at fp32 speed; decode reads the compressed cache.
 
+Two more runtime choices trade differently:
+
+- `--dense fp8` stores the dense (non-expert) weights as FP8 e4m3, one scale per
+  128 weights, quantized on the host at load (routers stay bf16): half the bytes,
+  so decode reads less (35-37 ms per verify step against 43-50 ms at 32k-95k) and
+  the expert tier gains about 1,660 VRAM slots. Next-token distributions shift
+  measurably (KL about 0.10-0.13, 86-88% top-1 against the exact reference, about
+  3x the rounding floor, with per-row or per-block scales and with or without bf16
+  routers), while retrieval and the long-context task set still pass (#6865).
+  Prefill dequantizes each weight to bf16 once per layer (a 512 MB cache freed
+  when the prefill ends). Off by default.
+- `--kv-placement host` keeps attention K/V caches in host memory the GPU reads
+  over PCIe (managed memory preferring the host); the indexer's keys stay on the
+  device, so decode reads only each token's selected rows. Results are identical
+  to device placement. It frees the cache's VRAM for experts: decode is 4%
+  slower at 32k and 9% faster at 95k, prefill 4-6% slower (each layer's fp32
+  shadow is read over PCIe) (#6856). Off by default.
+
 Attention follows each query's QSA selection (at most 2,048 keys): decode splits
 one token's list over warps, and prefill runs one block per (token, KV head)
 over that token's own list. Grouping tokens to share key tiles does not pay:

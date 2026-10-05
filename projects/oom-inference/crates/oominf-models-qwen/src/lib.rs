@@ -56,6 +56,11 @@ pub struct Dims {
     pub text: serde_json::Value,
     /// How attention layers store their KV cache (a runtime choice, fp32 unless set).
     pub kv: oominf_core::KvFormat,
+    /// How dense weights are stored (a runtime choice, bf16 unless set).
+    pub dense: oominf_core::DenseFormat,
+    /// Attention K/V caches live in host memory, read over the bus (a runtime
+    /// choice, device memory unless set); the indexer's keys stay on the device.
+    pub kv_host: bool,
 }
 
 impl Dims {
@@ -106,6 +111,8 @@ impl Dims {
             scratch_cols: 0,
             text: t.clone(),
             kv: oominf_core::KvFormat::F32,
+            dense: oominf_core::DenseFormat::Bf16,
+            kv_host: false,
         })
     }
 

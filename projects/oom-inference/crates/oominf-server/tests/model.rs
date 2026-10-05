@@ -93,6 +93,8 @@ async fn gpu_smoke() {
             prefill_chunk: None,
             host_threads: 0,
             kv: oominf_core::KvFormat::F32,
+            dense: oominf_core::DenseFormat::Bf16,
+            kv_host: false,
         };
         let disk = files.clone();
         oominf_models::open(

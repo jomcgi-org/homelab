@@ -127,6 +127,38 @@ impl Memory for Gpu {
         Ok(Dev(self.stream.alloc_zeros::<u8>(n)?))
     }
 
+    fn zeros_bytes_host(&self, n: usize) -> Result<Dev<u8>> {
+        use cudarc::driver::result;
+        let n = n.max(1);
+        self.ctx.bind_to_thread()?;
+        let location = |type_, id| sys::CUmemLocation { type_, id };
+        // SAFETY: a fresh managed allocation of `n` bytes, advised over its whole
+        // range and owned by the returned slice (freed with it).
+        unsafe {
+            let ptr = result::malloc_managed(n, sys::CUmemAttach_flags::CU_MEM_ATTACH_GLOBAL)?;
+            // Pages live in host memory and the device maps them rather than
+            // migrating them on access.
+            result::mem_advise(
+                ptr,
+                n,
+                sys::CUmem_advise::CU_MEM_ADVISE_SET_PREFERRED_LOCATION,
+                location(sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_HOST, 0),
+            )?;
+            result::mem_advise(
+                ptr,
+                n,
+                sys::CUmem_advise::CU_MEM_ADVISE_SET_ACCESSED_BY,
+                location(
+                    sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
+                    self.ctx.ordinal() as i32,
+                ),
+            )?;
+            let mut buf = Dev(self.stream.upgrade_device_ptr::<u8>(ptr, n));
+            self.stream.memset_zeros(&mut buf.0)?;
+            Ok(buf)
+        }
+    }
+
     fn download_bytes(&self, buf: &Dev<u8>) -> Result<Vec<u8>> {
         Ok(self.stream.clone_dtoh(&buf.0)?)
     }

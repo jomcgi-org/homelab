@@ -1,20 +1,20 @@
 //! Gated DeltaNet, the token mixer of linear-attention layers.
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, DeviceBuffer, Probe, Workspace, tap, tap_cols};
+use oominf_core::{Backend, DeviceBuffer, Probe, Weight, Workspace, tap, tap_cols};
 use oominf_format::Model;
 
 use crate::Dims;
-use crate::util::{bf16_concat, bf16_tensor};
+use crate::util::{bf16_tensor, weight, weight_concat};
 
 pub struct Gdn<B: Backend> {
     /// `in_proj_qkv`, `in_proj_z`, `in_proj_b`, `in_proj_a` stacked: one GEMM.
-    in_proj: B::Bf16,
+    in_proj: Weight<B>,
     conv: B::Bf16,
     a_log: B::Bf16,
     dt_bias: B::Bf16,
     norm: B::Bf16,
-    out: B::Bf16,
+    out: Weight<B>,
 }
 
 /// Recurrent GDN state carried across steps.
@@ -72,7 +72,7 @@ impl<B: Backend> Gdn<B> {
         );
         let w = |n: &str, s: &[u64]| bf16_tensor(gpu, model, &format!("{la}{n}"), s);
         Ok(Gdn {
-            in_proj: bf16_concat(
+            in_proj: weight_concat(
                 gpu,
                 model,
                 &[
@@ -81,12 +81,13 @@ impl<B: Backend> Gdn<B> {
                     (format!("{la}in_proj_b.weight"), vec![hv, h]),
                     (format!("{la}in_proj_a.weight"), vec![hv, h]),
                 ],
+                d,
             )?,
             conv: w("conv1d.weight", &[cd, d.conv_kernel as u64])?,
             a_log: w("A_log", &[hv])?,
             dt_bias: w("dt_bias", &[hv])?,
             norm: w("norm.weight", &[d.head_v as u64])?,
-            out: w("out_proj.weight", &[h, vd])?,
+            out: weight(gpu, model, &format!("{la}out_proj.weight"), &[h, vd], d)?,
         })
     }
 
@@ -140,7 +141,7 @@ impl<B: Backend> Gdn<B> {
             state.ckpt = None;
         }
         let mut proj = ws.take(gpu, "gdn.proj", t * n)?;
-        gpu.gemm_bf16(x, &w.in_proj, &mut proj, scratch, t, n, h)?;
+        gpu.gemm_w(x, &w.in_proj, &mut proj, scratch, t, n, h)?;
         // Downstream kernels read the fused projection in place:
         // [qkv (cd) | z (vd) | b (hv) | a (hv)] per row.
         let (z_off, b_off, a_off) = (cd, cd + vd, cd + vd + hv);
@@ -211,7 +212,7 @@ impl<B: Backend> Gdn<B> {
         ws.give("gdn.proj", proj);
         tap(gpu, probe, "gdn.norm_out", &mut normed)?;
         let mut out = ws.take(gpu, "gdn.out", t * h)?;
-        gpu.gemm_bf16(&normed, &w.out, &mut out, scratch, t, h, vd)?;
+        gpu.gemm_w(&normed, &w.out, &mut out, scratch, t, h, vd)?;
         ws.give("gdn.normed", normed);
         Ok(out)
     }

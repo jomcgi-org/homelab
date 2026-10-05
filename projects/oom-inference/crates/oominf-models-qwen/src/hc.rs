@@ -2,18 +2,18 @@
 //! combine a block's output back into every stream.
 
 use anyhow::Result;
-use oominf_core::{Backend, Probe, Workspace, tap};
+use oominf_core::{Backend, Probe, Weight, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
-use crate::util::{bf16_concat, bf16_tensor};
+use crate::util::{bf16_tensor, weight, weight_concat};
 
 pub struct HyperConn<B: Backend> {
     norm: B::Bf16,
     /// `input_mix_weight_down` with, when the connection combines,
     /// `block_inject_weight` stacked under it: both read the normed residual.
-    down_inject: B::Bf16,
-    up: B::Bf16,
+    down_inject: Weight<B>,
+    up: Weight<B>,
     combine: bool,
 }
 
@@ -34,12 +34,13 @@ impl<B: Backend> HyperConn<B> {
         }
         Ok(HyperConn {
             norm: bf16_tensor(gpu, model, &format!("{prefix}.hc_norm.weight"), &[r])?,
-            down_inject: bf16_concat(gpu, model, &parts)?,
-            up: bf16_tensor(
+            down_inject: weight_concat(gpu, model, &parts, d)?,
+            up: weight(
                 gpu,
                 model,
                 &format!("{prefix}.input_mix_weight_up.weight"),
                 &[r, lr],
+                d,
             )?,
             combine,
         })
@@ -76,7 +77,7 @@ impl<B: Backend> HyperConn<B> {
             1.0,
         )?;
         let mut down = ws.take(gpu, "hc.down", t * (lr + hc))?;
-        gpu.gemm_bf16(
+        gpu.gemm_w(
             &normed,
             &self.down_inject,
             &mut down,
@@ -94,7 +95,7 @@ impl<B: Backend> HyperConn<B> {
         }
         ws.give("hc.down", down);
         let mut up = ws.take(gpu, "hc.up", t * r)?;
-        gpu.gemm_bf16(&act, &self.up, &mut up, scratch, t, r, lr)?;
+        gpu.gemm_w(&act, &self.up, &mut up, scratch, t, r, lr)?;
         ws.give("hc.act", act);
         let mut mixed = ws.take(gpu, "hc.mixed", t * d.hidden)?;
         gpu.hc_mix(&up, &normed, &mut mixed, t, d.hc, d.hidden)?;

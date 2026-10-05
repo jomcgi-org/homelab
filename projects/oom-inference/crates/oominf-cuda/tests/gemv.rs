@@ -3,7 +3,8 @@
 //! `cargo test --release -p oominf-cuda --test gemv -- --ignored --nocapture`.
 
 use anyhow::Result;
-use oominf_core::{Linear, Memory};
+use oominf_core::{Linear, Memory, fp8};
+
 use oominf_cuda::Gpu;
 
 /// Deterministic values in [-1, 1) (xorshift64*).
@@ -116,5 +117,67 @@ fn gemv_throughput() -> Result<()> {
         "all shapes: {:.0} GB/s weighted by bytes",
         total_bytes / total_s / 1e9
     );
+    Ok(())
+}
+
+/// FP8 weights quantized per block on the host (as the loader does): the GEMV (t <= 4)
+/// and the dequantize-then-cuBLAS path (larger t) both match an f64 reference over
+/// the dequantized weights, and the quantization error is e4m3's (a few % per weight).
+#[test]
+#[ignore = "needs a GPU"]
+fn fp8_gemm_matches_reference() -> Result<()> {
+    let gpu = Gpu::new(0)?;
+    for (n, k) in [(640, 2560), (2560, 640), (300, 10240)] {
+        // The dequantized cache is keyed by the FP8 buffer's address, which a new
+        // buffer may reuse once the old one is freed.
+        gpu.release_weight_cache();
+        let w: Vec<u16> = values(n * k, 9).into_iter().map(bf16_bits).collect();
+        let (qh, sh) = fp8::quantize_blocks(&w, n, k);
+        let nb = k.div_ceil(fp8::BLOCK);
+        let (q, scale) = (gpu.upload_bytes(&qh)?, gpu.upload_f32(&sh)?);
+        let deq: Vec<f32> = (0..n * k)
+            .map(|i| fp8::e4m3_to_f32(qh[i]) * sh[i / k * nb + i % k / fp8::BLOCK])
+            .collect();
+        let rel: f64 = (0..n * k)
+            .map(|i| (deq[i] as f64 - bf16_value(w[i]) as f64).powi(2))
+            .sum::<f64>()
+            / (0..n * k)
+                .map(|i| (bf16_value(w[i]) as f64).powi(2))
+                .sum::<f64>();
+        assert!(
+            rel.sqrt() < 0.05,
+            "{n}x{k}: fp8 relative error {:.3}",
+            rel.sqrt()
+        );
+        for t in [1, 2, 4, 37] {
+            let x = values(t * k, 5 + t as u64);
+            let mut y = gpu.zeros(t * n)?;
+            let mut scratch = gpu.uninit_bf16(t * k)?;
+            gpu.gemm_fp8(
+                &gpu.upload_f32(&x)?,
+                &q,
+                &scale,
+                &mut y,
+                &mut scratch,
+                t,
+                n,
+                k,
+            )?;
+            let got = gpu.download_f32(&y)?;
+            // Larger t rounds activations to bf16 for tensor cores.
+            let tol = if t <= 4 { 1e-5 } else { 1e-2 };
+            let mut worst = 0f64;
+            for r in 0..t {
+                for c in 0..n {
+                    let want: f64 = (0..k)
+                        .map(|i| x[r * k + i] as f64 * deq[c * k + i] as f64)
+                        .sum();
+                    worst = worst.max((got[r * n + c] as f64 - want).abs() / (k as f64).sqrt());
+                }
+            }
+            assert!(worst < tol, "t={t} {n}x{k}: scaled error {worst:.2e}");
+        }
+    }
+    gpu.release_weight_cache();
     Ok(())
 }

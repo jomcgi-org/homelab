@@ -8,13 +8,15 @@
 mod backend;
 pub mod decode;
 mod experts;
+pub mod fp8;
 mod model;
 mod probe;
 mod workspace;
 
 pub use backend::{
-    Attention, Backend, Bf16Record, DeviceBuffer, Elementwise, Experts, HyperConnection, KvFormat,
-    Linear, Lookup, Memory, Norm, Nvfp4Record, Recurrent, Transfer, View,
+    Attention, Backend, Bf16Record, DenseFormat, DeviceBuffer, Elementwise, Experts,
+    HyperConnection, KvFormat, Linear, Lookup, Memory, Norm, Nvfp4Record, Recurrent, Transfer,
+    View, Weight,
 };
 pub use decode::{Decoded, argmax, decode_step};
 pub use experts::{ExpertFactory, ExpertSource, ExpertStats, Fetched, Staged};
