@@ -8,6 +8,7 @@
 //! (W4A16 with no extra rounding).
 
 pub mod attention;
+pub mod checkpoint;
 pub mod gdn;
 pub mod hc;
 pub mod layer;

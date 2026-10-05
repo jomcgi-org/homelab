@@ -1,7 +1,10 @@
 //! A persistent prefix store behind [`PrefixCache`]: sequences evicted from the
 //! device are saved to disk, and a later request whose prompt extends one resumes
 //! from it instead of prefilling those tokens (agent loops that come back hours
-//! later, repeated long system prompts).
+//! later, repeated long system prompts). An entry also carries the sequence's
+//! prefix checkpoints, so a prompt that shares only a prefix with it (the same
+//! documents, another question) resumes at the longest checkpoint inside that
+//! prefix.
 //!
 //! The live sequence stays on the device as in [`LastSequence`]. When a request
 //! does not extend it, the store saves it (the device-to-host copy on the engine
@@ -13,8 +16,8 @@
 //! entries comes from the page cache.
 //!
 //! Entry file: `OOMSNAP1`, `u32` header length, JSON header (identity, token and
-//! logit counts, payload checksum), token ids (`u32`), logits (`f32`), then the
-//! session's own snapshot ([`oominf_core::Session::save`]).
+//! logit counts, checkpoint positions, payload checksum), token ids (`u32`), logits
+//! (`f32`), then the session's own snapshot ([`oominf_core::Session::save`]).
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -27,7 +30,7 @@ use anyhow::{Context, Result, ensure};
 use oominf_core::Session;
 use serde_json::json;
 
-use crate::engine::{CachedSeq, LastSequence, PrefixCache};
+use crate::engine::{CachedSeq, LastSequence, PrefixCache, resume_at, reusable};
 
 const MAGIC: &[u8; 8] = b"OOMSNAP1";
 
@@ -53,6 +56,8 @@ struct Entry {
     /// The entry saved the logits after its last token, so an identical prompt can
     /// resume from it too.
     has_logits: bool,
+    /// Positions the saved sequence can rewind to.
+    checkpoints: Vec<usize>,
     bytes: u64,
     used: SystemTime,
 }
@@ -77,6 +82,7 @@ struct Shared {
 struct Pending {
     ids: Vec<u32>,
     logits: Vec<f32>,
+    checkpoints: Vec<usize>,
     payload: Vec<u8>,
 }
 
@@ -161,6 +167,7 @@ impl PrefixStore {
         let w = Pending {
             ids: seq.ids.clone(),
             logits: seq.logits.clone(),
+            checkpoints: seq.state.checkpoints(),
             payload,
         };
         // One write in flight; drop rather than stall the engine.
@@ -171,24 +178,23 @@ impl PrefixStore {
         }
     }
 
-    /// Restores the longest saved sequence that `prompt` extends.
+    /// Restores the saved sequence that serves the most of `prompt`: one it extends,
+    /// or one sharing a prefix that holds a checkpoint.
     fn restore(
         &mut self,
         prompt: &[u32],
         new_session: &mut dyn FnMut() -> Result<Seq>,
     ) -> Option<CachedSeq<Seq>> {
-        let (path, identity) = {
+        let (path, identity, pos) = {
             let s = self.shared.lock().unwrap();
-            let best = s
+            let (best, pos) = s
                 .index
                 .iter()
-                .filter(|e| {
-                    prompt.starts_with(&e.ids) && (prompt.len() > e.ids.len() || e.has_logits)
-                })
-                .max_by_key(|e| e.ids.len())?;
-            (best.path.clone(), s.cfg.identity.clone())
+                .filter_map(|e| Some((e, reusable(&e.ids, e.has_logits, &e.checkpoints, prompt)?)))
+                .max_by_key(|&(_, pos)| pos)?;
+            (best.path.clone(), s.cfg.identity.clone(), pos)
         };
-        match read_entry(&path, &identity, new_session) {
+        match read_entry(&path, &identity, new_session).and_then(|seq| resume_at(seq, pos)) {
             Ok(seq) => {
                 let mut s = self.shared.lock().unwrap();
                 s.stats.restored += 1;
@@ -301,6 +307,7 @@ fn write_entry(shared: &Mutex<Shared>, w: Pending) -> Result<()> {
         "identity": identity,
         "tokens": w.ids.len(),
         "logits": w.logits.len(),
+        "checkpoints": w.checkpoints,
         "payload_bytes": w.payload.len(),
         "payload_xxh3": oominf_format::checksum(&w.payload),
     });
@@ -324,6 +331,7 @@ fn write_entry(shared: &Mutex<Shared>, w: Pending) -> Result<()> {
     s.index.push(Entry {
         path,
         has_logits: !w.logits.is_empty(),
+        checkpoints: w.checkpoints,
         ids: w.ids,
         bytes,
         used: SystemTime::now(),
@@ -366,6 +374,7 @@ fn read_index(path: &Path, identity: &str) -> Result<Option<Entry>> {
     Ok(Some(Entry {
         path: path.to_owned(),
         has_logits: header["logits"].as_u64().is_some_and(|n| n > 0),
+        checkpoints: serde_json::from_value(header["checkpoints"].clone()).unwrap_or_default(),
         ids,
         bytes: meta.len(),
         used: meta.modified()?,

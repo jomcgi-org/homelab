@@ -85,12 +85,16 @@ pub fn start(app: &Arc<App>, req: GenRequest) -> Result<mpsc::Receiver<Output>, 
             ))
         })
         .collect();
+    let reuse_at = app
+        .template
+        .reuse_points(&req.messages, tools, &req.template, &text, &prompt);
     let mut parser: Box<dyn OutputParser> = (app.parser)(&text, schemas);
 
     let (ev_tx, mut ev_rx) = mpsc::channel(256);
     app.engine
         .submit(Job {
             prompt,
+            reuse_at,
             sampling: req.sampling,
             max_tokens: req.max_tokens,
             stop_ids: app.stop_ids.clone(),

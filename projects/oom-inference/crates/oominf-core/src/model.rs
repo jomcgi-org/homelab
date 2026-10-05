@@ -41,6 +41,21 @@ pub trait Session {
         anyhow::ensure!(n == 0, "this model cannot rewind");
         Ok(())
     }
+    /// Positions the next prefill should keep prefix checkpoints at, so the sequence
+    /// can later return there ([`Session::rewind_to`]); a no-op where unsupported.
+    fn plan_checkpoints(&mut self, positions: &[usize]) {
+        let _ = positions;
+    }
+    /// Positions this sequence can return to with [`Session::rewind_to`], ascending.
+    fn checkpoints(&self) -> Vec<usize> {
+        Vec::new()
+    }
+    /// Returns to the state after the first `pos` tokens, one of
+    /// [`Session::checkpoints`] (or the current length).
+    fn rewind_to(&mut self, pos: usize) -> Result<()> {
+        anyhow::ensure!(pos == self.len(), "no checkpoint at {pos}");
+        Ok(())
+    }
     /// Writes this sequence's state (between steps) so [`Session::load`] can
     /// resume it in another session of the same model.
     fn save(&self, w: &mut dyn std::io::Write) -> Result<()> {

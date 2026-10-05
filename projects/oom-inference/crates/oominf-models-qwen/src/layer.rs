@@ -174,6 +174,26 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    /// Returns this layer to its state after the first `pos` tokens: the attention
+    /// cache is truncated, recurrent state comes from `snap`.
+    pub fn restore_checkpoint(
+        &self,
+        gpu: &B,
+        state: &mut LayerState<B>,
+        snap: &crate::checkpoint::LayerSnap,
+        pos: usize,
+    ) -> Result<()> {
+        if let (Mixer::Attention(a), Some(st)) = (&self.mixer, state.attn.as_mut()) {
+            anyhow::ensure!(
+                st.base == 0 && st.len >= pos,
+                "attention cache holds {} tokens, rewinding to {pos}",
+                st.len
+            );
+            a.rewind(st, pos);
+        }
+        crate::checkpoint::restore(gpu, state, snap)
+    }
+
     /// The position of this layer's first cached token and how many it holds
     /// (`None` without attention).
     pub fn attention_extent(&self, state: &LayerState<B>) -> Option<(usize, usize)> {

@@ -108,6 +108,53 @@ impl ChatTemplate {
         Ok(out)
     }
 
+    /// Prompt positions where a later request is likely to diverge: the starts of
+    /// the first and the last user message (a shared system prompt or documents
+    /// followed by a different question). `text` and `prompt` are `messages`
+    /// rendered and encoded; positions are where the token prefix up to that
+    /// message start agrees with `prompt`.
+    pub fn reuse_points(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        opts: &TemplateOptions,
+        text: &str,
+        prompt: &[u32],
+    ) -> Vec<usize> {
+        const MARK: &str = "\u{e000}oominf-reuse-point\u{e000}";
+        let users: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m["role"] == "user" && m["content"].is_string())
+            .map(|(i, _)| i)
+            .collect();
+        let mut points = Vec::new();
+        for i in [users.first(), users.last()].into_iter().flatten().copied() {
+            let mut marked = messages.to_vec();
+            marked[i]["content"] = serde_json::Value::String(MARK.into());
+            let Ok(rendered) = self.render(&marked, tools, opts) else {
+                continue;
+            };
+            let Some(at) = rendered.find(MARK) else {
+                continue;
+            };
+            let head = &rendered[..at];
+            if !text.starts_with(head) {
+                continue;
+            }
+            let Ok(ids) = self.encode(head) else {
+                continue;
+            };
+            let shared = ids.iter().zip(prompt).take_while(|(a, b)| a == b).count();
+            if shared > 0 {
+                points.push(shared);
+            }
+        }
+        points.sort_unstable();
+        points.dedup();
+        points
+    }
+
     pub fn encode(&self, text: &str) -> Result<Vec<u32>> {
         Ok(self
             .tokenizer

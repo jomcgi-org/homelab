@@ -11,6 +11,7 @@ use oominf_core::{
 use oominf_format::Model;
 
 use crate::Dims;
+use crate::checkpoint::{self, Checkpoint};
 use crate::hc::HyperConn;
 use crate::layer::{DecoderLayer, LayerState, PreMoe, StepInput};
 use crate::moe::{HostIds, PendingRoute};
@@ -137,6 +138,10 @@ pub struct SeqState<B: Backend> {
     /// at (draft-chain entries beyond it are dropped at the next draft).
     mtp: Option<LayerState<B>>,
     pub(crate) mtp_end: usize,
+    /// Positions the sequence can rewind to ([`QwenModel::rewind_to`]), ascending.
+    pub(crate) checkpoints: Vec<Checkpoint>,
+    /// Positions the next prefill captures checkpoints at.
+    pub(crate) plan: Vec<usize>,
     /// Start and length of the last step if it can be rewound.
     pub(crate) rewindable: Option<(usize, usize)>,
 }
@@ -263,6 +268,8 @@ impl<B: Backend> QwenModel<B> {
                 None => None,
             },
             mtp_end: 0,
+            checkpoints: Vec::new(),
+            plan: Vec::new(),
             rewindable: None,
             ws,
         })
@@ -673,10 +680,31 @@ impl<B: Backend> QwenModel<B> {
         }
         let d = &self.dims;
         let total = state.pos + token_ids.len();
-        let transient = self.prefill_bytes(token_ids.len(), total, chunk);
+        // Planned checkpoints inside this window end a chunk there, and each layer
+        // copies its recurrent state as it passes them.
+        let cuts: Vec<usize> = state
+            .plan
+            .iter()
+            .filter(|&&p| p > state.pos && p < total)
+            .map(|&p| p - state.pos)
+            .collect();
+        let snap_bytes: usize = state.layers.iter().map(checkpoint::snap_bytes).sum();
+        let transient = self.prefill_bytes(token_ids.len(), total, chunk) + cuts.len() * snap_bytes;
         let reserve = more.unwrap_or(total).max(total);
         self.reserve_kv(gpu, state, reserve, transient, experts)?;
-        let chunks: Vec<&[u32]> = token_ids.chunks(chunk).collect();
+        let mut chunks: Vec<&[u32]> = Vec::new();
+        let mut from = 0;
+        for end in cuts.iter().copied().chain([token_ids.len()]) {
+            while from < end {
+                let to = (from + chunk).min(end);
+                chunks.push(&token_ids[from..to]);
+                from = to;
+            }
+        }
+        let mut captures: Vec<Vec<Option<checkpoint::DevSnap<B>>>> = cuts
+            .iter()
+            .map(|_| (0..self.layers.len()).map(|_| None).collect())
+            .collect();
         let mut xs = Vec::with_capacity(chunks.len());
         for c in &chunks {
             let mut x = gpu.uninit(c.len() * d.residual())?;
@@ -716,6 +744,11 @@ impl<B: Backend> QwenModel<B> {
                     let t = chunks[ci].len();
                     pres.push(layer.pre_moe(gpu, d, &xs[ci], t, &step, st, &mut NoProbe)?);
                     pos += t;
+                    // The mixers (GDN, PLE) have consumed the chunk: their state is
+                    // the state after `pos` tokens.
+                    if let Some(k) = cuts.iter().position(|&c| c + state.pos == pos) {
+                        captures[k][li] = Some(checkpoint::capture(gpu, st)?);
+                    }
                 }
                 let lens: Vec<usize> = chunks[lo..hi].iter().map(|c| c.len()).collect();
                 let t = lens.iter().sum();
@@ -762,6 +795,11 @@ impl<B: Backend> QwenModel<B> {
             self.prefill_finish_group(gpu, state, &mut xs, q, &hosts, experts)?;
         }
         drop(hosts);
+        for (rel, layers) in cuts.iter().zip(captures) {
+            let c = checkpoint::download(gpu, state.pos + rel, layers)?;
+            state.checkpoints.push(c);
+        }
+        state.checkpoints.sort_by_key(|c| c.pos);
         state.pos += token_ids.len();
         state.rewindable = None;
         let last = xs.last().expect("at least one chunk");
@@ -779,6 +817,36 @@ impl<B: Backend> QwenModel<B> {
         gpu.release_weight_cache();
         self.reclaim_vram(gpu, state, experts)?;
         Ok(Some(Some(logits)))
+    }
+
+    /// Returns the sequence to its state after its first `pos` tokens, a position it
+    /// captured a checkpoint at during prefill (or its current length). Later
+    /// checkpoints are dropped; the next step recomputes the draft head's input.
+    pub fn rewind_to(&self, gpu: &B, state: &mut SeqState<B>, pos: usize) -> Result<()> {
+        if pos == state.pos {
+            return Ok(());
+        }
+        let snap = state
+            .checkpoints
+            .iter()
+            .find(|c| c.pos == pos)
+            .with_context(|| format!("no checkpoint at {pos}"))?
+            .clone();
+        for ((layer, st), ls) in self
+            .layers
+            .iter()
+            .zip(state.layers.iter_mut())
+            .zip(&snap.layers)
+        {
+            layer.restore_checkpoint(gpu, st, ls, pos)?;
+        }
+        state.checkpoints.retain(|c| c.pos <= pos);
+        state.pos = pos;
+        state.rewindable = None;
+        state.hidden = None;
+        state.hidden_tokens.clear();
+        state.mtp_end = 0;
+        Ok(())
     }
 
     /// Drops the last `n` tokens of the last step, which must have run with
