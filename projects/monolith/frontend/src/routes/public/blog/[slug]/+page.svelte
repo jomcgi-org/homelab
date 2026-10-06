@@ -203,7 +203,7 @@
               >
             {/each}
           </div>
-          {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")], )}
+          {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")] )}
             <p>Loading the inference demo…</p>
           {:then [replay, coding]}
             {#key demo}

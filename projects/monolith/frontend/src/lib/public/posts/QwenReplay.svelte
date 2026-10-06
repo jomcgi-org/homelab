@@ -139,7 +139,8 @@
       Map the controls and failures from the <a
         href={recording.source.url}
         target="_blank"
-        rel="noreferrer">OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
+        rel="noreferrer"
+        >OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
       >.
     </p>
   {/if}
