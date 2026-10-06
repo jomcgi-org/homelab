@@ -184,14 +184,14 @@ There are no application imports, stores, requests or browser-global reads.
 
 ### Components
 
-| Component | Props and snippets | Semantics |
-| --- | --- | --- |
-| `Panel` (also exported as `Section`) | Required `title`; `headingLevel=2` (integer 2 through 6); `state="ready"`; optional `message`, `children()` and `footer()` snippets | Outlined native section linked to a real heading. Footer partition remains visible in every state. |
-| `KeyValue` | `rows=[]` of `{label, value, unit?}`; `density="dense"` or `"sparse"`; optional `value(row)` snippet | Native definition list. Values flow from the left and wrap; rows stack below 30rem. Null, undefined and non-finite numeric values display Unavailable. A custom snippet owns its value semantics. |
-| `Status` | `kind="unknown"`; required `label`; `live=false` | Stable cue and visible human label. Ordinary rendering has no live region. `live=true` opts into `role="status"` and polite announcements. |
-| `Metric` | Required `label`; `value`; `unit=""`; `locale="en-US"`; optional `context`; `state="ready"` | Labelled group, compact visible value with accessible exact text including units, plus native Exact value disclosure for sighted keyboard/touch users. |
-| `ChartFrame` | Required nonblank `title`, `units`, `description` and `fallback(state)` snippet; optional `children()` chart snippet, `message`; `state="ready"` | Native figure linked to title and description in its visible figcaption. Read chart data disclosure renders the fallback in every state. No chart renderer. |
-| `Legend` | `entries=SERIES_ROLES` (array of `{id, label}`); `label="Chart series"` | Labelled native list. Supplied entries are sorted into contract order without mutation, with visible shape names and distinct SVG markers. Unknown/duplicate IDs and blank labels throw. An empty array is an empty list. |
+| Component                            | Props and snippets                                                                                                                               | Semantics                                                                                                                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Panel` (also exported as `Section`) | Required `title`; `headingLevel=2` (integer 2 through 6); `state="ready"`; optional `message`, `children()` and `footer()` snippets              | Outlined native section linked to a real heading. Footer partition remains visible in every state.                                                                                                                        |
+| `KeyValue`                           | `rows=[]` of `{label, value, unit?}`; `density="dense"` or `"sparse"`; optional `value(row)` snippet                                             | Native definition list. Values flow from the left and wrap; rows stack below 30rem. Null, undefined and non-finite numeric values display Unavailable. A custom snippet owns its value semantics.                         |
+| `Status`                             | `kind="unknown"`; required `label`; `live=false`                                                                                                 | Stable cue and visible human label. Ordinary rendering has no live region. `live=true` opts into `role="status"` and polite announcements.                                                                                |
+| `Metric`                             | Required `label`; `value`; `unit=""`; `locale="en-US"`; optional `context`; `state="ready"`                                                      | Labelled group, compact visible value with accessible exact text including units, plus native Exact value disclosure for sighted keyboard/touch users.                                                                    |
+| `ChartFrame`                         | Required nonblank `title`, `units`, `description` and `fallback(state)` snippet; optional `children()` chart snippet, `message`; `state="ready"` | Native figure linked to title and description in its visible figcaption. Read chart data disclosure renders the fallback in every state. No chart renderer.                                                               |
+| `Legend`                             | `entries=SERIES_ROLES` (array of `{id, label}`); `label="Chart series"`                                                                          | Labelled native list. Supplied entries are sorted into contract order without mutation, with visible shape names and distinct SVG markers. Unknown/duplicate IDs and blank labels throw. An empty array is an empty list. |
 
 Required text inputs reject missing, non-string or whitespace-only values with
 `TypeError` during render. Invalid headings, densities, kinds and content states
@@ -205,7 +205,8 @@ Style caller-owned tables with wrapping cells and a width bounded by the figure.
 human text. Panel and ChartFrame render chart/content snippets only when ready;
 other states render state text and optional message. Metric renders no stale
 value in those states. Missing or non-finite ready measurements become
-Unavailable. Loading sets `aria-busy`; none of these ordinary data states is a
+Unavailable. Supplied Metric units stay visible in missing/non-ready states.
+Loading sets `aria-busy`; none of these ordinary data states is a
 live region. Disclosures use native keyboard behavior, a minimum 44px height
 and a visible `--ds-focus` outline using `--ds-focus-width`.
 
@@ -235,13 +236,13 @@ The cue is hidden from screen readers; the explicit label carries the meaning.
 
 `SERIES_ROLES` is frozen in this order in both schemes:
 
-| ID | Default label | Role | Marker |
-| --- | --- | --- | --- |
-| `gpu` | GPU | `--ds-series-1` | circle |
-| `host-ram` | Host RAM | `--ds-series-2` | square |
-| `page-cache` | Page cache | `--ds-series-3` | triangle |
-| `nvme` | NVMe | `--ds-series-4` | diamond |
-| `hot-expert-set` | Hot expert set | `--ds-series-5` | cross |
+| ID               | Default label  | Role            | Marker   |
+| ---------------- | -------------- | --------------- | -------- |
+| `gpu`            | GPU            | `--ds-series-1` | circle   |
+| `host-ram`       | Host RAM       | `--ds-series-2` | square   |
+| `page-cache`     | Page cache     | `--ds-series-3` | triangle |
+| `nvme`           | NVMe           | `--ds-series-4` | diamond  |
+| `hot-expert-set` | Hot expert set | `--ds-series-5` | cross    |
 
 `DATA_DISPLAY_FIXTURES` exports frozen measurements (all numeric edges,
 missing and non-finite values, long labels/units), rows, densities and states.
@@ -340,22 +341,22 @@ computed contrast. No production page imports the opt-in export.
 
 ### Roles
 
-| Roles | Meaning |
-| --- | --- |
-| `--ds-surface`, `--ds-surface-raised` | White sheet / neutral inset in light; neutral-dark sheet / inset in dark |
-| `--ds-ink`, `--ds-ink-muted`, `--ds-ink-faint` | Primary, secondary and faint meaningful text, each at least 4.5:1 on both surfaces |
-| `--ds-accent`, `--ds-on-accent` | Solid accent fill and text on that fill |
-| `--ds-accent-ink` | Links and interactive text on either surface |
-| `--ds-line` | Decorative hairline divider only; not a control boundary or meaningful graphic |
-| `--ds-line-strong` | Control boundaries and meaningful structural rules, at least 3:1 on both surfaces |
-| `--ds-focus`, `--ds-focus-width` | Focus ring colour on either surface and 2px width; components must apply a visible outline |
-| `--ds-ok`, `--ds-warn`, `--ds-err` | Success, warning and error text or graphics; pair with explicit labels or distinct shapes |
-| `--ds-series-1` through `--ds-series-5` | Stable order: GPU, host RAM, page cache, NVMe, hot expert set; use keyed labels or line/marker shapes too |
-| `--ds-shadow`, `--ds-shadow-raised` | `none` |
-| `--ds-border-weight`, `--ds-radius` | 1px rules and square corners (`0`) |
-| `--ds-font-display`, `--ds-font-body` | Schibsted Grotesk, Avenir Next, Segoe UI, system-ui, sans-serif |
-| `--ds-font-mono` | ui-monospace, SF Mono, Cascadia Mono, monospace |
-| `--ds-space-xs`, `--ds-space-sm`, `--ds-space-md`, `--ds-space-lg`, `--ds-space-xl`, `--ds-space-2xl` | Same 8, 12, 16, 24, 40, 60px spacing as the contract, redeclared at each boundary |
+| Roles                                                                                                 | Meaning                                                                                                   |
+| ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `--ds-surface`, `--ds-surface-raised`                                                                 | White sheet / neutral inset in light; neutral-dark sheet / inset in dark                                  |
+| `--ds-ink`, `--ds-ink-muted`, `--ds-ink-faint`                                                        | Primary, secondary and faint meaningful text, each at least 4.5:1 on both surfaces                        |
+| `--ds-accent`, `--ds-on-accent`                                                                       | Solid accent fill and text on that fill                                                                   |
+| `--ds-accent-ink`                                                                                     | Links and interactive text on either surface                                                              |
+| `--ds-line`                                                                                           | Decorative hairline divider only; not a control boundary or meaningful graphic                            |
+| `--ds-line-strong`                                                                                    | Control boundaries and meaningful structural rules, at least 3:1 on both surfaces                         |
+| `--ds-focus`, `--ds-focus-width`                                                                      | Focus ring colour on either surface and 2px width; components must apply a visible outline                |
+| `--ds-ok`, `--ds-warn`, `--ds-err`                                                                    | Success, warning and error text or graphics; pair with explicit labels or distinct shapes                 |
+| `--ds-series-1` through `--ds-series-5`                                                               | Stable order: GPU, host RAM, page cache, NVMe, hot expert set; use keyed labels or line/marker shapes too |
+| `--ds-shadow`, `--ds-shadow-raised`                                                                   | `none`                                                                                                    |
+| `--ds-border-weight`, `--ds-radius`                                                                   | 1px rules and square corners (`0`)                                                                        |
+| `--ds-font-display`, `--ds-font-body`                                                                 | Schibsted Grotesk, Avenir Next, Segoe UI, system-ui, sans-serif                                           |
+| `--ds-font-mono`                                                                                      | ui-monospace, SF Mono, Cascadia Mono, monospace                                                           |
+| `--ds-space-xs`, `--ds-space-sm`, `--ds-space-md`, `--ds-space-lg`, `--ds-space-xl`, `--ds-space-2xl` | Same 8, 12, 16, 24, 40, 60px spacing as the contract, redeclared at each boundary                         |
 
 The figure series use the existing technical-drawing tones in both schemes,
 with the same memory-tier meaning. They are measured as graphics, not guaranteed
@@ -374,23 +375,25 @@ require 3:1. The on-accent row measures against the accent fill in each scheme,
 so its value is repeated across that scheme's surface columns.
 
 <!-- contrast:start -->
-| Role | Light sheet `#ffffff` | Light raised `#f5f6f8` | Dark sheet `#181a20` | Dark raised `#1c1e26` |
-| --- | --- | --- | --- | --- |
-| `--ds-ink` | 15.68 | 14.50 | 13.81 | 13.20 |
-| `--ds-ink-muted` | 6.56 | 6.07 | 6.80 | 6.50 |
-| `--ds-ink-faint` | 5.73 | 5.30 | 6.03 | 5.76 |
-| `--ds-accent-ink` | 7.84 | 7.25 | 7.66 | 7.32 |
-| `--ds-ok` | 5.07 | 4.69 | 7.88 | 7.53 |
-| `--ds-warn` | 6.10 | 5.64 | 7.31 | 6.99 |
-| `--ds-err` | 6.54 | 6.05 | 7.26 | 6.94 |
-| `--ds-focus` | 7.84 | 7.25 | 7.66 | 7.32 |
-| `--ds-line-strong` | 4.56 | 4.22 | 4.60 | 4.39 |
-| `--ds-series-1` | 4.60 | 4.26 | 7.10 | 6.79 |
-| `--ds-series-2` | 5.07 | 4.69 | 9.75 | 9.32 |
-| `--ds-series-3` | 4.95 | 4.57 | 9.46 | 9.05 |
-| `--ds-series-4` | 5.26 | 4.86 | 6.27 | 5.99 |
-| `--ds-series-5` | 4.80 | 4.44 | 7.63 | 7.30 |
-| `--ds-on-accent` on `--ds-accent` | 7.84 | 7.84 | 7.66 | 7.66 |
+
+| Role                              | Light sheet `#ffffff` | Light raised `#f5f6f8` | Dark sheet `#181a20` | Dark raised `#1c1e26` |
+| --------------------------------- | --------------------- | ---------------------- | -------------------- | --------------------- |
+| `--ds-ink`                        | 15.68                 | 14.50                  | 13.81                | 13.20                 |
+| `--ds-ink-muted`                  | 6.56                  | 6.07                   | 6.80                 | 6.50                  |
+| `--ds-ink-faint`                  | 5.73                  | 5.30                   | 6.03                 | 5.76                  |
+| `--ds-accent-ink`                 | 7.84                  | 7.25                   | 7.66                 | 7.32                  |
+| `--ds-ok`                         | 5.07                  | 4.69                   | 7.88                 | 7.53                  |
+| `--ds-warn`                       | 6.10                  | 5.64                   | 7.31                 | 6.99                  |
+| `--ds-err`                        | 6.54                  | 6.05                   | 7.26                 | 6.94                  |
+| `--ds-focus`                      | 7.84                  | 7.25                   | 7.66                 | 7.32                  |
+| `--ds-line-strong`                | 4.56                  | 4.22                   | 4.60                 | 4.39                  |
+| `--ds-series-1`                   | 4.60                  | 4.26                   | 7.10                 | 6.79                  |
+| `--ds-series-2`                   | 5.07                  | 4.69                   | 9.75                 | 9.32                  |
+| `--ds-series-3`                   | 4.95                  | 4.57                   | 9.46                 | 9.05                  |
+| `--ds-series-4`                   | 5.26                  | 4.86                   | 6.27                 | 5.99                  |
+| `--ds-series-5`                   | 4.80                  | 4.44                   | 7.63                 | 7.30                  |
+| `--ds-on-accent` on `--ds-accent` | 7.84                  | 7.84                   | 7.66                 | 7.66                  |
+
 <!-- contrast:end -->
 
 ### Verification
@@ -437,8 +440,8 @@ check command are in `frontend/theme-preview/README.md`.
 
 ## Decision status
 
-| Decision | Status | Claimed by |
-| --- | --- | --- |
+| Decision                                                     | Status                                                                    | Claimed by                                        |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------- |
 | ADR platform/013, shared contract with three distinct themes | Superseded by the collision-only scope in #4449; distinct themes retained | shared with the platform rollup; not deleted here |
 
 Issues: #4449 (collision isolation and programme supersession), #4667 (this

@@ -40,7 +40,7 @@
     {/each}
     <ChartFrame
       title="Synthetic memory tiers"
-      units="LongSyntheticUnitWithoutBreaksForWrapping"
+      units="Mixed synthetic units, including LongSyntheticUnitWithoutBreaksForWrapping; each table row names its unit"
       description="Synthetic edge measurements in fixture order. Shape and label identify each series; the table contains exact values."
     >
       <Legend entries={[...SERIES_ROLES].reverse()} />
@@ -56,12 +56,14 @@
           >
           <tbody>
             {#each measurements as measurement}
+              {@const formatted = formatMeasurement(measurement.value, {
+                unit: measurement.unit,
+                locale,
+              })}
               <tr
                 ><th scope="row">{measurement.label}</th><td
-                  >{formatMeasurement(measurement.value, {
-                    unit: measurement.unit,
-                    locale,
-                  }).exactText}</td
+                  >{formatted.exactText}{#if formatted.state === "unavailable"}
+                    ({measurement.unit}){/if}</td
                 ></tr
               >
             {/each}

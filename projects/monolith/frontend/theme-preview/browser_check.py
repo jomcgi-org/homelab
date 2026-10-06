@@ -278,7 +278,8 @@ def data_display_checks(page):
           if (row.querySelector('th').textContent !== metric.querySelector('.label').textContent)
             throw new Error('Fallback table reading order differs from metrics');
           const exact = metric.querySelector('.exact-sr');
-          if (row.querySelector('td').textContent !== (exact?.textContent ?? 'Unavailable'))
+          const missingUnit = metric.querySelector('.unit-state')?.textContent.replace(/^Units: /, '');
+          if (row.querySelector('td').textContent !== (exact?.textContent ?? `Unavailable (${missingUnit})`))
             throw new Error('Fallback table lost exact measurement or missing state');
           if (exact && (exact.closest('[aria-hidden="true"]') || metric.querySelector('details data').textContent !== exact.textContent))
             throw new Error('Exact value is not accessible without hover');

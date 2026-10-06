@@ -53,6 +53,7 @@
     </details>
   {:else}
     <p class="state">{stateText}</p>
+    {#if unit}<p class="unit unit-state">Units: {unit}</p>{/if}
   {/if}
   {#if context}<p class="context">{context}</p>{/if}
 </div>
@@ -87,6 +88,10 @@
   }
   .context {
     margin-top: var(--ds-space-xs);
+  }
+  .unit-state {
+    margin-top: var(--ds-space-xs);
+    color: var(--ds-ink-muted);
   }
   [data-state="error"] .state {
     color: var(--ds-err);

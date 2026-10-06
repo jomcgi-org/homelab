@@ -237,6 +237,27 @@ it.each(DATA_DISPLAY_FIXTURES.states)(
   },
 );
 
+it.each(["ready", ...DATA_DISPLAY_FIXTURES.states])(
+  "retains supplied units when a measurement is %s or missing",
+  async (state) => {
+    const target = await render(Metric, {
+      label: "Memory",
+      value: null,
+      unit: "bytes",
+      state,
+    });
+    expect(target.querySelector(".unit-state").textContent).toBe(
+      "Units: bytes",
+    );
+    expect(target.querySelector(".measurement, details")).toBeNull();
+    expect(target.querySelector(".state").textContent).toBe(
+      state === "ready"
+        ? "Unavailable"
+        : `${state[0].toUpperCase()}${state.slice(1)}`,
+    );
+  },
+);
+
 it.each(["en-US", "de-DE"])(
   "hydrates %s SSR without replacing nodes, text or attributes",
   async (locale) => {
