@@ -18,7 +18,9 @@ pub mod resources;
 mod tiered;
 
 pub use disk::DiskExperts;
-pub use grouped::{GroupedExperts, Layout, PolicyPair, TierBudget, layouts, tiered_for_model};
+pub use grouped::{
+    GroupedExperts, Layout, PolicyPair, TierBudget, layouts, split, tiered_for_model,
+};
 pub use tiered::{
     CHUNK_SLOTS, TierSizes, TieredExperts, free_vram_gib, min_host_slots, min_vram_slots,
     slots_for, stream_threshold,

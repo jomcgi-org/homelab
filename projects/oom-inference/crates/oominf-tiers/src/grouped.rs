@@ -187,12 +187,45 @@ pub fn tiered_for_model<B: Backend + 'static>(
 ) -> Result<Box<dyn ExpertSource<B>>> {
     let groups = &model.index().expert_groups;
     let layouts = layouts(model)?;
-    let largest = layouts
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, l)| l.records * l.stride)
-        .map(|(i, _)| i)
-        .context("model has no expert groups")?;
+    let sizes = split(&layouts, budget);
+    let largest = crate::plan::largest(&layouts);
+
+    let mut sources: Vec<Box<dyn ExpertSource<B>>> = Vec::new();
+    for (i, (l, sizes)) in layouts.iter().zip(&sizes).enumerate() {
+        let (vp, hp) = policies()?;
+        let mut t = TieredExperts::new(b.clone(), model.clone(), &l.name, *sizes, vp, hp, io)?;
+        t.lookahead = lookahead;
+        t.host_compute = host_compute;
+        // No prompt warms a small group's records (e.g. a draft head's experts): read
+        // them into the host tier now if it can hold them all.
+        if i != largest {
+            t.preload_host()?;
+        }
+        sources.push(Box::new(t));
+    }
+    if sources.len() == 1 {
+        return Ok(sources.pop().expect("one source"));
+    }
+    let max_layer = groups.iter().map(|g| g.layer).max().unwrap_or(0) as usize;
+    let mut route = vec![usize::MAX; max_layer + 1];
+    for g in groups {
+        route[g.layer as usize] = layouts
+            .iter()
+            .position(|l| l.name == g.schema.layout)
+            .expect("layout listed");
+    }
+    Ok(Box::new(GroupedExperts::new(sources, route)))
+}
+
+const GIB: f64 = (1u64 << 30) as f64;
+
+/// Splits `budget` into each layout's tier sizes. A layout other than the largest
+/// gets one VRAM chunk and [`MINOR_HOST_SHARE`] of the host budget (at least its
+/// minimum, at most its records). The largest gets the rest; its prefill staging
+/// ring (only beside a VRAM stage) comes out of its host share and shrinks, down
+/// to one slot, before its host tier would fall below the minimum.
+pub fn split(layouts: &[Layout], budget: &TierBudget) -> Vec<TierSizes> {
+    let largest = crate::plan::largest(layouts);
     let (mut vram_left, mut host_left) = (budget.vram_gib, budget.host_gib);
     let mut sizes = vec![
         TierSizes {
@@ -224,52 +257,27 @@ pub fn tiered_for_model<B: Backend + 'static>(
     }
     let l = &layouts[largest];
     let vram = ((vram_left.max(0.0) * GIB) as usize / l.stride).min(l.records);
-    // The host staging ring exists only beside a VRAM stage (one layer's worth of
-    // VRAM set aside, see `TieredExperts::new`), and comes out of the host budget.
-    let ring = if vram >= 2 * l.num_experts {
+    let slots = (host_left.max(0.0) * GIB) as usize / l.stride;
+    // The ring exists only beside a VRAM stage (see `TieredExperts::new`).
+    let stage = vram >= 2 * l.num_experts;
+    let ring = if stage {
+        let min = min_host_slots(l.num_experts, l.num_experts, true);
         budget
             .host_stage_slots
             .unwrap_or(l.num_experts)
+            .min(slots.saturating_sub(min))
             .clamp(1, l.num_experts)
     } else {
         1
     };
-    let host = ((host_left.max(0.0) * GIB) as usize / l.stride).saturating_sub(ring);
     sizes[largest] = TierSizes {
         vram_slots: vram,
-        host_slots: host.min(l.records),
+        host_slots: slots.saturating_sub(ring).min(l.records),
         host_stage_slots: ring,
         max_fetch: l.num_experts,
     };
-
-    let mut sources: Vec<Box<dyn ExpertSource<B>>> = Vec::new();
-    for (i, (l, sizes)) in layouts.iter().zip(&sizes).enumerate() {
-        let (vp, hp) = policies()?;
-        let mut t = TieredExperts::new(b.clone(), model.clone(), &l.name, *sizes, vp, hp, io)?;
-        t.lookahead = lookahead;
-        t.host_compute = host_compute;
-        // No prompt warms a small group's records (e.g. a draft head's experts): read
-        // them into the host tier now if it can hold them all.
-        if i != largest {
-            t.preload_host()?;
-        }
-        sources.push(Box::new(t));
-    }
-    if sources.len() == 1 {
-        return Ok(sources.pop().expect("one source"));
-    }
-    let max_layer = groups.iter().map(|g| g.layer).max().unwrap_or(0) as usize;
-    let mut route = vec![usize::MAX; max_layer + 1];
-    for g in groups {
-        route[g.layer as usize] = layouts
-            .iter()
-            .position(|l| l.name == g.schema.layout)
-            .expect("layout listed");
-    }
-    Ok(Box::new(GroupedExperts::new(sources, route)))
+    sizes
 }
-
-const GIB: f64 = (1u64 << 30) as f64;
 
 /// One record layout of a model: its records, all of one size.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,4 +307,63 @@ pub fn layouts(model: &Model) -> Result<Vec<Layout>> {
     }
     anyhow::ensure!(!out.is_empty(), "model has no expert groups");
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GIB: f64 = (1u64 << 30) as f64;
+
+    fn qwen() -> Vec<Layout> {
+        vec![
+            Layout {
+                name: "nvfp4".into(),
+                stride: 2768896,
+                num_experts: 512,
+                records: 512 * 48,
+            },
+            Layout {
+                name: "bf16".into(),
+                stride: 9830400,
+                num_experts: 512,
+                records: 512,
+            },
+        ]
+    }
+
+    fn budget(vram: f64, host: f64) -> TierBudget {
+        TierBudget {
+            vram_gib: vram,
+            host_gib: host,
+            host_stage_slots: None,
+        }
+    }
+
+    #[test]
+    fn a_large_budget_gets_a_whole_layer_ring() {
+        let s = split(&qwen(), &budget(16.4, 45.2));
+        assert_eq!(s[0].host_stage_slots, 512);
+        assert_eq!(s[1].host_slots, 512);
+        assert!(s[0].host_slots > 14000, "{:?}", s[0]);
+    }
+
+    /// The planner's floor (with a one-slot ring) must yield working tiers: the
+    /// ring shrinks before the host tier falls below its minimum.
+    #[test]
+    fn the_floor_budget_shrinks_the_ring_not_the_tier() {
+        let l = qwen();
+        let floor = crate::plan::floors(&l, true).host as f64 / GIB;
+        let s = split(&l, &budget(16.4, floor));
+        assert!(
+            s[0].host_slots >= min_host_slots(512, 512, true),
+            "{:?}",
+            s[0]
+        );
+        assert_eq!(s[0].host_stage_slots, 1);
+        assert!(s[1].host_slots >= min_host_slots(512, 64, false));
+        // A little more goes to the ring first.
+        let s = split(&l, &budget(16.4, floor + 0.5));
+        assert!(s[0].host_stage_slots > 100, "{:?}", s[0]);
+    }
 }
