@@ -23,7 +23,7 @@ use anyhow::{Context, Result, ensure};
 use oominf_core::argmax;
 
 use crate::chat::Chat;
-use crate::load::{CacheArgs, ExpertArgs, OpenArgs, open_model};
+use crate::load::{CacheArgs, ExpertArgs, HostUse, OpenArgs, Tuning, open_model};
 
 /// `log_softmax(logits)` in f64.
 fn log_softmax(logits: &[f32]) -> Vec<f64> {
@@ -80,6 +80,8 @@ pub fn run(
         prefill_chunk: opts.prefill_chunk,
         experts: expert_args,
         cache,
+        host_use: HostUse::default(),
+        tuning: &Tuning::default(),
     })?;
     let vocab = model.vocab();
     let start = ids.len() - tail;

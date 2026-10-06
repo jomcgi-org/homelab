@@ -105,7 +105,7 @@ async fn gpu_smoke() {
             gpu,
             files,
             &opts,
-            Box::new(move |_| Ok(Box::new(oominf_tiers::DiskExperts::new(disk)))),
+            Box::new(move |_, _| Ok(Box::new(oominf_tiers::DiskExperts::new(disk)))),
         )
     });
     let (app, loaded) = oominf_server::build(&cfg, loader).unwrap();

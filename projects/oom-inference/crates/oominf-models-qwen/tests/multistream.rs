@@ -60,9 +60,21 @@ fn model(kv: oominf_core::KvFormat) -> Box<dyn Model> {
             attention_precision: oominf_core::AttentionPrecision::Exact,
             kv_host: false,
         },
-        Box::new(move |b| {
+        Box::new(move |b, _| {
             let policies = || Ok((policy::parse("lru")?, policy::parse("lru")?));
-            oominf_tiers::tiered_for_model(b, &experts_files, 8.0, 16.0, true, 6, &policies)
+            oominf_tiers::tiered_for_model(
+                b,
+                &experts_files,
+                &oominf_tiers::TierBudget {
+                    vram_gib: 8.0,
+                    host_gib: 16.0,
+                    host_stage_slots: None,
+                },
+                true,
+                6,
+                &policies,
+                &oominf_tiers::host::IoConfig::default(),
+            )
         }),
     )
     .unwrap()

@@ -411,6 +411,12 @@ fn main() -> Result<()> {
                 }),
                 None => None,
             };
+            let host_use = load::HostUse {
+                sequences: max_streams + 1,
+                checkpoints: oominf_server::engine::max_checkpoints(max_context),
+                snapshots: prefix_store.is_some(),
+            };
+            let tuning = load::Tuning::default();
             let model_name =
                 served_model_name.unwrap_or_else(|| oominf_server::default_model_name(&model));
             let model_type = oominf_models::model_type(&oominf_format::Model::open(&model)?)?;
@@ -434,6 +440,8 @@ fn main() -> Result<()> {
                         prefill_chunk,
                         experts: &experts,
                         cache: &cache,
+                        host_use,
+                        tuning: &tuning,
                     })
                 }),
             )?

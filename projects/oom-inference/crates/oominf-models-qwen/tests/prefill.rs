@@ -11,7 +11,7 @@ use std::sync::Arc;
 use oominf_core::{Memory, NoProbe};
 use oominf_cuda::Gpu;
 use oominf_models_qwen::{Dims, QwenModel};
-use oominf_tiers::{TieredExperts, policy};
+use oominf_tiers::{TierSizes, TieredExperts, policy};
 
 #[test]
 #[ignore = "needs a GPU and OOMINF_MODEL"]
@@ -31,10 +31,15 @@ fn layer_major_prefill_matches_chunked_forward() {
         gpu.clone(),
         files.clone(),
         layout,
-        vram,
-        host,
+        TierSizes {
+            vram_slots: vram,
+            host_slots: host,
+            host_stage_slots: 512,
+            max_fetch: 512,
+        },
         policy::parse("lru").unwrap(),
         policy::parse("lru").unwrap(),
+        &oominf_tiers::host::IoConfig::default(),
     )
     .unwrap();
 

@@ -898,6 +898,7 @@ dependencies = [
  "libc",
  "oominf-core",
  "oominf-format",
+ "tempfile",
 ]
 
 [[package]]

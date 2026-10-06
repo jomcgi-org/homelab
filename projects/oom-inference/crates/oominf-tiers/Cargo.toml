@@ -13,3 +13,6 @@ oominf-format = { path = "../oominf-format" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

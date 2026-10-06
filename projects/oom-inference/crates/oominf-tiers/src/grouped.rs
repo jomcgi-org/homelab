@@ -8,9 +8,10 @@ use anyhow::{Context, Result};
 use oominf_core::{Backend, ExpertSource, ExpertStats, ExpertTiers, Staged};
 use oominf_format::Model;
 
+use crate::TieredExperts;
+use crate::host::IoConfig;
 use crate::policy::Policy;
-use crate::tiered::CHUNK_SLOTS;
-use crate::{TieredExperts, slots_for};
+use crate::tiered::{CHUNK_SLOTS, TierSizes, min_host_slots};
 
 pub struct GroupedExperts<B> {
     sources: Vec<Box<dyn ExpertSource<B>>>,
@@ -156,65 +157,95 @@ pub type PolicyPair<'a> = dyn Fn() -> Result<(Box<dyn Policy>, Box<dyn Policy>)>
 /// the main layout costs decode hits.
 const MINOR_HOST_SHARE: f64 = 0.15;
 
-/// Tiered sources for every record layout of `model` within `vram_gib` and
-/// `host_gib`: one [`TieredExperts`] per layout, behind a [`GroupedExperts`] when
-/// there is more than one. `policies()` yields the (VRAM, host) policies of each.
+/// Memory a model's tiered sources may take, from [`crate::plan`] or explicit
+/// sizes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TierBudget {
+    /// VRAM for every layout's tiers, the stage included.
+    pub vram_gib: f64,
+    /// Pinned host memory for every layout's tiers, the host staging ring
+    /// included.
+    pub host_gib: f64,
+    /// Host staging ring slots of the largest layout (`None`: one layer's worth).
+    pub host_stage_slots: Option<usize>,
+}
+
+/// Tiered sources for every record layout of `model` within `budget`: one
+/// [`TieredExperts`] per layout, behind a [`GroupedExperts`] when there is more
+/// than one. `policies()` yields the (VRAM, host) policies of each. No tier is
+/// sized beyond the records its layout has: memory past that would never hold
+/// anything.
+#[allow(clippy::too_many_arguments)]
 pub fn tiered_for_model<B: Backend + 'static>(
     b: &Arc<B>,
     model: &Arc<Model>,
-    vram_gib: f64,
-    host_gib: f64,
+    budget: &TierBudget,
     lookahead: bool,
     host_compute: usize,
     policies: &PolicyPair<'_>,
+    io: &IoConfig,
 ) -> Result<Box<dyn ExpertSource<B>>> {
-    const GIB: f64 = (1u64 << 30) as f64;
     let groups = &model.index().expert_groups;
-    // Layouts in order of first appearance, with their total record bytes.
-    let mut layouts: Vec<(String, f64)> = Vec::new();
-    let mut strides: Vec<f64> = Vec::new();
-    for g in groups {
-        let bytes = g.num_experts as f64 * g.schema.stride as f64 / GIB;
-        match layouts.iter_mut().find(|(l, _)| *l == g.schema.layout) {
-            Some((_, total)) => *total += bytes,
-            None => {
-                layouts.push((g.schema.layout.clone(), bytes));
-                strides.push(g.schema.stride as f64 / GIB);
-            }
-        }
-    }
+    let layouts = layouts(model)?;
     let largest = layouts
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.1.total_cmp(&b.1.1))
+        .max_by_key(|(_, l)| l.records * l.stride)
         .map(|(i, _)| i)
         .context("model has no expert groups")?;
-    let (mut vram_left, mut host_left) = (vram_gib, host_gib);
-    let mut budgets = vec![(0.0, 0.0); layouts.len()];
-    for (i, (_, total)) in layouts.iter().enumerate() {
+    let (mut vram_left, mut host_left) = (budget.vram_gib, budget.host_gib);
+    let mut sizes = vec![
+        TierSizes {
+            vram_slots: 0,
+            host_slots: 0,
+            host_stage_slots: 1,
+            max_fetch: 0,
+        };
+        layouts.len()
+    ];
+    for (i, l) in layouts.iter().enumerate() {
         if i != largest {
-            budgets[i] = (
-                (CHUNK_SLOTS as f64 * strides[i]).min(*total),
-                (host_gib * MINOR_HOST_SHARE).min(*total),
-            );
-            vram_left -= budgets[i].0;
-            host_left -= budgets[i].1;
+            // Only decode-sized steps fetch these, at most a chunk's worth at once.
+            let max_fetch = CHUNK_SLOTS.min(l.num_experts);
+            let vram = CHUNK_SLOTS.min(l.records);
+            let share = (budget.host_gib * MINOR_HOST_SHARE * GIB) as usize / l.stride;
+            let host = share
+                .max(min_host_slots(l.num_experts, max_fetch, false))
+                .min(l.records);
+            vram_left -= (vram * l.stride) as f64 / GIB;
+            host_left -= ((host + 1) * l.stride) as f64 / GIB;
+            sizes[i] = TierSizes {
+                vram_slots: vram,
+                host_slots: host,
+                host_stage_slots: 1,
+                max_fetch,
+            };
         }
     }
-    budgets[largest] = (vram_left, host_left);
+    let l = &layouts[largest];
+    let vram = ((vram_left.max(0.0) * GIB) as usize / l.stride).min(l.records);
+    // The host staging ring exists only beside a VRAM stage (one layer's worth of
+    // VRAM set aside, see `TieredExperts::new`), and comes out of the host budget.
+    let ring = if vram >= 2 * l.num_experts {
+        budget
+            .host_stage_slots
+            .unwrap_or(l.num_experts)
+            .clamp(1, l.num_experts)
+    } else {
+        1
+    };
+    let host = ((host_left.max(0.0) * GIB) as usize / l.stride).saturating_sub(ring);
+    sizes[largest] = TierSizes {
+        vram_slots: vram,
+        host_slots: host.min(l.records),
+        host_stage_slots: ring,
+        max_fetch: l.num_experts,
+    };
 
     let mut sources: Vec<Box<dyn ExpertSource<B>>> = Vec::new();
-    for (i, ((layout, _), (vram, host))) in layouts.iter().zip(&budgets).enumerate() {
+    for (i, (l, sizes)) in layouts.iter().zip(&sizes).enumerate() {
         let (vp, hp) = policies()?;
-        let mut t = TieredExperts::new(
-            b.clone(),
-            model.clone(),
-            layout,
-            slots_for(model, layout, *vram),
-            slots_for(model, layout, *host),
-            vp,
-            hp,
-        )?;
+        let mut t = TieredExperts::new(b.clone(), model.clone(), &l.name, *sizes, vp, hp, io)?;
         t.lookahead = lookahead;
         t.host_compute = host_compute;
         // No prompt warms a small group's records (e.g. a draft head's experts): read
@@ -232,8 +263,40 @@ pub fn tiered_for_model<B: Backend + 'static>(
     for g in groups {
         route[g.layer as usize] = layouts
             .iter()
-            .position(|(l, _)| *l == g.schema.layout)
+            .position(|l| l.name == g.schema.layout)
             .expect("layout listed");
     }
     Ok(Box::new(GroupedExperts::new(sources, route)))
+}
+
+const GIB: f64 = (1u64 << 30) as f64;
+
+/// One record layout of a model: its records, all of one size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    pub name: String,
+    /// Bytes per record.
+    pub stride: usize,
+    /// Experts per layer.
+    pub num_experts: usize,
+    /// Records of this layout in the whole model.
+    pub records: usize,
+}
+
+/// The record layouts of `model`, in order of first appearance.
+pub fn layouts(model: &Model) -> Result<Vec<Layout>> {
+    let mut out: Vec<Layout> = Vec::new();
+    for g in &model.index().expert_groups {
+        match out.iter_mut().find(|l| l.name == g.schema.layout) {
+            Some(l) => l.records += g.num_experts as usize,
+            None => out.push(Layout {
+                name: g.schema.layout.clone(),
+                stride: g.schema.stride as usize,
+                num_experts: g.num_experts as usize,
+                records: g.num_experts as usize,
+            }),
+        }
+    }
+    anyhow::ensure!(!out.is_empty(), "model has no expert groups");
+    Ok(out)
 }

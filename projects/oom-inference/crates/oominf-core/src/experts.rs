@@ -114,8 +114,25 @@ pub trait ExpertSource<B> {
 }
 
 /// Builds a model's expert source once its dense weights and first session state are
-/// on the device, so a tiered source can size itself from what is left.
-pub type ExpertFactory<B> = Box<dyn FnOnce(&Arc<B>) -> Result<Box<dyn ExpertSource<B>>>>;
+/// on the device, so a tiered source can size itself from what is left (and leave
+/// host memory for what [`HostDemand`] says the sequences will take).
+pub type ExpertFactory<B> =
+    Box<dyn FnOnce(&Arc<B>, &HostDemand) -> Result<Box<dyn ExpertSource<B>>>>;
+
+/// Host memory a model's sequences take beside the expert tiers at the context the
+/// model was opened for, so the tiers can leave room for it. Estimates from the
+/// state's shapes, not measurements.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostDemand {
+    /// K/V caches one sequence keeps in host memory (`kv_host`), grown to the
+    /// full context.
+    pub kv: usize,
+    /// One prefix checkpoint (every recurrent layer's state at one position).
+    pub checkpoint: usize,
+    /// One saved copy of a full-context sequence without its checkpoints (prefix
+    /// store snapshots are built in host memory before they are written).
+    pub snapshot: usize,
+}
 
 /// Result of [`ExpertSource::begin_fetch`].
 pub struct Staged {
