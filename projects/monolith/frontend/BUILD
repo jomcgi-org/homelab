@@ -427,3 +427,62 @@ vitest_bin.vitest_test(
         ":src",
     ],
 )
+
+# Opt-in token fixture only, never part of :src or :src_public.
+js_library(
+    name = "theme_fixture_src",
+    srcs = [
+        "package.json",
+        "theme-preview/README.md",
+        "theme-preview/ThemeFixture.svelte",
+        "theme-preview/browser_check.py",
+        "theme-preview/hydration.test.js",
+        "theme-preview/index.html",
+        "theme-preview/main.js",
+        "theme-preview/server-render.js",
+        "theme-preview/server.js",
+        "theme-preview/ssr.test.js",
+        "theme-preview/vite.config.js",
+        "theme-preview/vitest.config.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "theme_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "theme-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":theme_fixture_src"],
+)
+
+js_run_binary(
+    name = "theme_fixture_preview",
+    srcs = [":theme_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "theme-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["theme-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "theme_fixture_preview_build_test",
+    targets = [":theme_fixture_preview"],
+)

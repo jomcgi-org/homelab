@@ -94,3 +94,29 @@ jobs:
           path: projects/monolith/frontend/factory-fixture-preview/
           if-no-files-found: error
           retention-days: 14
+      - name: Check SSR and hydration, and build synthetic theme views
+        working-directory: projects/monolith/frontend
+        run: |
+          pnpm exec vitest run --config theme-preview/vitest.config.js
+          pnpm exec vite build --config theme-preview/vite.config.js
+      - name: Check theme contrast, keyboard focus, and real text resize
+        run: |
+          /tmp/factory-browser/bin/python projects/monolith/frontend/theme-preview/browser_check.py \
+            --artifact projects/monolith/frontend/theme-fixture-preview \
+            --output theme-preview-evidence \
+            --expected-sha "$FACTORY_PREVIEW_SHA"
+      - name: Upload exact-commit theme contrast and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: theme-preview-evidence-${{ github.event.pull_request.head.sha }}
+          path: theme-preview-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload tested synthetic theme artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: theme-preview-${{ github.event.pull_request.head.sha }}
+          path: projects/monolith/frontend/theme-fixture-preview/
+          if-no-files-found: error
+          retention-days: 14
