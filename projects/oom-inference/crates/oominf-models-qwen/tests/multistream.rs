@@ -7,16 +7,23 @@
 //! Three sequences of different lengths (one prefilled layer by layer) take steps
 //! of different widths together (next token plus MTP drafts, some sequences
 //! sitting a step out), rewinding rejected drafts each on its own, against twins
-//! that take the same steps alone. In the batched step only the MoE and the head
-//! see more rows; their decode kernels compute every row on its own, so the
-//! logits match to rounding: measured at most 5e-7 of the row's largest logit
-//! (dense GEMVs of more rows sum in a different order). The gate allows 1e-4 and
-//! requires the same argmax: a wrong row, position or state shows up as order-one
-//! differences. Steps stay within 16 tokens, the decode GEMV's limit; wider ones
-//! run cuBLAS on bf16-rounded activations, which differs by about 1e-3. Host
-//! expert compute is off: which experts run on the CPU depends on copy timing,
-//! and its rounding differs from the GPU's, so with it on neither run is
-//! reproducible even alone.
+//! that take the same steps alone.
+//!
+//! Up to 4 tokens a step's dense GEMVs reduce each row the same way whatever the
+//! row count, so until the first wider step the twins match to the bit (gate
+//! 1e-4 of the row's largest logit, same argmax): a wrong row, position or state
+//! shows up as order-one differences. A wider step runs wider GEMV instances
+//! that split the reduction differently, the summation-order change a draft
+//! verification step makes against one-token steps: that step still matches
+//! within 1.2e-6 (same gate). Its rounding then lives on in the twins' states,
+//! and the compressed KV cache can turn it into a different codebook index, so
+//! later steps drift apart as speculative and one-token decoding do (measured up
+//! to 3e-2 of the largest logit): there the gate is 1e-1 and the argmax must
+//! agree unless the twin's top two logits nearly tie (as in the speculative
+//! test). Steps stay within 16 tokens, the decode GEMV's limit; wider ones run
+//! cuBLAS on bf16-rounded activations. Host expert compute is off: which experts
+//! run on the CPU depends on copy timing, and its rounding differs from the
+//! GPU's, so with it on neither run is reproducible even alone.
 
 use std::sync::Arc;
 
@@ -25,8 +32,13 @@ use oominf_cuda::Gpu;
 use oominf_models_qwen::{Options, open};
 use oominf_tiers::policy;
 
-/// Largest difference allowed, relative to the row's largest absolute logit.
+/// Largest difference allowed, relative to the row's largest absolute logit,
+/// before and after a step wider than [`NARROW`] tokens has run.
 const REL_TOL: f32 = 1e-4;
+const REL_TOL_WIDE: f32 = 1e-1;
+const NARROW: usize = 4;
+/// Largest top-two logit gap at which an argmax difference counts as a near tie.
+const NEAR_TIE: f32 = 0.05;
 
 fn model(kv: oominf_core::KvFormat) -> Box<dyn Model> {
     let dir = std::path::PathBuf::from(
@@ -56,9 +68,23 @@ fn model(kv: oominf_core::KvFormat) -> Box<dyn Model> {
     .unwrap()
 }
 
+fn top2_gap(row: &[f32]) -> f32 {
+    let (mut a, mut b) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &v in row {
+        if v > a {
+            b = a;
+            a = v;
+        } else if v > b {
+            b = v;
+        }
+    }
+    a - b
+}
+
 /// Largest absolute difference between `a` and `b`, relative to `a`'s largest
-/// absolute value, row by row of `vocab`; and whether every row's argmax agrees.
-fn compare(a: &[f32], b: &[f32], vocab: usize) -> (f32, bool) {
+/// absolute value, row by row of `vocab`; and whether every row's argmax agrees
+/// (with `near_ties`, also where `a`'s top two logits nearly tie).
+fn compare(a: &[f32], b: &[f32], vocab: usize, near_ties: bool) -> (f32, bool) {
     assert_eq!(a.len(), b.len(), "logit rows differ in count");
     let mut worst = 0f32;
     let mut same = true;
@@ -69,7 +95,7 @@ fn compare(a: &[f32], b: &[f32], vocab: usize) -> (f32, bool) {
             .zip(rb)
             .fold(0f32, |m, (x, y)| m.max((x - y).abs()));
         worst = worst.max(diff / scale);
-        same &= argmax(ra) == argmax(rb);
+        same &= argmax(ra) == argmax(rb) || (near_ties && top2_gap(ra) < NEAR_TIE);
     }
     (worst, same)
 }
@@ -98,6 +124,10 @@ fn run(kv: oominf_core::KvFormat) {
     // Per round, each sequence's step width (next token plus drafts), 0 to sit out.
     let rounds: &[[usize; 3]] = &[
         [1, 1, 1],
+        [1, 2, 1],
+        [2, 0, 2],
+        [0, 3, 1],
+        [1, 1, 2],
         [1, 3, 2],
         [2, 1, 1],
         [0, 2, 3],
@@ -109,7 +139,9 @@ fn run(kv: oominf_core::KvFormat) {
         [5, 5, 5],
         [1, 2, 1],
     ];
-    let mut worst = 0f32;
+    let (mut worst, mut worst_wide) = (0f32, 0f32);
+    // Once a wide step has run, the twins' states carry its rounding.
+    let mut drifted = false;
     for (r, widths) in rounds.iter().enumerate() {
         let mut feeds_tokens: Vec<(usize, Vec<u32>)> = Vec::new();
         for (i, &w) in widths.iter().enumerate() {
@@ -139,18 +171,26 @@ fn run(kv: oominf_core::KvFormat) {
                 .collect();
             model.step_many(&mut feeds).unwrap()
         };
+        let width: usize = feeds_tokens.iter().map(|(_, f)| f.len()).sum();
+        let wide = drifted;
+        drifted |= width > NARROW;
+        let tol = if wide { REL_TOL_WIDE } else { REL_TOL };
         for (((i, feed), e), g) in feeds_tokens.iter().zip(&expect).zip(&got) {
-            let (rel, same) = compare(e, g, vocab);
+            let (rel, same) = compare(e, g, vocab, wide);
             eprintln!(
-                "round {r}, sequence {i}: {} tokens, max relative diff {rel:.2e}",
+                "round {r} (width {width}), sequence {i}: {} tokens, max relative diff {rel:.2e}",
                 feed.len()
             );
             assert!(same, "round {r}, sequence {i}: argmax differs");
             assert!(
-                rel <= REL_TOL,
-                "round {r}, sequence {i}: relative diff {rel} over {REL_TOL}"
+                rel <= tol,
+                "round {r}, sequence {i}: relative diff {rel} over {tol}"
             );
-            worst = worst.max(rel);
+            if wide {
+                worst_wide = worst_wide.max(rel);
+            } else {
+                worst = worst.max(rel);
+            }
             // Greedy acceptance from the reference logits; both twins rewind alike.
             let mut keep = 1;
             while keep < feed.len() && argmax(&e[(keep - 1) * vocab..keep * vocab]) == feed[keep] {
@@ -163,19 +203,21 @@ fn run(kv: oominf_core::KvFormat) {
             assert_eq!(alone[*i].len(), batched[*i].len());
         }
     }
-    // After rewinds the twins must still agree: one more step each, alone.
+    // After rewinds the twins must still agree: one more step each, alone (their
+    // states carry the wide steps' rounding).
     for i in 0..prompts.len() {
         let e = alone[i].step_all(&[next[i]]).unwrap();
         let g = batched[i].step_all(&[next[i]]).unwrap();
-        let (rel, same) = compare(&e, &g, vocab);
+        let (rel, same) = compare(&e, &g, vocab, true);
         eprintln!("after rewinds, sequence {i}: max relative diff {rel:.2e}");
         assert!(
-            same && rel <= REL_TOL,
+            same && rel <= REL_TOL_WIDE,
             "sequence {i} diverged after rewinds"
         );
-        worst = worst.max(rel);
     }
-    eprintln!("{kv:?}: worst relative diff {worst:.2e}");
+    eprintln!(
+        "{kv:?}: worst relative diff {worst:.2e} up to the first step wider than {NARROW} tokens, {worst_wide:.2e} after it"
+    );
 }
 
 #[test]
