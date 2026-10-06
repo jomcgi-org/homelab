@@ -4,6 +4,7 @@ const measurements = [
   { label: "Negative", value: -12345, unit: "bytes" },
   { label: "Fractional", value: 0.125, unit: "seconds" },
   { label: "Large rounded value", value: 999950, unit: "bytes" },
+  { label: "Large fractional value", value: 1234567890.1234567, unit: "bytes" },
   { label: "Missing null", value: null, unit: "bytes" },
   { label: "Missing undefined", value: undefined, unit: "bytes" },
   { label: "Not a number", value: NaN, unit: "bytes" },

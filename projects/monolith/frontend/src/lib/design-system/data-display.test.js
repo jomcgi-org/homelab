@@ -156,6 +156,7 @@ describe("stable contracts", () => {
       -12345,
       0.125,
       999950,
+      1234567890.1234567,
       null,
       undefined,
       NaN,
@@ -224,7 +225,14 @@ describe("stable contracts", () => {
   });
 
   it("keeps styles component-scoped, role-only and wrapping instead of truncating", () => {
-    for (const name of ["Panel", "KeyValue", "Status", "Metric"]) {
+    for (const name of [
+      "Panel",
+      "KeyValue",
+      "Status",
+      "Metric",
+      "ChartFrame",
+      "Legend",
+    ]) {
       const source = readFileSync(
         new URL(
           `../../../../../design-system/data-display/${name}.svelte`,

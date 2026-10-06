@@ -15,7 +15,7 @@ here rather than inside the monolith frontend, read ADR platform/013.
 
 ```
 projects/design-system/
-├── package.json                 @homelab/design-system, CSS and Svelte exports
+├── package.json                 @homelab/design-system, CSS, components and opt-in data-display exports
 ├── BUILD                        js_library linked via npm_link_all_packages (hand-maintained)
 ├── README.md                    role guide and tested contrast table
 ├── components/
@@ -26,6 +26,13 @@ projects/design-system/
 │   ├── Tabs.svelte              local tablist and panels
 │   ├── PageHeader.svelte        heading and action snippets
 │   └── Breadcrumb.svelte        compact navigation
+├── data-display/                Svelte 5 presentation primitives and plain JS contracts
+│   ├── index.js                 component entry (svelte condition)
+│   ├── core.js                  formatter, contracts and synthetic fixtures (default condition)
+│   ├── format.js                compact and exact measurements, explicit locale
+│   ├── contracts.js             status meanings, content states and ordered series roles
+│   ├── fixtures.js              immutable synthetic edge values
+│   └── *.svelte                 Panel/Section, KeyValue, Status, Metric, ChartFrame, Legend
 └── tokens/
     ├── contract.css             unchanged --ds-* defaults at :root
     └── technical-drawing.css    explicit, opt-in light/dark boundaries
@@ -45,7 +52,8 @@ link, so the generated target is dead weight that shows up as permanent
 
 ## Current state, honestly
 
-The contract is **wired but not consumed**. As of this README:
+The contract is wired; production pages do not consume the shared primitives.
+As of this README:
 
 - The package is linked and the stylesheet loads on every route, but no
   production Svelte or CSS file in the frontend reads a `var(--ds-*)` token, and none of
@@ -59,6 +67,8 @@ The contract is **wired but not consumed**. As of this README:
 - Opt-in controls and navigation primitives exist under `components/`, with
   synthetic SSR/hydration fixtures. No production page consumes them. There is
   no `jomcgi.dev/design` gallery or Storybook. #4449 requires no migration.
+- #6875 adds an opt-in data-display primitive set under `data-display/`,
+  exercised by synthetic fixtures only. No production page consumes it.
 
 The live styling rules remain the three per-theme stylesheets named in
 `.impeccable.md`, and that file is the document to follow when touching any
@@ -157,6 +167,123 @@ warnings/errors, exercises callbacks/bindings, and checks shared Svelte runtime
 resolution. Native tab order, disclosure activation, visual focus, hit areas,
 contrast, nested theme isolation, reduced motion and layout require its Chromium
 checks. No production page imports these primitives.
+
+## Opt-in data display
+
+Import components from `@homelab/design-system/data-display`. Its `svelte`
+condition exports the components and the JS contracts. Plain Node resolves the
+`default` condition to `core.js`, which exports only the formatter, contracts
+and fixtures and needs no Svelte compiler. The three CSS exports and the
+default `.` export still resolve to their original stylesheets.
+
+All component styles are scoped and use `--ds-*` roles. Import the contract
+stylesheet and select an explicit technical-drawing boundary for series
+colours. Nested boundaries inherit their own roles. Outside a boundary the
+legend falls back to ink; labels and distinct shapes retain meaning.
+There are no application imports, stores, requests or browser-global reads.
+
+### Components
+
+| Component | Props and snippets | Semantics |
+| --- | --- | --- |
+| `Panel` (also exported as `Section`) | Required `title`; `headingLevel=2` (integer 2 through 6); `state="ready"`; optional `message`, `children()` and `footer()` snippets | Outlined native section linked to a real heading. Footer partition remains visible in every state. |
+| `KeyValue` | `rows=[]` of `{label, value, unit?}`; `density="dense"` or `"sparse"`; optional `value(row)` snippet | Native definition list. Values flow from the left and wrap; rows stack below 30rem. Null, undefined and non-finite numeric values display Unavailable. A custom snippet owns its value semantics. |
+| `Status` | `kind="unknown"`; required `label`; `live=false` | Stable cue and visible human label. Ordinary rendering has no live region. `live=true` opts into `role="status"` and polite announcements. |
+| `Metric` | Required `label`; `value`; `unit=""`; `locale="en-US"`; optional `context`; `state="ready"` | Labelled group, compact visible value with accessible exact text including units, plus native Exact value disclosure for sighted keyboard/touch users. |
+| `ChartFrame` | Required nonblank `title`, `units`, `description` and `fallback(state)` snippet; optional `children()` chart snippet, `message`; `state="ready"` | Native figure linked to title and description in its visible figcaption. Read chart data disclosure renders the fallback in every state. No chart renderer. |
+| `Legend` | `entries=SERIES_ROLES` (array of `{id, label}`); `label="Chart series"` | Labelled native list. Supplied entries are sorted into contract order without mutation, with visible shape names and distinct SVG markers. Unknown/duplicate IDs and blank labels throw. An empty array is an empty list. |
+
+Required text inputs reject missing, non-string or whitespace-only values with
+`TypeError` during render. Invalid headings, densities, kinds and content states
+throw `RangeError`. ChartFrame checks its metadata and fallback even while
+loading or unavailable. The caller must supply meaningful descriptive text and
+usable fallback content, such as a captioned table with column and row headers;
+the component validates snippet presence, not the caller's prose or table schema.
+Style caller-owned tables with wrapping cells and a width bounded by the figure.
+
+`CONTENT_STATES` maps `ready`, `loading`, `empty`, `error`, `unavailable` to
+human text. Panel and ChartFrame render chart/content snippets only when ready;
+other states render state text and optional message. Metric renders no stale
+value in those states. Missing or non-finite ready measurements become
+Unavailable. Loading sets `aria-busy`; none of these ordinary data states is a
+live region. Disclosures use native keyboard behavior, a minimum 44px height
+and a visible `--ds-focus` outline using `--ds-focus-width`.
+
+### Formatting and stable meanings
+
+`formatMeasurement(value, {unit="", locale=DEFAULT_LOCALE})` returns a frozen
+`{state, text, exactText, unit, locale}`. `MEASUREMENT_STATES` is `AVAILABLE:
+"available"`, `UNAVAILABLE: "unavailable"`. Only finite numbers are available:
+zero, negatives and fractions are measurements; strings, missing and non-finite
+inputs are never coerced into zero. Compact text uses three significant digits;
+exact text preserves the JavaScript number with up to 21 significant digits
+and appends literal units. No extra measurement precision is invented.
+
+`DEFAULT_LOCALE` is deterministic `en-US`, never navigator or the ambient host
+locale. Pass the same explicit locale during SSR and hydration. Valid unsupported
+tags fall back to `en-US`; malformed tags throw `RangeError`, and empty/non-text
+locale or non-text unit inputs throw `TypeError`. Exact and compact formatting
+both use the resolved locale. The same Intl locale data must be available on
+the server and client.
+
+`STATUS_KINDS` freezes each label, meaning, CSS role and cue: `ok` means healthy
+or successful (`--ds-ok`, check); `warn` means attention required (`--ds-warn`,
+triangle); `err` means failure (`--ds-err`, cross); `unknown` means not known or
+unavailable (`--ds-ink-muted`, question mark); `pending` means waiting or loading
+(`--ds-ink-muted`, clock). Supply a domain label that preserves that meaning.
+The cue is hidden from screen readers; the explicit label carries the meaning.
+
+`SERIES_ROLES` is frozen in this order in both schemes:
+
+| ID | Default label | Role | Marker |
+| --- | --- | --- | --- |
+| `gpu` | GPU | `--ds-series-1` | circle |
+| `host-ram` | Host RAM | `--ds-series-2` | square |
+| `page-cache` | Page cache | `--ds-series-3` | triangle |
+| `nvme` | NVMe | `--ds-series-4` | diamond |
+| `hot-expert-set` | Hot expert set | `--ds-series-5` | cross |
+
+`DATA_DISPLAY_FIXTURES` exports frozen measurements (all numeric edges,
+missing and non-finite values, long labels/units), rows, densities and states.
+They contain synthetic constants only. Unit/DOM tests live in
+`projects/monolith/frontend/src/lib/design-system/`; the isolated theme preview
+renders every component in light, dark and nested boundaries and checks SSR,
+hydration and real Chromium text resize. No production page consumes this set.
+
+### Composition
+
+```svelte
+<script>
+  import "@homelab/design-system/tokens/contract.css";
+  import "@homelab/design-system/tokens/technical-drawing.css";
+  import { Panel, KeyValue, Status, Metric, ChartFrame, Legend }
+    from "@homelab/design-system/data-display";
+</script>
+
+<section data-ds-theme="technical-drawing-light">
+  <Panel title="Synthetic memory">
+    <KeyValue rows={[{label: "Source", value: "Synthetic"}]} />
+    <Status kind="unknown" label="Synthetic sample, health unknown" />
+    <Metric label="GPU memory" value={0} unit="bytes" locale="en-US" />
+    <ChartFrame title="Memory sample" units="bytes"
+      description="One synthetic GPU measurement, zero bytes.">
+      <Legend entries={[{id: "gpu", label: "GPU"}]} />
+      {#snippet fallback(state)}
+        <table>
+          <caption>Memory sample ({state})</caption>
+          <thead><tr><th scope="col">Series</th><th scope="col">Bytes</th></tr></thead>
+          <tbody><tr><th scope="row">GPU</th><td>0</td></tr></tbody>
+        </table>
+      {/snippet}
+    </ChartFrame>
+  </Panel>
+</section>
+
+<style>
+  table { width: 100%; table-layout: fixed; }
+  th, td { text-align: start; overflow-wrap: anywhere; }
+</style>
+```
 
 ## Opt-in technical drawing
 

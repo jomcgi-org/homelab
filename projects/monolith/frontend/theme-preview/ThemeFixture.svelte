@@ -1,4 +1,5 @@
 <script>
+  import DataDisplayFixture from "./DataDisplayFixture.svelte";
   const series = [
     { name: "GPU", shape: "circle", length: 88 },
     { name: "Host RAM", shape: "square", length: 72 },
@@ -93,6 +94,7 @@
         </li>
       {/each}
     </ul>
+    <DataDisplayFixture />
     {#if nested}
       <p class="faint" data-contrast-text>
         Explicit dark roles inside the light sheet.
