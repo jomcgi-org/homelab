@@ -33,5 +33,5 @@ Browser selectors: `data-sample="light|dark|nested|contract"`,
 `data-action="default|submit|disabled|named|field|header|disclosure|selection|external-submit"`,
 and `data-state="submissions|disclosure|selection"`. The three themed samples
 share presentational state so binding changes can be observed across boundaries.
-Optional fixture props `orientation`, `headingLevel`, `initialSelected` and
+Optional fixture props `buttonType`, `orientation`, `headingLevel`, `initialSelected` and
 `tabs` cover vertical tabs, single tabs and selection fallback in Node tests.

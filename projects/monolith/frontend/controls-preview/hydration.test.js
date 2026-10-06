@@ -143,6 +143,21 @@ it("associates labels, descriptions, errors and native required/disabled state",
   expect(select.id).toBe(label.htmlFor);
 });
 
+it.each([null, "", "invalid"])(
+  "normalizes button type %j to an explicit non-submit type",
+  async (buttonType) => {
+    const root = await setup({ buttonType });
+    const button = root.querySelector('[data-action="default"]');
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.type).toBe("button");
+    button.click();
+    await tick();
+    expect(root.querySelector('[data-state="submissions"]').textContent).toBe(
+      "Submissions: 0",
+    );
+  },
+);
+
 it("renders native disclosure and synchronizes open binding in both directions", async () => {
   const root = await setup();
   const details = root.querySelector("details");
