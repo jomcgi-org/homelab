@@ -35,10 +35,15 @@ it("links figure title and description and exposes a captioned table by keyboard
     target.querySelector(`#${figure.getAttribute("aria-labelledby")}`)
       .textContent,
   ).toBe("Synthetic chart");
-  expect(
-    target.querySelector(`#${figure.getAttribute("aria-describedby")}`)
-      .textContent,
-  ).toBe("Exact synthetic measurements");
+  const describedby = figure.getAttribute("aria-describedby").split(" ");
+  expect(describedby).toHaveLength(2);
+  expect(target.querySelector(`#${describedby[0]}`).textContent).toBe(
+    "Units: bytes",
+  );
+  expect(target.querySelector(`#${describedby[1]}`).textContent).toBe(
+    "Exact synthetic measurements",
+  );
+  expect(figure.querySelector("figcaption .units").id).toBe(describedby[0]);
   expect(figure.querySelector("figcaption .units").textContent).toBe(
     "Units: bytes",
   );

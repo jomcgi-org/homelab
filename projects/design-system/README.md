@@ -27,8 +27,8 @@ projects/design-system/
 │   ├── PageHeader.svelte        heading and action snippets
 │   └── Breadcrumb.svelte        compact navigation
 ├── data-display/                Svelte 5 presentation primitives and plain JS contracts
-│   ├── index.js                 component entry (svelte condition)
-│   ├── core.js                  formatter, contracts and synthetic fixtures (default condition)
+│   ├── index.js                 component entry (every condition)
+│   ├── core.js                  formatter, contracts and synthetic fixtures (plain-Node entry)
 │   ├── format.js                compact and exact measurements, explicit locale
 │   ├── contracts.js             status meanings, content states and ordered series roles
 │   ├── fixtures.js              immutable synthetic edge values
@@ -170,16 +170,20 @@ checks. No production page imports these primitives.
 
 ## Opt-in data display
 
-Import components from `@homelab/design-system/data-display`. Its `svelte`
-condition exports the components and the JS contracts. Plain Node resolves the
-`default` condition to `core.js`, which exports only the formatter, contracts
-and fixtures and needs no Svelte compiler. The three CSS exports and the
+Import components from `@homelab/design-system/data-display`. The subpath
+resolves to `index.js` under every condition, so SvelteKit SSR and the client
+compile the same components from one entry. Plain Node without a Svelte
+compiler imports only the formatter, contracts and fixtures from
+`@homelab/design-system/data-display/core`. The three CSS exports and the
 default `.` export still resolve to their original stylesheets.
 
-All component styles are scoped and use `--ds-*` roles. Import the contract
-stylesheet and select an explicit technical-drawing boundary for series
-colours. Nested boundaries inherit their own roles. Outside a boundary the
-legend falls back to ink; labels and distinct shapes retain meaning.
+All component styles are scoped and use `--ds-*` roles. Render every
+component inside an explicit `data-ds-theme` technical-drawing boundary:
+status text colours and the focus ring are specified against boundary roles,
+and rendering outside a boundary is unsupported. Nested boundaries inherit
+their own roles. Outside a boundary the legend falls back to ink, labels and
+distinct shapes retain meaning, and disclosure focus falls back to the text
+colour so the ring stays visible.
 There are no application imports, stores, requests or browser-global reads.
 
 ### Components
@@ -190,7 +194,7 @@ There are no application imports, stores, requests or browser-global reads.
 | `KeyValue` | `rows=[]` of `{label, value, unit?}`; `density="dense"` or `"sparse"`; optional `value(row)` snippet | Native definition list. Values flow from the left and wrap; rows stack below 30rem. Null, undefined and non-finite numeric values display Unavailable. A custom snippet owns its value semantics. |
 | `Status` | `kind="unknown"`; required `label`; `live=false` | Stable cue and visible human label. Ordinary rendering has no live region. `live=true` opts into `role="status"` and polite announcements. |
 | `Metric` | Required `label`; `value`; `unit=""`; `locale="en-US"`; optional `context`; `state="ready"` | Labelled group, compact visible value with accessible exact text including units, plus native Exact value disclosure for sighted keyboard/touch users. |
-| `ChartFrame` | Required nonblank `title`, `units`, `description` and `fallback(state)` snippet; optional `children()` chart snippet, `message`; `state="ready"` | Native figure linked to title and description in its visible figcaption. Read chart data disclosure renders the fallback in every state. No chart renderer. |
+| `ChartFrame` | Required nonblank `title`, `units`, `description` and `fallback(state)` snippet; optional `children()` chart snippet, `message`; `state="ready"` | Native figure linked to title, units and description in its visible figcaption. Read chart data disclosure renders the fallback in every state. No chart renderer. |
 | `Legend` | `entries=SERIES_ROLES` (array of `{id, label}`); `label="Chart series"` | Labelled native list. Supplied entries are sorted into contract order without mutation, with visible shape names and distinct SVG markers. Unknown/duplicate IDs and blank labels throw. An empty array is an empty list. |
 
 Required text inputs reject missing, non-string or whitespace-only values with
@@ -216,9 +220,13 @@ and a visible `--ds-focus` outline using `--ds-focus-width`.
 `{state, text, exactText, unit, locale}`. `MEASUREMENT_STATES` is `AVAILABLE:
 "available"`, `UNAVAILABLE: "unavailable"`. Only finite numbers are available:
 zero, negatives and fractions are measurements; strings, missing and non-finite
-inputs are never coerced into zero. Compact text uses three significant digits;
-exact text preserves the JavaScript number with up to 21 significant digits
-and appends literal units. No extra measurement precision is invented.
+inputs are never coerced into zero. Compact text uses three significant digits
+only where the locale abbreviates with a suffix; values with no suffix keep the
+standard locale format (full integer digits, at most three fraction digits), so
+no invented precision appears in locales without a thousands abbreviation.
+Magnitudes the standard format would round to zero keep the compact
+significant-digit text instead. Exact text preserves the JavaScript number with
+up to 21 significant digits and appends literal units.
 
 `DEFAULT_LOCALE` is deterministic `en-US`, never navigator or the ambient host
 locale. Pass the same explicit locale during SSR and hydration. Valid unsupported

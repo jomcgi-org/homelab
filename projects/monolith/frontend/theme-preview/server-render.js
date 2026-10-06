@@ -11,7 +11,6 @@ export async function renderFixture() {
     plugins: [svelte({ configFile: false, compilerOptions: { hmr: false } })],
     ssr: {
       noExternal: ["@homelab/design-system"],
-      resolve: { conditions: ["svelte", "node", "module"] },
     },
     optimizeDeps: { noDiscovery: true, exclude: ["svelte"] },
     server: { middlewareMode: true, watch: null, hmr: false },

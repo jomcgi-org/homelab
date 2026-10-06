@@ -9,12 +9,17 @@ export const MEASUREMENT_STATES = Object.freeze({
 
 /**
  * Format only finite numbers. Units are caller-owned literal text, not an Intl
- * unit identifier. Significant digits let compact rounding promote 999,950 to
- * 1M, and preserve fractional measurements instead of rounding them to zero.
- * Exact text preserves the number's significant digits, not the compact result.
- * Unsupported locale tags fall back to en-US, never the host's ambient locale.
- * The default export condition exposes this helper in Node without a compiler;
- * the svelte condition additionally exposes components from index.js.
+ * unit identifier. Compact suffixes use three significant digits, so 999,950
+ * still promotes to 1M. Values with no compact suffix in the locale keep the
+ * standard locale format (full integer digits, at most three fraction digits)
+ * instead of significant-digit rounding, so de-DE shows -12.345 rather than
+ * -12.300 and ja-JP shows 1,234 rather than 1230. Magnitudes that the standard
+ * format would round to zero keep the compact significant-digit text, so a
+ * nonzero measurement never renders as "0". Exact text preserves the number's
+ * significant digits, not the compact result. Unsupported locale tags fall back
+ * to en-US, never the host's ambient locale. Plain Node without a Svelte
+ * compiler imports this helper from the data-display/core subpath; the
+ * data-display subpath always exposes the components from index.js.
  */
 export function formatMeasurement(
   value,
@@ -40,12 +45,22 @@ export function formatMeasurement(
     notation: "compact",
     maximumSignificantDigits: 3,
   });
+  const standard = new Intl.NumberFormat(locale, { maximumFractionDigits: 3 });
   const exact = new Intl.NumberFormat(locale, {
     maximumSignificantDigits: 21,
   });
+  const hasSuffix = compact
+    .formatToParts(value)
+    .some((part) => part.type === "compact");
+  let text = hasSuffix ? compact.format(value) : standard.format(value);
+  if (value !== 0 && text === standard.format(0)) {
+    // The standard format rounds this magnitude to zero; keep the compact
+    // significant-digit text so a nonzero measurement never reads as "0".
+    text = compact.format(value);
+  }
   return Object.freeze({
     state: MEASUREMENT_STATES.AVAILABLE,
-    text: compact.format(value),
+    text,
     exactText: [exact.format(value), unit].filter(Boolean).join(" "),
     unit,
     locale,

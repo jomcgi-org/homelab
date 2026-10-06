@@ -8,11 +8,11 @@ export async function serverRender(name, props = {}) {
     configFile: false,
     root: resolve("test/data-display"),
     plugins: [svelte({ configFile: false, compilerOptions: { hmr: false } })],
-    // Vite 6's SSR condition list is separate from the client list. Opt into
-    // the component entry and compile it rather than using Node's core entry.
+    // The package exposes one component entry under every condition, so
+    // default SSR resolution compiles the same components as the client.
+    // No hand-set conditions: this harness must resolve like the real app.
     ssr: {
       noExternal: ["@homelab/design-system"],
-      resolve: { conditions: ["svelte", "node", "module"] },
     },
     optimizeDeps: { noDiscovery: true, exclude: ["svelte"] },
     server: { middlewareMode: true, watch: null, hmr: false },
