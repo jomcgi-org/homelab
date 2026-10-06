@@ -79,6 +79,10 @@ enum Command {
         /// separated): the cost of checking prompt-lookup drafts.
         #[arg(long, value_delimiter = ',')]
         verify: Vec<usize>,
+        /// After decoding, time batched steps over this many concurrent sequences
+        /// (comma separated), each fed one token per step.
+        #[arg(long, value_delimiter = ',')]
+        streams: Vec<usize>,
         #[command(flatten)]
         experts: load::ExpertArgs,
         #[command(flatten)]
@@ -150,6 +154,23 @@ enum Command {
         /// Shorter sequences are not saved (they prefill in moments).
         #[arg(long, default_value_t = 1024)]
         prefix_store_min_tokens: usize,
+        /// Requests decoding at once (continuous batching: their tokens share each
+        /// step). 1 serves one request at a time, to completion.
+        #[arg(long, default_value_t = 1)]
+        max_streams: usize,
+        /// Most tokens a batched step carries (every stream's next token plus the
+        /// drafts the token budget picks).
+        #[arg(long, default_value_t = oominf_server::engine::MAX_STEP_TOKENS)]
+        max_step_tokens: usize,
+        /// Step cost in milliseconds by width, `width:ms` points (interpolated,
+        /// then refined by measured steps): what the token budget trades drafts
+        /// against.
+        #[arg(long, default_value = oominf_server::budget::DEFAULT_STEP_COST)]
+        step_cost: String,
+        /// Prompt tokens prefilled at a time while other requests decode (0: whole
+        /// prompts; other requests wait for the prefill).
+        #[arg(long, default_value_t = 0)]
+        prefill_slice: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
         #[command(flatten)]
@@ -298,6 +319,7 @@ fn main() -> Result<()> {
             draft,
             prompt_lookup,
             verify,
+            streams,
             experts,
             cache,
         } => {
@@ -313,6 +335,7 @@ fn main() -> Result<()> {
                 draft,
                 prompt_lookup,
                 &verify,
+                &streams,
                 &experts,
                 &cache,
             )?
@@ -351,9 +374,23 @@ fn main() -> Result<()> {
             prefix_store_gib,
             prefix_store_ttl_hours,
             prefix_store_min_tokens,
+            max_streams,
+            max_step_tokens,
+            step_cost,
+            prefill_slice,
             experts,
             cache,
         } => {
+            anyhow::ensure!(
+                max_streams >= 1 && max_streams <= max_step_tokens,
+                "--max-streams must be between 1 and --max-step-tokens"
+            );
+            let schedule = oominf_server::engine::Schedule {
+                max_streams,
+                step_cost: oominf_server::budget::CostCurve::parse(&step_cost, max_step_tokens)?,
+                draft_ms: oominf_server::engine::DEFAULT_DRAFT_MS,
+                prefill_slice,
+            };
             let prefix_store = match prefix_store_dir {
                 Some(dir) => Some(oominf_server::store::StoreConfig {
                     dir,
@@ -383,6 +420,7 @@ fn main() -> Result<()> {
                 addr: std::net::SocketAddr::new(host, port),
                 model_name,
                 prefix_store,
+                schedule,
             };
             oominf_server::serve(
                 cfg,
