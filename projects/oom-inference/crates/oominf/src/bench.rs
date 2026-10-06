@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use oominf_core::{ExpertStats, Model, Session, decode_step};
+use oominf_core::{ExpertStats, LOOKUP_MATCH, Model, PromptLookup, Session, decode_step_with};
 
 use crate::chat::Chat;
 use crate::load::{CacheArgs, ExpertArgs, OpenArgs, open_model};
@@ -64,6 +64,14 @@ fn tier_line(s: ExpertStats, tokens: usize, unit: &str) -> String {
 
 /// Generates at least `tokens` tokens greedily from `next` (the last generated,
 /// not yet fed token), drafting up to `draft` tokens per step; returns them.
+/// Prompt-lookup state for [`decode_phase`]: the drafter and every token so far
+/// (prompt and output, not counting the unfed `next`).
+struct LookupRun {
+    lookup: PromptLookup,
+    history: Vec<u32>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn decode_phase(
     name: &str,
     model: &dyn Model,
@@ -71,17 +79,46 @@ fn decode_phase(
     next: &mut u32,
     tokens: usize,
     draft: usize,
+    mut lookup: Option<&mut LookupRun>,
 ) -> Result<Vec<u32>> {
     let before = model.expert_stats();
     let t = Instant::now();
     let (mut out, mut steps, mut drafted, mut accepted) = (Vec::new(), 0, 0, 0);
+    // Per verification width (tokens fed): steps, time and tokens kept.
+    let mut widths: std::collections::BTreeMap<usize, (usize, f64, usize)> = Default::default();
     while out.len() < tokens {
-        let d = decode_step(session, *next, draft, |row: &[f32], _| Ok(argmax(row)))?;
+        let drafts = lookup.as_deref_mut().map(|l| {
+            l.history.push(*next);
+            let d = l.lookup.draft(&l.history);
+            l.history.pop();
+            d
+        });
+        let s = Instant::now();
+        let d = decode_step_with(session, *next, draft, drafts, |row: &[f32], _| {
+            Ok(argmax(row))
+        })?;
+        let e = widths.entry(d.drafted + 1).or_default();
+        e.0 += 1;
+        e.1 += s.elapsed().as_secs_f64() * 1e3;
+        e.2 += d.tokens.len();
         steps += 1;
         drafted += d.drafted;
         accepted += d.accepted;
+        if let Some(l) = lookup.as_deref_mut() {
+            l.history.push(*next);
+            l.history.extend(&d.tokens[..d.tokens.len() - 1]);
+        }
         *next = *d.tokens.last().expect("a step produces a token");
         out.extend(d.tokens);
+    }
+    if lookup.is_some() {
+        for (w, (n, ms, kept)) in &widths {
+            println!(
+                "  width {w:2}: {n:4} steps, {:6.1} ms/step, {:4.2} tokens kept/step",
+                ms / *n as f64,
+                *kept as f64 / *n as f64
+            );
+        }
     }
     let n = out.len();
     let per = t.elapsed().as_secs_f64() / n as f64 * 1e3;
@@ -167,6 +204,7 @@ pub fn run(
     tokens: usize,
     prefill_chunk: Option<usize>,
     draft: usize,
+    lookup_k: usize,
     verify: &[usize],
     expert_args: &ExpertArgs,
     cache: &CacheArgs,
@@ -191,6 +229,10 @@ pub fn run(
     let mut session = model.new_session(max_context)?;
     let logits = timed_prefill("prefill", &*model, &mut *session, &ids)?;
     let mut next = argmax(&logits);
+    let mut lookup = (lookup_k > 0).then(|| LookupRun {
+        lookup: PromptLookup::new(&LOOKUP_MATCH, lookup_k),
+        history: ids.clone(),
+    });
     decode_phase(
         "decode (cold tiers)",
         &*model,
@@ -198,6 +240,7 @@ pub fn run(
         &mut next,
         tokens,
         draft,
+        lookup.as_mut(),
     )?;
     decode_phase(
         "decode (warm tiers)",
@@ -206,6 +249,7 @@ pub fn run(
         &mut next,
         tokens,
         draft,
+        lookup.as_mut(),
     )?;
     verify_sweep(&*model, &mut *session, &mut next, &ids, verify)?;
     println!("after decode: {}", model.describe());
