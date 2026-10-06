@@ -22,7 +22,7 @@ Each post must follow these conventions:
 
 Store post figures as SVG files under `docs/posts/figures/` and reference them
 with the exact relative path, for example
-`![Memory tiers](figures/memory-tiers.svg)`. The generator validates and embeds
+`![Expert records and PLE rows take different paths](figures/oom-memory-paths.svg)`. The generator validates and embeds
 tracked SVG figures so the drawing inherits the blog theme. SVGs need a
 `viewBox` and no `width` or `height` attributes. Every figure is followed by a
 two-column `Key | Part` table with one row per callout in number order. The

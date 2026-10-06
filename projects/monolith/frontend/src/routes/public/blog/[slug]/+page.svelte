@@ -795,11 +795,13 @@
 
   .post-body :global(summary) {
     cursor: pointer;
-    min-height: 2.75rem;
-    display: flex;
-    align-items: center;
+    padding-block: 0.8rem;
     font: 0.8rem var(--font-code);
     color: var(--ink);
+  }
+
+  .post-body :global(details[open] > summary) {
+    margin-bottom: 0.25rem;
   }
 
   .post-body :global(hr) {
