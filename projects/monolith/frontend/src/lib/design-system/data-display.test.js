@@ -64,6 +64,12 @@ describe("measurement formatting", () => {
     expect(formatMeasurement(12345.6789, { locale: "de-DE" }).text).toBe(
       "12.345,679",
     );
+    expect(formatMeasurement(-0.0001).text).toBe("-0.0001");
+    expect(formatMeasurement(-0.0004).text).toBe("-0.0004");
+    expect(formatMeasurement(0.0001).text).toBe("0.0001");
+    expect(formatMeasurement(-0.0001, { locale: "de-DE" }).text).toBe(
+      "-0,0001",
+    );
     for (const value of [
       Number.MIN_VALUE,
       Number.MAX_VALUE,
@@ -72,6 +78,7 @@ describe("measurement formatting", () => {
       const formatted = formatMeasurement(value);
       expect(formatted.state).toBe("available");
       expect(formatted.text).not.toBe("0");
+      expect(formatted.text).not.toBe("-0");
       expect(Number(formatted.exactText.replaceAll(",", ""))).toBe(value);
     }
     expect(formatMeasurement(-0).exactText).toBe("-0");
