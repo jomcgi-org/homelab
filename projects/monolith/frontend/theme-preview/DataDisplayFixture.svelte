@@ -62,8 +62,9 @@
               })}
               <tr
                 ><th scope="row">{measurement.label}</th><td
-                  >{formatted.exactText}{#if formatted.state === "unavailable"}
-                    ({measurement.unit}){/if}</td
+                  >{formatted.exactText}{formatted.state === "unavailable"
+                    ? ` (${measurement.unit})`
+                    : ""}</td
                 ></tr
               >
             {/each}

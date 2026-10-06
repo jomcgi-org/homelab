@@ -5,6 +5,29 @@ import ThemeFixture from "./ThemeFixture.svelte";
 import { renderFixture } from "./server-render.js";
 import "@homelab/design-system/tokens/technical-drawing.css";
 
+it("retains exact measurements and unavailable units in fallback table rows", async () => {
+  const { body } = await renderFixture();
+  const target = document.createElement("div");
+  target.innerHTML = body;
+  for (const display of target.querySelectorAll("[data-data-display]")) {
+    const metrics = [...display.querySelectorAll(".metrics > .metric")];
+    const rows = [...display.querySelectorAll("figure tbody tr")];
+    expect(rows).toHaveLength(metrics.length);
+    for (const [index, metric] of metrics.entries()) {
+      const exact = metric.querySelector(".exact-sr");
+      const unit = metric
+        .querySelector(".unit-state")
+        ?.textContent.replace(/^Units: /, "");
+      expect(rows[index].querySelector("th").textContent).toBe(
+        metric.querySelector(".label").textContent,
+      );
+      expect(rows[index].querySelector("td").textContent).toBe(
+        exact?.textContent ?? `Unavailable (${unit})`,
+      );
+    }
+  }
+});
+
 it("hydrates actual server markup without replacing nodes, text or attributes", async () => {
   const { body } = await renderFixture();
   const target = document.createElement("div");
