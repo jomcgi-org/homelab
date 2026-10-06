@@ -207,7 +207,12 @@ pub fn tier_budget(
             floor: vram_floors.vram,
             useful: vram_floors.vram_useful,
         },
-    )?;
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "{e}; to fit, free GPU memory, use --dense fp8, lower --max-context, or use --kv-placement host"
+        )
+    })?;
     let mem = HostMemory::probe()?;
     let mut lines = vec![mem.describe()];
     let stage = v.bytes >= plan::stage_bytes(&layouts);
@@ -240,7 +245,12 @@ pub fn tier_budget(
             floor: host_floors.host,
             useful: host_floors.host_useful,
         },
-    )?;
+    )
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "{e}; to fit, raise the memory (or container) limit, lower --max-context or --max-streams (fewer prefix checkpoints), drop --prefix-store-dir or --kv-placement host, or lower --host-reserve-gib"
+        )
+    })?;
     let detail: Vec<String> = outside
         .iter()
         .map(|(w, b)| format!("{w} {:.1}", *b as f64 / GIB))
