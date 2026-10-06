@@ -422,6 +422,11 @@ impl<B: Backend> Moe<B> {
         })
     }
 
+    /// Whether a [`Moe::route_start`]'s routing has landed (without waiting).
+    pub fn route_ready(&self, gpu: &B, pending: &PendingRoute<B>) -> Result<bool> {
+        gpu.event_done(&pending.done)
+    }
+
     /// Waits for a [`Moe::route_start`] download in `host`: the routing, and the
     /// next layer's predicted experts (distinct, sorted; empty without the pair).
     pub fn route_finish(

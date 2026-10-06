@@ -119,6 +119,15 @@ const GIB: f64 = (1u64 << 30) as f64;
 /// Reads in flight on the stage-ahead reader and on a fetch's reader. A single
 /// record read is many block requests and keeps a drive near full speed.
 const AHEAD_READ_DEPTH: u32 = 4;
+
+/// A stage-ahead's host-tier copies go to the copy queue this many at a time (about
+/// 2 ms of copy engine), the next only once those completed, as the caller polls
+/// ([`ExpertSource::finish_stage_ahead`], which prefill calls while it waits for
+/// routing). The copy engine runs ready copies in submission order across queues,
+/// so a fetch's own copies (needed now) wait behind at most one trickle of the next
+/// layer's, not all of it (measured: ~45 ms of idle device per layer with one batch,
+/// ~13 ms with a quarter layer per fetch group).
+const STAGE_TRICKLE: usize = 8;
 const FETCH_READ_DEPTH: u32 = 32;
 
 /// The copy that last read a host buffer: a fetch's (by fetch sequence number, on
@@ -192,6 +201,11 @@ pub struct TieredExperts<B: Backend> {
     /// number of the open (or last) batch.
     ahead_pending: VecDeque<(u64, B::Event)>,
     ahead_batch: u64,
+    /// Host-tier copies of the open stage-ahead not yet handed to the copy queue
+    /// (host slot, device address), fed in slices (see `STAGE_SLICES`).
+    ahead_unsent: VecDeque<(usize, u64)>,
+    /// Copy-queue event after the last trickle sent.
+    ahead_trickle: Option<B::Event>,
     /// Disk reads of the open stage-ahead and of the open fetch, per read tag: (host
     /// buffer, device address, key, VRAM cache the key was placed in).
     ahead_reads: Vec<Read>,
@@ -318,6 +332,8 @@ impl<B: Backend> TieredExperts<B> {
             ahead_queue: b.copy_queue()?,
             ahead_pending: VecDeque::new(),
             ahead_batch: 0,
+            ahead_unsent: VecDeque::new(),
+            ahead_trickle: None,
             reader,
             fetch_reader,
             lookahead_reader,
@@ -380,6 +396,26 @@ impl<B: Backend> TieredExperts<B> {
     }
 
     fn summary(&self) -> String {
+        let both = self
+            .vram
+            .keys()
+            .chain(self.stage.keys())
+            .filter(|&k| self.host.peek(k).is_some())
+            .count();
+        let held = self.vram.len() + self.stage.len() + self.host.len() - both;
+        format!(
+            "{}; held: VRAM {} + stage {} + host {} records, {} in both VRAM and host, {} distinct; disk reads so far {}",
+            self.summary_sizes(),
+            self.vram.len(),
+            self.stage.len(),
+            self.host.len(),
+            both,
+            held,
+            self.stats.disk_reads
+        )
+    }
+
+    fn summary_sizes(&self) -> String {
         format!(
             "tiered experts: VRAM {} + {} stage slots ({:.1} GiB, {}), host {} slots ({:.1} GiB pinned, {})",
             self.vram.capacity(),
@@ -610,10 +646,126 @@ impl<B: Backend> TieredExperts<B> {
 
     /// Queues the device copies of the open stage-ahead's reads that have landed,
     /// without waiting for the rest.
+    /// Places `experts` of `layer` (a prediction) for the open stage-ahead batch
+    /// and starts loading those not yet in VRAM: host-tier records copy in slices,
+    /// the rest read from disk first. Records already staged are skipped.
+    fn stage_keys(&mut self, layer: u32, experts: &[u32]) -> Result<()> {
+        let ne = self.num_experts;
+        let mut keys: Vec<u32> = experts
+            .iter()
+            .filter(|&&e| e < ne)
+            .map(|&e| layer * ne + e)
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let (Some((_, staged)), Some((_, predicted))) = (&mut self.ahead_keys, &mut self.prediction)
+        else {
+            return Ok(());
+        };
+        keys.retain(|k| !predicted.contains(k));
+        self.stats.predicted += keys.len() as u64;
+        predicted.extend(keys.iter().copied());
+        let predicted = predicted.clone();
+        let mut staged_now = std::mem::take(staged);
+        let current = self.last_layer;
+        let pinned = |k: u32| predicted.contains(&k) || Some(k / ne) == current;
+
+        // Main slots (free ones first, then by policy), then the stage: the stage
+        // belongs to the computing layer, whose later fetch groups stream their
+        // misses through it and would evict staged records there; the next layer
+        // borrows the main tier's coldest records instead (once-staged records score
+        // lowest, so later layers evict each other before any decode-hot record).
+        let mut fills = Vec::new();
+        for &key in &keys {
+            if self.vram.peek(key).is_some() || self.stage.peek(key).is_some() {
+                continue;
+            }
+            if let Some(Place::Miss(s, _)) = self.vram.place(key, &pinned) {
+                fills.push((key, Target::Main, self.main_addr(s)));
+                continue;
+            }
+            match self.stage.place(key, &pinned) {
+                Some(Place::Miss(s, _)) => fills.push((key, Target::Stage, self.stage_addr(s))),
+                // Every slot of both holds a pinned record.
+                _ => break,
+            }
+        }
+        self.stats.staged += fills.len() as u64;
+        staged_now.extend(fills.iter().map(|&(k, _, _)| k));
+        self.ahead_keys = Some((layer, staged_now));
+        let copy = LastCopy {
+            ahead: true,
+            seq: self.ahead_batch,
+        };
+        let mut jobs = Vec::new();
+        for (key, target, dst) in fills {
+            match self.host.peek(key) {
+                // Sent in slices; until sent, the slot counts as read by this batch
+                // (CopySourceValid: finish_staging sends the rest before anything
+                // may overwrite it).
+                Some(hs) => {
+                    self.ahead_unsent.push_back((hs, dst));
+                    self.host_last_copy[hs] = copy;
+                }
+                None if self.host.has_free() => {
+                    let Some(Place::Miss(hs, None)) = self.host.place(key, &pinned) else {
+                        unreachable!("a free slot evicts nothing");
+                    };
+                    self.queue_read(Batch::Ahead, &mut jobs, key, Src::Host(hs), dst, target)?;
+                }
+                None => {
+                    let ss = self.next_host_stage()?;
+                    self.queue_read(Batch::Ahead, &mut jobs, key, Src::Stage(ss), dst, target)?;
+                }
+            }
+        }
+        self.trickle()?;
+        if !jobs.is_empty()
+            && let Err(e) = self.reader.submit(jobs)
+        {
+            self.forget_reads(Batch::Ahead);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Hands up to `n` of the open stage-ahead's host-tier copies to its queue.
+    fn send_ahead_copies(&mut self, n: usize) -> Result<()> {
+        let copy = LastCopy {
+            ahead: true,
+            seq: self.ahead_batch,
+        };
+        for _ in 0..n {
+            let Some((hs, dst)) = self.ahead_unsent.pop_front() else {
+                break;
+            };
+            enqueue_copy(&*self.b, &self.ahead_queue, dst, &self.host_arena, hs)?;
+            self.host_last_copy[hs] = copy;
+        }
+        Ok(())
+    }
+
+    /// Sends the next trickle of the open stage-ahead's host-tier copies once the
+    /// last one completed.
+    fn trickle(&mut self) -> Result<()> {
+        if self.ahead_unsent.is_empty() {
+            return Ok(());
+        }
+        if let Some(ev) = &self.ahead_trickle
+            && !self.b.event_done(ev)?
+        {
+            return Ok(());
+        }
+        self.send_ahead_copies(STAGE_TRICKLE)?;
+        self.ahead_trickle = Some(self.b.record_copies(&self.ahead_queue)?);
+        Ok(())
+    }
+
     fn poll_staging(&mut self) -> Result<()> {
         if !self.ahead_open {
             return Ok(());
         }
+        self.trickle()?;
         let mut land = Lander {
             b: &*self.b,
             queue: &self.ahead_queue,
@@ -647,6 +799,8 @@ impl<B: Backend> TieredExperts<B> {
             return Ok(());
         }
         self.ahead_open = false;
+        self.send_ahead_copies(usize::MAX)?;
+        self.ahead_trickle = None;
         self.land_reads(Batch::Ahead)?;
         let done = self.b.record_copies(&self.ahead_queue)?;
         self.ahead_pending.push_back((self.ahead_batch, done));
@@ -1044,47 +1198,8 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
         self.finish_staging()?;
         self.finish_lookahead(u32::MAX, &[])?;
         self.seq += 1;
-        let ne = self.num_experts;
-        let mut keys: Vec<u32> = experts
-            .iter()
-            .filter(|&&e| e < ne)
-            .map(|&e| layer * ne + e)
-            .collect();
-        keys.sort_unstable();
-        keys.dedup();
-        self.stats.predicted += keys.len() as u64;
-        let predicted: HashSet<u32> = keys.iter().copied().collect();
-        let current = self.last_layer;
-        let pinned = |k: u32| predicted.contains(&k) || Some(k / ne) == current;
-
-        // Main slots (free ones first, then by policy), then the stage: the stage
-        // belongs to the computing layer, whose later fetch groups stream their
-        // misses through it and would evict staged records there; the next layer
-        // borrows the main tier's coldest records instead (once-staged records score
-        // lowest, so later layers evict each other before any decode-hot record).
-        let mut fills = Vec::new();
-        for &key in &keys {
-            if self.vram.peek(key).is_some() || self.stage.peek(key).is_some() {
-                continue;
-            }
-            if let Some(Place::Miss(s, _)) = self.vram.place(key, &pinned) {
-                fills.push((key, Target::Main, self.main_addr(s)));
-                continue;
-            }
-            match self.stage.place(key, &pinned) {
-                Some(Place::Miss(s, _)) => fills.push((key, Target::Stage, self.stage_addr(s))),
-                // Every slot of both holds a pinned record.
-                _ => break,
-            }
-        }
-        let loaded: HashSet<u32> = fills.iter().map(|&(k, _, _)| k).collect();
-        self.prediction = Some((layer, predicted.clone()));
-        self.stats.staged += loaded.len() as u64;
-        self.ahead_keys = Some((layer, loaded));
-        if fills.is_empty() {
-            return Ok(());
-        }
-
+        self.ahead_keys = Some((layer, HashSet::new()));
+        self.prediction = Some((layer, HashSet::new()));
         // Refills overwrite records of layers other than the computing one (pinned),
         // and every kernel reading those was queued before that layer's first fetch
         // (KernelReadsValid), so the copies overlap the computing layer's kernels.
@@ -1093,38 +1208,23 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
             None => self.b.record_compute()?,
         };
         self.b.copies_wait(&self.ahead_queue, &after)?;
+        // The copy engine runs ready copies in submission order across queues: the
+        // computing layer's fetch copies (needed now) go first, or they wait behind
+        // the next layer's (measured: ~50 ms of idle device per layer).
+        let fetched = self.b.record_copies(&self.copy_queue)?;
+        self.b.copies_wait(&self.ahead_queue, &fetched)?;
         self.ahead_open = true;
         self.ahead_batch += 1;
-        let copy = LastCopy {
-            ahead: true,
-            seq: self.ahead_batch,
-        };
-        let mut jobs = Vec::new();
-        for (key, target, dst) in fills {
-            match self.host.peek(key) {
-                Some(hs) => {
-                    enqueue_copy(&*self.b, &self.ahead_queue, dst, &self.host_arena, hs)?;
-                    self.host_last_copy[hs] = copy;
-                }
-                None if self.host.has_free() => {
-                    let Some(Place::Miss(hs, None)) = self.host.place(key, &pinned) else {
-                        unreachable!("a free slot evicts nothing");
-                    };
-                    self.queue_read(Batch::Ahead, &mut jobs, key, Src::Host(hs), dst, target)?;
-                }
-                None => {
-                    let ss = self.next_host_stage()?;
-                    self.queue_read(Batch::Ahead, &mut jobs, key, Src::Stage(ss), dst, target)?;
-                }
-            }
+        self.stage_keys(layer, experts)
+    }
+
+    fn stage_more(&mut self, _b: &B, layer: u32, experts: &[u32]) -> Result<()> {
+        // Only while that layer's batch is still open: once its first fetch began,
+        // the stage-ahead is over and the fetches load the rest.
+        if !self.ahead_open || !matches!(&self.ahead_keys, Some((l, _)) if *l == layer) {
+            return Ok(());
         }
-        if !jobs.is_empty()
-            && let Err(e) = self.reader.submit(jobs)
-        {
-            self.forget_reads(Batch::Ahead);
-            return Err(e);
-        }
-        Ok(())
+        self.stage_keys(layer, experts)
     }
 
     fn finish_stage_ahead(&mut self, _b: &B) -> Result<()> {

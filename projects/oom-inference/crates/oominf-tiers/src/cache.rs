@@ -44,6 +44,11 @@ impl SlotCache {
     }
 
     /// Slot holding `key`, without counting an access.
+    /// Keys held, in no particular order.
+    pub fn keys(&self) -> impl Iterator<Item = u32> + '_ {
+        self.slot_of.keys().copied()
+    }
+
     pub fn peek(&self, key: u32) -> Option<usize> {
         self.slot_of.get(&key).copied()
     }
