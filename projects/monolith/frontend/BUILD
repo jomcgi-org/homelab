@@ -1,5 +1,6 @@
 # gazelle:ignore
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")
+load("@aspect_rules_py//py:defs.bzl", "py_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/monolith/frontend:vite/package_json.bzl", vite_bin = "bin")
@@ -495,6 +496,16 @@ build_test(
 )
 
 # Opt-in token fixture only, never part of :src or :src_public.
+py_test(
+    name = "gallery_evidence_test",
+    srcs = [
+        "theme-preview/gallery_check.py",
+        "theme-preview/gallery_check_test.py",
+    ],
+    main = "theme-preview/gallery_check_test.py",
+    imports = ["theme-preview"],
+)
+
 js_library(
     name = "theme_fixture_src",
     srcs = [
@@ -508,6 +519,7 @@ js_library(
         "theme-preview/README.md",
         "theme-preview/ThemeFixture.svelte",
         "theme-preview/browser_check.py",
+        "theme-preview/gallery_check.py",
         "theme-preview/gallery.html",
         "theme-preview/gallery/GalleryFixture.svelte",
         "theme-preview/gallery/contract.test.js",

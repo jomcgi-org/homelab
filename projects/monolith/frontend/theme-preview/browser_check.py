@@ -5,13 +5,19 @@ import functools
 import hashlib
 import http.server
 import importlib.metadata
+import importlib.util
 import itertools
 import json
 import threading
 from pathlib import Path
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError as error:
+    raise RuntimeError(
+        "Playwright is required; browser acceptance cannot be skipped"
+    ) from error
 
 
 def digest_tree(root):
@@ -22,11 +28,12 @@ def digest_tree(root):
     }
 
 
-def resize_text(page):
+def resize_text(page, selector=".fixture"):
     # Same real text-only resize as factory-preview: snapshot computed pixels,
     # then double every font and explicit line-height. Spacing stays unchanged.
-    return page.evaluate("""async () => {
-      const rows = [...document.querySelectorAll('.fixture, .fixture *')]
+    return page.evaluate(
+        """async selector => {
+      const rows = [...document.querySelectorAll(`${selector}, ${selector} *`)]
         .map(node => ({node, size: parseFloat(getComputedStyle(node).fontSize),
           line: getComputedStyle(node).lineHeight}));
       for (const {node, size, line} of rows) {
@@ -39,7 +46,9 @@ def resize_text(page):
         .map(({node, size}) => ({tag: node.tagName, expected: size * 2,
           actual: getComputedStyle(node).fontSize}));
       return {count: rows.length, verified: mismatches.length === 0, mismatches};
-    }""")
+    }""",
+        selector,
+    )
 
 
 # Compute contrast from rendered longhands, never by parsing token source.
@@ -143,12 +152,13 @@ def root_boundary_checks(page):
     }""")
 
 
-def layout_checks(page):
-    return page.evaluate("""() => {
+def layout_checks(page, selector=".fixture"):
+    return page.evaluate(
+        """selector => {
       const issues = [];
       const root = document.documentElement;
       if (root.scrollWidth > root.clientWidth) issues.push(`page overflow: ${root.scrollWidth} > ${root.clientWidth}`);
-      const walker = document.createTreeWalker(document.querySelector('.fixture'), NodeFilter.SHOW_TEXT);
+      const walker = document.createTreeWalker(document.querySelector(selector), NodeFilter.SHOW_TEXT);
       let count = 0;
       const boxes = [];
       while (walker.nextNode()) {
@@ -185,7 +195,9 @@ def layout_checks(page):
         }
       }
       return {issues, visible_text_nodes: count, checked_text_rectangles: boxes.length, scroll_width: root.scrollWidth, client_width: root.clientWidth};
-    }""")
+    }""",
+        selector,
+    )
 
 
 def keyboard_checks(page):
@@ -306,6 +318,12 @@ def check(root, output, expected_sha):
     assert json.loads((root / "build.json").read_text())["commit"] == expected_sha, (
         "artifact is not from the requested commit"
     )
+    spec = importlib.util.spec_from_file_location(
+        "gallery_check", Path(__file__).with_name("gallery_check.py")
+    )
+    gallery = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gallery)
+    gallery.preflight(root)
     assert (
         'data-ds-theme="technical-drawing-light"' in (root / "index.html").read_text()
     ), "static artifact has no server-rendered light boundary"
@@ -319,10 +337,16 @@ def check(root, output, expected_sha):
         "commit": expected_sha,
         "playwright": importlib.metadata.version("playwright"),
         "cases": [],
+        "gallery_cases": [],
     }
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            try:
+                browser = playwright.chromium.launch()
+            except PlaywrightError as error:
+                raise RuntimeError(
+                    "Chromium failed to launch; browser acceptance cannot be skipped"
+                ) from error
             evidence["chromium"] = browser.version
             for (width, height), scheme, scale in itertools.product(
                 [(320, 740), (1440, 1000)], ["light", "dark"], [1, 2]
@@ -410,10 +434,18 @@ def check(root, output, expected_sha):
                     print(f"{record['status']}: {name}", flush=True)
                     for issue in record["issues"]:
                         print(issue, flush=True)
+            gallery.run(
+                browser, base, output, evidence, resize_text, layout_checks, COLOURS
+            )
             browser.close()
     finally:
         server.shutdown()
         server.server_close()
+        evidence["screenshots"] = {
+            name: digest
+            for name, digest in digest_tree(output).items()
+            if name.endswith(".png")
+        }
         (output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
         (output / "tested-files.json").write_text(json.dumps(before, indent=2) + "\n")
     assert before == digest_tree(root), "browser check changed the artifact"
@@ -421,6 +453,7 @@ def check(root, output, expected_sha):
     assert all(case["status"] == "passed" for case in evidence["cases"]), (
         "theme browser checks failed; see result.json and screenshots"
     )
+    gallery.validate(evidence, output)
 
 
 if __name__ == "__main__":
