@@ -5,14 +5,15 @@ argument; task defaults follow the protocol each published score was measured un
 
 ```sh
 cd projects/oom-inference/evals
-export UV_CACHE_DIR=/disks/nvme-02/src/.toolchains/uv-cache
+# optionally: export UV_CACHE_DIR=<a cache on a large disk>
 uv sync
 uv run python -m oomeval list                       # tasks, default protocols, published scores
 ```
 
 ## Run
 
-Start `oominf serve` (under `flock /disks/nvme-02/src/oominf-data/gpu.lock`), then:
+Start `oominf serve` (holding the machine's GPU lock if it has one, e.g. `flock <lock file>`),
+then:
 
 ```sh
 uv run python -m oomeval run --label bf16 --tasks gsm8k,ruler --limit 300 \
