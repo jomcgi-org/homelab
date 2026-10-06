@@ -67,7 +67,9 @@ def chat(url, body, timeout):
         finish_reason=finish,
         prompt_tokens=usage.get("prompt_tokens", 0),
         completion_tokens=usage.get("completion_tokens", 0),
-        cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
+        cached_tokens=(usage.get("prompt_tokens_details") or {}).get(
+            "cached_tokens", 0
+        ),
         ttft_s=first - start,
         decode_s=last - first,
         wall_s=end - start,
@@ -89,7 +91,9 @@ def wait_ready(url, timeout):
 def models(url, timeout=10):
     """Returns the server's /v1/models listing, or None if unavailable."""
     try:
-        with urllib.request.urlopen(url.rstrip("/") + "/v1/models", timeout=timeout) as resp:
+        with urllib.request.urlopen(
+            url.rstrip("/") + "/v1/models", timeout=timeout
+        ) as resp:
             return json.load(resp)
     except OSError:
         return None

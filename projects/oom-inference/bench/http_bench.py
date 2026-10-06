@@ -63,7 +63,9 @@ def long_prompt(target_words=1500):
         lines.append(line)
         words += len(line.split())
         i += 1
-    return "Summarize these maintenance notes in three bullet points.\n\n" + "\n".join(lines)
+    return "Summarize these maintenance notes in three bullet points.\n\n" + "\n".join(
+        lines
+    )
 
 
 def stream_chat(url, model, messages, max_tokens, timeout):
@@ -109,7 +111,9 @@ def stream_chat(url, model, messages, max_tokens, timeout):
     if first is None:
         raise RuntimeError("no tokens received")
     tokens = (usage or {}).get("completion_tokens") or chunks
-    decode = (tokens - 1) / (last - first) if tokens > 1 and last > first else float("nan")
+    decode = (
+        (tokens - 1) / (last - first) if tokens > 1 and last > first else float("nan")
+    )
     cached = ((usage or {}).get("prompt_tokens_details") or {}).get("cached_tokens")
     return {
         "ttft": first - t0,
@@ -127,28 +131,54 @@ def run_case(args, case, run):
     topic = TOPICS[run % len(TOPICS)]
     if case == "short":
         prompt = f"Write a short story about {topic}."
-        return stream_chat(args.url, args.model, [{"role": "user", "content": prompt}], args.max_tokens, args.timeout)
+        return stream_chat(
+            args.url,
+            args.model,
+            [{"role": "user", "content": prompt}],
+            args.max_tokens,
+            args.timeout,
+        )
     if case == "long":
         prompt = f"(For a report on {topic}.) " + long_prompt()
-        return stream_chat(args.url, args.model, [{"role": "user", "content": prompt}], 64, args.timeout)
+        return stream_chat(
+            args.url,
+            args.model,
+            [{"role": "user", "content": prompt}],
+            64,
+            args.timeout,
+        )
     if case == "multiturn":
-        first_turn = [{"role": "user", "content": f"Name three challenges facing {topic}, briefly."}]
-        r1 = stream_chat(args.url, args.model, first_turn, args.max_tokens, args.timeout)
+        first_turn = [
+            {
+                "role": "user",
+                "content": f"Name three challenges facing {topic}, briefly.",
+            }
+        ]
+        r1 = stream_chat(
+            args.url, args.model, first_turn, args.max_tokens, args.timeout
+        )
         reply = {"role": "assistant", "content": r1["content"]}
         if r1["reasoning"]:
             reply["reasoning_content"] = r1["reasoning"]
-        follow = first_turn + [reply, {"role": "user", "content": "Which of those matters most today, and why?"}]
+        follow = first_turn + [
+            reply,
+            {"role": "user", "content": "Which of those matters most today, and why?"},
+        ]
         return stream_chat(args.url, args.model, follow, args.max_tokens, args.timeout)
     raise ValueError(case)
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--url", default="http://127.0.0.1:8091")
     p.add_argument("--model", default="default", help="model name sent in requests")
     p.add_argument("--cases", default="short,long,multiturn")
     p.add_argument("--runs", type=int, default=3)
-    p.add_argument("--warmup", type=int, default=1, help="untimed runs of each case first")
+    p.add_argument(
+        "--warmup", type=int, default=1, help="untimed runs of each case first"
+    )
     p.add_argument("--max-tokens", type=int, default=128)
     p.add_argument("--timeout", type=float, default=600)
     p.add_argument("--json", help="also write results to this file")
@@ -174,8 +204,17 @@ def main():
             "ttft": statistics.median(r["ttft"] for r in runs),
             "decode_tps": statistics.median(r["decode_tps"] for r in runs),
         }
-        print(f"{case:9s} median: ttft {med['ttft']:.2f}s  decode {med['decode_tps']:.2f} tok/s", flush=True)
-        results[case] = {"median": med, "runs": [{k: v for k, v in r.items() if k not in ("reasoning", "content")} for r in runs]}
+        print(
+            f"{case:9s} median: ttft {med['ttft']:.2f}s  decode {med['decode_tps']:.2f} tok/s",
+            flush=True,
+        )
+        results[case] = {
+            "median": med,
+            "runs": [
+                {k: v for k, v in r.items() if k not in ("reasoning", "content")}
+                for r in runs
+            ],
+        }
     if args.json:
         with open(args.json, "w") as f:
             json.dump({"url": args.url, "results": results}, f, indent=2)

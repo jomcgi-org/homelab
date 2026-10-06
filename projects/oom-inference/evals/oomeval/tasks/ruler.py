@@ -51,21 +51,54 @@ class Ruler(Task):
     @classmethod
     def add_args(cls, parser):
         g = parser.add_argument_group("ruler")
-        g.add_argument("--ruler-tokenizer", help="model tokenizer.json, used to size haystacks (required for ruler)")
-        g.add_argument("--ruler-lengths", default="8192,32768", help="comma-separated context lengths in tokens")
-        g.add_argument("--ruler-haystack", default="essay", choices=("essay", "noise"), help="filler text")
-        g.add_argument("--ruler-variants", default=",".join(VARIANTS), help=f"subset of {','.join(VARIANTS)}")
-        g.add_argument("--ruler-per-length", type=int, default=10, help="prompts per variant per length")
-        g.add_argument("--ruler-distractors", type=int, default=8, help="distractor needles for multikey")
-        g.add_argument("--ruler-hops", type=int, default=4, help="assignment hops for vt")
+        g.add_argument(
+            "--ruler-tokenizer",
+            help="model tokenizer.json, used to size haystacks (required for ruler)",
+        )
+        g.add_argument(
+            "--ruler-lengths",
+            default="8192,32768",
+            help="comma-separated context lengths in tokens",
+        )
+        g.add_argument(
+            "--ruler-haystack",
+            default="essay",
+            choices=("essay", "noise"),
+            help="filler text",
+        )
+        g.add_argument(
+            "--ruler-variants",
+            default=",".join(VARIANTS),
+            help=f"subset of {','.join(VARIANTS)}",
+        )
+        g.add_argument(
+            "--ruler-per-length",
+            type=int,
+            default=10,
+            help="prompts per variant per length",
+        )
+        g.add_argument(
+            "--ruler-distractors",
+            type=int,
+            default=8,
+            help="distractor needles for multikey",
+        )
+        g.add_argument(
+            "--ruler-hops", type=int, default=4, help="assignment hops for vt"
+        )
         g.add_argument("--ruler-seed", type=int, default=0)
 
     def load(self, args):
         if not args.ruler_tokenizer:
-            raise SystemExit("ruler needs --ruler-tokenizer (the model's tokenizer.json)")
+            raise SystemExit(
+                "ruler needs --ruler-tokenizer (the model's tokenizer.json)"
+            )
         tok = Tokenizer.from_file(args.ruler_tokenizer)
         if args.ruler_haystack == "essay":
-            text = " ".join(r["text"] for r in parquet_rows("baber/paul_graham_essays", "essays.parquet"))
+            text = " ".join(
+                r["text"]
+                for r in parquet_rows("baber/paul_graham_essays", "essays.parquet")
+            )
             sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text).strip())
         else:
             sentences = [NOISE]
@@ -89,28 +122,43 @@ class Ruler(Task):
             value = str(rng.randint(10_000, 99_999))
             names = [_word(rng, 5).upper() for _ in range(args.ruler_hops + 1)]
             needles = [f"VAR {names[0]} = {value}."]
-            needles += [f"VAR {names[j + 1]} = VAR {names[j]}." for j in range(args.ruler_hops)]
+            needles += [
+                f"VAR {names[j + 1]} = VAR {names[j]}." for j in range(args.ruler_hops)
+            ]
             question = VT_PROMPT.replace("{value}", value)
             target, ordered = names, True
         else:
             key = f"{_word(rng)}-{_word(rng, 4)}"
             if variant == "multivalue":
                 values = [_number(rng) for _ in range(4)]
-                needles = [f"One of the special magic numbers for {key} is: {v}." for v in values]
+                needles = [
+                    f"One of the special magic numbers for {key} is: {v}."
+                    for v in values
+                ]
                 what, noun = "are all the special magic numbers", "numbers"
             else:
                 values = [_number(rng)]
-                needles = [f"One of the special magic numbers for {key} is: {values[0]}."]
+                needles = [
+                    f"One of the special magic numbers for {key} is: {values[0]}."
+                ]
                 what, noun = "is the special magic number", "number"
             if variant == "multikey":
                 needles += [
                     f"One of the special magic numbers for {_word(rng)}-{_word(rng, 4)} is: {_number(rng)}."
                     for _ in range(args.ruler_distractors)
                 ]
-            question = NIAH_PROMPT.replace("{what}", what).replace("{key}", key).replace("{noun}", noun)
+            question = (
+                NIAH_PROMPT.replace("{what}", what)
+                .replace("{key}", key)
+                .replace("{noun}", noun)
+            )
             target, ordered = values, variant == "multivalue"
 
-        budget = length - TEMPLATE_SLACK - len(tok.encode(question.replace("{context}", "")).ids)
+        budget = (
+            length
+            - TEMPLATE_SLACK
+            - len(tok.encode(question.replace("{context}", "")).ids)
+        )
         budget -= sum(len(tok.encode(n).ids) for n in needles)
         sentences, counts = filler
         start = rng.randrange(len(sentences))
@@ -126,7 +174,9 @@ class Ruler(Task):
         # tail until the prompt fits.
         while True:
             context = self._haystack([sentences[i] for i in chosen], needles, slots)
-            over = len(tok.encode(question.replace("{context}", context)).ids) - (length - TEMPLATE_SLACK)
+            over = len(tok.encode(question.replace("{context}", context)).ids) - (
+                length - TEMPLATE_SLACK
+            )
             if over <= 0:
                 break
             while over > 0 and len(chosen) > 1:

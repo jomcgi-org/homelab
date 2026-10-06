@@ -46,7 +46,11 @@ def select(items, limit, subset_seed):
 
 
 def request_body(item, settings, sample, model):
-    body = {"model": model, "messages": item.messages, "seed": settings["seed"] + sample}
+    body = {
+        "model": model,
+        "messages": item.messages,
+        "seed": settings["seed"] + sample,
+    }
     for k in SAMPLING_KEYS:
         if k in settings:
             body[k] = settings[k]
@@ -78,7 +82,9 @@ def run_task(task, args, deadline):
         "task_args": task_args(task, args),
         "limit": args.limit,
         "subset_seed": args.subset_seed,
-        "items_sha": hashlib.sha256(json.dumps([it.id for it in items]).encode()).hexdigest()[:16],
+        "items_sha": hashlib.sha256(
+            json.dumps([it.id for it in items]).encode()
+        ).hexdigest()[:16],
         "dataset_size": dataset_size,
     }
     out = Path(args.out) / args.label
@@ -92,21 +98,46 @@ def run_task(task, args, deadline):
                 f"(previous: {json.dumps({k: prev.get(k) for k in config})})"
             )
     else:
-        meta = {"url": args.url, "model": args.model, "notes": args.notes, "server_models": client.models(args.url)}
-        cfg_path.write_text(json.dumps({**config, **meta, "started": time.strftime("%Y-%m-%dT%H:%M:%S")}, indent=2))
+        meta = {
+            "url": args.url,
+            "model": args.model,
+            "notes": args.notes,
+            "server_models": client.models(args.url),
+        }
+        cfg_path.write_text(
+            json.dumps(
+                {**config, **meta, "started": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                indent=2,
+            )
+        )
 
     done = {(r["id"], r["sample"]) for r in load_records(rec_path) if "error" not in r}
-    todo = [(it, s) for it in items for s in range(settings["samples"]) if (it.id, s) not in done]
-    print(f"[{task.name}] {len(items)} items x {settings['samples']} samples; {len(todo)} to run", flush=True)
+    todo = [
+        (it, s)
+        for it in items
+        for s in range(settings["samples"])
+        if (it.id, s) not in done
+    ]
+    print(
+        f"[{task.name}] {len(items)} items x {settings['samples']} samples; {len(todo)} to run",
+        flush=True,
+    )
     failures = 0
     with rec_path.open("a") as f:
         for n, (item, sample) in enumerate(todo, 1):
             if deadline and time.monotonic() > deadline:
-                print(f"[{task.name}] time budget reached; rerun the same command to resume", flush=True)
+                print(
+                    f"[{task.name}] time budget reached; rerun the same command to resume",
+                    flush=True,
+                )
                 return False
             record = {"id": item.id, "sample": sample, "group": item.meta.get("group")}
             try:
-                c = client.chat(args.url, request_body(item, settings, sample, args.model), args.timeout)
+                c = client.chat(
+                    args.url,
+                    request_body(item, settings, sample, args.model),
+                    args.timeout,
+                )
             except Exception as e:  # recorded and retried on resume
                 failures += 1
                 record["error"] = repr(e)
@@ -147,7 +178,9 @@ def run_task(task, args, deadline):
 def summarize(task, out_dir):
     """Prints and writes <task>.summary.json from the records; returns the summary."""
     cfg = json.loads((out_dir / f"{task.name}.json").read_text())
-    records = [r for r in load_records(out_dir / f"{task.name}.jsonl") if "error" not in r]
+    records = [
+        r for r in load_records(out_dir / f"{task.name}.jsonl") if "error" not in r
+    ]
     if not records:
         print(f"[{task.name}] no records")
         return None
@@ -156,17 +189,26 @@ def summarize(task, out_dir):
     for r in records:
         if r.get("group"):
             groups.setdefault(r["group"], []).append(r)
-    rates = [(r["completion_tokens"] - 1) / r["decode_s"] for r in records if r["decode_s"] > 0 and r["completion_tokens"] > 1]
+    rates = [
+        (r["completion_tokens"] - 1) / r["decode_s"]
+        for r in records
+        if r["decode_s"] > 0 and r["completion_tokens"] > 1
+    ]
     summary = {
         "task": task.name,
         "items": len({r["id"] for r in records}),
         "samples": len(records),
         "score": mean * 100,
         "ci95": half * 100,
-        "groups": {g: stats.mean_ci(list(stats.item_means(rs).values()))[0] * 100 for g, rs in sorted(groups.items())},
-        "truncated_rate": sum(r["finish_reason"] == "length" for r in records) / len(records),
+        "groups": {
+            g: stats.mean_ci(list(stats.item_means(rs).values()))[0] * 100
+            for g, rs in sorted(groups.items())
+        },
+        "truncated_rate": sum(r["finish_reason"] == "length" for r in records)
+        / len(records),
         "mean_prompt_tokens": sum(r["prompt_tokens"] for r in records) / len(records),
-        "mean_completion_tokens": sum(r["completion_tokens"] for r in records) / len(records),
+        "mean_completion_tokens": sum(r["completion_tokens"] for r in records)
+        / len(records),
         "median_ttft_s": stats.median([r["ttft_s"] for r in records]),
         "median_decode_tps": stats.median(rates),
         "total_wall_h": sum(r["wall_s"] for r in records) / 3600,

@@ -50,7 +50,9 @@ def parquet_rows(repo, filename, revision=None):
     return pq.read_table(path).to_pylist()
 
 
-BOXED_INSTRUCTION = "Please reason step by step, and put your final answer within \\boxed{}."
+BOXED_INSTRUCTION = (
+    "Please reason step by step, and put your final answer within \\boxed{}."
+)
 
 
 def last_boxed(text):

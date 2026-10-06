@@ -137,7 +137,9 @@ def cmd_run(a):
         r["prompt"] = prompt
         n = (r["usage"] or {}).get("completion_tokens", 0)
         rate = (n - 1) / r["decode_s"] if r["decode_s"] > 0 and n > 1 else 0
-        print(f"{name:13} {n:5} tokens  ttft {r['ttft_s']:6.1f}s  decode {rate:5.1f} tok/s")
+        print(
+            f"{name:13} {n:5} tokens  ttft {r['ttft_s']:6.1f}s  decode {rate:5.1f} tok/s"
+        )
         (out / f"{name}{a.tag}.json").write_text(json.dumps(r))
 
 
@@ -148,7 +150,14 @@ class Adaptive:
     `probe`-th match, drafted at `mid_k` to re-measure."""
 
     def __init__(self, k, hi=0.7, lo=0.35, mid_k=3, alpha=0.3, probe=8):
-        self.k, self.hi, self.lo, self.mid_k, self.alpha, self.probe = k, hi, lo, mid_k, alpha, probe
+        self.k, self.hi, self.lo, self.mid_k, self.alpha, self.probe = (
+            k,
+            hi,
+            lo,
+            mid_k,
+            alpha,
+            probe,
+        )
         self.rate = 1.0
         self.skipped = 0
 
@@ -204,7 +213,9 @@ def simulate(ctx, out, ns, k, adaptive=False):
             index()
             continue
         kept = 0
-        while kept < len(draft) and i + kept < len(out) and out[i + kept] == draft[kept]:
+        while (
+            kept < len(draft) and i + kept < len(out) and out[i + kept] == draft[kept]
+        ):
             kept += 1
         take = min(kept + 1, len(out) - i)
         if policy:
@@ -234,14 +245,20 @@ def cmd_sim(a):
 
     runs = sorted(pathlib.Path(a.runs).glob("*.json"))
     policies = [("n" + ",".join(map(str, ns)), ns) for ns in a.policy]
-    print(f"{'workload':13} {'tokens':>6} {'match':>11} {'k':>3}  {'rounds':>6} {'matched':>7} {'tok/round':>9} {'accept':>6}  {'base tok/s':>10} {'pred tok/s':>10} {'gain':>6}")
+    print(
+        f"{'workload':13} {'tokens':>6} {'match':>11} {'k':>3}  {'rounds':>6} {'matched':>7} {'tok/round':>9} {'accept':>6}  {'base tok/s':>10} {'pred tok/s':>10} {'gain':>6}"
+    )
     for path in runs:
         r = json.loads(path.read_text())
         ctx = tok.encode(r["prompt"]).ids
         out = tok.encode(r["text"]).ids
         n_out = (r.get("usage") or {}).get("completion_tokens", len(out))
         # Fallback: this workload's measured decode rate (current MTP decoding).
-        base = (n_out - 1) / r["decode_s"] if r["decode_s"] > 0 else 1e3 / a.fallback_ms_per_token
+        base = (
+            (n_out - 1) / r["decode_s"]
+            if r["decode_s"] > 0
+            else 1e3 / a.fallback_ms_per_token
+        )
         fallback_ms = 1e3 / base
         if not out:
             continue
@@ -267,7 +284,9 @@ def cmd_sim(a):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--url", default="http://127.0.0.1:8091")
@@ -278,15 +297,34 @@ def main():
     s = sub.add_parser("sim")
     s.add_argument("--runs", required=True)
     s.add_argument("--tokenizer", required=True)
-    s.add_argument("--cost", required=True, help="width:ms per verification step, comma separated")
-    s.add_argument("--fallback-ms-per-token", type=float, default=25.0,
-                   help="when a run has no measured decode rate")
-    s.add_argument("--policy", type=lambda v: [int(x) for x in v.split(",")], nargs="+",
-                   default=[[3], [8, 6, 4, 3, 2], [8, 6, 4], [8, 6]],
-                   help="match lengths tried, longest first (comma separated), per policy")
-    s.add_argument("--adaptive", action="store_true", help="adapt the draft width to recent acceptance")
-    s.add_argument("--draft", type=int, nargs="+", default=[3, 7, 11, 15],
-                   help="draft tokens per round (a round verifies one more)")
+    s.add_argument(
+        "--cost", required=True, help="width:ms per verification step, comma separated"
+    )
+    s.add_argument(
+        "--fallback-ms-per-token",
+        type=float,
+        default=25.0,
+        help="when a run has no measured decode rate",
+    )
+    s.add_argument(
+        "--policy",
+        type=lambda v: [int(x) for x in v.split(",")],
+        nargs="+",
+        default=[[3], [8, 6, 4, 3, 2], [8, 6, 4], [8, 6]],
+        help="match lengths tried, longest first (comma separated), per policy",
+    )
+    s.add_argument(
+        "--adaptive",
+        action="store_true",
+        help="adapt the draft width to recent acceptance",
+    )
+    s.add_argument(
+        "--draft",
+        type=int,
+        nargs="+",
+        default=[3, 7, 11, 15],
+        help="draft tokens per round (a round verifies one more)",
+    )
     a = p.parse_args()
     {"run": cmd_run, "sim": cmd_sim}[a.cmd](a)
 
