@@ -271,6 +271,18 @@ impl<B: Backend> Attention<B> {
         tokens.max(2 * cap).min(max_tokens).max(tokens).div_ceil(r) * r
     }
 
+    /// Device bytes a fresh state of a `max_tokens` sequence holds once it has grown
+    /// to `tokens` (capacity doubles from its initial size, as [`Self::grow`] does).
+    pub fn state_bytes(&self, tokens: usize, max_tokens: usize) -> usize {
+        let mut cap = self.capacity_for(INITIAL_KV_TOKENS.min(max_tokens).max(1), 0, max_tokens);
+        while cap < tokens.min(max_tokens) {
+            cap = self.capacity_for(tokens.min(max_tokens), cap, max_tokens);
+        }
+        let (kb, vb, ik, bk) = self.buffer_lens(cap);
+        let kv = if self.kv_host { 0 } else { kb + vb };
+        kv + (ik + bk) * std::mem::size_of::<f32>()
+    }
+
     /// Bytes of fresh buffers that [`Attention::grow`] would allocate to hold
     /// `tokens`, or 0 when they already fit.
     /// Forgets every cached token (the buffers stay allocated).

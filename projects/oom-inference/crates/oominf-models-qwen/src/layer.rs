@@ -243,6 +243,27 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    /// Device bytes this layer's state for one sequence of up to `max_tokens` holds
+    /// at `tokens` tokens: the KV cache, or the recurrent and conv state with the
+    /// copies a rewindable step keeps (decode-sized steps), and PLE conv state.
+    pub fn state_bytes(&self, d: &Dims, tokens: usize, max_tokens: usize) -> usize {
+        let f = std::mem::size_of::<f32>();
+        let mixer = match &self.mixer {
+            Mixer::Attention(a) => a.state_bytes(tokens, max_tokens),
+            Mixer::Gdn(_) => {
+                2 * (d.conv_dim() * d.conv_kernel + d.v_heads * d.head_k * d.head_v) * f
+            }
+        };
+        // PLE conv state ((kernel - 1) * dilation residual rows, 9 for this
+        // family, bounded here by 16) and its rewind copy.
+        let ple = if self.ple.is_some() {
+            2 * d.residual() * 16 * f
+        } else {
+            0
+        };
+        mixer + ple
+    }
+
     /// Bytes [`Self::grow_kv`] would allocate for this layer to hold `tokens`.
     pub fn kv_growth_bytes(&self, state: &LayerState<B>, tokens: usize) -> usize {
         match (&self.mixer, &state.attn) {
@@ -282,6 +303,66 @@ impl<B: Backend> DecoderLayer<B> {
         ws.give_bf16("gemm.scratch", scratch);
         drop(ws);
         self.post_moe(gpu, d, pre, &moe_out, t, state, probe)
+    }
+
+    /// Runs the layer over several sequences' rows in one step: each sequence's
+    /// token mixer (PLE, GDN or attention, and their hyper-connections) runs on its
+    /// own state, then their MoE inputs are concatenated and the MoE runs once over
+    /// all rows (one routing, one fetch of the union of their experts, one decode
+    /// expert launch), and each sequence's MoE output is combined back on its own.
+    /// `xs[i]` holds `steps[i].token_ids.len()` residual rows of sequence `i`, whose
+    /// layer state is `states[i]`. Returns each sequence's layer output, taken from
+    /// its own workspace as `layer.out` (as [`Self::forward`]). Shared buffers come
+    /// from `ws`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_many(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &RefCell<Workspace<B>>,
+        xs: &[&B::F32],
+        steps: &[StepInput],
+        states: &mut [&mut LayerState<B>],
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<Vec<B::F32>> {
+        let h = d.hidden;
+        let lens: Vec<usize> = steps.iter().map(|s| s.token_ids.len()).collect();
+        let total: usize = lens.iter().sum();
+        let mut pres = Vec::with_capacity(xs.len());
+        for ((x, step), st) in xs.iter().zip(steps).zip(states.iter_mut()) {
+            pres.push(self.pre_moe(gpu, d, x, step.token_ids.len(), step, st, &mut NoProbe)?);
+        }
+        let mut wsb = ws.borrow_mut();
+        let mut moe_in = wsb.take(gpu, "layer.many_in", total * h)?;
+        let mut at = 0;
+        for (pre, &t) in pres.iter().zip(&lens) {
+            gpu.copy_range(&pre.mixed, 0, &mut moe_in, at * h, t * h)?;
+            at += t;
+        }
+        let mut scratch = wsb.take_bf16(gpu, "gemm.scratch", scratch_len(d, total))?;
+        let moe_out = self.moe.forward(
+            gpu,
+            d,
+            &mut wsb,
+            &moe_in,
+            total,
+            experts,
+            &mut scratch,
+            &mut NoProbe,
+        )?;
+        wsb.give_bf16("gemm.scratch", scratch);
+        wsb.give("layer.many_in", moe_in);
+        drop(wsb);
+        let mut outs = Vec::with_capacity(xs.len());
+        let mut at = 0;
+        for ((pre, &t), st) in pres.into_iter().zip(&lens).zip(states.iter_mut()) {
+            let mut part = st.ws.borrow_mut().take(gpu, "layer.many_part", t * h)?;
+            gpu.copy_range(&moe_out, at * h, &mut part, 0, t * h)?;
+            outs.push(self.post_moe(gpu, d, pre, &part, t, st, &mut NoProbe)?);
+            st.ws.borrow_mut().give("layer.many_part", part);
+            at += t;
+        }
+        Ok(outs)
     }
 
     /// The MoE inputs of `pres` (from [`Self::pre_moe`], `lens[i]` tokens each) in one
