@@ -36,6 +36,8 @@ def test_should_index_includes_and_excludes():
     assert not _should_index("projects/svc/frontend/build/g.md")
     assert not _should_index("bazel/ocaml/third_party/fmt/LICENSE.md")
     assert not _should_index("bazel/semgrep/tests/fixtures/no-stale-repo-paths.md")
+    # Bazel-ignored trees (built outside Bazel) cannot be carried by a filegroup.
+    assert not _should_index("projects/oom-inference/docs/ARCHITECTURE.md")
     # The generated manifest never indexes itself.
     assert not _should_index("projects/monolith/knowledge/repo_docs_manifest.ndjson")
 
