@@ -43,6 +43,7 @@ def workloads():
     host = read("crates/oominf-tiers/src/host.rs")
     grouped = read("crates/oominf-tiers/src/grouped.rs")
     kernel = read("crates/oominf-cpu/src/kernel.rs")
+    tiered = read("crates/oominf-tiers/src/tiered.rs")
     arch = read("docs/ARCHITECTURE.md")
     arch = arch[: len(arch) // 3]
     return {
@@ -56,6 +57,12 @@ def workloads():
             "returns how many submitted reads have not completed, with a doc "
             "comment, next to the other public methods. Output the complete updated "
             "file and nothing else.\n\n```rust\n" + host + "```"
+        ),
+        "edit_long": (
+            "Add a public method `held_records(&self) -> usize` to `TieredExperts` "
+            "that returns how many records are currently held for host compute, "
+            "with a doc comment, after `vram_bytes`. Output the complete updated "
+            "file and nothing else.\n\n```rust\n" + tiered + "```"
         ),
         "diff": (
             "Make `GroupedExperts::describe` prefix each source's description with "
@@ -134,7 +141,34 @@ def cmd_run(a):
         (out / f"{name}{a.tag}.json").write_text(json.dumps(r))
 
 
-def simulate(ctx, out, ns, k):
+class Adaptive:
+    """Per-sequence draft width from recent lookup acceptance (fraction of drafted
+    tokens kept, exponentially weighted): `k` while it is at least `hi`, `mid_k`
+    while at least `lo`, else no lookup draft (the model drafts) except every
+    `probe`-th match, drafted at `mid_k` to re-measure."""
+
+    def __init__(self, k, hi=0.7, lo=0.35, mid_k=3, alpha=0.3, probe=8):
+        self.k, self.hi, self.lo, self.mid_k, self.alpha, self.probe = k, hi, lo, mid_k, alpha, probe
+        self.rate = 1.0
+        self.skipped = 0
+
+    def width(self):
+        if self.rate >= self.hi:
+            return self.k
+        if self.rate >= self.lo:
+            return self.mid_k
+        self.skipped += 1
+        if self.skipped >= self.probe:
+            self.skipped = 0
+            return self.mid_k
+        return 0
+
+    def record(self, drafted, kept):
+        if drafted:
+            self.rate = (1 - self.alpha) * self.rate + self.alpha * kept / drafted
+
+
+def simulate(ctx, out, ns, k, adaptive=False):
     """Rounds of prompt lookup over `out` with context `ctx`: (width, kept) each,
     width 0 for rounds with no match (one token at the fallback rate). `ns` are
     the match lengths tried, longest first; each matches its most recent
@@ -152,14 +186,16 @@ def simulate(ctx, out, ns, k):
             done[n] = max(done[n], len(seq) - n)
 
     index()
+    policy = Adaptive(k) if adaptive else None
     while i < len(out):
         draft = []
-        for n in ns:
+        width = policy.width() if policy else k
+        for n in ns if width else []:
             if len(seq) < n:
                 continue
             pos = last[n].get(tuple(seq[-n:]))
             if pos is not None:
-                draft = seq[pos + n : pos + n + k]
+                draft = seq[pos + n : pos + n + width]
                 break
         if not draft:
             rounds.append((0, 1))
@@ -171,6 +207,8 @@ def simulate(ctx, out, ns, k):
         while kept < len(draft) and i + kept < len(out) and out[i + kept] == draft[kept]:
             kept += 1
         take = min(kept + 1, len(out) - i)
+        if policy:
+            policy.record(len(draft), kept)
         rounds.append((len(draft) + 1, take))
         seq.extend(out[i : i + take])
         i += take
@@ -209,7 +247,7 @@ def cmd_sim(a):
             continue
         for label, ns in policies:
             for k in a.draft:
-                rounds = simulate(ctx, out, ns, k)
+                rounds = simulate(ctx, out, ns, k, a.adaptive)
                 ms = 0.0
                 drafted = kept_drafts = matched = 0
                 for width, take in rounds:
@@ -246,6 +284,7 @@ def main():
     s.add_argument("--policy", type=lambda v: [int(x) for x in v.split(",")], nargs="+",
                    default=[[3], [8, 6, 4, 3, 2], [8, 6, 4], [8, 6]],
                    help="match lengths tried, longest first (comma separated), per policy")
+    s.add_argument("--adaptive", action="store_true", help="adapt the draft width to recent acceptance")
     s.add_argument("--draft", type=int, nargs="+", default=[3, 7, 11, 15],
                    help="draft tokens per round (a round verifies one more)")
     a = p.parse_args()

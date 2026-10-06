@@ -72,6 +72,9 @@ enum Command {
         /// Draft tokens per decode step (speculative decoding); 0 disables it.
         #[arg(long, default_value_t = 1)]
         draft: usize,
+        /// Tokens per prompt-lookup draft (0: the model's drafts only).
+        #[arg(long, default_value_t = 0)]
+        prompt_lookup: usize,
         /// After decoding, time verification steps of these widths (comma
         /// separated): the cost of checking prompt-lookup drafts.
         #[arg(long, value_delimiter = ',')]
@@ -291,6 +294,7 @@ fn main() -> Result<()> {
             tokens,
             prefill_chunk,
             draft,
+            prompt_lookup,
             verify,
             experts,
             cache,
@@ -305,6 +309,7 @@ fn main() -> Result<()> {
                 tokens,
                 prefill_chunk,
                 draft,
+                prompt_lookup,
                 &verify,
                 &experts,
                 &cache,
