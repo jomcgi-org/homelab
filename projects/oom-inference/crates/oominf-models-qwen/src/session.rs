@@ -10,6 +10,7 @@ use oominf_core::{
 };
 use oominf_format::Model as Files;
 
+use crate::model::WORKSPACE_HEADROOM;
 use crate::{Dims, QwenModel, SeqState};
 
 pub const MODEL_TYPE: &str = "qwen4_exp";
@@ -103,7 +104,16 @@ impl<B: Backend> Model for Qwen<B> {
             .take_if(|_| max_tokens == inner.opts.max_context);
         let state = match spare {
             Some(s) => s,
-            None => inner.model.new_state(&*inner.b, max_tokens)?,
+            None => {
+                // Other sequences may be live: take this one's memory from the expert
+                // tier, not from the step workspace's headroom.
+                inner.model.ensure_free(
+                    &*inner.b,
+                    inner.model.new_sequence_bytes(max_tokens) + WORKSPACE_HEADROOM,
+                    inner.experts.borrow_mut().as_mut(),
+                )?;
+                inner.model.new_state(&*inner.b, max_tokens)?
+            }
         };
         // A dropped sequence may have grown its caches at the expert cache's
         // expense: give the memory back.

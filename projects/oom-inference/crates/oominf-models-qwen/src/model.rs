@@ -413,6 +413,34 @@ impl<B: Backend> QwenModel<B> {
         layers + SEQUENCE_WORKSPACE
     }
 
+    /// Makes at least `bytes` of device memory free, asking `experts` to give
+    /// memory back when it is not.
+    pub fn ensure_free(
+        &self,
+        gpu: &B,
+        bytes: usize,
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<()> {
+        gpu.sync()?;
+        let (free, _) = gpu.mem_info()?;
+        if free < bytes {
+            experts.release_vram(gpu, bytes - free)?;
+        }
+        Ok(())
+    }
+
+    /// What a new sequence of up to `max_tokens` allocates before and during its
+    /// first steps (its state at the initial cache size, the copies a rewindable
+    /// step keeps, its decode workspace): made free before it is created, so
+    /// several live sequences take their memory from the expert tier rather than
+    /// from the workspace headroom.
+    pub fn new_sequence_bytes(&self, max_tokens: usize) -> usize {
+        self.sequence_bytes(
+            crate::attention::INITIAL_KV_TOKENS.min(max_tokens),
+            max_tokens,
+        )
+    }
+
     /// Device memory new sequences may still take: free memory plus what `experts`
     /// can give back, less the step workspace headroom and slack.
     pub fn available_bytes(&self, gpu: &B, experts: &dyn ExpertSource<B>) -> Result<usize> {
@@ -582,6 +610,9 @@ impl<B: Backend> QwenModel<B> {
             let end = st.pos + t.len();
             self.reserve_kv(gpu, st, end, 0, experts)?;
         }
+        // Several sequences' step buffers and rewind copies come out of the
+        // workspace headroom: keep it free.
+        self.ensure_free(gpu, WORKSPACE_HEADROOM, experts)?;
         // Shared buffers (MoE input and scratch, the head) come from the first
         // sequence's workspace; layers run one at a time.
         let ws = seqs[0].ws.clone();
