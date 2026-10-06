@@ -658,7 +658,8 @@ impl<B: Backend> TieredExperts<B> {
             .collect();
         keys.sort_unstable();
         keys.dedup();
-        let (Some((_, staged)), Some((_, predicted))) = (&mut self.ahead_keys, &mut self.prediction)
+        let (Some((_, staged)), Some((_, predicted))) =
+            (&mut self.ahead_keys, &mut self.prediction)
         else {
             return Ok(());
         };

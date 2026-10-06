@@ -40,6 +40,10 @@ pub struct ServeConfig {
     /// Draft tokens per decode step when the model can draft (0 disables
     /// speculative decoding).
     pub draft: usize,
+    /// Tokens per prompt-lookup draft (0 disables it): when the latest tokens
+    /// repeat earlier ones, what followed them is drafted instead of the model's
+    /// draft (see `oominf_core::PromptLookup`).
+    pub prompt_lookup: usize,
     pub addr: SocketAddr,
     pub model_name: String,
     /// Persistent prefix store (`None`: only the live sequence is reused).
@@ -215,8 +219,13 @@ pub fn build(
     let template = ChatTemplate::load(&cfg.model_dir)?;
     let (defaults, stop_ids) = generation_defaults(&cfg.model_dir, &template)?;
     let parser = parse::parser_for(&cfg.model_type)?;
-    let (engine, ready) =
-        engine::start(loader, cfg.max_context, cfg.draft, cfg.prefix_store.clone());
+    let (engine, ready) = engine::start(
+        loader,
+        cfg.max_context,
+        cfg.draft,
+        cfg.prompt_lookup,
+        cfg.prefix_store.clone(),
+    );
     let app = Arc::new(App::new(
         engine,
         template,

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use oominf_core::{ExpertStats, ExpertTiers, Model, Session, decode_step};
+use oominf_core::{
+    ExpertStats, ExpertTiers, LOOKUP_MATCH, Model, PromptLookup, Session, decode_step_with,
+};
 use tokio::sync::mpsc;
 
 use crate::sampling::{Sampler, SamplingParams};
@@ -227,6 +229,7 @@ pub fn start(
     loader: ModelLoader,
     max_context: usize,
     draft: usize,
+    lookup: usize,
     store: Option<StoreConfig>,
 ) -> (EngineHandle, std_mpsc::Receiver<Result<String>>) {
     let (jobs_tx, jobs_rx) = std_mpsc::channel::<Job>();
@@ -239,7 +242,7 @@ pub fn start(
     std::thread::Builder::new()
         .name("oominf-engine".into())
         .spawn(move || {
-            let engine = match Engine::load(loader, max_context, draft, store, shared) {
+            let engine = match Engine::load(loader, max_context, draft, lookup, store, shared) {
                 Ok((engine, summary)) => {
                     let _ = ready_tx.send(Ok(summary));
                     engine
@@ -291,6 +294,8 @@ struct Engine {
     max_context: usize,
     /// Draft tokens per decode step (0: no speculative decoding).
     draft: usize,
+    /// Tokens per prompt-lookup draft (0: off).
+    lookup: usize,
     telemetry: Arc<Mutex<Telemetry>>,
 }
 
@@ -299,6 +304,7 @@ impl Engine {
         loader: ModelLoader,
         max_context: usize,
         draft: usize,
+        lookup: usize,
         store: Option<StoreConfig>,
         telemetry: Arc<Mutex<Telemetry>>,
     ) -> Result<(Self, String)> {
@@ -315,7 +321,7 @@ impl Engine {
             None => (Box::new(LastSequence::default()), String::new()),
         };
         let summary = format!(
-            "model loaded in {:.1}s; {}; max context {max_context} tokens; draft {draft} tokens per step{stored}",
+            "model loaded in {:.1}s; {}; max context {max_context} tokens; draft {draft} tokens per step; prompt lookup {lookup} tokens{stored}",
             t.elapsed().as_secs_f64(),
             model.describe(),
         );
@@ -325,6 +331,7 @@ impl Engine {
                 cache,
                 max_context,
                 draft,
+                lookup,
                 telemetry,
             },
             summary,
@@ -424,6 +431,8 @@ impl Engine {
         let mut sampler = Sampler::new(job.sampling);
         let mut finish = FinishReason::Length;
         let (mut emitted, mut drafted, mut accepted) = (0, 0, 0);
+        let (mut looked_up, mut lookup_accepted) = (0, 0);
+        let mut lookup = (self.lookup > 0).then(|| PromptLookup::new(&LOOKUP_MATCH, self.lookup));
         // `next` was chosen from `logits` (after the last token of `ids`) and is not
         // fed yet.
         let mut next = sampler.sample(&logits);
@@ -440,14 +449,28 @@ impl Engine {
             if emitted == max_tokens {
                 break;
             }
-            let d = decode_step(
+            // Prompt lookup first (free when the output repeats the sequence),
+            // else the model's own draft.
+            let looked = lookup.as_mut().map(|l| {
+                ids.push(next);
+                let d = l.draft(&ids);
+                ids.pop();
+                d
+            });
+            let from_lookup = looked.as_ref().is_some_and(|d| !d.is_empty());
+            let d = decode_step_with(
                 &mut *state,
                 next,
                 self.draft,
+                looked,
                 |row: &[f32], draft: Option<u32>| Ok(sampler.choose(row, draft)),
             )?;
             drafted += d.drafted;
             accepted += d.accepted;
+            if from_lookup {
+                looked_up += d.drafted;
+                lookup_accepted += d.accepted;
+            }
             let now = Instant::now();
             rate.push_back((now, emitted + d.tokens.len() - 1));
             while rate.len() > 2 && now - rate[1].0 >= Duration::from_secs(1) {
@@ -492,7 +515,7 @@ impl Engine {
         }
         if drafted > 0 {
             eprintln!(
-                "oominf: {emitted} tokens, drafts accepted {accepted}/{drafted} ({:.0}%)",
+                "oominf: {emitted} tokens, drafts accepted {accepted}/{drafted} ({:.0}%); prompt lookup {lookup_accepted}/{looked_up}",
                 100.0 * accepted as f64 / drafted as f64
             );
         }
@@ -703,7 +726,7 @@ mod tests {
     }
 
     fn engine(draft: usize) -> EngineHandle {
-        let (handle, ready) = start(Box::new(|| Ok(Box::new(Counting))), 1024, draft, None);
+        let (handle, ready) = start(Box::new(|| Ok(Box::new(Counting))), 1024, draft, 0, None);
         ready.recv().unwrap().unwrap();
         handle
     }

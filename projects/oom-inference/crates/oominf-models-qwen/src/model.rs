@@ -784,15 +784,7 @@ impl<B: Backend> QwenModel<B> {
                 let moe_in = layer.moe_input(gpu, d, &pres, &lens, st, MOE_IN[slot])?;
                 // Every group also predicts the next layer, to stage it while the rest
                 // of this layer computes.
-                let route = layer.route_start(
-                    gpu,
-                    d,
-                    &moe_in,
-                    t,
-                    st,
-                    stage,
-                    &mut hosts[slot],
-                )?;
+                let route = layer.route_start(gpu, d, &moe_in, t, st, stage, &mut hosts[slot])?;
                 if gi + 1 == groups {
                     // The fp32 shadow serves this layer's mixers, all queued now.
                     layer.end_prefill(st);

@@ -127,6 +127,11 @@ enum Command {
         /// Draft tokens per decode step (speculative decoding); 0 disables it.
         #[arg(long, default_value_t = 1)]
         draft: usize,
+        /// Tokens per prompt-lookup draft: when the latest tokens repeat earlier
+        /// ones (code being edited, quoted input), what followed them is drafted
+        /// instead of the model's draft. 0 disables it.
+        #[arg(long, default_value_t = 0)]
+        prompt_lookup: usize,
         /// Save sequences evicted from the device here, and resume later requests
         /// that extend one instead of prefilling (off when unset).
         #[arg(long)]
@@ -334,6 +339,7 @@ fn main() -> Result<()> {
             max_context,
             prefill_chunk,
             draft,
+            prompt_lookup,
             prefix_store_dir,
             prefix_store_gib,
             prefix_store_ttl_hours,
@@ -366,6 +372,7 @@ fn main() -> Result<()> {
                 model_type,
                 max_context,
                 draft,
+                prompt_lookup,
                 addr: std::net::SocketAddr::new(host, port),
                 model_name,
                 prefix_store,

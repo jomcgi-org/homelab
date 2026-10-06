@@ -18,7 +18,7 @@ pub use backend::{
     ExpertPrecision, Experts, HyperConnection, KvFormat, Linear, Lookup, Memory, Norm, Nvfp4Record,
     Recurrent, Transfer, View, Weight,
 };
-pub use decode::{Decoded, argmax, decode_step};
+pub use decode::{Decoded, LOOKUP_MATCH, PromptLookup, argmax, decode_step, decode_step_with};
 pub use experts::{ExpertFactory, ExpertSource, ExpertStats, ExpertTiers, Fetched, Staged};
 pub use model::{Model, Session};
 pub use probe::{NoProbe, Probe, tap, tap_cols};
