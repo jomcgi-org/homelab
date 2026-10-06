@@ -20,7 +20,8 @@ tokens over the time from the first request's start to the last token),
 per-stream decode tok/s, TTFT, and p50/p95 inter-token latency (the gaps between
 streamed chunks of every request; drafts accepted together arrive together).
 With --long-every N, every Nth request of a round carries the ~2k-token prompt
-instead, to measure how much a prefill stalls the others (max gap).
+instead, starting --long-delay seconds after the others, to measure how much
+its prefill stalls their decoding (max gap).
 
 Example:
   bench/http_bench.py --url http://127.0.0.1:8091 --runs 3
@@ -212,6 +213,7 @@ def concurrent_round(args, k, round_no):
         n = round_no * 64 + i
         if args.long_every and i % args.long_every == args.long_every - 1:
             prompt = f"(For a report on {TOPICS[n % len(TOPICS)]}.) " + long_prompt()
+            time.sleep(args.long_delay)
         else:
             prompt = TASKS[n % len(TASKS)].format(TOPICS[(n // len(TASKS) + n) % len(TOPICS)])
         try:
@@ -292,6 +294,7 @@ def main():
     p.add_argument("--concurrency", help="concurrency mode: comma-separated request counts, e.g. 1,2,4,8")
     p.add_argument("--rounds", type=int, default=2, help="concurrency mode: timed rounds per count")
     p.add_argument("--long-every", type=int, default=0, help="concurrency mode: every Nth request has the long prompt")
+    p.add_argument("--long-delay", type=float, default=3.0, help="concurrency mode: seconds the long requests start after the others")
     args = p.parse_args()
     if args.concurrency:
         return concurrency_mode(args)
