@@ -157,12 +157,16 @@ trades are how engines drift from the model they claim to run.
   experts. It runs layer by layer: a layer's token mixer runs over every chunk,
   the union of their routed experts is fetched once and runs as one step (up to
   2048 tokens, about 40 per expert, enough for tensor-core tiles), and the next
-  layer's experts, predicted by its router on the layer's first group (stacked
-  with this layer's router, so the prediction arrives with the routing), are
-  staged while the rest of this layer computes (stage-ahead), borrowing the main
+  layer's experts, predicted by its router on each group (stacked with this
+  layer's router, so the prediction arrives with the routing; the first group
+  opens the batch, later groups add what their tokens route to), are staged
+  while the rest of this layer computes (stage-ahead), borrowing the main
   tier's coldest slots while the stage holds the computing layer. Staging copies
   wait only for kernels queued before the computing layer started (only those
   read the slots they overwrite), and their disk reads land as they complete.
+  Host-tier staging copies go to the copy engine a few records at a time (the
+  next only once those completed) while the host polls for routing, so a group's
+  own copies never queue behind the next layer's.
   The host runs one group ahead of the device: a group's mixers and routing are
   queued before the previous group's routing is collected (an asynchronous
   download) and its experts fetched, and small uploads go through pinned
@@ -251,6 +255,17 @@ copies and compute overlapped for 0.3 s of a 4.7 s prefill. The prediction
 covers about 90% of the routed experts (93% of what it stages is used), so most
 of each layer's loading now runs under the previous layer's compute; what is
 left is bound by disk reads of records the host tier does not hold.
+
+**Why staging copies trickle.** The GPU has one host-to-device copy engine and
+it runs ready copies in submission order across streams, so stream priorities
+cannot reorder them. Submitting a layer's stage-ahead at once (about 450
+records, 1.2 GB, 45 ms of engine time) made the computing layer's own fetch
+copies, needed now, wait behind all of it: the profile of a warm 32k prefill
+showed the GPU idle for 2.7 s of 10.5 s, mostly in one stall per layer
+boundary. Sending the stage-ahead in small pieces (8 records, about 1 ms of engine) as
+earlier ones complete bounds that wait to one piece: warm prefill 10.30 to 9.40 s at
+32k tokens and 28.1 to 27.4 s at 95k, decode unchanged. Disk volume was not
+the cause: a larger host tier (19% fewer disk reads) did not change it.
 
 **Why host compute.** A host-tier hit costs a 2.7 MB copy over PCIe (about
 110 us) that the GPU waits for; the CPU computes the same expert for one token

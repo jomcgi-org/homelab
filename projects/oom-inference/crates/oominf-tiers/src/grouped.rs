@@ -78,6 +78,15 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
         Ok(())
     }
 
+    fn stage_more(&mut self, b: &B, layer: u32, experts: &[u32]) -> Result<()> {
+        match self.staging {
+            Some(i) if self.route.get(layer as usize) == Some(&i) => {
+                self.sources[i].stage_more(b, layer, experts)
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn finish_stage_ahead(&mut self, b: &B) -> Result<()> {
         // Polled repeatedly while a stage-ahead's reads land; the staging source
         // finishes it at its own next fetch.

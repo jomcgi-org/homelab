@@ -75,6 +75,9 @@ struct Queued<B: Backend> {
 /// group's activations at the MoE fit beside the expert tiers.
 pub const PREFILL_FETCH_TOKENS: usize = 8192;
 
+/// How often prefill polls routing (and feeds staged copies) while it waits.
+const ROUTE_POLL: std::time::Duration = std::time::Duration::from_micros(100);
+
 pub struct QwenModel<B: Backend> {
     pub dims: Dims,
     vocab: usize,
@@ -591,21 +594,30 @@ impl<B: Backend> QwenModel<B> {
     ) -> Result<()> {
         let d = &self.dims;
         let layer = &self.layers[q.li];
-        // Staged reads that have landed get their device copies queued while the
-        // device runs the work queued above.
+        // While the device computes up to this group's routing, staged reads that
+        // have landed get their copies queued and the next layer's staged copies
+        // flow a little at a time, so this group's own copies never wait behind many
+        // of them on the copy engine.
         experts.finish_stage_ahead(gpu)?;
+        while !layer.route_ready(gpu, &q.route)? {
+            std::thread::sleep(ROUTE_POLL);
+            experts.finish_stage_ahead(gpu)?;
+        }
         let (routing, predicted) = layer.route_finish(gpu, d, q.route, &hosts[q.slot])?;
         let mut union: Vec<u32> = routing.experts().collect();
         union.sort_unstable();
         union.dedup();
         let addrs = experts.fetch(gpu, layer.layer, &union)?;
-        // Stage the next layer once, from the layer's first group: a group covers most
-        // of a layer's experts, so its prediction is as good as a later one's, and the
-        // copies then overlap the rest of this layer (the later groups' fetches do not
-        // wait for them). Staging again for every group would block on the previous
-        // group's reads and copies.
-        if q.gi == 0 && !predicted.is_empty() {
-            experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
+        // Stage the next layer from every group's prediction: the first opens the
+        // batch, later ones add the experts their tokens route to that earlier groups'
+        // did not (otherwise those load on demand at the next layer, behind the
+        // staged copies on the copy engine), without waiting for what it started.
+        if !predicted.is_empty() {
+            if q.gi == 0 {
+                experts.stage_ahead(gpu, layer.layer + 1, &predicted)?;
+            } else {
+                experts.stage_more(gpu, layer.layer + 1, &predicted)?;
+            }
         }
         let mut fetched = Fetched::new(layer.layer, &union, &addrs);
         let st = &mut state.layers[q.li];
@@ -770,15 +782,15 @@ impl<B: Backend> QwenModel<B> {
                 let t = lens.iter().sum();
                 let slot = item % 2;
                 let moe_in = layer.moe_input(gpu, d, &pres, &lens, st, MOE_IN[slot])?;
-                // The layer's first group also predicts the next layer, to stage it while
-                // the rest of this layer computes.
+                // Every group also predicts the next layer, to stage it while the rest
+                // of this layer computes.
                 let route = layer.route_start(
                     gpu,
                     d,
                     &moe_in,
                     t,
                     st,
-                    stage && gi == 0,
+                    stage,
                     &mut hosts[slot],
                 )?;
                 if gi + 1 == groups {

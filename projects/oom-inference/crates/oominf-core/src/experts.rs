@@ -62,6 +62,13 @@ pub trait ExpertSource<B> {
         Ok(())
     }
 
+    /// Adds `experts` (a later, partial prediction for the same layer) to the open
+    /// [`ExpertSource::stage_ahead`] of `layer`, without waiting for what it already
+    /// started. A no-op once that layer's fetches began.
+    fn stage_more(&mut self, _b: &B, _layer: u32, _experts: &[u32]) -> Result<()> {
+        Ok(())
+    }
+
     /// Queues the device copies of the disk reads [`ExpertSource::stage_ahead`]
     /// started that have completed, without waiting for the rest. Call it often
     /// while the device is busy, so copies overlap compute; the staged layer's

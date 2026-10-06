@@ -330,6 +330,11 @@ impl<B: Backend> DecoderLayer<B> {
         pending
     }
 
+    /// Whether routing queued by [`Self::route_start`] has landed.
+    pub fn route_ready(&self, gpu: &B, pending: &crate::moe::PendingRoute<B>) -> Result<bool> {
+        self.moe.route_ready(gpu, pending)
+    }
+
     /// Collects routing queued by [`Self::route_start`]; see [`Moe::route_finish`].
     pub fn route_finish(
         &self,

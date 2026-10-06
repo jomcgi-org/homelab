@@ -172,5 +172,6 @@ pub fn run(
     let mut session = model.new_session(ids.len() + 1)?;
     println!("fresh sequence: {}", model.describe());
     timed_prefill("prefill (warm tiers)", &*model, &mut *session, &ids)?;
+    println!("after warm prefill: {}", model.describe());
     Ok(())
 }
