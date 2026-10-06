@@ -188,9 +188,10 @@ trades are how engines drift from the model they claim to run.
   later miss on it is a promotion. When a prefill ends, its prefill-only buffers
   (residuals, KV shadows, fetch-group buffers) are freed and the memory is
   offered back to the expert tier for decode.
-- During decode (and draft verification), layer L+1's router applied to layer
-  L's input predicts the next experts; predicted disk misses are read into the
-  host tier. Routing, not prediction, decides which experts run.
+- With `--lookahead on` (off by default), during decode (and draft verification)
+  layer L+1's router applied to layer L's input predicts the next experts, and
+  predicted disk misses are read into the host tier. Routing, not prediction,
+  decides which experts run.
 - Groups with different record layouts (the decoder layers' NVFP4 experts, the
   MTP layer's bf16 experts) get separate tiers behind one source. A small group
   gets one VRAM chunk and has its records read into the host tier at start-up:
@@ -431,6 +432,23 @@ boundary. Sending the stage-ahead in small pieces (8 records, about 1 ms of engi
 earlier ones complete bounds that wait to one piece: warm prefill 10.30 to 9.40 s at
 32k tokens and 28.1 to 27.4 s at 95k, decode unchanged. Disk volume was not
 the cause: a larger host tier (19% fewer disk reads) did not change it.
+
+**Why no decode lookahead.** Reading predicted disk misses ahead looked free, but
+the reads it issues are for exactly the experts the cache does not hold, where the
+prediction is weakest (62-65% precision over all predicted experts, about 24% of
+lookahead reads then used), and a step predicts for every token it carries,
+rejected drafts included. On the served 22k-token demo (warm, three requests per
+setting), lookahead on against off: 45.4 against 48.4 tok/s with no memory limit
+(20.6 against 20.8 demand disk reads per token: the used reads saved none, since a
+placed guess counts as a fresh access and evicts records that would have hit, plus
+8.7 lookahead reads per token on top), and 16.5 against 21.2 tok/s at a 32 GiB
+limit, where the drive is the bottleneck (74-78% of decode time waits on reads)
+and lookahead raised reads per token from 88 to 136, close to the drive's 7 GB/s.
+With prediction kept but no reads issued, decode matched off (48.7 tok/s), so the
+cost is the reads, not the bookkeeping (0.1-0.9% of decode time). `oominf bench`
+hides it: its workload reads about 4 records per token from disk. A gate on the
+measured used fraction, inserting guesses at the cold end of the host tier and
+skipping draft tokens would be the way back if a workload shows a gain.
 
 **Why host compute.** A host-tier hit costs a 2.7 MB copy over PCIe (about
 110 us) that the GPU waits for; the CPU computes the same expert for one token
