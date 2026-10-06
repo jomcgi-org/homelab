@@ -20,6 +20,11 @@ const GIB: f64 = (1u64 << 30) as f64;
 /// state, workspaces and the CUDA context), not a measurement.
 const LOAD_OVERHEAD: u64 = 1 << 30;
 
+/// Host memory the loaded model holds when the tiers are sized (tokenizer,
+/// host-side tables and buffers): measured 1.5 GiB in the container runs of
+/// `docs/HARDWARE.md`.
+const HOST_LOAD_OVERHEAD: u64 = 3 << 29;
+
 pub struct Settings<'a> {
     pub max_context: usize,
     pub max_streams: usize,
@@ -33,7 +38,8 @@ pub struct Settings<'a> {
 pub fn run(model_dir: &Path, s: &Settings) -> Result<()> {
     let files = Files::open(model_dir)?;
     let gpu = Gpu::new(0)?;
-    let fp = Fingerprint::collect(&gpu, &files)?;
+    let mode = crate::load::read_mode(s.experts, &files)?;
+    let fp = Fingerprint::collect(&gpu, &files, mode)?;
     println!("fingerprint:");
     println!(
         "  gpu {} ({:.1} GiB), driver {}",
@@ -47,7 +53,7 @@ pub fn run(model_dir: &Path, s: &Settings) -> Result<()> {
         fp.cpus,
         fp.ram_bytes as f64 / GIB
     );
-    println!("  model storage {}", fp.storage);
+    println!("  model storage {}, read path {}", fp.storage, fp.read_path);
     println!("  engine {}", fp.engine);
 
     let mut tuning = Tuning::default();
@@ -82,7 +88,6 @@ pub fn run(model_dir: &Path, s: &Settings) -> Result<()> {
     }
 
     println!("fresh checks:");
-    let mode = crate::load::read_mode(s.experts, &files)?;
     println!("  expert reads: {}", mode.describe());
     let (free, total) = gpu.mem_info()?;
     println!(
@@ -142,7 +147,19 @@ pub fn run(model_dir: &Path, s: &Settings) -> Result<()> {
         checkpoints: oominf_server::engine::max_checkpoints(s.max_context),
         snapshots: s.prefix_store,
     };
-    match crate::load::tier_budget(s.experts, &files, after, &demand, &host_use, &tuning) {
+    println!(
+        "  host memory the loaded model holds (estimate): {:.1} GiB",
+        HOST_LOAD_OVERHEAD as f64 / GIB
+    );
+    match crate::load::tier_budget(
+        s.experts,
+        &files,
+        after,
+        HOST_LOAD_OVERHEAD,
+        &demand,
+        &host_use,
+        &tuning,
+    ) {
         Ok(r) => {
             for l in &r.lines {
                 println!("  {l}");

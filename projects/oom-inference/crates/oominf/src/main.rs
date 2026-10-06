@@ -496,7 +496,8 @@ fn main() -> Result<()> {
         } => {
             let files = oominf_format::Model::open(&model)?;
             let gpu = oominf_cuda::Gpu::new(0)?;
-            let fp = profile::Fingerprint::collect(&gpu, &files)?;
+            let fp =
+                profile::Fingerprint::collect(&gpu, &files, load::read_mode(&experts, &files)?)?;
             let path = match out {
                 Some(p) => p,
                 None => profile::cache_dir()
