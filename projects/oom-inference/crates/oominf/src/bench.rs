@@ -160,6 +160,7 @@ fn timed_prefill(
     Ok(logits)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     model_dir: &Path,
     prompt: &str,
