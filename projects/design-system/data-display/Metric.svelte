@@ -104,7 +104,7 @@
     font-size: 1rem;
   }
   summary:focus-visible {
-    outline: var(--ds-focus-width, 2px) solid var(--ds-focus);
+    outline: var(--ds-focus-width, 2px) solid var(--ds-focus, currentColor);
     outline-offset: var(--ds-focus-width, 2px);
   }
   .exact {

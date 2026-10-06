@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
 import { serverRender } from "../../../test/data-display/server-render.js";
 
 it("SSR imports and renders every synthetic state without browser globals", async () => {
@@ -25,6 +27,31 @@ it("SSR imports and renders every synthetic state without browser globals", asyn
       expect(globalThis[name]).toBeUndefined();
   } finally {
     vi.unstubAllGlobals();
+  }
+});
+
+it("SSR resolves components through the real frontend vite config", async () => {
+  // The app's SvelteKit config carries no "svelte" resolve condition on the
+  // server. Loading it here proves the package entry serves components to
+  // real SSR instead of the compiler-free core entry.
+  const server = await createServer({
+    configFile: fileURLToPath(
+      new URL("../../../vite.config.js", import.meta.url),
+    ),
+    server: { middlewareMode: true, watch: null, hmr: false },
+    appType: "custom",
+  });
+  try {
+    const entry = await server.ssrLoadModule("/test/data-display/server.js");
+    const { body } = entry.renderDisplayComponent("Metric", {
+      label: "Real config",
+      value: -12345,
+      unit: "bytes",
+    });
+    expect(body).toContain("Real config");
+    expect(body).toContain("-12,345 bytes");
+  } finally {
+    await server.close();
   }
 });
 

@@ -17,7 +17,7 @@ describe("measurement formatting", () => {
     [0, "0", "0 bytes"],
     [-12345, "-12.3K", "-12,345 bytes"],
     [0.125, "0.125", "0.125 bytes"],
-    [-12.345, "-12.3", "-12.345 bytes"],
+    [-12.345, "-12.345", "-12.345 bytes"],
     [999950, "1M", "999,950 bytes"],
     [-999950, "-1M", "-999,950 bytes"],
     [1234567890.1234567, "1.23B", "1,234,567,890.1234567 bytes"],
@@ -57,10 +57,12 @@ describe("measurement formatting", () => {
         .exactText,
     ).toBe("12.345,6789 bytes");
     expect(formatMeasurement(12345.6789, { locale: "de-DE" }).text).toBe(
-      new Intl.NumberFormat("de-DE", {
-        notation: "compact",
-        maximumSignificantDigits: 3,
-      }).format(12345.6789),
+      new Intl.NumberFormat("de-DE", { maximumFractionDigits: 3 }).format(
+        12345.6789,
+      ),
+    );
+    expect(formatMeasurement(12345.6789, { locale: "de-DE" }).text).toBe(
+      "12.345,679",
     );
     for (const value of [
       Number.MIN_VALUE,
@@ -73,6 +75,20 @@ describe("measurement formatting", () => {
       expect(Number(formatted.exactText.replaceAll(",", ""))).toBe(value);
     }
     expect(formatMeasurement(-0).exactText).toBe("-0");
+  });
+
+  it("keeps full precision where the locale has no thousands abbreviation", () => {
+    expect(formatMeasurement(-12345, { locale: "de-DE" }).text).toBe("-12.345");
+    expect(formatMeasurement(-12345, { locale: "de-DE" }).text).not.toBe(
+      "-12.300",
+    );
+    expect(formatMeasurement(1234, { locale: "de-DE" }).text).toBe("1.234");
+    expect(formatMeasurement(1234, { locale: "ja-JP" }).text).toBe("1,234");
+    expect(formatMeasurement(1234, { locale: "ja-JP" }).text).not.toBe("1230");
+    expect(
+      formatMeasurement(123456, { locale: "de-DE", unit: "bytes" }).text,
+    ).toBe("123.456");
+    expect(formatMeasurement(0.000123456).text).not.toBe("0");
   });
 
   it("validates caller locale and literal units", () => {
@@ -186,7 +202,7 @@ describe("stable contracts", () => {
     }
   });
 
-  it("preserves existing CSS exports and imports the default subpath in plain Node without browser globals", () => {
+  it("preserves existing CSS exports and imports the core subpath in plain Node without browser globals", () => {
     const pkg = JSON.parse(
       readFileSync(
         new URL("../../../../../design-system/package.json", import.meta.url),
@@ -198,6 +214,10 @@ describe("stable contracts", () => {
     expect(pkg.exports["./tokens/technical-drawing.css"]).toBe(
       "./tokens/technical-drawing.css",
     );
+    // One component entry for every condition: SSR must resolve the same
+    // components as the client, so the subpath cannot split on "svelte".
+    expect(pkg.exports["./data-display"]).toBe("./data-display/index.js");
+    expect(pkg.exports["./data-display/core"]).toBe("./data-display/core.js");
     const output = execFileSync(
       process.execPath,
       [
@@ -208,7 +228,7 @@ describe("stable contracts", () => {
       for (const name of ['window', 'document', 'navigator']) {
         Object.defineProperty(globalThis, name, { configurable: true, get() { throw new Error('Read browser global: ' + name); } });
       }
-      const core = await import('@homelab/design-system/data-display');
+      const core = await import('@homelab/design-system/data-display/core');
       assert.equal(core.formatMeasurement(0).text, '0');
       assert.equal(core.DEFAULT_LOCALE, 'en-US');
       assert.equal(core.SERIES_ROLES.length, 5);
@@ -243,6 +263,11 @@ describe("stable contracts", () => {
       const style = source.split("<style>")[1];
       expect(style).toContain("overflow-wrap: anywhere");
       expect(style).not.toMatch(/:global|#[0-9a-f]{3,8}\b|ellipsis/);
+      if (name === "Metric" || name === "ChartFrame") {
+        // --ds-focus exists only inside a boundary, so disclosures must fall
+        // back to the text colour to keep the ring visible outside one.
+        expect(style).toContain("var(--ds-focus, currentColor)");
+      }
       for (const match of style.matchAll(/var\(([^)]+)\)/g))
         expect(match[1]).toMatch(/^--ds-/);
       expect(source).not.toMatch(

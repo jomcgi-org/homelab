@@ -77,10 +77,16 @@ it("hydrates actual server markup without replacing nodes, text or attributes", 
       ])
         expect(display.querySelector(selector)).not.toBeNull();
       const chart = display.querySelector("figure");
+      const describedby = chart.getAttribute("aria-describedby").split(" ");
+      expect(describedby).toHaveLength(2);
       expect(
-        display.querySelector(`#${chart.getAttribute("aria-describedby")}`)
-          .textContent,
-      ).toContain("Synthetic edge measurements");
+        describedby.map(
+          (id) => display.querySelector(`#${id}`).textContent,
+        ),
+      ).toEqual([
+        expect.stringContaining("Units:"),
+        expect.stringContaining("Synthetic edge measurements"),
+      ]);
       const summary = chart.querySelector("summary");
       summary.click();
       expect(chart.querySelector("details").open).toBe(true);

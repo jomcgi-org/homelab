@@ -12,6 +12,7 @@
   } = $props();
   const componentId = $props.id();
   const titleId = `${componentId}-title`;
+  const unitsId = `${componentId}-units`;
   const descriptionId = `${componentId}-description`;
   const checked = $derived.by(() => {
     const metadata = {
@@ -28,13 +29,13 @@
 
 <figure
   aria-labelledby={titleId}
-  aria-describedby={descriptionId}
+  aria-describedby={`${unitsId} ${descriptionId}`}
   aria-busy={checked.state === "loading" ? true : undefined}
   data-state={checked.state}
 >
   <figcaption>
     <p class="title" id={titleId}>{checked.title}</p>
-    <p class="units">Units: {checked.units}</p>
+    <p class="units" id={unitsId}>Units: {checked.units}</p>
     <p id={descriptionId}>{checked.description}</p>
   </figcaption>
   {#if checked.state === "ready"}
@@ -88,7 +89,7 @@
     font-size: 1rem;
   }
   summary:focus-visible {
-    outline: var(--ds-focus-width, 2px) solid var(--ds-focus);
+    outline: var(--ds-focus-width, 2px) solid var(--ds-focus, currentColor);
     outline-offset: var(--ds-focus-width, 2px);
   }
 </style>

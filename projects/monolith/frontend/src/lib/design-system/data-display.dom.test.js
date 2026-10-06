@@ -14,6 +14,7 @@ import {
   formatMeasurement,
 } from "@homelab/design-system/data-display";
 import Fixture from "../../../test/data-display/Fixture.svelte";
+import ChartHarness from "../../../test/data-display/ChartHarness.svelte";
 import { serverRender } from "../../../test/data-display/server-render.js";
 
 let mounted = [];
@@ -150,6 +151,23 @@ it("keeps every status label visible with distinct hidden cues and no default an
   expect(live.querySelector('[role="status"]').getAttribute("aria-live")).toBe(
     "polite",
   );
+});
+
+it("stays keyboard-usable with a fallback focus ring outside a boundary", async () => {
+  // No boundary and no stylesheets: unsupported per the README, but the
+  // disclosure must stay keyboard-usable. The unit suite asserts both
+  // summaries ship a currentColor focus fallback in their scoped CSS.
+  const target = await render(Metric, { label: "Outside", value: 1 });
+  const harness = await render(ChartHarness);
+  expect(harness.querySelector("figure")).not.toBeNull();
+  const summary = target.querySelector("summary");
+  summary.focus();
+  expect(document.activeElement).toBe(summary);
+  summary.click();
+  expect(target.querySelector("details").open).toBe(true);
+  expect(target.querySelector("data").textContent).toBe("1");
+  const status = await render(Status, { kind: "ok", label: "Outside ok" });
+  expect(status.querySelector(".status").textContent).toContain("Outside ok");
 });
 
 it("exposes exact measurements in accessible text and a native touch/keyboard disclosure", async () => {
