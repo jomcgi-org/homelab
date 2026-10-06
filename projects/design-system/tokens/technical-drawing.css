@@ -1,0 +1,93 @@
+/*
+ * Opt-in technical drawing for shared components (#6822, #6873).
+ * Each boundary owns the whole contract, including spacing, so nested
+ * boundaries never borrow roles from another scheme. Selection is explicit.
+ * No shadow, glow, ambient tint or display serif belongs on this sheet.
+ */
+
+[data-ds-theme="technical-drawing-light"] {
+  --ds-surface: #ffffff;
+  --ds-surface-raised: #f5f6f8;
+  --ds-ink: #26231c;
+  --ds-ink-muted: #625d50;
+  /* Retain text-capable faint ink; #97917f is the reference ornament. */
+  --ds-ink-faint: #6b6658;
+  /* Hairline dividers are decorative. Controls use line-strong. */
+  --ds-line: #d5d7dc;
+  --ds-line-strong: #77766f;
+  --ds-accent: #1f4f9f;
+  --ds-on-accent: #ffffff;
+  --ds-accent-ink: #1f4f9f;
+  --ds-focus: #1f4f9f;
+  --ds-focus-width: 2px;
+  --ds-shadow: none;
+  --ds-shadow-raised: none;
+  --ds-border-weight: 1px;
+  --ds-radius: 0;
+  --ds-font-display:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --ds-font-body:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --ds-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+  --ds-space-xs: 8px;
+  --ds-space-sm: 12px;
+  --ds-space-md: 16px;
+  --ds-space-lg: 24px;
+  --ds-space-xl: 40px;
+  --ds-space-2xl: 60px;
+  /* Status colours support text on either surface, with a label or shape. */
+  --ds-ok: #0b7f47;
+  --ds-warn: #8a5700;
+  --ds-err: #b42328;
+  /* Stable figure order: GPU, host RAM, page cache, NVMe, hot expert set. */
+  --ds-series-1: #0b6bff;
+  --ds-series-2: #0b7f47;
+  --ds-series-3: #0e7c86;
+  --ds-series-4: #d0262a;
+  --ds-series-5: #d100b5;
+  color-scheme: light;
+  color: var(--ds-ink);
+  background-color: var(--ds-surface);
+}
+
+[data-ds-theme="technical-drawing-dark"] {
+  --ds-surface: #181a20;
+  --ds-surface-raised: #1c1e26;
+  --ds-ink: #e8e5dc;
+  --ds-ink-muted: #a5a297;
+  /* Lift the reference #6f6d65 ornament to text-capable faint ink. */
+  --ds-ink-faint: #9b988e;
+  --ds-line: #393b43;
+  --ds-line-strong: #82847e;
+  --ds-accent: #d3a45f;
+  --ds-on-accent: #181a20;
+  --ds-accent-ink: #d3a45f;
+  --ds-focus: #d3a45f;
+  --ds-focus-width: 2px;
+  --ds-shadow: none;
+  --ds-shadow-raised: none;
+  --ds-border-weight: 1px;
+  --ds-radius: 0;
+  --ds-font-display:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --ds-font-body:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --ds-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+  --ds-space-xs: 8px;
+  --ds-space-sm: 12px;
+  --ds-space-md: 16px;
+  --ds-space-lg: 24px;
+  --ds-space-xl: 40px;
+  --ds-space-2xl: 60px;
+  --ds-ok: #6fbf8d;
+  --ds-warn: #d0a050;
+  --ds-err: #ff8377;
+  --ds-series-1: #63a8ff;
+  --ds-series-2: #3ddc84;
+  --ds-series-3: #4dd0e1;
+  --ds-series-4: #ff6b6b;
+  --ds-series-5: #ff7be5;
+  color-scheme: dark;
+  color: var(--ds-ink);
+  background-color: var(--ds-surface);
+}
