@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { Legend, SERIES_ROLES } from "@homelab/design-system/data-display";
+import {
+  ChartFrame,
+  Legend,
+  SERIES_ROLES,
+} from "@homelab/design-system/data-display";
 import ChartHarness from "../../../test/data-display/ChartHarness.svelte";
 
 const mounted = [];
@@ -14,9 +18,14 @@ afterEach(async () => {
 async function render(component, props = {}) {
   const target = document.createElement("div");
   document.body.append(target);
-  mounted.push({ component: mount(component, { target, props }), target });
-  await tick();
-  return target;
+  try {
+    mounted.push({ component: mount(component, { target, props }), target });
+    await tick();
+    return target;
+  } catch (error) {
+    target.remove();
+    throw error;
+  }
 }
 
 it("links figure title and description and exposes a captioned table by keyboard disclosure", async () => {
@@ -52,6 +61,34 @@ it("links figure title and description and exposes a captioned table by keyboard
   expect(table.querySelector("tbody td").textContent).toBe("0");
   expect(target.querySelector('[aria-live], [role="status"]')).toBeNull();
 });
+
+it.each(
+  ["title", "units", "description"].flatMap((prop) =>
+    ["ready", "unavailable"].map((state) => ({ prop, state })),
+  ),
+)(
+  "rejects blank or missing chart $prop ($state) when mounted in the DOM",
+  async ({ prop, state }) => {
+    for (const value of [undefined, " \n\t"])
+      await expect(
+        render(ChartHarness, { [prop]: value, state }),
+      ).rejects.toThrow(`chart ${prop} must be non-empty text`);
+  },
+);
+
+it.each(["ready", "unavailable"])(
+  "rejects a missing fallback (%s) when mounted in the DOM",
+  async (state) => {
+    await expect(
+      render(ChartFrame, {
+        title: "Chart",
+        units: "bytes",
+        description: "Synthetic",
+        state,
+      }),
+    ).rejects.toThrow("chart fallback snippet is required");
+  },
+);
 
 it.each(["light", "dark"])(
   "retains contract order, role colours, text labels and distinct SVG shapes in %s",
