@@ -19,9 +19,11 @@ pub struct CostCurve {
     ms: Vec<f64>,
 }
 
-/// Measured on an RTX 4090 with warm tiers (max-perf config, verify steps of
-/// width w, #6872): 1-2 tokens 25-50 ms, 4 about 70, 8 about 110-125, 16 about 210.
-pub const DEFAULT_STEP_COST: &str = "1:30,2:45,4:70,8:118,16:210";
+/// Measured on an RTX 4090 with warm tiers (max-perf config, `oominf bench
+/// --streams`): batched steps of 1, 2, 4, 8 and 16 sequences, one token each.
+/// Steps of one sequence's drafts cost less (the rows share their context's
+/// experts); the running costs learn the mix actually served.
+pub const DEFAULT_STEP_COST: &str = "1:22,2:37,4:54,8:117,16:255";
 
 /// Weight of a new measurement in a width's running cost.
 const COST_EMA: f64 = 0.2;
