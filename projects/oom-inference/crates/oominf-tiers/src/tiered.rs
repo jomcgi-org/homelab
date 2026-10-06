@@ -588,7 +588,7 @@ impl<B: Transfer + 'static> TieredExperts<B> {
             }
             &mut self.ahead_pending
         } else {
-            if self.pending.back().is_none_or(|(s, _)| *s < last.seq) {
+            if self.open && last.seq == self.seq {
                 // A copy of the fetch still open (its event comes at
                 // `finish_fetch`): wait for its queue so far.
                 let ev = self.b.record_copies(&self.copy_queue)?;
