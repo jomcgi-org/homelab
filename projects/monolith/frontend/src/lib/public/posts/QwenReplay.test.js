@@ -68,25 +68,45 @@ test("reduced motion leaves the landing paused until Play is requested", async (
   expect(view.querySelector(".controls button").textContent).toBe("Pause");
 });
 
-test("first-token timing stays fixed when seeking, without a prefill rate or chart", async () => {
+test("measurements fill in as the replay reaches them, in request order", async () => {
   const view = await render();
-  const timing = view.querySelector(".measurements > div");
-  expect(timing.textContent).toContain("First token");
-  expect(timing.textContent).toContain((turn.metrics.ttftMs / 1000).toFixed(1));
-  const initial = timing.textContent;
-  for (const at of [1000, turn.metrics.ttftMs, turn.durationMs, 0]) {
-    await seek(at);
-    expect(timing.textContent).toBe(initial);
-    expect(view.querySelector(".prefill-history")).toBeNull();
-    expect(view.querySelector(".prefill-segment")).toBeNull();
-  }
+  const slots = () =>
+    [...view.querySelectorAll(".measurements > div")].map((d) => d.textContent);
+  const labels = [...view.querySelectorAll(".measurements dt")].map((d) =>
+    d.textContent.trim(),
+  );
+  expect(labels).toEqual(["Prefill", "First token", "Decode"]);
+  const tokens = (
+    turn.usage.prompt_tokens - turn.usage.cached_tokens
+  ).toLocaleString("en-US");
+  await seek(1000);
+  let [prefill, first, decode] = slots();
+  expect(prefill).toContain(`reading ${tokens} tokens`);
+  expect(first).toContain("--");
+  expect(decode).toContain("--");
+  await seek(turn.metrics.ttftMs);
+  [prefill, first, decode] = slots();
+  expect(first).toContain((turn.metrics.ttftMs / 1000).toFixed(1));
+  expect(decode).toContain("tok/s now");
   await seek(turn.durationMs);
+  [prefill, first, decode] = slots();
+  expect(decode).toContain(turn.metrics.tokensPerSecond.toFixed(1));
+  expect(view.querySelector(".prefill-history")).toBeNull();
   const output = turn.events.map((e) => e.content).join("");
   expect(view.querySelector(".incident-graph pre").textContent).toBe(output);
   expect(view.querySelectorAll(".graph-node").length).toBe(
     incidentGraph(output, true).nodes.length,
   );
   expect(view.querySelector(".answer > p")).toBeNull();
+});
+
+test("the output panel opens while the model writes and closes when it finishes", async () => {
+  const view = await render({ landing: true });
+  await seek(turn.events[0].at + 1);
+  const toggle = () => view.querySelector(".model-output button");
+  expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  await seek(turn.durationMs);
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
 });
 
 test("playback advances in real time and cancels on pause", async () => {
@@ -138,11 +158,11 @@ test("current replay uses captured timings without fabricated routing", async ()
   const view = await render();
   expect(recording.telemetry.routing).toBe(false);
   expect(view.querySelector(".telemetry")).toBeNull();
-  const rate = view.querySelectorAll(".measurements dd")[1];
-  expect(rate.textContent).toContain(turn.metrics.tokensPerSecond.toFixed(1));
   await seek(turn.durationMs);
   expect(view.querySelectorAll(".measurements dd")).toHaveLength(3);
-  expect(rate.textContent).toContain(turn.metrics.tokensPerSecond.toFixed(1));
+  expect(view.querySelectorAll(".measurements dd")[2].textContent).toContain(
+    turn.metrics.tokensPerSecond.toFixed(1),
+  );
 });
 
 test("shows effective uncached prefill throughput without speed or arrival-count clutter", async () => {
@@ -151,7 +171,8 @@ test("shows effective uncached prefill throughput without speed or arrival-count
     ((turn.usage.prompt_tokens - turn.usage.cached_tokens) * 1000) /
       turn.metrics.ttftMs,
   );
-  expect(view.querySelectorAll(".measurements dd")[2].textContent).toContain(
+  await seek(turn.durationMs);
+  expect(view.querySelectorAll(".measurements dd")[0].textContent).toContain(
     rate.toLocaleString("en-US"),
   );
   expect(view.querySelector(".speed-control")).toBeNull();

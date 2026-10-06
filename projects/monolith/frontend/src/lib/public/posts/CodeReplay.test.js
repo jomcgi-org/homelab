@@ -41,6 +41,9 @@ test("prefill scans the crate's files as pages", async () => {
     (h) => h.textContent,
   );
   expect(headings).toContain("src/cache.rs");
+  expect(new Set(headings)).toEqual(
+    new Set(recording.document.sections.map((s) => s.label)),
+  );
   expect(headings).toHaveLength(recording.document.pages);
 });
 
@@ -65,7 +68,7 @@ test("steps ahead of the playhead stay pending", async () => {
   await seek(mid);
   const pending = view.querySelectorAll(".trace rect.pending").length;
   expect(pending).toBe(steps.filter((s) => s.at > mid).length);
-  expect(view.querySelector(".code-output .rate").textContent).toMatch(
+  expect(view.querySelectorAll(".measurements dd")[2].textContent).toMatch(
     /tok\/s now/,
   );
 });
