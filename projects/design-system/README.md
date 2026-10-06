@@ -40,7 +40,7 @@ link, so the generated target is dead weight that shows up as permanent
 The contract is **wired but not consumed**. As of this README:
 
 - The package is linked and the stylesheet loads on every route, but no
-  Svelte or CSS file in the frontend reads a `var(--ds-*)` token, and none of
+  production Svelte or CSS file in the frontend reads a `var(--ds-*)` token, and none of
   the three themes overrides a `--ds-*` token inside its scope class. The new
   technical-drawing export is opt-in and not yet consumed by any page.
 - The five conflicting public tokens are scoped to
@@ -102,8 +102,11 @@ listed system sans faces when it is unavailable.
 Selection is the literal `data-ds-theme` value. There is no `system` mode,
 media query or browser-global read at import time. Render the same attribute on
 the server and client. Import safety is tested in Node with browser globals
-undefined; an actual SSR/hydration render check and synthetic browser fixture
-remain follow-up work in this PR.
+undefined. The isolated `projects/monolith/frontend/theme-preview/` fixture
+server-renders both schemes and a dark-in-light boundary, then hydrates the same
+markup. Its tests retain DOM nodes, text and attributes without hydration
+warnings. The browser lane checks text resize, keyboard focus, clipping and
+computed contrast. No production page imports the opt-in export.
 
 ### Roles
 
