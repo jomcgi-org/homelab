@@ -81,8 +81,10 @@ Observations:
   39.3 instead of 33.0 at 48G, and 49.7 instead of 45.2 without a limit. At the
   minimum, lookahead is already capped to nothing (it may not pin the slots a
   fetch needs). `oominf bench` (one sequence, no server) does not show it: 56.8
-  against 58.6 tok/s short, 46.0 against about 45.5 at 32k. The default stays on
-  until more workloads are measured.
+  against 58.6 tok/s short, 46.0 against about 45.5 at 32k. Three warm requests
+  per setting confirmed it (45.4 against 48.4 tok/s with no limit, 16.5 against
+  21.2 at 32G), so `--lookahead` now defaults to off; the rows above were measured
+  with it on. See ARCHITECTURE.md, "Why no decode lookahead".
 - At 16G the default 10 GiB reserve is mostly unused (peak 4.6 GiB); 4 GiB raised
   the host tier from 2.7 to 8.6 GiB and decode from 9.0 to 10.6 tok/s warm.
 - The 2-CPU run's slower start (58 s to ready against 26 to 29 s) is the FP8
