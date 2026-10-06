@@ -13,15 +13,26 @@ Cases:
   long        a ~2k-token prompt (prefill-bound TTFT)
   multiturn   a follow-up that extends the previous turn verbatim (prefix reuse)
 
+Concurrency mode (--concurrency K1,K2,...): for each K, K streaming requests with
+different prompts (different tasks and topics), fixed max_tokens, temperature 0,
+start together; per round it reports aggregate output tok/s (all completion
+tokens over the time from the first request's start to the last token),
+per-stream decode tok/s, TTFT, and p50/p95 inter-token latency (the gaps between
+streamed chunks of every request; drafts accepted together arrive together).
+With --long-every N, every Nth request of a round carries the ~2k-token prompt
+instead, to measure how much a prefill stalls the others (max gap).
+
 Example:
   bench/http_bench.py --url http://127.0.0.1:8091 --runs 3
   bench/http_bench.py --url http://127.0.0.1:8090 --model qwen3.6-27b --cases short
+  bench/http_bench.py --url http://127.0.0.1:8091 --concurrency 1,2,4,8 --rounds 2
 """
 
 import argparse
 import json
 import statistics
 import sys
+import threading
 import time
 import urllib.request
 
@@ -85,6 +96,7 @@ def stream_chat(url, model, messages, max_tokens, timeout):
     t0 = time.perf_counter()
     first = last = None
     chunks = 0
+    times = []
     usage = None
     reasoning, content = [], []
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -108,6 +120,7 @@ def stream_chat(url, model, messages, max_tokens, timeout):
                     first = first if first is not None else now
                     last = now
                     chunks += 1
+                    times.append(now)
     if first is None:
         raise RuntimeError("no tokens received")
     tokens = (usage or {}).get("completion_tokens") or chunks
@@ -116,6 +129,8 @@ def stream_chat(url, model, messages, max_tokens, timeout):
     )
     cached = ((usage or {}).get("prompt_tokens_details") or {}).get("cached_tokens")
     return {
+        "start": t0,
+        "times": times,
         "ttft": first - t0,
         "decode_tps": decode,
         "tokens": tokens,
@@ -168,6 +183,98 @@ def run_case(args, case, run):
     raise ValueError(case)
 
 
+TASKS = [
+    "Write a long, detailed story about {}.",
+    "Explain step by step how {} would plan a difficult week, with numbered lists.",
+    "Write a Python program that simulates the daily work of {}, with comments.",
+    "Write a long poem in rhyming couplets about {}.",
+    "Draft a detailed technical report on the equipment used by {}.",
+    "Give a long list of interview questions for {}, each with a model answer.",
+    "Describe the history and future of the job of {} in a long essay.",
+    "Write a play script with three characters set around {}.",
+]
+
+
+def percentile(xs, q):
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    i = min(len(xs) - 1, max(0, round(q * (len(xs) - 1))))
+    return xs[i]
+
+
+def concurrent_round(args, k, round_no):
+    """K requests started together; returns the round's summary."""
+    results = [None] * k
+    errors = []
+
+    def one(i):
+        n = round_no * 64 + i
+        if args.long_every and i % args.long_every == args.long_every - 1:
+            prompt = f"(For a report on {TOPICS[n % len(TOPICS)]}.) " + long_prompt()
+        else:
+            prompt = TASKS[n % len(TASKS)].format(TOPICS[(n // len(TASKS) + n) % len(TOPICS)])
+        try:
+            results[i] = stream_chat(args.url, args.model, [{"role": "user", "content": prompt}], args.max_tokens, args.timeout)
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(f"request {i}: {e}")
+
+    threads = [threading.Thread(target=one, args=(i,)) for i in range(k)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    start = min(r["start"] for r in results)
+    end = max(r["times"][-1] for r in results)
+    tokens = sum(r["tokens"] for r in results)
+    gaps = [b - a for r in results for a, b in zip(r["times"], r["times"][1:])]
+    return {
+        "k": k,
+        "aggregate_tps": tokens / (end - start),
+        "tokens": tokens,
+        "wall": end - start,
+        "stream_tps": statistics.median(r["decode_tps"] for r in results),
+        "ttft_p50": percentile([r["ttft"] for r in results], 0.5),
+        "ttft_max": max(r["ttft"] for r in results),
+        "itl_p50": percentile(gaps, 0.5),
+        "itl_p95": percentile(gaps, 0.95),
+        "itl_max": max(gaps) if gaps else float("nan"),
+    }
+
+
+def concurrency_mode(args):
+    rows = []
+    for k in [int(x) for x in args.concurrency.split(",")]:
+        for w in range(args.warmup):
+            concurrent_round(args, k, 1000 + w)
+        runs = []
+        for r in range(args.rounds):
+            s = concurrent_round(args, k, k * 10 + r)
+            runs.append(s)
+            print(
+                f"K={k:2d} round {r}: aggregate {s['aggregate_tps']:6.1f} tok/s  per stream {s['stream_tps']:5.1f} tok/s  "
+                f"ttft p50 {s['ttft_p50']:5.2f}s max {s['ttft_max']:5.2f}s  itl p50 {1e3 * s['itl_p50']:6.1f} ms "
+                f"p95 {1e3 * s['itl_p95']:6.1f} ms max {1e3 * s['itl_max']:7.1f} ms  ({s['tokens']} tokens in {s['wall']:.1f}s)",
+                flush=True,
+            )
+        med = {key: statistics.median(r[key] for r in runs) for key in runs[0] if key != "k"}
+        med["k"] = k
+        rows.append(med)
+    print("\n| K | aggregate tok/s | per-stream tok/s | TTFT p50 (s) | TTFT max (s) | ITL p50 (ms) | ITL p95 (ms) | ITL max (ms) |")
+    print("|---|---|---|---|---|---|---|---|")
+    for m in rows:
+        print(
+            f"| {m['k']} | {m['aggregate_tps']:.1f} | {m['stream_tps']:.1f} | {m['ttft_p50']:.2f} | {m['ttft_max']:.2f} | "
+            f"{1e3 * m['itl_p50']:.1f} | {1e3 * m['itl_p95']:.1f} | {1e3 * m['itl_max']:.0f} |"
+        )
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump({"url": args.url, "concurrency": rows}, f, indent=2)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -182,7 +289,12 @@ def main():
     p.add_argument("--max-tokens", type=int, default=128)
     p.add_argument("--timeout", type=float, default=600)
     p.add_argument("--json", help="also write results to this file")
+    p.add_argument("--concurrency", help="concurrency mode: comma-separated request counts, e.g. 1,2,4,8")
+    p.add_argument("--rounds", type=int, default=2, help="concurrency mode: timed rounds per count")
+    p.add_argument("--long-every", type=int, default=0, help="concurrency mode: every Nth request has the long prompt")
     args = p.parse_args()
+    if args.concurrency:
+        return concurrency_mode(args)
 
     results = {}
     serial = 0
