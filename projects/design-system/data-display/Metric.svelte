@@ -99,8 +99,8 @@
     font-size: 1rem;
   }
   summary:focus-visible {
-    outline: 2px solid var(--ds-focus);
-    outline-offset: 2px;
+    outline: var(--ds-focus-width, 2px) solid var(--ds-focus);
+    outline-offset: var(--ds-focus-width, 2px);
   }
   .exact {
     padding-bottom: var(--ds-space-xs);

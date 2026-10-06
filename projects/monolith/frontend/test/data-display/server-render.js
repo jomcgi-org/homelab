@@ -15,7 +15,7 @@ export async function serverRender(name, props = {}) {
       resolve: { conditions: ["svelte", "node", "module"] },
     },
     optimizeDeps: { noDiscovery: true, exclude: ["svelte"] },
-    server: { middlewareMode: true, watch: null },
+    server: { middlewareMode: true, watch: null, hmr: false },
     appType: "custom",
   });
   try {

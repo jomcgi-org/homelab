@@ -89,13 +89,16 @@ def contrast_checks(page):
           kind, text: node.textContent.trim().slice(0, 80), colour, ground,
           ratio: contrast(rgba(colour), ground), threshold});
       };
-      for (const node of document.querySelectorAll('[data-contrast-text]')) {
+      for (const node of document.querySelectorAll('[data-contrast-text], [data-data-display] p, [data-data-display] dt, [data-data-display] dd, [data-data-display] summary, [data-data-display] th, [data-data-display] td, [data-data-display] caption, [data-data-display] span:not(.exact-sr), [data-data-display] h3, [data-data-display] h4')) {
+        if (!node.checkVisibility() || node.closest('.exact-sr')) continue;
         const style = getComputedStyle(node);
         const large = parseFloat(style.fontSize) >= 24 ||
           (parseFloat(style.fontSize) >= 18.6667 && parseFloat(style.fontWeight) >= 700);
         record(node, 'text', style.color, background(node), large ? 3 : 4.5);
       }
       for (const node of document.querySelectorAll('[data-contrast-marker]'))
+        record(node, 'series', getComputedStyle(node).fill, background(node), 3);
+      for (const node of document.querySelectorAll('[data-series-role] svg'))
         record(node, 'series', getComputedStyle(node).fill, background(node), 3);
       for (const node of document.querySelectorAll('[data-contrast-border]')) {
         const style = getComputedStyle(node);
@@ -147,14 +150,20 @@ def layout_checks(page):
       if (root.scrollWidth > root.clientWidth) issues.push(`page overflow: ${root.scrollWidth} > ${root.clientWidth}`);
       const walker = document.createTreeWalker(document.querySelector('.fixture'), NodeFilter.SHOW_TEXT);
       let count = 0;
+      const boxes = [];
       while (walker.nextNode()) {
         const text = walker.currentNode;
-        if (!text.textContent.trim() || !text.parentElement.checkVisibility()) continue;
+        if (!text.textContent.trim() || !text.parentElement.checkVisibility() || text.parentElement.closest('.exact-sr')) continue;
         count++;
+        const textStyle = getComputedStyle(text.parentElement);
+        if (parseFloat(textStyle.fontSize) < 16) issues.push(`tiny meaningful text: ${text.textContent.trim()}`);
+        if (textStyle.textOverflow === 'ellipsis' || textStyle.webkitLineClamp !== 'none')
+          issues.push(`truncated text: ${text.textContent.trim()}`);
         const range = document.createRange();
         range.selectNodeContents(text);
         for (const box of range.getClientRects()) {
           if (!box.width || !box.height) continue;
+          boxes.push({box, text: text.textContent.trim()});
           if (box.left < -1 || box.right > root.clientWidth + 1)
             issues.push(`text outside viewport: ${text.textContent.trim()}`);
           for (let node = text.parentElement; node; node = node.parentElement) {
@@ -167,14 +176,22 @@ def layout_checks(page):
           }
         }
       }
-      return {issues, visible_text_nodes: count, scroll_width: root.scrollWidth, client_width: root.clientWidth};
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i].box, b = boxes[j].box;
+          if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+              Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1)
+            issues.push(`overlapping text: ${boxes[i].text} / ${boxes[j].text}`);
+        }
+      }
+      return {issues, visible_text_nodes: count, checked_text_rectangles: boxes.length, scroll_width: root.scrollWidth, client_width: root.clientWidth};
     }""")
 
 
 def keyboard_checks(page):
-    controls = page.locator("a[href], button, input, select, textarea, [tabindex]")
+    controls = page.locator("a[href], button, summary, input, select, textarea, [tabindex]")
     expected = controls.count()
-    assert expected == 6, f"expected six synthetic controls, found {expected}"
+    assert expected > 6, f"data disclosures are missing, found {expected} controls"
     records = []
     # Start from the document and use Tab exclusively, including offscreen controls.
     page.evaluate("document.activeElement.blur()")
@@ -193,7 +210,8 @@ def keyboard_checks(page):
             visible: node.matches(':focus-visible'), style: style.outlineStyle,
             width: parseFloat(style.outlineWidth), offset: parseFloat(style.outlineOffset),
             expected_width: parseFloat(style.getPropertyValue('--ds-focus-width')),
-            colour: style.outlineColor, ground, ratio: contrast(rgba(style.outlineColor), ground)};
+            colour: style.outlineColor, ground, ratio: contrast(rgba(style.outlineColor), ground),
+            height: node.getBoundingClientRect().height, tag: node.tagName};
         }"""
         )
         assert record["visible"] and record["style"] == "solid", record
@@ -202,12 +220,81 @@ def keyboard_checks(page):
         )
         assert record["offset"] >= record["width"], record
         assert record["ratio"] >= 3, record
+        if record["tag"] == "SUMMARY":
+            assert record["height"] >= 44, record
+            page.keyboard.press("Enter")
+            assert controls.nth(index).evaluate("node => node.parentElement.open"), record
         records.append(record)
+    button = page.locator('[data-sample="dark"] > .raised button')
+    button.focus()
     page.keyboard.press("Enter")
-    assert controls.last.inner_text() == "Sample action: 1", (
+    assert button.inner_text() == "Sample action: 1", (
         "hydrated button did not respond"
     )
     return records
+
+
+def data_display_checks(page):
+    return page.evaluate("""() => {
+      const expectedRoles = ['gpu', 'host-ram', 'page-cache', 'nvme', 'hot-expert-set'];
+      const expectedMarkers = ['circle', 'square', 'triangle', 'diamond', 'cross'];
+      const expectedLabels = ['GPU', 'Host RAM', 'Page cache', 'NVMe', 'Hot expert set'];
+      const displays = [...document.querySelectorAll('[data-data-display]')];
+      if (displays.length !== 3) throw new Error('Every boundary must render data primitives');
+      const records = [];
+      const ordered = nodes => {
+        const rects = nodes.map(node => node.getBoundingClientRect());
+        for (let i = 1; i < rects.length; i++) {
+          const a = rects[i - 1], b = rects[i];
+          if (b.top < a.top - 1 || (Math.abs(b.top - a.top) < 1 && b.left < a.right - 1))
+            throw new Error(`Visual reading order changed: ${nodes[i].textContent}`);
+        }
+      };
+      for (const display of displays) {
+        const boundary = display.closest('[data-sample]');
+        const legend = [...display.querySelectorAll('[data-series-role]')];
+        legend.forEach((node, i) => {
+          if (node.dataset.seriesRole !== expectedRoles[i] || node.dataset.marker !== expectedMarkers[i] ||
+              node.textContent.trim() !== `${expectedLabels[i]} (${expectedMarkers[i]})`)
+            throw new Error('Series identity, marker or order changed');
+          const reference = boundary.querySelector(`.series > [data-series="${i + 1}"] svg`);
+          if (getComputedStyle(reference).fill !== getComputedStyle(node.querySelector('svg')).fill)
+            throw new Error(`Series role colour changed: ${expectedRoles[i]}`);
+        });
+        if (legend.length !== 5) throw new Error('Incomplete series legend');
+        ordered(legend);
+        const metrics = [...display.querySelectorAll('.metrics .metric')];
+        if (metrics.length !== 12) throw new Error(`Missing measurement edge fixtures: ${metrics.length}`);
+        ordered(metrics);
+        for (const dl of display.querySelectorAll('dl')) ordered([...dl.querySelectorAll('dt, dd')]);
+        const table = display.querySelector('[data-fallback-table]');
+        if (!table.closest('details').open || !table.checkVisibility() || !table.querySelector('caption') ||
+            table.querySelectorAll('thead th[scope="col"]').length !== 2 ||
+            table.querySelectorAll('tbody th[scope="row"]').length !== metrics.length)
+          throw new Error('Chart fallback table is not usable or incomplete');
+        ordered([...table.querySelectorAll('tbody tr')]);
+        for (const [i, metric] of metrics.entries()) {
+          const row = table.querySelectorAll('tbody tr')[i];
+          if (row.querySelector('th').textContent !== metric.querySelector('.label').textContent)
+            throw new Error('Fallback table reading order differs from metrics');
+          const exact = metric.querySelector('.exact-sr');
+          if (row.querySelector('td').textContent !== (exact?.textContent ?? 'Unavailable'))
+            throw new Error('Fallback table lost exact measurement or missing state');
+          if (exact && (exact.closest('[aria-hidden="true"]') || metric.querySelector('details data').textContent !== exact.textContent))
+            throw new Error('Exact value is not accessible without hover');
+        }
+        if (display.querySelector('[aria-live], [role="status"], [title]')) throw new Error('Ordinary data must not announce or require hover');
+        for (const state of ['loading', 'empty', 'error', 'unavailable']) {
+          const block = display.querySelector(`[data-state-case="${state}"]`);
+          if (block.querySelector('figure').dataset.state !== state || !block.textContent.includes(`Chart data: ${state}`))
+            throw new Error(`Missing state: ${state}`);
+          if (block.querySelector('.chart, .measurement')) throw new Error('State displays stale data');
+        }
+        records.push({sample: boundary.dataset.sample, metrics: metrics.length, series: legend.length,
+          fallback_rows: table.querySelectorAll('tbody tr').length, reading_order: 'passed'});
+      }
+      return records;
+    }""")
 
 
 def check(root, output, expected_sha):
@@ -302,7 +389,12 @@ def check(root, output, expected_sha):
                     record["layout"] = layout_checks(page)
                     assert not record["layout"]["issues"], record["layout"]
                     record["focus"] = keyboard_checks(page)
+                    record["data_display"] = data_display_checks(page)
+                    record["expanded_contrast"] = contrast_checks(page)
+                    for colour in record["expanded_contrast"]:
+                        assert colour["ratio"] >= colour["threshold"], colour
                     after = layout_checks(page)
+                    record["expanded_layout"] = after
                     assert not after["issues"], after
                     assert not errors, errors
                 except (AssertionError, PlaywrightError) as error:

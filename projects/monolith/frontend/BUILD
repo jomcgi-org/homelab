@@ -241,6 +241,7 @@ js_library(
         # private Qwen route was removed.
         "scripts/qwen-replay-metrics.mjs",
         "scripts/qwen-replay-metrics.test.mjs",
+        "test/data-display/ChartHarness.svelte",
         "test/data-display/Fixture.svelte",
         "test/data-display/server.js",
         "test/data-display/server-render.js",
@@ -499,6 +500,7 @@ js_library(
     srcs = [
         "package.json",
         "theme-preview/README.md",
+        "theme-preview/DataDisplayFixture.svelte",
         "theme-preview/ThemeFixture.svelte",
         "theme-preview/browser_check.py",
         "theme-preview/hydration.test.js",
