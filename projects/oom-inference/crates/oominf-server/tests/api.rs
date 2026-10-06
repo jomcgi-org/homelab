@@ -382,6 +382,64 @@ async fn anthropic_history_maps_to_template_messages() {
     );
 }
 
+/// With the waiting queue full, both APIs refuse at once with 429 and
+/// `Retry-After`, and the refusal is counted; the queued request is unaffected.
+#[tokio::test]
+async fn full_queue_returns_429_with_retry_after() {
+    // An engine that takes jobs and never serves them: each stays waiting.
+    let (tx, rx) = std_mpsc::channel::<Job>();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while let Ok(job) = rx.recv() {
+            held.push(job);
+        }
+    });
+    let template = ChatTemplate::from_parts(tokenizer(), TEMPLATE.into()).unwrap();
+    let app = Arc::new(App::new(
+        EngineHandle::bounded(tx, 1),
+        template,
+        "m".into(),
+        4096,
+        oominf_server::parse::parser_for("qwen4_exp").unwrap(),
+        SamplingParams::default(),
+        vec![id("<|im_end|>")],
+    ));
+    app.set_ready();
+    let first = tokio::spawn(post(
+        app.clone(),
+        "/v1/chat/completions",
+        json!({"messages": [{"role": "user", "content": "hi"}]}),
+    ));
+    while app.engine.queue().0 == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "user", "content": "hi"}]}),
+        ),
+        (
+            "/v1/messages",
+            json!({"messages": [{"role": "user", "content": "hi"}], "max_tokens": 4}),
+        ),
+    ] {
+        let req = Request::post(path)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = router(app.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "{path}");
+        assert_eq!(resp.headers()["retry-after"], "5", "{path}");
+        let body: Value =
+            serde_json::from_slice(&to_bytes(resp.into_body(), 1 << 20).await.unwrap()).unwrap();
+        // Both flavours name it `rate_limit_error` under `error.type`.
+        assert_eq!(body["error"]["type"], "rate_limit_error", "{path}: {body}");
+    }
+    assert_eq!(app.engine.queue(), (1, 2));
+    assert!(!first.is_finished());
+    first.abort();
+}
+
 #[tokio::test]
 async fn not_ready_returns_503() {
     let (tx, _rx) = std_mpsc::channel::<Job>();

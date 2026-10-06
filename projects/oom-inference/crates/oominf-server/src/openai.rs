@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::App;
-use crate::generation::{self, BadRequest, Finish, GenRequest, Output, Usage};
+use crate::generation::{self, Finish, GenRequest, Output, Rejected, Usage};
 use crate::parse::{Piece, ToolCall};
 use crate::template::TemplateOptions;
 
@@ -64,6 +64,29 @@ pub fn error(status: StatusCode, message: &str) -> Response {
         Json(json!({"error": {"message": message, "type": kind}})),
     )
         .into_response()
+}
+
+/// The response to a request that was not started: 400, 429 with `Retry-After`
+/// when the waiting queue is full, or 500.
+fn rejected(r: Rejected) -> Response {
+    match r {
+        Rejected::BadRequest(e) => error(StatusCode::BAD_REQUEST, &e),
+        Rejected::Busy(secs) => {
+            let mut resp = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error": {
+                    "message": "too many requests are waiting; retry later",
+                    "type": "rate_limit_error",
+                    "code": "queue_full",
+                }})),
+            )
+                .into_response();
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, secs.into());
+            resp
+        }
+        Rejected::Stopped => error(StatusCode::INTERNAL_SERVER_ERROR, "engine is not running"),
+    }
 }
 
 /// Converts an OpenAI request into the template's message shape.
@@ -193,7 +216,7 @@ pub async fn chat_completions(
     };
     let rx = match generation::start(&app, gen_req) {
         Ok(rx) => rx,
-        Err(BadRequest(e)) => return error(StatusCode::BAD_REQUEST, &e),
+        Err(r) => return rejected(r),
     };
     let id = app.new_id("chatcmpl");
     if stream {

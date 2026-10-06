@@ -330,7 +330,9 @@ impl Engine {
 
     /// Starts serving `job`: takes a reusable cached sequence or a fresh one and
     /// tells the client. `None` when the client is already gone.
-    fn admit(&mut self, job: Job) -> Result<Option<Stream>> {
+    fn admit(&mut self, mut job: Job) -> Result<Option<Stream>> {
+        // Served now: no longer waiting.
+        drop(job.ticket.take());
         let max_context = self.max_context;
         anyhow::ensure!(!job.prompt.is_empty(), "empty prompt");
         anyhow::ensure!(

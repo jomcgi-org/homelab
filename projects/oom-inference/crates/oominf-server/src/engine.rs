@@ -2,6 +2,7 @@
 //! generation at a time.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,7 +32,44 @@ pub struct Job {
     /// Token ids that end generation (not emitted).
     pub stop_ids: Vec<u32>,
     pub events: mpsc::Sender<Event>,
+    /// Its place in the waiting queue, given back when the engine starts serving
+    /// it (or drops it); set by [`EngineHandle::submit`].
+    pub ticket: Option<Ticket>,
 }
+
+/// A place in the engine's waiting queue: held by a submitted job until the engine
+/// starts serving it or drops it, so the queue stays bounded whatever the engine
+/// does with the job.
+pub struct Ticket(Arc<AtomicUsize>);
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Why a job was not queued.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SubmitError {
+    /// The waiting queue is full; the caller should retry later.
+    Busy,
+    /// The engine thread is gone.
+    Stopped,
+}
+
+impl std::fmt::Display for SubmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SubmitError::Busy => "too many requests are waiting; retry later",
+            SubmitError::Stopped => "engine is not running",
+        })
+    }
+}
+
+impl std::error::Error for SubmitError {}
+
+/// Requests that may wait for a free stream by default (`serve --max-queued`).
+pub const DEFAULT_MAX_QUEUED: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishReason {
@@ -184,6 +222,10 @@ impl<S: Resume> PrefixCache<S> for LastSequence<S> {
 pub struct EngineHandle {
     jobs: std_mpsc::Sender<Job>,
     telemetry: Arc<Mutex<Telemetry>>,
+    /// Jobs submitted and not yet being served, and the most allowed.
+    waiting: Arc<AtomicUsize>,
+    max_waiting: usize,
+    rejected: Arc<AtomicU64>,
 }
 
 /// What the engine is doing (`/v1/stats`), updated by the engine thread as it
@@ -203,13 +245,38 @@ pub struct Telemetry {
 }
 
 impl EngineHandle {
-    /// A handle over any job queue (the engine thread, or a stand-in in tests).
+    /// A handle over any job queue (the engine thread, or a stand-in in tests),
+    /// with no bound on waiting jobs.
     pub fn new(jobs: std_mpsc::Sender<Job>) -> Self {
-        Self::with_telemetry(jobs, Arc::default())
+        Self::bounded(jobs, usize::MAX)
     }
 
-    fn with_telemetry(jobs: std_mpsc::Sender<Job>, telemetry: Arc<Mutex<Telemetry>>) -> Self {
-        EngineHandle { jobs, telemetry }
+    /// A handle that refuses jobs while `max_waiting` are waiting to be served.
+    pub fn bounded(jobs: std_mpsc::Sender<Job>, max_waiting: usize) -> Self {
+        Self::with_telemetry(jobs, Arc::default(), max_waiting)
+    }
+
+    fn with_telemetry(
+        jobs: std_mpsc::Sender<Job>,
+        telemetry: Arc<Mutex<Telemetry>>,
+        max_waiting: usize,
+    ) -> Self {
+        EngineHandle {
+            jobs,
+            telemetry,
+            waiting: Arc::default(),
+            max_waiting,
+            rejected: Arc::default(),
+        }
+    }
+
+    /// Jobs waiting to be served now, and jobs refused so far because the queue
+    /// was full.
+    pub fn queue(&self) -> (usize, u64) {
+        (
+            self.waiting.load(Ordering::Acquire),
+            self.rejected.load(Ordering::Relaxed),
+        )
     }
 
     /// A snapshot of the engine's telemetry.
@@ -217,10 +284,19 @@ impl EngineHandle {
         self.telemetry.lock().unwrap().clone()
     }
 
-    pub fn submit(&self, job: Job) -> Result<()> {
-        self.jobs
-            .send(job)
-            .map_err(|_| anyhow::anyhow!("engine is not running"))
+    /// Queues `job`, or refuses it when `max_waiting` jobs already wait.
+    pub fn submit(&self, mut job: Job) -> std::result::Result<(), SubmitError> {
+        let taken = self
+            .waiting
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.max_waiting).then_some(n + 1)
+            });
+        if taken.is_err() {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+            return Err(SubmitError::Busy);
+        }
+        job.ticket = Some(Ticket(self.waiting.clone()));
+        self.jobs.send(job).map_err(|_| SubmitError::Stopped)
     }
 }
 
@@ -228,6 +304,7 @@ impl EngineHandle {
 /// up to `draft` tokens per decode step when the model can (speculative decoding;
 /// 0 disables it), sharing steps between requests as `sched` says. `ready`
 /// receives the startup summary once the model is loaded, or the load error.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     loader: ModelLoader,
     max_context: usize,
@@ -235,6 +312,7 @@ pub fn start(
     lookup: usize,
     store: Option<StoreConfig>,
     sched: Schedule,
+    max_queued: usize,
 ) -> (EngineHandle, std_mpsc::Receiver<Result<String>>) {
     let (jobs_tx, jobs_rx) = std_mpsc::channel::<Job>();
     let (ready_tx, ready_rx) = std_mpsc::channel();
@@ -260,7 +338,10 @@ pub fn start(
             engine.run(jobs_rx);
         })
         .expect("spawn engine thread");
-    (EngineHandle::with_telemetry(jobs_tx, telemetry), ready_rx)
+    (
+        EngineHandle::with_telemetry(jobs_tx, telemetry, max_queued),
+        ready_rx,
+    )
 }
 
 type Seq = Box<dyn Session>;
@@ -369,7 +450,9 @@ impl Engine {
             return self.run_batched(jobs);
         }
         self.publish(0, None);
-        while let Ok(job) = jobs.recv() {
+        while let Ok(mut job) = jobs.recv() {
+            // Served now: no longer waiting.
+            drop(job.ticket.take());
             let events = job.events.clone();
             self.telemetry.lock().unwrap().requests_active = 1;
             if let Err(e) = self.serve(job) {
@@ -743,6 +826,7 @@ mod tests {
                 max_tokens,
                 stop_ids: stop.to_vec(),
                 events: tx,
+                ticket: None,
             })
             .unwrap();
         let (mut cached, mut tokens, mut finish) = (0, Vec::new(), None);
@@ -772,6 +856,7 @@ mod tests {
                 max_streams,
                 ..Schedule::default()
             },
+            DEFAULT_MAX_QUEUED,
         );
         ready.recv().unwrap().unwrap();
         handle
@@ -791,6 +876,7 @@ mod tests {
                 max_tokens,
                 stop_ids: stop.to_vec(),
                 events: tx,
+                ticket: None,
             })
             .unwrap();
         rx

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::App;
-use crate::generation::{self, BadRequest, Finish, GenRequest, Output, Usage};
+use crate::generation::{self, Finish, GenRequest, Output, Rejected, Usage};
 use crate::parse::Piece;
 use crate::template::TemplateOptions;
 
@@ -55,9 +55,28 @@ pub struct Thinking {
     pub kind: String,
 }
 
+/// The response to a request that was not started: 400, 429 with `Retry-After`
+/// when the waiting queue is full, or 500.
+fn rejected(r: Rejected) -> Response {
+    match r {
+        Rejected::BadRequest(e) => error(StatusCode::BAD_REQUEST, &e),
+        Rejected::Busy(secs) => {
+            let mut resp = error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests are waiting; retry later",
+            );
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, secs.into());
+            resp
+        }
+        Rejected::Stopped => error(StatusCode::INTERNAL_SERVER_ERROR, "engine is not running"),
+    }
+}
+
 pub fn error(status: StatusCode, message: &str) -> Response {
     let kind = match status {
         StatusCode::SERVICE_UNAVAILABLE => "overloaded_error",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
         s if s.is_client_error() => "invalid_request_error",
         _ => "api_error",
     };
@@ -239,7 +258,7 @@ pub async fn messages(State(app): State<Arc<App>>, Json(req): Json<MessagesReque
     };
     let rx = match generation::start(&app, gen_req) {
         Ok(rx) => rx,
-        Err(BadRequest(e)) => return error(StatusCode::BAD_REQUEST, &e),
+        Err(r) => return rejected(r),
     };
     let id = app.new_id("msg");
     if stream {

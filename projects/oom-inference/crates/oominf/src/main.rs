@@ -174,6 +174,10 @@ enum Command {
         /// prompts; other requests wait for the prefill).
         #[arg(long, default_value_t = 0)]
         prefill_slice: usize,
+        /// Requests that may wait for a free stream; more are refused at once with
+        /// 429 and `Retry-After`, so sustained overload cannot grow memory.
+        #[arg(long, default_value_t = oominf_server::engine::DEFAULT_MAX_QUEUED)]
+        max_queued: usize,
         #[command(flatten)]
         experts: load::ExpertArgs,
         #[command(flatten)]
@@ -381,6 +385,7 @@ fn main() -> Result<()> {
             max_step_tokens,
             step_cost,
             prefill_slice,
+            max_queued,
             experts,
             cache,
         } => {
@@ -430,6 +435,7 @@ fn main() -> Result<()> {
                 model_name,
                 prefix_store,
                 schedule,
+                max_queued,
             };
             oominf_server::serve(
                 cfg,
