@@ -175,7 +175,9 @@
       <dd>
         {#if phase === "Prefill"}
           {seconds(Math.max(0, position - prefillStart))}
-          <small class="detail">reading {uncachedTokens.toLocaleString("en-US")} tokens</small>
+          <small class="detail"
+            >reading {uncachedTokens.toLocaleString("en-US")} tokens</small
+          >
         {:else}
           {Math.round(prefillRate).toLocaleString("en-US")} <small>tok/s</small>
         {/if}
