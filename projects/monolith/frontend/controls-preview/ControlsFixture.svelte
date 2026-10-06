@@ -11,6 +11,7 @@
   import "@homelab/design-system/tokens/technical-drawing.css";
 
   let {
+    buttonType,
     orientation = "horizontal",
     headingLevel = 2,
     initialSelected = "overview",
@@ -86,6 +87,7 @@
       </Field>
       <div class="controls">
         <Button
+          type={buttonType}
           data-action="default"
           name="action"
           value="sample"

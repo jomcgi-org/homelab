@@ -7,9 +7,18 @@
     class: className = "",
     ...rest
   } = $props();
+  let nativeType = $derived(
+    type === "submit" || type === "reset" ? type : "button",
+  );
 </script>
 
-<button {...rest} {type} {disabled} class={className} data-variant={variant}>
+<button
+  {...rest}
+  type={nativeType}
+  {disabled}
+  class={className}
+  data-variant={variant}
+>
   {#if children}{@render children()}{/if}
 </button>
 
