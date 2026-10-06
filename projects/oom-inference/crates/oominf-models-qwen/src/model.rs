@@ -73,7 +73,7 @@ struct Queued<B: Backend> {
 /// Most prompt tokens whose routed experts one prefill fetch loads and runs as one
 /// step: enough assignments per expert for tensor-core tiles, bounded so the
 /// group's activations at the MoE fit beside the expert tiers.
-pub const PREFILL_FETCH_TOKENS: usize = 4096;
+pub const PREFILL_FETCH_TOKENS: usize = 8192;
 
 pub struct QwenModel<B: Backend> {
     pub dims: Dims,
@@ -636,7 +636,10 @@ impl<B: Backend> QwenModel<B> {
         let r = d.residual();
         let group = t.min(PREFILL_FETCH_TOKENS);
         let moe = d.top_k * (d.hidden + 3 * d.moe_inter) + 2 * d.hidden;
-        let held = group * (2 * (2 * r + d.hidden) + moe);
+        // The host queues the next group before the device has run this one, and
+        // stream-ordered frees only become reusable once the device reaches them,
+        // so two groups' MoE buffers are allocated at once.
+        let held = group * (2 * (2 * r + d.hidden) + 2 * moe);
         let attn = self.step_bytes(chunk.min(t), total);
         let shadow = self
             .layers
