@@ -93,6 +93,7 @@ fn decode_phase(
             l.history.pop();
             d
         });
+        let from_lookup = drafts.as_ref().is_some_and(|d| !d.is_empty());
         let s = Instant::now();
         let d = decode_step_with(session, *next, draft, drafts, |row: &[f32], _| {
             Ok(argmax(row))
@@ -105,6 +106,9 @@ fn decode_phase(
         drafted += d.drafted;
         accepted += d.accepted;
         if let Some(l) = lookup.as_deref_mut() {
+            if from_lookup {
+                l.lookup.record(d.drafted, d.accepted);
+            }
             l.history.push(*next);
             l.history.extend(&d.tokens[..d.tokens.len() - 1]);
         }

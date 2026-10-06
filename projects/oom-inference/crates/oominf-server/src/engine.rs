@@ -470,6 +470,9 @@ impl Engine {
             if from_lookup {
                 looked_up += d.drafted;
                 lookup_accepted += d.accepted;
+                if let Some(l) = lookup.as_mut() {
+                    l.record(d.drafted, d.accepted);
+                }
             }
             let now = Instant::now();
             rate.push_back((now, emitted + d.tokens.len() - 1));

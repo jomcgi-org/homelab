@@ -109,7 +109,25 @@ pub struct PromptLookup {
     index: Vec<std::collections::HashMap<u64, usize>>,
     /// Positions indexed so far, per match length.
     done: Vec<usize>,
+    /// Recent fraction of drafted tokens kept (exponentially weighted), and
+    /// rounds since a lookup draft was last offered while below the gate.
+    rate: f32,
+    skipped: usize,
 }
+
+/// Lookup drafts are offered while recent acceptance is at least this. An
+/// 8-token verification costs ~120 ms against ~47 ms for a model-drafted step
+/// keeping ~1.8 tokens, so a 7-token draft pays when about half of it is kept.
+/// Measured on structured output (newline-delimited JSON) that matched short
+/// scaffolding: lookup unconditionally cost 20% (37 vs 47 tok/s).
+const LOOKUP_GATE: f32 = 0.55;
+/// While below the gate, every this many rounds a short draft (`LOOKUP_PROBE_K`
+/// tokens) is offered anyway, to notice when output starts copying.
+const LOOKUP_PROBE: usize = 32;
+const LOOKUP_PROBE_K: usize = 3;
+/// A sequence starts just above the gate, so one mostly rejected draft closes it.
+const LOOKUP_START: f32 = 0.6;
+const LOOKUP_ALPHA: f32 = 0.3;
 
 /// Matches of 8, 6 or 4 tokens: on recorded outputs, shorter matches drafted
 /// novel text often enough to cost more than they saved.
@@ -129,11 +147,22 @@ impl PromptLookup {
             seq: Vec::new(),
             index: ns.iter().map(|_| Default::default()).collect(),
             done: vec![0; ns.len()],
+            rate: LOOKUP_START,
+            skipped: 0,
+        }
+    }
+
+    /// Records how many of a lookup draft's tokens the model kept.
+    pub fn record(&mut self, drafted: usize, kept: usize) {
+        if drafted > 0 {
+            let r = kept as f32 / drafted as f32;
+            self.rate = (1.0 - LOOKUP_ALPHA) * self.rate + LOOKUP_ALPHA * r;
         }
     }
 
     /// A draft continuing `history` (every token so far, the last one not yet fed),
-    /// empty when nothing matches. `history` normally extends the previous call's;
+    /// empty when nothing matches or recent drafts were mostly rejected (see
+    /// [`PromptLookup::record`]). `history` normally extends the previous call's;
     /// otherwise the index is rebuilt.
     pub fn draft(&mut self, history: &[u32]) -> Vec<u32> {
         if !history.starts_with(&self.seq) {
@@ -150,13 +179,23 @@ impl PromptLookup {
             }
             self.done[i] = self.done[i].max(len.saturating_sub(n));
         }
+        // Below the gate, offer a short draft only every LOOKUP_PROBE rounds.
+        let mut k = self.k;
+        if self.rate < LOOKUP_GATE {
+            self.skipped += 1;
+            if self.skipped < LOOKUP_PROBE {
+                return Vec::new();
+            }
+            self.skipped = 0;
+            k = k.min(LOOKUP_PROBE_K);
+        }
         for (i, &n) in self.ns.iter().enumerate() {
             if len < n {
                 continue;
             }
             if let Some(&pos) = self.index[i].get(&ngram_hash(&self.seq[len - n..])) {
                 let from = pos + n;
-                return self.seq[from..(from + self.k).min(len)].to_vec();
+                return self.seq[from..(from + k).min(len)].to_vec();
             }
         }
         Vec::new()
