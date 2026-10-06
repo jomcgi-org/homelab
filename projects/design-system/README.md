@@ -100,6 +100,7 @@ stays selected through every navigation key, with no duplicate `onchange`.
 An empty or entirely disabled list has no tab stop or visible panel; callers
 should normally provide at least one enabled tab. Tab/Shift+Tab enter/leave the
 tablist through the selected tab; panel content follows in native document order.
+Focusable panels also have a 44px minimum width and height.
 Selected state has an underline, stronger rule and weight. Enter/Space activate
 the focused native button. There is no manual activation mode.
 

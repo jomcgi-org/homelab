@@ -129,6 +129,9 @@
     outline-offset: 3px;
   }
   [role="tabpanel"] {
+    box-sizing: border-box;
+    min-width: 44px;
+    min-height: 44px;
     padding: var(--ds-space-sm) 0;
   }
   @media (prefers-reduced-motion: reduce) {
