@@ -702,8 +702,9 @@ impl<B: Backend> QwenModel<B> {
         let mut at = 0;
         for (st, t) in seqs.iter_mut().zip(tokens) {
             st.rewindable = (t.len() > 1).then_some((st.pos, t.len()));
+            let continues = st.hidden.is_some();
             st.pos += t.len();
-            self.keep_hidden(gpu, st, &x, at, t)?;
+            self.keep_hidden(gpu, st, &x, at, t, continues)?;
             at += t.len();
         }
         let mut wsb = ws.borrow_mut();
