@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { fileURLToPath } from "node:url";
 import { renderFixture } from "./server-render.js";
+import { renderFixture as renderGallery } from "./gallery/server-render.js";
 const here = (path) => fileURLToPath(new URL(path, import.meta.url));
 
 export default defineConfig({
@@ -14,8 +15,10 @@ export default defineConfig({
       name: "synthetic-theme-ssr",
       transformIndexHtml: {
         order: "pre",
-        async handler(html) {
-          const rendered = await renderFixture();
+        async handler(html, context) {
+          const rendered = await (context.filename === here("./gallery.html")
+            ? renderGallery()
+            : renderFixture());
           return html
             .replace("<!--fixture-ssr-->", rendered.body)
             .replace("</head>", `${rendered.head}</head>`);
@@ -31,7 +34,7 @@ export default defineConfig({
           fileName: "build.json",
           source: JSON.stringify({
             commit: process.env.FACTORY_PREVIEW_SHA ?? "local-unpublished",
-            scope: "synthetic technical-drawing themes only",
+            scope: "synthetic technical-drawing themes and composition gallery only",
           }),
         });
       },
@@ -43,5 +46,8 @@ export default defineConfig({
     outDir: here("../theme-fixture-preview"),
     emptyOutDir: true,
     sourcemap: false,
+    rollupOptions: {
+      input: { index: here("./index.html"), gallery: here("./gallery.html") },
+    },
   },
 });
