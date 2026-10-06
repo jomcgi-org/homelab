@@ -82,14 +82,54 @@ The gallery remains outside the production source closures.
 The existing `Factory mobile preview` browser job already watches this
 directory. Its theme Vitest step discovers `theme-preview/**/*.test.js`, its
 Vite step builds both entries, and its artifact upload includes both pages
-and `build.json` with the exact head SHA. The unchanged theme browser checker
-visits only `index.html`; its tested-file digest manifest also records the
-gallery bytes. Download `theme-preview-<head sha>` to inspect the gallery and
-`theme-preview-evidence-<head sha>` for the existing eight-case theme evidence.
-No workflow, publisher or public route is added.
+and `build.json` with the exact head SHA. `browser_check.py` retains all eight
+original theme/data-display cases and then imports `gallery_check.py`. The
+existing step, "Check theme contrast, keyboard focus, and real text resize",
+hosts both matrices. No workflow edit is needed: the push credential lacks
+workflow scope, and reusing the harness follows the #6875 data-display precedent.
 
-Gallery-specific Chromium acceptance remains the next node: 320px, 390px and
-1440px, both schemes, actual 200% text, keyboard and repeated interactions,
-contrast, targets, clipping, isolation, screenshots and visual inspection.
-Happy-dom checks do not claim that acceptance. This node preserves the existing
-theme browser checks with the extra built page present.
+The gallery matrix has 24 cases: dashboard and document, 320px, 390px and
+1440px, both browser schemes, and 100%/200% text. Every page contains explicit
+light/dark boundaries, the nested dark inset and the unmarked contract region.
+Text-only resizing doubles the measured computed font sizes and numeric line
+heights through `resize_text`; it uses no zoom, transform or device scale.
+The checker compares text rectangles for clipping and intersections, verifies
+DOM/visual reading order, measures 44x44px targets, traverses focus with Tab and
+Shift+Tab, and measures rendered text, control border, glyph, marker and focus
+contrast. It tests labelled fields, error associations, disabled controls,
+arrow-key tabs, repeated disclosures and form entry/reset/submission.
+
+Captures wait for the bundled Schibsted Grotesk and stable layout. External
+requests, including fonts, fail. Date is frozen to the fixture date. Reduced
+motion captures follow interaction checks in both reduce and no-preference;
+active animations and non-zero transition/animation durations fail. Each case
+writes a full-page image containing both compositions and explicit schemes,
+plus composition, chart, tabs, open disclosure and error-field images in each
+explicit boundary. One phone case is captured twice and the digests must match.
+
+Run the commands at the top of this README with Playwright 1.63.0 and its
+Chromium installed. Fail-closed unit tests run without Chromium:
+
+```sh
+python3 theme-preview/gallery_check_test.py
+python3 -c 'import sys; sys.path.insert(0,"theme-preview"); import gallery_check as g; from pathlib import Path; g.preflight(Path("/tmp/empty-gallery-artifact"))'
+python3 -c 'import sys; sys.path.insert(0,"theme-preview"); import gallery_check as g; from pathlib import Path; g.validate({"gallery_cases":[],"screenshots":{}},Path("/tmp/empty-gallery-evidence"))'
+```
+
+The last two commands must exit non-zero with "gallery page missing from
+artifact" and "zero gallery cases ran". Missing Playwright/Chromium or a launch
+failure is also fatal. Missing/empty screenshots, incomplete case lists and
+artifact SHA mismatches fail. The built `build.json` commit must equal the
+requested head SHA, which is recorded in `result.json` alongside each gallery
+case, failure messages and the screenshot SHA-256 manifest. Failed cases retain
+a Playwright trace and a full-page failure capture when the browser permits it.
+
+Download `theme-preview-<head sha>` and `theme-preview-evidence-<head sha>`
+from the exact-head Factory mobile preview run. Check `result.json` has eight
+theme cases and 24 passing `gallery_cases`, then inspect the 200pct full-page
+and selected images under `gallery/`, in both schemes at all three widths.
+Open a failure trace with `playwright show-trace gallery/<case>-failure.zip`.
+CI is the Linux authority; Vitest alone does not establish visual acceptance.
+Update fixtures or layout only after reading failed measurements and inspecting
+the images, then rebuild at the new head and rerun the same command. Never
+replace expected screenshots or relax thresholds to conceal a failure.
