@@ -189,7 +189,9 @@ def layout_checks(page):
 
 
 def keyboard_checks(page):
-    controls = page.locator("a[href], button, summary, input, select, textarea, [tabindex]")
+    controls = page.locator(
+        "a[href], button, summary, input, select, textarea, [tabindex]"
+    )
     expected = controls.count()
     assert expected > 6, f"data disclosures are missing, found {expected} controls"
     records = []
@@ -223,14 +225,14 @@ def keyboard_checks(page):
         if record["tag"] == "SUMMARY":
             assert record["height"] >= 44, record
             page.keyboard.press("Enter")
-            assert controls.nth(index).evaluate("node => node.parentElement.open"), record
+            assert controls.nth(index).evaluate("node => node.parentElement.open"), (
+                record
+            )
         records.append(record)
     button = page.locator('[data-sample="dark"] > .raised button')
     button.focus()
     page.keyboard.press("Enter")
-    assert button.inner_text() == "Sample action: 1", (
-        "hydrated button did not respond"
-    )
+    assert button.inner_text() == "Sample action: 1", "hydrated button did not respond"
     return records
 
 
