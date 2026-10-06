@@ -1,6 +1,11 @@
 //! Compiles every `kernels/*.cu` to PTX with nvcc and writes `kernels.rs`, a table of
 //! `(name, ptx)` the backend loads at start-up. `NVCC` overrides the compiler path and
 //! `OOMINF_CUDA_ARCH` the virtual architecture (default `compute_89`).
+//!
+//! Without nvcc (a machine without the CUDA toolkit) the table is empty and the
+//! build warns: everything else, CPU tests included, builds and runs, and the CUDA
+//! backend fails at start-up saying why. A kernel nvcc rejects still fails the
+//! build.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,6 +33,12 @@ fn main() {
         })
         .collect();
     names.sort();
+    if Command::new(&nvcc).arg("--version").output().is_err() {
+        println!(
+            "cargo::warning=nvcc not found ({nvcc}): building without CUDA kernels; the CUDA backend will refuse to start (set NVCC to build them)"
+        );
+        names.clear();
+    }
     let mut table = String::from("pub(crate) const KERNELS: &[(&str, &str)] = &[\n");
     for name in &names {
         let src = format!("kernels/{name}.cu");

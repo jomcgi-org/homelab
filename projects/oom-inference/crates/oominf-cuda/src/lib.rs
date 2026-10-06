@@ -107,6 +107,10 @@ pub(crate) fn grid(n: usize, block: u32) -> LaunchConfig {
 impl Gpu {
     /// Opens device `ordinal` and loads every compiled kernel module.
     pub fn new(ordinal: usize) -> Result<Self> {
+        ensure!(
+            !KERNELS.is_empty(),
+            "this build has no CUDA kernels: nvcc was not found when oominf-cuda was compiled (install the CUDA toolkit or set NVCC, then rebuild)"
+        );
         let ctx = CudaContext::new(ordinal)?;
         // Ordering is explicit (one compute stream, events for the copy queues), so
         // cudarc's per-buffer event tracking is unnecessary overhead.
@@ -129,6 +133,11 @@ impl Gpu {
             kv_codebooks: Mutex::new(None),
             fp8_cache: Mutex::new(std::collections::VecDeque::new()),
         })
+    }
+
+    /// The device's name (e.g. for a hardware fingerprint).
+    pub fn name(&self) -> Result<String> {
+        Ok(self.ctx.name()?)
     }
 
     /// Looks a kernel up by name across every compiled `kernels/*.cu` module (cached).
