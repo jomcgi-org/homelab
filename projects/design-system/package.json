@@ -5,6 +5,14 @@
   "exports": {
     ".": "./tokens/contract.css",
     "./tokens/contract.css": "./tokens/contract.css",
-    "./tokens/technical-drawing.css": "./tokens/technical-drawing.css"
+    "./tokens/technical-drawing.css": "./tokens/technical-drawing.css",
+    "./components": {
+      "svelte": "./components/index.js",
+      "default": "./components/index.js"
+    },
+    "./components/*.svelte": {
+      "svelte": "./components/*.svelte",
+      "default": "./components/*.svelte"
+    }
   }
 }
