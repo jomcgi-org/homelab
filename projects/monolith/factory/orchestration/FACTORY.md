@@ -765,6 +765,16 @@ and open pull requests oldest first, up to five pages of one hundred each; a
 read that hits that cap records `truncated` on the audit, so a partial sweep
 reads as partial.
 
+The intake status exposes `last_swept` (the attempt clock), `last_evaluated`
+(the completed candidate evaluation), and `last_error` (sanitized listing
+failure evidence), each with its own timestamp. Every real sweep records its
+listed counts, exclusions, candidate counts by lane, listing result and
+truncation flag independently of the hourly idle audit. A later `not_due`
+tick cannot erase this evidence. Candidate counts precede the daily cap and
+the final locked admission checks; they are not admission counts. A failed
+or partial GitHub read is explicit, and local candidates remain independent.
+An old error is historical evidence, not proof that a newer sweep failed.
+
 Intake admits at most one issue per lane per tick, and never opens more than
 `max_per_day` deliveries over a rolling 24 hours. The cap bounds delivery
 churn, which is pull requests and the Opus reviews they cost. Advisory

@@ -915,6 +915,33 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 )
         candidates.sort(key=lambda candidate: candidate["sort"])
         excluded = {reason: count for reason, count in excluded.items() if count}
+        if listing_due:
+            # The idle audit has an independent hourly throttle. Its next
+            # write can be a not_due tick, and suppress the actual sweep's
+            # exclusions forever. Preserve one bounded evaluation per real
+            # sweep, separately from both its attempt clock and idle ticks.
+            with _locked_session() as (db, _control):
+                _audit(
+                    db,
+                    ACTOR,
+                    "intake_evaluated",
+                    generation=generation,
+                    github=(
+                        "failed"
+                        if len(read_failed) == len(repos)
+                        else "partial"
+                        if read_failed
+                        else "completed"
+                    ),
+                    listed=listed_total,
+                    local_listed=local_listed,
+                    excluded=excluded,
+                    candidates={
+                        lane: sum(candidate["lane"] == lane for candidate in candidates)
+                        for lane in LANES
+                    },
+                    truncated=truncated,
+                )
         if not candidates:
             _idle(
                 {
