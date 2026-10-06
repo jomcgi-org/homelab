@@ -1,11 +1,13 @@
 //! `oominf serve`: OpenAI- and Anthropic-compatible HTTP API over one engine thread.
 //!
 //! Requests are rendered with the model's chat template, tokenized, and queued to
-//! the engine, which serves them one at a time and reuses the previous sequence's
-//! state when a prompt extends it. Generated tokens are detokenized and parsed
+//! the engine, which serves them one at a time (or several at once with
+//! continuous batching) and reuses the previous sequence's state when a prompt
+//! extends it. Generated tokens are detokenized and parsed
 //! into reasoning, content and tool calls on the async side.
 
 pub mod anthropic;
+pub mod budget;
 pub mod engine;
 pub mod generation;
 pub mod openai;
@@ -48,6 +50,8 @@ pub struct ServeConfig {
     pub model_name: String,
     /// Persistent prefix store (`None`: only the live sequence is reused).
     pub prefix_store: Option<store::StoreConfig>,
+    /// How concurrent requests share steps (continuous batching).
+    pub schedule: engine::Schedule,
 }
 
 /// Shared state of the HTTP handlers.
@@ -225,6 +229,7 @@ pub fn build(
         cfg.draft,
         cfg.prompt_lookup,
         cfg.prefix_store.clone(),
+        cfg.schedule.clone(),
     );
     let app = Arc::new(App::new(
         engine,

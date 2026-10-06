@@ -10,7 +10,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use oominf_core::{ExpertStats, LOOKUP_MATCH, Model, PromptLookup, Session, decode_step_with};
+use oominf_core::{
+    ExpertStats, Feed, LOOKUP_MATCH, Model, PromptLookup, Session, decode_step_with,
+};
 
 use crate::chat::Chat;
 use crate::load::{CacheArgs, ExpertArgs, OpenArgs, open_model};
@@ -181,6 +183,82 @@ fn verify_sweep(
     Ok(())
 }
 
+/// Distinct requests for [`streams_sweep`]: different tasks and topics, so
+/// concurrent sequences route to different experts as unrelated requests do.
+const STREAM_PROMPTS: [&str; 16] = [
+    "Write a short story about a lighthouse keeper.",
+    "Explain how Rust's borrow checker prevents data races, with a code example.",
+    "Summarise the causes of the French Revolution in five bullet points.",
+    "Write a Python function that parses ISO 8601 durations and test it.",
+    "What is the difference between a Fourier series and a Fourier transform?",
+    "Draft a polite email declining a meeting invitation for next Tuesday.",
+    "Translate into German: The train was late, so we walked to the old harbour.",
+    "Give a recipe for a vegetarian lasagne for six people.",
+    "Prove that there are infinitely many prime numbers.",
+    "Write a SQL query listing the ten customers with the highest total orders.",
+    "Describe the life cycle of a star like the Sun.",
+    "Compose a haiku sequence about autumn rain in the mountains.",
+    "How does TCP congestion control work? Compare Reno and CUBIC.",
+    "Plan a three-day walking itinerary for Kyoto.",
+    "Explain the rules of chess castling and en passant to a beginner.",
+    "Write a bash script that backs up a directory with rotation of seven copies.",
+];
+
+/// Times batched decode steps over `n` concurrent sequences for each `n` in
+/// `streams` (continuous batching): each sequence holds a different request
+/// ([`STREAM_PROMPTS`]) and every step feeds each one its next greedy token.
+/// Reports the step time, aggregate and per-stream rates and records per step.
+fn streams_sweep(
+    chat: &Chat,
+    model: &dyn Model,
+    max_context: usize,
+    streams: &[usize],
+) -> Result<()> {
+    const STEPS: usize = 24;
+    for &n in streams {
+        let n = n.max(1);
+        let mut sessions = Vec::with_capacity(n);
+        let mut next = Vec::with_capacity(n);
+        for i in 0..n {
+            let ids = chat.encode(&chat.render_user(STREAM_PROMPTS[i % STREAM_PROMPTS.len()])?)?;
+            let mut s = model.new_session(max_context)?;
+            let logits = s.prefill(&ids, &|| false)?.context("prefill cancelled")?;
+            next.push(argmax(&logits));
+            sessions.push(s);
+        }
+        // One untimed step, so every sequence's step buffers exist.
+        for timed in [false, true] {
+            let before = model.expert_stats();
+            let t = Instant::now();
+            for _ in 0..if timed { STEPS } else { 1 } {
+                let tokens: Vec<[u32; 1]> = next.iter().map(|&t| [t]).collect();
+                let mut feeds: Vec<Feed<'_>> = sessions
+                    .iter_mut()
+                    .zip(&tokens)
+                    .map(|(s, t)| Feed {
+                        session: &mut **s,
+                        tokens: t,
+                    })
+                    .collect();
+                let logits = model.step_many(&mut feeds)?;
+                for (nx, l) in next.iter_mut().zip(&logits) {
+                    *nx = argmax(l);
+                }
+            }
+            if timed {
+                let per = t.elapsed().as_secs_f64() / STEPS as f64 * 1e3;
+                println!(
+                    "streams {n:2}: {per:.1} ms/step, {:.1} tok/s aggregate, {:.1} tok/s per stream{}",
+                    1e3 * n as f64 / per,
+                    1e3 / per,
+                    tier_line(model.expert_stats() - before, STEPS, "per step")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn timed_prefill(
     name: &str,
     model: &dyn Model,
@@ -210,13 +288,15 @@ pub fn run(
     draft: usize,
     lookup_k: usize,
     verify: &[usize],
+    streams: &[usize],
     expert_args: &ExpertArgs,
     cache: &CacheArgs,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
     let widest = verify.iter().copied().max().unwrap_or(0);
-    let max_context = ids.len() + 2 * (tokens + draft) + 16 * verify.len() + widest + 1;
+    let max_context = (ids.len() + 2 * (tokens + draft) + 16 * verify.len() + widest + 1)
+        .max(256 * usize::from(!streams.is_empty()));
     let t = Instant::now();
     let model = open_model(&OpenArgs {
         model_dir,
@@ -259,6 +339,9 @@ pub fn run(
     println!("after decode: {}", model.describe());
     // The same prompt again on a fresh sequence: prefill from warm tiers.
     drop(session);
+    if !streams.is_empty() {
+        streams_sweep(&chat, &*model, max_context, streams)?;
+    }
     let mut session = model.new_session(ids.len() + 1)?;
     println!("fresh sequence: {}", model.describe());
     timed_prefill("prefill (warm tiers)", &*model, &mut *session, &ids)?;

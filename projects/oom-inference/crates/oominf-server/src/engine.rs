@@ -15,6 +15,9 @@ use tokio::sync::mpsc;
 use crate::sampling::{Sampler, SamplingParams};
 use crate::store::{PrefixStore, StoreConfig};
 
+mod scheduler;
+pub use scheduler::{DEFAULT_DRAFT_MS, MAX_STEP_TOKENS, Schedule};
+
 /// Loads the model; runs on the engine thread, which then owns it.
 pub type ModelLoader = Box<dyn FnOnce() -> Result<Box<dyn Model>> + Send>;
 
@@ -223,14 +226,15 @@ impl EngineHandle {
 
 /// Starts the engine thread for sequences of up to `max_context` tokens, drafting
 /// up to `draft` tokens per decode step when the model can (speculative decoding;
-/// 0 disables it). `ready` receives the startup summary once the model is loaded,
-/// or the load error.
+/// 0 disables it), sharing steps between requests as `sched` says. `ready`
+/// receives the startup summary once the model is loaded, or the load error.
 pub fn start(
     loader: ModelLoader,
     max_context: usize,
     draft: usize,
     lookup: usize,
     store: Option<StoreConfig>,
+    sched: Schedule,
 ) -> (EngineHandle, std_mpsc::Receiver<Result<String>>) {
     let (jobs_tx, jobs_rx) = std_mpsc::channel::<Job>();
     let (ready_tx, ready_rx) = std_mpsc::channel();
@@ -242,16 +246,17 @@ pub fn start(
     std::thread::Builder::new()
         .name("oominf-engine".into())
         .spawn(move || {
-            let engine = match Engine::load(loader, max_context, draft, lookup, store, shared) {
-                Ok((engine, summary)) => {
-                    let _ = ready_tx.send(Ok(summary));
-                    engine
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                    return;
-                }
-            };
+            let engine =
+                match Engine::load(loader, max_context, draft, lookup, store, sched, shared) {
+                    Ok((engine, summary)) => {
+                        let _ = ready_tx.send(Ok(summary));
+                        engine
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
             engine.run(jobs_rx);
         })
         .expect("spawn engine thread");
@@ -296,6 +301,8 @@ struct Engine {
     draft: usize,
     /// Tokens per prompt-lookup draft (0: off).
     lookup: usize,
+    /// How steps are shared between requests.
+    sched: Schedule,
     telemetry: Arc<Mutex<Telemetry>>,
 }
 
@@ -306,6 +313,7 @@ impl Engine {
         draft: usize,
         lookup: usize,
         store: Option<StoreConfig>,
+        sched: Schedule,
         telemetry: Arc<Mutex<Telemetry>>,
     ) -> Result<(Self, String)> {
         let t = Instant::now();
@@ -320,8 +328,18 @@ impl Engine {
             }
             None => (Box::new(LastSequence::default()), String::new()),
         };
+        let streams = if sched.max_streams > 1 {
+            format!(
+                "; up to {} streams, {} tokens per step, prefill slice {}",
+                sched.max_streams,
+                sched.step_cost.max_width(),
+                sched.prefill_slice
+            )
+        } else {
+            String::new()
+        };
         let summary = format!(
-            "model loaded in {:.1}s; {}; max context {max_context} tokens; draft {draft} tokens per step; prompt lookup {lookup} tokens{stored}",
+            "model loaded in {:.1}s; {}; max context {max_context} tokens; draft {draft} tokens per step; prompt lookup {lookup} tokens{stored}{streams}",
             t.elapsed().as_secs_f64(),
             model.describe(),
         );
@@ -332,6 +350,7 @@ impl Engine {
                 max_context,
                 draft,
                 lookup,
+                sched,
                 telemetry,
             },
             summary,
@@ -339,6 +358,9 @@ impl Engine {
     }
 
     fn run(mut self, jobs: std_mpsc::Receiver<Job>) {
+        if self.sched.max_streams > 1 {
+            return self.run_batched(jobs);
+        }
         self.publish(0, None);
         while let Ok(job) = jobs.recv() {
             let events = job.events.clone();
@@ -729,9 +751,109 @@ mod tests {
     }
 
     fn engine(draft: usize) -> EngineHandle {
-        let (handle, ready) = start(Box::new(|| Ok(Box::new(Counting))), 1024, draft, 0, None);
+        engine_with(draft, 1)
+    }
+
+    fn engine_with(draft: usize, max_streams: usize) -> EngineHandle {
+        let (handle, ready) = start(
+            Box::new(|| Ok(Box::new(Counting))),
+            1024,
+            draft,
+            0,
+            None,
+            Schedule {
+                max_streams,
+                ..Schedule::default()
+            },
+        );
         ready.recv().unwrap().unwrap();
         handle
+    }
+
+    /// Submits a job and returns its event stream.
+    fn submit(handle: &EngineHandle, prompt: &[u32], max_tokens: usize, stop: &[u32]) -> Rx {
+        let (tx, rx) = mpsc::channel(64);
+        handle
+            .submit(Job {
+                prompt: prompt.to_vec(),
+                reuse_at: Vec::new(),
+                sampling: SamplingParams {
+                    temperature: 0.0,
+                    ..Default::default()
+                },
+                max_tokens,
+                stop_ids: stop.to_vec(),
+                events: tx,
+            })
+            .unwrap();
+        rx
+    }
+
+    type Rx = mpsc::Receiver<Event>;
+
+    fn collect(mut rx: Rx) -> (usize, Vec<u32>, Option<FinishReason>) {
+        let (mut cached, mut tokens, mut finish) = (0, Vec::new(), None);
+        while let Some(e) = rx.blocking_recv() {
+            match e {
+                Event::Started { cached: c, .. } => cached = c,
+                Event::Token(t) => tokens.push(t),
+                Event::Finished(f) => finish = Some(f),
+                Event::Failed(m) => panic!("{m}"),
+            }
+        }
+        (cached, tokens, finish)
+    }
+
+    #[test]
+    fn concurrent_requests_each_get_their_own_tokens_and_limits() {
+        for draft in [0, 2] {
+            let h = engine_with(draft, 4);
+            // Submitted together: they decode in the same steps.
+            let rxs: Vec<Rx> = [(0u32, 10usize), (3, 4), (5, 7), (7, 1), (2, 6)]
+                .iter()
+                .map(|&(p, n)| submit(&h, &[p], n, &[]))
+                .collect();
+            for (rx, (p, n)) in
+                rxs.into_iter()
+                    .zip([(0u32, 10usize), (3, 4), (5, 7), (7, 1), (2, 6)])
+            {
+                let (_, tokens, finish) = collect(rx);
+                let want: Vec<u32> = (1..=n as u32).map(|i| (p + i) % 8).collect();
+                assert_eq!(tokens, want, "prompt {p}, draft {draft}");
+                assert_eq!(finish, Some(FinishReason::Length));
+            }
+        }
+    }
+
+    #[test]
+    fn batched_stops_and_limits_inside_a_step_and_caching() {
+        let h = engine_with(3, 2);
+        // A hits its limit within a step; B runs longer and stops on 3, inside a
+        // later step.
+        let a = submit(&h, &[0], 2, &[]);
+        let b = submit(&h, &[4], 100, &[3]);
+        let (_, ta, fa) = collect(a);
+        assert_eq!(ta, [1, 2]);
+        assert_eq!(fa, Some(FinishReason::Length));
+        let (_, tb, fb) = collect(b);
+        assert_eq!(tb, [5, 6, 7, 0, 1, 2]);
+        assert_eq!(fb, Some(FinishReason::Stop));
+        // B ended last: it is the cached sequence, holding exactly its prompt and
+        // emitted tokens, and a request extending it resumes there.
+        let (cached, tokens, _) = collect(submit(&h, &[4, 5, 6, 7, 0, 1, 2, 3], 2, &[]));
+        assert_eq!(cached, 7);
+        assert_eq!(tokens, [4, 5]);
+    }
+
+    #[test]
+    fn a_closed_client_leaves_the_others_running() {
+        let h = engine_with(1, 3);
+        let gone = submit(&h, &[0], 50, &[]);
+        let kept = submit(&h, &[1], 20, &[]);
+        drop(gone);
+        let (_, tokens, finish) = collect(kept);
+        assert_eq!(tokens.len(), 20);
+        assert_eq!(finish, Some(FinishReason::Length));
     }
 
     #[test]
