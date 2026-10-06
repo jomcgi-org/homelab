@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from figlib import Figure
+from figlib import OUTLINE, Figure
 
 HERE = Path(__file__).resolve().parent
 
@@ -527,6 +527,150 @@ def oom_memory_paths() -> Figure:
     return f
 
 
+def oom_expert_routing() -> Figure:
+    f = Figure(720, 320, "One layer: 10 of 512 routed experts run for a token")
+
+    f.text(18, 120, "token")
+    f.arrow(58, 116, 90, 116)
+    f.box(90, 86, 96, 60)
+    f.text(138, 112, "ROUTER", anchor="middle", weight="bold")
+    f.text(138, 130, "pick 10", anchor="middle")
+    f.keyed(138, 58, "1", 138, 86)
+
+    # The pool is 32 x 16 = 512 cells. Idle cells are one faint path; the ten
+    # selected ones are drawn heavier on top (positions are illustrative).
+    px, py, pitch, cell = 232, 62, 11, 8
+    idle = "".join(
+        f"M{px + c * pitch} {py + r * pitch}h{cell}v{cell}h-{cell}z"
+        for r in range(16)
+        for c in range(32)
+    )
+    f.parts.append(
+        f'<path d="{idle}" fill="none" stroke="currentColor" stroke-width="1" '
+        'stroke-opacity="0.3"/>'
+    )
+    picks = [(3, 1), (7, 2), (11, 3), (12, 5), (14, 6), (17, 8), (19, 10), (22, 11), (26, 13), (29, 14)]
+    for c, r in picks:
+        f.box(px + c * pitch, py + r * pitch, cell, cell, weight=2)
+    f.text(px, 48, "512 ROUTED EXPERTS IN THIS LAYER")
+    f.path_arrow([(186, 116), (210, 116), (210, 134), (px - 4, 134)])
+    f.keyed(640, 62, "2", px + 32 * pitch - 4, py + 4)
+
+    f.arrow(px + 32 * pitch + 6, 134, 616, 134)
+    f.box(616, 106, 90, 56)
+    f.text(661, 130, "COMBINE", anchor="middle", weight="bold")
+    f.text(661, 146, "outputs", anchor="middle")
+
+    # Work every token does regardless of the route.
+    f.box(232, 272, 352, 34, dashed=False)
+    f.text(244, 293, "dense + shared-expert work: every token")
+    f.path_arrow([(584, 289), (661, 289), (661, 168)])
+    f.keyed(206, 289, "3", 232, 289)
+
+    f.text(18, 218, "heavy = routed", size=11)
+    f.text(18, 234, "faint = idle", size=11)
+    f.text(18, 250, "for this token", size=11)
+    return f
+
+
+def oom_residency() -> Figure:
+    f = Figure(720, 336, "A GPU-resident baseline against the three expert tiers")
+
+    # Left: everything fits in VRAM.
+    f.box(24, 40, 250, 176)
+    f.text(36, 62, "GPU-RESIDENT BASELINE", size=12, weight="bold")
+    f.hline(24, 274, 74)
+    f.lines(
+        36,
+        98,
+        ["dense weights", "sequence state", "every expert in VRAM"],
+        step=20,
+        size=12,
+    )
+    f.text(36, 192, "needs a GPU that holds", size=12)
+    f.text(36, 208, "the whole model", size=12)
+    f.keyed(149, 244, "1", 149, 216)
+
+    # Right: three tiers.
+    f.box(334, 24, 362, 100)
+    f.text(346, 46, "VRAM: 24 GB", size=12, weight="bold")
+    f.hline(334, 696, 56)
+    f.lines(
+        346,
+        78,
+        ["dense weights + sequence state", "hot expert cache (the rest of VRAM)"],
+        step=20,
+        size=12,
+    )
+    f.keyed(300, 70, "2", 334, 70)
+
+    f.box(334, 168, 170, 64)
+    f.text(346, 190, "PINNED RAM", size=12, weight="bold")
+    f.hline(334, 504, 200)
+    f.text(346, 220, "warm expert records", size=12)
+    f.keyed(300, 200, "3", 334, 200)
+
+    f.box(334, 272, 170, 44)
+    f.text(346, 298, "NVMe: all experts", size=12, weight="bold")
+    f.keyed(300, 294, "4", 334, 294)
+
+    f.arrow(380, 168, 380, 130)
+    f.text(392, 152, "PCIe copy", size=12)
+    f.arrow(430, 272, 430, 238)
+    f.text(442, 258, "miss: direct read", size=12)
+
+    f.box(560, 168, 130, 64)
+    f.text(572, 190, "CPU", size=12, weight="bold")
+    f.hline(560, 690, 200)
+    f.text(572, 220, "host hit, decode", size=12)
+    f.arrow(504, 200, 554, 200)
+    f.path_arrow([(628, 168), (628, 130)])
+    f.text(640, 152, "10 KB out", size=12)
+    f.keyed(709, 200, "5", 690, 200)
+    return f
+
+
+def oom_context_state() -> Figure:
+    f = Figure(720, 380, "Context state grows with attention layers and shrinks the expert cache")
+
+    f.text(44, 34, "FOUR OF THE 48 DECODER LAYERS, REPEATED 12 TIMES", size=12, weight="bold")
+    for i, name in enumerate(["GDN", "GDN", "GDN", "QSA"]):
+        x = 44 + i * 115
+        f.box(x, 50, 100, 34, weight=2 if name == "QSA" else OUTLINE)
+        f.text(x + 50, 72, name, anchor="middle", size=12, weight="bold")
+        f.text(x + 50, 106, "fixed state" if name == "GDN" else "history grows", anchor="middle", size=12)
+    f.text(520, 62, "GDN: recurrent state,", size=12)
+    f.text(520, 78, "fixed size per layer", size=12)
+    f.text(520, 98, "QSA: reads selected rows", size=12)
+    f.text(520, 114, "but stores all of them", size=12)
+    f.keyed(94, 140, "1", 94, 114)
+    f.keyed(439, 140, "2", 439, 114)
+
+    def bar(y, title, dense, state, caption):
+        total, x0 = 480, 44
+        f.text(x0, y - 8, title, size=12, weight="bold")
+        f.box(x0, y, total, 40)
+        d, s = total * dense, total * state
+        f.vline(x0 + d, y, y + 40)
+        f.vline(x0 + d + s, y, y + 40)
+        f.text(x0 + d / 2, y + 24, "dense", anchor="middle", size=12)
+        if state > 0.12:
+            f.text(x0 + d + s / 2, y + 24, "state", anchor="middle", size=12)
+        f.text(x0 + d + s + (total - d - s) / 2, y + 24, "expert slots", anchor="middle", size=12)
+        f.text(x0 + total + 14, y + 24, caption, size=12)
+
+    bar(190, "SHORTER CONTEXT (schematic)", 0.25, 0.06, "more experts stay")
+    bar(262, "LONGER CONTEXT (schematic)", 0.25, 0.32, "fewer slots left")
+    f.keyed(20, 188, "3", 44, 200)
+    f.keyed(20, 252, "4", 44, 272)
+
+    f.arrow(284, 236, 284, 254)
+    f.text(296, 250, "grows on demand", size=12)
+    f.text(44, 336, "Shrinking a prompt does not refill the cache by itself:", size=12)
+    f.text(44, 352, "a rewind keeps its buffers, and freed slots still need warming.", size=12)
+    return f
+
+
 def main() -> None:
     for name, build in {
         "memory-tiers": memory_tiers,
@@ -537,6 +681,9 @@ def main() -> None:
         "expert-paths": expert_paths,
         "conformance-loop": conformance_loop,
         "oom-memory-paths": oom_memory_paths,
+        "oom-expert-routing": oom_expert_routing,
+        "oom-residency": oom_residency,
+        "oom-context-state": oom_context_state,
     }.items():
         (HERE / f"{name}.svg").write_text(build().svg(), encoding="utf-8")
 

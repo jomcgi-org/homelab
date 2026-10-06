@@ -266,7 +266,14 @@ export function renderDoc(entry, slugByPath) {
       html({ text }) {
         // Neutralise raw HTML blocks rather than passing them through. The docs
         // are first-party, but this avoids any raw-HTML surprise on the public
-        // surface; these reference docs do not rely on inline HTML.
+        // surface; these reference docs do not rely on inline HTML. The one
+        // exception is a bare disclosure wrapper, so a post can fold away
+        // supporting detail: exactly `<details><summary>plain text</summary>`
+        // and `</details>`, each on lines of their own.
+        const t = text.trim();
+        if (t === "</details>") return "</details>\n";
+        const open = /^<details>\s*<summary>([^<>&]*)<\/summary>$/.exec(t);
+        if (open) return `<details><summary>${open[1]}</summary>\n`;
         return escapeHtml(text);
       },
     },
