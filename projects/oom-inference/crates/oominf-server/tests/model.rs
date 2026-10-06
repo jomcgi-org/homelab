@@ -87,6 +87,7 @@ async fn gpu_smoke() {
         model_name: "smoke".into(),
         prefix_store: None,
         schedule: Default::default(),
+        max_queued: oominf_server::engine::DEFAULT_MAX_QUEUED,
     };
     let loader = Box::new(move || {
         let gpu = Arc::new(oominf_cuda::Gpu::new(0)?);

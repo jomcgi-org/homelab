@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::App;
-use crate::engine::{Event, FinishReason, Job};
+use crate::engine::{Event, FinishReason, Job, SubmitError};
 use crate::parse::{OutputParser, Piece, StopMatcher, ToolSchemas};
 use crate::sampling::SamplingParams;
 use crate::template::{Detokenizer, TemplateOptions};
@@ -52,12 +52,26 @@ pub enum Output {
     Failed(String),
 }
 
+/// Why a request was not started.
 #[derive(Debug)]
-pub struct BadRequest(pub String);
+pub enum Rejected {
+    /// The request itself is invalid (400).
+    BadRequest(String),
+    /// Too many requests are waiting; retry after this many seconds (429).
+    Busy(u64),
+    /// The engine is gone (500).
+    Stopped,
+}
+
+/// Seconds a refused client is asked to wait before retrying: about one short
+/// request's time.
+pub const RETRY_AFTER_SECS: u64 = 5;
+
+use Rejected::BadRequest;
 
 /// Renders and tokenizes `req`, submits it, and returns a stream of parsed output.
 /// Dropping the receiver cancels generation.
-pub fn start(app: &Arc<App>, req: GenRequest) -> Result<mpsc::Receiver<Output>, BadRequest> {
+pub fn start(app: &Arc<App>, req: GenRequest) -> Result<mpsc::Receiver<Output>, Rejected> {
     let tools = (!req.tools.is_empty()).then_some(req.tools.as_slice());
     let text = app
         .template
@@ -99,8 +113,12 @@ pub fn start(app: &Arc<App>, req: GenRequest) -> Result<mpsc::Receiver<Output>, 
             max_tokens: req.max_tokens,
             stop_ids: app.stop_ids.clone(),
             events: ev_tx,
+            ticket: None,
         })
-        .map_err(|e| BadRequest(format!("{e:#}")))?;
+        .map_err(|e| match e {
+            SubmitError::Busy => Rejected::Busy(RETRY_AFTER_SECS),
+            SubmitError::Stopped => Rejected::Stopped,
+        })?;
 
     let (out_tx, out_rx) = mpsc::channel(256);
     let app = app.clone();

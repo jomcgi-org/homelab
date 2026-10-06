@@ -52,6 +52,8 @@ pub struct ServeConfig {
     pub prefix_store: Option<store::StoreConfig>,
     /// How concurrent requests share steps (continuous batching).
     pub schedule: engine::Schedule,
+    /// Requests that may wait for a stream; more are refused with 429.
+    pub max_queued: usize,
 }
 
 /// Shared state of the HTTP handlers.
@@ -182,11 +184,13 @@ pub fn router(app: Arc<App>) -> Router {
 /// an interval) with the size of each tier.
 async fn stats(State(app): State<Arc<App>>) -> Response {
     let t = app.engine.telemetry();
+    let (queued, rejected) = app.engine.queue();
     let e = t.experts;
     let tiers = t.tiers;
     axum::Json(serde_json::json!({
         "instance_id": app.started.to_string(),
-        "requests": {"active": t.requests_active, "completed": t.requests_completed},
+        "requests": {"active": t.requests_active, "completed": t.requests_completed,
+                     "queued": queued, "rejected": rejected},
         "context": {"tokens": t.context_tokens, "max": t.max_context},
         "throughput": {"decode_tps": t.decode_tps},
         "experts": {
@@ -230,6 +234,7 @@ pub fn build(
         cfg.prompt_lookup,
         cfg.prefix_store.clone(),
         cfg.schedule.clone(),
+        cfg.max_queued,
     );
     let app = Arc::new(App::new(
         engine,
