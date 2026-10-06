@@ -502,8 +502,8 @@ py_test(
         "theme-preview/gallery_check.py",
         "theme-preview/gallery_check_test.py",
     ],
-    main = "theme-preview/gallery_check_test.py",
     imports = ["theme-preview"],
+    main = "theme-preview/gallery_check_test.py",
 )
 
 js_library(
@@ -519,7 +519,6 @@ js_library(
         "theme-preview/README.md",
         "theme-preview/ThemeFixture.svelte",
         "theme-preview/browser_check.py",
-        "theme-preview/gallery_check.py",
         "theme-preview/gallery.html",
         "theme-preview/gallery/GalleryFixture.svelte",
         "theme-preview/gallery/contract.test.js",
@@ -531,6 +530,7 @@ js_library(
         "theme-preview/gallery/server.js",
         "theme-preview/gallery/server-render.js",
         "theme-preview/gallery/ssr.test.js",
+        "theme-preview/gallery_check.py",
         "theme-preview/hydration.test.js",
         "theme-preview/index.html",
         "theme-preview/main.js",
