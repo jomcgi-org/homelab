@@ -113,7 +113,7 @@ pub struct Attention<B: Backend> {
 
 /// Tokens of KV cache a fresh sequence starts with; it doubles on demand up to the
 /// sequence's `max_tokens`.
-const INITIAL_KV_TOKENS: usize = 2048;
+pub(crate) const INITIAL_KV_TOKENS: usize = 2048;
 
 /// KV cache and indexer raw-key cache for one attention layer. Buffers hold `cap`
 /// tokens and grow by reallocation (see [`Attention::grow`]).
