@@ -15,7 +15,7 @@ use oominf_core::{
 };
 
 use crate::chat::Chat;
-use crate::load::{CacheArgs, ExpertArgs, HostUse, OpenArgs, Tuning, open_model};
+use crate::load::{CacheArgs, ExpertArgs, HostUse, OpenArgs, open_model};
 use oominf_core::argmax;
 
 /// Prediction precision and recall, and how many lookahead reads a fetch used.
@@ -308,7 +308,7 @@ pub fn run(
             sequences: 1 + streams.iter().copied().max().unwrap_or(0),
             ..HostUse::default()
         },
-        tuning: &Tuning::default(),
+        profile: None,
     })?;
     println!(
         "{} (loaded in {:.1}s)",

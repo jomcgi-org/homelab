@@ -46,6 +46,21 @@ pub fn model_type(files: &Files) -> Result<String> {
         .context("config.json has no model_type")
 }
 
+/// Host memory a sequence of the model in `files` takes beside the expert tiers at
+/// `opts.max_context` (see [`oominf_core::HostDemand`]), without loading it.
+pub fn host_demand(files: &Files, opts: &Options) -> Result<oominf_core::HostDemand> {
+    match model_type(files)?.as_str() {
+        oominf_models_qwen::MODEL_TYPE => {
+            let config = std::fs::read_to_string(files.dir().join("config.json"))?;
+            let mut d = oominf_models_qwen::Dims::from_config(&config)?;
+            d.kv = opts.kv;
+            d.kv_host = opts.kv_host;
+            oominf_models_qwen::host_demand(&d, opts.max_context)
+        }
+        other => bail!("no implementation for model_type {other:?} (supported: {SUPPORTED:?})"),
+    }
+}
+
 /// Loads the model in `files` onto `backend`; `experts` builds its expert source.
 pub fn open<B: Backend>(
     backend: Arc<B>,

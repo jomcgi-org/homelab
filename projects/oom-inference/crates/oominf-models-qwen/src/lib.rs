@@ -21,7 +21,7 @@ mod util;
 
 pub use gdn::GdnState;
 pub use layer::{DecoderLayer, LayerState, StepInput};
-pub use model::{PREFILL_CHUNK, QwenModel, SeqState};
+pub use model::{PREFILL_CHUNK, QwenModel, SeqState, host_demand};
 pub use session::{MODEL_TYPE, Options, open};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

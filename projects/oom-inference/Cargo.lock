@@ -784,6 +784,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "oominf-convert",
  "oominf-core",
  "oominf-cpu",
@@ -793,6 +794,7 @@ dependencies = [
  "oominf-models-qwen",
  "oominf-server",
  "oominf-tiers",
+ "serde",
  "serde_json",
 ]
 

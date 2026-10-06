@@ -173,8 +173,16 @@ fn bytes(gib: f64) -> u64 {
     (gib.max(0.0) * GIB) as u64
 }
 
+/// The tiers' budget, with the figures it came from and warnings for anything
+/// shrunk.
+pub struct BudgetReport {
+    pub budget: TierBudget,
+    pub lines: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
 /// The expert tiers' memory: fresh checks of free VRAM and usable host memory,
-/// split by [`oominf_tiers::plan`]. Logs every figure and warning.
+/// split by [`oominf_tiers::plan`].
 pub fn tier_budget(
     args: &ExpertArgs,
     files: &Files,
@@ -182,7 +190,7 @@ pub fn tier_budget(
     demand: &HostDemand,
     host_use: &HostUse,
     tuning: &Tuning,
-) -> Result<TierBudget> {
+) -> Result<BudgetReport> {
     use oominf_tiers::plan;
     let layouts = oominf_tiers::layouts(files)?;
     let vram_floors = plan::floors(&layouts, false);
@@ -200,7 +208,7 @@ pub fn tier_budget(
         },
     )?;
     let mem = HostMemory::probe()?;
-    eprintln!("oominf: {}", mem.describe());
+    let mut lines = vec![mem.describe()];
     let stage = v.bytes >= plan::stage_bytes(&layouts);
     let host_floors = plan::floors(&layouts, stage);
     let n = host_use.sequences as u64;
@@ -232,15 +240,12 @@ pub fn tier_budget(
             useful: host_floors.host_useful,
         },
     )?;
-    for w in v.warnings.iter().chain(&h.warnings) {
-        eprintln!("oominf: warning: {w}");
-    }
     let detail: Vec<String> = outside
         .iter()
         .map(|(w, b)| format!("{w} {:.1}", *b as f64 / GIB))
         .collect();
-    eprintln!(
-        "oominf: expert tiers: VRAM {:.1} GiB of {:.1} free (reserve {:.1}); host {:.1} GiB of {:.1} usable (reserve {:.1}; beside the tiers, GiB: {})",
+    lines.push(format!(
+        "expert tiers: VRAM {:.1} GiB of {:.1} free (reserve {:.1}); host {:.1} GiB of {:.1} usable (reserve {:.1}; beside the tiers, GiB: {})",
         v.bytes as f64 / GIB,
         free_vram as f64 / GIB,
         v.reserve as f64 / GIB,
@@ -248,11 +253,15 @@ pub fn tier_budget(
         mem.usable() as f64 / GIB,
         h.reserve as f64 / GIB,
         detail.join(", ")
-    );
-    Ok(TierBudget {
-        vram_gib: v.bytes as f64 / GIB,
-        host_gib: h.bytes as f64 / GIB,
-        host_stage_slots: tuning.host_stage_slots,
+    ));
+    Ok(BudgetReport {
+        budget: TierBudget {
+            vram_gib: v.bytes as f64 / GIB,
+            host_gib: h.bytes as f64 / GIB,
+            host_stage_slots: tuning.host_stage_slots,
+        },
+        lines,
+        warnings: v.warnings.into_iter().chain(h.warnings).collect(),
     })
 }
 
@@ -285,8 +294,15 @@ pub fn factory<B: Backend>(
                 "tiered" => {
                     let io = IoConfig::new(read_mode(&args, &files)?);
                     let (free, _) = b.mem_info()?;
-                    let budget =
+                    let report =
                         tier_budget(&args, &files, free as u64, demand, &host_use, &tuning)?;
+                    for l in &report.lines {
+                        eprintln!("oominf: {l}");
+                    }
+                    for w in &report.warnings {
+                        eprintln!("oominf: warning: {w}");
+                    }
+                    let budget = report.budget;
                     let lookahead = match args.lookahead.as_str() {
                         "on" => true,
                         "off" => false,
@@ -329,24 +345,30 @@ pub struct OpenArgs<'a> {
     pub experts: &'a ExpertArgs,
     pub cache: &'a CacheArgs,
     pub host_use: HostUse,
-    pub tuning: &'a Tuning,
+    /// Where `serve` gets its hardware profile (`None`: built-in defaults, as
+    /// benchmarks and correctness tools want).
+    pub profile: Option<&'a crate::profile::ProfileArgs>,
 }
 
 /// Loads a converted model on the CUDA device with the selected expert source.
 pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     let files = Arc::new(Files::open(args.model_dir)?);
     let gpu = Arc::new(Gpu::new(0)?);
+    let tuning = match args.profile {
+        Some(p) => crate::profile::tuning(p, &gpu, &files, args.experts)?,
+        None => Tuning::default(),
+    };
     let opts = oominf_models::Options {
         max_context: args.max_context,
         prefill_chunk: args.prefill_chunk,
-        host_threads: args.experts.host_threads(args.tuning),
+        host_threads: args.experts.host_threads(&tuning),
         kv: args.cache.kv_cache,
         dense: args.cache.dense,
         expert_precision: args.cache.expert_precision,
         attention_precision: args.cache.attention_precision,
         kv_host: args.cache.kv_host(),
     };
-    let experts = factory::<Gpu>(args.experts, files.clone(), args.host_use, args.tuning);
+    let experts = factory::<Gpu>(args.experts, files.clone(), args.host_use, &tuning);
     oominf_models::open(gpu, files, &opts, experts)
 }
 
