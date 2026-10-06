@@ -80,7 +80,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{Backend, ExpertSource, ExpertStats, Memory, Staged};
+use oominf_core::{Backend, ExpertSource, ExpertStats, ExpertTiers, Memory, Staged};
 use oominf_format::Model;
 
 use crate::cache::{Place, SlotCache};
@@ -1204,6 +1204,21 @@ impl<B: Backend> ExpertSource<B> for TieredExperts<B> {
 
     fn stats(&self) -> ExpertStats {
         self.stats
+    }
+
+    fn tiers(&self) -> ExpertTiers {
+        let records = (self.layers.len() * self.num_experts as usize) as u64;
+        let vram = (self.vram.capacity() + self.stage.capacity()) as u64;
+        let host = self.host.capacity() as u64;
+        let stride = self.stride as u64;
+        ExpertTiers {
+            records,
+            bytes: records * stride,
+            vram_records: vram,
+            vram_bytes: vram * stride,
+            host_records: host,
+            host_bytes: host * stride,
+        }
     }
 
     fn describe(&self) -> String {

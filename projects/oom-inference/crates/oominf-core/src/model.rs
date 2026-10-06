@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::experts::ExpertStats;
+use crate::experts::{ExpertStats, ExpertTiers};
 
 /// A loaded model, ready to run sequences. Everything outside a model crate (the
 /// server, the CLI, benchmarks) works through this trait and [`Session`].
@@ -14,6 +14,10 @@ pub trait Model {
     fn describe(&self) -> String;
     /// Where routed-expert records came from so far.
     fn expert_stats(&self) -> ExpertStats;
+    /// How many routed-expert records each tier holds.
+    fn expert_tiers(&self) -> ExpertTiers {
+        ExpertTiers::default()
+    }
 }
 
 /// One sequence: its caches and recurrent state.
