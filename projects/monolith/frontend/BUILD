@@ -499,8 +499,8 @@ js_library(
     name = "theme_fixture_src",
     srcs = [
         "package.json",
-        "theme-preview/README.md",
         "theme-preview/DataDisplayFixture.svelte",
+        "theme-preview/README.md",
         "theme-preview/ThemeFixture.svelte",
         "theme-preview/browser_check.py",
         "theme-preview/hydration.test.js",
