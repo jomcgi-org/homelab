@@ -306,6 +306,7 @@ impl Engine {
                 Ok(Some(s)) => active.push(s),
                 Ok(None) => {}
                 Err(e) => {
+                    eprintln!("oominf: request failed: {e:#}");
                     let _ = events.blocking_send(Event::Failed(format!("{e:#}")));
                     self.telemetry.lock().unwrap().requests_completed += 1;
                 }
@@ -556,6 +557,7 @@ impl Engine {
     /// Ends a stream whose step failed: its state may be half-updated, so it is
     /// dropped, and the client is told.
     fn fail(&mut self, s: Stream, e: &anyhow::Error) {
+        eprintln!("oominf: request failed: {e:#}");
         let _ = s.job.events.blocking_send(Event::Failed(format!("{e:#}")));
         self.telemetry.lock().unwrap().requests_completed += 1;
     }

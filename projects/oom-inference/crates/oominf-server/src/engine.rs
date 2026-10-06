@@ -458,6 +458,7 @@ impl Engine {
             if let Err(e) = self.serve(job) {
                 // The cached state may be half-updated: drop it unsaved.
                 self.cache.discard();
+                eprintln!("oominf: request failed: {e:#}");
                 let _ = events.blocking_send(Event::Failed(format!("{e:#}")));
             }
             let mut t = self.telemetry.lock().unwrap();
