@@ -432,7 +432,6 @@ vitest_bin.vitest_test(
 js_library(
     name = "controls_fixture_src",
     srcs = [
-        "package.json",
         "controls-preview/ControlsFixture.svelte",
         "controls-preview/README.md",
         "controls-preview/hydration.test.js",
@@ -441,6 +440,7 @@ js_library(
         "controls-preview/server-render.js",
         "controls-preview/ssr.test.js",
         "controls-preview/vitest.config.js",
+        "package.json",
     ],
     deps = [
         ":node_modules/@esbuild/linux-x64",
