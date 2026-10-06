@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import QwenReplay from "./QwenReplay.svelte";
 import { incidentGraph } from "./incident-graph.js";
+import { decodeSteps } from "./draft-steps.js";
 import recording from "./qwen-replay.json";
 
 const turn = recording.turns[0];
@@ -222,4 +223,19 @@ test("model output is open during decode and contains only arrived text", async 
   expect(pane.querySelector(".disclosure-panel").inert).toBe(true);
   await seek(turn.durationMs);
   expect(pane.querySelector(".stream-cursor")).toBeNull();
+});
+
+test("the research answer shows a bar per decode step, mostly kept model drafts", async () => {
+  const view = await render();
+  const steps = decodeSteps(turn.events);
+  await seek(turn.durationMs);
+  expect(view.querySelectorAll(".trace rect")).toHaveLength(steps.length);
+  const drafts = view.querySelectorAll(".trace rect.draft").length;
+  expect(drafts).toBeGreaterThan(
+    view.querySelectorAll(".trace rect.lookup").length,
+  );
+  // The code tint only applies to the coding demo.
+  expect(view.querySelector(".trace figcaption").textContent).not.toContain(
+    "tinted",
+  );
 });
