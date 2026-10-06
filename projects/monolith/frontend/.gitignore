@@ -1,3 +1,4 @@
 dist/
 .svelte-kit/
 node_modules/
+controls-fixture-preview/

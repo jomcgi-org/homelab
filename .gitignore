@@ -36,6 +36,7 @@ MODULE.bazel.lock
 node_modules/
 dist/
 .wrangler/
+/controls-preview-evidence/
 
 
 *.venv/
