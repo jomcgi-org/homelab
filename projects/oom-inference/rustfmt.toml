@@ -1,0 +1,3 @@
+# The repo-wide formatter runs rustfmt on files directly (no Cargo), so the
+# edition must be set here or it parses them as Rust 2015.
+edition = "2024"
