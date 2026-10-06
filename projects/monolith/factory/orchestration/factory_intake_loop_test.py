@@ -567,6 +567,84 @@ def test_a_quiet_lane_sweeps_github_at_most_once_an_hour(db, monkeypatch):
     assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(calls) == first
     assert len(audits(db, "intake_idle")) == 1
+    assert len(audits(db, "intake_evaluated")) == 1
+
+
+def test_not_due_ticks_cannot_hide_actual_sweep_exclusions(db, monkeypatch):
+    # The idle clock is ahead of the sweep clock in production. A real
+    # sweep can therefore finish inside its throttle, before a not_due tick
+    # becomes the latest idle observation.
+    with Session(db) as session:
+        session.add(
+            FactoryAudit(
+                actor=intake_loop.ACTOR,
+                action="intake_idle",
+                detail_json='{"github":"not_due","listed":0,"excluded":{}}',
+                created_at=NOW - timedelta(minutes=50),
+            )
+        )
+        intake_receipt(session, 4)
+        session.commit()
+    calls = fake_pages(
+        monkeypatch,
+        [
+            issue(1, ["human", "agent-ready"]),
+            issue(2, ["agent-ready"], assignees=[{"login": "owner"}]),
+            issue(3, ["needs-human", "agent-ready"]),
+            issue(4, ["agent-ready"]),
+            issue(5, ["needs-thought"]),
+        ],
+    )
+    intake_policy = policy(refine_enabled=True, exclude_labels=["needs-human"])
+    assert intake_loop.intake_tick(intake_policy, generation=0) == []
+    first = intake_loop.intake_state(intake_policy)
+    evaluation = first["last_evaluated"]
+    assert evaluation["detail"] == {
+        "generation": 0,
+        "github": "completed",
+        "listed": 5,
+        "local_listed": 0,
+        "excluded": {
+            "human": 1,
+            "assigned": 1,
+            "excluded_label": 1,
+            "delivered": 1,
+            "deferred": 1,
+        },
+        "candidates": {"delivery": 0, "advisory": 0},
+        "truncated": False,
+    }
+    assert first["last_swept"] is not None
+    assert first["last_idle"]["detail"]["github"] == "not_due"
+    read_count = len(calls)
+
+    later = NOW + timedelta(minutes=11)
+    monkeypatch.setattr(intake_loop, "_now", lambda: later)
+    monkeypatch.setattr(controls, "_now", lambda: later)
+    assert intake_loop.intake_tick(intake_policy, generation=0) == []
+    state = intake_loop.intake_state(intake_policy)
+    assert state["last_idle"]["created_at"] != first["last_idle"]["created_at"]
+    assert state["last_idle"]["detail"]["github"] == "not_due"
+    assert state["last_evaluated"] == evaluation
+    assert state["last_swept"] == first["last_swept"]
+    assert len(calls) == read_count
+    assert len(audits(db, "intake_evaluated")) == 1
+
+
+def test_sweep_evaluation_distinguishes_candidates_from_admissions(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2)])
+    with Session(db) as session:
+        intake_receipt(session, 90)
+        session.commit()
+    intake_policy = policy(max_per_day=1, refine_enabled=True)
+    received = intake_loop.intake_tick(intake_policy, generation=0)
+    assert [item["receipt"]["task_class"] for item in received] == ["refine"]
+    state = intake_loop.intake_state(intake_policy)
+    assert state["last_evaluated"]["detail"]["candidates"] == {
+        "delivery": 1,
+        "advisory": 1,
+    }
+    assert state["last_idle"]["detail"]["reason"] == "daily_cap"
 
 
 def test_an_hour_later_the_sweep_runs_again(db, monkeypatch):
@@ -649,6 +727,14 @@ def test_a_github_failure_is_audited_not_only_logged(db, monkeypatch):
     detail = json.loads(rows[0].detail_json)
     assert detail["stage"] == "listing" and detail["error"] == "RuntimeError"
     assert "403 rate limited" not in rows[0].detail_json
+    state = intake_loop.intake_state(policy())
+    assert state["last_error"]["detail"] == detail
+    assert state["last_evaluated"]["detail"]["github"] == "failed"
+    assert state["last_evaluated"]["detail"]["candidates"] == {
+        "delivery": 0,
+        "advisory": 0,
+    }
+    assert "403 rate limited" not in json.dumps(state)
 
 
 def test_a_truncated_sweep_says_so(db, monkeypatch):
@@ -691,6 +777,10 @@ def test_a_truncated_sweep_says_so(db, monkeypatch):
     assert intake_loop.intake_tick(policy(refine_enabled=False), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["truncated"] is True
+    assert (
+        intake_loop.intake_state(policy())["last_evaluated"]["detail"]["truncated"]
+        is True
+    )
     assert reconcile_truncation == [True]
 
 
@@ -2132,6 +2222,33 @@ def test_sweep_serves_every_enabled_repo(db, monkeypatch):
             ("owner/repo", 1),
             ("weave-hand/loom", 2),
         ]
+
+
+def test_sweep_evidence_distinguishes_partial_read_and_recovery(db, monkeypatch):
+    def partial_listing(repo, _suffix):
+        if repo == "weave-hand/loom":
+            raise RuntimeError("private issue title and token must stay out of status")
+        return []
+
+    monkeypatch.setattr(intake_loop, "github_list", partial_listing)
+    intake_policy = multi_repo_policy()
+    assert intake_loop.intake_tick(intake_policy, generation=0) == []
+    partial = intake_loop.intake_state(intake_policy)
+    assert partial["last_evaluated"]["detail"]["github"] == "partial"
+    assert partial["last_error"]["detail"] == {
+        "stage": "listing",
+        "error": "RuntimeError",
+        "status": None,
+        "repo": "weave-hand/loom",
+    }
+    assert "private issue title" not in json.dumps(partial)
+    release_sweep(db)
+    fake_repo_pages(monkeypatch, {})
+    assert intake_loop.intake_tick(intake_policy, generation=0) == []
+    recovered = intake_loop.intake_state(intake_policy)
+    assert recovered["last_evaluated"]["detail"]["github"] == "completed"
+    assert recovered["last_error"] == partial["last_error"]
+    assert len(audits(db, "intake_evaluated")) == 2
 
 
 def test_sweep_ignores_a_disabled_repo_without_reading_it(db, monkeypatch):

@@ -2240,7 +2240,7 @@ def escalations(receipts: list[dict]) -> list[dict]:
 
 
 def intake_state(policy: dict, *, session: Session | None = None) -> dict:
-    """What the board shows: the block, the last two audits, today's usage.
+    """What the board shows: policy, usage and durable intake observations.
 
     This lives beside status rather than beside the intake loop because the
     board reads it, and the board must not link the reconciler to render a
@@ -2276,6 +2276,11 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
             "max_per_day": block["max_per_day"],
             "last_admitted": latest("intake_admitted"),
             "last_idle": latest("intake_idle"),
+            # A not_due idle tick is not a candidate evaluation. Keep the
+            # actual sweep evidence and sanitized listing errors visible.
+            "last_swept": latest("intake_swept"),
+            "last_evaluated": latest("intake_evaluated"),
+            "last_error": latest("intake_error"),
         }
 
 

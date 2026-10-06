@@ -980,6 +980,9 @@ def test_status_defaults_intake_for_empty_control_policy(db):
         "max_per_day": 5,
         "last_admitted": None,
         "last_idle": None,
+        "last_swept": None,
+        "last_evaluated": None,
+        "last_error": None,
     }
 
 
