@@ -14,7 +14,9 @@ test("tokens arriving together are one step, classified by size", () => {
 });
 
 test("the rolling rate rises where a lookup step lands", () => {
-  const steps = decodeSteps(events([0, 40, 80, 120, 160, 161, 162, 163, 164, 165]));
+  const steps = decodeSteps(
+    events([0, 40, 80, 120, 160, 161, 162, 163, 164, 165]),
+  );
   const rates = rollingRate(steps, 100);
   const before = rates.find((r) => r.at === 120).rate;
   const after = rates.find((r) => r.at === 160).rate;

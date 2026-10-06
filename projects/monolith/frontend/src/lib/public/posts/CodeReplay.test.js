@@ -51,7 +51,9 @@ test("decode streams the code with copied text tinted and one bar per step", asy
   const code = view.querySelector(".code-output code").textContent;
   expect(code).toBe(turn.events.map((e) => e.content).join(""));
   expect(code).toContain("fn occupancy");
-  expect(view.querySelectorAll(".code-output .copied").length).toBeGreaterThan(0);
+  expect(view.querySelectorAll(".code-output .copied").length).toBeGreaterThan(
+    0,
+  );
   expect(view.querySelectorAll(".trace rect")).toHaveLength(steps.length);
   expect(view.querySelectorAll(".trace rect.pending")).toHaveLength(0);
 });
@@ -63,5 +65,7 @@ test("steps ahead of the playhead stay pending", async () => {
   await seek(mid);
   const pending = view.querySelectorAll(".trace rect.pending").length;
   expect(pending).toBe(steps.filter((s) => s.at > mid).length);
-  expect(view.querySelector(".code-output .rate").textContent).toMatch(/tok\/s now/);
+  expect(view.querySelector(".code-output .rate").textContent).toMatch(
+    /tok\/s now/,
+  );
 });

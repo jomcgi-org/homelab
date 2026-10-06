@@ -35,7 +35,10 @@
   const BARS = 54;
   const x = (at) => ((at - start) / (end - start)) * (W - 8) + 4;
   const line = rates
-    .map((r) => `${x(r.at).toFixed(1)},${(BARS - (r.rate / maxRate) * (BARS - 6)).toFixed(1)}`)
+    .map(
+      (r) =>
+        `${x(r.at).toFixed(1)},${(BARS - (r.rate / maxRate) * (BARS - 6)).toFixed(1)}`,
+    )
     .join(" ");
   const counts = {
     lookup: steps.filter((s) => s.source === "lookup").length,
@@ -45,9 +48,7 @@
   const lookupTokens = steps
     .filter((s) => s.source === "lookup")
     .reduce((n, s) => n + s.tokens, 0);
-  let current = $derived(
-    rates.findLast((r) => r.at <= position)?.rate ?? 0,
-  );
+  let current = $derived(rates.findLast((r) => r.at <= position)?.rate ?? 0);
   let pre = $state();
   let arrived = $derived(pieces.filter((piece) => piece.at <= position));
   $effect(() => {
@@ -59,9 +60,7 @@
 <div class="code-output">
   <div class="code-head">
     <span>{file}</span>
-    <span class="rate"
-      >{Math.round(current)} <small>tok/s now</small></span
-    >
+    <span class="rate">{Math.round(current)} <small>tok/s now</small></span>
   </div>
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the output.) -->
   <pre
@@ -103,7 +102,9 @@
       <text class="axis" x="6" y="12">{Math.round(maxRate)} tok/s</text>
     </svg>
     <figcaption>
-      <span class="key lookup">Prompt lookup, 3+ tokens a step (tinted code)</span>
+      <span class="key lookup"
+        >Prompt lookup, 3+ tokens a step (tinted code)</span
+      >
       <span class="key draft">Model draft kept, 2</span>
       <span class="key single">1 token</span>
       <span class="key rate-key">Output rate</span>
