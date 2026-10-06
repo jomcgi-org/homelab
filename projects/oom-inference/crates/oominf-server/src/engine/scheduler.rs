@@ -165,6 +165,10 @@ impl Stream {
             self.looked_up += d.drafted;
             self.lookup_accepted += d.accepted;
             self.lookup_acc.record(d.drafted, d.accepted);
+            // The drafter's own gate (it stops offering drafts that keep missing).
+            if let Some(l) = self.lookup.as_mut() {
+                l.record(d.drafted, d.accepted);
+            }
         } else {
             self.model_acc.record(d.drafted, d.accepted);
         }

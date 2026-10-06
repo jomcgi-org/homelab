@@ -155,8 +155,11 @@ enum Command {
         #[arg(long, default_value_t = 1024)]
         prefix_store_min_tokens: usize,
         /// Requests decoding at once (continuous batching: their tokens share each
-        /// step). 1 serves one request at a time, to completion.
-        #[arg(long, default_value_t = 1)]
+        /// step). A cap: a lone request runs exactly as single-stream; only
+        /// overlapping requests share steps (2 streams: ~48 tok/s in total, ~31
+        /// each, against ~43 for one, and the second starts without waiting for
+        /// the first to finish). 1 serves one request at a time, to completion.
+        #[arg(long, default_value_t = 2)]
         max_streams: usize,
         /// Most tokens a batched step carries (every stream's next token plus the
         /// drafts the token budget picks).
