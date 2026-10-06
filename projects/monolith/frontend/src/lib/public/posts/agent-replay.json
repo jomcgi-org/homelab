@@ -3727,16 +3727,16 @@
     "url": "https://github.com/jomcgi-org/homelab/tree/9877b1c8a/projects/oom-inference/crates/oominf-tiers"
   },
   "document": {
-    "pages": 8,
+    "pages": 42,
     "sections": [
       { "from": 1, "label": "Cargo.toml" },
       { "from": 2, "label": "src/lib.rs" },
       { "from": 3, "label": "src/cache.rs" },
-      { "from": 4, "label": "src/policy.rs" },
-      { "from": 5, "label": "src/disk.rs" },
-      { "from": 6, "label": "src/host.rs" },
-      { "from": 7, "label": "src/grouped.rs" },
-      { "from": 8, "label": "src/tiered.rs" }
+      { "from": 6, "label": "src/policy.rs" },
+      { "from": 9, "label": "src/disk.rs" },
+      { "from": 10, "label": "src/host.rs" },
+      { "from": 15, "label": "src/grouped.rs" },
+      { "from": 19, "label": "src/tiered.rs" }
     ]
   },
   "benchmark": {

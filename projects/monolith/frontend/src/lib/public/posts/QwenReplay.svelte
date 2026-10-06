@@ -2,6 +2,7 @@
   import { fade } from "svelte/transition";
   import DemoDisclosure from "./DemoDisclosure.svelte";
   import CodeOutput from "./CodeOutput.svelte";
+  import { decodeSteps, rollingRate } from "./draft-steps.js";
   import IncidentGraph from "./IncidentGraph.svelte";
   import research from "./qwen-replay.json";
   // `kind` "research" reads a long report and maps it as a graph; "coding" reads
@@ -50,6 +51,15 @@
     scanFraction * Math.max(0, (recording.document?.pages ?? 1) - 4),
   );
   const prefillRate = (uncachedTokens * 1000) / turn.metrics.ttftMs;
+  // Output rate over the last 1.5 s of decode steps, for the live readout.
+  // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
+  const rates = rollingRate(decodeSteps(turn.events), 1500);
+  let liveRate = $derived(rates.findLast((r) => r.at <= position)?.rate ?? 0);
+  let written = $derived(
+    turn.events
+      .filter((event) => event.at <= position)
+      .reduce((n, event) => n + (event.tokens ?? 1), 0),
+  );
   let phase = $derived(
     position >= turn.durationMs
       ? "Complete"
@@ -58,6 +68,15 @@
         : "Decode",
   );
   const seconds = (ms) => (ms == null ? "--" : (ms / 1000).toFixed(1) + " s");
+  // The output panel opens while the model writes and closes when it finishes,
+  // so the result (the graph) is what remains; it can still be reopened.
+  let shownPhase = "Prefill";
+  $effect(() => {
+    if (phase === shownPhase) return;
+    if (phase === "Decode") outputOpen = true;
+    if (phase === "Complete") outputOpen = false;
+    shownPhase = phase;
+  });
   function toggle() {
     if (position >= turn.durationMs) position = 0;
     playing = !playing;
@@ -145,6 +164,48 @@
     </p>
   {/if}
   {#if landing}{@render playbackControls()}{/if}
+  <!-- Each measurement fills in as the replay reaches it, in request order. -->
+  <dl class="measurements" aria-label="Measured inference performance">
+    <div class="prefill-rate" class:live={phase === "Prefill"}>
+      <dt
+        title="Uncached prompt tokens divided by client time to first token, including request overhead"
+      >
+        Prefill
+      </dt>
+      <dd>
+        {#if phase === "Prefill"}
+          {seconds(Math.max(0, position - prefillStart))}
+          <small class="detail">reading {uncachedTokens.toLocaleString("en-US")} tokens</small>
+        {:else}
+          {Math.round(prefillRate).toLocaleString("en-US")} <small>tok/s</small>
+        {/if}
+      </dd>
+    </div>
+    <div class="first-token">
+      <dt>First token</dt>
+      <dd>
+        {#if phase === "Prefill"}--{:else}{(turn.metrics.ttftMs / 1000).toFixed(
+            1,
+          )} <small>s</small>{/if}
+      </dd>
+    </div>
+    <div class="decode-rate" class:live={phase === "Decode"}>
+      <dt>Decode</dt>
+      <dd>
+        {#if phase === "Prefill"}--{:else if phase === "Decode"}{Math.round(
+            liveRate,
+          )}
+          <small>tok/s now</small>
+          <small class="detail">{written.toLocaleString("en-US")} tokens</small>
+        {:else}{turn.metrics.tokensPerSecond?.toFixed(1) ?? "--"}
+          <small>tok/s</small>
+          <small class="detail"
+            >{turn.usage.completion_tokens.toLocaleString("en-US")} tokens</small
+          >
+        {/if}
+      </dd>
+    </div>
+  </dl>
   <div class="demo-body" class:output-expanded={outputOpen}>
     <span class="sr-only" role="status">{phase}</span>
     {#if phase === "Prefill"}
@@ -211,28 +272,6 @@
       </div>
     {/if}
   </div>
-  <dl class="measurements" aria-label="Measured inference performance">
-    <div class="first-token">
-      <dt>First token</dt>
-      <dd>{(turn.metrics.ttftMs / 1000).toFixed(1)} <small>s</small></dd>
-    </div>
-    <div class="decode-rate">
-      <dt>Decode</dt>
-      <dd>
-        {turn.metrics.tokensPerSecond?.toFixed(1) ?? "--"} <small>tok/s</small>
-      </dd>
-    </div>
-    <div class="prefill-rate">
-      <dt
-        title="Uncached prompt tokens divided by client time to first token, including request overhead"
-      >
-        Prefill
-      </dt>
-      <dd>
-        {Math.round(prefillRate).toLocaleString("en-US")} <small>tok/s</small>
-      </dd>
-    </div>
-  </dl>
   {#if !landing}{@render playbackControls()}{/if}
   <DemoDisclosure class="prompt" label="Prompt">
     <pre>{turn.prompt}</pre>
@@ -258,7 +297,7 @@
     min-height: max(20.5rem, calc((100cqw - 1.5rem) * 0.29923));
   }
   .landing .measurements {
-    margin-top: 0.5rem;
+    margin-block: 0.25rem 0.75rem;
     padding-block: 0.6rem;
   }
   .landing .controls {
@@ -363,21 +402,22 @@
     line-height: 1.6;
   }
   .measurements {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1rem;
-    margin: 0.8rem 0 0;
+    margin: 0 0 0.8rem;
     padding-block: 0.8rem;
-    border-top: 1px solid var(--line);
+    border-block: 1px solid var(--line);
   }
-  .prefill-rate {
-    order: 1;
+  /* Detail (tokens read or written) sits under the number, so the number and
+     its unit never wrap apart. */
+  .measurements .detail {
+    display: block;
+    margin-top: 0.2rem;
   }
-  .decode-rate {
-    order: 2;
-  }
-  .first-token {
-    order: 3;
+  .measurements .live dt::after {
+    content: " ●";
+    color: var(--tone-hot);
   }
   dt {
     font: 0.65rem var(--font-code);

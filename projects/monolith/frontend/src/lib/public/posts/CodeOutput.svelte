@@ -48,7 +48,6 @@
   const lookupTokens = steps
     .filter((s) => s.source === "lookup")
     .reduce((n, s) => n + s.tokens, 0);
-  let current = $derived(rates.findLast((r) => r.at <= position)?.rate ?? 0);
   let pre = $state();
   let arrived = $derived(pieces.filter((piece) => piece.at <= position));
   $effect(() => {
@@ -58,10 +57,7 @@
 </script>
 
 <div class="code-output">
-  <div class="code-head">
-    <span>{file}</span>
-    <span class="rate">{Math.round(current)} <small>tok/s now</small></span>
-  </div>
+  <div class="code-head">{file}</div>
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the output.) -->
   <pre
     bind:this={pre}
@@ -119,19 +115,8 @@
     gap: 0.6rem;
   }
   .code-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
     color: var(--tone-gpu);
     font: 0.7rem var(--font-code);
-  }
-  .rate {
-    color: var(--ink);
-    font-size: 0.9rem;
-  }
-  .rate small {
-    color: var(--ink-2);
-    font-size: 0.65rem;
   }
   pre {
     margin: 0;
