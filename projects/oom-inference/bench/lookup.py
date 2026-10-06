@@ -134,44 +134,46 @@ def cmd_run(a):
         (out / f"{name}{a.tag}.json").write_text(json.dumps(r))
 
 
-def simulate(ctx, out, n, k):
+def simulate(ctx, out, ns, k):
     """Rounds of prompt lookup over `out` with context `ctx`: (width, kept) each,
-    width 0 for rounds with no match (one token at the fallback rate)."""
+    width 0 for rounds with no match (one token at the fallback rate). `ns` are
+    the match lengths tried, longest first; each matches its most recent
+    occurrence that has a token after it (so the suffix never matches itself)."""
     seq = list(ctx)
     rounds = []
     i = 0
-    # Most recent position of each n-gram that has a token after it (so the
-    # current suffix never matches itself), extended as the sequence grows.
-    last = {}
-    done = 0
+    last = {n: {} for n in ns}
+    done = {n: 0 for n in ns}
 
     def index():
-        nonlocal done
-        for j in range(done, len(seq) - n):
-            last[tuple(seq[j : j + n])] = j
-        done = max(done, len(seq) - n)
+        for n in ns:
+            for j in range(done[n], len(seq) - n):
+                last[n][tuple(seq[j : j + n])] = j
+            done[n] = max(done[n], len(seq) - n)
 
     index()
     while i < len(out):
-        key = tuple(seq[-n:]) if len(seq) >= n else None
-        pos = last.get(key) if key else None
         draft = []
-        if pos is not None and pos + n < len(seq):
-            draft = seq[pos + n : pos + n + k]
+        for n in ns:
+            if len(seq) < n:
+                continue
+            pos = last[n].get(tuple(seq[-n:]))
+            if pos is not None:
+                draft = seq[pos + n : pos + n + k]
+                break
         if not draft:
             rounds.append((0, 1))
             seq.append(out[i])
             i += 1
             index()
             continue
-        else:
-            kept = 0
-            while kept < len(draft) and i + kept < len(out) and out[i + kept] == draft[kept]:
-                kept += 1
-            take = min(kept + 1, len(out) - i)
-            rounds.append((len(draft) + 1, take))
-            seq.extend(out[i : i + take])
-            i += take
+        kept = 0
+        while kept < len(draft) and i + kept < len(out) and out[i + kept] == draft[kept]:
+            kept += 1
+        take = min(kept + 1, len(out) - i)
+        rounds.append((len(draft) + 1, take))
+        seq.extend(out[i : i + take])
+        i += take
         index()
     return rounds
 
@@ -193,32 +195,36 @@ def cmd_sim(a):
         return cost[widths[-1]] * width / widths[-1]
 
     runs = sorted(pathlib.Path(a.runs).glob("*.json"))
-    print(f"{'workload':13} {'tokens':>6} {'n':>2} {'k':>3}  {'rounds':>6} {'matched':>7} {'tok/round':>9} {'accept':>6}  {'pred tok/s':>10} {'vs fallback':>11}")
+    policies = [("n" + ",".join(map(str, ns)), ns) for ns in a.policy]
+    print(f"{'workload':13} {'tokens':>6} {'match':>11} {'k':>3}  {'rounds':>6} {'matched':>7} {'tok/round':>9} {'accept':>6}  {'base tok/s':>10} {'pred tok/s':>10} {'gain':>6}")
     for path in runs:
         r = json.loads(path.read_text())
         ctx = tok.encode(r["prompt"]).ids
         out = tok.encode(r["text"]).ids
+        n_out = (r.get("usage") or {}).get("completion_tokens", len(out))
+        # Fallback: this workload's measured decode rate (current MTP decoding).
+        base = (n_out - 1) / r["decode_s"] if r["decode_s"] > 0 else 1e3 / a.fallback_ms_per_token
+        fallback_ms = 1e3 / base
         if not out:
             continue
-        for n in a.match:
+        for label, ns in policies:
             for k in a.draft:
-                rounds = simulate(ctx, out, n, k)
+                rounds = simulate(ctx, out, ns, k)
                 ms = 0.0
                 drafted = kept_drafts = matched = 0
                 for width, take in rounds:
                     if width == 0:
-                        ms += a.fallback_ms_per_token
+                        ms += fallback_ms
                     else:
                         matched += 1
                         ms += step_ms(width)
                         drafted += width - 1
                         kept_drafts += take - 1
                 rate = len(out) / ms * 1e3
-                base = 1e3 / a.fallback_ms_per_token
                 acc = kept_drafts / drafted if drafted else 0
                 print(
-                    f"{path.stem:13} {len(out):6} {n:2} {k:3}  {len(rounds):6} {matched:7} "
-                    f"{len(out) / len(rounds):9.2f} {acc:6.1%}  {rate:10.1f} {rate / base:10.2f}x"
+                    f"{path.stem:13} {len(out):6} {label:>11} {k:3}  {len(rounds):6} {matched:7} "
+                    f"{len(out) / len(rounds):9.2f} {acc:6.1%}  {base:10.1f} {rate:10.1f} {rate / base:5.2f}x"
                 )
 
 
@@ -235,9 +241,13 @@ def main():
     s.add_argument("--runs", required=True)
     s.add_argument("--tokenizer", required=True)
     s.add_argument("--cost", required=True, help="width:ms per verification step, comma separated")
-    s.add_argument("--fallback-ms-per-token", type=float, required=True)
-    s.add_argument("--match", type=int, nargs="+", default=[2, 3, 4])
-    s.add_argument("--draft", type=int, nargs="+", default=[4, 8, 12, 16])
+    s.add_argument("--fallback-ms-per-token", type=float, default=25.0,
+                   help="when a run has no measured decode rate")
+    s.add_argument("--policy", type=lambda v: [int(x) for x in v.split(",")], nargs="+",
+                   default=[[3], [8, 6, 4, 3, 2], [8, 6, 4], [8, 6]],
+                   help="match lengths tried, longest first (comma separated), per policy")
+    s.add_argument("--draft", type=int, nargs="+", default=[3, 7, 11, 15],
+                   help="draft tokens per round (a round verifies one more)")
     a = p.parse_args()
     {"run": cmd_run, "sim": cmd_sim}[a.cmd](a)
 

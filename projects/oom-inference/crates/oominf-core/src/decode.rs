@@ -33,12 +33,24 @@ pub fn decode_step(
     session: &mut dyn Session,
     next: u32,
     k: usize,
+    choose: impl FnMut(&[f32], Option<u32>) -> Result<u32>,
+) -> Result<Decoded> {
+    decode_step_with(session, next, k, None, choose)
+}
+
+/// As [`decode_step`], verifying `drafts` (e.g. from [`PromptLookup`]) when given
+/// and not empty, else up to `k` tokens the model drafts.
+pub fn decode_step_with(
+    session: &mut dyn Session,
+    next: u32,
+    k: usize,
+    drafts: Option<Vec<u32>>,
     mut choose: impl FnMut(&[f32], Option<u32>) -> Result<u32>,
 ) -> Result<Decoded> {
-    let drafts = if k > 0 {
-        session.draft(next, k)?
-    } else {
-        Vec::new()
+    let drafts = match drafts {
+        Some(d) if !d.is_empty() => d,
+        _ if k > 0 => session.draft(next, k)?,
+        _ => Vec::new(),
     };
     if drafts.is_empty() {
         let logits = session.step(&[next])?;
@@ -79,6 +91,76 @@ pub fn decode_step(
         drafted: drafts.len(),
         accepted,
     })
+}
+
+/// Prompt-lookup drafting (#6872): output that copies earlier text (a file being
+/// edited, quoted input, repeated code) is drafted from the sequence itself. The
+/// last `n` tokens are matched against earlier positions, longest `n` first, and
+/// the tokens that followed the most recent match are the draft. Free to compute;
+/// the target still decides every token, so output is unchanged.
+pub struct PromptLookup {
+    /// Match lengths tried, longest first.
+    ns: Vec<usize>,
+    /// Most tokens per draft.
+    k: usize,
+    seq: Vec<u32>,
+    /// Per match length: n-gram hash to its most recent position with a token
+    /// after it (a hash collision only costs a rejected draft).
+    index: Vec<std::collections::HashMap<u64, usize>>,
+    /// Positions indexed so far, per match length.
+    done: Vec<usize>,
+}
+
+/// Matches of 8, 6 or 4 tokens: on recorded outputs, shorter matches drafted
+/// novel text often enough to cost more than they saved.
+pub const LOOKUP_MATCH: [usize; 3] = [8, 6, 4];
+
+fn ngram_hash(tokens: &[u32]) -> u64 {
+    tokens.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &t| {
+        (h ^ t as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+impl PromptLookup {
+    pub fn new(ns: &[usize], k: usize) -> Self {
+        PromptLookup {
+            ns: ns.to_vec(),
+            k,
+            seq: Vec::new(),
+            index: ns.iter().map(|_| Default::default()).collect(),
+            done: vec![0; ns.len()],
+        }
+    }
+
+    /// A draft continuing `history` (every token so far, the last one not yet fed),
+    /// empty when nothing matches. `history` normally extends the previous call's;
+    /// otherwise the index is rebuilt.
+    pub fn draft(&mut self, history: &[u32]) -> Vec<u32> {
+        if !history.starts_with(&self.seq) {
+            self.seq.clear();
+            self.index.iter_mut().for_each(|m| m.clear());
+            self.done.iter_mut().for_each(|d| *d = 0);
+        }
+        self.seq.extend_from_slice(&history[self.seq.len()..]);
+        let len = self.seq.len();
+        for (i, &n) in self.ns.iter().enumerate() {
+            // Positions with a token after them, so the suffix never matches itself.
+            for j in self.done[i]..len.saturating_sub(n) {
+                self.index[i].insert(ngram_hash(&self.seq[j..j + n]), j);
+            }
+            self.done[i] = self.done[i].max(len.saturating_sub(n));
+        }
+        for (i, &n) in self.ns.iter().enumerate() {
+            if len < n {
+                continue;
+            }
+            if let Some(&pos) = self.index[i].get(&ngram_hash(&self.seq[len - n..])) {
+                let from = pos + n;
+                return self.seq[from..(from + self.k).min(len)].to_vec();
+            }
+        }
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +228,23 @@ mod tests {
             fed: Vec::new(),
             rewound: 0,
         }
+    }
+
+    #[test]
+    fn prompt_lookup_drafts_what_followed_the_longest_match() {
+        let mut l = PromptLookup::new(&[4, 2], 3);
+        // "1 2 3 4 5 6 7" then "9 3 4": the 2-token suffix "3 4" matches; 5 6 7 follow.
+        let mut h = vec![1, 2, 3, 4, 5, 6, 7, 9, 3, 4];
+        assert_eq!(l.draft(&h), vec![5, 6, 7]);
+        // No 4- or 2-token match: no draft.
+        h.extend([11, 12]);
+        assert_eq!(l.draft(&h), Vec::<u32>::new());
+        // A 4-token match wins over a more recent 2-token one.
+        let mut l = PromptLookup::new(&[4, 2], 2);
+        let h = vec![1, 2, 3, 4, 50, 51, 3, 4, 60, 1, 2, 3, 4];
+        assert_eq!(l.draft(&h), vec![50, 51]);
+        // A history that does not extend the last one rebuilds the index.
+        assert_eq!(l.draft(&[7, 8, 9, 7, 8]), vec![9, 7]);
     }
 
     #[test]

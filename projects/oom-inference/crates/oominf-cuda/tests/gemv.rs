@@ -84,7 +84,10 @@ fn gemv_throughput() -> Result<()> {
     let gpu = Gpu::new(0)?;
     let mut total_bytes = 0f64;
     let mut total_s = 0f64;
-    let t: usize = std::env::var("GEMV_T").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    let t: usize = std::env::var("GEMV_T")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
     for &(n, k) in &SHAPES {
         let x = gpu.upload_f32(&values(t * k, 3))?;
         // Rotate over copies totalling well past the 72 MB L2, so every launch

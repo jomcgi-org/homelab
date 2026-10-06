@@ -168,7 +168,15 @@ impl Gpu {
         let mut t0 = 0;
         while t0 < t {
             let tc = per.min(t - t0);
-            self.gemv_at(xp + (t0 * k * 4) as u64, w, scale, yp + (t0 * n * 4) as u64, tc, n, k)?;
+            self.gemv_at(
+                xp + (t0 * k * 4) as u64,
+                w,
+                scale,
+                yp + (t0 * n * 4) as u64,
+                tc,
+                n,
+                k,
+            )?;
             t0 += tc;
         }
         Ok(())
