@@ -283,8 +283,18 @@ impl<B: Backend> Attention<B> {
         kv + (ik + bk) * std::mem::size_of::<f32>()
     }
 
-    /// Bytes of fresh buffers that [`Attention::grow`] would allocate to hold
-    /// `tokens`, or 0 when they already fit.
+    /// Bytes a full `max_tokens` sequence's caches hold: (K/V rows, indexer and
+    /// block keys), wherever they live.
+    pub fn full_bytes(&self, max_tokens: usize) -> (usize, usize) {
+        let (kb, vb, ik, bk) = self.buffer_lens(max_tokens.div_ceil(self.a.ratio) * self.a.ratio);
+        (kb + vb, (ik + bk) * std::mem::size_of::<f32>())
+    }
+
+    /// Whether the K/V caches live in host memory.
+    pub fn kv_host(&self) -> bool {
+        self.kv_host
+    }
+
     /// Forgets every cached token (the buffers stay allocated).
     pub fn reset(&self, state: &mut AttnState<B>) {
         state.len = 0;

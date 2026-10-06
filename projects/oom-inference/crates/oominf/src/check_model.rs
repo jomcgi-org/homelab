@@ -16,7 +16,7 @@ use oominf_cuda::Gpu;
 use oominf_models_qwen::{Dims, QwenModel};
 
 use crate::check_layer::{STEPS, load_step, rms_rel_and_cos, step_tokens};
-use crate::load::{CacheArgs, ExpertArgs, factory};
+use crate::load::{CacheArgs, ExpertArgs, HostUse, Tuning, factory};
 
 struct ModelProbe<'a> {
     truth: &'a HashMap<String, Vec<f32>>,
@@ -94,8 +94,9 @@ pub fn run(
     let gpu = Arc::new(Gpu::new(0)?);
     let t0 = std::time::Instant::now();
     let mut qwen = QwenModel::load(&*gpu, &model, dims, None)?;
-    if expert_args.host_threads() > 0 {
-        let pool = oominf_cpu::HostExperts::new(expert_args.host_threads())?;
+    let tuning = Tuning::default();
+    if expert_args.host_threads(&tuning) > 0 {
+        let pool = oominf_cpu::HostExperts::new(expert_args.host_threads(&tuning))?;
         qwen.set_host_experts(Arc::new(pool));
     }
     gpu.sync()?;
@@ -103,7 +104,10 @@ pub fn run(
     let vocab = qwen.vocab();
     let max_tokens: usize = tokens.iter().map(Vec::len).sum();
 
-    let mut experts = factory::<Gpu>(expert_args, model.clone())(&gpu)?;
+    let mut experts = factory::<Gpu>(expert_args, model.clone(), HostUse::default(), &tuning)(
+        &gpu,
+        &qwen.host_demand(max_tokens),
+    )?;
     println!("{}", experts.describe());
     let mut ok = true;
     for isolate in [true, false] {

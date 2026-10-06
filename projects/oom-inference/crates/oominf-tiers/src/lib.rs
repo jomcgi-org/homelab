@@ -10,12 +10,19 @@ pub mod cache;
 mod disk;
 mod grouped;
 pub mod host;
+#[cfg(test)]
+mod mock;
+pub mod plan;
 pub mod policy;
+pub mod resources;
 mod tiered;
 
 pub use disk::DiskExperts;
-pub use grouped::{GroupedExperts, PolicyPair, tiered_for_model};
-pub use tiered::{TieredExperts, available_host_gib, free_vram_gib, slots_for};
+pub use grouped::{GroupedExperts, Layout, PolicyPair, TierBudget, layouts, tiered_for_model};
+pub use tiered::{
+    CHUNK_SLOTS, TierSizes, TieredExperts, free_vram_gib, min_host_slots, min_vram_slots,
+    slots_for, stream_threshold,
+};
 
 /// A recorded decode routing trace: raw little-endian `u16` `[steps, layers, top_k]`.
 pub fn load_trace(

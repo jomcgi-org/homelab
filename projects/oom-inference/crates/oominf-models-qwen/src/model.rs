@@ -471,6 +471,23 @@ impl<B: Backend> QwenModel<B> {
         layers + SEQUENCE_WORKSPACE
     }
 
+    /// Host memory a sequence of `max_tokens` takes beside the expert tiers (see
+    /// [`oominf_core::HostDemand`]); the draft head's attention cache stays on the
+    /// device and is not saved.
+    pub fn host_demand(&self, max_tokens: usize) -> oominf_core::HostDemand {
+        let d = &self.dims;
+        self.layers
+            .iter()
+            .fold(oominf_core::HostDemand::default(), |acc, l| {
+                let (kv, checkpoint, snapshot) = l.host_demand(d, max_tokens);
+                oominf_core::HostDemand {
+                    kv: acc.kv + kv,
+                    checkpoint: acc.checkpoint + checkpoint,
+                    snapshot: acc.snapshot + snapshot,
+                }
+            })
+    }
+
     /// Makes at least `bytes` of device memory free, asking `experts` to give
     /// memory back when it is not.
     pub fn ensure_free(

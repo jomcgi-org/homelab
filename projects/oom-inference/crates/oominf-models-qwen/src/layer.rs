@@ -243,6 +243,28 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    /// Host bytes of this layer's share of [`oominf_core::HostDemand`] at
+    /// `max_tokens`: (K/V kept in host memory, one checkpoint, one snapshot without
+    /// checkpoints).
+    pub fn host_demand(&self, d: &Dims, max_tokens: usize) -> (usize, usize, usize) {
+        let f = std::mem::size_of::<f32>();
+        let ple = if self.ple.is_some() {
+            d.residual() * 16 * f
+        } else {
+            0
+        };
+        match &self.mixer {
+            Mixer::Attention(a) => {
+                let (kv, keys) = a.full_bytes(max_tokens);
+                (if a.kv_host() { kv } else { 0 }, ple, kv + keys + ple)
+            }
+            Mixer::Gdn(_) => {
+                let rec = (d.conv_dim() * d.conv_kernel + d.v_heads * d.head_k * d.head_v) * f;
+                (0, rec + ple, rec + ple)
+            }
+        }
+    }
+
     /// Device bytes this layer's state for one sequence of up to `max_tokens` holds
     /// at `tokens` tokens: the KV cache, or the recurrent and conv state with the
     /// copies a rewindable step keeps (decode-sized steps), and PLE conv state.

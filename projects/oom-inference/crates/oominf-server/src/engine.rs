@@ -283,6 +283,13 @@ fn checkpoint_plan(reuse_at: &[usize], from: usize, to: usize) -> Vec<usize> {
     plan
 }
 
+/// Most prefix checkpoints [`checkpoint_plan`] picks for one prefill of up to
+/// `max_context` tokens: the request's reuse points (the first and last user
+/// messages) and the powers of two below it.
+pub fn max_checkpoints(max_context: usize) -> usize {
+    2 + (13..20).filter(|k| 1usize << k < max_context).count()
+}
+
 /// Caches `seq`; the session must hold exactly its tokens.
 fn keep(cache: &mut dyn PrefixCache<Seq>, seq: CachedSeq<Seq>) {
     debug_assert_eq!(
