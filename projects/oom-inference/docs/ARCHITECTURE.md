@@ -251,8 +251,13 @@ fixed reserve unaccounted (the staging ring alone is 1.3 GiB); counting it makes
 the reserve mean what it says, and 10 GiB with it counted leaves the same memory
 free as 12 GiB did. Shrinking with a warning keeps a smaller machine serving at
 lower speed instead of not at all; failing below the minimum, with the missing
-amount, is the only case nothing can serve. Measured results on simulated
-smaller machines are in [HARDWARE.md](HARDWARE.md).
+amount, is the only case nothing can serve. Measured on the reference box under
+container limits ([HARDWARE.md](HARDWARE.md)): 48, 32, 24, 20, 16, 12, 10 and
+8 GiB all start and serve the 22k-token demo correctly, with warm decode falling
+with the host tier (45, 33, 16, 12, 10, 9 tok/s down to 16 GiB; about 12.7 at the
+minimum, where lookahead is capped off) and prefill at about 800 tok/s at the
+minimum (a one-record staging ring); 7 GiB is refused at start-up with the
+itemised shortfall.
 
 ## Hardware profile
 
