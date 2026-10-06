@@ -31,7 +31,7 @@ struct Tables<B: Backend> {
 
 /// Most tokens in a step that still routes this layer and predicts the next one
 /// with one stacked router GEMV (decode and draft verification).
-const PAIR_MAX_TOKENS: usize = 4;
+const PAIR_MAX_TOKENS: usize = 32;
 
 /// Steps where some expert has at least this many assignments use the tiled
 /// (shared-memory) kernels; smaller steps use the warp-per-row kernels.
