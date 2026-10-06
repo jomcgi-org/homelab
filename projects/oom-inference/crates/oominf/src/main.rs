@@ -72,6 +72,10 @@ enum Command {
         /// Draft tokens per decode step (speculative decoding); 0 disables it.
         #[arg(long, default_value_t = 1)]
         draft: usize,
+        /// After decoding, time verification steps of these widths (comma
+        /// separated): the cost of checking prompt-lookup drafts.
+        #[arg(long, value_delimiter = ',')]
+        verify: Vec<usize>,
         #[command(flatten)]
         experts: load::ExpertArgs,
         #[command(flatten)]
@@ -282,6 +286,7 @@ fn main() -> Result<()> {
             tokens,
             prefill_chunk,
             draft,
+            verify,
             experts,
             cache,
         } => {
@@ -295,6 +300,7 @@ fn main() -> Result<()> {
                 tokens,
                 prefill_chunk,
                 draft,
+                &verify,
                 &experts,
                 &cache,
             )?

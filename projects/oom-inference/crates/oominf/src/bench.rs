@@ -102,6 +102,44 @@ fn decode_phase(
     Ok(out)
 }
 
+/// Times verification steps of each width in `widths` (tokens fed at once, the
+/// last generated token plus `width - 1` drafts): the cost of checking a
+/// prompt-lookup draft, whose tokens copy a span of the prompt. Each step keeps
+/// only its first token (every draft rejected, as a failed draft would) and
+/// rewinds the rest, so the sequence advances one token per step.
+fn verify_sweep(
+    model: &dyn Model,
+    session: &mut dyn Session,
+    next: &mut u32,
+    ids: &[u32],
+    widths: &[usize],
+) -> Result<()> {
+    const STEPS: usize = 16;
+    for &width in widths {
+        let width = width.max(1);
+        let span = width - 1;
+        let room = ids.len().saturating_sub(span).max(1);
+        let before = model.expert_stats();
+        let t = Instant::now();
+        for step in 0..STEPS {
+            let at = (step * 7919 + width * 131) % room;
+            let mut feed = vec![*next];
+            feed.extend(ids.iter().skip(at).take(span));
+            let logits = session.step_all(&feed)?;
+            let vocab = logits.len() / feed.len();
+            session.rewind(feed.len() - 1)?;
+            *next = argmax(&logits[..vocab]);
+        }
+        let per = t.elapsed().as_secs_f64() / STEPS as f64 * 1e3;
+        println!(
+            "verify {width:2} tokens: {per:.1} ms/step ({:.1} ms per token if all accepted){}",
+            per / width as f64,
+            tier_line(model.expert_stats() - before, STEPS, "per step")
+        );
+    }
+    Ok(())
+}
+
 fn timed_prefill(
     name: &str,
     model: &dyn Model,
@@ -128,12 +166,14 @@ pub fn run(
     tokens: usize,
     prefill_chunk: Option<usize>,
     draft: usize,
+    verify: &[usize],
     expert_args: &ExpertArgs,
     cache: &CacheArgs,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
     let ids = chat.encode(&chat.render_user(prompt)?)?;
-    let max_context = ids.len() + 2 * (tokens + draft) + 1;
+    let widest = verify.iter().copied().max().unwrap_or(0);
+    let max_context = ids.len() + 2 * (tokens + draft) + 16 * verify.len() + widest + 1;
     let t = Instant::now();
     let model = open_model(&OpenArgs {
         model_dir,
@@ -166,6 +206,7 @@ pub fn run(
         tokens,
         draft,
     )?;
+    verify_sweep(&*model, &mut *session, &mut next, &ids, verify)?;
     println!("after decode: {}", model.describe());
     // The same prompt again on a fresh sequence: prefill from warm tiers.
     drop(session);

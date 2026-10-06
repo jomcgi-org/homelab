@@ -47,7 +47,7 @@ const SHAPES: [(usize, usize); 9] = [
 #[ignore = "needs a GPU"]
 fn gemv_matches_reference() -> Result<()> {
     let gpu = Gpu::new(0)?;
-    for t in [1, 2, 4] {
+    for t in [1, 2, 4, 5, 8, 13, 16] {
         for &(n, k) in &[(640, 2560), (2560, 640), (10240, 320), (300, 10240)] {
             let x = values(t * k, 1 + t as u64);
             let w: Vec<u16> = values(n * k, 7).into_iter().map(bf16_bits).collect();
@@ -84,8 +84,8 @@ fn gemv_throughput() -> Result<()> {
     let gpu = Gpu::new(0)?;
     let mut total_bytes = 0f64;
     let mut total_s = 0f64;
+    let t: usize = std::env::var("GEMV_T").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
     for &(n, k) in &SHAPES {
-        let t = 2;
         let x = gpu.upload_f32(&values(t * k, 3))?;
         // Rotate over copies totalling well past the 72 MB L2, so every launch
         // reads its weights from DRAM as decode does.
@@ -149,7 +149,7 @@ fn fp8_gemm_matches_reference() -> Result<()> {
             "{n}x{k}: fp8 relative error {:.3}",
             rel.sqrt()
         );
-        for t in [1, 2, 4, 37] {
+        for t in [1, 2, 4, 6, 8, 11, 16, 32, 37] {
             let x = values(t * k, 5 + t as u64);
             let mut y = gpu.zeros(t * n)?;
             let mut scratch = gpu.uninit_bf16(t * k)?;

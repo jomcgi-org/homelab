@@ -354,8 +354,10 @@ fn kv_row_shape(d: usize, bits: u8) -> bool {
         && (bits == 0 || (d.is_power_of_two() && (2..=8).contains(&bits)))
 }
 
-/// Most query tokens that take the flash-decode path, one token at a time.
-const DECODE_MAX_TOKENS: usize = 4;
+/// Most query tokens that take the flash-decode path, one token at a time: decode
+/// and draft verification (the sparse prefill kernel costs ~50 ms a step at 8
+/// tokens and 6k context, flash decode a fraction of that).
+const DECODE_MAX_TOKENS: usize = 16;
 
 impl Gpu {
     /// Flash-decode of one query token (`q`, `mask` row and `out` of that token).
