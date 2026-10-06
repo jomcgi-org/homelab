@@ -80,9 +80,7 @@ it("hydrates actual server markup without replacing nodes, text or attributes", 
       const describedby = chart.getAttribute("aria-describedby").split(" ");
       expect(describedby).toHaveLength(2);
       expect(
-        describedby.map(
-          (id) => display.querySelector(`#${id}`).textContent,
-        ),
+        describedby.map((id) => display.querySelector(`#${id}`).textContent),
       ).toEqual([
         expect.stringContaining("Units:"),
         expect.stringContaining("Synthetic edge measurements"),
