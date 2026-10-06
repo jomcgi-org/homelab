@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 566" role="img" aria-label="Expert records and PLE rows take different paths">
+  <rect x="90" y="26" width="540" height="104" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="102" y="46" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU: RTX 4090, 24 GB VRAM</text>
+  <line x1="90" y1="56" x2="630" y2="56" stroke="currentColor" stroke-width="1.25"/>
+  <text x="102" y="78" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">compute + dense weights + sequence state</text>
+  <text x="102" y="92" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert cache uses remaining VRAM</text>
+  <text x="102" y="106" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">state growth releases expert-cache chunks</text>
+  <circle cx="38" cy="76" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="1"/>
+  <text x="38" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">1</text>
+  <line x1="47.0" y1="76.0" x2="90" y2="76" stroke="currentColor" stroke-width="1"/>
+  <circle cx="90" cy="76" r="2" fill="currentColor"/>
+  <line x1="235" y1="206" x2="235" y2="138" stroke="currentColor" stroke-width="1"/>
+  <line x1="235" y1="138" x2="237.93892626146237" y2="142.04508497187473" stroke="currentColor" stroke-width="1"/>
+  <line x1="235" y1="138" x2="232.06107373853763" y2="142.04508497187473" stroke="currentColor" stroke-width="1"/>
+  <text x="247" y="169" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">PCIe copies</text>
+  <rect x="90" y="212" width="290" height="80" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="102" y="233" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">PINNED HOST ARENA</text>
+  <line x1="90" y1="244" x2="380" y2="244" stroke="currentColor" stroke-width="1.25"/>
+  <text x="102" y="264" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">bounded expert-record cache</text>
+  <text x="102" y="278" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">direct reads land here</text>
+  <circle cx="38" cy="252" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="2"/>
+  <text x="38" y="256" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">2</text>
+  <line x1="47.0" y1="252.0" x2="90" y2="252" stroke="currentColor" stroke-width="1"/>
+  <circle cx="90" cy="252" r="2" fill="currentColor"/>
+  <rect x="440" y="212" width="140" height="80" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="452" y="233" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU EXPERTS</text>
+  <line x1="440" y1="244" x2="580" y2="244" stroke="currentColor" stroke-width="1.25"/>
+  <text x="452" y="264" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">host hits</text>
+  <text x="452" y="278" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">decode only</text>
+  <line x1="386" y1="260" x2="434" y2="260" stroke="currentColor" stroke-width="1"/>
+  <line x1="434" y1="260" x2="429.95491502812524" y2="262.93892626146237" stroke="currentColor" stroke-width="1"/>
+  <line x1="434" y1="260" x2="429.95491502812524" y2="257.06107373853763" stroke="currentColor" stroke-width="1"/>
+  <line x1="510" y1="206" x2="510" y2="138" stroke="currentColor" stroke-width="1"/>
+  <line x1="510" y1="138" x2="512.9389262614624" y2="142.04508497187473" stroke="currentColor" stroke-width="1"/>
+  <line x1="510" y1="138" x2="507.06107373853763" y2="142.04508497187473" stroke="currentColor" stroke-width="1"/>
+  <text x="522" y="165" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">output</text>
+  <text x="522" y="179" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">rows</text>
+  <circle cx="612" cy="252" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="4"/>
+  <text x="612" y="256" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">4</text>
+  <line x1="603.0" y1="252.0" x2="580" y2="252" stroke="currentColor" stroke-width="1"/>
+  <circle cx="580" cy="252" r="2" fill="currentColor"/>
+  <line x1="235" y1="464" x2="235" y2="298" stroke="currentColor" stroke-width="1"/>
+  <line x1="235" y1="298" x2="237.93892626146237" y2="302.04508497187476" stroke="currentColor" stroke-width="1"/>
+  <line x1="235" y1="298" x2="232.06107373853763" y2="302.04508497187476" stroke="currentColor" stroke-width="1"/>
+  <text x="102" y="342" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">O_DIRECT</text>
+  <text x="102" y="356" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">io_uring</text>
+  <text x="102" y="370" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">no page cache</text>
+  <rect x="440" y="346" width="190" height="76" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="452" y="367" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">PLE HOST BUFFERS</text>
+  <line x1="440" y1="378" x2="630" y2="378" stroke="currentColor" stroke-width="1.25"/>
+  <text x="452" y="398" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">buffered row reads</text>
+  <text x="452" y="412" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">page cache may hit</text>
+  <polyline points="636,392 660,392 660,94 636,94" fill="none" stroke="currentColor" stroke-width="1"/>
+  <line x1="636" y1="94" x2="640.0450849718748" y2="91.06107373853763" stroke="currentColor" stroke-width="1"/>
+  <line x1="636" y1="94" x2="640.0450849718748" y2="96.93892626146237" stroke="currentColor" stroke-width="1"/>
+  <text x="654" y="328" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="end">upload</text>
+  <circle cx="692" cy="382" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="5"/>
+  <text x="692" y="386" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">5</text>
+  <line x1="683.0" y1="382.0" x2="630" y2="382" stroke="currentColor" stroke-width="1"/>
+  <circle cx="630" cy="382" r="2" fill="currentColor"/>
+  <line x1="520" y1="464" x2="520" y2="428" stroke="currentColor" stroke-width="1"/>
+  <line x1="520" y1="428" x2="522.9389262614624" y2="432.04508497187476" stroke="currentColor" stroke-width="1"/>
+  <line x1="520" y1="428" x2="517.0610737385376" y2="432.04508497187476" stroke="currentColor" stroke-width="1"/>
+  <text x="532" y="449" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">io_uring</text>
+  <rect x="90" y="470" width="540" height="76" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="102" y="491" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">NVMe: CONVERTED MODEL FILES</text>
+  <line x1="90" y1="502" x2="630" y2="502" stroke="currentColor" stroke-width="1.25"/>
+  <line x1="400" y1="502" x2="400" y2="546" stroke="currentColor" stroke-width="1.25"/>
+  <text x="102" y="522" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">experts.bin</text>
+  <text x="102" y="536" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">aligned records + their scales</text>
+  <text x="412" y="522" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">tables.bin</text>
+  <text x="412" y="536" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">n-gram lookup rows</text>
+  <circle cx="38" cy="508" r="9" fill="none" stroke="currentColor" stroke-width="1" data-key="3"/>
+  <text x="38" y="512" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">3</text>
+  <line x1="47.0" y1="508.0" x2="90" y2="508" stroke="currentColor" stroke-width="1"/>
+  <circle cx="90" cy="508" r="2" fill="currentColor"/>
+</svg>

@@ -467,6 +467,66 @@ def conformance_loop() -> Figure:
     return f
 
 
+def oom_memory_paths() -> Figure:
+    f = Figure(720, 566, "Expert records and PLE rows take different paths")
+
+    # The expert record path shares a vertical assembly axis. PLE rows use
+    # their own buffered path at the right; the CPU reads the pinned arena.
+    f.box(90, 26, 540, 104)
+    f.text(102, 46, "GPU: RTX 4090, 24 GB VRAM")
+    f.hline(90, 630, 56)
+    f.lines(
+        102,
+        78,
+        [
+            "compute + dense weights + sequence state",
+            "expert cache uses remaining VRAM",
+            "state growth releases expert-cache chunks",
+        ],
+    )
+    f.keyed(38, 76, "1", 90, 76)
+
+    f.arrow(235, 206, 235, 138)
+    f.text(247, 169, "PCIe copies")
+
+    f.box(90, 212, 290, 80)
+    f.text(102, 233, "PINNED HOST ARENA")
+    f.hline(90, 380, 244)
+    f.lines(102, 264, ["bounded expert-record cache", "direct reads land here"])
+    f.keyed(38, 252, "2", 90, 252)
+
+    f.box(440, 212, 140, 80)
+    f.text(452, 233, "CPU EXPERTS")
+    f.hline(440, 580, 244)
+    f.lines(452, 264, ["host hits", "decode only"])
+    f.arrow(386, 260, 434, 260)
+    f.arrow(510, 206, 510, 138)
+    f.lines(522, 165, ["output", "rows"])
+    f.keyed(612, 252, "4", 580, 252)
+
+    f.arrow(235, 464, 235, 298)
+    f.lines(102, 342, ["O_DIRECT", "io_uring", "no page cache"])
+
+    f.box(440, 346, 190, 76)
+    f.text(452, 367, "PLE HOST BUFFERS")
+    f.hline(440, 630, 378)
+    f.lines(452, 398, ["buffered row reads", "page cache may hit"])
+    f.path_arrow([(636, 392), (660, 392), (660, 94), (636, 94)])
+    f.text(654, 328, "upload", anchor="end")
+    f.keyed(692, 382, "5", 630, 382)
+    f.arrow(520, 464, 520, 428)
+    f.text(532, 449, "io_uring")
+
+    f.box(90, 470, 540, 76)
+    f.text(102, 491, "NVMe: CONVERTED MODEL FILES")
+    f.hline(90, 630, 502)
+    f.vline(400, 502, 546)
+    f.lines(102, 522, ["experts.bin", "aligned records + their scales"])
+    f.lines(412, 522, ["tables.bin", "n-gram lookup rows"])
+    f.keyed(38, 508, "3", 90, 508)
+    return f
+
+
 def main() -> None:
     for name, build in {
         "memory-tiers": memory_tiers,
@@ -476,6 +536,7 @@ def main() -> None:
         "moe-selection": moe_selection,
         "expert-paths": expert_paths,
         "conformance-loop": conformance_loop,
+        "oom-memory-paths": oom_memory_paths,
     }.items():
         (HERE / f"{name}.svg").write_text(build().svg(), encoding="utf-8")
 
