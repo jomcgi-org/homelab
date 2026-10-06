@@ -107,9 +107,81 @@ impl<B: Backend> Gdn<B> {
         scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
     ) -> Result<B::F32> {
+        let (cd, vd, hv) = (d.conv_dim(), d.value_dim(), d.v_heads);
+        let n = self.proj_width(d);
+        let mut proj = self.project(gpu, d, ws, x, t, scratch)?;
+        // Downstream kernels read the fused projection in place:
+        // [qkv (cd) | z (vd) | b (hv) | a (hv)] per row.
+        let (z_off, b_off, a_off) = (cd, cd + vd, cd + vd + hv);
+        tap_cols(gpu, probe, "gdn.in_proj_qkv", &mut proj, t, n, 0, cd)?;
+        tap_cols(gpu, probe, "gdn.in_proj_z", &mut proj, t, n, z_off, vd)?;
+        tap_cols(gpu, probe, "gdn.in_proj_b", &mut proj, t, n, b_off, hv)?;
+        tap_cols(gpu, probe, "gdn.in_proj_a", &mut proj, t, n, a_off, hv)?;
+        let normed = self.core(gpu, d, ws, &proj, t, state, checkpoint, probe)?;
+        ws.give("gdn.proj", proj);
+        let out = self.output(gpu, d, ws, &normed, t, scratch)?;
+        ws.give("gdn.normed", normed);
+        Ok(out)
+    }
+
+    /// Width of [`Self::project`]'s rows.
+    pub fn proj_width(&self, d: &Dims) -> usize {
+        d.conv_dim() + d.value_dim() + 2 * d.v_heads
+    }
+
+    /// The fused input projection of `t` rows of `x` (workspace buffer
+    /// `gdn.proj`). Rows are independent: several sequences' rows can run as one.
+    pub fn project(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+    ) -> Result<B::F32> {
+        let n = self.proj_width(d);
+        let mut proj = ws.take(gpu, "gdn.proj", t * n)?;
+        gpu.gemm_w(x, &self.in_proj, &mut proj, scratch, t, n, d.hidden)?;
+        Ok(proj)
+    }
+
+    /// The output projection of `t` normed rows (workspace buffer `gdn.out`).
+    pub fn output(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        normed: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+    ) -> Result<B::F32> {
+        let (vd, h) = (d.value_dim(), d.hidden);
+        let mut out = ws.take(gpu, "gdn.out", t * h)?;
+        gpu.gemm_w(normed, &self.out, &mut out, scratch, t, h, vd)?;
+        Ok(out)
+    }
+
+    /// One sequence's recurrence over its `t` projected rows (from
+    /// [`Self::project`]): causal conv, gates, the gated delta rule on `state` and
+    /// the gated norm. Returns the normed rows `[t, value_dim]` as workspace buffer
+    /// `gdn.normed`. With `checkpoint`, the step can later be rewound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn core(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        proj: &B::F32,
+        t: usize,
+        state: &mut GdnState<B>,
+        checkpoint: bool,
+        probe: &mut dyn Probe,
+    ) -> Result<B::F32> {
         let w = self;
-        let (cd, vd, hv, h) = (d.conv_dim(), d.value_dim(), d.v_heads, d.hidden);
+        let (cd, vd, hv) = (d.conv_dim(), d.value_dim(), d.v_heads);
         let n = cd + vd + 2 * hv;
+        let (z_off, b_off, a_off) = (cd, cd + vd, cd + vd + hv);
         let mut ckpt = None;
         if checkpoint {
             let old = state.ckpt.take();
@@ -140,19 +212,9 @@ impl<B: Backend> Gdn<B> {
         } else {
             state.ckpt = None;
         }
-        let mut proj = ws.take(gpu, "gdn.proj", t * n)?;
-        gpu.gemm_w(x, &w.in_proj, &mut proj, scratch, t, n, h)?;
-        // Downstream kernels read the fused projection in place:
-        // [qkv (cd) | z (vd) | b (hv) | a (hv)] per row.
-        let (z_off, b_off, a_off) = (cd, cd + vd, cd + vd + hv);
-        tap_cols(gpu, probe, "gdn.in_proj_qkv", &mut proj, t, n, 0, cd)?;
-        tap_cols(gpu, probe, "gdn.in_proj_z", &mut proj, t, n, z_off, vd)?;
-        tap_cols(gpu, probe, "gdn.in_proj_b", &mut proj, t, n, b_off, hv)?;
-        tap_cols(gpu, probe, "gdn.in_proj_a", &mut proj, t, n, a_off, hv)?;
-
         let mut conv = ws.take(gpu, "gdn.conv", t * cd)?;
         gpu.causal_conv_silu(
-            &proj,
+            proj,
             0,
             n,
             &mut state.conv,
@@ -168,10 +230,10 @@ impl<B: Backend> Gdn<B> {
         let mut g = ws.take(gpu, "gdn.g", t * hv)?;
         let mut beta = ws.take(gpu, "gdn.beta", t * hv)?;
         gpu.gdn_gates(
-            &proj, a_off, b_off, n, &w.a_log, &w.dt_bias, &mut g, &mut beta, t, hv,
+            proj, a_off, b_off, n, &w.a_log, &w.dt_bias, &mut g, &mut beta, t, hv,
         )?;
         if let Some(c) = ckpt.as_mut() {
-            gpu.copy_at(&proj, &mut c.proj, 0, t * n)?;
+            gpu.copy_at(proj, &mut c.proj, 0, t * n)?;
             gpu.copy_at(&conv, &mut c.qkv, 0, t * cd)?;
             gpu.copy_at(&g, &mut c.g, 0, t * hv)?;
             gpu.copy_at(&beta, &mut c.beta, 0, t * hv)?;
@@ -198,7 +260,7 @@ impl<B: Backend> Gdn<B> {
         let mut normed = ws.take(gpu, "gdn.normed", t * vd)?;
         gpu.gated_rmsnorm_sigmoid(
             &core,
-            &proj,
+            proj,
             z_off,
             n,
             hv,
@@ -209,12 +271,7 @@ impl<B: Backend> Gdn<B> {
             d.eps,
         )?;
         ws.give("gdn.core", core);
-        ws.give("gdn.proj", proj);
-        tap(gpu, probe, "gdn.norm_out", &mut normed)?;
-        let mut out = ws.take(gpu, "gdn.out", t * h)?;
-        gpu.gemm_w(&normed, &w.out, &mut out, scratch, t, h, vd)?;
-        ws.give("gdn.normed", normed);
-        Ok(out)
+        Ok(normed)
     }
 
     /// Returns the state to just after the first `keep` rows of the last

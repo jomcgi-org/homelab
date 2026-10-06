@@ -305,64 +305,158 @@ impl<B: Backend> DecoderLayer<B> {
         self.post_moe(gpu, d, pre, &moe_out, t, state, probe)
     }
 
-    /// Runs the layer over several sequences' rows in one step: each sequence's
-    /// token mixer (PLE, GDN or attention, and their hyper-connections) runs on its
-    /// own state, then their MoE inputs are concatenated and the MoE runs once over
-    /// all rows (one routing, one fetch of the union of their experts, one decode
-    /// expert launch), and each sequence's MoE output is combined back on its own.
-    /// `xs[i]` holds `steps[i].token_ids.len()` residual rows of sequence `i`, whose
-    /// layer state is `states[i]`. Returns each sequence's layer output, taken from
-    /// its own workspace as `layer.out` (as [`Self::forward`]). Shared buffers come
-    /// from `ws`.
+    /// Runs the layer over several sequences' rows in one step. `x` holds every
+    /// sequence's residual rows, sequence after sequence (`steps[i]` says how many
+    /// are sequence `i`'s, whose layer state is `states[i]`). Everything that works
+    /// row by row runs once over all rows (hyper-connections, the mixer's input
+    /// and output projections, the MoE: one routing, one fetch of the union of the
+    /// sequences' experts); only what carries per-sequence state runs per sequence
+    /// on its own rows (PLE, the GDN recurrence or the attention core), in that
+    /// sequence's workspace. Returns the output rows as `ws` buffer `layer.out`.
     #[allow(clippy::too_many_arguments)]
     pub fn forward_many(
         &self,
         gpu: &B,
         d: &Dims,
         ws: &RefCell<Workspace<B>>,
-        xs: &[&B::F32],
+        x: &B::F32,
         steps: &[StepInput],
         states: &mut [&mut LayerState<B>],
         experts: &mut dyn ExpertSource<B>,
-    ) -> Result<Vec<B::F32>> {
-        let h = d.hidden;
-        let lens: Vec<usize> = steps.iter().map(|s| s.token_ids.len()).collect();
-        let total: usize = lens.iter().sum();
-        let mut pres = Vec::with_capacity(xs.len());
-        for ((x, step), st) in xs.iter().zip(steps).zip(states.iter_mut()) {
-            pres.push(self.pre_moe(gpu, d, x, step.token_ids.len(), step, st, &mut NoProbe)?);
-        }
+    ) -> Result<B::F32> {
+        let r = d.residual();
+        let total: usize = steps.iter().map(|s| s.token_ids.len()).sum();
         let mut wsb = ws.borrow_mut();
-        let mut moe_in = wsb.take(gpu, "layer.many_in", total * h)?;
-        let mut at = 0;
-        for (pre, &t) in pres.iter().zip(&lens) {
-            gpu.copy_range(&pre.mixed, 0, &mut moe_in, at * h, t * h)?;
-            at += t;
-        }
         let mut scratch = wsb.take_bf16(gpu, "gemm.scratch", scratch_len(d, total))?;
+
+        let mut with_ple = None;
+        if let Some(ple) = &self.ple {
+            let mut add_all = wsb.take(gpu, "layer.many_ple_add", total * r)?;
+            let mut at = 0;
+            for (step, st) in steps.iter().zip(states.iter_mut()) {
+                let t = step.token_ids.len();
+                let ws_rc = st.ws.clone();
+                let mut wsi = ws_rc.borrow_mut();
+                let mut xi = wsi.take(gpu, "layer.many_x", t * r)?;
+                gpu.copy_range(x, at * r, &mut xi, 0, t * r)?;
+                let pst = st.ple.as_mut().context("PLE layer without PLE state")?;
+                let mut sc = wsi.take_bf16(gpu, "gemm.scratch", scratch_len(d, t))?;
+                let add =
+                    ple.forward(gpu, d, &mut wsi, &xi, t, step, pst, &mut sc, &mut NoProbe)?;
+                wsi.give_bf16("gemm.scratch", sc);
+                gpu.copy_range(&add, 0, &mut add_all, at * r, t * r)?;
+                wsi.give("ple.out", add);
+                wsi.give("layer.many_x", xi);
+                at += t;
+            }
+            let mut sum = wsb.take(gpu, "layer.ple_sum", total * r)?;
+            gpu.add(x, &add_all, &mut sum, total * r)?;
+            wsb.give("layer.many_ple_add", add_all);
+            with_ple = Some(sum);
+        }
+        let residual = with_ple.as_ref().unwrap_or(x);
+
+        let (mixed, inject) = self.attn_hc.mix(
+            gpu,
+            d,
+            &mut wsb,
+            residual,
+            total,
+            &mut scratch,
+            &mut NoProbe,
+            "attn_hc",
+        )?;
+        let inject = inject.context("attention hyper-connection without combine")?;
+        // The mixer: projections over all rows, the stateful core per sequence.
+        let (mixer_out, out_name) = match &self.mixer {
+            Mixer::Gdn(g) => {
+                let (n, vd) = (g.proj_width(d), d.value_dim());
+                let proj = g.project(gpu, d, &mut wsb, &mixed, total, &mut scratch)?;
+                let mut normed = wsb.take(gpu, "layer.many_core", total * vd)?;
+                let mut at = 0;
+                for (step, st) in steps.iter().zip(states.iter_mut()) {
+                    let t = step.token_ids.len();
+                    let ws_rc = st.ws.clone();
+                    let mut wsi = ws_rc.borrow_mut();
+                    let mut pi = wsi.take(gpu, "gdn.proj", t * n)?;
+                    gpu.copy_range(&proj, at * n, &mut pi, 0, t * n)?;
+                    let gst = st.gdn.as_mut().context("GDN layer without GDN state")?;
+                    let ni =
+                        g.core(gpu, d, &mut wsi, &pi, t, gst, step.checkpoint, &mut NoProbe)?;
+                    gpu.copy_range(&ni, 0, &mut normed, at * vd, t * vd)?;
+                    wsi.give("gdn.normed", ni);
+                    wsi.give("gdn.proj", pi);
+                    at += t;
+                }
+                wsb.give("gdn.proj", proj);
+                let out = g.output(gpu, d, &mut wsb, &normed, total, &mut scratch)?;
+                wsb.give("layer.many_core", normed);
+                (out, "gdn.out")
+            }
+            Mixer::Attention(a) => {
+                let (n, cw) = (a.proj_width(), a.core_width());
+                let proj = a.project(gpu, d, &mut wsb, &mixed, total, &mut scratch)?;
+                let mut core = wsb.take(gpu, "layer.many_core", total * cw)?;
+                let mut at = 0;
+                for (step, st) in steps.iter().zip(states.iter_mut()) {
+                    let t = step.token_ids.len();
+                    let ws_rc = st.ws.clone();
+                    let mut wsi = ws_rc.borrow_mut();
+                    let mut pi = wsi.take(gpu, "attn.proj", t * n)?;
+                    gpu.copy_range(&proj, at * n, &mut pi, 0, t * n)?;
+                    let ast = st
+                        .attn
+                        .as_mut()
+                        .context("attention layer without KV state")?;
+                    let ci = a.core(gpu, d, &mut wsi, &pi, t, step, ast, &mut NoProbe)?;
+                    gpu.copy_range(&ci, 0, &mut core, at * cw, t * cw)?;
+                    wsi.give("attn.core", ci);
+                    wsi.give("attn.proj", pi);
+                    at += t;
+                }
+                wsb.give("attn.proj", proj);
+                let out = a.output(gpu, d, &mut wsb, &core, total, &mut scratch)?;
+                wsb.give("layer.many_core", core);
+                (out, "attn.out")
+            }
+        };
+        wsb.give("hc.mixed", mixed);
+        let mut res1 = wsb.take(gpu, "layer.res1", total * r)?;
+        HyperConn::combine_into(gpu, d, residual, &mixer_out, &inject, total, &mut res1)?;
+        wsb.give(out_name, mixer_out);
+        wsb.give("hc.inject", inject);
+        if let Some(sum) = with_ple {
+            wsb.give("layer.ple_sum", sum);
+        }
+
+        let (mixed, inject) = self.mlp_hc.mix(
+            gpu,
+            d,
+            &mut wsb,
+            &res1,
+            total,
+            &mut scratch,
+            &mut NoProbe,
+            "mlp_hc",
+        )?;
+        let inject = inject.context("MLP hyper-connection without combine")?;
         let moe_out = self.moe.forward(
             gpu,
             d,
             &mut wsb,
-            &moe_in,
+            &mixed,
             total,
             experts,
             &mut scratch,
             &mut NoProbe,
         )?;
         wsb.give_bf16("gemm.scratch", scratch);
-        wsb.give("layer.many_in", moe_in);
-        drop(wsb);
-        let mut outs = Vec::with_capacity(xs.len());
-        let mut at = 0;
-        for ((pre, &t), st) in pres.into_iter().zip(&lens).zip(states.iter_mut()) {
-            let mut part = st.ws.borrow_mut().take(gpu, "layer.many_part", t * h)?;
-            gpu.copy_range(&moe_out, at * h, &mut part, 0, t * h)?;
-            outs.push(self.post_moe(gpu, d, pre, &part, t, st, &mut NoProbe)?);
-            st.ws.borrow_mut().give("layer.many_part", part);
-            at += t;
-        }
-        Ok(outs)
+        let mut out = wsb.take(gpu, "layer.out", total * r)?;
+        HyperConn::combine_into(gpu, d, &res1, &moe_out, &inject, total, &mut out)?;
+        wsb.give("hc.mixed", mixed);
+        wsb.give("hc.inject", inject);
+        wsb.give("layer.res1", res1);
+        Ok(out)
     }
 
     /// The MoE inputs of `pres` (from [`Self::pre_moe`], `lens[i]` tokens each) in one

@@ -393,8 +393,87 @@ impl<B: Backend> Attention<B> {
         scratch: &mut B::Bf16,
         probe: &mut dyn Probe,
     ) -> Result<B::F32> {
+        let proj = self.project(gpu, d, ws, x, t, scratch)?;
+        let attn = self.core(gpu, d, ws, &proj, t, step, state, probe)?;
+        ws.give("attn.proj", proj);
+        let out = self.output(gpu, d, ws, &attn, t, scratch)?;
+        ws.give("attn.core", attn);
+        Ok(out)
+    }
+
+    /// Width of [`Self::project`]'s rows.
+    pub fn proj_width(&self) -> usize {
         let a = &self.a;
+        (a.idx_heads + a.idx_kv_heads) * a.idx_dim
+            + a.heads * a.head_dim * 2
+            + 2 * a.kv_heads * a.head_dim
+    }
+
+    /// Width of [`Self::core`]'s rows.
+    pub fn core_width(&self) -> usize {
+        self.a.heads * self.a.head_dim
+    }
+
+    /// Every projection of `t` rows of `x` in one GEMM, rows of
+    /// `[indexer qk | q+gate | k | v]` (workspace buffer `attn.proj`). Rows are
+    /// independent: the projections of several sequences can run as one.
+    pub fn project(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        x: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+    ) -> Result<B::F32> {
+        let n = self.proj_width();
+        let mut proj = ws.take(gpu, "attn.proj", t * n)?;
+        gpu.gemm_w(x, &self.in_proj, &mut proj, scratch, t, n, d.hidden)?;
+        Ok(proj)
+    }
+
+    /// The output projection of `t` gated attention rows (workspace buffer
+    /// `attn.out`).
+    pub fn output(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        attn: &B::F32,
+        t: usize,
+        scratch: &mut B::Bf16,
+    ) -> Result<B::F32> {
         let h = d.hidden;
+        let mut out = ws.take(gpu, "attn.out", t * h)?;
+        gpu.gemm_w(
+            attn,
+            &self.o_proj,
+            &mut out,
+            scratch,
+            t,
+            h,
+            self.core_width(),
+        )?;
+        Ok(out)
+    }
+
+    /// One sequence's attention over its `t` projected rows (from
+    /// [`Self::project`]): indexer, norms, RoPE, cache append, sparse attention and
+    /// the output gate. Returns the gated rows `[t, heads * head_dim]` as workspace
+    /// buffer `attn.core`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn core(
+        &self,
+        gpu: &B,
+        d: &Dims,
+        ws: &mut Workspace<B>,
+        proj: &B::F32,
+        t: usize,
+        step: &StepInput,
+        state: &mut AttnState<B>,
+        probe: &mut dyn Probe,
+    ) -> Result<B::F32> {
+        let a = &self.a;
         // `pos` is the sequence position (RoPE), `start` the cache index.
         let pos = step.start_pos;
         ensure!(
@@ -409,21 +488,17 @@ impl<B: Backend> Attention<B> {
         let (nh, kvh, hd) = (a.heads, a.kv_heads, a.head_dim);
         let (rd, inv) = (a.rotary_dim, &self.inv_freq);
 
-        // One GEMM for every projection of x: [indexer qk | q+gate | k | v].
         let idx_w = (a.idx_heads + a.idx_kv_heads) * a.idx_dim;
         let (qg_w, kv_w) = (nh * hd * 2, kvh * hd);
         let n = idx_w + qg_w + 2 * kv_w;
-        let mut proj = ws.take(gpu, "attn.proj", t * n)?;
-        gpu.gemm_w(x, &self.in_proj, &mut proj, scratch, t, n, h)?;
         let mut idx_qk = ws.take(gpu, "attn.idx_qk", t * idx_w)?;
-        gpu.copy_cols(&proj, &mut idx_qk, t, n, 0, idx_w)?;
+        gpu.copy_cols(proj, &mut idx_qk, t, n, 0, idx_w)?;
         let mut qg = ws.take(gpu, "attn.qg", t * qg_w)?;
-        gpu.copy_cols(&proj, &mut qg, t, n, idx_w, qg_w)?;
+        gpu.copy_cols(proj, &mut qg, t, n, idx_w, qg_w)?;
         let mut k_raw = ws.take(gpu, "attn.k_raw", t * kv_w)?;
-        gpu.copy_cols(&proj, &mut k_raw, t, n, idx_w + qg_w, kv_w)?;
+        gpu.copy_cols(proj, &mut k_raw, t, n, idx_w + qg_w, kv_w)?;
         let mut v = ws.take(gpu, "attn.v", t * kv_w)?;
-        gpu.copy_cols(&proj, &mut v, t, n, idx_w + qg_w + kv_w, kv_w)?;
-        ws.give("attn.proj", proj);
+        gpu.copy_cols(proj, &mut v, t, n, idx_w + qg_w + kv_w, kv_w)?;
 
         // Indexer: selection mask over [0, kv_len) for each query.
         tap(gpu, probe, "indexer.qk_proj", &mut idx_qk)?;
@@ -607,11 +682,8 @@ impl<B: Backend> Attention<B> {
         gpu.mul_sigmoid(&mut attn, &gate, t * nh * hd)?;
         ws.give("attn.gate", gate);
         tap(gpu, probe, "attn.gated_out", &mut attn)?;
-        let mut out = ws.take(gpu, "attn.out", t * h)?;
-        gpu.gemm_w(&attn, &self.o_proj, &mut out, scratch, t, h, nh * hd)?;
-        ws.give("attn.core", attn);
         self.tap_state(gpu, state, probe)?;
-        Ok(out)
+        Ok(attn)
     }
 
     /// Taps the block scores as `indexer.block_scores` (`[t, kv_len / ratio]`, zero

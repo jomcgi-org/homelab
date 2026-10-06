@@ -88,6 +88,8 @@ pub struct QwenModel<B: Backend> {
     lm_head: Weight<B>,
     /// The multi-token-prediction head, when the checkpoint has one.
     mtp: Option<Mtp<B>>,
+    /// Scratch of batched steps over several sequences ([`Self::step_many`]).
+    batch: RefCell<Workspace<B>>,
 }
 
 /// The checkpoint's multi-token-prediction head. Given the final residual at
@@ -235,6 +237,7 @@ impl<B: Backend> QwenModel<B> {
         };
         Ok(QwenModel {
             mtp,
+            batch: RefCell::new(Workspace::new()),
             final_mixer: HyperConn::load(
                 gpu,
                 model,
@@ -576,8 +579,9 @@ impl<B: Backend> QwenModel<B> {
         Ok(logits)
     }
 
-    /// One step over several sequences: `seqs[i]` is fed `tokens[i]` (each step can
-    /// afterwards be rewound per sequence, as with `checkpoint` in [`Self::step`]).
+    /// One step over several sequences: `seqs[i]` is fed `tokens[i]` (each step of
+    /// more than one token can afterwards be rewound per sequence, as with
+    /// `checkpoint` in [`Self::step`]).
     /// Each sequence's token mixers run on its own state; the MoE of every layer and
     /// the final head run once over all rows ([`DecoderLayer::forward_many`]), so a
     /// layer fetches the union of the sequences' routed experts once. Returns the
@@ -613,15 +617,13 @@ impl<B: Backend> QwenModel<B> {
         // Several sequences' step buffers and rewind copies come out of the
         // workspace headroom: keep it free.
         self.ensure_free(gpu, WORKSPACE_HEADROOM, experts)?;
-        // Shared buffers (MoE input and scratch, the head) come from the first
-        // sequence's workspace; layers run one at a time.
-        let ws = seqs[0].ws.clone();
-        let mut xs = Vec::with_capacity(seqs.len());
-        for (st, t) in seqs.iter().zip(tokens) {
-            let mut x = st.ws.borrow_mut().take(gpu, "model.embed", t.len() * r)?;
-            self.embed_into(gpu, t, &mut x)?;
-            xs.push(x);
-        }
+        // Every sequence's rows live in one buffer from the batch workspace;
+        // per-sequence state runs in each sequence's own workspace.
+        let ws = &self.batch;
+        let total: usize = tokens.iter().map(|t| t.len()).sum();
+        let all: Vec<u32> = tokens.iter().flat_map(|t| t.iter().copied()).collect();
+        let mut x = ws.borrow_mut().take(gpu, "model.embed", total * r)?;
+        self.embed_into(gpu, &all, &mut x)?;
         let mut x_name = "model.embed";
         let steps: Vec<StepInput> = seqs
             .iter()
@@ -629,36 +631,28 @@ impl<B: Backend> QwenModel<B> {
             .map(|(st, t)| StepInput {
                 token_ids: t,
                 start_pos: st.pos,
-                checkpoint: true,
+                // One token is never rewound: skip the recurrent-state copies.
+                checkpoint: t.len() > 1,
             })
             .collect();
         for (li, layer) in self.layers.iter().enumerate() {
             let mut states: Vec<&mut LayerState<B>> =
                 seqs.iter_mut().map(|s| &mut s.layers[li]).collect();
-            let refs: Vec<&B::F32> = xs.iter().collect();
-            let outs = layer.forward_many(gpu, d, &ws, &refs, &steps, &mut states, experts)?;
-            drop(states);
-            for ((st, x), out) in seqs.iter().zip(xs.iter_mut()).zip(outs) {
-                st.ws.borrow_mut().give(x_name, std::mem::replace(x, out));
-            }
+            let next = layer.forward_many(gpu, d, ws, &x, &steps, &mut states, experts)?;
+            ws.borrow_mut()
+                .give(x_name, std::mem::replace(&mut x, next));
             x_name = "layer.out";
         }
-        let total: usize = tokens.iter().map(|t| t.len()).sum();
-        let mut all = ws.borrow_mut().take(gpu, "model.many_x", total * r)?;
         let mut at = 0;
-        for ((st, t), x) in seqs.iter_mut().zip(tokens).zip(&xs) {
-            st.rewindable = Some((st.pos, t.len()));
+        for (st, t) in seqs.iter_mut().zip(tokens) {
+            st.rewindable = (t.len() > 1).then_some((st.pos, t.len()));
             st.pos += t.len();
-            gpu.copy_range(x, 0, &mut all, at * r, t.len() * r)?;
+            self.keep_hidden(gpu, st, &x, at, t)?;
             at += t.len();
         }
-        for ((st, t), x) in seqs.iter_mut().zip(tokens).zip(xs) {
-            self.keep_hidden(gpu, st, &x, 0, t)?;
-            st.ws.borrow_mut().give(x_name, x);
-        }
         let mut wsb = ws.borrow_mut();
-        let logits = self.head(gpu, &mut wsb, &all, total, &mut NoProbe, false)?;
-        wsb.give("model.many_x", all);
+        let logits = self.head(gpu, &mut wsb, &x, total, &mut NoProbe, false)?;
+        wsb.give(x_name, x);
         Ok(logits)
     }
 
