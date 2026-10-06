@@ -1,11 +1,13 @@
 //! The engine thread: owns the model and the cached sequence, and runs one
 //! generation at a time.
 
+use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use oominf_core::{Model, Session, decode_step};
+use oominf_core::{ExpertStats, ExpertTiers, Model, Session, decode_step};
 use tokio::sync::mpsc;
 
 use crate::sampling::{Sampler, SamplingParams};
@@ -176,12 +178,38 @@ impl<S: Resume> PrefixCache<S> for LastSequence<S> {
 #[derive(Clone)]
 pub struct EngineHandle {
     jobs: std_mpsc::Sender<Job>,
+    telemetry: Arc<Mutex<Telemetry>>,
+}
+
+/// What the engine is doing (`/v1/stats`), updated by the engine thread as it
+/// works: at a request's start, after prefill, every decode step and at the end.
+#[derive(Debug, Clone, Default)]
+pub struct Telemetry {
+    pub requests_active: u64,
+    pub requests_completed: u64,
+    /// Tokens the current (or last) sequence holds, and the context limit.
+    pub context_tokens: usize,
+    pub max_context: usize,
+    /// Generated tokens per second over about the last second of decoding.
+    pub decode_tps: Option<f64>,
+    /// Where routed experts came from so far, and how much each tier holds.
+    pub experts: ExpertStats,
+    pub tiers: ExpertTiers,
 }
 
 impl EngineHandle {
     /// A handle over any job queue (the engine thread, or a stand-in in tests).
     pub fn new(jobs: std_mpsc::Sender<Job>) -> Self {
-        EngineHandle { jobs }
+        Self::with_telemetry(jobs, Arc::default())
+    }
+
+    fn with_telemetry(jobs: std_mpsc::Sender<Job>, telemetry: Arc<Mutex<Telemetry>>) -> Self {
+        EngineHandle { jobs, telemetry }
+    }
+
+    /// A snapshot of the engine's telemetry.
+    pub fn telemetry(&self) -> Telemetry {
+        self.telemetry.lock().unwrap().clone()
     }
 
     pub fn submit(&self, job: Job) -> Result<()> {
@@ -203,10 +231,15 @@ pub fn start(
 ) -> (EngineHandle, std_mpsc::Receiver<Result<String>>) {
     let (jobs_tx, jobs_rx) = std_mpsc::channel::<Job>();
     let (ready_tx, ready_rx) = std_mpsc::channel();
+    let telemetry = Arc::new(Mutex::new(Telemetry {
+        max_context,
+        ..Telemetry::default()
+    }));
+    let shared = telemetry.clone();
     std::thread::Builder::new()
         .name("oominf-engine".into())
         .spawn(move || {
-            let engine = match Engine::load(loader, max_context, draft, store) {
+            let engine = match Engine::load(loader, max_context, draft, store, shared) {
                 Ok((engine, summary)) => {
                     let _ = ready_tx.send(Ok(summary));
                     engine
@@ -219,7 +252,7 @@ pub fn start(
             engine.run(jobs_rx);
         })
         .expect("spawn engine thread");
-    (EngineHandle::new(jobs_tx), ready_rx)
+    (EngineHandle::with_telemetry(jobs_tx, telemetry), ready_rx)
 }
 
 type Seq = Box<dyn Session>;
@@ -258,6 +291,7 @@ struct Engine {
     max_context: usize,
     /// Draft tokens per decode step (0: no speculative decoding).
     draft: usize,
+    telemetry: Arc<Mutex<Telemetry>>,
 }
 
 impl Engine {
@@ -266,6 +300,7 @@ impl Engine {
         max_context: usize,
         draft: usize,
         store: Option<StoreConfig>,
+        telemetry: Arc<Mutex<Telemetry>>,
     ) -> Result<(Self, String)> {
         let t = Instant::now();
         let model = loader()?;
@@ -290,20 +325,39 @@ impl Engine {
                 cache,
                 max_context,
                 draft,
+                telemetry,
             },
             summary,
         ))
     }
 
     fn run(mut self, jobs: std_mpsc::Receiver<Job>) {
+        self.publish(0, None);
         while let Ok(job) = jobs.recv() {
             let events = job.events.clone();
+            self.telemetry.lock().unwrap().requests_active = 1;
             if let Err(e) = self.serve(job) {
                 // The cached state may be half-updated: drop it unsaved.
                 self.cache.discard();
                 let _ = events.blocking_send(Event::Failed(format!("{e:#}")));
             }
+            let mut t = self.telemetry.lock().unwrap();
+            t.requests_active = 0;
+            t.requests_completed += 1;
         }
+    }
+
+    /// Updates the telemetry: the sequence's length, the decode rate when one was
+    /// measured, and the expert tiers' counters.
+    fn publish(&self, context_tokens: usize, decode_tps: Option<f64>) {
+        let (experts, tiers) = (self.model.expert_stats(), self.model.expert_tiers());
+        let mut t = self.telemetry.lock().unwrap();
+        t.context_tokens = context_tokens;
+        if decode_tps.is_some() {
+            t.decode_tps = decode_tps;
+        }
+        t.experts = experts;
+        t.tiers = tiers;
     }
 
     fn serve(&mut self, job: Job) -> Result<()> {
@@ -329,6 +383,7 @@ impl Engine {
             }
         };
         let cached = ids.len();
+        self.publish(cached, None);
         if job
             .events
             .blocking_send(Event::Started {
@@ -363,6 +418,9 @@ impl Engine {
             }
         };
 
+        self.publish(ids.len(), None);
+        // Emitted-token counts over about the last second, for the decode rate.
+        let mut rate: VecDeque<(Instant, usize)> = VecDeque::new();
         let mut sampler = Sampler::new(job.sampling);
         let mut finish = FinishReason::Length;
         let (mut emitted, mut drafted, mut accepted) = (0, 0, 0);
@@ -390,6 +448,18 @@ impl Engine {
             )?;
             drafted += d.drafted;
             accepted += d.accepted;
+            let now = Instant::now();
+            rate.push_back((now, emitted + d.tokens.len() - 1));
+            while rate.len() > 2 && now - rate[1].0 >= Duration::from_secs(1) {
+                rate.pop_front();
+            }
+            let tps = match (rate.front(), rate.back()) {
+                (Some(&(t0, n0)), Some(&(t1, n1))) if t1 > t0 => {
+                    Some((n1 - n0) as f64 / (t1 - t0).as_secs_f64())
+                }
+                _ => None,
+            };
+            self.publish(ids.len() + d.tokens.len(), tps);
             ids.push(next);
             // `tokens[..n - 1]` are accepted drafts, already fed; `tokens[n - 1]` is
             // the new `next`. A stop, a closed client or the token limit inside the

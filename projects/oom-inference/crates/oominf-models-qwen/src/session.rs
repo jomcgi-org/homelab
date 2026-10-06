@@ -122,6 +122,10 @@ impl<B: Backend> Model for Qwen<B> {
     fn expert_stats(&self) -> ExpertStats {
         self.0.experts.borrow().stats()
     }
+
+    fn expert_tiers(&self) -> oominf_core::ExpertTiers {
+        self.0.experts.borrow().tiers()
+    }
 }
 
 impl<B: Backend> Session for QwenSession<B> {

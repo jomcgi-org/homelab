@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use oominf_core::{Backend, ExpertSource, ExpertStats, Staged};
+use oominf_core::{Backend, ExpertSource, ExpertStats, ExpertTiers, Staged};
 use oominf_format::Model;
 
 use crate::policy::Policy;
@@ -119,6 +119,13 @@ impl<B> ExpertSource<B> for GroupedExperts<B> {
             .iter()
             .map(|s| s.stats())
             .fold(ExpertStats::default(), |a, s| a + s)
+    }
+
+    fn tiers(&self) -> ExpertTiers {
+        self.sources
+            .iter()
+            .map(|s| s.tiers())
+            .fold(ExpertTiers::default(), |a, t| a + t)
     }
 
     fn describe(&self) -> String {

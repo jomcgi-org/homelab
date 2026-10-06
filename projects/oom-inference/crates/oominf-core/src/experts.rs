@@ -97,6 +97,10 @@ pub trait ExpertSource<B> {
     fn stats(&self) -> ExpertStats {
         ExpertStats::default()
     }
+    /// How many records each tier holds (capacity, not occupancy).
+    fn tiers(&self) -> ExpertTiers {
+        ExpertTiers::default()
+    }
 
     /// One line describing the source (sizes, policies).
     fn describe(&self) -> String;
@@ -159,6 +163,33 @@ impl<B> ExpertSource<B> for Fetched {
             self.addrs.len(),
             self.layer
         )
+    }
+}
+
+/// How many routed-expert records each tier of an [`ExpertSource`] holds.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ExpertTiers {
+    /// Records the source serves, and their bytes.
+    pub records: u64,
+    pub bytes: u64,
+    /// Records (and bytes) the VRAM tier and the pinned host tier hold.
+    pub vram_records: u64,
+    pub vram_bytes: u64,
+    pub host_records: u64,
+    pub host_bytes: u64,
+}
+
+impl std::ops::Add for ExpertTiers {
+    type Output = ExpertTiers;
+    fn add(self, o: ExpertTiers) -> ExpertTiers {
+        ExpertTiers {
+            records: self.records + o.records,
+            bytes: self.bytes + o.bytes,
+            vram_records: self.vram_records + o.vram_records,
+            vram_bytes: self.vram_bytes + o.vram_bytes,
+            host_records: self.host_records + o.host_records,
+            host_bytes: self.host_bytes + o.host_bytes,
+        }
     }
 }
 

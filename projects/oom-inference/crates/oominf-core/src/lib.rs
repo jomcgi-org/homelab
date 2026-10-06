@@ -19,7 +19,7 @@ pub use backend::{
     Transfer, View, Weight,
 };
 pub use decode::{Decoded, argmax, decode_step};
-pub use experts::{ExpertFactory, ExpertSource, ExpertStats, Fetched, Staged};
+pub use experts::{ExpertFactory, ExpertSource, ExpertStats, ExpertTiers, Fetched, Staged};
 pub use model::{Model, Session};
 pub use probe::{NoProbe, Probe, tap, tap_cols};
 pub use workspace::Workspace;

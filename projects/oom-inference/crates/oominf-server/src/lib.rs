@@ -162,10 +162,40 @@ fn generation_defaults(
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/v1/stats", get(stats))
         .route("/v1/models", get(openai::models))
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/messages", post(anthropic::messages))
         .with_state(app)
+}
+
+/// What the engine is doing: requests, context use, the recent decode rate, and
+/// where routed experts came from (cumulative counters; subtract two snapshots for
+/// an interval) with the size of each tier.
+async fn stats(State(app): State<Arc<App>>) -> Response {
+    let t = app.engine.telemetry();
+    let e = t.experts;
+    let tiers = t.tiers;
+    axum::Json(serde_json::json!({
+        "instance_id": app.started.to_string(),
+        "requests": {"active": t.requests_active, "completed": t.requests_completed},
+        "context": {"tokens": t.context_tokens, "max": t.max_context},
+        "throughput": {"decode_tps": t.decode_tps},
+        "experts": {
+            "routed": e.requests,
+            "vram_hits": e.vram_hits,
+            "host_hits": e.host_hits,
+            "host_computed": e.host_computed,
+            "disk_reads": e.disk_reads,
+        },
+        "tiers": {
+            "records": tiers.records,
+            "bytes": tiers.bytes,
+            "vram": {"records": tiers.vram_records, "bytes": tiers.vram_bytes},
+            "host": {"records": tiers.host_records, "bytes": tiers.host_bytes},
+        },
+    }))
+    .into_response()
 }
 
 async fn health(State(app): State<Arc<App>>) -> Response {
