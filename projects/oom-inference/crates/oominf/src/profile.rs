@@ -29,7 +29,7 @@ use crate::load::{ExpertArgs, Tuning};
 
 /// Bumped whenever what the probe measures or how [`derive`] uses it changes, so
 /// older profiles are measured again.
-const PROBE_VERSION: u32 = 1;
+const PROBE_VERSION: u32 = 2;
 
 /// What a profile is valid for: a change in any field measures again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +43,9 @@ pub struct Fingerprint {
     pub ram_bytes: u64,
     /// The block device and filesystem holding the model's `experts.bin`.
     pub storage: String,
+    /// The read path the engine uses for it (a forced or fallen-back path reads at
+    /// its own speed).
+    pub read_path: String,
     pub engine: String,
 }
 
@@ -186,7 +189,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 }
 
 impl Fingerprint {
-    pub fn collect(gpu: &Gpu, files: &Files) -> Result<Self> {
+    pub fn collect(gpu: &Gpu, files: &Files, read: ReadMode) -> Result<Self> {
         let (_, vram) = gpu.mem_info()?;
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
         let cpu = cpuinfo
@@ -203,6 +206,7 @@ impl Fingerprint {
             cpus: std::thread::available_parallelism().map_or(1, |n| n.get()),
             ram_bytes: mem.total,
             storage: storage_of(&files.dir().join(oominf_format::EXPERTS_FILE)),
+            read_path: read.name().into(),
             engine: format!("{} probe {PROBE_VERSION}", env!("CARGO_PKG_VERSION")),
         })
     }
@@ -312,7 +316,7 @@ pub fn resolve(
     if let Some(p) = &args.profile {
         return Ok(Some((Profile::load(p)?, Source::File(p.clone()))));
     }
-    let fp = Fingerprint::collect(gpu, files)?;
+    let fp = Fingerprint::collect(gpu, files, crate::load::read_mode(experts, files)?)?;
     let path = cache_dir().map(|d| d.join(fp.file_name()));
     if !args.reprobe
         && let Some(path) = &path
@@ -463,7 +467,7 @@ pub fn measure(
 ) -> Result<Profile> {
     let t0 = Instant::now();
     let path = files.dir().join(oominf_format::EXPERTS_FILE);
-    let mode = crate::load::read_mode(experts, files)?;
+    let mode = ReadMode::parse(&fingerprint.read_path)?.unwrap_or(ReadMode::Uring);
     let io = IoConfig::new(mode);
     let layouts = oominf_tiers::layouts(files)?;
     let main = &layouts[oominf_tiers::plan::largest(&layouts)];

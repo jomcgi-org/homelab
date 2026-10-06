@@ -183,11 +183,15 @@ pub struct BudgetReport {
 }
 
 /// The expert tiers' memory: fresh checks of free VRAM and usable host memory,
-/// split by [`oominf_tiers::plan`].
+/// split by [`oominf_tiers::plan`]. `loading` is host memory the model will still
+/// take before the tiers are sized (0 once it has loaded; an estimate for
+/// `doctor`).
+#[allow(clippy::too_many_arguments)]
 pub fn tier_budget(
     args: &ExpertArgs,
     files: &Files,
     free_vram: u64,
+    loading: u64,
     demand: &HostDemand,
     host_use: &HostUse,
     tuning: &Tuning,
@@ -236,7 +240,7 @@ pub fn tier_budget(
     let h = plan::plan(
         "host memory",
         &plan::Request {
-            usable: mem.usable(),
+            usable: mem.usable().saturating_sub(loading),
             reserve: bytes(args.host_reserve_gib.unwrap_or(DEFAULT_HOST_RESERVE_GIB)),
             reserve_explicit: args.host_reserve_gib.is_some(),
             min_reserve: plan::MIN_HOST_RESERVE,
@@ -306,7 +310,7 @@ pub fn factory<B: Backend>(
                     let io = IoConfig::new(read_mode(&args, &files)?);
                     let (free, _) = b.mem_info()?;
                     let report =
-                        tier_budget(&args, &files, free as u64, demand, &host_use, &tuning)?;
+                        tier_budget(&args, &files, free as u64, 0, demand, &host_use, &tuning)?;
                     for l in &report.lines {
                         eprintln!("oominf: {l}");
                     }
