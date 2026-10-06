@@ -381,6 +381,7 @@ js_library(
         "src/lib/public/components/TechnicalDrawingChrome.svelte",
         "src/lib/public/posts/CodeOutput.svelte",
         "src/lib/public/posts/DemoDisclosure.svelte",
+        "src/lib/public/posts/DraftTrace.svelte",
         "src/lib/public/posts/IncidentGraph.svelte",
         "src/lib/public/posts/QwenReplay.svelte",
         "src/lib/public/posts/SystemDiagram.svelte",

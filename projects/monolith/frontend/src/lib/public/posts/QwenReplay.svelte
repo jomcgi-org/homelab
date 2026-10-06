@@ -2,6 +2,7 @@
   import { fade } from "svelte/transition";
   import DemoDisclosure from "./DemoDisclosure.svelte";
   import CodeOutput from "./CodeOutput.svelte";
+  import DraftTrace from "./DraftTrace.svelte";
   import { decodeSteps, rollingRate } from "./draft-steps.js";
   import IncidentGraph from "./IncidentGraph.svelte";
   import research from "./qwen-replay.json";
@@ -256,7 +257,6 @@
           <CodeOutput
             events={turn.events}
             {position}
-            durationMs={turn.durationMs}
             file="src/cache.rs"
             complete={phase === "Complete"}
           />
@@ -271,6 +271,12 @@
             complete={phase === "Complete"}
           />
         {/if}
+        <DraftTrace
+          events={turn.events}
+          {position}
+          durationMs={turn.durationMs}
+          tinted={kind === "coding"}
+        />
       </div>
     {/if}
   </div>
