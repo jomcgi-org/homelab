@@ -15,7 +15,7 @@ export const MEASUREMENT_STATES = Object.freeze({
  * instead of significant-digit rounding, so de-DE shows -12.345 rather than
  * -12.300 and ja-JP shows 1,234 rather than 1230. Magnitudes that the standard
  * format would round to zero keep the compact significant-digit text, so a
- * nonzero measurement never renders as "0". Exact text preserves the number's
+ * nonzero measurement never renders as "0" or "-0". Exact text preserves the number's
  * significant digits, not the compact result. Unsupported locale tags fall back
  * to en-US, never the host's ambient locale. Plain Node without a Svelte
  * compiler imports this helper from the data-display/core subpath; the
@@ -53,9 +53,13 @@ export function formatMeasurement(
     .formatToParts(value)
     .some((part) => part.type === "compact");
   let text = hasSuffix ? compact.format(value) : standard.format(value);
-  if (value !== 0 && text === standard.format(0)) {
-    // The standard format rounds this magnitude to zero; keep the compact
-    // significant-digit text so a nonzero measurement never reads as "0".
+  if (
+    value !== 0 &&
+    (text === standard.format(0) || text === standard.format(-0))
+  ) {
+    // The standard format rounds this magnitude to zero ("0" or "-0"); keep
+    // the compact significant-digit text so a nonzero measurement never reads
+    // as zero.
     text = compact.format(value);
   }
   return Object.freeze({
