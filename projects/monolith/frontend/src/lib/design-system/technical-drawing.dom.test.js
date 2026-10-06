@@ -76,8 +76,25 @@ describe("technical-drawing boundary inheritance", () => {
   });
   afterEach(() => {
     style.remove();
+    document.documentElement.removeAttribute("data-ds-theme");
     document.body.replaceChildren();
   });
+
+  it.each(schemes)(
+    "preserves the %s root boundary in either import order",
+    (scheme) => {
+      document.documentElement.dataset.dsTheme = `technical-drawing-${scheme}`;
+      document.body.innerHTML = '<span id="root-child"></span>';
+      for (const styles of [`${contract}\n${css}`, `${css}\n${contract}`]) {
+        style.textContent = styles;
+        checkRoles(document.documentElement, themes[scheme]);
+        checkRoles(document.getElementById("root-child"), themes[scheme]);
+        expect(getComputedStyle(document.documentElement).colorScheme).toBe(
+          scheme,
+        );
+      }
+    },
+  );
 
   it("selects the declared light and dark roles explicitly", () => {
     document.body.innerHTML = schemes

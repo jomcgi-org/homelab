@@ -93,6 +93,8 @@ roles. Its descendants inherit the nearest boundary, including spacing and type
 stacks. A light boundary inside dark inside light owns the light values again;
 a sibling after the outer boundary reads the contract defaults. Theme-only roles
 are empty outside a boundary. Stylesheet import order does not select a scheme.
+The boundary selector has higher specificity than the contract's `:root`, so
+an explicit boundary on `<html>` also keeps its roles when the contract loads last.
 
 The boundary sets only custom properties plus its own `color-scheme`, ink and
 surface background. Components choose their layout, typography and focus
@@ -177,15 +179,22 @@ Targeted advisory checks in a guest without `ci` (Linux PR CI remains required):
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm --dir projects/monolith/frontend exec vitest run src/lib/design-system/technical-drawing.test.js src/lib/design-system/technical-drawing.dom.test.js
 pnpm --dir projects/monolith/frontend exec vitest run --config factory-preview/vitest.config.js
+pnpm --dir projects/monolith/frontend exec vitest run --config theme-preview/vitest.config.js
+FACTORY_PREVIEW_SHA=$(git rev-parse HEAD) pnpm --dir projects/monolith/frontend exec vite build --config theme-preview/vite.config.js
 ```
 
 The Node test checks completeness, scoped syntax, default values, palette order,
 contrast, documentation and import safety. The happy-dom test loads both real
 package exports and checks explicit selection, nesting, closed-boundary siblings,
 unknown theme values, defaults and import-order independence. These are contract
-checks, not browser layout evidence. Linux CI must also cover the private and
-public frontend builds and existing Factory fixture checks. The synthetic theme
-fixture, hydration check and 320px / 200% text browser evidence are not yet added.
+checks. The separate theme fixture tests server-render without browser globals
+and hydrate the same markup without replacing nodes, text or attributes.
+Linux CI covers the private and public frontend builds, existing Factory/blog
+fixtures, and the isolated theme targets. The existing Factory mobile preview
+workflow also runs the theme browser checker at 320px and 1440px in both schemes
+with 100% and actual 200% text sizes. It uploads computed contrast and screenshots
+in `theme-preview-evidence-<head sha>`. Browser prerequisites and the standalone
+check command are in `frontend/theme-preview/README.md`.
 
 ## Rules that already hold
 

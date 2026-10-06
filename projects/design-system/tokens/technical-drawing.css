@@ -3,9 +3,11 @@
  * Each boundary owns the whole contract, including spacing, so nested
  * boundaries never borrow roles from another scheme. Selection is explicit.
  * No shadow, glow, ambient tint or display serif belongs on this sheet.
+ * The extra attribute gives boundaries priority over contract :root defaults,
+ * including when the boundary is the html element and the contract loads last.
  */
 
-[data-ds-theme="technical-drawing-light"] {
+[data-ds-theme="technical-drawing-light"][data-ds-theme] {
   --ds-surface: #ffffff;
   --ds-surface-raised: #f5f6f8;
   --ds-ink: #26231c;
@@ -50,7 +52,7 @@
   background-color: var(--ds-surface);
 }
 
-[data-ds-theme="technical-drawing-dark"] {
+[data-ds-theme="technical-drawing-dark"][data-ds-theme] {
   --ds-surface: #181a20;
   --ds-surface-raised: #1c1e26;
   --ds-ink: #e8e5dc;
