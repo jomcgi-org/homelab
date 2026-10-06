@@ -9,7 +9,7 @@
 
 use anyhow::{Result, ensure};
 
-use crate::Session;
+use crate::{Feed, Model, Session};
 
 /// What one [`decode_step`] produced.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,15 +65,78 @@ pub fn decode_step_with(
     feed.push(next);
     feed.extend_from_slice(&drafts);
     let logits = session.step_all(&feed)?;
+    accept(session, &drafts, &logits, choose)
+}
+
+/// What one sequence feeds to a [`decode_many`] step: the last generated token and
+/// the drafts to verify after it (possibly none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proposal {
+    pub next: u32,
+    pub drafts: Vec<u32>,
+}
+
+/// [`decode_step_with`] for several sequences in one [`Model::step_many`] step:
+/// each session is fed its proposal's `next` and drafts, keeps the longest prefix
+/// of its drafts the model agrees with and rewinds the rest. `choose(i, logits,
+/// draft)` picks sequence `i`'s token as in [`decode_step`].
+pub fn decode_many(
+    model: &dyn Model,
+    sessions: &mut [&mut dyn Session],
+    proposals: &[Proposal],
+    mut choose: impl FnMut(usize, &[f32], Option<u32>) -> Result<u32>,
+) -> Result<Vec<Decoded>> {
     ensure!(
-        !logits.is_empty() && logits.len().is_multiple_of(feed.len()),
-        "step_all returned {} logits for {} tokens",
-        logits.len(),
-        feed.len()
+        sessions.len() == proposals.len(),
+        "{} sessions for {} proposals",
+        sessions.len(),
+        proposals.len()
     );
-    let vocab = logits.len() / feed.len();
-    let mut tokens = Vec::with_capacity(feed.len());
-    let mut rows = Vec::with_capacity(feed.len());
+    let feeds_tokens: Vec<Vec<u32>> = proposals
+        .iter()
+        .map(|p| {
+            std::iter::once(p.next)
+                .chain(p.drafts.iter().copied())
+                .collect()
+        })
+        .collect();
+    let mut feeds: Vec<Feed<'_>> = sessions
+        .iter_mut()
+        .zip(&feeds_tokens)
+        .map(|(s, tokens)| Feed {
+            session: &mut **s,
+            tokens,
+        })
+        .collect();
+    let logits = model.step_many(&mut feeds)?;
+    drop(feeds);
+    ensure!(logits.len() == proposals.len(), "step_many lost a sequence");
+    sessions
+        .iter_mut()
+        .zip(proposals)
+        .zip(&logits)
+        .enumerate()
+        .map(|(i, ((s, p), l))| accept(&mut **s, &p.drafts, l, |row, d| choose(i, row, d)))
+        .collect()
+}
+
+/// Keeps the longest prefix of `drafts` that `choose` agrees with, given the logits
+/// after the step's next token and each draft, and rewinds the session past it.
+fn accept(
+    session: &mut dyn Session,
+    drafts: &[u32],
+    logits: &[f32],
+    mut choose: impl FnMut(&[f32], Option<u32>) -> Result<u32>,
+) -> Result<Decoded> {
+    let fed = drafts.len() + 1;
+    ensure!(
+        !logits.is_empty() && logits.len().is_multiple_of(fed),
+        "step returned {} logits for {fed} tokens",
+        logits.len(),
+    );
+    let vocab = logits.len() / fed;
+    let mut tokens = Vec::with_capacity(fed);
+    let mut rows = Vec::with_capacity(fed);
     for (i, row) in logits.chunks(vocab).enumerate() {
         let draft = drafts.get(i).copied();
         let token = choose(row, draft)?;
@@ -313,6 +376,66 @@ mod tests {
         let d = decode_step(&mut s, 1, 1, greedy).unwrap();
         assert_eq!(d.tokens, [2]);
         assert_eq!(s.fed, [1]);
+    }
+
+    /// A model whose sessions are [`Table`]s, batched by the default `step_many`.
+    struct Tables;
+
+    impl crate::Model for Tables {
+        fn model_type(&self) -> &str {
+            "tables"
+        }
+        fn vocab(&self) -> usize {
+            5
+        }
+        fn new_session(&self, _: usize) -> Result<Box<dyn Session>> {
+            Ok(Box::new(session(vec![])))
+        }
+        fn describe(&self) -> String {
+            String::new()
+        }
+        fn expert_stats(&self) -> crate::ExpertStats {
+            Default::default()
+        }
+    }
+
+    #[test]
+    fn decode_many_verifies_each_sequence_as_alone() {
+        let (mut a, mut b, mut c) = (session(vec![]), session(vec![]), session(vec![]));
+        let proposals = [
+            // 2 is right, 0 is not: keep [2], correct to 3, rewind one.
+            Proposal {
+                next: 1,
+                drafts: vec![2, 0],
+            },
+            Proposal {
+                next: 3,
+                drafts: vec![],
+            },
+            Proposal {
+                next: 4,
+                drafts: vec![0, 1],
+            },
+        ];
+        let mut seen = Vec::new();
+        let d = decode_many(
+            &Tables,
+            &mut [&mut a, &mut b, &mut c],
+            &proposals,
+            |i, row, draft| {
+                seen.push(i);
+                greedy(row, draft)
+            },
+        )
+        .unwrap();
+        assert_eq!(d[0].tokens, [2, 3]);
+        assert_eq!((d[0].drafted, d[0].accepted), (2, 1));
+        assert_eq!((a.fed.as_slice(), a.rewound), (&[1, 2][..], 1));
+        assert_eq!(d[1].tokens, [4]);
+        assert_eq!(b.fed, [3]);
+        assert_eq!(d[2].tokens, [0, 1, 2]);
+        assert_eq!((c.fed.as_slice(), c.rewound), (&[4, 0, 1][..], 0));
+        assert_eq!(seen, [0, 0, 1, 2, 2, 2]);
     }
 
     #[test]

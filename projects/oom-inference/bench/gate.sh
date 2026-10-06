@@ -69,6 +69,7 @@ run "check-model fp32 kv" $bin check-model --model "$model" --fixtures "$fixture
 run "speculative" env OOMINF_MODEL="$model" cargo test --release -p oominf-models-qwen --test speculative -- --ignored
 run "snapshot" env OOMINF_MODEL="$model" cargo test --release -p oominf-models-qwen --test snapshot -- --ignored
 run "checkpoint" env OOMINF_MODEL="$model" cargo test --release -p oominf-models-qwen --test checkpoint -- --ignored
+run "multistream" env OOMINF_MODEL="$model" cargo test --release -p oominf-models-qwen --test multistream -- --ignored
 
 if [[ ${#failed[@]} -gt 0 ]]; then
 	echo "GATES FAILED: ${failed[*]}"

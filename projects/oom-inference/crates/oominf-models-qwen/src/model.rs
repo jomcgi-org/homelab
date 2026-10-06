@@ -120,6 +120,11 @@ const MTP_STEP: usize = 4;
 /// Expert tiers should leave at least this much when they size themselves.
 pub const WORKSPACE_HEADROOM: usize = 3 << 29;
 
+/// Device memory a decoding sequence's own workspace holds (decode-sized step
+/// buffers, its draft head's scratch and its share of logits), estimated for
+/// admission control.
+const SEQUENCE_WORKSPACE: usize = 96 << 20;
+
 /// Free device memory left beyond the headroom when expert tiers take memory back,
 /// so a sequence's first KV growths do not immediately take it away again.
 const RECLAIM_SLACK: usize = 512 << 20;
@@ -394,6 +399,30 @@ impl<B: Backend> QwenModel<B> {
             .unwrap_or(0)
     }
 
+    /// Device memory one sequence of up to `max_tokens` holds once it has grown to
+    /// `tokens` tokens: every layer's state (including the draft head's), plus its
+    /// decode-step workspace.
+    pub fn sequence_bytes(&self, tokens: usize, max_tokens: usize) -> usize {
+        let d = &self.dims;
+        let layers: usize = self
+            .layers
+            .iter()
+            .chain(self.mtp.as_ref().map(|m| &m.layer))
+            .map(|l| l.state_bytes(d, tokens, max_tokens))
+            .sum();
+        layers + SEQUENCE_WORKSPACE
+    }
+
+    /// Device memory new sequences may still take: free memory plus what `experts`
+    /// can give back, less the step workspace headroom and slack.
+    pub fn available_bytes(&self, gpu: &B, experts: &dyn ExpertSource<B>) -> Result<usize> {
+        gpu.sync()?;
+        let (free, _) = gpu.mem_info()?;
+        Ok((free + experts.releasable_vram())
+            .saturating_sub(WORKSPACE_HEADROOM)
+            .saturating_sub(RECLAIM_SLACK))
+    }
+
     /// Makes the KV caches hold `tokens`. When the growth plus `transient` bytes
     /// (other allocations the step is about to make) plus workspace headroom would
     /// not fit in free device memory, asks `experts` to give memory back first.
@@ -516,6 +545,89 @@ impl<B: Backend> QwenModel<B> {
         let mut ws = state.ws.borrow_mut();
         let logits = self.head(gpu, &mut ws, &x, t, probe, last_only)?;
         ws.give(x_name, x);
+        Ok(logits)
+    }
+
+    /// One step over several sequences: `seqs[i]` is fed `tokens[i]` (each step can
+    /// afterwards be rewound per sequence, as with `checkpoint` in [`Self::step`]).
+    /// Each sequence's token mixers run on its own state; the MoE of every layer and
+    /// the final head run once over all rows ([`DecoderLayer::forward_many`]), so a
+    /// layer fetches the union of the sequences' routed experts once. Returns the
+    /// logits after every fed token, sequence by sequence (`[sum of lengths, vocab]`).
+    pub fn step_many(
+        &self,
+        gpu: &B,
+        seqs: &mut [&mut SeqState<B>],
+        tokens: &[&[u32]],
+        experts: &mut dyn ExpertSource<B>,
+    ) -> Result<B::F32> {
+        let d = &self.dims;
+        let r = d.residual();
+        ensure!(
+            !seqs.is_empty() && seqs.len() == tokens.len(),
+            "{} sequences for {} token lists",
+            seqs.len(),
+            tokens.len()
+        );
+        ensure!(tokens.iter().all(|t| !t.is_empty()), "empty step");
+        for i in 0..seqs.len() {
+            for j in 0..i {
+                ensure!(
+                    !Rc::ptr_eq(&seqs[i].ws, &seqs[j].ws),
+                    "a sequence appears twice in one step"
+                );
+            }
+        }
+        for (st, t) in seqs.iter_mut().zip(tokens) {
+            let end = st.pos + t.len();
+            self.reserve_kv(gpu, st, end, 0, experts)?;
+        }
+        // Shared buffers (MoE input and scratch, the head) come from the first
+        // sequence's workspace; layers run one at a time.
+        let ws = seqs[0].ws.clone();
+        let mut xs = Vec::with_capacity(seqs.len());
+        for (st, t) in seqs.iter().zip(tokens) {
+            let mut x = st.ws.borrow_mut().take(gpu, "model.embed", t.len() * r)?;
+            self.embed_into(gpu, t, &mut x)?;
+            xs.push(x);
+        }
+        let mut x_name = "model.embed";
+        let steps: Vec<StepInput> = seqs
+            .iter()
+            .zip(tokens)
+            .map(|(st, t)| StepInput {
+                token_ids: t,
+                start_pos: st.pos,
+                checkpoint: true,
+            })
+            .collect();
+        for (li, layer) in self.layers.iter().enumerate() {
+            let mut states: Vec<&mut LayerState<B>> =
+                seqs.iter_mut().map(|s| &mut s.layers[li]).collect();
+            let refs: Vec<&B::F32> = xs.iter().collect();
+            let outs = layer.forward_many(gpu, d, &ws, &refs, &steps, &mut states, experts)?;
+            drop(states);
+            for ((st, x), out) in seqs.iter().zip(xs.iter_mut()).zip(outs) {
+                st.ws.borrow_mut().give(x_name, std::mem::replace(x, out));
+            }
+            x_name = "layer.out";
+        }
+        let total: usize = tokens.iter().map(|t| t.len()).sum();
+        let mut all = ws.borrow_mut().take(gpu, "model.many_x", total * r)?;
+        let mut at = 0;
+        for ((st, t), x) in seqs.iter_mut().zip(tokens).zip(&xs) {
+            st.rewindable = Some((st.pos, t.len()));
+            st.pos += t.len();
+            gpu.copy_range(x, 0, &mut all, at * r, t.len() * r)?;
+            at += t.len();
+        }
+        for ((st, t), x) in seqs.iter_mut().zip(tokens).zip(xs) {
+            self.keep_hidden(gpu, st, &x, 0, t)?;
+            st.ws.borrow_mut().give(x_name, x);
+        }
+        let mut wsb = ws.borrow_mut();
+        let logits = self.head(gpu, &mut wsb, &all, total, &mut NoProbe, false)?;
+        wsb.give("model.many_x", all);
         Ok(logits)
     }
 

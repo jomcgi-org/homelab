@@ -5,7 +5,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use oominf_core::{Backend, ExpertFactory, ExpertSource, ExpertStats, Model, NoProbe, Session};
+use oominf_core::{
+    Backend, ExpertFactory, ExpertSource, ExpertStats, Feed, Model, NoProbe, Session,
+};
 use oominf_format::Model as Files;
 
 use crate::{Dims, QwenModel, SeqState};
@@ -129,11 +131,67 @@ impl<B: Backend> Model for Qwen<B> {
     fn expert_tiers(&self) -> oominf_core::ExpertTiers {
         self.0.experts.borrow().tiers()
     }
+
+    fn step_many(&self, feeds: &mut [Feed<'_>]) -> Result<Vec<Vec<f32>>> {
+        if let [one] = feeds {
+            return one.session.step_all(one.tokens).map(|l| vec![l]);
+        }
+        let inner = &self.0;
+        let mut seqs = Vec::with_capacity(feeds.len());
+        let mut tokens = Vec::with_capacity(feeds.len());
+        for f in feeds.iter_mut() {
+            let s = f
+                .session
+                .as_any_mut()
+                .and_then(|a| a.downcast_mut::<QwenSession<B>>())
+                .context("step_many: a session of another model")?;
+            anyhow::ensure!(
+                Rc::ptr_eq(&s.inner, inner),
+                "step_many: a session of another model"
+            );
+            seqs.push(&mut s.state);
+            tokens.push(f.tokens);
+        }
+        let out = inner.model.step_many(
+            &*inner.b,
+            &mut seqs,
+            &tokens,
+            inner.experts.borrow_mut().as_mut(),
+        )?;
+        let all = inner.b.download_f32(&out)?;
+        let vocab = inner.model.vocab();
+        let mut at = 0;
+        Ok(tokens
+            .iter()
+            .map(|t| {
+                let n = t.len() * vocab;
+                at += n;
+                all[at - n..at].to_vec()
+            })
+            .collect())
+    }
+
+    fn sequence_bytes(&self, tokens: usize) -> usize {
+        let max = tokens.max(self.0.opts.max_context);
+        self.0.model.sequence_bytes(tokens, max)
+    }
+
+    fn available_bytes(&self) -> usize {
+        let inner = &self.0;
+        inner
+            .model
+            .available_bytes(&*inner.b, inner.experts.borrow().as_ref())
+            .unwrap_or(0)
+    }
 }
 
 impl<B: Backend> Session for QwenSession<B> {
     fn len(&self) -> usize {
         self.state.pos
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn plan_checkpoints(&mut self, positions: &[usize]) {
