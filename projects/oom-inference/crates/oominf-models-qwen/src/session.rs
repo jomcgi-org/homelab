@@ -74,7 +74,10 @@ pub fn open<B: Backend>(
     }
     let spare = model.new_state(&*b, opts.max_context)?;
     b.sync()?;
-    let experts = experts(&b, &model.host_demand(opts.max_context))?;
+    let experts = experts(
+        &b,
+        &crate::model::host_demand(&model.dims, opts.max_context)?,
+    )?;
     b.sync()?;
     Ok(Box::new(Qwen(Rc::new(Inner {
         b,

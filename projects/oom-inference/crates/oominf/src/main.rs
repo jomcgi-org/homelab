@@ -2,14 +2,16 @@ mod bench;
 mod chat;
 mod check_layer;
 mod check_model;
+mod doctor;
 mod generate;
 mod load;
+mod profile;
 mod score;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -178,6 +180,41 @@ enum Command {
         /// 429 and `Retry-After`, so sustained overload cannot grow memory.
         #[arg(long, default_value_t = oominf_server::engine::DEFAULT_MAX_QUEUED)]
         max_queued: usize,
+        #[command(flatten)]
+        probe: profile::ProfileArgs,
+        #[command(flatten)]
+        experts: load::ExpertArgs,
+        #[command(flatten)]
+        cache: load::CacheArgs,
+    },
+    /// Measure this machine's drive, PCIe link, RAM and CPU for the engine (longer
+    /// and more repeatable than serve's start-up probe) and write the profile
+    /// `serve` uses.
+    Tune {
+        #[arg(long)]
+        model: PathBuf,
+        /// Write the profile here instead of the cache directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[command(flatten)]
+        experts: load::ExpertArgs,
+    },
+    /// Show what `serve` would decide here without starting it: the hardware
+    /// fingerprint, the cached profile, fresh memory, VRAM and disk checks, and
+    /// the effective configuration with its warnings.
+    Doctor {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long, default_value_t = 32768)]
+        max_context: usize,
+        #[arg(long, default_value_t = 2)]
+        max_streams: usize,
+        /// As for serve: a prefix store keeps snapshots in host memory while
+        /// writing them.
+        #[arg(long)]
+        prefix_store_dir: Option<PathBuf>,
+        #[command(flatten)]
+        probe: profile::ProfileArgs,
         #[command(flatten)]
         experts: load::ExpertArgs,
         #[command(flatten)]
@@ -386,6 +423,7 @@ fn main() -> Result<()> {
             step_cost,
             prefill_slice,
             max_queued,
+            probe,
             experts,
             cache,
         } => {
@@ -421,7 +459,6 @@ fn main() -> Result<()> {
                 checkpoints: oominf_server::engine::max_checkpoints(max_context),
                 snapshots: prefix_store.is_some(),
             };
-            let tuning = load::Tuning::default();
             let model_name =
                 served_model_name.unwrap_or_else(|| oominf_server::default_model_name(&model));
             let model_type = oominf_models::model_type(&oominf_format::Model::open(&model)?)?;
@@ -447,11 +484,49 @@ fn main() -> Result<()> {
                         experts: &experts,
                         cache: &cache,
                         host_use,
-                        tuning: &tuning,
+                        profile: Some(&probe),
                     })
                 }),
             )?
         }
+        Command::Tune {
+            model,
+            out,
+            experts,
+        } => {
+            let files = oominf_format::Model::open(&model)?;
+            let gpu = oominf_cuda::Gpu::new(0)?;
+            let fp = profile::Fingerprint::collect(&gpu, &files)?;
+            let path = match out {
+                Some(p) => p,
+                None => profile::cache_dir()
+                    .context("no cache directory (HOME unset): give --out")?
+                    .join(fp.file_name()),
+            };
+            let p = profile::measure(&gpu, &files, &experts, fp, true)?;
+            p.save(&path)?;
+            println!("wrote {}", path.display());
+            profile::report(&p, &files)?;
+        }
+        Command::Doctor {
+            model,
+            max_context,
+            max_streams,
+            prefix_store_dir,
+            probe,
+            experts,
+            cache,
+        } => doctor::run(
+            &model,
+            &doctor::Settings {
+                max_context,
+                max_streams,
+                prefix_store: prefix_store_dir.is_some(),
+                experts: &experts,
+                cache: &cache,
+                probe: &probe,
+            },
+        )?,
         Command::Generate {
             model,
             prompt,

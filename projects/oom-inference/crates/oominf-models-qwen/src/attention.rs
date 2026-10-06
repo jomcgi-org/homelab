@@ -79,6 +79,17 @@ impl AttnDims {
     }
 }
 
+/// Bytes one attention layer's caches hold for a full `max_tokens` sequence:
+/// (K/V rows in `kv`'s format, indexer and block keys).
+pub fn full_cache_bytes(d: &Dims, max_tokens: usize) -> Result<(usize, usize)> {
+    let a = AttnDims::from_text(&d.text)?;
+    let cap = max_tokens.div_ceil(a.ratio) * a.ratio;
+    let kv =
+        cap * a.kv_heads * (d.kv.row_bytes(true, a.head_dim) + d.kv.row_bytes(false, a.head_dim));
+    let keys = (cap + (cap / a.ratio).max(1)) * a.idx_dim * std::mem::size_of::<f32>();
+    Ok((kv, keys))
+}
+
 fn rope_inv_freq(t: &serde_json::Value, rotary_dim: usize) -> Result<Vec<f32>> {
     let base = t["rope_parameters"]["rope_theta"]
         .as_f64()
@@ -281,18 +292,6 @@ impl<B: Backend> Attention<B> {
         let (kb, vb, ik, bk) = self.buffer_lens(cap);
         let kv = if self.kv_host { 0 } else { kb + vb };
         kv + (ik + bk) * std::mem::size_of::<f32>()
-    }
-
-    /// Bytes a full `max_tokens` sequence's caches hold: (K/V rows, indexer and
-    /// block keys), wherever they live.
-    pub fn full_bytes(&self, max_tokens: usize) -> (usize, usize) {
-        let (kb, vb, ik, bk) = self.buffer_lens(max_tokens.div_ceil(self.a.ratio) * self.a.ratio);
-        (kb + vb, (ik + bk) * std::mem::size_of::<f32>())
-    }
-
-    /// Whether the K/V caches live in host memory.
-    pub fn kv_host(&self) -> bool {
-        self.kv_host
     }
 
     /// Forgets every cached token (the buffers stay allocated).

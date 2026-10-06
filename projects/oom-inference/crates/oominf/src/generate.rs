@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use oominf_core::{argmax, decode_step};
 
 use crate::chat::Chat;
-use crate::load::{CacheArgs, ExpertArgs, HostUse, OpenArgs, Tuning, open_model};
+use crate::load::{CacheArgs, ExpertArgs, HostUse, OpenArgs, open_model};
 
 pub fn run(
     model_dir: &Path,
@@ -35,7 +35,7 @@ pub fn run(
         experts: expert_args,
         cache,
         host_use: HostUse::default(),
-        tuning: &Tuning::default(),
+        profile: None,
     })?;
     eprintln!(
         "loaded in {:.1}s: {}; prompt {} tokens",

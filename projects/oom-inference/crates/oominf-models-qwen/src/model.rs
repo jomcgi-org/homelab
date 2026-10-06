@@ -133,6 +133,38 @@ pub const WORKSPACE_HEADROOM: usize = 3 << 29;
 /// admission control.
 const SEQUENCE_WORKSPACE: usize = 96 << 20;
 
+/// Host memory a sequence of up to `max_tokens` takes beside the expert tiers (see
+/// [`oominf_core::HostDemand`]), from the model's dimensions alone. The draft
+/// head's attention cache stays on the device and is not saved.
+pub fn host_demand(d: &Dims, max_tokens: usize) -> Result<oominf_core::HostDemand> {
+    let f = std::mem::size_of::<f32>();
+    let mut out = oominf_core::HostDemand::default();
+    for (i, kind) in d.layer_kinds.iter().enumerate() {
+        // PLE conv state: (kernel - 1) * dilation rows, bounded by 16.
+        let ple = if d.ple_layers.contains(&(i as u32)) {
+            d.residual() * 16 * f
+        } else {
+            0
+        };
+        match kind {
+            crate::LayerKind::Full => {
+                let (kv, keys) = crate::attention::full_cache_bytes(d, max_tokens)?;
+                if d.kv_host {
+                    out.kv += kv;
+                }
+                out.checkpoint += ple;
+                out.snapshot += kv + keys + ple;
+            }
+            crate::LayerKind::Linear => {
+                let rec = (d.conv_dim() * d.conv_kernel + d.v_heads * d.head_k * d.head_v) * f;
+                out.checkpoint += rec + ple;
+                out.snapshot += rec + ple;
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Free device memory left beyond the headroom when expert tiers take memory back,
 /// so a sequence's first KV growths do not immediately take it away again.
 const RECLAIM_SLACK: usize = 512 << 20;
@@ -469,23 +501,6 @@ impl<B: Backend> QwenModel<B> {
             .map(|l| l.state_bytes(d, tokens, max_tokens))
             .sum();
         layers + SEQUENCE_WORKSPACE
-    }
-
-    /// Host memory a sequence of `max_tokens` takes beside the expert tiers (see
-    /// [`oominf_core::HostDemand`]); the draft head's attention cache stays on the
-    /// device and is not saved.
-    pub fn host_demand(&self, max_tokens: usize) -> oominf_core::HostDemand {
-        let d = &self.dims;
-        self.layers
-            .iter()
-            .fold(oominf_core::HostDemand::default(), |acc, l| {
-                let (kv, checkpoint, snapshot) = l.host_demand(d, max_tokens);
-                oominf_core::HostDemand {
-                    kv: acc.kv + kv,
-                    checkpoint: acc.checkpoint + checkpoint,
-                    snapshot: acc.snapshot + snapshot,
-                }
-            })
     }
 
     /// Makes at least `bytes` of device memory free, asking `experts` to give

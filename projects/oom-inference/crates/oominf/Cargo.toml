@@ -16,7 +16,9 @@ oominf-models = { path = "../oominf-models" }
 oominf-models-qwen = { path = "../oominf-models-qwen" }
 oominf-server = { path = "../oominf-server" }
 oominf-tiers = { path = "../oominf-tiers" }
+serde.workspace = true
 serde_json.workspace = true
+libc = "0.2"
 
 [lints]
 workspace = true

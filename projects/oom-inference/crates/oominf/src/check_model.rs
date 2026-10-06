@@ -106,7 +106,7 @@ pub fn run(
 
     let mut experts = factory::<Gpu>(expert_args, model.clone(), HostUse::default(), &tuning)(
         &gpu,
-        &qwen.host_demand(max_tokens),
+        &oominf_models_qwen::host_demand(&qwen.dims, max_tokens)?,
     )?;
     println!("{}", experts.describe());
     let mut ok = true;
