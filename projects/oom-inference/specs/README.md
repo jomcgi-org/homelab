@@ -20,8 +20,8 @@ specs/run.sh large    # one config by name
 specs/run.sh bugs     # each buggy variant; every one must be caught
 ```
 
-Needs Java 17+ and `tla2tools.jar` in `$TLA_HOME` (default
-`/disks/nvme-02/src/.toolchains/tla`, from
+Needs Java 17+ and `tla2tools.jar` in `$TLA_HOME` (set it; the script's
+default is the development machine's toolchain directory), from
 https://github.com/tlaplus/tlaplus/releases). TLC runs nice'd on cores
 `$TLC_CPUS` (default 12-15) with 4 workers. `MC.tla` wraps the spec to add
 symmetry for the safety-only configs (host buffers are permuted only within
@@ -178,6 +178,8 @@ minutes, hence TopK 2 in `large_indirect`.
 | `StageH2V` / `CompleteH2V` | Host to device copies on a copy stream, completion observed by event. A stage-ahead claims its host-tier copies at once but hands them to the copy queue a few at a time: a claimed, unsent copy is a started copy that has not completed (the source slot's last-copy record already names its batch), and any path that may overwrite a source first sends the rest (`finish_staging`), so `CopySourceValid` holds unchanged. The copy engine's submission-order scheduling (which motivates the trickle) is a timing property, not modelled |
 | `Route`, `Launch`, `inflight`, `Complete` | Decode/prefill loop: router output, launch on the compute stream, completion events that release pins |
 | `<<"cpu", h>>` launches, `InflightHosts` | Host compute (`oominf-cpu`): a decode-sized fetch may leave a host-tier record in its buffer and hand its address to the CPU workers instead of copying it. The buffer stays pinned for the rest of the fetch (it is one of the fetch's keys) and nothing writes host buffers before the next fetch or prefetch, which the MoE issues only after the CPU work completed (`Pending` also waits on drop) |
+| Prefill staging ring (`host_stage`) | Host buffers outside the cache, like `StageBufs`: a ring slot is reused (an eviction) only once the read filling it completed (the open batch's submitted reads land without closing the batch, and reads the caller queued but has not submitted are submitted first) and the copy that last read it completed, including a copy of the fetch still open, waited on its queue (`CopySourceValid`). The ring may be smaller than a layer when memory is short |
+| I/O errors (not modelled) | A failed read abandons its batch only after every read the batch submitted has finished and every copy queued so far has completed; then its records are forgotten and their buffers and slots freed. That is `CompleteD2H`/`CompleteH2V` followed by evictions of unpinned buffers, so no invariant depends on the error path; `oominf-tiers` tests it with injected faults |
 | `StageH2V` with a VRAM source | Stage promotions and decode victim saves: device-to-device copies on the same copy queue, enqueued before any refill of their source slot, so in-order execution of the queue keeps every copy source valid until it is read |
 | `Capture`, `Replay`, `Invalidate`, `graph` | CUDA graph manager; capture registers graph pins, invalidation releases them |
 | Unfair `StageD2H`/`StageH2V`/`Evict*` | Prefetch and placement policy plugins: free to do anything the pins allow |

@@ -7,16 +7,17 @@ transformers `qwen4_exp`), never by another engine.
 - CPU only, deterministic: two runs at 8 threads produce byte-identical files.
 - Only the tensors a layer needs are read from the release checkpoint
   (RadixArk Qwen3.8-Flash-Next-NVFP4), given by `--model` or `$OOMINF_RELEASE_CHECKPOINT`.
-- Fixtures live outside the repo: `/disks/nvme-02/src/oominf-data/fixtures/qwen38-flash/`.
+- Fixtures live outside the repo, in a directory you choose (`--out`); the gates take it as
+  `--fixtures`.
 
 ## Regenerate
 
 ```sh
 cd projects/oom-inference/reference
-export UV_CACHE_DIR=/disks/nvme-02/src/.toolchains/uv-cache HF_HUB_OFFLINE=1
+export HF_HUB_OFFLINE=1   # optionally UV_CACHE_DIR=<a cache on a large disk>
 export OOMINF_RELEASE_CHECKPOINT=/path/to/Qwen3.8-Flash-Next-NVFP4
 uv sync
-CUDA_VISIBLE_DEVICES= nice -n 19 taskset -c 8-15 uv run python make_fixtures.py --layers 0 1
+CUDA_VISIBLE_DEVICES= nice -n 19 taskset -c 8-15 uv run python make_fixtures.py --out <fixtures dir> --layers 0 1
 ```
 
 About 20 s with a warm page cache, peak RSS about 14 GB (the fp32 run densifies all 512 experts of a

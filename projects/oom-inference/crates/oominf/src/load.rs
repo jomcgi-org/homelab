@@ -110,8 +110,9 @@ pub const DEFAULT_HOST_COMPUTE: usize = 6;
 /// default reserve was 12 GiB with those inside it; 10 keeps the same memory free.
 const DEFAULT_HOST_RESERVE_GIB: f64 = 10.0;
 const DEFAULT_VRAM_RESERVE_GIB: f64 = 2.0;
-/// Pinned upload and download buffers, routing tables and host-expert work buffers
-/// outside the tiers (measured well under this).
+/// An allowance for host memory outside the tiers that does not grow with the
+/// context: pinned upload and download buffers (a ring of 64, at most 1 MiB
+/// each), routing tables and the host-expert pool's work buffers.
 const TRANSFER_BUFFERS: u64 = 512 << 20;
 /// Prefix-store snapshots that can be in host memory at once: one being built on
 /// the engine thread, one queued and one being written.

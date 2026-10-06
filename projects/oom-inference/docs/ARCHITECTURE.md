@@ -71,6 +71,8 @@ in `TESTING.md`. Defaults:
 - Dense weights: bf16 as released. Decode GEMVs read fp32 activations directly;
   prefill GEMMs round activations to bf16 for tensor cores.
 - Residual stream, norms, softmax and recurrent state: fp32.
+- MTP experts (the draft head): bf16 as released, fp32 activations and
+  accumulation.
 - KV cache: compressed by default, `k8v6` (`KvFormat::Turbo`: TurboQuant-style
   rotation, then 8-bit keys and 6-bit values from Lloyd-Max codebooks with a
   scale per 32 coordinates); `--kv-cache fp32` keeps it exact. The indexer caches
@@ -131,9 +133,8 @@ Reproducibility: experts computed on the CPU round differently from the GPU, and
 which ones run there depends on cache timing. With an exact cache that rarely
 changes a token; a compressed cache can turn it into a different codebook index,
 so greedy output with `k8v6` varies run to run. With `--host-compute 0` it is
-deterministic, and speculative decoding again equals one-token decoding.
-- MTP experts (the draft head): bf16 as released, fp32 activations and
-  accumulation.
+deterministic, and speculative decoding again matches one-token decoding up to
+near ties (below).
 
 **Why.** The engine exists to run a frontier model on modest hardware without
 making it worse. Rounding that buys nothing is pure loss, and silent precision
@@ -146,7 +147,8 @@ trades are how engines drift from the model they claim to run.
 - **VRAM tier:** record-sized slots in chunked arenas, so whole chunks can be
   given back when a growing KV cache needs memory and taken back for the next
   sequence. **Host tier:** a pinned arena filled with direct (O_DIRECT, io_uring)
-  reads, never the page cache. **Disk:** the model files.
+  reads, never the page cache, or through the fallbacks of
+  [Smaller machines](#smaller-machines) where those are unavailable. **Disk:** the model files.
 - Placement is a `Policy` (LRU and decay-weighted frequency), chosen by replaying
   recorded routing traces (`oominf-tiers/examples/replay.rs`).
 - **Host compute** (decode-sized steps): a record that misses VRAM but is in the
@@ -195,6 +197,102 @@ trades are how engines drift from the model they claim to run.
   measured on the MTP experts, more device slots barely shorten drafting while
   every slot taken from the main tiers costs decode hits.
 
+## Smaller machines
+
+The tiers size themselves on every start from fresh checks, shrink what does not
+fit and fail only when the smallest working configuration does not fit
+(`oominf-tiers/src/plan.rs`, `resources.rs`; `oominf doctor` prints the result
+without starting).
+
+- **Usable host memory** is the smaller of `MemAvailable` and the control
+  group's headroom: cgroup v2 `memory.max` or `memory.high`, whichever is lower,
+  less the group's use minus its inactive page cache, taking the tightest
+  ancestor; cgroup v1 `memory.limit_in_bytes` the same way.
+- **Host split.** Usable memory = reserve (`--host-reserve-gib`, default 10) +
+  memory beside the tiers + the tiers. Beside the tiers, at the configured
+  context and stream count (`HostDemand` from the model, `HostUse` from the
+  command): host-placed KV caches per live sequence (`--kv-placement host`),
+  prefix checkpoints per live sequence (the planned count at `--max-context`,
+  about 0.12 GB each), three prefix-store snapshots when a store is set (one
+  being built, one queued, one being written; 0.75 GB each at 32k tokens), and
+  a 0.5 GiB allowance for pinned transfer and work buffers. The prefill staging
+  ring is part of the tiers' budget.
+- **VRAM split** is the same over free VRAM once the model and a first sequence
+  are loaded, with `--vram-reserve-gib` (default 2).
+- **Shrinking.** A requested size that does not fit is shrunk to what does, with
+  a warning naming the figures. No tier is larger than the records its layout
+  has. When the result is below the smallest working tiers, a default reserve is
+  lowered as far as 3 GiB (host) or 1 GiB (VRAM), keeping as much reserve as
+  possible; an explicit reserve is kept. Only then does start-up fail, with the
+  needed total itemised.
+- **Smallest working tiers** (`min_vram_slots`, `min_host_slots`): VRAM holds the
+  largest fetch that does not stream, in 64-record chunks (one chunk beside a
+  stage; a whole layer, 512 records, without one); the host tier holds that
+  fetch's records too (64 with a stage). For Qwen 3.8 Flash that is 0.2 GiB of
+  host tier plus a one-slot ring with a stage, or 1.4 GiB without; the MTP layer's
+  minor tier adds 0.6 GiB. Lookahead never pins more host slots than those left
+  beyond the minimum, and a fetch that still finds every slot pinned waits for
+  the lookahead reads to land.
+- **Allocation.** Pinned arenas retry at three quarters of the size down to the
+  minimum when mapping or pinning fails. VRAM chunks are kept as far as they
+  allocate; the stage is dropped before the main tier would fall below its
+  minimum.
+- **Reads.** `experts.bin` is read with O_DIRECT through io_uring when both work;
+  else O_DIRECT `pread` on a thread pool (io_uring blocked by a seccomp profile or
+  missing); else buffered `pread` on a thread pool that drops the read pages from
+  the page cache (a filesystem without O_DIRECT). Each start tries a real read on
+  each path and logs which one is active; `--io` forces one.
+
+**Why.** A container limit is invisible to `MemAvailable`, and pinning past it
+gets the process OOM-killed rather than an error back, so the limit has to be
+read before anything is pinned. The memory beside the tiers grows with the
+context, the stream count and the prefix store, and used to come out of the
+fixed reserve unaccounted (the staging ring alone is 1.3 GiB); counting it makes
+the reserve mean what it says, and 10 GiB with it counted leaves the same memory
+free as 12 GiB did. Shrinking with a warning keeps a smaller machine serving at
+lower speed instead of not at all; failing below the minimum, with the missing
+amount, is the only case nothing can serve. Measured results on simulated
+smaller machines are in [HARDWARE.md](HARDWARE.md).
+
+## Hardware profile
+
+`serve` measures the machine just before the model loads when no cached
+profile matches (`oominf/src/profile.rs`; about a second on the reference
+NVMe): scattered and consecutive record reads of `experts.bin` through the
+active read path, single-record latency, pinned host-to-device copies, a
+one-thread memory copy and the host expert kernel (six experts of a one-token
+step on real records). The profile is cached in `$XDG_CACHE_HOME/oominf/` (or
+`~/.cache/oominf/`) keyed by GPU name, VRAM, driver, CPU model, usable CPUs
+(affinity, so `taskset` counts), RAM, the model's block device and filesystem,
+and the engine and probe version; any change measures again. `--no-probe`,
+`--reprobe` and `--profile <file>` control it; `oominf tune` measures four times
+longer (median of three rounds) and writes it. Safety checks are never cached.
+
+The profile decides only:
+
+- **Host compute off** (`--host-compute 0` by default) when one expert on the CPU
+  takes more than 2x a record's PCIe copy: the GPU would wait for the CPU. On the
+  reference machine an expert takes 57 us on 8 threads against 103 us to copy its
+  2.8 MB record at 26.8 GB/s, so host compute stays on.
+- **Prefill staging ring** no larger than the drive fills in 0.5 s (about two
+  layers of a long prefill's compute), at least 64 records: slots beyond that
+  wait idle, and the memory goes to the host tier. The reference drive (6.9 GB/s)
+  fills a whole layer, so the ring stays at 512 records.
+- **Warnings** when scattered reads run under 1 GB/s (cold prefill and decode
+  misses), reading the dense weights would take over 60 s, or host-to-device
+  copies run under 6 GB/s.
+
+A flag on the command line always wins over the profile. Adapting these while
+serving (from measured steps, as the step cost curve already is) is not done;
+it would hook in at the batched engine's periodic report
+(`oominf-server/src/engine/scheduler.rs`).
+
+**Why.** The defaults were tuned on one machine; the two choices above are the
+ones whose right value follows directly from a hardware rate, and both are
+conservative (they only turn off or shrink something that cannot pay off at
+the measured rate). Everything else stays at measured defaults until there is
+data from other machines.
+
 ## Prefix store
 
 The server keeps the last sequence on the device and resumes a request that
@@ -240,7 +338,10 @@ The checkpoint's multi-token-prediction head drafts the next token from the last
 token's final residual; one step then feeds the current token and the drafts,
 and `decode_step` (`oominf-core/src/decode.rs`) keeps the longest prefix the
 model agrees with, plus the model's own next token. Greedy decoding keeps a
-draft only when it is the argmax, so output equals one-token decoding; sampling
+draft only when it is the argmax, so output matches one-token decoding except
+where a verify step's different summation order flips a near tie (the
+`speculative` test accepts a divergence only where the one-token run's top two
+logits are within 0.05, and reports each); sampling
 keeps it with the model's probability of it and otherwise samples the model
 without it, so output keeps the model's distribution. Rejected drafts are
 rewound: GDN and PLE layers restore the step's starting state and replay their
@@ -297,8 +398,9 @@ step per four positions, which used to be skipped: rings of 32, 64 and 256
 rows measured the same on the edit workloads. Catching up lazily at the next
 model draft is never more work than catching up eagerly after every lookup
 step (the same positions, in fuller steps), so it is kept.
-`tests/mtp_lookup.rs` checks that drafts after lookup runs equal drafts made on
-every step: 0 of 48 tokens differ, against 13 when the head restarts.
+`tests/mtp_lookup.rs` checks that drafts after lookup runs match drafts made on
+every step (it tolerates one near-tie difference in 20 draft tokens): measured
+0 of 48 tokens differ, against 13 when the head restarts.
 
 A draft width that grows from one to three tokens while recent model drafts
 were mostly kept (90% for two, 95% for three) was measured and not kept: on the
@@ -338,9 +440,12 @@ deterministic, where the page cache competes with everything else on the machine
 
 ## Concurrent requests
 
-`oominf serve --max-streams N` (default 1: one request at a time, to
-completion, exactly as before) serves up to N requests at once with continuous
-batching.
+`oominf serve --max-streams N` (default 2; 1 serves one request at a time, to
+completion) serves up to N requests at once with continuous batching. Requests
+beyond those wait in a bounded queue (`--max-queued`, default 16); a request
+arriving when the queue is full is refused at once with 429 and `Retry-After: 5`
+on both APIs, so sustained overload cannot grow memory (`/v1/stats` reports
+`queued` and `rejected`).
 
 - **Batched step** (`Model::step_many`, `QwenModel::step_many`). One step
   carries tokens of several sequences, each with its own KV caches, GDN
