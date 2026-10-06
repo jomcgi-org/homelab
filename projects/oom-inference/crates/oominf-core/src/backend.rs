@@ -118,6 +118,28 @@ impl DenseFormat {
     }
 }
 
+/// Arithmetic of prefill attention (decode attention is always fp32).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttentionPrecision {
+    /// fp32 throughout (exact).
+    Exact,
+    /// Queries, keys and values rounded to bf16 on tensor cores, fp32 accumulation
+    /// and softmax (standard flash attention; lossy).
+    Bf16,
+}
+
+impl AttentionPrecision {
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "exact" => Ok(AttentionPrecision::Exact),
+            "bf16" => Ok(AttentionPrecision::Bf16),
+            other => Err(format!(
+                "unknown attention precision {other:?} (exact, bf16)"
+            )),
+        }
+    }
+}
+
 /// Activation precision of the tiled (prefill) routed-expert GEMM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExpertPrecision {
@@ -543,6 +565,7 @@ pub trait Attention: Memory + Sized {
         kv_len: usize,
         max_visible: usize,
         scale: f32,
+        precision: AttentionPrecision,
     ) -> Result<()>;
 }
 

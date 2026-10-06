@@ -342,11 +342,12 @@ fn main() -> Result<()> {
                     ttl: std::time::Duration::from_secs_f64(prefix_store_ttl_hours * 3600.0),
                     min_tokens: prefix_store_min_tokens,
                     identity: format!(
-                        "{} kv={:?} dense={:?} experts={:?}",
+                        "{} kv={:?} dense={:?} experts={:?} attention={:?}",
                         load::checkpoint_id(&model)?,
                         cache.kv_cache,
                         cache.dense,
-                        cache.expert_precision
+                        cache.expert_precision,
+                        cache.attention_precision
                     ),
                 }),
                 None => None,

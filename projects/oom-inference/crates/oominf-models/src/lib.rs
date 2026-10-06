@@ -28,6 +28,8 @@ pub struct Options {
     pub dense: oominf_core::DenseFormat,
     /// Activation precision of the prefill expert GEMM.
     pub expert_precision: oominf_core::ExpertPrecision,
+    /// Arithmetic of prefill attention.
+    pub attention_precision: oominf_core::AttentionPrecision,
     /// Attention K/V caches in host memory rather than device memory.
     pub kv_host: bool,
 }
@@ -64,6 +66,7 @@ pub fn open<B: Backend>(
                 kv: opts.kv,
                 dense: opts.dense,
                 expert_precision: opts.expert_precision,
+                attention_precision: opts.attention_precision,
                 kv_host: opts.kv_host,
             },
             experts,

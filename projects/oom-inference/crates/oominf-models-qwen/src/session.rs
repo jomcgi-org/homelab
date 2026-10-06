@@ -28,6 +28,8 @@ pub struct Options {
     pub dense: oominf_core::DenseFormat,
     /// Activation precision of the prefill expert GEMM.
     pub expert_precision: oominf_core::ExpertPrecision,
+    /// Arithmetic of prefill attention.
+    pub attention_precision: oominf_core::AttentionPrecision,
     /// Attention K/V caches in host memory rather than device memory.
     pub kv_host: bool,
 }
@@ -61,6 +63,7 @@ pub fn open<B: Backend>(
     dims.kv = opts.kv;
     dims.dense = opts.dense;
     dims.expert_precision = opts.expert_precision;
+    dims.attention_precision = opts.attention_precision;
     dims.kv_host = opts.kv_host;
     let mut model = QwenModel::load(&*b, &files, dims, None)?;
     if opts.host_threads > 0 {

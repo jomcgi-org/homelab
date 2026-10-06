@@ -105,6 +105,8 @@ pub struct Attention<B: Backend> {
     inv_freq: B::F32,
     /// How the KV cache stores keys and values.
     kv: KvFormat,
+    /// Arithmetic of prefill attention.
+    precision: oominf_core::AttentionPrecision,
     /// K/V caches in host memory (see [`Dims::kv_host`]).
     kv_host: bool,
 }
@@ -180,6 +182,7 @@ impl<B: Backend> Attention<B> {
             inv_freq: gpu.upload_f32(&inv_freq)?,
             kv: d.kv,
             kv_host: d.kv_host,
+            precision: d.attention_precision,
             a,
         })
     }
@@ -584,6 +587,7 @@ impl<B: Backend> Attention<B> {
             kv_len,
             max_visible,
             1.0 / (hd as f32).sqrt(),
+            self.precision,
         )?;
         ws.give("attn.q", q);
         ws.give_bytes("attn.mask", mask);
