@@ -6,6 +6,7 @@ on:
     paths:
       - projects/monolith/frontend/**
       - projects/design-system/tokens/**
+      - projects/design-system/**
       - projects/monolith/chart/templates/httproute-friends*.yaml
       - projects/monolith/chart/templates/httproute-grimoire.yaml
       - .github/workflows/factory-mobile-preview.yml
@@ -118,5 +119,31 @@ jobs:
         with:
           name: theme-preview-${{ github.event.pull_request.head.sha }}
           path: projects/monolith/frontend/theme-fixture-preview/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Check controls SSR and hydration, and build synthetic controls
+        working-directory: projects/monolith/frontend
+        run: |
+          pnpm exec vitest run --config controls-preview/vitest.config.js
+          pnpm exec vite build --config controls-preview/vite.config.js
+      - name: Check controls semantics, keyboard, contrast, and real text resize
+        run: |
+          /tmp/factory-browser/bin/python projects/monolith/frontend/controls-preview/browser_check.py \
+            --artifact projects/monolith/frontend/controls-fixture-preview \
+            --output controls-preview-evidence \
+            --expected-sha "$FACTORY_PREVIEW_SHA"
+      - name: Upload exact-commit controls checks and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: controls-preview-evidence-${{ github.event.pull_request.head.sha }}
+          path: controls-preview-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload tested synthetic controls artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: controls-preview-${{ github.event.pull_request.head.sha }}
+          path: projects/monolith/frontend/controls-fixture-preview/
           if-no-files-found: error
           retention-days: 14
