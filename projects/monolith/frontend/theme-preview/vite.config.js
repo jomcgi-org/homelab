@@ -34,7 +34,8 @@ export default defineConfig({
           fileName: "build.json",
           source: JSON.stringify({
             commit: process.env.FACTORY_PREVIEW_SHA ?? "local-unpublished",
-            scope: "synthetic technical-drawing themes and composition gallery only",
+            scope:
+              "synthetic technical-drawing themes and composition gallery only",
           }),
         });
       },
