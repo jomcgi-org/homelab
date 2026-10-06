@@ -249,6 +249,26 @@ draft costs much less than a second step. The gain is bounded by the draft
 acceptance rate (55 to 75% measured) and by the extra routed experts the
 drafted token pulls in.
 
+Prompt lookup (`PromptLookup`, `serve --prompt-lookup 7`, on by default) drafts
+from the sequence itself before asking the model: when the last 8, 6 or 4 tokens
+(longest first) occur earlier in the prompt or output, the 7 tokens that followed
+their most recent occurrence are verified in one step; otherwise the model
+drafts as above. Verification steps of 5 to 16 tokens run on the decode kernels
+(GEMVs instantiated for 8 and 16 tokens, FP8 in launches of 8; per-token flash
+decode attention), not the prefill ones.
+
+**Why prompt lookup.** Coding agents print edited files whole, repeat code and
+quote input, so long spans of output already exist in the sequence. Measured
+end to end (`bench/lookup.py`, medians of three warm runs, max-perf config):
++22 to +40% output rate on file edits (92 to 95% of lookup drafts kept, about 7
+tokens per step), level on tests, -2 to -9% on prose, quotes and a short diff.
+An 8-token verification step costs 110 to 125 ms when its tokens are new (about
+2,200 routed records, a quarter outside VRAM) against about 25 ms for one token,
+so it pays only when most of a draft is kept; matches shorter than 4 tokens
+drafted novel text often enough to lose. Before the decode-kernel paths, an
+8-token step fell onto the sparse prefill attention and dequantized FP8 weights
+for cuBLAS every step (215 ms).
+
 **Why stage-ahead.** Fetching a layer's experts only once it has routed left
 the GPU idle for every layer's copies and disk reads: on a 2.2k-token prompt,
 copies and compute overlapped for 0.3 s of a 4.7 s prefill. The prediction
