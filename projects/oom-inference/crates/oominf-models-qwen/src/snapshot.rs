@@ -91,7 +91,8 @@ pub fn save<B: Backend>(
     let hidden = match &state.hidden {
         Some(h) => {
             let mut row = gpu.uninit(r)?;
-            gpu.copy_range(h, state.hidden_row * r, &mut row, 0, r)?;
+            let slot = (state.pos - 1) % crate::model::HIDDEN_RING;
+            gpu.copy_range(h, slot * r, &mut row, 0, r)?;
             blobs.push(f32s(gpu.download_f32(&row)?));
             true
         }
@@ -247,12 +248,18 @@ pub fn load<B: Backend>(
         });
     }
     if header["hidden"] == true {
-        let row = to_f32(next(Some(model.dims.residual() * 4))?);
-        state.hidden = Some(gpu.upload_f32(&row)?);
-        state.hidden_row = 0;
+        let r = model.dims.residual();
+        let row = gpu.upload_f32(&to_f32(next(Some(r * 4))?))?;
+        let mut ring = match state.hidden.take() {
+            Some(b) => b,
+            None => gpu.uninit(crate::model::HIDDEN_RING * r)?,
+        };
+        let slot = (pos - 1) % crate::model::HIDDEN_RING;
+        gpu.copy_range(&row, 0, &mut ring, slot * r, r)?;
+        state.hidden = Some(ring);
     }
     // The draft head's cache is not saved: it restarts at the restored position.
-    state.hidden_tokens.clear();
+    state.hidden_next.clear();
     state.mtp_end = 0;
     state.pos = pos;
     state.rewindable = None;

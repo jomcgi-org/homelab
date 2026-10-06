@@ -5,9 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, ensure};
-use oominf_core::{
-    Backend, DeviceBuffer, ExpertSource, Fetched, NoProbe, Probe, Weight, Workspace, tap,
-};
+use oominf_core::{Backend, ExpertSource, Fetched, NoProbe, Probe, Weight, Workspace, tap};
 use oominf_format::Model;
 
 use crate::Dims;
@@ -112,10 +110,18 @@ struct Mtp<B: Backend> {
 /// Longest draft chain a sequence supports.
 pub const MAX_DRAFT: usize = 8;
 
-/// Most positions a draft call appends to the MTP cache, and per MTP step (a step's
-/// routed experts must fit the draft head's small VRAM tier).
+/// Positions a draft call appends to the MTP cache when it restarts the cache, and
+/// per MTP step (a step's routed experts must fit the draft head's small VRAM tier).
 const MTP_CATCHUP: usize = MAX_DRAFT + 1;
 const MTP_STEP: usize = 4;
+
+/// Final residual rows kept for the draft head, the last positions of the sequence
+/// (a ring indexed by position). Steps drafted by prompt lookup do not call the
+/// draft head, so its cache falls behind by every token they keep; the next draft
+/// call catches up from these rows instead of restarting. 40 KB per row on Qwen3.8
+/// Flash (10 MB in all), and longer than any run of lookup rounds measured on
+/// structured output.
+pub(crate) const HIDDEN_RING: usize = 256;
 
 /// Device memory a step's workspace may need on top of what it already holds (a
 /// prefill chunk's activations and MoE scratch), kept free when caches grow.
@@ -138,12 +144,14 @@ pub struct SeqState<B: Backend> {
     pub pos: usize,
     /// Scratch buffers shared by every layer.
     pub ws: Rc<RefCell<Workspace<B>>>,
-    /// With an MTP head: the final residual rows of the last step, and which row is
-    /// the sequence's last token (the draft head's input).
+    /// With an MTP head: the final residuals of the last positions, the draft
+    /// head's input, in a ring of [`HIDDEN_RING`] rows (position `p` in row
+    /// `p % HIDDEN_RING`). The kept positions end at `pos`.
     pub(crate) hidden: Option<B::F32>,
-    pub(crate) hidden_row: usize,
-    /// The tokens of those rows (empty when unknown, e.g. after a restore).
-    pub(crate) hidden_tokens: Vec<u32>,
+    /// The token after each kept position but the last: kept positions are
+    /// `pos - hidden_next.len() - 1 .. pos` (only the last after a prefill or a
+    /// restore).
+    pub(crate) hidden_next: Vec<u32>,
     /// The MTP layer's attention state, and the position its committed entries end
     /// at (draft-chain entries beyond it are dropped at the next draft).
     mtp: Option<LayerState<B>>,
@@ -154,6 +162,44 @@ pub struct SeqState<B: Backend> {
     pub(crate) plan: Vec<usize>,
     /// Start and length of the last step if it can be rewound.
     pub(crate) rewindable: Option<(usize, usize)>,
+}
+
+/// Writes `n` rows of `src` from offset `off` to the ring rows of positions
+/// `pos..pos + n` (`n` at most [`HIDDEN_RING`]).
+fn ring_write<B: Backend>(
+    gpu: &B,
+    src: &B::F32,
+    off: usize,
+    ring: &mut B::F32,
+    pos: usize,
+    n: usize,
+    r: usize,
+) -> Result<()> {
+    let slot = pos % HIDDEN_RING;
+    let a = n.min(HIDDEN_RING - slot);
+    gpu.copy_range(src, off, ring, slot * r, a * r)?;
+    if a < n {
+        gpu.copy_range(src, off + a * r, ring, 0, (n - a) * r)?;
+    }
+    Ok(())
+}
+
+/// Reads the ring rows of positions `pos..pos + n` into the first rows of `dst`.
+fn ring_read<B: Backend>(
+    gpu: &B,
+    ring: &B::F32,
+    pos: usize,
+    n: usize,
+    dst: &mut B::F32,
+    r: usize,
+) -> Result<()> {
+    let slot = pos % HIDDEN_RING;
+    let a = n.min(HIDDEN_RING - slot);
+    gpu.copy_range(ring, slot * r, dst, 0, a * r)?;
+    if a < n {
+        gpu.copy_range(ring, 0, dst, a * r, (n - a) * r)?;
+    }
+    Ok(())
 }
 
 /// Renames a layer's stages to `{stage}.{layer}` for a model-level probe.
@@ -267,8 +313,7 @@ impl<B: Backend> QwenModel<B> {
                 .collect::<Result<_>>()?,
             pos: 0,
             hidden: None,
-            hidden_row: 0,
-            hidden_tokens: Vec::new(),
+            hidden_next: Vec::new(),
             mtp: match &self.mtp {
                 Some(m) => {
                     Some(
@@ -296,8 +341,10 @@ impl<B: Backend> QwenModel<B> {
         self.mtp.is_some()
     }
 
-    /// Keeps rows `[first, first + rows)` of the residual `x`, the hidden states of
-    /// `tokens`, as the draft head's input, the last being the sequence's last token.
+    /// Keeps rows `[first, first + tokens.len())` of the residual `x`, the hidden
+    /// states of `tokens` (the sequence's last tokens), as the draft head's input.
+    /// With `extends` they follow the rows kept so far; otherwise only they are
+    /// kept.
     fn keep_hidden(
         &self,
         gpu: &B,
@@ -305,21 +352,29 @@ impl<B: Backend> QwenModel<B> {
         x: &B::F32,
         first: usize,
         tokens: &[u32],
+        extends: bool,
     ) -> Result<()> {
-        let rows = tokens.len();
         if self.mtp.is_none() {
             return Ok(());
         }
         let r = self.dims.residual();
-        let buf = match state.hidden.take() {
-            Some(b) if b.len() >= rows * r => b,
-            _ => gpu.uninit(rows.max(MAX_DRAFT + 1) * r)?,
+        let n = tokens.len().min(HIDDEN_RING);
+        let skip = tokens.len() - n;
+        let mut buf = match state.hidden.take() {
+            Some(b) => b,
+            None => gpu.uninit(HIDDEN_RING * r)?,
         };
-        let mut buf = buf;
-        gpu.copy_range(x, first * r, &mut buf, 0, rows * r)?;
+        if extends && skip == 0 {
+            // The previous last row is followed by this step's first token.
+            state.hidden_next.push(tokens[0]);
+        } else {
+            state.hidden_next.clear();
+        }
+        state.hidden_next.extend_from_slice(&tokens[skip + 1..]);
+        let excess = (state.hidden_next.len() + 1).saturating_sub(HIDDEN_RING);
+        state.hidden_next.drain(..excess);
+        ring_write(gpu, x, (first + skip) * r, &mut buf, state.pos - n, n, r)?;
         state.hidden = Some(buf);
-        state.hidden_row = rows - 1;
-        state.hidden_tokens = tokens.to_vec();
         Ok(())
     }
 
@@ -570,8 +625,9 @@ impl<B: Backend> QwenModel<B> {
                 .give(x_name, std::mem::replace(&mut x, next));
             x_name = "layer.out";
         }
+        let continues = state.hidden.is_some();
         state.pos += t;
-        self.keep_hidden(gpu, state, &x, 0, token_ids)?;
+        self.keep_hidden(gpu, state, &x, 0, token_ids, continues)?;
 
         let mut ws = state.ws.borrow_mut();
         let logits = self.head(gpu, &mut ws, &x, t, probe, last_only)?;
@@ -964,7 +1020,14 @@ impl<B: Backend> QwenModel<B> {
             return Ok(Some(None));
         }
         let t = chunks.last().map_or(0, |c| c.len());
-        self.keep_hidden(gpu, state, last, t - 1, &token_ids[token_ids.len() - 1..])?;
+        self.keep_hidden(
+            gpu,
+            state,
+            last,
+            t - 1,
+            &token_ids[token_ids.len() - 1..],
+            false,
+        )?;
         let logits = self.head(gpu, &mut state.ws.borrow_mut(), last, t, &mut NoProbe, true)?;
         // Give prefill-only memory back to the expert tier for decode: the residuals,
         // the fp32 KV shadows, the grow-only buffers sized for fetch groups and FP8
@@ -1001,7 +1064,7 @@ impl<B: Backend> QwenModel<B> {
         state.pos = pos;
         state.rewindable = None;
         state.hidden = None;
-        state.hidden_tokens.clear();
+        state.hidden_next.clear();
         state.mtp_end = 0;
         Ok(())
     }
@@ -1022,8 +1085,9 @@ impl<B: Backend> QwenModel<B> {
             layer.rewind(gpu, &self.dims, st, keep, start + keep)?;
         }
         state.pos = start + keep;
-        state.hidden_row = keep - 1;
-        state.hidden_tokens.truncate(keep);
+        // The rows of dropped positions stay in the ring until overwritten.
+        let kept = state.hidden_next.len().saturating_sub(n);
+        state.hidden_next.truncate(kept);
         // Rewinding replays from the step's start, so a later rewind within the kept
         // rows is still exact.
         state.rewindable = Some((start, keep));
@@ -1058,24 +1122,21 @@ impl<B: Backend> QwenModel<B> {
         }
         let d = &self.dims;
         let r = d.residual();
-        let rows = state.hidden_row + 1;
         let pos = state.pos;
-        let first = pos - rows;
-        // Entries before `first` need residuals no longer kept: catch up from the
-        // committed end when it lies within the kept rows, else restart the cache.
-        let mut lo = pos.saturating_sub(MTP_CATCHUP).max(first);
-        if state.hidden_tokens.len() != rows {
-            lo = pos - 1;
-        }
+        let first = pos - state.hidden_next.len() - 1;
+        // Catch up from the committed end when it lies within the kept rows (it
+        // does unless lookup kept more than HIDDEN_RING tokens since the last
+        // call), else restart the cache a few positions back.
         let mst = state.mtp.as_mut().expect("checked above");
         let from = match mtp.layer.attention_extent(mst) {
             Some((base, len))
-                if state.mtp_end >= lo.max(base) && state.mtp_end < pos && len > 0 =>
+                if state.mtp_end >= first.max(base) && state.mtp_end < pos && len > 0 =>
             {
                 mtp.layer.rewind(gpu, d, mst, 0, state.mtp_end - base)?;
                 state.mtp_end
             }
             _ => {
+                let lo = pos.saturating_sub(MTP_CATCHUP).max(first);
                 mtp.layer.reset_attention_at(mst, lo);
                 lo
             }
@@ -1089,7 +1150,7 @@ impl<B: Backend> QwenModel<B> {
             let tokens: Vec<u32> = (p..end)
                 .map(|q| {
                     if q + 1 < pos {
-                        state.hidden_tokens[q + 1 - first]
+                        state.hidden_next[q - first]
                     } else {
                         next
                     }
@@ -1098,7 +1159,7 @@ impl<B: Backend> QwenModel<B> {
             let m = end - p;
             let mut x = state.ws.borrow_mut().take(gpu, "mtp.x", m * r)?;
             let hidden = state.hidden.as_ref().expect("checked above");
-            gpu.copy_range(hidden, (p - first) * r, &mut x, 0, m * r)?;
+            ring_read(gpu, hidden, p, m, &mut x, r)?;
             let out = self.mtp_rows(gpu, state, &x, &tokens, p, experts)?;
             let mut ws = state.ws.borrow_mut();
             ws.give("mtp.x", x);

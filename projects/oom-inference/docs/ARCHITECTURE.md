@@ -271,6 +271,42 @@ drafted novel text often enough to lose. Before the decode-kernel paths, an
 8-token step fell onto the sparse prefill attention and dequantized FP8 weights
 for cuBLAS every step (215 ms).
 
+The draft head keeps its own attention cache across calls: entry `p` fuses the
+final residual at position `p` with the embedding of the token at `p + 1`, and
+each call first appends the entries for the tokens kept since the last call.
+Steps drafted by prompt lookup do not call the head, so it falls behind by every
+token they keep. The sequence therefore keeps the final residuals of its last
+256 positions in a ring (40 KB each, 10 MB) with the tokens that follow them,
+and the next model draft catches the head up on every position since its last
+call, in steps of four. Only after more than 256 lookup-kept tokens in a row
+does the head restart its cache a few positions back. A rewind cuts the ring's
+token list; rows of dropped positions are overwritten later.
+
+**Why keep residuals across lookup steps.** The ring used to hold only the last
+step's rows, so two lookup steps in a row made the head restart its cache and
+draft without the output's context. On the blog demo (a 22k-token incident
+report in, about 580 tokens of newline-delimited JSON out, sampled, serve
+defaults, warm) model drafts kept 76% with lookup on against 83% with it off,
+and decode ran at 43.4 against 47.0 tok/s (medians of 12 and 4 requests).
+Catching up restores 83% acceptance and 45.6 tok/s with lookup on (median of
+10 requests; lookup off unchanged within noise, 46.1 tok/s). The file-edit
+workloads of `bench/lookup.py` keep their lookup gains: within -4 to +2% of
+before on every workload (medians of five warm passes, which vary by a few
+percent between server runs). The cost is the catch-up itself, one MTP layer
+step per four positions, which used to be skipped: rings of 32, 64 and 256
+rows measured the same on the edit workloads. Catching up lazily at the next
+model draft is never more work than catching up eagerly after every lookup
+step (the same positions, in fuller steps), so it is kept.
+`tests/mtp_lookup.rs` checks that drafts after lookup runs equal drafts made on
+every step: 0 of 48 tokens differ, against 13 when the head restarts.
+
+A draft width that grows from one to three tokens while recent model drafts
+were mostly kept (90% for two, 95% for three) was measured and not kept: on the
+demo it tied one-token drafts (46.4 against 46.3 tok/s) and it lost 3 to 7% on
+the edit workloads, whose high acceptance comes from easy positions lookup
+leaves the head. Fixed two- and three-token drafts ran the demo at 45.6 and
+42.8 tok/s.
+
 **Why stage-ahead.** Fetching a layer's experts only once it has routed left
 the GPU idle for every layer's copies and disk reads: on a 2.2k-token prompt,
 copies and compute overlapped for 0.3 s of a 4.7 s prefill. The prediction
