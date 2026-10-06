@@ -1,7 +1,7 @@
 # Architecture
 
 oom-inference serves Mixture-of-Experts models that are larger than GPU memory
-plus host memory, on one consumer machine, for one or two interactive streams.
+plus host memory, on one consumer machine, for a few interactive streams.
 Routed experts live in three tiers (VRAM, pinned host memory, NVMe) and move on
 demand; everything else stays resident on the device.
 
@@ -17,7 +17,7 @@ demand; everything else stays resident on the device.
 | `oominf-tiers` | Expert sources: `TieredExperts` (VRAM slots, pinned host arena filled by direct I/O, cache policies) and `DiskExperts` | core, format |
 | `oominf-models-qwen` | Qwen 3.8 Flash, generic over `B: Backend` | core, cpu, format |
 | `oominf-models` | Registry: opens a converted model with the implementation for its `model_type` | core, format, models-* |
-| `oominf-server` | OpenAI and Anthropic HTTP APIs, chat templates, output parsers, sampling, prefix reuse | core |
+| `oominf-server` | OpenAI and Anthropic HTTP APIs, chat templates, output parsers, sampling, prefix reuse, continuous batching | core |
 | `oominf` | CLI and composition root: picks the backend, the model (via the registry) and the expert source | all |
 
 Only `oominf-cuda` knows about CUDA. Only `oominf-models-*`, the converter's
@@ -45,7 +45,9 @@ touches the other.
   recurrent state) and runs `prefill(tokens)` and `step(tokens)`, returning the
   logits after the last token. For speculative decoding a session may also
   `draft(next, k)` tokens, verify them in one `step_all`, and `rewind` the ones
-  the model rejects. The server, `generate` and `bench` use only these.
+  the model rejects. `Model::step_many` runs one step over several sessions
+  (continuous batching, below). The server, `generate` and `bench` use only
+  these.
 - **`ExpertSource`** makes a layer's routed experts device-resident and returns
   their record addresses, optionally in two phases so resident experts compute
   while the rest load. Kernels read every part of a record, scales included,
@@ -297,6 +299,100 @@ reach VRAM through admission.
 on-disk layout barely matters because drives split large reads into small
 commands anyway. An explicit pinned host tier makes memory use and copy timing
 deterministic, where the page cache competes with everything else on the machine.
+
+## Concurrent requests
+
+`oominf serve --max-streams N` (default 1: one request at a time, to
+completion, exactly as before) serves up to N requests at once with continuous
+batching.
+
+- **Batched step** (`Model::step_many`, `QwenModel::step_many`). One step
+  carries tokens of several sequences, each with its own KV caches, GDN
+  recurrent and conv state, PLE state, draft-head state and position. All
+  rows live in one buffer; everything that works row by row runs once over
+  all of them (embedding, hyper-connections, the GDN and attention input and
+  output projections, the MoE and the head), and only what carries
+  per-sequence state runs per sequence on its own rows (PLE, the GDN conv and
+  recurrence, the attention core). Each layer therefore routes all rows
+  together and fetches the union of their experts once. Each sequence can
+  rewind its own rejected drafts afterwards. Sessions are trait objects; the
+  model reaches its own sessions' state through `Session::as_any_mut`.
+- **Scheduler** (`oominf-server/src/engine/scheduler.rs`). Requests join and
+  leave between steps. Each loop runs one prefill slice (the oldest admitted
+  request still prefilling) and then one decode step for every decoding
+  request. A prompt prefills whole, or in `--prefill-slice` pieces when other
+  requests are decoding. Stop tokens, token limits, sampling, events and
+  cancellation stay per request; a finished sequence goes to the prefix cache,
+  clearing (and so saving to a prefix store) the one it displaces.
+- **Admission.** A request is admitted while its sequence, grown to its token
+  limit, fits in device memory beside the active sequences grown to theirs
+  (`Model::sequence_bytes` against free memory plus what the expert tier can
+  give back, less the step headroom); otherwise it queues. A new session takes
+  its state's memory from the expert tier (`release_vram`) rather than from the
+  step headroom, and batched steps keep that headroom free.
+- **Token budget** (`oominf-server/src/budget.rs`). Each step carries every
+  decoding stream's next token (worth 1) and the drafts (prompt lookup when it
+  matches, else the draft head's) whose expected value pays for the width they
+  add: draft j of a stream is worth a^j, a being that stream's recent
+  acceptance. The allocator takes candidates by value and picks the width that
+  maximises expected tokens per millisecond under a step cost curve
+  (`--step-cost`, default measured below, refined by every measured step) plus
+  the draft head's cost per drafted token, within `--max-step-tokens` (default
+  16, the decode GEMV's limit; wider steps run prefill GEMMs). With one
+  decoding request the step is exactly the one-request engine's (its
+  configured drafts).
+
+**Why one batched step.** Decode is bound by routed-expert misses, and a step
+fetches the union of its rows' experts once per layer, so rows of different
+sequences share the misses their experts have in common and every dense weight
+is read once. Measured with `oominf bench --streams` (max-perf config, warm
+tiers, 16 different requests, one token per sequence per step): 1 sequence
+22 ms per step (45 tok/s), 2 sequences 37 ms (54 tok/s), 4 sequences 52-55 ms
+(73-77 tok/s), 8 sequences 115-120 ms (67-70 tok/s), 16 sequences 254-257 ms
+(62-63 tok/s). The plateau comes early because unrelated requests share few
+experts: 8 sequences route about as many records per step as 8 verified drafts
+of one sequence (2,266 against 2,317), but across steps their working set
+outgrows the VRAM tier (hit rate 68% against 84%), so host-tier copies
+dominate. Running each sequence's token mixer on its own first cost about
+10 ms per extra sequence (its dense GEMVs and about 25 kernel launches per
+layer); batching every row-wise operation removed that (8 sequences 146 to
+120 ms per step).
+
+Measured through the server (`bench/http_bench.py --concurrency`, K
+concurrent streaming requests of 128 tokens with different short prompts,
+temperature 0, the same max-perf config; median of two rounds):
+
+| K | `--max-streams 1`: aggregate tok/s | TTFT p50 / max (s) | `--max-streams 8`: aggregate tok/s | per-stream tok/s | TTFT p50 / max (s) | ITL p50 / p95 / max (ms) |
+|---|---|---|---|---|---|---|
+| 1 | 43.4 | 0.55 / 0.55 | 43.6 | 53.4 | 0.55 / 0.55 | 25 / 41 / 58 |
+| 2 | 42.6 | 0.64 / 3.6 | 48.0 | 31.3 | 0.64 / 1.3 | 40 / 56 / 675 |
+| 4 | 41.5 | 6.7 / 9.9 | 54.9 | 16.9 | 2.1 / 2.8 | 51 / 68 / 739 |
+| 8 | 39.9 | 13.4 / 23.1 | 47.3 | 7.1 | 3.7 / 5.9 | 126 / 210 / 812 |
+
+With `--max-streams 4` the same runs gave 47.3, 47.8 and 47.4 tok/s at K = 2,
+4 and 8 (K = 8 queues four requests: TTFT p50 9.5 s); the two K = 4 runs,
+which schedule identically, differ by 15% (54.9 against 47.8), the run to run
+spread of these numbers. One request decodes exactly as before (MTP drafts, 53 tok/s per stream). With
+several, aggregate throughput rises 1.1-1.3x and the queueing delay before a
+request's first token falls 3-4x, at the cost of each stream's speed. The
+aggregate gain is smaller than the steady state above because each new
+request's prefill (about 0.6 s for these prompts, a sweep of most layers'
+experts) stalls the others' decoding (the 0.7-0.8 s maximum gaps), and one
+stream alone already gains about 1.2x from its drafts, which batched steps
+mostly drop (the budget finds them not worth the width beside other streams'
+next tokens).
+
+**Why prefills are not sliced by default.** A prefill of any size above a few
+hundred tokens touches most of every layer's experts, so its cost is about one
+sweep of the expert tiers whatever its length. Slicing a 2k-token prompt
+between other streams' steps (4 concurrent requests, one of them long) cut the
+others' longest stall from 3.6 s to 2.2 s (512-token slices) or 2.7 s (1024)
+but raised the long request's time to first token from 3.5 s to 9.8 s or
+6.9 s and lowered aggregate throughput from 38 to 32-33 tok/s.
+`--prefill-slice` is there for workloads that prefer the shorter stall. A stall
+shorter than a sweep needs the decoding streams' rows to ride along inside the
+layer-major prefill, which fetches every layer's experts anyway.
+
 
 ## Correctness
 

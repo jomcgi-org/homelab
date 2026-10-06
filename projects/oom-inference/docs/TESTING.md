@@ -6,7 +6,7 @@ below.
 
 | Layer | What it proves | Command |
 |---|---|---|
-| Unit tests (CPU) | format round trips and checksums, converter byte copies, cache policies, PLE hashing, server parsing, sampling and API shapes | `cargo test --workspace` |
+| Unit tests (CPU) | format round trips and checksums, converter byte copies, cache policies, PLE hashing, server parsing, sampling and API shapes, the batched engine's per-request stops, limits, cancellation and caching, the token budget | `cargo test --workspace` |
 | Stage fixtures | every stage of one decoder layer matches the reference | `oominf check-layer` |
 | Whole-model chain | all layers, final mixer and logits match the reference end to end | `oominf check-model` |
 | Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
@@ -15,6 +15,7 @@ below.
 | Decode GEMV | `gemm_bf16` (up to 4 rows) and FP8 `gemm_fp8` (GEMV and the dequantize-then-cuBLAS path) match f64 references; throughput on the model's dense shapes past L2 | `cargo test --release -p oominf-cuda --test gemv -- --ignored --nocapture` |
 | KV cache formats and attention | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32; prefill-sized attention under sparse masks matches an f64 reference; a cache in host memory gives bit-identical attention | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
 | Sequence snapshots | a saved and restored sequence continues with bit-identical logits and drafts | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test snapshot -- --ignored` |
+| Batched steps | a step over three sequences of different lengths (one prefilled layer by layer) with different widths, sequences sitting steps out and rewinding their own drafts, matches twins stepped alone: to the bit until the first step wider than 4 tokens (1.2e-6 in it; gate 1e-4, same argmax), then as speculative decoding does (argmax except near ties, gate 1e-1) | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test multistream -- --ignored` |
 | Prefix checkpoints | a sequence rewound to a prefill checkpoint and fed a new continuation matches prefix-then-continuation bit for bit, also after save and load | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test checkpoint -- --ignored` |
 | GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
 
@@ -61,6 +62,15 @@ ratio of 1.0.
 
 Caching and scheduling only move bytes, so tier or policy changes must leave
 `check-model` output byte-identical.
+
+**Batched steps** (`--max-streams` above 1) change only which rows share a
+GEMM; the `multistream` test above checks each sequence against itself run
+alone. Why its tolerance has two levels: up to 4 tokens a step's dense GEMVs
+reduce every row the same way whatever the row count, so results are bit for
+bit; wider steps run wider GEMV instances that split the reduction differently,
+which changes rounding in the same way a draft verification step does against
+one-token steps, and the compressed KV cache and top-k routing carry that
+rounding forward.
 
 ## Protocol specs
 
