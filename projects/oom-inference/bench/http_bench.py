@@ -215,9 +215,17 @@ def concurrent_round(args, k, round_no):
             prompt = f"(For a report on {TOPICS[n % len(TOPICS)]}.) " + long_prompt()
             time.sleep(args.long_delay)
         else:
-            prompt = TASKS[n % len(TASKS)].format(TOPICS[(n // len(TASKS) + n) % len(TOPICS)])
+            prompt = TASKS[n % len(TASKS)].format(
+                TOPICS[(n // len(TASKS) + n) % len(TOPICS)]
+            )
         try:
-            results[i] = stream_chat(args.url, args.model, [{"role": "user", "content": prompt}], args.max_tokens, args.timeout)
+            results[i] = stream_chat(
+                args.url,
+                args.model,
+                [{"role": "user", "content": prompt}],
+                args.max_tokens,
+                args.timeout,
+            )
         except Exception as e:  # noqa: BLE001 - reported below
             errors.append(f"request {i}: {e}")
 
@@ -261,10 +269,16 @@ def concurrency_mode(args):
                 f"p95 {1e3 * s['itl_p95']:6.1f} ms max {1e3 * s['itl_max']:7.1f} ms  ({s['tokens']} tokens in {s['wall']:.1f}s)",
                 flush=True,
             )
-        med = {key: statistics.median(r[key] for r in runs) for key in runs[0] if key != "k"}
+        med = {
+            key: statistics.median(r[key] for r in runs)
+            for key in runs[0]
+            if key != "k"
+        }
         med["k"] = k
         rows.append(med)
-    print("\n| K | aggregate tok/s | per-stream tok/s | TTFT p50 (s) | TTFT max (s) | ITL p50 (ms) | ITL p95 (ms) | ITL max (ms) |")
+    print(
+        "\n| K | aggregate tok/s | per-stream tok/s | TTFT p50 (s) | TTFT max (s) | ITL p50 (ms) | ITL p95 (ms) | ITL max (ms) |"
+    )
     print("|---|---|---|---|---|---|---|---|")
     for m in rows:
         print(
@@ -291,10 +305,25 @@ def main():
     p.add_argument("--max-tokens", type=int, default=128)
     p.add_argument("--timeout", type=float, default=600)
     p.add_argument("--json", help="also write results to this file")
-    p.add_argument("--concurrency", help="concurrency mode: comma-separated request counts, e.g. 1,2,4,8")
-    p.add_argument("--rounds", type=int, default=2, help="concurrency mode: timed rounds per count")
-    p.add_argument("--long-every", type=int, default=0, help="concurrency mode: every Nth request has the long prompt")
-    p.add_argument("--long-delay", type=float, default=3.0, help="concurrency mode: seconds the long requests start after the others")
+    p.add_argument(
+        "--concurrency",
+        help="concurrency mode: comma-separated request counts, e.g. 1,2,4,8",
+    )
+    p.add_argument(
+        "--rounds", type=int, default=2, help="concurrency mode: timed rounds per count"
+    )
+    p.add_argument(
+        "--long-every",
+        type=int,
+        default=0,
+        help="concurrency mode: every Nth request has the long prompt",
+    )
+    p.add_argument(
+        "--long-delay",
+        type=float,
+        default=3.0,
+        help="concurrency mode: seconds the long requests start after the others",
+    )
     args = p.parse_args()
     if args.concurrency:
         return concurrency_mode(args)
