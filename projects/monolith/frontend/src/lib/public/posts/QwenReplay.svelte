@@ -1,9 +1,13 @@
 <script>
   import { fade } from "svelte/transition";
   import DemoDisclosure from "./DemoDisclosure.svelte";
+  import CodeOutput from "./CodeOutput.svelte";
   import IncidentGraph from "./IncidentGraph.svelte";
-  import recording from "./qwen-replay.json";
-  let { landing = false } = $props();
+  import research from "./qwen-replay.json";
+  // `kind` "research" reads a long report and maps it as a graph; "coding" reads
+  // a codebase and writes a change, with the per-step draft trace.
+  let { landing = false, recording = research, kind = "research" } = $props();
+  // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
   const turn = recording.turns[0];
   let element;
   let position = $state(0);
@@ -27,6 +31,7 @@
   const uncachedTokens =
     turn.usage.prompt_tokens - (turn.usage.cached_tokens ?? 0);
   const finalAnswer = turn.events.map((event) => event.content).join("");
+  // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
   const reportSections = recording.document?.sections ?? [];
   const prefillStart =
     turn.progress?.find((event) => event.stage === "prefill")?.at ?? 0;
@@ -123,13 +128,21 @@
   class:landing
   aria-label="Inference on the RTX 4090"
 >
-  <p class="question">
-    Map the controls and failures from the <a
-      href={recording.source.url}
-      target="_blank"
-      rel="noreferrer">OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
-    >.
-  </p>
+  {#if kind === "coding"}
+    <p class="question">
+      Read <a href={recording.source.url} target="_blank" rel="noreferrer"
+        >the engine's expert-cache crate</a
+      > and add a method with a test.
+    </p>
+  {:else}
+    <p class="question">
+      Map the controls and failures from the <a
+        href={recording.source.url}
+        target="_blank"
+        rel="noreferrer">OpenAI &lt;&gt; HuggingFace cyber incident postmortem</a
+      >.
+    </p>
+  {/if}
   {#if landing}{@render playbackControls()}{/if}
   <div class="demo-body" class:output-expanded={outputOpen}>
     <span class="sr-only" role="status">{phase}</span>
@@ -137,7 +150,9 @@
       <div
         class="input-scan"
         transition:fade={{ duration: fadeDuration() }}
-        aria-label="Report pages across the measured prefill interval"
+        aria-label={kind === "coding"
+          ? "Source files across the measured prefill interval"
+          : "Report pages across the measured prefill interval"}
       >
         <div class="scan-heading">
           <span>{uncachedTokens.toLocaleString("en-US")} input tokens</span
@@ -173,15 +188,25 @@
         aria-label="Recorded answer"
         transition:fade={{ duration: fadeDuration() }}
       >
-        <IncidentGraph
-          {answer}
-          {landing}
-          {finalAnswer}
-          bind:outputOpen
-          sourceUrl={recording.source.url}
-          review={recording.review}
-          complete={phase === "Complete"}
-        />
+        {#if kind === "coding"}
+          <CodeOutput
+            events={turn.events}
+            {position}
+            durationMs={turn.durationMs}
+            file="src/cache.rs"
+            complete={phase === "Complete"}
+          />
+        {:else}
+          <IncidentGraph
+            {answer}
+            {landing}
+            {finalAnswer}
+            bind:outputOpen
+            sourceUrl={recording.source.url}
+            review={recording.review}
+            complete={phase === "Complete"}
+          />
+        {/if}
       </div>
     {/if}
   </div>

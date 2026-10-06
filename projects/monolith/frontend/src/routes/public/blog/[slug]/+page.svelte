@@ -11,6 +11,13 @@
   let { data } = $props();
   let activeId = $state("");
   let hasLanding = $derived(data.slug === "125b-on-a-4090");
+  // The landing's two recorded demos: reading a long report (prefill-heavy) and
+  // writing a change to a codebase (decode with draft tokens).
+  const demos = [
+    { kind: "research", label: "Long-context research" },
+    { kind: "coding", label: "Agentic coding" },
+  ];
+  let demo = $state("research");
   const replays = {
     "ember-conformance": {
       load: () => import("$lib/public/posts/ConformanceReplay.svelte"),
@@ -187,10 +194,29 @@
         </header>
         <section class="landing-demo" aria-labelledby="inference-demo">
           <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
-          {#await import("$lib/public/posts/QwenReplay.svelte")}
+          <div class="demo-switch" role="group" aria-label="Demo">
+            {#each demos as d}
+              <button
+                type="button"
+                aria-pressed={demo === d.kind}
+                onclick={() => (demo = d.kind)}>{d.label}</button
+              >
+            {/each}
+          </div>
+          {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")], )}
             <p>Loading the inference demo…</p>
-          {:then replay}
-            <replay.default landing />
+          {:then [replay, coding]}
+            {#key demo}
+              {#if demo === "coding"}
+                <replay.default
+                  landing
+                  kind="coding"
+                  recording={coding.default}
+                />
+              {:else}
+                <replay.default landing />
+              {/if}
+            {/key}
           {:catch}
             <p>
               The inference demo could not load. Refresh the page to try again.
@@ -395,6 +421,29 @@
     clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
+  }
+  .demo-switch {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--ink);
+    width: fit-content;
+  }
+  .demo-switch button {
+    padding: 0.4rem 0.8rem;
+    min-height: 2.75rem;
+    border: 0;
+    background: var(--sheet);
+    color: var(--ink);
+    font: 0.75rem var(--font-code);
+    cursor: pointer;
+  }
+  .demo-switch button + button {
+    border-left: 1px solid var(--ink);
+  }
+  .demo-switch button[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--sheet);
   }
   .landing-demo h2 {
     /* Reloaded demo fragments keep the opening header in view. */

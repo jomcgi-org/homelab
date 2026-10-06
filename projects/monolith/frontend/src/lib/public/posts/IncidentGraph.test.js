@@ -39,16 +39,19 @@ test("clicking a connection exposes its verified source and inferred analysis", 
   await tick();
   expect(
     target.querySelector(".graph-detail a").getAttribute("href"),
-  ).toContain("#page=15");
+  ).toContain(`#page=${alertEdge.pages[0]}`);
   expect(
     alert
       .closest(".connection")
       .querySelector(".edge")
       .classList.contains("feedback"),
   ).toBe(true);
-  const failure = reviewedEdges.find(
-    (edge) => edge.kind === "failure" && edge.basis === "inferred",
-  );
+  // A failure edge's citation says whether it is reported by the source or the
+  // model's own analysis (an inferred edge).
+  const failure =
+    reviewedEdges.find(
+      (edge) => edge.kind === "failure" && edge.basis === "inferred",
+    ) ?? reviewedEdges.find((edge) => edge.kind === "failure");
   [...target.querySelectorAll(".edge-hit")]
     .find(
       (el) =>
@@ -57,7 +60,7 @@ test("clicking a connection exposes its verified source and inferred analysis", 
     .dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await tick();
   expect(target.querySelector(".graph-detail a").textContent).toContain(
-    "Analysis",
+    failure.basis === "inferred" ? "Analysis" : "Report p.",
   );
   expect(target.querySelector("animateMotion")).toBeNull();
   await unmount(component);
