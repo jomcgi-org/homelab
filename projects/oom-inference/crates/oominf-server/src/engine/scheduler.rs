@@ -260,6 +260,8 @@ impl Engine {
                     }
                 }
             }
+            // Again after retiring: with nothing left, the loop next blocks on a job.
+            self.telemetry.lock().unwrap().requests_active = (active.len() + queue.len()) as u64;
             let now = Instant::now();
             rate.push_back((now, generated));
             while rate.len() > 2 && now - rate[1].0 >= Duration::from_secs(1) {
