@@ -1,0 +1,91 @@
+{
+ "version": 3,
+ "recordedAt": "2026-01-01T00:00:00.000Z",
+ "build": "synthetic-fixture",
+ "model": "Synthetic model",
+ "hardware": "Synthetic hardware",
+ "thinking": false,
+ "sampleIntervalMs": 200,
+ "conditions": "Entirely synthetic. Timings are invented for UI testing.",
+ "telemetry": {
+  "routing": false,
+  "stats": false
+ },
+ "source": {
+  "title": "Synthetic crate",
+  "url": "https://example.invalid/crate"
+ },
+ "document": {
+  "pages": 2,
+  "sections": [
+   {
+    "from": 1,
+    "label": "src/lib.rs"
+   },
+   {
+    "from": 2,
+    "label": "src/fixture.rs"
+   }
+  ]
+ },
+ "review": {},
+ "turns": [
+  {
+   "title": "Synthetic coding",
+   "prompt": "Synthetic instruction.",
+   "events": [
+    {
+     "at": 1000,
+     "content": "//! Fixture module.\n",
+     "reasoning": "",
+     "tokens": 1
+    },
+    {
+     "at": 1040,
+     "content": "\n",
+     "reasoning": "",
+     "tokens": 1
+    },
+    {
+     "at": 1041,
+     "content": "pub fn fixture() -> u32 {\n",
+     "reasoning": "",
+     "tokens": 1
+    },
+    {
+     "at": 1080,
+     "content": "    1\n",
+     "reasoning": "",
+     "tokens": 1
+    },
+    {
+     "at": 1081,
+     "content": "}\n",
+     "reasoning": "",
+     "tokens": 1
+    }
+   ],
+   "samples": [],
+   "progress": [
+    {
+     "at": 0,
+     "stage": "prefill"
+    }
+   ],
+   "statsSamples": [],
+   "usage": {
+    "prompt_tokens": 1000,
+    "completion_tokens": 5,
+    "cached_tokens": 0
+   },
+   "finishReason": "stop",
+   "durationMs": 1281,
+   "metrics": {
+    "ttftMs": 1000,
+    "generationMs": 81,
+    "completionTokens": 5,
+    "tokensPerSecond": 50
+   }
+  }
+ ]
+}
