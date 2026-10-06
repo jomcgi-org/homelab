@@ -132,8 +132,10 @@ enum Command {
         draft: usize,
         /// Tokens per prompt-lookup draft: when the latest tokens repeat earlier
         /// ones (code being edited, quoted input), what followed them is drafted
-        /// instead of the model's draft. 0 disables it.
-        #[arg(long, default_value_t = 0)]
+        /// instead of the model's draft. On by default: +22-40% output rate when
+        /// output copies input (file edits), -2 to -9% on prose and short diffs
+        /// (#6872). 0 disables it.
+        #[arg(long, default_value_t = 7)]
         prompt_lookup: usize,
         /// Save sequences evicted from the device here, and resume later requests
         /// that extend one instead of prefilling (off when unset).
