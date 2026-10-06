@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./tokens/contract.css",
-    "./tokens/contract.css": "./tokens/contract.css"
+    "./tokens/contract.css": "./tokens/contract.css",
+    "./tokens/technical-drawing.css": "./tokens/technical-drawing.css"
   }
 }

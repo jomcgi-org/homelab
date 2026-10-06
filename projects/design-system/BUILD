@@ -11,8 +11,11 @@ npm_link_all_packages(name = "node_modules")
 js_library(
     name = "pkg",
     srcs = [
+        # The token tests verify the README's measured contrast table.
+        "README.md",
         "package.json",
         "tokens/contract.css",
+        "tokens/technical-drawing.css",
     ],
     visibility = [
         "//:__pkg__",
