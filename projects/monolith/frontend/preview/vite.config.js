@@ -20,7 +20,7 @@ export default defineConfig({
         });
         for (const id of this.getModuleIds()) {
           if (
-            /src\/lib\/(server|private)\/|src\/routes\/(private|friends)\/|posts-manifest\.json|posts\/(qwen|conformance)-replay\.json/.test(
+            /src\/lib\/(server|private)\/|src\/routes\/(private|friends)\/|posts-manifest\.json|posts\/(qwen|conformance|agent)-replay\.json/.test(
               id,
             )
           ) {
@@ -38,6 +38,10 @@ export default defineConfig({
       {
         find: /^\.\/qwen-replay\.json$/,
         replacement: here("./fixtures/qwen-replay.json"),
+      },
+      {
+        find: "$lib/public/posts/agent-replay.json",
+        replacement: here("./fixtures/agent-replay.json"),
       },
       {
         find: "$lib/public/posts/ConformanceReplay.svelte",
