@@ -207,7 +207,7 @@
           </div>
           {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")] )}
             <table class="landing-results">
-              <caption>Recorded on the RTX 4090. Loading the replay…</caption>
+              <caption>Recorded on the RTX 4090</caption>
               <thead>
                 <tr>
                   <th scope="col">Request</th>
@@ -470,7 +470,7 @@
   .landing-results caption {
     padding-bottom: 0.5rem;
     text-align: left;
-    color: var(--ink-muted, inherit);
+    color: var(--ink-2);
   }
   .landing-results th,
   .landing-results td {

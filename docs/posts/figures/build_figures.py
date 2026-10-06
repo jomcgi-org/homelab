@@ -549,7 +549,18 @@ def oom_expert_routing() -> Figure:
         f'<path d="{idle}" fill="none" stroke="currentColor" stroke-width="1" '
         'stroke-opacity="0.3"/>'
     )
-    picks = [(3, 1), (7, 2), (11, 3), (12, 5), (14, 6), (17, 8), (19, 10), (22, 11), (26, 13), (29, 14)]
+    picks = [
+        (3, 1),
+        (7, 2),
+        (11, 3),
+        (12, 5),
+        (14, 6),
+        (17, 8),
+        (19, 10),
+        (22, 11),
+        (26, 13),
+        (29, 14),
+    ]
     for c, r in picks:
         f.box(px + c * pitch, py + r * pitch, cell, cell, weight=2)
     f.text(px, 48, "512 ROUTED EXPERTS IN THIS LAYER")
@@ -561,9 +572,9 @@ def oom_expert_routing() -> Figure:
     f.text(661, 130, "COMBINE", anchor="middle", weight="bold")
     f.text(661, 146, "outputs", anchor="middle")
 
-    # Work every token does regardless of the route.
+    # The shared expert runs whatever the route and joins the combine.
     f.box(232, 272, 352, 34, dashed=False)
-    f.text(244, 293, "dense + shared-expert work: every token")
+    f.text(244, 293, "shared expert: runs for every token")
     f.path_arrow([(584, 289), (661, 289), (661, 168)])
     f.keyed(206, 289, "3", 232, 289)
 
@@ -631,14 +642,30 @@ def oom_residency() -> Figure:
 
 
 def oom_context_state() -> Figure:
-    f = Figure(720, 380, "Context state grows with attention layers and shrinks the expert cache")
+    f = Figure(
+        720,
+        380,
+        "Context state grows with attention layers and shrinks the expert cache",
+    )
 
-    f.text(44, 34, "FOUR OF THE 48 DECODER LAYERS, REPEATED 12 TIMES", size=12, weight="bold")
+    f.text(
+        44,
+        34,
+        "FOUR OF THE 48 DECODER LAYERS, REPEATED 12 TIMES",
+        size=12,
+        weight="bold",
+    )
     for i, name in enumerate(["GDN", "GDN", "GDN", "QSA"]):
         x = 44 + i * 115
         f.box(x, 50, 100, 34, weight=2 if name == "QSA" else OUTLINE)
         f.text(x + 50, 72, name, anchor="middle", size=12, weight="bold")
-        f.text(x + 50, 106, "fixed state" if name == "GDN" else "history grows", anchor="middle", size=12)
+        f.text(
+            x + 50,
+            106,
+            "fixed state" if name == "GDN" else "history grows",
+            anchor="middle",
+            size=12,
+        )
     f.text(520, 62, "GDN: recurrent state,", size=12)
     f.text(520, 78, "fixed size per layer", size=12)
     f.text(520, 98, "QSA: reads selected rows", size=12)
@@ -656,7 +683,13 @@ def oom_context_state() -> Figure:
         f.text(x0 + d / 2, y + 24, "dense", anchor="middle", size=12)
         if state > 0.12:
             f.text(x0 + d + s / 2, y + 24, "state", anchor="middle", size=12)
-        f.text(x0 + d + s + (total - d - s) / 2, y + 24, "expert slots", anchor="middle", size=12)
+        f.text(
+            x0 + d + s + (total - d - s) / 2,
+            y + 24,
+            "expert slots",
+            anchor="middle",
+            size=12,
+        )
         f.text(x0 + total + 14, y + 24, caption, size=12)
 
     bar(190, "SHORTER CONTEXT (schematic)", 0.25, 0.06, "more experts stay")
@@ -667,7 +700,12 @@ def oom_context_state() -> Figure:
     f.arrow(284, 236, 284, 254)
     f.text(296, 250, "grows on demand", size=12)
     f.text(44, 336, "Shrinking a prompt does not refill the cache by itself:", size=12)
-    f.text(44, 352, "a rewind keeps its buffers, and freed slots still need warming.", size=12)
+    f.text(
+        44,
+        352,
+        "a rewind keeps its buffers, and freed slots still need warming.",
+        size=12,
+    )
     return f
 
 

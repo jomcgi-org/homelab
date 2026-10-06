@@ -29,22 +29,21 @@ MTP_EXPERTS = {
 }
 
 
-def fetch(name, start=0, length=None):
-    if isinstance(BASE_DIR, Path):
-        with open(BASE_DIR / name, "rb") as f:
+def fetch(source, name, start=0, length=None):
+    """Bytes of `name` from a local checkpoint directory or the pinned revision."""
+    if isinstance(source, Path):
+        with open(source / name, "rb") as f:
             f.seek(start)
-            return f.read(length) if length is not None else f.read()
-    headers = {}
-    if length is not None:
-        headers["Range"] = f"bytes={start}-{start + length - 1}"
+            return f.read() if length is None else f.read(length)
+    headers = {} if length is None else {"Range": f"bytes={start}-{start + length - 1}"}
     req = urllib.request.Request(BASE + name, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as r:
         return r.read()
 
 
-def header(shard):
-    (n,) = struct.unpack("<Q", fetch(shard, 0, 8))
-    return json.loads(fetch(shard, 8, n))
+def header(source, shard):
+    (n,) = struct.unpack("<Q", fetch(source, shard, 0, 8))
+    return json.loads(fetch(source, shard, 8, n))
 
 
 def size(meta):
@@ -64,17 +63,20 @@ def classify(name):
     return "dense"
 
 
-BASE_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-if BASE_DIR is None:
-    BASE_DIR = BASE
-shards = sorted(set(json.loads(fetch("model.safetensors.index.json"))["weight_map"].values()))
-totals = Counter()
-for shard in shards:
-    print(shard, file=sys.stderr, flush=True)
-    for name, meta in header(shard).items():
-        if name != "__metadata__":
-            totals[classify(name)] += size(meta)
-text = sum(v for k, v in totals.items() if not k.startswith("vision"))
-for k, v in sorted(totals.items()):
-    print(f"{k:20} {v / 1e9:8.2f} GB")
-print(f"{'text-model total':20} {text / 1e9:8.2f} GB  ({text / 2**30:.2f} GiB)")
+def main():
+    source = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    index = json.loads(fetch(source, "model.safetensors.index.json"))
+    totals = Counter()
+    for shard in sorted(set(index["weight_map"].values())):
+        print(shard, file=sys.stderr, flush=True)
+        for name, meta in header(source, shard).items():
+            if name != "__metadata__":
+                totals[classify(name)] += size(meta)
+    text = sum(v for k, v in totals.items() if not k.startswith("vision"))
+    for k, v in sorted(totals.items()):
+        print(f"{k:20} {v / 1e9:8.2f} GB")
+    print(f"{'text-model total':20} {text / 1e9:8.2f} GB  ({text / 2**30:.2f} GiB)")
+
+
+if __name__ == "__main__":
+    main()
