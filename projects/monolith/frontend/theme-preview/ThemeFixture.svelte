@@ -51,7 +51,9 @@
       <ul class="statuses" aria-label="Synthetic status labels">
         {#each statuses as status}
           <li class={status.role} data-status={status.role}>
-            <span aria-hidden="true" data-contrast-text>{status.glyph}</span>
+            <span class="status-cue" aria-hidden="true" data-contrast-text
+              >{status.glyph}</span
+            >
             <span data-contrast-text>{status.label}</span>
           </li>
         {/each}
@@ -199,6 +201,10 @@
     display: flex;
     gap: var(--ds-space-xs);
     line-height: 1.5;
+  }
+  .status-cue {
+    /* Reserve the glyph width when labels wrap at 320px and 200% text. */
+    flex: none;
   }
   .ok {
     color: var(--ds-ok);
