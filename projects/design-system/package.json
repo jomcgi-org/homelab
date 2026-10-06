@@ -13,6 +13,10 @@
     "./components/*.svelte": {
       "svelte": "./components/*.svelte",
       "default": "./components/*.svelte"
+    },
+    "./data-display": {
+      "svelte": "./data-display/index.js",
+      "default": "./data-display/core.js"
     }
   }
 }

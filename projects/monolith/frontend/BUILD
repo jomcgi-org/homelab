@@ -241,6 +241,9 @@ js_library(
         # private Qwen route was removed.
         "scripts/qwen-replay-metrics.mjs",
         "scripts/qwen-replay-metrics.test.mjs",
+        "test/data-display/Fixture.svelte",
+        "test/data-display/server.js",
+        "test/data-display/server-render.js",
         "vitest.config.js",
         # Resolved by the $app/environment alias in vitest.config.js; lives
         # outside src/ so it never reaches the app bundle.
@@ -257,6 +260,8 @@ js_library(
     deps = [
         ":node_modules/vitest",
         ":src",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
     ],
 )
 
