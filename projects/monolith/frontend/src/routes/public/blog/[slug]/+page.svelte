@@ -190,7 +190,10 @@
             </nav>
             <SchemeToggle />
           </div>
-          <h1 id="landing-title">125B on a 4090</h1>
+          <h1 id="landing-title">{data.title}</h1>
+          <p class="landing-hardware">
+            RTX 4090 · 64 GB host RAM · NVMe storage
+          </p>
         </header>
         <section class="landing-demo" aria-labelledby="inference-demo">
           <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
@@ -407,6 +410,11 @@
     font-size: clamp(1.4rem, 2.8vw, 2rem);
     line-height: 1.15;
     letter-spacing: -0.025em;
+  }
+  .landing-hardware {
+    margin: 0.5rem 0 0.25rem;
+    color: var(--ink-2);
+    font: 0.75rem / 1.5 var(--font-code);
   }
   .landing-demo {
     min-width: 0;
