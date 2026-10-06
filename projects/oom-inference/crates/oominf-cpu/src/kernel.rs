@@ -115,6 +115,95 @@ pub fn bf16_rows_scalar(m: Bf16Matrix, row0: usize, n_rows: usize, xs: &[&[f32]]
     }
 }
 
+/// Token columns a GEMM activation row is padded to (one vector of fp32 lanes).
+pub const LANES: usize = 16;
+
+/// Decodes rows `row0..row0 + n_rows` of `m` to fp32 into `w` (`[n_rows, cols]`):
+/// `e2m1(code) * fp8(scale)`, exact in fp32. `scale2` is left out, for the caller to
+/// apply to the products' sums as the device kernels do.
+pub fn nvfp4_decode(m: Nvfp4Matrix, row0: usize, n_rows: usize, w: &mut [f32]) {
+    assert!(w.len() >= n_rows * m.cols && m.packed.len() >= (row0 + n_rows) * m.cols / 2);
+    assert!(m.scales.len() >= (row0 + n_rows) * m.cols / 16);
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx512f") {
+        // SAFETY: the feature was detected and the bounds checked above.
+        unsafe { avx512::nvfp4_decode(m, row0, n_rows, w) };
+        return;
+    }
+    nvfp4_decode_scalar(m, row0, n_rows, w);
+}
+
+pub fn nvfp4_decode_scalar(m: Nvfp4Matrix, row0: usize, n_rows: usize, w: &mut [f32]) {
+    let fp8 = e4m3_table();
+    let groups = m.cols / 16;
+    for r in 0..n_rows {
+        let row = row0 + r;
+        let packed = &m.packed[row * m.cols / 2..(row + 1) * m.cols / 2];
+        let scales = &m.scales[row * groups..(row + 1) * groups];
+        let out = &mut w[r * m.cols..(r + 1) * m.cols];
+        for g in 0..groups {
+            let s = fp8[scales[g] as usize];
+            for i in 0..8 {
+                let b = packed[g * 8 + i];
+                out[g * 16 + 2 * i] = E2M1[(b & 0x0f) as usize] * s;
+                out[g * 16 + 2 * i + 1] = E2M1[(b >> 4) as usize] * s;
+            }
+        }
+    }
+}
+
+/// As [`nvfp4_decode`] for bf16 weights (exact in fp32).
+pub fn bf16_decode(m: Bf16Matrix, row0: usize, n_rows: usize, w: &mut [f32]) {
+    let base = row0 * m.cols * 2;
+    for (i, v) in w[..n_rows * m.cols].iter_mut().enumerate() {
+        let b = base + 2 * i;
+        *v = f32::from_bits((u16::from_le_bytes([m.weights[b], m.weights[b + 1]]) as u32) << 16);
+    }
+}
+
+/// `out[r * ntp + t] = scale * sum_c w[r * cols + c] * xt[c * ntp + t]`: decoded
+/// weight rows (`[n_rows, cols]`) times activations stored by column (`[cols, ntp]`,
+/// `ntp` a multiple of [`LANES`]), every product and sum in fp32.
+pub fn gemm(
+    w: &[f32],
+    n_rows: usize,
+    cols: usize,
+    xt: &[f32],
+    ntp: usize,
+    scale: f32,
+    out: &mut [f32],
+) {
+    assert!(ntp.is_multiple_of(LANES) && w.len() >= n_rows * cols && xt.len() >= cols * ntp);
+    assert!(out.len() >= n_rows * ntp);
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx512f") {
+        // SAFETY: the feature was detected and the bounds checked above.
+        unsafe { avx512::gemm(w, n_rows, cols, xt, ntp, scale, out) };
+        return;
+    }
+    gemm_scalar(w, n_rows, cols, xt, ntp, scale, out);
+}
+
+pub fn gemm_scalar(
+    w: &[f32],
+    n_rows: usize,
+    cols: usize,
+    xt: &[f32],
+    ntp: usize,
+    scale: f32,
+    out: &mut [f32],
+) {
+    for r in 0..n_rows {
+        for t in 0..ntp {
+            let mut acc = 0.0f32;
+            for c in 0..cols {
+                acc = w[r * cols + c].mul_add(xt[c * ntp + t], acc);
+            }
+            out[r * ntp + t] = acc * scale;
+        }
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 mod avx512 {
     use std::arch::x86_64::*;
@@ -126,6 +215,159 @@ mod avx512 {
     fn store(acc: &[__m512; MAX_TOKENS], nt: usize, out: &mut [f32], r: usize) {
         for t in 0..nt {
             out[r * nt + t] = _mm512_reduce_add_ps(acc[t]);
+        }
+    }
+
+    /// One pass of the GEMM over columns `k0..k0 + kc`, for the token vectors from
+    /// `t0`: `w` and `xt` point at column `k0`.
+    struct Pass {
+        w: *const f32,
+        stride: usize,
+        kc: usize,
+        xt: *const f32,
+        ntp: usize,
+        t0: usize,
+        /// The first pass stores its sums; later ones add to them.
+        first: bool,
+        /// Applied when storing (the last pass's).
+        scale: f32,
+    }
+
+    /// A tile of `R` weight rows by `TV` vectors of token columns, accumulated in
+    /// registers over the pass's columns.
+    ///
+    /// # Safety
+    /// `p.w` holds `R` rows of `p.stride` (from `p.kc` columns on), `p.xt` `p.kc`
+    /// rows of `p.ntp` from `p.t0 + TV * 16`, and `out` `R` rows of `p.ntp`.
+    #[target_feature(enable = "avx512f")]
+    unsafe fn tile<const R: usize, const TV: usize>(p: &Pass, w: *const f32, out: *mut f32) {
+        let mut acc = [[_mm512_setzero_ps(); TV]; R];
+        if !p.first {
+            for (r, a) in acc.iter_mut().enumerate() {
+                for (v, x) in a.iter_mut().enumerate() {
+                    *x = unsafe { _mm512_loadu_ps(out.add(r * p.ntp + p.t0 + v * 16)) };
+                }
+            }
+        }
+        for c in 0..p.kc {
+            let mut xv = [_mm512_setzero_ps(); TV];
+            for (v, x) in xv.iter_mut().enumerate() {
+                *x = unsafe { _mm512_loadu_ps(p.xt.add(c * p.ntp + p.t0 + v * 16)) };
+            }
+            for (r, a) in acc.iter_mut().enumerate() {
+                let wv = _mm512_set1_ps(unsafe { *w.add(r * p.stride + c) });
+                for v in 0..TV {
+                    a[v] = _mm512_fmadd_ps(wv, xv[v], a[v]);
+                }
+            }
+        }
+        let s = _mm512_set1_ps(p.scale);
+        for (r, a) in acc.iter().enumerate() {
+            for (v, &x) in a.iter().enumerate() {
+                let o = unsafe { out.add(r * p.ntp + p.t0 + v * 16) };
+                unsafe { _mm512_storeu_ps(o, _mm512_mul_ps(x, s)) };
+            }
+        }
+    }
+
+    /// Rows in tiles of `R`, then smaller tiles, for `TV` token vectors.
+    ///
+    /// # Safety
+    /// As for [`tile`], for `n_rows` rows.
+    #[target_feature(enable = "avx512f")]
+    unsafe fn rows<const R: usize, const TV: usize>(p: &Pass, n_rows: usize, out: *mut f32) {
+        let mut r = 0;
+        while r + R <= n_rows {
+            unsafe { tile::<R, TV>(p, p.w.add(r * p.stride), out.add(r * p.ntp)) };
+            r += R;
+        }
+        // The remainder in smaller tiles (each smaller than `R`), not row by row.
+        for (size, call) in [
+            (8, tile::<8, TV> as unsafe fn(&Pass, *const f32, *mut f32)),
+            (4, tile::<4, TV>),
+            (2, tile::<2, TV>),
+            (1, tile::<1, TV>),
+        ] {
+            while size < R && r + size <= n_rows {
+                unsafe { call(p, p.w.add(r * p.stride), out.add(r * p.ntp)) };
+                r += size;
+            }
+        }
+    }
+
+    /// # Safety
+    /// Requires AVX-512F; bounds as checked by [`super::nvfp4_decode`].
+    #[target_feature(enable = "avx512f,avx512bw")]
+    pub unsafe fn nvfp4_decode(m: Nvfp4Matrix, row0: usize, n_rows: usize, w: &mut [f32]) {
+        let fp8 = e4m3_table();
+        let lut = unsafe { _mm512_loadu_ps(E2M1.as_ptr()) };
+        let groups = m.cols / 16;
+        for r in 0..n_rows {
+            let row = row0 + r;
+            let packed = &m.packed[row * m.cols / 2..(row + 1) * m.cols / 2];
+            let scales = &m.scales[row * groups..(row + 1) * groups];
+            let out = &mut w[r * m.cols..(r + 1) * m.cols];
+            for g in 0..groups {
+                let v = u64::from_le_bytes(packed[g * 8..g * 8 + 8].try_into().unwrap());
+                let lo = v & 0x0f0f_0f0f_0f0f_0f0f;
+                let hi = (v >> 4) & 0x0f0f_0f0f_0f0f_0f0f;
+                let codes =
+                    _mm_unpacklo_epi8(_mm_cvtsi64_si128(lo as i64), _mm_cvtsi64_si128(hi as i64));
+                let idx = _mm512_cvtepu8_epi32(codes);
+                let s = _mm512_set1_ps(fp8[scales[g] as usize]);
+                let wv = _mm512_mul_ps(_mm512_permutexvar_ps(idx, lut), s);
+                // SAFETY: the row holds m.cols values.
+                unsafe { _mm512_storeu_ps(out.as_mut_ptr().add(g * 16), wv) };
+            }
+        }
+    }
+
+    /// Columns per pass: a pass's activations (`KC x 64` fp32) stay in L2 while
+    /// every row tile reads them.
+    const KC: usize = 512;
+
+    /// # Safety
+    /// Requires AVX-512F; bounds as checked by [`super::gemm`].
+    #[target_feature(enable = "avx512f")]
+    pub unsafe fn gemm(
+        w: &[f32],
+        n_rows: usize,
+        cols: usize,
+        xt: &[f32],
+        ntp: usize,
+        scale: f32,
+        out: &mut [f32],
+    ) {
+        let (w, xt, out) = (w.as_ptr(), xt.as_ptr(), out.as_mut_ptr());
+        let vectors = ntp / 16;
+        let mut v = 0;
+        // Up to 24 accumulators: 4 vectors x 6 rows, 3 x 8, 2 x 12, 1 x 16.
+        while v < vectors {
+            let t0 = v * 16;
+            let mut k0 = 0;
+            while k0 < cols {
+                let kc = KC.min(cols - k0);
+                let pass = Pass {
+                    w: unsafe { w.add(k0) },
+                    stride: cols,
+                    kc,
+                    xt: unsafe { xt.add(k0 * ntp) },
+                    ntp,
+                    t0,
+                    first: k0 == 0,
+                    scale: if k0 + kc == cols { scale } else { 1.0 },
+                };
+                unsafe {
+                    match vectors - v {
+                        1 => rows::<16, 1>(&pass, n_rows, out),
+                        2 => rows::<12, 2>(&pass, n_rows, out),
+                        3 => rows::<8, 3>(&pass, n_rows, out),
+                        _ => rows::<6, 4>(&pass, n_rows, out),
+                    }
+                }
+                k0 += kc;
+            }
+            v += (vectors - v).min(4);
         }
     }
 
