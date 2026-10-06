@@ -15,9 +15,17 @@ here rather than inside the monolith frontend, read ADR platform/013.
 
 ```
 projects/design-system/
-├── package.json                 @homelab/design-system, CSS exports
+├── package.json                 @homelab/design-system, CSS and Svelte exports
 ├── BUILD                        js_library linked via npm_link_all_packages (hand-maintained)
 ├── README.md                    role guide and tested contrast table
+├── components/
+│   ├── index.js                 named component exports
+│   ├── Button.svelte            native button
+│   ├── Field.svelte             native control composition
+│   ├── Disclosure.svelte        native details/summary
+│   ├── Tabs.svelte              local tablist and panels
+│   ├── PageHeader.svelte        heading and action snippets
+│   └── Breadcrumb.svelte        compact navigation
 └── tokens/
     ├── contract.css             unchanged --ds-* defaults at :root
     └── technical-drawing.css    explicit, opt-in light/dark boundaries
@@ -48,14 +56,106 @@ The contract is **wired but not consumed**. As of this README:
   The public layout and root error boundary mount that marker, so the
   brutalist palette follows the rendered surface rather than stylesheet
   import order.
-- There is no primitive layer, no `jomcgi.dev/design` gallery, and no
-  Storybook, and #4449 does not require any of them.
+- Opt-in controls and navigation primitives exist under `components/`, with
+  synthetic SSR/hydration fixtures. No production page consumes them. There is
+  no `jomcgi.dev/design` gallery or Storybook. #4449 requires no migration.
 
 The live styling rules remain the three per-theme stylesheets named in
 `.impeccable.md`, and that file is the document to follow when touching any
 of them. The broader contract migration and primitive programme are no longer
 outstanding work. This preserves the package history without turning it into
 an adoption requirement.
+
+## Controls and navigation
+
+Import named components from `@homelab/design-system/components`, or a single
+default export from `@homelab/design-system/components/Button.svelte` (replace
+`Button` with any name below). Load `tokens/contract.css`; opt into the
+technical-drawing export at explicit light/dark boundaries as shown below.
+The three existing CSS exports and both token files are unchanged.
+
+These are Svelte 5 presentational primitives. They have no fetch, store,
+persistence, route state, private/server import, or module-scope browser access.
+Callers own validation, submission, navigation and application state. Component
+styles use scoped `--ds-*` roles; theme-only focus/link roles fall back to the
+contract roles outside a boundary. Technical drawing uses square corners and no
+shadow. Interactive targets have 44px minimum width/height, labels wrap, and
+there are no transitions or animations. Reduced-motion rules also suppress both
+on interactive elements. Browser measurements are separate from Node semantics.
+
+| Component | Props and snippets | HTML and behavior |
+| --- | --- | --- |
+| `Button` | `type="button"`, `disabled=false`, `variant="primary"`, `children()`; other props forwarded | Native `<button>` with explicit type. `submit` and `reset` are opt-in. Provide visible children or `aria-label`. `primary`, `secondary`, `quiet` variants; dashed disabled border and native non-activation. `onclick`, `form`, `name`, `value`, `aria-*` and `class` pass through. Enter/Space use native activation. |
+| `Field` | Required `label` and `control(attributes)`; optional `description`, `error`, `required=false`, `disabled=false` | `<label for>` and optional description/error paragraphs around the caller's native input/select/textarea. Spread **all** snippet attributes onto exactly one control. `$props.id()` supplies stable unique IDs. `aria-describedby` includes description and error IDs; errors set `aria-invalid="true"` and start with `Error:`. Required adds `(required)` and native `required`; disabled passes native `disabled`. No validation or form-state engine. |
+| `Disclosure` | Required `summary()`; optional `children()`, bindable `open=false` | Native `<details>/<summary>`. Enter/Space toggle, Tab follows native document order, no JavaScript needed for toggling. A decorative plus becomes minus when open. `bind:open` synchronizes native toggles and caller changes. |
+| `Tabs` | Required `tabs: { id, label, disabled? }[]`, `panel(tab)`, and either `label` or `labelledby`; `orientation="horizontal"`, bindable `selected`, `onchange(id)` | Labelled `tablist`; button `tab`s with `aria-selected`/`aria-controls`; `tabpanel`s with `aria-labelledby`, `tabindex=0`, inactive `hidden`. Stable unique tab IDs are caller data; DOM IDs are SSR-stable and instance-local. Selection defaults to first enabled tab. An unknown/disabled selection falls back there without changing the caller value or emitting an event. |
+| `PageHeader` | Required `title`; `level=1` (1 to 6), optional `description`, `breadcrumb()`, `actions()` | `<header>` with `h1` to `h6`, optional description and caller-supplied navigation/actions. Actions and long headings wrap. No masthead, routing or imposed action. |
+| `Breadcrumb` | `items: { label, href?, current? }[]`, optional `label="Breadcrumb"` | Labelled `<nav><ol>` with native links when `href` exists, otherwise text. Set `current: true` on exactly one item for `aria-current="page"`. Decorative separators are hidden from assistive technology. Links have 44px hit areas and wrap without truncation; Tab/Enter use native navigation. |
+
+Tabs use **automatic activation**: focus movement selects immediately. Horizontal
+Left/Right or vertical Up/Down wrap through enabled tabs; Home/End select the
+first/last enabled tab. Disabled tabs are native-disabled and skipped. Exactly
+one enabled tab has `tabindex=0`; the others have `-1`. A single enabled tab
+stays selected through every navigation key, with no duplicate `onchange`.
+An empty or entirely disabled list has no tab stop or visible panel; callers
+should normally provide at least one enabled tab. Tab/Shift+Tab enter/leave the
+tablist through the selected tab; panel content follows in native document order.
+Selected state has an underline, stronger rule and weight. Enter/Space activate
+the focused native button. There is no manual activation mode.
+
+`onchange` fires once for a user selection change and receives the selected tab
+ID. Setting `selected` externally does not emit it. Routing synchronization is
+the caller's responsibility: initialize `selected` from the caller's route and
+handle `onchange` there. Components do not read or write URLs.
+
+```svelte
+<script>
+  import { Breadcrumb, Button, Disclosure, Field, PageHeader, Tabs }
+    from "@homelab/design-system/components";
+  import "@homelab/design-system/tokens/contract.css";
+  import "@homelab/design-system/tokens/technical-drawing.css";
+  let selected = $state("overview");
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    { id: "notes", label: "Notes" },
+  ];
+</script>
+
+<section data-ds-theme="technical-drawing-light">
+  <PageHeader title="Drawing sheet" description="Local example">
+    {#snippet breadcrumb()}
+      <Breadcrumb items={[
+        { label: "Sheets", href: "/sheets" },
+        { label: "Drawing sheet", current: true },
+      ]} />
+    {/snippet}
+    {#snippet actions()}<Button onclick={() => {}}>Print sheet</Button>{/snippet}
+  </PageHeader>
+  <form>
+    <Field label="Sheet size" description="Choose the native select option" required>
+      {#snippet control(attributes)}
+        <select {...attributes} name="size"><option>A4</option><option>A3</option></select>
+      {/snippet}
+    </Field>
+    <Button type="submit">Save sheet</Button>
+  </form>
+  <Disclosure>
+    {#snippet summary()}Sheet details{/snippet}
+    <p>Local details</p>
+  </Disclosure>
+  <Tabs {tabs} label="Sheet panels" bind:selected>
+    {#snippet panel(tab)}<p>{tab.label} content</p>{/snippet}
+  </Tabs>
+</section>
+```
+
+The synthetic `projects/monolith/frontend/controls-preview/` fixture exercises
+these APIs through package exports. Its contract suite server-renders without
+browser globals, hydrates with element/text/attribute identity and zero console
+warnings/errors, exercises callbacks/bindings, and checks shared Svelte runtime
+resolution. Native tab order, disclosure activation, visual focus, hit areas,
+contrast, nested theme isolation, reduced motion and layout require its Chromium
+checks. No production page imports these primitives.
 
 ## Opt-in technical drawing
 

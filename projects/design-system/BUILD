@@ -13,6 +13,13 @@ js_library(
     srcs = [
         # The token tests verify the README's measured contrast table.
         "README.md",
+        "components/Breadcrumb.svelte",
+        "components/Button.svelte",
+        "components/Disclosure.svelte",
+        "components/Field.svelte",
+        "components/PageHeader.svelte",
+        "components/Tabs.svelte",
+        "components/index.js",
         "package.json",
         "tokens/contract.css",
         "tokens/technical-drawing.css",
@@ -21,6 +28,7 @@ js_library(
         "//:__pkg__",
         "//projects/monolith/frontend:__pkg__",
     ],
+    deps = ["//:node_modules/svelte"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

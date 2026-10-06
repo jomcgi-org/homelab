@@ -428,6 +428,44 @@ vitest_bin.vitest_test(
     ],
 )
 
+# Shared controls fixture only, never part of :src or :src_public.
+js_library(
+    name = "controls_fixture_src",
+    srcs = [
+        "package.json",
+        "controls-preview/ControlsFixture.svelte",
+        "controls-preview/README.md",
+        "controls-preview/hydration.test.js",
+        "controls-preview/resolution.test.js",
+        "controls-preview/server.js",
+        "controls-preview/server-render.js",
+        "controls-preview/ssr.test.js",
+        "controls-preview/vitest.config.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "controls_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "controls-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":controls_fixture_src"],
+)
+
 # Opt-in token fixture only, never part of :src or :src_public.
 js_library(
     name = "theme_fixture_src",
