@@ -82,6 +82,36 @@ it("hydrates every component with stable nodes, attributes, ids and working hand
   );
 });
 
+it("hydrates the full native field and nested-theme matrix", async () => {
+  await setup();
+  for (const sample of ["light", "dark", "nested", "sibling"]) {
+    const root = target.querySelector(`[data-sample="${sample}"]`);
+    for (const name of ["title", "notes", "region", "unavailable"]) {
+      const control = root.querySelector(`[name="${name}"]`);
+      expect(root.querySelector(`label[for="${control.id}"]`)).not.toBeNull();
+    }
+    expect(
+      root
+        .querySelector('input[name="title"]')
+        .getAttribute("aria-describedby"),
+    ).toBeTruthy();
+    expect(
+      root
+        .querySelector('textarea[name="notes"]')
+        .getAttribute("aria-describedby"),
+    ).toBeTruthy();
+    expect(root.querySelector('[data-state="submitter"]').textContent).toBe(
+      "Submitter: none",
+    );
+  }
+  const nested = target.querySelector('[data-sample="nested"]');
+  expect(nested.nextElementSibling.dataset.sample).toBe("sibling");
+  expect(nested.dataset.dsTheme).toBe("technical-drawing-dark");
+  expect(nested.nextElementSibling.dataset.dsTheme).toBe(
+    "technical-drawing-light",
+  );
+});
+
 it("keeps explicit button types, forwarded form attributes, names and native disabled semantics", async () => {
   const root = await setup();
   const button = root.querySelector('[data-action="default"]');
@@ -318,7 +348,7 @@ it("renders wrapping breadcrumb names, current page, heading level and action sn
   expect(header.querySelector("h1, h2, h4, h5, h6")).toBeNull();
   const nav = header.querySelector("nav");
   expect(nav.getAttribute("aria-label")).toBe("Breadcrumb");
-  expect(nav.querySelector("ol").children).toHaveLength(2);
+  expect(nav.querySelector("ol").children).toHaveLength(3);
   expect(nav.querySelector('[aria-current="page"]').textContent.trim()).toBe(
     header.querySelector("h3").textContent,
   );

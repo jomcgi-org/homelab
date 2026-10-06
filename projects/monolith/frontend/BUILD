@@ -434,11 +434,15 @@ js_library(
     srcs = [
         "controls-preview/ControlsFixture.svelte",
         "controls-preview/README.md",
+        "controls-preview/browser_check.py",
         "controls-preview/hydration.test.js",
+        "controls-preview/index.html",
+        "controls-preview/main.js",
         "controls-preview/resolution.test.js",
         "controls-preview/server.js",
         "controls-preview/server-render.js",
         "controls-preview/ssr.test.js",
+        "controls-preview/vite.config.js",
         "controls-preview/vitest.config.js",
         "package.json",
     ],
@@ -464,6 +468,24 @@ vitest_bin.vitest_test(
     ],
     chdir = package_name(),
     data = [":controls_fixture_src"],
+)
+
+js_run_binary(
+    name = "controls_fixture_preview",
+    srcs = [":controls_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "controls-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["controls-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "controls_fixture_preview_build_test",
+    targets = [":controls_fixture_preview"],
 )
 
 # Opt-in token fixture only, never part of :src or :src_public.

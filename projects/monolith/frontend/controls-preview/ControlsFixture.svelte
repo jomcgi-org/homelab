@@ -18,7 +18,10 @@
     tabs = [
       { id: "overview", label: "Overview" },
       { id: "unavailable", label: "Unavailable", disabled: true },
-      { id: "metrics", label: "Metrics" },
+      {
+        id: "metrics",
+        label: "Metrics with an intentionally very long synthetic panel label",
+      },
       { id: "logs", label: "Logs" },
     ],
   } = $props();
@@ -27,6 +30,7 @@
   let changes = $state(0);
   let clicks = $state(0);
   let submissions = $state(0);
+  let submitter = $state("none");
   let open = $state(false);
   let fieldDisabled = $state(false);
   const longName =
@@ -44,6 +48,10 @@
         <Breadcrumb
           items={[
             { label: "Home", href: "#home" },
+            {
+              label: "Synthetic controls and navigation reference library",
+              href: "#library",
+            },
             { label: longName, href: "#current", current: true },
           ]}
         />
@@ -61,6 +69,7 @@
       onsubmit={(event) => {
         event.preventDefault();
         submissions++;
+        submitter = event.submitter?.dataset.action ?? "none";
       }}
     >
       <Field
@@ -84,6 +93,18 @@
             name="unavailable"
             placeholder="Unavailable sample"
           />{/snippet}
+      </Field>
+      <Field label="Sample title" description="Enter a synthetic title">
+        {#snippet control(attributes)}<input
+            {...attributes}
+            name="title"
+          />{/snippet}
+      </Field>
+      <Field label="Sample notes" description="Describe the synthetic sample">
+        {#snippet control(attributes)}<textarea
+            {...attributes}
+            name="notes"
+            rows="3"></textarea>{/snippet}
       </Field>
       <div class="controls">
         <Button
@@ -120,6 +141,7 @@
       data-action="external-submit">External submit</Button
     >
     <p data-state="submissions">Submissions: {submissions}</p>
+    <p data-state="submitter">Submitter: {submitter}</p>
     <Disclosure bind:open>
       {#snippet summary()}Sample disclosure{/snippet}
       <p>Expanded synthetic information</p>
@@ -149,10 +171,11 @@
   </section>
 {/snippet}
 
-<main>
+<main class="fixture">
   {@render sample("light", "technical-drawing-light")}
   <section data-sample="outer" data-ds-theme="technical-drawing-light">
     {@render sample("nested", "technical-drawing-dark")}
+    {@render sample("sibling", "technical-drawing-light")}
   </section>
   {@render sample("dark", "technical-drawing-dark")}
   <section data-sample="contract">

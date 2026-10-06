@@ -15,6 +15,12 @@ export async function renderFixture(props = {}) {
   });
   try {
     const entry = await server.ssrLoadModule("/server.js");
+    for (const id of server.moduleGraph.idToModuleMap.keys()) {
+      if (/\/projects\/monolith\/frontend\/src\/|\$app\//.test(id))
+        throw new Error(
+          `Production module entered controls SSR fixture: ${id}`,
+        );
+    }
     return entry.renderFixture(props);
   } finally {
     await server.close();
