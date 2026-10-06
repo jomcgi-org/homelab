@@ -70,6 +70,11 @@ pub struct CacheArgs {
     /// faster prefill; lossy, judge with `oominf score`). Decode is unaffected.
     #[arg(long, default_value = "exact", value_parser = oominf_core::ExpertPrecision::parse)]
     pub expert_precision: oominf_core::ExpertPrecision,
+    /// Arithmetic of prefill attention: `exact` (fp32) or `bf16` (tensor cores with
+    /// bf16 queries, keys and values and fp32 accumulation: faster prefill; lossy,
+    /// judge with `oominf score`). Decode attention is fp32 either way.
+    #[arg(long, default_value = "exact", value_parser = oominf_core::AttentionPrecision::parse)]
+    pub attention_precision: oominf_core::AttentionPrecision,
     /// Where attention K/V caches live: `device` memory, or `host` memory the GPU
     /// reads over PCIe (decode reads only each token's selected rows; frees VRAM
     /// for experts at long context; same results).
@@ -163,6 +168,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
         kv: args.cache.kv_cache,
         dense: args.cache.dense,
         expert_precision: args.cache.expert_precision,
+        attention_precision: args.cache.attention_precision,
         kv_host: args.cache.kv_host(),
     };
     let experts = factory::<Gpu>(args.experts, files.clone());

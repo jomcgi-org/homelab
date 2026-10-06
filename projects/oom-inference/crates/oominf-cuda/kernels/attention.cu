@@ -1,6 +1,7 @@
 // Rotary attention with block-sparse (QSA) key selection: prefill and flash-decode.
 // All arithmetic is fp32.
 
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <math.h>
 #include <stdint.h>
@@ -832,6 +833,155 @@ attn_sparse_g12(const float* q, const uint8_t* k, const uint8_t* v, const int* s
             float inv = 1.0f / l[g];
 #pragma unroll
             for (int x = 0; x < 8; x++) ot[g * FD_D + x * 32 + lane] = acc[g][x] * inv;
+        }
+    }
+}
+
+// attn_sparse_g12 on bf16 tensor cores (opt-in, lossy): the same per-token selections
+// over an fp32 cache (the prefill shadow), with q, k, v rounded to bf16 and the
+// products accumulated in fp32 (standard flash attention). A block takes one
+// (token, KV head): its 12 query heads (padded to 16) are the rows of one m16 tile,
+// keys go through in tiles of SB_KEYS gathered from the token's list. Four warps:
+// each scores 8 keys of a tile (S = Q K^T, 16 k-steps), one thread per row updates
+// the online softmax, then each warp adds P V for 64 of the 256 dims.
+// q: [T, H, D] (H = 12 Hkv); k, v: fp32 rows [*, Hkv, D]; out: [T, H, D].
+// Grid (T, Hkv), block 128.
+#define SB_KEYS 32
+#define SB_QS (FD_D + 8)   // bf16 per Q / K row in shared memory (padding: no bank conflicts)
+#define SB_VS (SB_KEYS + 8) // bf16 per transposed V row
+#define SB_SS (SB_KEYS + 1) // fp32 per score row
+
+__device__ __forceinline__ void sb_mma(float c[4], const uint32_t a[4], const uint32_t b[2]) {
+    asm volatile(
+        "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+        "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+__device__ __forceinline__ uint16_t sb_bf16(float x) {
+    __nv_bfloat16 b = __float2bfloat16_rn(x);
+    return *reinterpret_cast<uint16_t*>(&b);
+}
+
+extern "C" __global__ void __launch_bounds__(128)
+attn_sparse_g12_bf16(const float* q, const float* k, const float* v, const int* sel,
+                     int sel_stride, float* out, int Hkv, float scale) {
+    constexpr int G = 12;
+    __shared__ __align__(16) uint16_t qs[16][SB_QS];
+    // Keys of the tile; once scored, the same space holds the fp32 scores.
+    __shared__ __align__(16) uint16_t ks[SB_KEYS][SB_QS];
+    __shared__ __align__(16) uint16_t vt[FD_D][SB_VS];
+    __shared__ __align__(16) uint16_t ps[16][SB_VS];
+    __shared__ float m_s[16], l_s[16], corr_s[16];
+    float* ss = reinterpret_cast<float*>(&ks[0][0]);
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int g = lane >> 2, qd = lane & 3;
+    int t = blockIdx.x, kvh = blockIdx.y, H = Hkv * G;
+    const float* qt = q + ((size_t)t * H + kvh * G) * FD_D;
+    for (int i = tid; i < 16 * FD_D; i += 128) {
+        int r = i / FD_D, c = i % FD_D;
+        qs[r][c] = r < G ? sb_bf16(qt[r * FD_D + c]) : 0;
+    }
+    if (tid < 16) {
+        m_s[tid] = -INFINITY;
+        l_s[tid] = 0.0f;
+    }
+    const int* ts = sel + (size_t)t * sel_stride;
+    int count = ts[0];
+    // This warp's output: rows g, g + 8, dims warp * 64 + n * 8 + 2 qd (+1).
+    float o[8][4] = {};
+    __syncthreads();
+    for (int base = 0; base < count; base += SB_KEYS) {
+        // Gather the tile's keys (rows) and values (transposed) as bf16.
+        for (int i = tid; i < SB_KEYS * FD_D / 4; i += 128) {
+            int key = i / (FD_D / 4), c = (i % (FD_D / 4)) * 4;
+            int j = base + key < count ? ts[1 + base + key] : -1;
+            float4 kv4 = make_float4(0.f, 0.f, 0.f, 0.f), vv4 = kv4;
+            if (j >= 0) {
+                size_t row = ((size_t)j * Hkv + kvh) * FD_D + c;
+                kv4 = *reinterpret_cast<const float4*>(k + row);
+                vv4 = *reinterpret_cast<const float4*>(v + row);
+            }
+            *reinterpret_cast<uint2*>(&ks[key][c]) =
+                make_uint2(uint32_t(sb_bf16(kv4.x)) | (uint32_t(sb_bf16(kv4.y)) << 16),
+                           uint32_t(sb_bf16(kv4.z)) | (uint32_t(sb_bf16(kv4.w)) << 16));
+            vt[c][key] = sb_bf16(vv4.x);
+            vt[c + 1][key] = sb_bf16(vv4.y);
+            vt[c + 2][key] = sb_bf16(vv4.z);
+            vt[c + 3][key] = sb_bf16(vv4.w);
+        }
+        __syncthreads();
+        // Scores of keys warp * 8 .. + 8 for the 16 rows.
+        float s[4] = {};
+#pragma unroll
+        for (int k0 = 0; k0 < FD_D; k0 += 16) {
+            uint32_t a[4] = {*reinterpret_cast<const uint32_t*>(&qs[g][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&qs[g + 8][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&qs[g][k0 + 8 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&qs[g + 8][k0 + 8 + 2 * qd])};
+            const uint16_t* kr = &ks[warp * 8 + g][k0 + 2 * qd];
+            uint32_t b[2] = {*reinterpret_cast<const uint32_t*>(kr),
+                             *reinterpret_cast<const uint32_t*>(kr + 8)};
+            sb_mma(s, a, b);
+        }
+        __syncthreads();  // every warp has read ks: its space now takes the scores
+        int col = warp * 8 + 2 * qd;
+        ss[g * SB_SS + col] = s[0] * scale;
+        ss[g * SB_SS + col + 1] = s[1] * scale;
+        ss[(g + 8) * SB_SS + col] = s[2] * scale;
+        ss[(g + 8) * SB_SS + col + 1] = s[3] * scale;
+        __syncthreads();
+        if (tid < 16) {
+            int valid = min(SB_KEYS, count - base);
+            float mo = m_s[tid], mn = mo;
+            for (int j = 0; j < valid; j++) mn = fmaxf(mn, ss[tid * SB_SS + j]);
+            float sum = 0.0f;
+            for (int j = 0; j < SB_KEYS; j++) {
+                float p = j < valid ? expf(ss[tid * SB_SS + j] - mn) : 0.0f;
+                sum += p;
+                ps[tid][j] = sb_bf16(p);
+            }
+            float c = expf(mo - mn);
+            corr_s[tid] = c;
+            l_s[tid] = l_s[tid] * c + sum;
+            m_s[tid] = mn;
+        }
+        __syncthreads();
+        float c0 = corr_s[g], c1 = corr_s[g + 8];
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            o[n][0] *= c0;
+            o[n][1] *= c0;
+            o[n][2] *= c1;
+            o[n][3] *= c1;
+        }
+#pragma unroll
+        for (int k0 = 0; k0 < SB_KEYS; k0 += 16) {
+            uint32_t a[4] = {*reinterpret_cast<const uint32_t*>(&ps[g][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&ps[g + 8][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&ps[g][k0 + 8 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&ps[g + 8][k0 + 8 + 2 * qd])};
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                const uint16_t* vr = &vt[warp * 64 + n * 8 + g][k0 + 2 * qd];
+                uint32_t b[2] = {*reinterpret_cast<const uint32_t*>(vr),
+                                 *reinterpret_cast<const uint32_t*>(vr + 8)};
+                sb_mma(o[n], a, b);
+            }
+        }
+        __syncthreads();  // before the next tile overwrites ks, vt and ps
+    }
+    float* ot = out + ((size_t)t * H + kvh * G) * FD_D;
+    float inv0 = 1.0f / l_s[g], inv1 = 1.0f / l_s[g + 8];
+#pragma unroll
+    for (int n = 0; n < 8; n++) {
+        int d = warp * 64 + n * 8 + 2 * qd;
+        ot[g * FD_D + d] = o[n][0] * inv0;
+        ot[g * FD_D + d + 1] = o[n][1] * inv0;
+        if (g + 8 < G) {
+            ot[(g + 8) * FD_D + d] = o[n][2] * inv1;
+            ot[(g + 8) * FD_D + d + 1] = o[n][3] * inv1;
         }
     }
 }

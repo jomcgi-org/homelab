@@ -110,6 +110,7 @@ fn attention_error(gpu: &Gpu, format: KvFormat, t: usize, kv_len: usize) -> Resu
             kv_len,
             kv_len,
             1.0 / 16.0,
+            oominf_core::AttentionPrecision::Exact,
         )?;
         gpu.download_f32(&out)
     };
@@ -169,8 +170,21 @@ fn decode_attention_timing() -> Result<()> {
             let mut ws = oominf_core::Workspace::new();
             let mut run = || {
                 gpu.attention(
-                    &mut ws, &q, &kc, &vc, f, &mask, &mut out, 1, heads, kvh, d, kv_len, kv_len,
+                    &mut ws,
+                    &q,
+                    &kc,
+                    &vc,
+                    f,
+                    &mask,
+                    &mut out,
+                    1,
+                    heads,
+                    kvh,
+                    d,
+                    kv_len,
+                    kv_len,
                     0.0625,
+                    oominf_core::AttentionPrecision::Exact,
                 )
             };
             run()?;
@@ -226,57 +240,67 @@ fn sparse_attention_matches_reference() -> Result<()> {
     let mut vc = gpu.zeros_bytes(kv_len * kvh * f.row_bytes(false, d))?;
     gpu.kv_append(&gpu.upload_f32(&k)?, &mut kc, f, true, 0, kv_len, kvh, d)?;
     gpu.kv_append(&gpu.upload_f32(&v)?, &mut vc, f, false, 0, kv_len, kvh, d)?;
-    let mut out = gpu.zeros(t * heads * d)?;
-    let mut ws = oominf_core::Workspace::new();
     let scale = 1.0 / 16.0;
-    gpu.attention(
-        &mut ws,
-        &gpu.upload_f32(&q)?,
-        &kc,
-        &vc,
-        f,
-        &gpu.upload_bytes(&mask)?,
-        &mut out,
-        t,
-        heads,
-        kvh,
-        d,
-        kv_len,
-        max_visible,
-        scale,
-    )?;
-    let got = gpu.download_f32(&out)?;
-    let mut worst = 0f64;
-    for i in 0..t {
-        for h in 0..heads {
-            let qr = &q[(i * heads + h) * d..][..d];
-            let kvhh = h / g;
-            let scores: Vec<(usize, f64)> = (0..kv_len)
-                .filter(|&j| mask[i * kv_len + j] != 0)
-                .map(|j| {
-                    let kr = &k[(j * kvh + kvhh) * d..][..d];
-                    let s: f64 = qr.iter().zip(kr).map(|(&a, &b)| a as f64 * b as f64).sum();
-                    (j, s * scale as f64)
-                })
-                .collect();
-            let m = scores
-                .iter()
-                .map(|&(_, s)| s)
-                .fold(f64::NEG_INFINITY, f64::max);
-            let den: f64 = scores.iter().map(|&(_, s)| (s - m).exp()).sum();
-            for c in 0..d {
-                let num: f64 = scores
+    // Exact fp32, and bf16 tensor cores (q, k, v rounded to bf16, so its error is
+    // a few bf16 ulps of the largest output).
+    for (precision, tolerance) in [
+        (oominf_core::AttentionPrecision::Exact, 1e-4),
+        (oominf_core::AttentionPrecision::Bf16, 1e-2),
+    ] {
+        let mut out = gpu.zeros(t * heads * d)?;
+        let mut ws = oominf_core::Workspace::new();
+        gpu.attention(
+            &mut ws,
+            &gpu.upload_f32(&q)?,
+            &kc,
+            &vc,
+            f,
+            &gpu.upload_bytes(&mask)?,
+            &mut out,
+            t,
+            heads,
+            kvh,
+            d,
+            kv_len,
+            max_visible,
+            scale,
+            precision,
+        )?;
+        let got = gpu.download_f32(&out)?;
+        let mut worst = 0f64;
+        for i in 0..t {
+            for h in 0..heads {
+                let qr = &q[(i * heads + h) * d..][..d];
+                let kvhh = h / g;
+                let scores: Vec<(usize, f64)> = (0..kv_len)
+                    .filter(|&j| mask[i * kv_len + j] != 0)
+                    .map(|j| {
+                        let kr = &k[(j * kvh + kvhh) * d..][..d];
+                        let s: f64 = qr.iter().zip(kr).map(|(&a, &b)| a as f64 * b as f64).sum();
+                        (j, s * scale as f64)
+                    })
+                    .collect();
+                let m = scores
                     .iter()
-                    .map(|&(j, s)| (s - m).exp() * v[(j * kvh + kvhh) * d + c] as f64)
-                    .sum();
-                let want = num / den;
-                let err = (got[(i * heads + h) * d + c] as f64 - want).abs();
-                worst = worst.max(err);
+                    .map(|&(_, s)| s)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let den: f64 = scores.iter().map(|&(_, s)| (s - m).exp()).sum();
+                for c in 0..d {
+                    let num: f64 = scores
+                        .iter()
+                        .map(|&(j, s)| (s - m).exp() * v[(j * kvh + kvhh) * d + c] as f64)
+                        .sum();
+                    let want = num / den;
+                    let err = (got[(i * heads + h) * d + c] as f64 - want).abs();
+                    worst = worst.max(err);
+                }
             }
         }
+        println!(
+            "sparse attention {precision:?}: max abs error {worst:.2e} (max_visible {max_visible})"
+        );
+        assert!(worst < tolerance, "{precision:?} max abs error {worst:.2e}");
     }
-    println!("sparse attention: max abs error {worst:.2e} (max_visible {max_visible})");
-    assert!(worst < 1e-4, "max abs error {worst:.2e}");
     Ok(())
 }
 
@@ -313,7 +337,21 @@ fn host_cache_matches_device() -> Result<()> {
         let mut out = gpu.zeros(t * heads * d)?;
         let mut ws = oominf_core::Workspace::new();
         gpu.attention(
-            &mut ws, &q, &kc, &vc, f, &mask, &mut out, t, heads, kvh, d, kv_len, kv_len, 0.0625,
+            &mut ws,
+            &q,
+            &kc,
+            &vc,
+            f,
+            &mask,
+            &mut out,
+            t,
+            heads,
+            kvh,
+            d,
+            kv_len,
+            kv_len,
+            0.0625,
+            oominf_core::AttentionPrecision::Exact,
         )?;
         outs.push((gpu.download_bytes(&kc)?, gpu.download_f32(&out)?));
     }

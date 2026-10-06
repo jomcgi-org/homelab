@@ -84,6 +84,7 @@ pub fn run(
     dims.kv = cache.kv_cache;
     dims.dense = cache.dense;
     dims.expert_precision = cache.expert_precision;
+    dims.attention_precision = cache.attention_precision;
     dims.kv_host = cache.kv_host();
     let tolerances: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixtures.join("tolerances.json")).context("tolerances.json")?,

@@ -62,6 +62,8 @@ pub struct Dims {
     /// Activation precision of the prefill expert GEMM (a runtime choice, exact
     /// unless set).
     pub expert_precision: oominf_core::ExpertPrecision,
+    /// Arithmetic of prefill attention (a runtime choice, exact unless set).
+    pub attention_precision: oominf_core::AttentionPrecision,
     /// Attention K/V caches live in host memory, read over the bus (a runtime
     /// choice, device memory unless set); the indexer's keys stay on the device.
     pub kv_host: bool,
@@ -117,6 +119,7 @@ impl Dims {
             kv: oominf_core::KvFormat::F32,
             dense: oominf_core::DenseFormat::Bf16,
             expert_precision: oominf_core::ExpertPrecision::Exact,
+            attention_precision: oominf_core::AttentionPrecision::Exact,
             kv_host: false,
         })
     }

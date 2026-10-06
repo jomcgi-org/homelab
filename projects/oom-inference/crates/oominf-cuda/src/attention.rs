@@ -3,7 +3,7 @@
 use anyhow::Result;
 use cudarc::driver::sys::CUfunction_attribute;
 use cudarc::driver::{CudaView, CudaViewMut, DevicePtr, LaunchConfig, PushKernelArg};
-use oominf_core::{Attention, Elementwise, KvFormat, Memory, Workspace};
+use oominf_core::{Attention, AttentionPrecision, Elementwise, KvFormat, Memory, Workspace};
 
 use crate::{Buf, Dev, Gpu, grid};
 
@@ -278,6 +278,7 @@ impl Attention for Gpu {
         kv_len: usize,
         max_visible: usize,
         scale: f32,
+        precision: AttentionPrecision,
     ) -> Result<()> {
         let bits = (
             format.bits(true),
@@ -301,6 +302,8 @@ impl Attention for Gpu {
                 ws, qq, k, v, bits, mask, out, t, heads, kv_heads, d, kv_len, kv_len, scale,
             )?;
         } else if t > DECODE_MAX_TOKENS {
+            // The bf16 kernel reads fp32 rows: the prefill shadow (an fp32 cache).
+            let bf16 = precision == AttentionPrecision::Bf16 && format == KvFormat::F32;
             self.attn_sparse(
                 ws,
                 qq,
@@ -314,6 +317,7 @@ impl Attention for Gpu {
                 kv_len,
                 max_visible,
                 scale,
+                bf16,
             )?;
         } else {
             let row = heads * d;
@@ -508,6 +512,7 @@ impl Gpu {
         kv_len: usize,
         max_visible: usize,
         scale: f32,
+        bf16: bool,
     ) -> Result<()> {
         self.check(mask.len() >= t * kv_len, "attn_sparse sizes")?;
         let sel_stride = max_visible.min(kv_len) + 1;
@@ -531,8 +536,31 @@ impl Gpu {
                 .arg(&sel32)
                 .launch(cfg)?
         };
-        let f = self.func("attn_sparse_g12")?;
         let kvh32 = kv_heads as i32;
+        if bf16 {
+            let f = self.func("attn_sparse_g12_bf16")?;
+            let cfg = LaunchConfig {
+                grid_dim: (t as u32, kv_heads as u32, 1),
+                block_dim: (128, 1, 1),
+                shared_mem_bytes: 0,
+            };
+            unsafe {
+                self.stream
+                    .launch_builder(&f)
+                    .arg(q)
+                    .arg(k)
+                    .arg(v)
+                    .arg(&sel)
+                    .arg(&sel32)
+                    .arg(out)
+                    .arg(&kvh32)
+                    .arg(&scale)
+                    .launch(cfg)?
+            };
+            ws.give_bytes("attn.sel_prefill", sel);
+            return Ok(());
+        }
+        let f = self.func("attn_sparse_g12")?;
         let cfg = LaunchConfig {
             grid_dim: (t as u32, kv_heads as u32, 1),
             block_dim: (128, 1, 1),
