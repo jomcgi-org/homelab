@@ -109,6 +109,37 @@ def contrast_checks(page):
     )
 
 
+def root_boundary_checks(page):
+    # Append the actual rendered contract values to replay a late contract
+    # stylesheet. Root boundaries must retain every role, not just colour-scheme.
+    return page.evaluate("""() => {
+      const root = document.documentElement;
+      const light = getComputedStyle(document.querySelector('[data-sample="light"]'));
+      const roles = [...light].filter(name => name.startsWith('--ds-'));
+      const defaults = getComputedStyle(root);
+      const style = document.createElement('style');
+      style.textContent = ':root{' + roles.map(role => [role, defaults.getPropertyValue(role)])
+        .filter(([, value]) => value.trim()).map(([role, value]) => `${role}:${value};`).join('') + '}';
+      document.head.append(style);
+      const records = [];
+      try {
+        for (const scheme of ['light', 'dark']) {
+          const expected = getComputedStyle(document.querySelector(`[data-sample="${scheme}"]`));
+          root.dataset.dsTheme = `technical-drawing-${scheme}`;
+          const actual = getComputedStyle(root);
+          const mismatches = roles.filter(role => actual.getPropertyValue(role).trim() !== expected.getPropertyValue(role).trim());
+          if (mismatches.length) throw new Error(`Root boundary lost roles: ${scheme}: ${mismatches}`);
+          records.push({scheme, checked_roles: roles.length, late_contract: 'passed'});
+        }
+      } finally {
+        root.removeAttribute('data-ds-theme');
+        style.remove();
+      }
+      if (roles.length !== 33) throw new Error(`Root role coverage incomplete: ${roles.length}`);
+      return records;
+    }""")
+
+
 def layout_checks(page):
     return page.evaluate("""() => {
       const issues = [];
@@ -258,6 +289,7 @@ def check(root, output, expected_sha):
                         page.locator('[data-ds-theme="technical-drawing-dark"]').count()
                         == 2
                     )
+                    record["root_boundaries"] = root_boundary_checks(page)
                     if scale == 2:
                         record["text_resize"] = resize_text(page)
                         assert record["text_resize"]["verified"], record["text_resize"]

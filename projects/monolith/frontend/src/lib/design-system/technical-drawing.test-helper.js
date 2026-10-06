@@ -25,7 +25,7 @@ export const graphicRoles = [
 export const contrastRoles = [...new Set([...textRoles, ...graphicRoles])];
 
 export function boundary(scheme) {
-  return `[data-ds-theme="technical-drawing-${scheme}"]`;
+  return `[data-ds-theme="technical-drawing-${scheme}"][data-ds-theme]`;
 }
 
 // Accept only flat declaration blocks. Reject leftover syntax rather than
