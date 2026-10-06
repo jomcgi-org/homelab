@@ -7,6 +7,7 @@ contract region. Both compositions are present in each full-page screenshot.
 
 import hashlib
 import itertools
+import shutil
 from datetime import datetime, timezone
 
 WIDTHS = (320, 390, 1440)
@@ -74,10 +75,16 @@ def settle(page):
       await new Promise(requestAnimationFrame);
       const geometry = () => [...document.querySelectorAll('.gallery *')]
         .map(n => {const r = n.getBoundingClientRect(); return [r.x,r.y,r.width,r.height];});
-      const before = JSON.stringify(geometry());
-      await new Promise(requestAnimationFrame);
-      if (before !== JSON.stringify(geometry())) throw new Error('gallery layout not settled');
-      return {time: Date.now(), loaded: [...document.fonts].map(f => ({family:f.family,status:f.status}))};
+      let before = JSON.stringify(geometry()), stable = 0;
+      for (let frame=0;frame<30;frame++) {
+        await new Promise(requestAnimationFrame);
+        const after=JSON.stringify(geometry());
+        stable=before===after?stable+1:0;
+        if (stable>=2) return {stable_frames:stable, time: Date.now(),
+          loaded: [...document.fonts].map(f => ({family:f.family,status:f.status}))};
+        before=after;
+      }
+      throw new Error('gallery layout not settled after 30 frames');
     }""")
 
 
@@ -248,6 +255,48 @@ def focus(page, colours):
     return record
 
 
+def native_text(page):
+    """Native control values have no DOM text ranges; measure their font too."""
+    records = page.evaluate("""() => {
+      const context=document.createElement('canvas').getContext('2d');
+      return [...document.querySelectorAll('.gallery input,.gallery select')]
+        .filter(n=>n.checkVisibility()).map(node=>{
+          const style=getComputedStyle(node), rect=node.getBoundingClientRect();
+          const text=node.tagName==='SELECT'?node.selectedOptions[0]?.textContent:node.value;
+          context.font=`${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          const spacing=parseFloat(style.letterSpacing)||0;
+          const width=context.measureText(text||'').width+Math.max(0,(text||'').length-1)*spacing;
+          // Reserve one font em for the browser's native dropdown arrow.
+          const available=rect.width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)
+            -parseFloat(style.borderLeftWidth)-parseFloat(style.borderRightWidth)
+            -(node.tagName==='SELECT'?parseFloat(style.fontSize):0);
+          return {name:node.name,text,width,available};
+        });
+    }""")
+    assert len(records) == 12, "native field coverage incomplete"
+    for record in records:
+        assert record["width"] <= record["available"], (
+            f"clipped native control value: {record}"
+        )
+    return records
+
+
+def native_text_regression(page):
+    """Prove the previously clipped selected option now fails the checker."""
+    select = page.locator('select[name="region"]').first
+    original = select.evaluate("n=>n.selectedOptions[0].textContent")
+    select.evaluate("n=>n.selectedOptions[0].textContent='Invented north'")
+    try:
+        native_text(page)
+    except AssertionError as error:
+        assert "clipped native control value" in str(error), str(error)
+        return {"rejected_clipped_option": "Invented north", "failure": str(error)}
+    else:
+        raise AssertionError("native-value regression was not rejected")
+    finally:
+        select.evaluate("(n,text)=>n.selectedOptions[0].textContent=text", original)
+
+
 def keyboard(page, colours):
     from playwright.sync_api import expect
 
@@ -299,8 +348,9 @@ def interactions(page, colours):
             assert field.get_attribute("aria-describedby"), (
                 "error has no description association"
             )
-            field.fill("synthetic-sheet")
-            expect(field).to_have_value("synthetic-sheet")
+            field.fill("sheet-014")
+            expect(field).to_have_value("sheet-014")
+            native_text(page)
             before = int(
                 form.locator('[data-gallery-state="submissions"]')
                 .inner_text()
@@ -405,10 +455,12 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
 
     directory = output / "gallery"
     directory.mkdir(exist_ok=True)
-    for composition, width, scheme, scale in itertools.product(
-        COMPOSITIONS, WIDTHS, SCHEMES, SCALES
-    ):
+    for width, scheme, scale in itertools.product(WIDTHS, SCHEMES, SCALES):
+        # Both compositions share one page. Page-wide assertions cover both;
+        # retain a separately named result and composition capture for each.
+        composition = "dashboard"
         name = f"{composition}-{width}-{scheme}-{scale * 100}pct"
+        document_name = f"document-{width}-{scheme}-{scale * 100}pct"
         selected = [
             (boundary, suffix, selector)
             for boundary in ("light", "dark")
@@ -429,6 +481,7 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
             "width": width,
             "browser_scheme": scheme,
             "text_scale": scale,
+            "shared_page_cases": [name, document_name],
             "issues": [],
             "screenshots": [
                 f"gallery/{name}-{boundary}-{suffix}.png"
@@ -443,7 +496,9 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
             reduced_motion="reduce",
             service_workers="block",
         )
-        context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        # Each failed case retains its full-page image and API trace. Avoid a
+        # DOM snapshot and filmstrip for every keyboard event on this long page.
+        context.tracing.start(screenshots=False, snapshots=False, sources=True)
         page = context.new_page()
         page.set_default_timeout(10000)
         errors = []
@@ -479,6 +534,9 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
             record["collapsed_layout"] = layout_checks(page, ".gallery")
             assert not record["collapsed_layout"]["issues"], record["collapsed_layout"]
             record["structure"] = structure(page)
+            record["native_text"] = native_text(page)
+            if width == 320 and scale == 2 and scheme == "light":
+                record["native_value_regression"] = native_text_regression(page)
             record["contrast"] = contrast(page, colours)
             record["keyboard"] = keyboard(page, colours)
             record["interactions"] = interactions(page, colours)
@@ -509,6 +567,7 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
             record["expanded_layout"] = layout_checks(page, ".gallery")
             assert not record["expanded_layout"]["issues"], record["expanded_layout"]
             record["expanded_structure"] = structure(page)
+            record["expanded_native_text"] = native_text(page)
             record["expanded_contrast"] = contrast(page, colours)
             assert not errors, errors
             for boundary, suffix, selector in selected:
@@ -520,7 +579,22 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
                 expect(target).to_be_visible()
                 settle(page)
                 path = f"gallery/{name}-{boundary}-{suffix}.png"
-                target.screenshot(path=str(output / path), animations="disabled")
+                target.screenshot(
+                    path=str(output / path), animations="disabled", timeout=60000
+                )
+            for boundary in SCHEMES:
+                target = page.locator(
+                    f'[data-gallery-boundary="{boundary}"] [data-gallery-section="document"]'
+                )
+                expect(target).to_be_visible()
+                settle(page)
+                target.screenshot(
+                    path=str(
+                        output / f"gallery/{document_name}-{boundary}-composition.png"
+                    ),
+                    animations="disabled",
+                    timeout=60000,
+                )
         except (AssertionError, PlaywrightError) as error:
             record["issues"].append(str(error))
         finally:
@@ -529,7 +603,10 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
                 settle(page)
                 path = f"gallery/{name}-full.png"
                 page.screenshot(
-                    path=str(output / path), full_page=True, animations="disabled"
+                    path=str(output / path),
+                    full_page=True,
+                    animations="disabled",
+                    timeout=60000,
                 )
                 if (
                     composition == "dashboard"
@@ -540,7 +617,10 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
                     repeat = f"gallery/{name}-repeat.png"
                     record["screenshots"].append(repeat)
                     page.screenshot(
-                        path=str(output / repeat), full_page=True, animations="disabled"
+                        path=str(output / repeat),
+                        full_page=True,
+                        animations="disabled",
+                        timeout=60000,
                     )
                     record["repeat_digest_identical"] = (
                         hashlib.sha256((output / path).read_bytes()).digest()
@@ -553,11 +633,33 @@ def run(browser, base, output, evidence, resize_text, layout_checks, colours):
                 record["issues"].append(f"capture failed: {error}")
             record["status"] = "failed" if record["issues"] else "passed"
             if record["issues"]:
+                record["failure_screenshot"] = f"gallery/{name}-full.png"
                 record["trace"] = f"gallery/{name}-failure.zip"
                 context.tracing.stop(path=str(output / record["trace"]))
             else:
                 context.tracing.stop()
             context.close()
+            document_record = {
+                **record,
+                "name": document_name,
+                "composition": "document",
+                "screenshots": [
+                    path.replace(name, document_name) for path in record["screenshots"]
+                ],
+            }
+            for source, destination in zip(
+                record["screenshots"], document_record["screenshots"], strict=True
+            ):
+                if source.endswith("-composition.png"):
+                    continue  # Captured the distinct document section above.
+                if (output / source).is_file():
+                    shutil.copyfile(output / source, output / destination)
+            if record["issues"]:
+                document_record["failure_screenshot"] = (
+                    f"gallery/{document_name}-full.png"
+                )
+            evidence["gallery_cases"].append(document_record)
             print(f"{record['status']}: gallery {name}", flush=True)
+            print(f"{document_record['status']}: gallery {document_name}", flush=True)
             for issue in record["issues"]:
                 print(issue, flush=True)

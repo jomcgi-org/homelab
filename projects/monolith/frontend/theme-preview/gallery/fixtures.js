@@ -23,8 +23,10 @@ export const FIXTURES = Object.freeze({
   count: 0,
   countUnit: "requests",
   regions: Object.freeze([
-    Object.freeze({ value: "north", label: "Invented north" }),
-    Object.freeze({ value: "south", label: "Invented south" }),
+    // The field description establishes synthetic provenance. Short option
+    // labels keep the native selected value visible at 320px and 200% text.
+    Object.freeze({ value: "north", label: "North" }),
+    Object.freeze({ value: "south", label: "South" }),
   ]),
   text: Object.freeze({
     gallery: "Synthetic gallery",

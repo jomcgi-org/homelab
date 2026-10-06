@@ -91,6 +91,10 @@ workflow scope, and reusing the harness follows the #6875 data-display precedent
 The gallery matrix has 24 cases: dashboard and document, 320px, 390px and
 1440px, both browser schemes, and 100%/200% text. Every page contains explicit
 light/dark boundaries, the nested dark inset and the unmarked contract region.
+Page-wide checks run once in each of the 12 browser configurations and cover
+both compositions. Each has its own result and section images. Full-page and
+shared-control captures are identical copies from that shared page; this avoids
+repeating the same keyboard/interaction matrix within the 20-minute CI budget.
 Text-only resizing doubles the measured computed font sizes and numeric line
 heights through `resize_text`; it uses no zoom, transform or device scale.
 The checker compares text rectangles for clipping and intersections, verifies
@@ -98,6 +102,10 @@ DOM/visual reading order, measures 44x44px targets, traverses focus with Tab and
 Shift+Tab, and measures rendered text, control border, glyph, marker and focus
 contrast. It tests labelled fields, error associations, disabled controls,
 arrow-key tabs, repeated disclosures and form entry/reset/submission.
+Native input and selected-option values are measured with their rendered font,
+padding, borders and reserved dropdown-arrow space. DOM text ranges alone miss
+clipped selected values. Region options use short labels because the field's
+description already says the regions are invented.
 
 Captures wait for the bundled Schibsted Grotesk and stable layout. External
 requests, including fonts, fail. Date is frozen to the fixture date. Reduced
