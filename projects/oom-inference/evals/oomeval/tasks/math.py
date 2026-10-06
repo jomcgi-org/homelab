@@ -10,7 +10,12 @@ class GSM8K(Task):
     description = "GSM8K test set (1319 grade-school math problems), boxed final answer"
     defaults = {"temperature": 0.6, "top_p": 0.95, "max_tokens": 8192, "samples": 1}
     published = [
-        Published(97.27, "accuracy", "full 1319, t0.6 / top-p 0.95 / max 8192, template-default thinking", CARD),
+        Published(
+            97.27,
+            "accuracy",
+            "full 1319, t0.6 / top-p 0.95 / max 8192, template-default thinking",
+            CARD,
+        ),
     ]
 
     def load(self, args):
@@ -18,7 +23,9 @@ class GSM8K(Task):
         return [
             Item(
                 id=str(i),
-                messages=[{"role": "user", "content": f"{r['question']}\n{BOXED_INSTRUCTION}"}],
+                messages=[
+                    {"role": "user", "content": f"{r['question']}\n{BOXED_INSTRUCTION}"}
+                ],
                 target=r["answer"].split("####")[-1].strip().replace(",", ""),
             )
             for i, r in enumerate(rows)
@@ -32,9 +39,20 @@ class GSM8K(Task):
 class AIME(Task):
     name = "aime26"
     description = "AIME 2026 (30 problems, MathArena), integer answers 0-999"
-    defaults = {"temperature": 1.0, "top_p": 0.95, "max_tokens": 130000, "samples": 8, "thinking": True}
+    defaults = {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "max_tokens": 130000,
+        "samples": 8,
+        "thinking": True,
+    }
     published = [
-        Published(98.75, "pass@1 (mean over samples)", "30 x 8, t1.0 / top-p 0.95 / max 130k, thinking", CARD),
+        Published(
+            98.75,
+            "pass@1 (mean over samples)",
+            "30 x 8, t1.0 / top-p 0.95 / max 130k, thinking",
+            CARD,
+        ),
     ]
     dataset = "MathArena/aime_2026"
 
@@ -43,7 +61,9 @@ class AIME(Task):
         return [
             Item(
                 id=str(r["problem_idx"]),
-                messages=[{"role": "user", "content": f"{r['problem']}\n{BOXED_INSTRUCTION}"}],
+                messages=[
+                    {"role": "user", "content": f"{r['problem']}\n{BOXED_INSTRUCTION}"}
+                ],
                 target=str(r["answer"]).strip(),
             )
             for r in rows

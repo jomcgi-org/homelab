@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 CHARS_PER_TOKEN = 3.75
-QUESTION = "\n\nSummarise the main design decisions in these documents in five bullet points."
+QUESTION = (
+    "\n\nSummarise the main design decisions in these documents in five bullet points."
+)
 
 
 def corpus(root):
@@ -37,14 +39,26 @@ def corpus(root):
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--tokens", type=int, required=True, help="approximate prompt length")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--tokens", type=int, required=True, help="approximate prompt length"
+    )
     p.add_argument("--out", required=True)
-    p.add_argument("--root", default=None, help="repository root (default: this checkout)")
+    p.add_argument(
+        "--root", default=None, help="repository root (default: this checkout)"
+    )
     args = p.parse_args()
-    root = args.root or subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    root = (
+        args.root
+        or subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
     budget = int(args.tokens * CHARS_PER_TOKEN) - len(QUESTION)
     parts, used = [], 0
     for name, text in corpus(root):

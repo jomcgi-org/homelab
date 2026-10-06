@@ -52,9 +52,7 @@ DECODE_STEPS = 3
 # visible (top block_topk of more than 512 blocks), so its top-k pruning is exercised. The text is
 # a fixed prefix of the repository's MPL-2.0 LICENSE, stored next to this script.
 LONG_PROMPT_FILE = Path(__file__).with_name("long_prompt.txt")
-LONG_INSTRUCTION = (
-    "Summarize the obligations this license places on distributors in three bullet points.\n\n"
-)
+LONG_INSTRUCTION = "Summarize the obligations this license places on distributors in three bullet points.\n\n"
 
 DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16}
 

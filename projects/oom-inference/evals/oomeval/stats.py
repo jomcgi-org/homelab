@@ -31,7 +31,9 @@ def paired_bootstrap(a, b, iters=4000, seed=0):
     if n == 0:
         return float("nan"), float("nan")
     rng = random.Random(seed)
-    means = sorted(sum(diffs[rng.randrange(n)] for _ in range(n)) / n for _ in range(iters))
+    means = sorted(
+        sum(diffs[rng.randrange(n)] for _ in range(n)) / n for _ in range(iters)
+    )
     return means[int(0.025 * iters)], means[int(0.975 * iters) - 1]
 
 

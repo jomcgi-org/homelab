@@ -14,7 +14,14 @@ CHOICE_INSTRUCTION = (
 class GPQADiamond(Task):
     name = "gpqa_diamond"
     description = "GPQA Diamond (198 graduate-level science questions, 4 choices)"
-    defaults = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "max_tokens": 65536, "samples": 1, "thinking": True}
+    defaults = {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "max_tokens": 65536,
+        "samples": 1,
+        "thinking": True,
+    }
     published = [
         Published(
             91.7,
@@ -29,7 +36,11 @@ class GPQADiamond(Task):
         rows = parquet_rows("fingertap/GPQA-Diamond", "test/gpqa_diamond.parquet")
         prompt = CHOICE_INSTRUCTION.format(letters="A, B, C or D")
         return [
-            Item(id=str(i), messages=[{"role": "user", "content": f"{prompt}\n\n{r['question']}"}], target=r["answer"])
+            Item(
+                id=str(i),
+                messages=[{"role": "user", "content": f"{prompt}\n\n{r['question']}"}],
+                target=r["answer"],
+            )
             for i, r in enumerate(rows)
         ]
 
@@ -40,7 +51,9 @@ class GPQADiamond(Task):
 
 class MMLUPro(Task):
     name = "mmlu_pro"
-    description = "MMLU-Pro test set (12,032 questions, up to 10 choices, 14 categories)"
+    description = (
+        "MMLU-Pro test set (12,032 questions, up to 10 choices, 14 categories)"
+    )
     defaults = {"temperature": 0.0, "max_tokens": 8192, "samples": 1}
     published = []
 
@@ -68,7 +81,12 @@ class MMLUPro(Task):
             items.append(
                 Item(
                     id=str(r["question_id"]),
-                    messages=[{"role": "user", "content": f"{prompt}\n\n{r['question']}\n\n{body}"}],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": f"{prompt}\n\n{r['question']}\n\n{body}",
+                        }
+                    ],
                     target=r["answer"],
                     meta={"category": r["category"], "letters": letters},
                 )
