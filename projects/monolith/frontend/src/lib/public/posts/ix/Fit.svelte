@@ -52,7 +52,6 @@
     <span class="name">{part.label}, {part.gb} GB.</span>
     {part.where}
   </div>
-
 </Fig>
 
 <style>

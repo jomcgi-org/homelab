@@ -15,8 +15,7 @@ export const expertPaths = [
     micros: 0,
     cost: "No transfer",
     moves: "Nothing",
-    detail:
-      "Already in our hot cache! No transfer penalty.",
+    detail: "Already in our hot cache! No transfer penalty.",
   },
   {
     key: "cpu",

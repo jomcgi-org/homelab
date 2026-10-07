@@ -122,7 +122,6 @@
       </div>
     {/each}
   </div>
-
 </Fig>
 
 <style>
