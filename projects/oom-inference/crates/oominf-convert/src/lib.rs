@@ -63,7 +63,7 @@ pub fn convert(
     let config: serde_json::Value = serde_json::from_slice(&config_raw)?;
     let adapter = adapters::for_config(&config)?;
     let ckpt = Checkpoint::open(src)?;
-    let index_raw = std::fs::read(src.join("model.safetensors.index.json"))?;
+    let index_raw = ckpt.metadata_bytes()?;
 
     let mut dense = Vec::new();
     let mut tables = Vec::new();

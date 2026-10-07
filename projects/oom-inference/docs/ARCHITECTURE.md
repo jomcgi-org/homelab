@@ -13,6 +13,7 @@ demand; everything else stays resident on the device.
 | `oominf-format` | On-disk weight format: reader, writer, checksums (`FORMAT.md`) | |
 | `oominf-convert` | Release checkpoint (safetensors) to the format, one adapter per model family | format |
 | `oominf-cuda` | CUDA implementation of `Backend`: device memory, streams, events, cuBLAS, kernels in `kernels/*.cu` | core |
+| `oominf-metal` | Apple Silicon foundation: shared buffers, ordered commands, matrix operations, norms, elementwise operations and expert transfers | core, tiers |
 | `oominf-cpu` | Routed experts computed on the host from records in host memory (exact NVFP4 and bf16 decoding, fp32, AVX-512 with a scalar path), on a worker pool | core |
 | `oominf-tiers` | Expert sources: `TieredExperts` (VRAM slots, pinned host arena filled by direct I/O, cache policies) and `DiskExperts` | core, format |
 | `oominf-models-qwen` | Qwen 3.8 Flash, generic over `B: Backend` | core, cpu, format |
@@ -28,6 +29,35 @@ runs any `Model`; the CLI is the one place that names the CUDA backend.
 platform port implements `Backend` and reuses every model, the tiers and the
 server; a new model family reuses the backend, the tiers and the server. Neither
 touches the other.
+
+### Apple Silicon direction
+
+Direct Metal is the selected backend for the 16 GiB M1 Pro port. The initial
+checkpoint is Qwen3.5-35B-A3B in its released ModelOpt NVFP4 format. Conversion
+keeps the text decoder and routed experts, excluding vision and the optional
+MTP draft head. Both sharded and single-file safetensors checkpoints are accepted.
+
+**Why.** Expert streaming and bounded memory are central to this engine. On
+Apple Silicon, CPU buffers and Metal buffers consume the same physical RAM, so
+the composition root must budget resident weights, sequence state, expert cache
+and staging together. Direct Metal keeps those allocations and command ordering
+under the engine's control. MLX's implementations remain a reference for model
+semantics and kernel techniques; the choice does not establish a speed advantage
+over MLX.
+
+The foundation implements `Memory`, `Linear`, `Elementwise`, `Norm` and
+`Transfer`; it does not yet implement the complete `Backend` bundle or connect
+Metal to the model registry and CLI. Matrix operations accumulate in fp32 with
+fast math disabled, and NVFP4 weights and scales are decoded directly. Shared
+copies are synchronous and ordered after compute. They do not yet overlap disk
+reads or copies with GPU work. macOS expert reads use `F_NOCACHE` pread workers;
+Linux retains io_uring and O_DIRECT. The Metal allocator enforces an explicit
+limit capped at the device's recommended working set. Host allocations still
+need to be included by the future composition root.
+
+| Direction | Issue |
+|---|---|
+| Implement and validate Qwen3.5 text inference on direct Metal, then measure actual cold/warm performance and combined RAM use | [#6896](https://github.com/jomcgi-org/homelab/issues/6896) |
 
 ## Interfaces
 

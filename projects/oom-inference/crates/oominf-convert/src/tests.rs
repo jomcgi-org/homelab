@@ -206,6 +206,61 @@ fn converts_and_reads_back_every_byte() {
 }
 
 #[test]
+fn qwen35_unsharded_checkpoint_keeps_expert_bytes_and_excludes_draft_head() {
+    let src = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let source = tiny_checkpoint(src.path());
+    let checkpoint = safetensors::Checkpoint::open(src.path()).unwrap();
+    let tensors: Vec<_> = checkpoint
+        .names()
+        .map(|name| {
+            let tensor = checkpoint.get(name).unwrap();
+            (
+                name.to_owned(),
+                tensor.dtype,
+                tensor.shape.to_vec(),
+                tensor.bytes.to_vec(),
+            )
+        })
+        .collect();
+    write_shard(&src.path().join("model.safetensors"), &tensors);
+    std::fs::remove_file(src.path().join("model.safetensors.index.json")).unwrap();
+    std::fs::write(
+        src.path().join("config.json"),
+        json!({
+            "model_type": "qwen3_5_moe", "text_config": {"num_hidden_layers": 2, "num_experts": 2}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let path = out.path().join("qwen35.oom");
+    let (index, summary) = convert(src.path(), &path, &Options::default(), |_| {}).unwrap();
+    assert_eq!(summary.expert_layers, 2);
+    assert_eq!(summary.skipped, 3);
+    assert_eq!(index.source.model_type, "qwen3_5_moe");
+    assert!(index.tensors.iter().all(|t| !t.name.starts_with("mtp.")));
+    let model = Model::open(&path).unwrap();
+    assert!(model.verify(|_| {}).unwrap().mismatches.is_empty());
+    for group in &index.expert_groups {
+        for expert in 0..group.num_experts {
+            let mut record = vec![0; group.schema.stride as usize];
+            model.read_record(group.layer, expert, &mut record).unwrap();
+            for part in group.schema.parts.iter().filter(|p| p.name != "scalars") {
+                let (proj, field) = part.name.split_once('.').unwrap();
+                let name = format!(
+                    "model.language_model.layers.{}.mlp.experts.{expert}.{proj}_proj.{field}",
+                    group.layer
+                );
+                assert_eq!(
+                    &record[part.offset as usize..(part.offset + part.nbytes) as usize],
+                    &source[&name]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn layer_filter_and_no_tables() {
     let src = tempfile::tempdir().unwrap();
     let out = tempfile::tempdir().unwrap();
