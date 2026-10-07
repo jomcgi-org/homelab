@@ -192,9 +192,7 @@
             <SchemeToggle />
           </div>
           <h1 id="landing-title">{data.title}</h1>
-          <p class="landing-hardware">
-            Quantisation isn't always the answer
-          </p>
+          <p class="landing-hardware">Quantisation isn't always the answer</p>
         </header>
         <section class="landing-demo" aria-labelledby="inference-demo">
           <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
