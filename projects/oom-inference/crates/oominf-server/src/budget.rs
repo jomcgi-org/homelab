@@ -3,7 +3,7 @@
 //!
 //! A step's cost grows with its width (the tokens it carries) much more slowly
 //! than linearly, because routed-expert fetches are shared by every row of a step
-//! (see `docs/ARCHITECTURE.md`). Each step carries every decoding stream's next
+//! (see `docs/dev/architecture.md`). Each step carries every decoding stream's next
 //! token (worth one token each) and the drafts whose expected value pays for the
 //! width they add: draft `j` of a stream is accepted with about `a^j`, where `a`
 //! is that stream's recent per-draft acceptance rate. The allocator picks the set

@@ -12,7 +12,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
-- [**oom-inference**](projects/oom-inference/): Rust inference engine for mixture-of-experts models bigger than memory. Serves a 125B model from a 24 GB GPU by tiering experts across VRAM, pinned RAM and NVMe. See its [architecture](projects/oom-inference/docs/ARCHITECTURE.md).
+- [**oom-inference**](projects/oom-inference/): Rust inference engine for mixture-of-experts models bigger than memory. Serves a 125B model from a 24 GB GPU by tiering experts across VRAM, pinned RAM and NVMe. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
 - [**Build system**](bazel/): custom Bazel rules for Helm and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
 - [**Buck2 rules**](buck2/): reusable Buck2 rules for container images (apko/OCI) and Helm charts, the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
 

@@ -4,21 +4,21 @@ Correctness is defined against the model's reference implementation, never
 against another engine. Speed changes must not move results outside the gates
 below.
 
-| Layer | What it proves | Command |
-|---|---|---|
-| Unit tests (CPU) | format round trips and checksums, converter byte copies, cache policies, PLE hashing, server parsing, sampling and API shapes, the batched engine's per-request stops, limits, cancellation and caching, the token budget, memory planning (cgroup limits, shrinking, the minimum), every expert read path, the bounded queue's 429s, and the tier fault-injection tests below | `cargo test --workspace` (builds without the CUDA toolkit: without `nvcc` the kernels are skipped with a warning) |
-| Tier fault injection (CPU) | on a mock device whose copies run as late as allowed, with reads delayed or failed by a hook: records handed out are intact on every read path; slow lookahead cannot exhaust a minimum host tier; slow stage-ahead waits for a one-slot staging ring; after a failed read no slot is reused while reads are in flight or copies pending; pinning retries smaller; VRAM allocation degrades | `cargo test --release -p oominf-tiers --lib tiered` |
-| Stage fixtures | every stage of one decoder layer matches the reference | `oominf check-layer` |
-| Whole-model chain | all layers, final mixer and logits match the reference end to end | `oominf check-model` |
-| Protocol specs | expert tiering never exposes a partially staged or reused slot | `specs/run.sh ci`, `specs/run.sh bugs` |
-| Speculative decoding | greedy decoding with MTP drafts produces the same tokens as one-token steps, except where the one-token run's top two logits are within 0.05 (near ties, reported) | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored` |
-| Expert kernel | the tensor-core NVFP4 kernel matches an f64 reference on random records at both activation precisions (fp32 exact, bf16-rounded), and its throughput | `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture` |
-| Decode GEMV | `gemm_bf16` (up to 4 rows) and FP8 `gemm_fp8` (GEMV and the dequantize-then-cuBLAS path) match f64 references; throughput on the model's dense shapes past L2 | `cargo test --release -p oominf-cuda --test gemv -- --ignored --nocapture` |
-| KV cache formats and attention | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32; prefill-sized attention under sparse masks matches an f64 reference; a cache in host memory gives bit-identical attention | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture` |
-| Sequence snapshots | a saved and restored sequence continues with bit-identical logits and drafts | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test snapshot -- --ignored` |
-| Batched steps | a step over three sequences of different lengths (one prefilled layer by layer) with different widths, sequences sitting steps out and rewinding their own drafts, matches twins stepped alone: to the bit until the first step wider than 4 tokens (1.2e-6 in it; gate 1e-4, same argmax), then as speculative decoding does (argmax except near ties, gate 1e-1) | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test multistream -- --ignored` |
-| Prefix checkpoints | a sequence rewound to a prefill checkpoint and fed a new continuation matches prefix-then-continuation bit for bit, also after save and load | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test checkpoint -- --ignored` |
-| GPU smoke tests | a real model loads, serves and completes | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored` |
+| Layer                          | What it proves                                                                                                                                                                                                                                                                                                                                                                              | Command                                                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Unit tests (CPU)               | format round trips and checksums, converter byte copies, cache policies, PLE hashing, server parsing, sampling and API shapes, the batched engine's per-request stops, limits, cancellation and caching, the token budget, memory planning (cgroup limits, shrinking, the minimum), every expert read path, the bounded queue's 429s, and the tier fault-injection tests below              | `cargo test --workspace` (builds without the CUDA toolkit: without `nvcc` the kernels are skipped with a warning) |
+| Tier fault injection (CPU)     | on a mock device whose copies run as late as allowed, with reads delayed or failed by a hook: records handed out are intact on every read path; slow lookahead cannot exhaust a minimum host tier; slow stage-ahead waits for a one-slot staging ring; after a failed read no slot is reused while reads are in flight or copies pending; pinning retries smaller; VRAM allocation degrades | `cargo test --release -p oominf-tiers --lib tiered`                                                               |
+| Stage fixtures                 | every stage of one decoder layer matches the reference                                                                                                                                                                                                                                                                                                                                      | `oominf check-layer`                                                                                              |
+| Whole-model chain              | all layers, final mixer and logits match the reference end to end                                                                                                                                                                                                                                                                                                                           | `oominf check-model`                                                                                              |
+| Protocol specs                 | expert tiering never exposes a partially staged or reused slot                                                                                                                                                                                                                                                                                                                              | `specs/run.sh ci`, `specs/run.sh bugs`                                                                            |
+| Speculative decoding           | greedy decoding with MTP drafts produces the same tokens as one-token steps, except where the one-token run's top two logits are within 0.05 (near ties, reported)                                                                                                                                                                                                                          | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test speculative -- --ignored`             |
+| Expert kernel                  | the tensor-core NVFP4 kernel matches an f64 reference on random records at both activation precisions (fp32 exact, bf16-rounded), and its throughput                                                                                                                                                                                                                                        | `cargo test --release -p oominf-cuda --test moe_tiled -- --ignored --nocapture`                                   |
+| Decode GEMV                    | `gemm_bf16` (up to 4 rows) and FP8 `gemm_fp8` (GEMV and the dequantize-then-cuBLAS path) match f64 references; throughput on the model's dense shapes past L2                                                                                                                                                                                                                               | `cargo test --release -p oominf-cuda --test gemv -- --ignored --nocapture`                                        |
+| KV cache formats and attention | fp32 rows round-trip exactly; compressed rows round-trip with Lloyd-Max distortion; attention over a compressed cache tracks fp32; prefill-sized attention under sparse masks matches an f64 reference; a cache in host memory gives bit-identical attention                                                                                                                                | `cargo test --release -p oominf-cuda --test kv_cache -- --ignored --nocapture`                                    |
+| Sequence snapshots             | a saved and restored sequence continues with bit-identical logits and drafts                                                                                                                                                                                                                                                                                                                | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test snapshot -- --ignored`                |
+| Batched steps                  | a step over three sequences of different lengths (one prefilled layer by layer) with different widths, sequences sitting steps out and rewinding their own drafts, matches twins stepped alone: to the bit until the first step wider than 4 tokens (1.2e-6 in it; gate 1e-4, same argmax), then as speculative decoding does (argmax except near ties, gate 1e-1)                          | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test multistream -- --ignored`             |
+| Prefix checkpoints             | a sequence rewound to a prefill checkpoint and fed a new continuation matches prefix-then-continuation bit for bit, also after save and load                                                                                                                                                                                                                                                | `OOMINF_MODEL=<model.oom> cargo test --release -p oominf-models-qwen --test checkpoint -- --ignored`              |
+| GPU smoke tests                | a real model loads, serves and completes                                                                                                                                                                                                                                                                                                                                                    | `OOMINF_MODEL=<model.oom> cargo test --workspace -- --ignored`                                                    |
 
 ## Tier fault injection
 
@@ -41,7 +41,7 @@ memory planning here.
 ## Reference fixtures
 
 `reference/make_fixtures.py` runs Hugging Face's own model code on CPU with
-the release weights (see `reference/README.md`): a fixed chat-templated prompt
+the release weights (see [`reference/README.md`](../../reference/README.md)): a fixed chat-templated prompt
 as prefill, then three teacher-forced decode steps, in fp32 (the truth) and
 bf16 (the error budget). It writes:
 
@@ -63,19 +63,19 @@ ratio of 1.0.
 
 **`check-layer`** runs one layer twice:
 
-- *isolated*: every stage is fed the reference's exact inputs, so each error
+- _isolated_: every stage is fed the reference's exact inputs, so each error
   belongs to that stage alone. Every stage must stay within 1.5x of the worst
   budget for that stage across steps. Integer stages (top-k expert sets, n-gram
   ids, indexer masks) are compared as sets and must match. The indexer mask is
   computed from the reference's exact block scores here, so it tests the
   selection rule itself.
-- *chained*: the layer runs from its input with state carried across steps;
+- _chained_: the layer runs from its input with state carried across steps;
   reported, not gated, because near-tie routing flips are legitimate.
 
 **`check-model`** runs every layer:
 
-- *layer-isolated*: each layer is fed the reference's input for that layer;
-- *chained* (gated): logits must be at least as close to fp32 as the
+- _layer-isolated_: each layer is fed the reference's input for that layer;
+- _chained_ (gated): logits must be at least as close to fp32 as the
   reference's own bf16 run (rms error within 1.05x and no fewer top-1 matches)
   on every step.
 
@@ -99,7 +99,7 @@ rounding forward.
 `specs/ExpertTiering.tla` models the disk, host and VRAM tiers, asynchronous
 staging, kernels running behind the host, and CUDA graphs that bake either
 slot addresses or a slot table's address. TLC checks the invariants in
-`specs/README.md`; each deliberate `Bug` variant must be caught by the
+[`specs/README.md`](../../specs/README.md); each deliberate `Bug` variant must be caught by the
 invariant it targets (`run.sh bugs`).
 
 ## KV cache format and the gates

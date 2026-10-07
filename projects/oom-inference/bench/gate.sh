@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tier 0: the correctness gates every change runs (docs/TESTING.md). Exact changes stop here.
+# Tier 0: the correctness gates every change runs (docs/dev/testing.md). Exact changes stop here.
 #
 #   bench/gate.sh --model <model.oom> --fixtures <fixtures dir> [--lock <file>] [-- <extra oominf flags>]
 #
