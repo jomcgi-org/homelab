@@ -9,7 +9,6 @@
     review = {},
     outputOpen = $bindable(true),
     landing = false,
-    aside,
   } = $props();
   let output = $state();
   let followOutput = $state(true);
@@ -217,7 +216,6 @@
       </div>
     </div>
 
-    {@render aside?.()}
     <DemoDisclosure
       class="model-output"
       label="Model output"
@@ -252,10 +250,10 @@
       align-items: start;
     }
     /* Fit the landing in one screen: the graph narrows (and so shortens)
-       until the page chrome above and the link below it fit the viewport. */
+       until the page chrome above, the draft trace and the link below fit. */
     .landing .graph-canvas {
       min-width: 560px;
-      max-width: min(840px, calc((100svh - 29rem) * 840 / var(--graph-height)));
+      max-width: min(840px, calc((100svh - 37rem) * 840 / var(--graph-height)));
     }
     .landing .graph-detail {
       border-top: 0;

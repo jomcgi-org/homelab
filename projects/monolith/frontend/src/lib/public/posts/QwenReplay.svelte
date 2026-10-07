@@ -261,8 +261,6 @@
             complete={phase === "Complete"}
           />
         {:else}
-          <!-- The trace sits in the graph's side column, under the detail,
-               so the landing fits one screen. -->
           <IncidentGraph
             {answer}
             {landing}
@@ -271,24 +269,14 @@
             sourceUrl={recording.source.url}
             review={recording.review}
             complete={phase === "Complete"}
-          >
-            {#snippet aside()}
-              <DraftTrace
-                events={turn.events}
-                {position}
-                durationMs={turn.durationMs}
-              />
-            {/snippet}
-          </IncidentGraph>
-        {/if}
-        {#if kind === "coding"}
-          <DraftTrace
-            events={turn.events}
-            {position}
-            durationMs={turn.durationMs}
-            tinted
           />
         {/if}
+        <DraftTrace
+          events={turn.events}
+          {position}
+          durationMs={turn.durationMs}
+          tinted={kind === "coding"}
+        />
       </div>
     {/if}
   </div>
@@ -313,12 +301,12 @@
   }
   /* Reserve the final graph: 415 / 840 high, using 1.8 / 2.8 of the width,
      but no taller than the viewport leaves (IncidentGraph caps the graph to
-     the same 100svh - 29rem budget). */
+     the same 100svh - 37rem budget; the trace below takes about 8rem). */
   .landing .demo-body,
   .landing .demo-body.output-expanded {
     min-height: max(
       15.5rem,
-      min(calc((100cqw - 1.5rem) * 0.3176), calc(100svh - 29rem))
+      min(calc((100cqw - 1.5rem) * 0.3176), calc(100svh - 37rem))
     );
   }
   /* The code view gives up height before the page does: the chrome above,
