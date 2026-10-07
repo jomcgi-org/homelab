@@ -413,9 +413,8 @@ flowchart LR
   else O_DIRECT `pread` on a thread pool (io_uring blocked by a seccomp profile or
   missing); else buffered `pread` on a thread pool that drops the read pages from
   the page cache (a filesystem without O_DIRECT). Each start tries a real read on
-  each path and logs which one is active; `--io` forces one. Off Linux (a macOS
-  development build) only the buffered path exists. The PLE table rows are read
-  through io_uring on Linux whatever `--io` says.
+  each path and logs which one is active; `--io` forces one. The PLE table rows
+  are read through io_uring whatever `--io` says.
 
 **Why.** A container limit is invisible to `MemAvailable`, and pinning past it
 gets the process OOM-killed rather than an error back, so the limit has to be
@@ -757,6 +756,7 @@ every `oominf-core` operation trait for its device type, so it is a `Backend`:
 3. One line in the CLI (`oominf/src/load.rs`, `open_model`) to construct it.
 
 Models, tiers, the server and the tests are reused unchanged. Host-side I/O is
-Linux-specific today (io_uring, O_DIRECT, `/proc` and cgroup reads); a macOS
-build compiles with buffered reads and runs the CPU tests, but a Metal backend
-would also need those paths measured.
+Linux-specific today (io_uring, O_DIRECT, `/proc` and cgroup reads), so a
+non-Linux platform also needs its own read and memory-probe paths; the Metal
+port in [#6896](https://github.com/jomcgi-org/homelab/issues/6896) adds them for
+macOS.

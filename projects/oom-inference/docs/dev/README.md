@@ -64,8 +64,7 @@ installs it on the first `cargo` command. Platform setup is in
 skipped with a build warning and the CUDA backend refuses to start. They cover
 the format, converter, cache policies, memory planning, every read path, the
 server and its scheduler, and the tier fault-injection tests
-([testing.md](testing.md)). They also build and pass on macOS
-([install.md](../guide/install.md#macos-development-build-only)).
+([testing.md](testing.md)).
 
 **GPU tests** are `#[ignore]`d and need a converted model (`OOMINF_MODEL`) and
 the reference fixtures. Run them all through the gate:

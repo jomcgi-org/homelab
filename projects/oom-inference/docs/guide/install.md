@@ -3,7 +3,7 @@
 | Platform                       | Status                 | What works                                                               |
 | ------------------------------ | ---------------------- | ------------------------------------------------------------------------ |
 | Linux x86-64 + NVIDIA GPU      | Supported              | Everything. Developed and measured on an RTX 4090 (24 GB) with CUDA 13.0 |
-| macOS (Apple silicon or Intel) | Development build only | Builds and runs the CPU tests. Cannot serve the model: there is no CUDA  |
+| macOS (Apple silicon)          | In progress            | Does not build today; a Metal backend is in progress (#6896)            |
 | Windows                        | Untested               | Does not build natively today; WSL2 is the likely path but untested      |
 
 ## Linux (supported)
@@ -85,56 +85,13 @@ Every test binary should report `ok`; the GPU tests show as `ignored`.
 
 Next: [quickstart](quickstart.md).
 
-## macOS: development build only
+## macOS: in progress
 
-On a Mac the workspace builds and the CPU tests run, which is enough to work on
-the converter, the tiers' planning and read logic, the server, the scheduler and
-the docs. It **cannot serve the model**: the engine's only GPU backend is CUDA,
-and macOS has no CUDA. There is no Metal backend (see
-[Adding a platform](../dev/architecture.md#adding-a-platform)).
-
-What differs from Linux:
-
-- `serve`, `generate`, `bench`, `tune`, `doctor`, `check-layer` and
-  `check-model` exit with an error saying the CUDA backend is not available on
-  this platform.
-- Expert reads use buffered `pread`: io_uring and O_DIRECT are Linux-only.
-- The host memory check reads `/proc/meminfo`, which macOS does not have.
-
-Steps:
-
-1. Install the Xcode command line tools (the linker):
-
-       xcode-select --install
-
-2. Install rustup, then open a new terminal:
-
-       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-3. Get the source and build:
-
-       git clone https://github.com/jomcgi-org/homelab.git
-       cd homelab/projects/oom-inference
-       cargo build --release
-
-   The first `cargo` command downloads the pinned Rust toolchain. Expect one
-   build warning, and nothing else:
-
-       warning: oominf-cuda@0.0.0: nvcc not found (nvcc): building without CUDA kernels; the CUDA backend will refuse to start (set NVCC to build them)
-
-4. Run the CPU tests:
-
-       cargo test --workspace
-
-   Expect every test binary to report `test result: ok`, with 96 tests passed
-   and 18 ignored in total (the ignored ones need a GPU and a converted model).
-   The read-path tests skip io_uring and O_DIRECT and test the buffered path.
-   One Linux-only benchmark test (`read_throughput`) is not built on macOS.
-
-These counts come from the same commit on Linux, where 96 pass and 19 are
-ignored (the extra one is `read_throughput`); the macOS build was checked by
-cross-compiling (`cargo check --workspace --tests --target aarch64-apple-darwin`
-and `x86_64-apple-darwin`), so report any difference you see.
+The workspace does not build on macOS today: the expert tiers and the hardware
+probe use Linux interfaces (io_uring, O_DIRECT, `/proc/meminfo` and cgroup
+limits). A Metal backend for Apple Silicon, with macOS expert reads, is being
+built in [#6896](https://github.com/jomcgi-org/homelab/issues/6896); this
+section will carry the steps once it serves a model.
 
 ## Windows: untested
 
