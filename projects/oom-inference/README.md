@@ -9,7 +9,7 @@ Apple Silicon runs Qwen3.5-35B-A3B text inference through direct Metal. The
 released NVFP4 checkpoint is 23.59 GB; its converted text weights occupy 21.03 GB
 and stream routed experts from SSD. On a 16 GiB M1 Pro, the optimized measured
 run reached 2.8 to 2.9 generated tokens/sec with a 1 GiB expert cache and a
-3.70 GiB peak process footprint.
+2.85 GiB peak process footprint.
 See [Hardware](docs/HARDWARE.md#apple-silicon) for the command and limits.
 
 - [Architecture](docs/ARCHITECTURE.md): crates, interfaces, precision, tiers,
@@ -38,6 +38,8 @@ The tested HTTP request is in [Hardware](docs/HARDWARE.md#apple-silicon).
 
 Metal and host allocations share a budget based on current reclaimable RAM.
 `--vram-expert-gib` caps the shared expert cache; it shrinks to fit.
+When less than 6 GiB of RAM is currently available, the default cache cap is
+1 GiB. An explicit cache size overrides that cap.
 The default RAM reserve is 3 GiB when at least 6 GiB is currently available,
 otherwise 1 GiB. `--host-reserve-gib` overrides it. Embedding rows are read on
 demand; dense projections and the output head stay resident.

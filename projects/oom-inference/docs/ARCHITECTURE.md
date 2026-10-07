@@ -69,6 +69,16 @@ limits Metal allocations to current usable RAM less a reserve, capped at the
 device's recommended working set. The composition root reserves host staging,
 sequence state and transient activations before allocating the expert cache.
 It releases expert cache chunks when additional sessions need memory.
+BF16 tensors are read directly into initialized shared buffers; loading the output
+head avoids two temporary 1 GB host vectors. Mac pread pools use up to eight
+workers for the top-8 fetches.
+
+**Why.** System swap grew by about 356 MiB during the 128-token benchmark
+with a larger expert cache and other apps running. When available RAM is below 6 GiB,
+the CLI caps the default expert cache at 1 GiB. Its measured process footprint
+was 2.85 GiB, throughput stayed near 2.9 tokens/sec, and system swap did not
+increase during that run. Explicit cache sizes override the cap; an idle Mac
+can use the available RAM. The reserve still counts separately.
 
 **Why.** Embedding rows are paged from `dense.bin`, spending 4 KiB per token
 instead of keeping the 1 GB vocabulary table resident. The output head remains

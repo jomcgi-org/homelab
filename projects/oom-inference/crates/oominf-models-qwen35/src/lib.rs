@@ -11,6 +11,7 @@ use oominf_tiers::host::IoConfig;
 use oominf_tiers::policy::Policy;
 use oominf_tiers::{TierSizes, TieredExperts};
 use std::fs::File;
+use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -126,14 +127,10 @@ fn bf16(gpu: &Gpu, files: &Files, name: &str) -> Result<Dev<u16>> {
         .tensor(name)
         .with_context(|| format!("missing {name}"))?;
     ensure!(t.dtype == "BF16", "{name}: expected BF16, got {}", t.dtype);
-    let raw = files.read_tensor(t)?;
-    let values: Vec<_> = raw
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| u16::from_le_bytes(*c))
-        .collect();
-    gpu.upload_bf16(&values)
+    ensure!(t.nbytes.is_multiple_of(2), "BF16 byte count must be even");
+    let mut file = File::open(files.dir().join(t.file.file_name()))?;
+    file.seek(SeekFrom::Start(t.offset))?;
+    gpu.load_bf16(&mut file, usize::try_from(t.nbytes / 2)?)
 }
 
 enum Matrix {

@@ -150,7 +150,7 @@ compare NVFP4, BF16, normalization, grouped attention and gated delta recurrence
 against CPU f64 references. The recurrence test carries state across three steps. Batched experts match
 f64 math and the original individual projections for 1, 8, 9 and 17 selections,
 including record offsets and buffer lifetime. Scale decoding checks all 256
-E4M3 codes.
+E4M3 codes. Direct BF16 loading preserves values and rejects truncated reads.
 The attention test checks grouped heads and the unrotated RoPE tail.
 
 For whole-model parity, install `mlx` and `numpy` in a separate Python environment

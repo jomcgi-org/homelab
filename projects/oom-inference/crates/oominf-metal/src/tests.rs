@@ -523,3 +523,30 @@ fn fp8_decoder_preserves_every_finite_code_and_nan() {
         }
     }
 }
+
+#[test]
+fn direct_bf16_loading_preserves_values_and_rejects_truncation() {
+    use oominf_core::Linear;
+    let gpu = Gpu::new().unwrap();
+    let values = [1.5f32, -2., 0.25, 0.];
+    let bytes: Vec<_> = values
+        .iter()
+        .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
+        .collect();
+    let weights = gpu
+        .load_bf16(&mut std::io::Cursor::new(&bytes), values.len())
+        .unwrap();
+    let input = gpu.upload_f32(&[1.]).unwrap();
+    let mut out = gpu.uninit(values.len()).unwrap();
+    let mut scratch = gpu.uninit_bf16(0).unwrap();
+    gpu.gemm_bf16(&input, &weights, &mut out, &mut scratch, 1, values.len(), 1)
+        .unwrap();
+    assert_eq!(gpu.download_f32(&out).unwrap(), values);
+    assert!(
+        gpu.load_bf16(
+            &mut std::io::Cursor::new(&bytes[..bytes.len() - 1]),
+            values.len()
+        )
+        .is_err()
+    );
+}

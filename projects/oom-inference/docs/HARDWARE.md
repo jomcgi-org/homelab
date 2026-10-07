@@ -177,10 +177,23 @@ prefill and 37.41 s overall. Peak process footprint was 3,973,244,352 bytes
 (3.70 GiB); the process reported zero swaps. Use the command above with
 `--host-reserve-gib 1 --vram-expert-gib 1` to reproduce the fixed cache budget.
 
+After direct BF16 loading and the eight-worker Mac read limit, the fixed 1 GiB
+cache run reached 2.82 cold and 2.90 warm tokens/sec. Load took 1.6 s; cold/warm
+18-token prefill took 6.14/6.04 s. Peak process footprint fell to 3,060,801,472
+bytes (2.85 GiB), maximum RSS was 2,163,474,432 bytes, and the process reported
+zero swaps. System swap used was 4228.31 MiB before and 4212.31 MiB after.
+
+A 128-token run with a 36-token story prompt and a requested 2 GiB cache
+(shrunk to 1.8 GiB) measured 2.85 cold and 2.91 warm tokens/sec over 115.14 s.
+Cold/warm prefill took 12.34/11.75 s. Peak process footprint was 3,990,480,448
+bytes (3.72 GiB). The process reported zero swaps, while system swap used grew
+from 4096.56 to 4452.38 MiB with other applications running. The CLI therefore
+caps the default cache at 1 GiB when currently available RAM is below 6 GiB.
+
 These are short-context baseline results. The warm run retained an expert cache
 far smaller than all experts and did not improve throughput. The SSD-only probe
-(3.72 GB/s with eight readers) does not measure inference. System-wide swap
-changes, sustained thermal behavior and long-context throughput remain unmeasured.
+(3.72 GB/s with eight readers) does not measure inference. Extended thermal behavior and long-context throughput remain unmeasured;
+the longer decode test ran for about two minutes.
 
 The local server returned `The capital of France is Paris.` with seven completion
 tokens and `finish_reason: stop` for this request:
@@ -189,3 +202,8 @@ tokens and `finish_reason: stop` for this request:
       --vram-expert-gib 2 --served-model-name qwen35-mac
     curl localhost:8091/v1/chat/completions -H 'Content-Type: application/json' \
       --data '{"model":"qwen35-mac","messages":[{"role":"user","content":"What is the capital of France? Answer in one sentence."}],"temperature":0,"max_tokens":16,"chat_template_kwargs":{"enable_thinking":false}}'
+
+The installed CLI at `~/.local/bin/oominf` also served a complete 103-token
+lighthouse story with `finish_reason: stop`, using Mac defaults (4096 context,
+one stream, 1 GiB expert cache while available RAM was below 6 GiB). The API
+used `enable_thinking: false`. This exercised 138 prompt-plus-output tokens.

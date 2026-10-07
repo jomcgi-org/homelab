@@ -3,6 +3,27 @@ use anyhow::{Result, ensure};
 use oominf_core::Memory;
 
 impl Gpu {
+    /// Read released BF16 bytes directly into shared memory, avoiding full-size
+    /// temporary host vectors while loading a large vocabulary projection.
+    pub fn load_bf16(&self, reader: &mut impl std::io::Read, len: usize) -> Result<Dev<u16>> {
+        ensure!(
+            cfg!(target_endian = "little"),
+            "BF16 files require little-endian Metal storage"
+        );
+        let buffer = self.allocate::<u16>(len)?;
+        self.zero(&buffer)?;
+        // SAFETY: the initialized shared allocation holds exactly `bytes` bytes,
+        // is writable and has never been encoded into a GPU command.
+        let destination = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.buffer().contents().cast::<u8>(),
+                buffer.allocation.bytes,
+            )
+        };
+        reader.read_exact(destination)?;
+        Ok(buffer)
+    }
+
     fn read<T: Copy>(&self, buffer: &Dev<T>) -> Result<Vec<T>> {
         self.finish()?;
         // SAFETY: completed GPU work, a typed buffer with exactly len initialized elements.

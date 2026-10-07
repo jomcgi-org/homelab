@@ -387,6 +387,10 @@ impl DirectReader {
     /// requests, so a few reads keep a drive busy; a shallow reader leaves the
     /// device queue to a deeper one's urgent reads.
     pub fn open_with(path: &Path, depth: u32, io: &IoConfig) -> Result<Self> {
+        // Mac decode fetches select eight experts at most per batch. Waking a
+        // 32-thread pread pool for those reads adds idle workers and contention.
+        #[cfg(target_os = "macos")]
+        let depth = depth.clamp(1, 8);
         let file = Arc::new(open_for(path, io.mode)?);
         let (done_tx, done_rx) = mpsc::channel();
         let faults = io.faults.clone();

@@ -58,10 +58,8 @@ pub fn run(model_dir: &Path, s: &Settings) -> Result<()> {
         + estimate.staging
         + (128 << 20);
     let available = (limit as usize).saturating_sub(held);
-    let cache = s
-        .experts
-        .vram_expert_gib
-        .map_or(available, |n| available.min((n * GIB) as usize));
+    let cache = crate::load::metal_cache_bytes(s.experts, host.usable())
+        .map_or(available, |n| available.min(n as usize));
     println!(
         "GPU: {}; shared memory, no separate VRAM budget",
         gpu.name()

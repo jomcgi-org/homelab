@@ -434,6 +434,16 @@ pub fn validate_metal(args: &OpenArgs) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+pub fn metal_cache_bytes(experts: &ExpertArgs, available: u64) -> Option<u64> {
+    // Keep headroom for other applications on a busy unified-memory Mac. Larger
+    // budgets remain explicit, and an idle machine can use the available RAM.
+    experts
+        .vram_expert_gib
+        .map(bytes)
+        .or_else(|| (available < 6 * (1 << 30)).then_some(1 << 30))
+}
+
+#[cfg(target_os = "macos")]
 pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     validate_metal(args)?;
     let files = Arc::new(Files::open(args.model_dir)?);
@@ -444,7 +454,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     eprintln!(
         "oominf: unified RAM reserve {reserve:.1} GiB; Metal and host buffers share one budget"
     );
-    let cache = args.experts.vram_expert_gib.map(bytes);
+    let cache = metal_cache_bytes(args.experts, available);
     Ok(oominf_models_qwen35::open(
         files,
         oominf_models_qwen35::Options {
