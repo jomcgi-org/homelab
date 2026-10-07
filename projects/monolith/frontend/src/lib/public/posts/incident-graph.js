@@ -67,7 +67,8 @@ export function layoutIncidentGraph(graph) {
   const rows = [0, 0, 0];
   const nodes = graph.nodes.map((node) => {
     const column = boundaries.indexOf(node.boundary);
-    return { ...node, x: column * 280 + 30, y: rows[column]++ * 105 + 64 };
+    // Rows start below a 24-unit band that carries long edges between lanes.
+    return { ...node, x: column * 280 + 30, y: rows[column]++ * 105 + 88 };
   });
-  return { nodes, height: Math.max(2, ...rows) * 105 + 76 };
+  return { nodes, height: Math.max(2, ...rows) * 105 + 100 };
 }

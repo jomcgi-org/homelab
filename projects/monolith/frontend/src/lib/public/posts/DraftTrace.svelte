@@ -22,16 +22,25 @@
   const end = Math.max(steps.at(-1)?.at ?? 1, start + 1);
   const maxTokens = Math.max(4, ...steps.map((s) => s.tokens));
   const maxRate = Math.max(1, ...rates.map((r) => r.rate));
-  const W = 840;
+  // Narrow traces scale the 840-unit drawing down; wider ones widen the
+  // drawing instead, so the trace never grows past its 120 px design height.
+  let measured = $state(0);
+  const W = $derived(Math.max(840, Math.round(measured)));
   const H = 120;
+  // Keep the axis label at 10 px when the drawing is scaled down.
+  const axisSize = $derived(
+    measured && measured < W ? (10 * W) / measured : 10,
+  );
   const BARS = 54;
   const x = (at) => ((at - start) / (end - start)) * (W - 8) + 4;
-  const line = rates
-    .map(
-      (r) =>
-        `${x(r.at).toFixed(1)},${(BARS - (r.rate / maxRate) * (BARS - 6)).toFixed(1)}`,
-    )
-    .join(" ");
+  const line = $derived(
+    rates
+      .map(
+        (r) =>
+          `${x(r.at).toFixed(1)},${(BARS - (r.rate / maxRate) * (BARS - 6)).toFixed(1)}`,
+      )
+      .join(" "),
+  );
   const counts = {
     lookup: steps.filter((s) => s.source === "lookup").length,
     draft: steps.filter((s) => s.source === "draft").length,
@@ -42,7 +51,7 @@
     .reduce((n, s) => n + s.tokens, 0);
 </script>
 
-<figure class="trace">
+<figure class="trace" bind:clientWidth={measured}>
   <svg
     viewBox={`0 0 ${W} ${H}`}
     role="img"
@@ -68,7 +77,9 @@
         y2={H}
       />
     {/if}
-    <text class="axis" x="6" y="12">{Math.round(maxRate)} tok/s</text>
+    <text class="axis" x="6" y={axisSize + 2} font-size={axisSize}
+      >{Math.round(maxRate)} tok/s</text
+    >
   </svg>
   <figcaption>
     <span class="key lookup"
@@ -112,7 +123,7 @@
   }
   .axis {
     fill: var(--ink-2);
-    font: 10px var(--font-code);
+    font-family: var(--font-code);
   }
   figcaption {
     display: flex;

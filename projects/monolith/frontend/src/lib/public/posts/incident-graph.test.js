@@ -51,10 +51,10 @@ test("requires source evidence, typed relationships, and unique nodes", () => {
 test("the complete graph determines stable layout before streaming begins", () => {
   const layout = layoutIncidentGraph(incidentGraph(lines.join("\n"), true));
   expect(layout.nodes.map((n) => [n.x, n.y])).toEqual([
-    [30, 64],
-    [310, 64],
+    [30, 88],
+    [310, 88],
   ]);
-  expect(layout.height).toBe(286);
+  expect(layout.height).toBe(310);
 });
 
 test("a complete evidence-backed overview survives interleaved graph assembly", () => {

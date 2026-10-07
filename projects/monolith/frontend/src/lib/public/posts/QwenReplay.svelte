@@ -261,6 +261,8 @@
             complete={phase === "Complete"}
           />
         {:else}
+          <!-- The trace sits in the graph's side column, under the detail,
+               so the landing fits one screen. -->
           <IncidentGraph
             {answer}
             {landing}
@@ -269,14 +271,24 @@
             sourceUrl={recording.source.url}
             review={recording.review}
             complete={phase === "Complete"}
+          >
+            {#snippet aside()}
+              <DraftTrace
+                events={turn.events}
+                {position}
+                durationMs={turn.durationMs}
+              />
+            {/snippet}
+          </IncidentGraph>
+        {/if}
+        {#if kind === "coding"}
+          <DraftTrace
+            events={turn.events}
+            {position}
+            durationMs={turn.durationMs}
+            tinted
           />
         {/if}
-        <DraftTrace
-          events={turn.events}
-          {position}
-          durationMs={turn.durationMs}
-          tinted={kind === "coding"}
-        />
       </div>
     {/if}
   </div>
@@ -299,10 +311,20 @@
     margin-bottom: 0.75rem;
     font-size: 1rem;
   }
-  /* Reserve the final graph: 391 / 840 high, using 1.8 / 2.8 of the width. */
+  /* Reserve the final graph: 415 / 840 high, using 1.8 / 2.8 of the width,
+     but no taller than the viewport leaves (IncidentGraph caps the graph to
+     the same 100svh - 29rem budget). */
   .landing .demo-body,
   .landing .demo-body.output-expanded {
-    min-height: max(20.5rem, calc((100cqw - 1.5rem) * 0.29923));
+    min-height: max(
+      15.5rem,
+      min(calc((100cqw - 1.5rem) * 0.3176), calc(100svh - 29rem))
+    );
+  }
+  /* The code view gives up height before the page does: the chrome above,
+     the trace and the link below take about 38.5rem. */
+  .landing :global(.code-output pre) {
+    height: clamp(8rem, calc(100svh - 38.5rem), 15rem);
   }
   .landing .measurements {
     margin-block: 0.25rem 0.75rem;
@@ -509,7 +531,23 @@
   @media (max-width: 900px) {
     .landing .demo-body,
     .landing .demo-body.output-expanded {
-      min-height: max(28.25rem, calc(100cqw * 0.46548 + 12rem));
+      min-height: max(28.25rem, calc(100cqw * 0.49405 + 12rem));
+    }
+  }
+  /* Short laptop screens get the phone's compact page strip, and the code
+     view may shrink further, so the landing still fits one screen. */
+  @media (max-height: 820px) {
+    .landing .document-strip {
+      height: 140px;
+    }
+    .landing .document-page {
+      height: 128px;
+    }
+    .landing .page-lines i:nth-child(n + 5) {
+      display: none;
+    }
+    .landing :global(.code-output pre) {
+      height: clamp(5.5rem, calc(100svh - 38.5rem), 15rem);
     }
   }
   @media (max-width: 600px) {

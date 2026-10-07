@@ -9,6 +9,7 @@
     review = {},
     outputOpen = $bindable(true),
     landing = false,
+    aside,
   } = $props();
   let output = $state();
   let followOutput = $state(true);
@@ -72,8 +73,10 @@
         ? [
             [x1, y1],
             [x1 + direction * 24, y1],
-            [x1 + direction * 24, 43 - (index % 3) * 8],
-            [x2 - direction * 24, 43 - (index % 3) * 8],
+            // Long edges cross in the band between the lane labels and the
+            // first row of nodes (see layoutIncidentGraph), not on the labels.
+            [x1 + direction * 24, 66 - (index % 3) * 6],
+            [x2 - direction * 24, 66 - (index % 3) * 6],
             [x2 - direction * 24, y2],
             [x2, y2],
           ]
@@ -113,7 +116,10 @@
 
 <div class="incident-graph" class:landing>
   <div class="graph-scroll">
-    <div class="graph-canvas" style={`aspect-ratio:840 / ${layout.height}`}>
+    <div
+      class="graph-canvas"
+      style={`aspect-ratio:840 / ${layout.height};--graph-height:${layout.height}`}
+    >
       <div class="boundaries" aria-hidden="true">
         <span>Evaluation</span><span>Shared infrastructure</span><span
           >External systems</span
@@ -211,6 +217,7 @@
       </div>
     </div>
 
+    {@render aside?.()}
     <DemoDisclosure
       class="model-output"
       label="Model output"
@@ -244,8 +251,11 @@
       gap: 1.5rem;
       align-items: start;
     }
+    /* Fit the landing in one screen: the graph narrows (and so shortens)
+       until the page chrome above and the link below it fit the viewport. */
     .landing .graph-canvas {
       min-width: 560px;
+      max-width: min(840px, calc((100svh - 29rem) * 840 / var(--graph-height)));
     }
     .landing .graph-detail {
       border-top: 0;

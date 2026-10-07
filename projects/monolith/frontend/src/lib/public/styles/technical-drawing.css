@@ -118,4 +118,8 @@ html[data-theme="dark"]:has(.td) {
 
 body:has(.td) {
   margin: 0;
+  /* global.css hides body overflow for the app shell and design-system.css
+   * restores it; which wins depends on bundle order (the dev server picks
+   * hidden, which stops touch scrolling). Assert it by specificity instead. */
+  overflow: auto;
 }
