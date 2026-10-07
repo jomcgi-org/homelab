@@ -15,6 +15,7 @@ use metal::{
 };
 use oominf_core::DeviceBuffer;
 
+mod decoder;
 mod elementwise;
 mod linear;
 mod memory;
@@ -86,6 +87,14 @@ impl Gpu {
                 "rmsnorm",
                 "l2norm",
                 "gated_norm",
+                "embedding",
+                "causal_conv",
+                "delta_step",
+                "rope_half",
+                "kv_append",
+                "gqa_step",
+                "scaled_add",
+                "shared_gate",
             ] {
                 let function = library
                     .get_function(name, None)
@@ -180,6 +189,18 @@ impl Gpu {
         threads: usize,
         group: usize,
     ) -> Result<()> {
+        let bindings: Vec<_> = buffers.iter().map(|b| (*b, 0)).collect();
+        self.launch_offsets(name, &bindings, params, threads, group)
+    }
+
+    fn launch_offsets(
+        &self,
+        name: &'static str,
+        buffers: &[(&metal::BufferRef, u64)],
+        params: &[u32],
+        threads: usize,
+        group: usize,
+    ) -> Result<()> {
         if threads == 0 {
             return Ok(());
         }
@@ -189,8 +210,8 @@ impl Gpu {
             let encoder = command.new_compute_command_encoder();
             let pipeline = &self.kernels[name];
             encoder.set_compute_pipeline_state(pipeline);
-            for (index, buffer) in buffers.iter().enumerate() {
-                encoder.set_buffer(index as u64, Some(buffer), 0);
+            for (index, (buffer, offset)) in buffers.iter().enumerate() {
+                encoder.set_buffer(index as u64, Some(*buffer), *offset);
             }
             encoder.set_bytes(
                 buffers.len() as u64,

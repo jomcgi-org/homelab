@@ -883,8 +883,10 @@ dependencies = [
  "oominf-cpu",
  "oominf-cuda",
  "oominf-format",
+ "oominf-metal",
  "oominf-models",
  "oominf-models-qwen",
+ "oominf-models-qwen35",
  "oominf-server",
  "oominf-tiers",
  "serde",
@@ -971,6 +973,18 @@ dependencies = [
  "oominf-cpu",
  "oominf-cuda",
  "oominf-format",
+ "oominf-tiers",
+ "serde_json",
+]
+
+[[package]]
+name = "oominf-models-qwen35"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "oominf-core",
+ "oominf-format",
+ "oominf-metal",
  "oominf-tiers",
  "serde_json",
 ]

@@ -1,4 +1,147 @@
 use super::Gpu;
+
+#[test]
+fn causal_convolution_keeps_history_and_zero_pads_the_first_token() {
+    let gpu = Gpu::new().unwrap();
+    let w = gpu
+        .upload_bf16(&[1f32, 2., 3., -1., 0.5, 2.].map(|v| (v.to_bits() >> 16) as u16))
+        .unwrap();
+    let mut history = gpu.zeros(4).unwrap();
+    for (input, expected) in [
+        ([1., 2.], [3f32, 4.]),
+        ([2., -1.], [8., -1.]),
+        ([0., 3.], [5., 3.5]),
+    ] {
+        let x = gpu.upload_f32(&input).unwrap();
+        let mut out = gpu.uninit(2).unwrap();
+        gpu.causal_conv(&x, &w, &mut history, &mut out, 2, 3)
+            .unwrap();
+        let got = gpu.download_f32(&out).unwrap();
+        for i in 0..2 {
+            let want = expected[i] / (1. + (-expected[i]).exp());
+            assert!((got[i] - want).abs() < 1e-5, "{} != {want}", got[i]);
+        }
+    }
+    assert_eq!(gpu.download_f32(&history).unwrap(), [2., -1., 0., 3.]);
+}
+
+#[test]
+fn delta_recurrence_matches_f64_reference_across_steps_and_grouped_heads() {
+    let gpu = Gpu::new().unwrap();
+    let (nk, nv, dk, dv) = (2, 4, 4, 3);
+    let mut state = gpu.zeros(nv * dv * dk).unwrap();
+    let mut reference = vec![0f64; nv * dv * dk];
+    let log_a = gpu
+        .upload_bf16(&[0f32, 0.5, -0.5, 1.].map(|v| (v.to_bits() >> 16) as u16))
+        .unwrap();
+    let bias = gpu
+        .upload_bf16(&[0f32, -1., 1., 0.25].map(|v| (v.to_bits() >> 16) as u16))
+        .unwrap();
+    for step in 0..3 {
+        let mut values: Vec<f32> = (0..2 * nk * dk + nv * dv)
+            .map(|i| ((i + step * 3) % 11) as f32 / 7. - 0.6)
+            .collect();
+        for head in 0..2 * nk {
+            let base = head * dk;
+            let sum: f32 = values[base..base + dk].iter().map(|v| v * v).sum();
+            for v in &mut values[base..base + dk] {
+                *v /= (sum + 1e-6).sqrt();
+            }
+        }
+        let av = [-3f32, 1., -0.5, 2.];
+        let bv = [0.25f32, -1., 2., 0.];
+        let qkv = gpu.upload_f32(&values).unwrap();
+        let a = gpu.upload_f32(&av).unwrap();
+        let b = gpu.upload_f32(&bv).unwrap();
+        let mut out = gpu.uninit(nv * dv).unwrap();
+        gpu.delta_step(
+            &qkv, &a, &b, &log_a, &bias, &mut state, &mut out, nk, nv, dk, dv,
+        )
+        .unwrap();
+        let got = gpu.download_f32(&out).unwrap();
+        for hv in 0..nv {
+            let hk = hv / (nv / nk);
+            let dt = av[hv] as f64 + [0., -1., 1., 0.25][hv];
+            let decay = (-[0f64, 0.5, -0.5, 1.][hv].exp() * (1. + dt.exp()).ln()).exp();
+            let beta = 1. / (1. + (-(bv[hv] as f64)).exp());
+            for c in 0..dv {
+                let at = (hv * dv + c) * dk;
+                for v in &mut reference[at..at + dk] {
+                    *v *= decay;
+                }
+                let prediction: f64 = (0..dk)
+                    .map(|j| reference[at + j] * values[nk * dk + hk * dk + j] as f64)
+                    .sum();
+                let delta = (values[2 * nk * dk + hv * dv + c] as f64 - prediction) * beta;
+                for j in 0..dk {
+                    reference[at + j] += values[nk * dk + hk * dk + j] as f64 * delta;
+                }
+                let want: f64 = (0..dk)
+                    .map(|j| reference[at + j] * values[hk * dk + j] as f64)
+                    .sum::<f64>()
+                    / (dk as f64).sqrt();
+                assert!(
+                    (got[hv * dv + c] as f64 - want).abs() < 2e-6,
+                    "{} != {want}",
+                    got[hv * dv + c]
+                );
+            }
+        }
+        let actual = gpu.download_f32(&state).unwrap();
+        assert!(
+            actual
+                .iter()
+                .zip(&reference)
+                .all(|(&a, &b)| (a as f64 - b).abs() < 2e-6)
+        );
+    }
+}
+
+#[test]
+fn grouped_attention_matches_f64_softmax_and_partial_rope_preserves_tail() {
+    let gpu = Gpu::new().unwrap();
+    let qv: Vec<f32> = (0..16).map(|i| (i as f32 - 7.) / 8.).collect();
+    let kv: Vec<f32> = (0..24).map(|i| ((i * 7 % 17) as f32 - 8.) / 8.).collect();
+    let vv: Vec<f32> = (0..24).map(|i| ((i * 3 % 13) as f32 - 6.) / 6.).collect();
+    let q = gpu.upload_f32(&qv).unwrap();
+    let k = gpu.upload_f32(&kv).unwrap();
+    let v = gpu.upload_f32(&vv).unwrap();
+    let mut out = gpu.uninit(16).unwrap();
+    let mut scores = gpu.uninit(12).unwrap();
+    gpu.gqa_step(&q, &k, &v, &mut out, &mut scores, 4, 2, 4, 3)
+        .unwrap();
+    let got = gpu.download_f32(&out).unwrap();
+    for h in 0..4 {
+        let raw: Vec<f64> = (0..3)
+            .map(|t| {
+                (0..4)
+                    .map(|c| qv[h * 4 + c] as f64 * kv[(t * 2 + h / 2) * 4 + c] as f64)
+                    .sum::<f64>()
+                    / 2.
+            })
+            .collect();
+        let max = raw.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let exp: Vec<_> = raw.iter().map(|v| (v - max).exp()).collect();
+        let sum: f64 = exp.iter().sum();
+        for c in 0..4 {
+            let want: f64 = (0..3)
+                .map(|t| exp[t] * vv[(t * 2 + h / 2) * 4 + c] as f64)
+                .sum::<f64>()
+                / sum;
+            assert!((got[h * 4 + c] as f64 - want).abs() < 1e-6);
+        }
+    }
+    let mut x = gpu.upload_f32(&[1., 2., 3., 4., 5., 6., 7., 8.]).unwrap();
+    gpu.rope_half(&mut x, 1, 8, 4, 7, 100.).unwrap();
+    let actual = gpu.download_f32(&x).unwrap();
+    for (i, angle) in [7f32, 0.7].into_iter().enumerate() {
+        let a = [1., 2.][i];
+        let b = [3., 4.][i];
+        assert!((actual[i] - (a * angle.cos() - b * angle.sin())).abs() < 1e-6);
+        assert!((actual[i + 2] - (b * angle.cos() + a * angle.sin())).abs() < 1e-6);
+    }
+    assert_eq!(&actual[4..], &[5., 6., 7., 8.]);
+}
 use oominf_core::{Linear, Memory};
 
 #[test]

@@ -36,7 +36,7 @@ pub type ParserFactory = fn(prompt: &str, schemas: ToolSchemas) -> Box<dyn Outpu
 /// The output parser of a model family, by `model_type`.
 pub fn parser_for(model_type: &str) -> anyhow::Result<ParserFactory> {
     match model_type {
-        "qwen4_exp" => Ok(|prompt, schemas| {
+        "qwen4_exp" | "qwen3_5_moe" | "qwen3_5_moe_text" => Ok(|prompt, schemas| {
             let in_reasoning = prompt.trim_end_matches('\n').ends_with("<think>");
             Box::new(QwenParser::new(in_reasoning, schemas))
         }),
@@ -307,6 +307,29 @@ mod tests {
             run(&mut p, &["Hello ", "world"]),
             vec![Piece::Content("Hello world".into())]
         );
+    }
+
+    #[test]
+    fn qwen35_factory_handles_thinking_and_content() {
+        for family in ["qwen3_5_moe", "qwen3_5_moe_text"] {
+            let factory = parser_for(family).unwrap();
+            let mut parser = factory("assistant\n<think>\n", ToolSchemas::new());
+            let mut out = Vec::new();
+            parser.push("Reason.</think>\nParis.", &mut out);
+            parser.finish(&mut out);
+            assert_eq!(
+                out,
+                vec![
+                    Piece::Reasoning("Reason.".into()),
+                    Piece::Content("Paris.".into())
+                ]
+            );
+            let mut parser = factory("assistant\n<think>\n\n</think>\n", ToolSchemas::new());
+            let mut out = Vec::new();
+            parser.push("Paris.", &mut out);
+            parser.finish(&mut out);
+            assert_eq!(out, vec![Piece::Content("Paris.".into())]);
+        }
     }
 
     #[test]

@@ -1,6 +1,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
+kernel void embedding(device const ushort* w [[buffer(0)]], device float* out [[buffer(1)]], constant uint* p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+    out[i] = as_type<float>(uint(w[p[0]*p[1]+i]) << 16);
+}
+
 inline float bf16(ushort value) { return as_type<float>(uint(value) << 16); }
 inline float e4m3(uchar value) {
     uint e = (value >> 3) & 15, m = value & 7;
@@ -11,6 +15,69 @@ inline float e4m3(uchar value) {
 constant float e2m1[16] = {0, .5, 1, 1.5, 2, 3, 4, 6, -0., -.5, -1, -1.5, -2, -3, -4, -6};
 inline float sigmoid(float x) { return 1.0f/(1.0f+exp(-x)); }
 inline float silu(float x) { return x*sigmoid(x); }
+
+kernel void causal_conv(device const float* x [[buffer(0)]], device const ushort* w [[buffer(1)]], device float* history [[buffer(2)]], device float* out [[buffer(3)]], constant uint* p [[buffer(4)]], uint c [[thread_position_in_grid]]) {
+    uint width = p[0], taps = p[1];
+    float value = x[c]*bf16(w[c*taps+taps-1]);
+    for (uint j=0; j+1<taps; ++j) value += history[j*width+c]*bf16(w[c*taps+j]);
+    for (uint j=0; j+2<taps; ++j) history[j*width+c] = history[(j+1)*width+c];
+    if (taps>1) history[(taps-2)*width+c] = x[c];
+    out[c] = silu(value);
+}
+
+kernel void delta_step(device const float* qkv [[buffer(0)]], device const float* a [[buffer(1)]], device const float* b [[buffer(2)]], device const ushort* log_a [[buffer(3)]], device const ushort* bias [[buffer(4)]], device float* state [[buffer(5)]], device float* out [[buffer(6)]], constant uint* p [[buffer(7)]], uint gid [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint item=gid/32, hv=item/p[3], hk=hv/(p[1]/p[0]), dk=p[2], key_width=p[0]*dk;
+    float dt=a[hv]+bf16(bias[hv]);
+    float small=exp(-abs(dt)), rounded=1.0f+small;
+    float logarithm=rounded==1.0f ? small : log(rounded)*(small/(rounded-1.0f));
+    float decay=exp(-exp(bf16(log_a[hv]))*(max(dt,0.0f)+logarithm));
+    float prediction=0;
+    for(uint c=lane;c<dk;c+=32) prediction += state[item*dk+c]*decay*qkv[key_width+hk*dk+c];
+    float correction=(qkv[2*key_width+item]-simd_sum(prediction))*sigmoid(b[hv]);
+    float sum=0;
+    for(uint c=lane;c<dk;c+=32) {
+        float value=state[item*dk+c]*decay+qkv[key_width+hk*dk+c]*correction;
+        state[item*dk+c]=value;
+        sum += value*qkv[hk*dk+c];
+    }
+    float result=simd_sum(sum)*rsqrt(float(dk));
+    if(lane==0) out[item]=result;
+}
+
+kernel void rope_half(device float* x [[buffer(0)]], constant uint* p [[buffer(1)]], uint i [[thread_position_in_grid]]) {
+    uint half_dim=p[1]/2, c=i%half_dim, at=(i/half_dim)*p[0]+c;
+    float angle=float(p[2])*pow(as_type<float>(p[3]),-2.0f*float(c)/float(p[1]));
+    float co=cos(angle), si=sin(angle), a=x[at], b=x[at+half_dim];
+    x[at]=a*co-b*si; x[at+half_dim]=b*co+a*si;
+}
+
+kernel void kv_append(device const float* x [[buffer(0)]], device float* cache [[buffer(1)]], constant uint* p [[buffer(2)]], uint i [[thread_position_in_grid]]) { cache[p[0]*p[1]+i]=x[i]; }
+
+// One SIMD group owns a query head. Stable softmax scores are kept in workspace.
+kernel void gqa_step(device const float* q [[buffer(0)]], device const float* k [[buffer(1)]], device const float* v [[buffer(2)]], device float* out [[buffer(3)]], device float* scores [[buffer(4)]], constant uint* p [[buffer(5)]], uint gid [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    uint h=gid/32, kh=h/(p[0]/p[1]), d=p[2], len=p[3];
+    float maximum=-INFINITY;
+    for(uint t=0;t<len;++t) {
+        float sum=0;
+        for(uint c=lane;c<d;c+=32) sum += q[h*d+c]*k[(t*p[1]+kh)*d+c];
+        float value=simd_sum(sum)*rsqrt(float(d));
+        maximum=max(maximum,value);
+        if(lane==0) scores[h*len+t]=value;
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+    float denominator=0;
+    for(uint t=lane;t<len;t+=32) { float s=exp(scores[h*len+t]-maximum); scores[h*len+t]=s; denominator+=s; }
+    denominator=simd_sum(denominator);
+    threadgroup_barrier(mem_flags::mem_device);
+    for(uint c=lane;c<d;c+=32) {
+        float value=0;
+        for(uint t=0;t<len;++t) value += scores[h*len+t]*v[(t*p[1]+kh)*d+c];
+        out[h*d+c]=value/denominator;
+    }
+}
+
+kernel void scaled_add(device const float* x [[buffer(0)]], device float* y [[buffer(1)]], constant uint* p [[buffer(2)]], uint i [[thread_position_in_grid]]) { y[i] += x[i]*as_type<float>(p[1]); }
+kernel void shared_gate(device float* x [[buffer(0)]], device const float* gate [[buffer(1)]], constant uint* p [[buffer(2)]], uint i [[thread_position_in_grid]]) { x[i] *= sigmoid(gate[0]); }
 
 kernel void elementwise(device const float* a [[buffer(0)]], device const float* b [[buffer(1)]],
     device float* out [[buffer(2)]], constant uint* p [[buffer(3)]], uint i [[thread_position_in_grid]]) {

@@ -142,3 +142,25 @@ only the prefill chunk size changed gives a mean KL of about 0.03 and about 90%
 top-1 agreement on a 32k-token document, because discrete expert routing
 amplifies rounding-level differences through the layers. Judge a lossy mode
 against that band (several equivalent fp32 runs), not against a single reference.
+
+## Apple Silicon
+
+`cargo test --workspace` runs the Metal tests on a Mac with a visible GPU. They
+compare NVFP4, BF16, normalization, grouped attention and gated delta recurrence
+against CPU f64 references. The recurrence test carries state across three steps.
+The attention test checks grouped heads and the unrotated RoPE tail.
+
+For whole-model parity, install `mlx` and `numpy` in a separate Python environment
+and compare against the original single-file checkpoint:
+
+    cargo run --release -p oominf-models-qwen35 --example logits -- \
+      model.oom /tmp/metal-logits 100,200,300
+    python reference/check_qwen35_metal.py --source <original-checkpoint-dir> \
+      --metal /tmp/metal-logits --tokens 100,200,300
+
+The reference streams all layers, carries both recurrent and attention state,
+and scores the output head in chunks. It reads original safetensors rather than
+converted records. Each step requires matching top predictions, relative logit
+RMSE below 1e-4 and maximum absolute difference below 0.02.
+The first three-token run passed: maximum difference 0.0000391, maximum relative
+RMSE 0.000002694, and identical top predictions (90, 200, 220).

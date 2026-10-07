@@ -82,20 +82,7 @@ pub struct Profile {
     pub cpu_expert_us: Option<f64>,
 }
 
-/// How `serve` gets its profile.
-#[derive(clap::Args, Debug, Clone, Default)]
-pub struct ProfileArgs {
-    /// Do not measure or read a hardware profile: use the built-in defaults.
-    #[arg(long, conflicts_with_all = ["reprobe", "profile"])]
-    pub no_probe: bool,
-    /// Measure the hardware again even when a cached profile matches.
-    #[arg(long)]
-    pub reprobe: bool,
-    /// Read the profile from this file (e.g. written by `oominf tune --out`)
-    /// instead of the cache.
-    #[arg(long)]
-    pub profile: Option<PathBuf>,
-}
+pub use crate::profile_args::ProfileArgs;
 
 const GB: f64 = 1e9;
 
@@ -298,6 +285,7 @@ impl Profile {
 }
 
 /// Where `serve` gets the profile, and how it was obtained.
+#[cfg(not(target_os = "macos"))]
 pub enum Source {
     Cached(PathBuf),
     Measured(PathBuf),
@@ -306,6 +294,7 @@ pub enum Source {
 
 /// The profile for `serve`: a given file, else the cached one matching this
 /// machine, else measured now (and cached). `None` with `--no-probe`.
+#[cfg(not(target_os = "macos"))]
 pub fn resolve(
     args: &ProfileArgs,
     gpu: &Gpu,
@@ -344,6 +333,7 @@ pub fn resolve(
 
 /// The tuning `serve` applies: the profile's choices (see [`derive`]), logged with
 /// why; built-in defaults without a profile.
+#[cfg(not(target_os = "macos"))]
 pub fn tuning(
     args: &ProfileArgs,
     gpu: &Gpu,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use oominf_core::{Backend, ExpertFactory, ExpertSource, HostDemand, Model};
+#[cfg(not(target_os = "macos"))]
 use oominf_cuda::Gpu;
 use oominf_format::Model as Files;
 use oominf_tiers::host::{IoConfig, ReadMode};
@@ -75,7 +76,8 @@ pub struct CacheArgs {
     /// The default `k8v6` measured inside fp32's own rounding noise at 32k-95k tokens
     /// while keeping about 3x less KV memory (#6830); other modes are lossy to
     /// different degrees: judge them with `oominf score`.
-    #[arg(long, default_value = "k8v6", value_parser = oominf_core::KvFormat::parse)]
+    #[cfg_attr(target_os = "macos", arg(long, default_value = "fp32", value_parser = oominf_core::KvFormat::parse))]
+    #[cfg_attr(not(target_os = "macos"), arg(long, default_value = "k8v6", value_parser = oominf_core::KvFormat::parse))]
     pub kv_cache: oominf_core::KvFormat,
     /// How dense (non-expert) weights are stored: `bf16` as in the checkpoint
     /// (exact), or `fp8` (e4m3 with a scale per 128 weights: half the bytes, so faster
@@ -368,6 +370,7 @@ pub struct OpenArgs<'a> {
 }
 
 /// Loads a converted model on the CUDA device with the selected expert source.
+#[cfg(not(target_os = "macos"))]
 pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     let files = Arc::new(Files::open(args.model_dir)?);
     let gpu = Arc::new(Gpu::new(0)?);
@@ -387,6 +390,73 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
     };
     let experts = factory::<Gpu>(args.experts, files.clone(), args.host_use, &tuning);
     oominf_models::open(gpu, files, &opts, experts)
+}
+
+#[cfg(target_os = "macos")]
+pub fn validate_metal(args: &OpenArgs) -> Result<()> {
+    anyhow::ensure!(
+        args.cache.kv_cache == oominf_core::KvFormat::F32,
+        "Metal currently uses exact fp32 KV state; pass --kv-cache fp32"
+    );
+    anyhow::ensure!(
+        args.cache.dense == oominf_core::DenseFormat::Bf16
+            && args.cache.expert_precision == oominf_core::ExpertPrecision::Exact
+            && args.cache.attention_precision == oominf_core::AttentionPrecision::Exact,
+        "Metal currently preserves released weights and uses exact fp32 activations"
+    );
+    anyhow::ensure!(
+        !args.host_use.snapshots,
+        "Metal prefix storage is not yet supported"
+    );
+    anyhow::ensure!(
+        args.prefill_chunk.unwrap_or(1) == 1,
+        "Metal currently prefills one token at a time"
+    );
+    if let Some(profile) = args.profile {
+        anyhow::ensure!(
+            profile.profile.is_none() && !profile.reprobe,
+            "CUDA hardware profiles cannot configure Metal"
+        );
+    }
+    anyhow::ensure!(
+        matches!(args.experts.experts.as_str(), "tiered" | "disk"),
+        "unknown expert source"
+    );
+    anyhow::ensure!(
+        args.experts.host_compute.unwrap_or(0) == 0,
+        "Metal computes routed experts on the GPU"
+    );
+    anyhow::ensure!(
+        args.experts.host_expert_gib.is_none(),
+        "Metal uses one shared expert cache; set --vram-expert-gib for its RAM budget"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
+    validate_metal(args)?;
+    let files = Arc::new(Files::open(args.model_dir)?);
+    let mode = read_mode(args.experts, &files)?;
+    let available = HostMemory::probe()?.usable();
+    let default_reserve = if available >= 6 * (1 << 30) { 3. } else { 1. };
+    let reserve = args.experts.host_reserve_gib.unwrap_or(default_reserve);
+    eprintln!(
+        "oominf: unified RAM reserve {reserve:.1} GiB; Metal and host buffers share one budget"
+    );
+    let cache = args.experts.vram_expert_gib.map(bytes);
+    oominf_models_qwen35::open(
+        files,
+        oominf_models_qwen35::Options {
+            max_context: args.max_context,
+            reserve_bytes: bytes(reserve),
+            cache_bytes: cache,
+            io: oominf_tiers::host::IoConfig::new(mode),
+            device_policy: oominf_tiers::policy::parse(&args.experts.vram_policy)?,
+            host_policy: oominf_tiers::policy::parse(&args.experts.host_policy)?,
+            disk_only: args.experts.experts == "disk",
+        },
+    )
 }
 
 /// Checksum of the files that identify a converted checkpoint (its index lists

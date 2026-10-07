@@ -5,11 +5,11 @@ GPU plus host memory, tuned for one or two interactive streams on one machine.
 Routed experts are tiered across VRAM, pinned host memory and NVMe; weights are
 used exactly as released. The CLI is `oominf`.
 
-Apple Silicon support is in progress. The `oominf-metal` crate has tested GPU
-primitives, shared expert transfers and macOS disk/memory support. The converter
-accepts text-only Qwen3.5 MoE NVFP4 checkpoints, including a single safetensors
-file. The CLI still runs inference through CUDA; full Qwen3.5 generation on
-Metal is tracked in [#6896](https://github.com/jomcgi-org/homelab/issues/6896).
+Apple Silicon runs Qwen3.5-35B-A3B text inference through direct Metal. The
+released NVFP4 checkpoint is 23.59 GB; its converted text weights occupy 21.03 GB
+and stream routed experts from SSD. On a 16 GiB M1 Pro, the initial measured
+baseline is 2.5 to 2.7 generated tokens/sec with a 3.72 GiB peak process footprint.
+See [Hardware](docs/HARDWARE.md#apple-silicon) for the command and limits.
 
 - [Architecture](docs/ARCHITECTURE.md): crates, interfaces, precision, tiers,
   and how to add a model or a platform.
@@ -18,7 +18,36 @@ Metal is tracked in [#6896](https://github.com/jomcgi-org/homelab/issues/6896).
 - [Hardware](docs/HARDWARE.md): what runs where, measured on smaller simulated
   machines.
 
-## Setup
+## Apple Silicon
+
+Build with the pinned Rust toolchain and `cargo build --release -p oominf`.
+Convert a local Qwen3.5 MoE NVFP4 checkpoint, then verify it:
+
+    target/release/oominf convert --src <checkpoint-dir> --out model.oom
+    target/release/oominf verify model.oom
+    target/release/oominf doctor --model model.oom
+    target/release/oominf generate --model model.oom --no-thinking \
+      --prompt "What is the capital of France?" --max-tokens 16
+    target/release/oominf serve --model model.oom
+
+The server listens on `127.0.0.1:8091`. Mac defaults are one active request,
+4096 context tokens, fp32 KV state and prompt lookup disabled. For short answers,
+set `"chat_template_kwargs":{"enable_thinking":false}` in an OpenAI request.
+The tested HTTP request is in [Hardware](docs/HARDWARE.md#apple-silicon).
+
+Metal and host allocations share a budget based on current reclaimable RAM.
+`--vram-expert-gib` caps the shared expert cache; it shrinks to fit.
+The default RAM reserve is 3 GiB when at least 6 GiB is currently available,
+otherwise 1 GiB. `--host-reserve-gib` overrides it. Embedding rows are read on
+demand; dense projections and the output head stay resident.
+
+This path prefills one token at a time and supports the text decoder only.
+Vision, MTP, prompt lookup, compressed KV and prefix snapshots are unavailable.
+CUDA hardware profiles are unused; `doctor` estimates the shared memory budget
+and `bench` measures actual inference. MLX is required only for the independent
+validation script in [Testing](docs/TESTING.md#apple-silicon).
+
+## Linux setup
 
 ### Prerequisites
 
@@ -41,7 +70,7 @@ Metal is tracked in [#6896](https://github.com/jomcgi-org/homelab/issues/6896).
 The workspace builds with Cargo (it is excluded from Bazel via `.bazelignore`).
 
     cargo build --release          # target/release/oominf
-    cargo test --workspace         # CPU tests; GPU tests are #[ignore]d (docs/TESTING.md)
+    cargo test --workspace         # CPU tests and Mac GPU tests; CUDA tests are ignored
 
 ### Checkpoint
 

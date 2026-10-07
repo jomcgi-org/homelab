@@ -136,3 +136,42 @@ included) over 95 s.
     oominf serve --model model.oom --io buffered
     # Overload: a small queue, then many concurrent clients
     oominf serve --model model.oom --max-queued 4
+
+## Apple Silicon
+
+Initial direct Metal measurements on a 16 GiB M1 Pro (10 CPU cores), with other
+applications running. Model: AxionML/Qwen3.5-35B-A3B-NVFP4, 23,590,338,856-byte
+source safetensors, SHA256
+`095c234e5e455349e4b6ce69ca61869a61b4527cd392224b517e60da1da1da4f`.
+The converted text decoder is 19.59 GiB: 1543 dense tensors and 10,240 expert
+records. Every converted checksum passed.
+
+    /usr/bin/time -l target/release/oominf bench --model model.oom \
+      --prompt 'Write a short poem about the sea.' --tokens 32 --draft 0 \
+      --vram-expert-gib 2
+
+| Measurement | Result |
+|---|---|
+| Model load | 2.3 s |
+| Cold prefill, 18 tokens | 6.44 s |
+| Cold decode, 32 tokens | 372.0 ms/token, 2.69 tokens/sec |
+| Warm prefill, 18 tokens | 7.55 s |
+| Warm decode, 32 tokens | 398.2 ms/token, 2.51 tokens/sec |
+| Shared expert cache after shrinking | 1.4 GiB |
+| Decode expert cache hits | About 40% |
+| Peak process memory footprint (`time -l`) | 3,992,282,496 bytes (3.72 GiB) |
+| Maximum resident set size | 2,617,769,984 bytes (2.44 GiB) |
+| Swaps reported for this process | 0 |
+
+These are short-context baseline results. The warm run retained an expert cache
+far smaller than all experts and did not improve throughput. The SSD-only probe
+(3.72 GB/s with eight readers) does not measure inference. System-wide swap
+changes, sustained thermal behavior and long-context throughput remain unmeasured.
+
+The local server returned `The capital of France is Paris.` with seven completion
+tokens and `finish_reason: stop` for this request:
+
+    target/release/oominf serve --model model.oom --max-context 256 \
+      --vram-expert-gib 2 --served-model-name qwen35-mac
+    curl localhost:8091/v1/chat/completions -H 'Content-Type: application/json' \
+      --data '{"model":"qwen35-mac","messages":[{"role":"user","content":"What is the capital of France? Answer in one sentence."}],"temperature":0,"max_tokens":16,"chat_template_kwargs":{"enable_thinking":false}}'

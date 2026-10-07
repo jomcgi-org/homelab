@@ -11,6 +11,7 @@ use oominf_core::{argmax, decode_step};
 use crate::chat::Chat;
 use crate::load::{CacheArgs, ExpertArgs, HostUse, OpenArgs, open_model};
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     model_dir: &Path,
     prompt: &str,
@@ -18,9 +19,14 @@ pub fn run(
     draft: usize,
     expert_args: &ExpertArgs,
     cache: &CacheArgs,
+    no_thinking: bool,
 ) -> Result<()> {
     let chat = Chat::load(model_dir)?;
-    let ids = chat.encode(&chat.render_user(prompt)?)?;
+    let options = oominf_server::template::TemplateOptions {
+        enable_thinking: no_thinking.then_some(false),
+        ..Default::default()
+    };
+    let ids = chat.encode(&chat.render_user_options(prompt, &options)?)?;
     let stop: Vec<u32> = ["<|im_end|>", "<|endoftext|>"]
         .iter()
         .filter_map(|t| chat.token_id(t))

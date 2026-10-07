@@ -10,7 +10,7 @@ pub enum Download {
 }
 
 impl Gpu {
-    fn address(
+    pub(crate) fn address(
         &self,
         address: u64,
         len: usize,

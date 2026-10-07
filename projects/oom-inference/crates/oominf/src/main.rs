@@ -2,16 +2,28 @@ mod bench;
 mod chat;
 mod check_layer;
 mod check_model;
+#[cfg(not(target_os = "macos"))]
+mod doctor;
+#[cfg(target_os = "macos")]
+#[path = "doctor_metal.rs"]
 mod doctor;
 mod generate;
 mod load;
+#[cfg(not(target_os = "macos"))]
 mod profile;
+mod profile_args;
+#[cfg(target_os = "macos")]
+mod profile {
+    pub use crate::profile_args::ProfileArgs;
+}
 mod score;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+#[cfg(not(target_os = "macos"))]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -127,7 +139,8 @@ enum Command {
         #[arg(long)]
         served_model_name: Option<String>,
         /// Longest sequence (prompt plus generation) the KV cache is sized for.
-        #[arg(long, default_value_t = 32768)]
+        #[cfg_attr(target_os = "macos", arg(long, default_value_t = 4096))]
+        #[cfg_attr(not(target_os = "macos"), arg(long, default_value_t = 32768))]
         max_context: usize,
         /// Prompt tokens per prefill chunk (bounds prefill activation memory; default:
         /// the model family's).
@@ -141,7 +154,8 @@ enum Command {
         /// instead of the model's draft. On by default: +22-40% output rate when
         /// output copies input (file edits), -2 to -9% on prose and short diffs
         /// (#6872). 0 disables it.
-        #[arg(long, default_value_t = 7)]
+        #[cfg_attr(target_os = "macos", arg(long, default_value_t = 0))]
+        #[cfg_attr(not(target_os = "macos"), arg(long, default_value_t = 7))]
         prompt_lookup: usize,
         /// Save sequences evicted from the device here, and resume later requests
         /// that extend one instead of prefilling (off when unset).
@@ -161,7 +175,8 @@ enum Command {
         /// overlapping requests share steps (2 streams: ~48 tok/s in total, ~31
         /// each, against ~43 for one, and the second starts without waiting for
         /// the first to finish). 1 serves one request at a time, to completion.
-        #[arg(long, default_value_t = 2)]
+        #[cfg_attr(target_os = "macos", arg(long, default_value_t = 1))]
+        #[cfg_attr(not(target_os = "macos"), arg(long, default_value_t = 2))]
         max_streams: usize,
         /// Most tokens a batched step carries (every stream's next token plus the
         /// drafts the token budget picks).
@@ -205,9 +220,11 @@ enum Command {
     Doctor {
         #[arg(long)]
         model: PathBuf,
-        #[arg(long, default_value_t = 32768)]
+        #[cfg_attr(target_os = "macos", arg(long, default_value_t = 4096))]
+        #[cfg_attr(not(target_os = "macos"), arg(long, default_value_t = 32768))]
         max_context: usize,
-        #[arg(long, default_value_t = 2)]
+        #[cfg_attr(target_os = "macos", arg(long, default_value_t = 1))]
+        #[cfg_attr(not(target_os = "macos"), arg(long, default_value_t = 2))]
         max_streams: usize,
         /// As for serve: a prefix store keeps snapshots in host memory while
         /// writing them.
@@ -231,6 +248,9 @@ enum Command {
         prompt_file: Option<PathBuf>,
         #[arg(long, default_value_t = 64)]
         max_tokens: usize,
+        /// Ask the chat template for a direct answer without a thinking block.
+        #[arg(long)]
+        no_thinking: bool,
         /// Draft tokens per decode step (speculative decoding); 0 disables it.
         #[arg(long, default_value_t = 1)]
         draft: usize,
@@ -427,6 +447,11 @@ fn main() -> Result<()> {
             experts,
             cache,
         } => {
+            #[cfg(target_os = "macos")]
+            anyhow::ensure!(
+                prompt_lookup == 0,
+                "Metal prompt lookup requires sequence rewind support; pass --prompt-lookup 0"
+            );
             anyhow::ensure!(
                 max_streams >= 1 && max_streams <= max_step_tokens,
                 "--max-streams must be between 1 and --max-step-tokens"
@@ -494,20 +519,33 @@ fn main() -> Result<()> {
             out,
             experts,
         } => {
-            let files = oominf_format::Model::open(&model)?;
-            let gpu = oominf_cuda::Gpu::new(0)?;
-            let fp =
-                profile::Fingerprint::collect(&gpu, &files, load::read_mode(&experts, &files)?)?;
-            let path = match out {
-                Some(p) => p,
-                None => profile::cache_dir()
-                    .context("no cache directory (HOME unset): give --out")?
-                    .join(fp.file_name()),
-            };
-            let p = profile::measure(&gpu, &files, &experts, fp, true)?;
-            p.save(&path)?;
-            println!("wrote {}", path.display());
-            profile::report(&p, &files)?;
+            #[cfg(target_os = "macos")]
+            {
+                let _ = (model, out, experts);
+                anyhow::bail!(
+                    "CUDA tuning profiles are not supported on Metal; use oominf doctor for the shared-memory estimate and oominf bench for measured inference"
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let files = oominf_format::Model::open(&model)?;
+                let gpu = oominf_cuda::Gpu::new(0)?;
+                let fp = profile::Fingerprint::collect(
+                    &gpu,
+                    &files,
+                    load::read_mode(&experts, &files)?,
+                )?;
+                let path = match out {
+                    Some(p) => p,
+                    None => profile::cache_dir()
+                        .context("no cache directory (HOME unset): give --out")?
+                        .join(fp.file_name()),
+                };
+                let p = profile::measure(&gpu, &files, &experts, fp, true)?;
+                p.save(&path)?;
+                println!("wrote {}", path.display());
+                profile::report(&p, &files)?;
+            }
         }
         Command::Doctor {
             model,
@@ -533,6 +571,7 @@ fn main() -> Result<()> {
             prompt,
             prompt_file,
             max_tokens,
+            no_thinking,
             draft,
             experts,
             cache,
@@ -541,7 +580,15 @@ fn main() -> Result<()> {
                 Some(p) => std::fs::read_to_string(p)?,
                 None => prompt.unwrap_or_default(),
             };
-            generate::run(&model, &prompt, max_tokens, draft, &experts, &cache)?
+            generate::run(
+                &model,
+                &prompt,
+                max_tokens,
+                draft,
+                &experts,
+                &cache,
+                no_thinking,
+            )?
         }
         Command::Tokenize {
             model,
