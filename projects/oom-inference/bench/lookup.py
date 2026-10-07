@@ -44,7 +44,7 @@ def workloads():
     grouped = read("crates/oominf-tiers/src/grouped.rs")
     kernel = read("crates/oominf-cpu/src/kernel.rs")
     tiered = read("crates/oominf-tiers/src/tiered.rs")
-    arch = read("docs/ARCHITECTURE.md")
+    arch = read("docs/dev/architecture.md")
     arch = arch[: len(arch) // 3]
     return {
         "edit_rename": (

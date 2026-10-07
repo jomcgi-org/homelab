@@ -1,11 +1,21 @@
-# Running on other hardware
+# Measurements
+
+Dated measurement logs: what was run, under which conditions, and what it
+showed. The decisions they support are in [decisions.md](decisions.md); the
+user-facing summary of the hardware runs is the
+[hardware guide](../guide/hardware.md). How to measure so the numbers mean
+something is in [the contributor overview](README.md#measuring-performance).
+
+Other dated measurements live with the decision they support: KV cache format
+(D3, 2026-10-04), speed modes (D4), staging copies (D8), decode lookahead (D9),
+prefix store (D12), prompt lookup (D14, D15) and concurrent requests (D16).
 
 oom-inference sizes itself from fresh checks on every start (usable RAM including
 a container's limit, free VRAM, which read path works) and shrinks instead of
 failing; the design and its rules are in
-[ARCHITECTURE.md](ARCHITECTURE.md#smaller-machines). This page records what was
-measured when smaller machines were simulated on the reference box, and what was
-not.
+[architecture.md](architecture.md#smaller-machines). The sections below record
+what was measured when smaller machines were simulated on the reference box, and
+what was not.
 
 `oominf doctor --model model.oom` shows what `serve` would decide on a machine
 without starting it.
@@ -31,25 +41,25 @@ prompt tokens over time to first token; decode is completion tokens after the
 first over the time after it. Peak is the scope's `memory.peak` (pinned tiers,
 heap and page cache charged to it).
 
-| Config | Outcome | Usable host | Tiers: VRAM / host (GiB) | Prefill tok/s cold / warm | Decode tok/s cold / warm | Correct | Peak (GiB) |
-|---|---|---|---|---|---|---|---|
-| No limit (62 GiB) | serves | 56.1 | 16.4 / 44.3 | 2,402 / 3,118 | 37.5 / 45.2 | yes | 50.9 |
-| `MemoryMax=48G` | serves, smaller host tier | 46.5 | 16.4 / 34.7 | 2,599 / 3,076 | 28.4 / 33.0 | yes | 37.9 |
-| `MemoryMax=32G` | serves, smaller host tier | 30.5 | 16.4 / 18.7 | 2,595 / 2,749 | 15.5 / 15.7 | yes | 20.6 |
-| `MemoryMax=24G` | serves | 22.5 | 16.4 / 10.7 | 2,374 / 2,450 | 11.4 / 12.0 | yes | 12.6 |
-| `MemoryMax=20G` | serves | 18.5 | 16.4 / 6.7 | 1,848 / 2,317 | 9.8 / 10.0 | yes | 8.6 |
-| `MemoryMax=16G` | serves | 14.5 | 16.4 / 2.7 | 2,105 / 2,193 | 8.6 / 9.0 | yes | 4.6 |
-| `MemoryMax=16G`, `--host-reserve-gib 4` | serves | 14.5 | 16.4 / 8.6 | 2,305 / 2,377 | 11.1 / 10.6 | yes | 10.6 |
-| `MemoryMax=12G` | serves at the minimum; reserve lowered 10 to 7.9 GiB | 10.5 | 16.4 / 0.8 | 824 / 847 | 12.7 / 12.7 | yes | 3.8 |
-| `MemoryMax=10G` | serves at the minimum; reserve lowered to 5.9 GiB | 8.5 | 16.4 / 0.8 | 781 / 785 | 12.8 / 12.6 | yes | 3.9 |
-| `MemoryMax=8G` | serves at the minimum; reserve lowered to 3.9 GiB | 6.5 | 16.4 / 0.8 | 818 / 845 | 12.9 / 12.7 | yes | 3.8 |
-| `MemoryMax=7G` | refuses to start (below) | 5.5 | n/a | n/a | n/a | n/a | n/a |
-| `MemoryMax=6G` | refuses to start | 4.5 | n/a | n/a | n/a | n/a | n/a |
-| `MemoryMax=32G`, `--prefix-store-dir`, `--kv-placement host` | serves; beside the tiers: host KV 1.1, checkpoints 1.3, snapshots 3.4 GiB | 30.5 | 16.4 / 14.2 | 2,444 / 2,381 | 13.3 / 13.4 | yes (4 of 5 runs, see below) | 18.9 |
-| `taskset -c 0-3` (4 CPUs) | serves; probe: 204 us per expert on 2 threads, host compute stays on | 56.6 | 16.4 / 44.7 | 2,320 / 3,114 | 31.8 / 35.9 | yes | 47.6 |
-| `taskset -c 0,1` (2 CPUs) | serves; probe: 429 us per expert on 1 thread, more than 2x the 103 us copy, so host compute off | 56.7 | 16.4 / 44.9 | 2,319 / 3,033 | 32.1 / 34.7 | yes | 50.9 |
-| `--io pread` (io_uring unavailable) | serves; logs "O_DIRECT pread on a thread pool" | 56.2 | 16.4 / 44.3 | 2,369 / 3,115 | 36.6 / 45.6 | yes | 50.7 |
-| `--io buffered` (no O_DIRECT) | serves; logs "buffered pread on a thread pool" | 56.6 | 16.4 / 44.7 | 1,630 / 2,505 | 23.4 / 30.2 | yes | 52.0 |
+| Config                                                       | Outcome                                                                                         | Usable host | Tiers: VRAM / host (GiB) | Prefill tok/s cold / warm | Decode tok/s cold / warm | Correct                      | Peak (GiB) |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | ----------- | ------------------------ | ------------------------- | ------------------------ | ---------------------------- | ---------- |
+| No limit (62 GiB)                                            | serves                                                                                          | 56.1        | 16.4 / 44.3              | 2,402 / 3,118             | 37.5 / 45.2              | yes                          | 50.9       |
+| `MemoryMax=48G`                                              | serves, smaller host tier                                                                       | 46.5        | 16.4 / 34.7              | 2,599 / 3,076             | 28.4 / 33.0              | yes                          | 37.9       |
+| `MemoryMax=32G`                                              | serves, smaller host tier                                                                       | 30.5        | 16.4 / 18.7              | 2,595 / 2,749             | 15.5 / 15.7              | yes                          | 20.6       |
+| `MemoryMax=24G`                                              | serves                                                                                          | 22.5        | 16.4 / 10.7              | 2,374 / 2,450             | 11.4 / 12.0              | yes                          | 12.6       |
+| `MemoryMax=20G`                                              | serves                                                                                          | 18.5        | 16.4 / 6.7               | 1,848 / 2,317             | 9.8 / 10.0               | yes                          | 8.6        |
+| `MemoryMax=16G`                                              | serves                                                                                          | 14.5        | 16.4 / 2.7               | 2,105 / 2,193             | 8.6 / 9.0                | yes                          | 4.6        |
+| `MemoryMax=16G`, `--host-reserve-gib 4`                      | serves                                                                                          | 14.5        | 16.4 / 8.6               | 2,305 / 2,377             | 11.1 / 10.6              | yes                          | 10.6       |
+| `MemoryMax=12G`                                              | serves at the minimum; reserve lowered 10 to 7.9 GiB                                            | 10.5        | 16.4 / 0.8               | 824 / 847                 | 12.7 / 12.7              | yes                          | 3.8        |
+| `MemoryMax=10G`                                              | serves at the minimum; reserve lowered to 5.9 GiB                                               | 8.5         | 16.4 / 0.8               | 781 / 785                 | 12.8 / 12.6              | yes                          | 3.9        |
+| `MemoryMax=8G`                                               | serves at the minimum; reserve lowered to 3.9 GiB                                               | 6.5         | 16.4 / 0.8               | 818 / 845                 | 12.9 / 12.7              | yes                          | 3.8        |
+| `MemoryMax=7G`                                               | refuses to start (below)                                                                        | 5.5         | n/a                      | n/a                       | n/a                      | n/a                          | n/a        |
+| `MemoryMax=6G`                                               | refuses to start                                                                                | 4.5         | n/a                      | n/a                       | n/a                      | n/a                          | n/a        |
+| `MemoryMax=32G`, `--prefix-store-dir`, `--kv-placement host` | serves; beside the tiers: host KV 1.1, checkpoints 1.3, snapshots 3.4 GiB                       | 30.5        | 16.4 / 14.2              | 2,444 / 2,381             | 13.3 / 13.4              | yes (4 of 5 runs, see below) | 18.9       |
+| `taskset -c 0-3` (4 CPUs)                                    | serves; probe: 204 us per expert on 2 threads, host compute stays on                            | 56.6        | 16.4 / 44.7              | 2,320 / 3,114             | 31.8 / 35.9              | yes                          | 47.6       |
+| `taskset -c 0,1` (2 CPUs)                                    | serves; probe: 429 us per expert on 1 thread, more than 2x the 103 us copy, so host compute off | 56.7        | 16.4 / 44.9              | 2,319 / 3,033             | 32.1 / 34.7              | yes                          | 50.9       |
+| `--io pread` (io_uring unavailable)                          | serves; logs "O_DIRECT pread on a thread pool"                                                  | 56.2        | 16.4 / 44.3              | 2,369 / 3,115             | 36.6 / 45.6              | yes                          | 50.7       |
+| `--io buffered` (no O_DIRECT)                                | serves; logs "buffered pread on a thread pool"                                                  | 56.6        | 16.4 / 44.7              | 1,630 / 2,505             | 23.4 / 30.2              | yes                          | 52.0       |
 
 The 7 GiB refusal, verbatim:
 
@@ -84,7 +94,7 @@ Observations:
   against 58.6 tok/s short, 46.0 against about 45.5 at 32k. Three warm requests
   per setting confirmed it (45.4 against 48.4 tok/s with no limit, 16.5 against
   21.2 at 32G), so `--lookahead` now defaults to off; the rows above were measured
-  with it on. See ARCHITECTURE.md, "Why no decode lookahead".
+  with it on. See [D9](decisions.md#d9-no-decode-lookahead-by-default).
 - At 16G the default 10 GiB reserve is mostly unused (peak 4.6 GiB); 4 GiB raised
   the host tier from 2.7 to 8.6 GiB and decode from 9.0 to 10.6 tok/s warm.
 - The 2-CPU run's slower start (58 s to ready against 26 to 29 s) is the FP8
@@ -112,7 +122,7 @@ included) over 95 s.
   machine's user manager does not delegate (`cpu memory pids`), so
   `IOReadBandwidthMax` had no effect without root. Not measured on real hardware.
   Slow and failing reads are covered only by the tier fault-injection tests
-  (`docs/TESTING.md`), and the profile's slow-drive warnings are untested on a slow
+  ([testing.md](testing.md#tier-fault-injection)), and the profile's slow-drive warnings are untested on a slow
   drive.
 - **io_uring or O_DIRECT actually unavailable** (seccomp, an old kernel, a
   filesystem without O_DIRECT). Only the forced fallbacks (`--io pread`,

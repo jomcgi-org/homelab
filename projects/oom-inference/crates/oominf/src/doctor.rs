@@ -22,7 +22,7 @@ const LOAD_OVERHEAD: u64 = 1 << 30;
 
 /// Host memory the loaded model holds when the tiers are sized (tokenizer,
 /// host-side tables and buffers): measured 1.5 GiB in the container runs of
-/// `docs/HARDWARE.md`.
+/// `docs/dev/measurements.md`.
 const HOST_LOAD_OVERHEAD: u64 = 3 << 29;
 
 pub struct Settings<'a> {

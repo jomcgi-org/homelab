@@ -1,4 +1,4 @@
-//! The oominf on-disk weight format (see `docs/FORMAT.md`).
+//! The oominf on-disk weight format (see `docs/dev/format.md`).
 //!
 //! A converted model is a directory holding `index.json` plus three data files:
 //! `dense.bin`, `experts.bin` and `tables.bin`. Every tensor and expert record
