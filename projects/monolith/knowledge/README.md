@@ -256,8 +256,9 @@ deadlines; unknown dates must remain due. Repeat the dry run to confirm that
 applied rows leave the pending set. A nonempty continuation is further work,
 not permission to loop through the corpus.
 
-The existing `knowledge-review-admission` job applies one batch with limits of
-20 notes, 60 GitHub requests and 240 seconds. Submit it only after reviewing
+The existing `knowledge-review-admission` job applies one batch with at most
+20 notes and 60 GitHub requests, a 240-second cutoff before starting another
+note, and a 300-second workflow deadline. Submit it only after reviewing
 dry-run counts and confirming no admission workflow is active. `Forbid`
 controls scheduled runs; manual submissions must be serialized by the operator.
 Capture its outcome counts and authoritative evidence for actual renewed note
