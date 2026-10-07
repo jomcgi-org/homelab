@@ -276,6 +276,7 @@
           {position}
           durationMs={turn.durationMs}
           tinted={kind === "coding"}
+          compact={landing}
         />
       </div>
     {/if}
@@ -301,18 +302,18 @@
   }
   /* Reserve the final graph: 415 / 840 high, using 1.8 / 2.8 of the width,
      but no taller than the viewport leaves (IncidentGraph caps the graph to
-     the same 100svh - 37rem budget; the trace below takes about 8rem). */
+     the same 100svh - 35rem budget; the compact trace below takes about 6rem). */
   .landing .demo-body,
   .landing .demo-body.output-expanded {
     min-height: max(
       15.5rem,
-      min(calc((100cqw - 1.5rem) * 0.3176), calc(100svh - 37rem))
+      min(calc((100cqw - 1.5rem) * 0.3176), calc(100svh - 35rem))
     );
   }
   /* The code view gives up height before the page does: the chrome above,
-     the trace and the link below take about 38.5rem. */
+     the trace and the link below take about 36.5rem. */
   .landing :global(.code-output pre) {
-    height: clamp(8rem, calc(100svh - 38.5rem), 15rem);
+    height: clamp(8rem, calc(100svh - 36.5rem), 15rem);
   }
   .landing .measurements {
     margin-block: 0.25rem 0.75rem;
@@ -535,7 +536,7 @@
       display: none;
     }
     .landing :global(.code-output pre) {
-      height: clamp(5.5rem, calc(100svh - 38.5rem), 15rem);
+      height: clamp(5.5rem, calc(100svh - 36.5rem), 15rem);
     }
   }
   @media (max-width: 600px) {

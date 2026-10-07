@@ -7,7 +7,13 @@
   // more a verified prompt-lookup draft (copied from the input) that may have
   // been partly accepted, and the rate line rises where they land. Exact
   // acceptance needs proposal/acceptance counters from the server.
-  let { events, position, durationMs, tinted = false } = $props();
+  let {
+    events,
+    position,
+    durationMs,
+    tinted = false,
+    compact = false,
+  } = $props();
 
   // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
   const steps = decodeSteps(events);
@@ -23,15 +29,18 @@
   const maxTokens = Math.max(4, ...steps.map((s) => s.tokens));
   const maxRate = Math.max(1, ...rates.map((r) => r.rate));
   // Narrow traces scale the 840-unit drawing down; wider ones widen the
-  // drawing instead, so the trace never grows past its 120 px design height.
+  // drawing instead, so the trace never grows past its design height (120 px,
+  // or 84 px when compact, as on the landing).
   let measured = $state(0);
   const W = $derived(Math.max(840, Math.round(measured)));
-  const H = 120;
+  // svelte-ignore state_referenced_locally (Layout is fixed per mount.)
+  const H = compact ? 84 : 120;
   // Keep the axis label at 10 px when the drawing is scaled down.
   const axisSize = $derived(
     measured && measured < W ? (10 * W) / measured : 10,
   );
-  const BARS = 54;
+  // svelte-ignore state_referenced_locally (Layout is fixed per mount.)
+  const BARS = compact ? 38 : 54;
   const x = (at) => ((at - start) / (end - start)) * (W - 8) + 4;
   const line = $derived(
     rates

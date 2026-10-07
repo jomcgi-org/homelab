@@ -252,8 +252,8 @@
     /* Fit the landing in one screen: the graph narrows (and so shortens)
        until the page chrome above, the draft trace and the link below fit. */
     .landing .graph-canvas {
-      min-width: 560px;
-      max-width: min(840px, calc((100svh - 37rem) * 840 / var(--graph-height)));
+      min-width: 500px;
+      max-width: min(840px, calc((100svh - 35rem) * 840 / var(--graph-height)));
     }
     .landing .graph-detail {
       border-top: 0;
