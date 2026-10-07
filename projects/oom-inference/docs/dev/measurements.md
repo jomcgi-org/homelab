@@ -1,14 +1,14 @@
 # Measurements
 
 Dated measurement logs: what was run, under which conditions, and what it
-showed. The decisions they support are in [decisions.md](decisions.md); the
-user-facing summary of the hardware runs is the
-[hardware guide](../guide/hardware.md). How to measure so the numbers mean
-something is in [the contributor overview](README.md#measuring-performance).
+showed. The decisions they support are the **Why** paragraphs in
+[architecture.md](architecture.md); the user-facing summary of the hardware runs
+is the [hardware guide](../guide/hardware.md). How to measure so the numbers
+mean something is in [the contributor overview](README.md#measuring-performance).
 
-Other dated measurements live with the decision they support: KV cache format
-(D3, 2026-10-04), speed modes (D4), staging copies (D8), decode lookahead (D9),
-prefix store (D12), prompt lookup (D14, D15) and concurrent requests (D16).
+Shorter measurements stay in the **Why** paragraph they support: KV cache
+format (2026-10-04, #6830), stage-ahead and staging copies, the prefix store
+(#6859) and prefill slicing.
 
 oom-inference sizes itself from fresh checks on every start (usable RAM including
 a container's limit, free VRAM, which read path works) and shrinks instead of
@@ -94,7 +94,7 @@ Observations:
   against 58.6 tok/s short, 46.0 against about 45.5 at 32k. Three warm requests
   per setting confirmed it (45.4 against 48.4 tok/s with no limit, 16.5 against
   21.2 at 32G), so `--lookahead` now defaults to off; the rows above were measured
-  with it on. See [D9](decisions.md#d9-no-decode-lookahead-by-default).
+  with it on. See [Decode lookahead](#decode-lookahead).
 - At 16G the default 10 GiB reserve is mostly unused (peak 4.6 GiB); 4 GiB raised
   the host tier from 2.7 to 8.6 GiB and decode from 9.0 to 10.6 tok/s warm.
 - The 2-CPU run's slower start (58 s to ready against 26 to 29 s) is the FP8
@@ -106,6 +106,129 @@ One unexplained failure: the first `--prefix-store-dir --kv-placement host` run 
 32G ended its first long request after 9.3 s with no output; the server log said
 nothing, because failed requests were not logged (they are now). Four further runs
 of the same configuration, two with the logging, all served correctly.
+
+## Speed modes
+
+Against the exact reference, max-perf flags one at a time, 32k and 95k-token
+prompts. Supports the speed modes being off by default
+([Precision](architecture.md#precision)).
+
+- `--dense fp8`: half the bytes, so decode reads less (35-37 ms per verify step
+  against 43-50 ms at 32k-95k) and the expert tier gains about 1,660 VRAM slots.
+  Next-token distributions shift measurably (KL about 0.10-0.13, 86-88% top-1
+  against the exact reference, about 3x the rounding floor, with per-row or
+  per-block scales and with or without bf16 routers), while retrieval and the
+  long-context task set still pass (#6865).
+- `--expert-precision bf16`: the kernel runs 2.2x faster and warm 32k prefill
+  drops from 16.2 s to 14.0 s. KL 0.058 / 92.1% top-1 at 32k and 0.035 / 91.2%
+  at 95k, about at the rounding floor, and `check-model` stays inside the HF
+  bf16 budget (#6838). Decode is unaffected.
+- `--attention-precision bf16`: KL 0.051 / 92.6% top-1 at 32k and 0.031 / 92.4%
+  at 95k, inside the rounding floor. The kernel is bound by gathering each
+  token's selected fp32 K/V rows, so it is only about 15% faster (1.51 to 1.27 s
+  per 32k prefill).
+- `--kv-placement host`: results are identical to device placement. It frees
+  the cache's VRAM for experts: decode is 4% slower at 32k and 9% faster at
+  95k, prefill 4-6% slower (each layer's fp32 shadow is read over PCIe) (#6856).
+  With `--dense fp8` the expert tier already has the VRAM and host placement is
+  slower at every length measured (32k-95k).
+
+## Decode lookahead
+
+October 6-7, 2026, the served demo, warm, three requests per setting. Supports
+lookahead being off by default (commit `2ce6fe7b4`,
+[A decode step](architecture.md#a-decode-step)).
+
+- Prediction: 62-65% precision over all predicted experts; about 24% of
+  lookahead reads were then used.
+- No memory limit: 45.4 tok/s with lookahead against 48.4 without. Demand disk
+  reads per token were 20.6 against 20.8: the used reads saved none, since a
+  placed guess counts as a fresh access and evicts records that would have hit,
+  and lookahead added 8.7 reads per token on top.
+- 32 GiB limit: 16.5 against 21.2 tok/s. The drive is the bottleneck there
+  (74-78% of decode time waits on reads) and lookahead raised reads per token
+  from 88 to 136, close to the drive's 7 GB/s.
+- Prediction kept but no reads issued: 48.7 tok/s, matching off, so the cost is
+  the reads, not the bookkeeping (0.1-0.9% of decode time).
+- `oominf bench` hides it: its workload reads about 4 records per token from
+  disk.
+
+The [simulated-machine runs](#simulated-machines-october-6-2026) showed it first.
+
+## Prompt lookup
+
+`bench/lookup.py`, medians of three warm runs, max-perf config (#6872): +22 to
++40% output rate on file edits (92 to 95% of lookup drafts kept, about 7 tokens
+per step), level on tests, -2 to -9% on prose, quotes and a short diff. An
+8-token verification step costs 110 to 125 ms when its tokens are new (about
+2,200 routed records, a quarter outside VRAM) against about 25 ms for one token.
+Before the decode-kernel paths, an 8-token step fell onto the sparse prefill
+attention and dequantized FP8 weights for cuBLAS every step (215 ms).
+
+Since the docs split, the quote workload reads the moved
+[architecture.md](architecture.md), so its results are not comparable with runs
+before it.
+
+## Draft-head catch-up
+
+The demo, sampled, serve defaults, warm. Supports keeping 256 residuals across
+lookup steps ([Speculative decoding](architecture.md#speculative-decoding)).
+
+- Before: model drafts kept 76% with lookup on against 83% with it off; decode
+  43.4 against 47.0 tok/s (medians of 12 and 4 requests).
+- Catching up: 83% acceptance and 45.6 tok/s with lookup on (median of 10
+  requests); lookup off unchanged within noise (46.1 tok/s).
+- The `bench/lookup.py` file-edit workloads: within -4 to +2% of before on
+  every workload (medians of five warm passes, which vary by a few percent
+  between server runs). Rings of 32, 64 and 256 rows measured the same.
+- `tests/mtp_lookup.rs`: 0 of 48 draft tokens differ from drafts made on every
+  step, against 13 when the head restarts.
+- Rejected: a draft width growing from one to three tokens while recent model
+  drafts were mostly kept (90% for two, 95% for three) tied one-token drafts on
+  the demo (46.4 against 46.3 tok/s) and lost 3 to 7% on the edit workloads,
+  whose high acceptance comes from easy positions lookup leaves the head. Fixed
+  two- and three-token drafts ran the demo at 45.6 and 42.8 tok/s.
+
+## Concurrent requests
+
+Supports one batched step for all decoding streams
+([Concurrent requests](architecture.md#concurrent-requests)).
+
+`oominf bench --streams` (max-perf config, warm tiers, 16 different requests,
+one token per sequence per step): 1 sequence 22 ms per step (45 tok/s), 2
+sequences 37 ms (54 tok/s), 4 sequences 52-55 ms (73-77 tok/s), 8 sequences
+115-120 ms (67-70 tok/s), 16 sequences 254-257 ms (62-63 tok/s). The plateau
+comes early because unrelated requests share few experts: 8 sequences route
+about as many records per step as 8 verified drafts of one sequence (2,266
+against 2,317), but across steps their working set outgrows the VRAM tier (hit
+rate 68% against 84%), so host-tier copies dominate. Running each sequence's
+token mixer on its own first cost about 10 ms per extra sequence (its dense
+GEMVs and about 25 kernel launches per layer); batching every row-wise
+operation removed that (8 sequences 146 to 120 ms per step).
+
+Through the server (`bench/http_bench.py --concurrency`, K concurrent streaming
+requests of 128 tokens with different short prompts, temperature 0, the same
+max-perf config; median of two rounds):
+
+| K   | `--max-streams 1`: aggregate tok/s | TTFT p50 / max (s) | `--max-streams 8`: aggregate tok/s | per-stream tok/s | TTFT p50 / max (s) | ITL p50 / p95 / max (ms) |
+| --- | ---------------------------------- | ------------------ | ---------------------------------- | ---------------- | ------------------ | ------------------------ |
+| 1   | 43.4                               | 0.55 / 0.55        | 43.6                               | 53.4             | 0.55 / 0.55        | 25 / 41 / 58             |
+| 2   | 42.6                               | 0.64 / 3.6         | 48.0                               | 31.3             | 0.64 / 1.3         | 40 / 56 / 675            |
+| 4   | 41.5                               | 6.7 / 9.9          | 54.9                               | 16.9             | 2.1 / 2.8          | 51 / 68 / 739            |
+| 8   | 39.9                               | 13.4 / 23.1        | 47.3                               | 7.1              | 3.7 / 5.9          | 126 / 210 / 812          |
+
+With `--max-streams 4` the same runs gave 47.3, 47.8 and 47.4 tok/s at K = 2,
+4 and 8 (K = 8 queues four requests: TTFT p50 9.5 s); the two K = 4 runs,
+which schedule identically, differ by 15% (54.9 against 47.8), the run to run
+spread of these numbers. One request decodes exactly as before (MTP drafts, 53
+tok/s per stream). With several, aggregate throughput rises 1.1-1.3x and the
+queueing delay before a request's first token falls 3-4x, at the cost of each
+stream's speed. The aggregate gain is smaller than the steady state above
+because each new request's prefill (about 0.6 s for these prompts, a sweep of
+most layers' experts) stalls the others' decoding (the 0.7-0.8 s maximum gaps),
+and one stream alone already gains about 1.2x from its drafts, which batched
+steps mostly drop (the budget finds them not worth the width beside other
+streams' next tokens).
 
 ## Overload
 

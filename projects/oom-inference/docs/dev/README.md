@@ -10,8 +10,7 @@ at the [guide](../guide/quickstart.md).
 flowchart TD
   Q{"What are you doing?"}
   Q -- "running it" --> G["guide/: quickstart, install,<br/>configuration, API, hardware,<br/>troubleshooting"]
-  Q -- "changing the engine" --> A["dev/architecture.md:<br/>how it works"]
-  A --> D["dev/decisions.md:<br/>why, evidence, when to revisit"]
+  Q -- "changing the engine" --> A["dev/architecture.md:<br/>how it works, why,<br/>when to revisit"]
   Q -- "checking a change" --> T["dev/testing.md: gates<br/>specs/: TLA+ protocols<br/>reference/: fixtures<br/>evals/: task benchmarks"]
   Q -- "measuring speed" --> M["Measuring performance (below)<br/>dev/measurements.md: logs"]
   Q -- "touching the file format" --> F["dev/format.md"]
@@ -20,7 +19,6 @@ flowchart TD
 | Document                                  | What it holds                                                                                                                                              |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [architecture.md](architecture.md)        | How it works: crates, interfaces, precision, tiers, prefill and decode, sizing, prefix store, speculative decoding, batching, adding a model or a platform |
-| [decisions.md](decisions.md)              | One record per design decision: context, decision, evidence (dated measurements), tradeoffs, revisit trigger                                               |
 | [measurements.md](measurements.md)        | Dated measurement logs, including the simulated smaller machines                                                                                           |
 | [testing.md](testing.md)                  | What each test layer proves, the reference fixtures, the gates and how to run them                                                                         |
 | [format.md](format.md)                    | The on-disk weight format (v0)                                                                                                                             |
@@ -116,12 +114,13 @@ Before reporting a speed change:
 - **Measure through the server for serving claims.** `oominf bench` runs one
   sequence without the server and can hide costs: it reads about 4 records per
   token from disk, which hid the decode lookahead loss
-  ([D9](decisions.md#d9-no-decode-lookahead-by-default)).
+  ([measurements](measurements.md#decode-lookahead)).
 - **Say which configuration.** Defaults, or the max-perf config
   (`--dense fp8 --expert-precision bf16 --attention-precision bf16`), and the
   context length.
-- **Record it.** Put the numbers, date and conditions in the decision record
-  they support, or in [measurements.md](measurements.md).
+- **Record it.** Put the numbers, date and conditions in
+  [measurements.md](measurements.md), or in the **Why** paragraph they support
+  when they are short.
 
 Tools: `oominf bench` (one sequence, tier statistics, `--verify` and `--streams`
 for step costs), `bench/http_bench.py` (TTFT and decode through the API,
@@ -135,8 +134,9 @@ for step costs), `bench/http_bench.py` (TTFT and decode through the API,
 - No em-dashes anywhere (docs, comments, commits): use a colon, comma,
   parentheses or two sentences.
 - A change to a mechanism updates [architecture.md](architecture.md) in the same
-  change; a change to a decision updates its record in
-  [decisions.md](decisions.md), with the new evidence and its date.
+  change. A change to a decision updates its **Why** paragraph and **Revisit
+  when** line there, with the new evidence and its date; the repo records
+  decisions this way rather than as ADRs.
 - User-facing changes (a flag, a default, an endpoint, a message) update the
   [guide](../guide/quickstart.md).
 - Figures: Mermaid blocks for flows; SVGs only from
