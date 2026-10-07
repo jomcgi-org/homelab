@@ -89,7 +89,7 @@ When to change them:
 | `--step-cost`       | `1:22,2:37,4:54,8:117,16:255` | Step cost curve (width:ms) the scheduler trades drafts against; refined by measured steps                                                                                                     |
 
 More streams help total throughput up to about 4 and make each stream slower
-([D16](../dev/decisions.md#d16-one-batched-step)).
+([why](../dev/architecture.md#concurrent-requests)).
 
 ## Reusing long prompts (prefix store)
 
@@ -128,7 +128,7 @@ together are the "max-perf config" the published speeds use.
 | `--attention-precision bf16` | About 15% faster prefill attention                                                                                 | Inside the rounding floor (KL 0.051, 92.6% top-1 at 32k)                                                                                   |
 
 Decode attention stays exact in every mode. The measurements and why they are
-off by default: [D4](../dev/decisions.md#d4-speed-modes-off-by-default).
+off by default: [Precision](../dev/architecture.md#precision).
 
 ## Drafting (speculative decoding)
 
@@ -145,7 +145,7 @@ model's distribution.
 | Flag          | Default | What it does                                                                                                                                                                                                                                               |
 | ------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--io`        | `auto`  | How expert records are read: `auto` picks the fastest that works; `uring` (O_DIRECT through io_uring), `pread` (O_DIRECT on a thread pool) or `buffered` (through the page cache) force one. The log line `oominf: expert reads: ...` says which is active |
-| `--lookahead` | `off`   | During decode, predict the next layer's experts and read predicted disk misses early. Off because only about a quarter of those reads were used and the rest cost decode speed ([D9](../dev/decisions.md#d9-no-decode-lookahead-by-default))               |
+| `--lookahead` | `off`   | During decode, predict the next layer's experts and read predicted disk misses early. Off because only about a quarter of those reads were used and the rest cost decode speed ([why](../dev/architecture.md#a-decode-step))                                  |
 
 ## CPU experts
 

@@ -5,9 +5,14 @@ plus host memory, on one consumer machine, for a few interactive streams.
 Routed experts live in three tiers (VRAM, pinned host memory, NVMe) and move on
 demand; everything else stays resident on the device.
 
-This page describes the mechanism. The reasons, with their measurements and
-when to reconsider them, are the decision records in
-[decisions.md](decisions.md); each section links its records.
+Each section describes the mechanism, then gives the reasons for it in
+**Why** paragraphs and the concrete signal that should reopen the decision in a
+**Revisit when** line. The dated measurements behind them are in
+[measurements.md](measurements.md). "Max-perf config" means `--dense fp8
+--expert-precision bf16 --attention-precision bf16` on the
+[reference box](measurements.md#reference-box), and "the demo" is the
+22k-token incident report prompt with about 580 tokens of newline-delimited JSON
+out.
 
 ![Where the weights live and how they reach the GPU](../figures/memory-paths.svg)
 
@@ -59,7 +64,17 @@ Only `oominf-cuda` knows about CUDA. Only `oominf-models-*`, the converter's
 adapter and the server's output parser know about a model family. The server
 runs any `Model`; the CLI is the one place that names the CUDA backend.
 
-Why: [D1: Crate boundaries](decisions.md#d1-crate-boundaries).
+**Why.** New hardware and new models are the two expected kinds of growth. A
+platform port implements `Backend` and reuses every model, the tiers and the
+server; a new model family reuses the backend, the tiers and the server.
+Neither touches the other. The cost: operations are described by what models
+need, so a new operation goes into an `oominf-core` trait and must be
+implemented in every backend, and monomorphised `B: Backend` code compiles once
+per backend.
+
+**Revisit when.** A second backend or model family lands and cannot be written
+without changing code on the other axis (a model needing a backend-specific
+type, or a backend needing a model-specific kernel interface).
 
 ## Interfaces
 
@@ -143,9 +158,48 @@ so greedy output with `k8v6` varies run to run. With `--host-compute 0` it is
 deterministic, and speculative decoding again matches one-token decoding up to
 near ties (below).
 
-Why: [D2: Weights exact, lossy modes opt-in](decisions.md#d2-weights-exact-lossy-modes-opt-in),
-[D3: k8v6 KV cache by default](decisions.md#d3-k8v6-kv-cache-by-default),
-[D4: Speed modes off by default](decisions.md#d4-speed-modes-off-by-default).
+**Why.** The engine exists to run a frontier model on modest hardware without
+making it worse. Rounding that buys nothing is pure loss, and silent precision
+trades are how engines drift from the model they claim to run. The exact
+defaults leave speed on the table; the max-perf config is what the published
+speeds use.
+
+**Revisit when.** A lossy mode matches the exact path on outcomes (`oominf
+score` inside the fp32 rounding band, retrieval and the task evals in
+[`evals/`](../../evals/README.md) unchanged) and its speed gain is worth making
+it the default.
+
+**Why k8v6 by default.** The one deliberate exception to "no rounding we do not
+benefit from", chosen 2026-10-04 (#6830). KV memory competes with the VRAM
+expert tier, and decode speed follows its hit rate: `k8v6` cuts KV memory about
+3x (the expert tier keeps about 1,400 more slots at 95k tokens, decode VRAM hits
+go from 26% to 57%, decode +19%). Its effect on outputs is inside the model's
+own rounding noise at long context (fp32 against fp32 with only the prefill
+chunk size changed shifts next-token distributions as much), with retrieval and
+long-context tasks unchanged; lower bit widths are measurably lossier. A lossy
+mode is judged by outcome (`oominf score`, retrieval, tasks), not by per-layer
+budgets: individual layers sit above the per-layer bf16 budget in
+`check-model` while the chained logits gate holds.
+
+**Revisit when.** `oominf score`, retrieval or a long-context task puts `k8v6`
+outside the fp32 rounding band on a new workload or model, or on a GPU where KV
+memory no longer limits the expert tier.
+
+**Why the speed modes are off by default.** Each trades output or placement for
+speed ([measurements](measurements.md#speed-modes)). `--dense fp8` cuts a decode
+verify step from 43-50 ms to 35-37 ms and gives the expert tier about 1,660 VRAM
+slots, but shifts next-token distributions about 3x the rounding floor (KL
+0.10-0.13), though retrieval and the long-context tasks still pass (#6865).
+`--expert-precision bf16` (warm 32k prefill 16.2 to 14.0 s) and
+`--attention-precision bf16` (about 15% faster prefill attention) sit at or
+inside the rounding floor but have no task-eval run yet (#6838).
+`--kv-placement host` gives identical results and frees VRAM for experts, but
+is slower except near 95k tokens without `--dense fp8` (#6856).
+
+**Revisit when.** For the two bf16 modes: a task-eval run (`evals/`) shows no
+regression. For `--dense fp8`: a scale scheme brings KL down to the rounding
+floor while keeping the decode gain. For `--kv-placement host`: typical
+requests run near 95k tokens without `--dense fp8`.
 
 ## Experts and tiers
 
@@ -164,7 +218,19 @@ Why: [D2: Weights exact, lossy modes opt-in](decisions.md#d2-weights-exact-lossy
   measured on the MTP experts, more device slots barely shorten drafting while
   every slot taken from the main tiers costs decode hits.
 
-Why: [D5: An explicit pinned host tier](decisions.md#d5-an-explicit-pinned-host-tier).
+**Why.** On recorded decode traces the cache hit rate dominates decode time,
+and on-disk layout barely matters because drives split large reads into small
+commands anyway. An explicit pinned tier makes memory use and copy timing
+deterministic, where the page cache competes with everything else on the
+machine. The cost: pinned memory is taken up front, so the planner has to read
+container limits before pinning ([Smaller machines](#smaller-machines)), and
+filesystems without O_DIRECT fall back to buffered reads that cost about 20% of
+prefill and a third of decode
+([measurements](measurements.md#simulated-machines-october-6-2026)).
+
+**Revisit when.** Replaying recorded traces (`oominf-tiers/examples/replay.rs`)
+shows the page cache, or a userspace pager, beating the pinned tier, for
+example on a machine whose RAM holds every expert.
 
 ### A decode step
 
@@ -191,8 +257,34 @@ flowchart TD
   predicted disk misses are read into the host tier. Routing, not prediction,
   decides which experts run.
 
-Why: [D6: Host compute](decisions.md#d6-host-compute),
-[D9: No decode lookahead by default](decisions.md#d9-no-decode-lookahead-by-default).
+**Why host compute.** A host-tier hit costs a 2.7 MB copy over PCIe (about
+110 us) that the GPU waits for; the CPU computes the same expert for one token
+in about 70 us on 8 cores while the GPU runs the resident experts, and moves a
+10 KB row. On novel prompts warm decode drops about 7%; recurring experts still
+reach VRAM through admission. The cost: CPU and GPU round differently, so which
+experts run where makes greedy output timing-dependent (`--host-compute 0` for
+determinism), and the CPU threads are busy during decode.
+
+**Revisit when.** The [hardware profile](#hardware-profile) already turns it
+off when one expert on the CPU takes more than 2x a record's copy. Reconsider
+the default when a faster link (PCIe 5) makes the copy cheaper than CPU compute
+on the reference CPU, or when workloads are mostly novel prompts.
+
+**Why no decode lookahead by default** (commit `2ce6fe7b4`). Its reads are for
+exactly the experts the cache does not hold, where the prediction is weakest
+(about 24% of lookahead reads were then used), and a step predicts for every
+token it carries, rejected drafts included. On the served demo it lost: 45.4
+against 48.4 tok/s with no memory limit (the used reads saved no demand reads,
+since a placed guess evicts records that would have hit) and 16.5 against
+21.2 tok/s at a 32 GiB limit, where the drive is the bottleneck. With prediction
+kept but no reads issued, decode matched off, so the cost is the reads, not the
+bookkeeping ([measurements](measurements.md#decode-lookahead)). A workload whose
+next experts are predictable from the previous layer loses what lookahead would
+have hidden.
+
+**Revisit when.** A workload shows more than about half of lookahead reads used.
+The way back: gate lookahead on the measured used fraction, insert guesses at
+the cold end of the host tier, and skip draft tokens.
 
 ### Prefill
 
@@ -247,8 +339,28 @@ sequenceDiagram
   buffers) are freed and the memory is offered back to the expert tier for
   decode.
 
-Why: [D7: Stage-ahead in prefill](decisions.md#d7-stage-ahead-in-prefill),
-[D8: Staging copies trickle](decisions.md#d8-staging-copies-trickle).
+**Why stage-ahead.** Fetching a layer's experts only once it has routed left
+the GPU idle for every layer's copies and disk reads: on a 2.2k-token prompt,
+copies and compute overlapped for 0.3 s of a 4.7 s prefill. The prediction
+covers about 90% of the routed experts (93% of what it stages is used), so most
+of each layer's loading now runs under the previous layer's compute; what is
+left is bound by disk reads of records the host tier does not hold.
+
+**Revisit when.** Another model or workload drops prediction coverage well below
+90% (or the used fraction below 93%), or every expert fits in VRAM.
+
+**Why staging copies trickle.** The GPU has one host-to-device copy engine, and
+it runs ready copies in submission order across streams, so stream priorities
+cannot reorder them. Submitting a layer's stage-ahead at once (about 450
+records, 45 ms of engine time) made the computing layer's own fetch copies wait
+behind all of it: a warm 32k prefill showed the GPU idle for 2.7 s of 10.5 s,
+mostly in one stall per layer boundary. Pieces of 8 records (about 1 ms of
+engine) bound that wait to one piece: warm prefill 10.30 to 9.40 s at 32k tokens
+and 28.1 to 27.4 s at 95k, decode unchanged. Disk volume was not the cause: a
+larger host tier (19% fewer disk reads) did not change it.
+
+**Revisit when.** A GPU or driver runs host-to-device copies by stream priority,
+or offers a second copy engine for this direction.
 
 ## Smaller machines
 
@@ -305,8 +417,24 @@ flowchart LR
   development build) only the buffered path exists. The PLE table rows are read
   through io_uring on Linux whatever `--io` says.
 
-Why: [D10: Size from fresh checks, shrink before failing](decisions.md#d10-size-from-fresh-checks-shrink-before-failing).
-Measured results under container limits: [measurements.md](measurements.md#simulated-machines-october-6-2026).
+**Why.** A container limit is invisible to `MemAvailable`, and pinning past it
+gets the process OOM-killed rather than an error back, so the limit has to be
+read before anything is pinned. The memory beside the tiers grows with the
+context, the stream count and the prefix store, and used to come out of the
+fixed reserve unaccounted (the staging ring alone is 1.3 GiB); counting it makes
+the reserve mean what it says. Shrinking with a warning keeps a smaller machine
+serving at lower speed instead of not at all; failing below the minimum, with
+the missing amount, is the only case nothing can serve. Under container limits
+on the reference box, 48 down to 8 GiB all served the demo correctly and 7 GiB
+was refused at start-up with the itemised shortfall
+([measurements](measurements.md#simulated-machines-october-6-2026)). The default
+10 GiB host reserve is conservative: at a 16 GiB limit it was mostly unused, and
+4 GiB raised warm decode from 9.0 to 10.6 tok/s.
+
+**Revisit when.** A real smaller machine (a slower disk, a GPU under 24 GB,
+cgroup v1, or io_uring or O_DIRECT actually unavailable) fails or misbehaves
+where the simulation served; [not verified](measurements.md#not-verified) lists
+which cases have only unit tests.
 
 ## Hardware profile
 
@@ -341,7 +469,15 @@ serving (from measured steps, as the step cost curve already is) is not done;
 it would hook in at the batched engine's periodic report
 (`oominf-server/src/engine/scheduler.rs`).
 
-Why: [D11: The profile decides only two things](decisions.md#d11-the-profile-decides-only-two-things).
+**Why.** The defaults were tuned on one machine. The two choices above are the
+ones whose right value follows directly from a hardware rate, and both are
+conservative: they only turn off or shrink something that cannot pay off at the
+measured rate. Everything else (policies, reserves, `--host-compute` counts)
+stays at measured defaults until there is data from other machines.
+
+**Revisit when.** `oominf doctor` and `oominf tune` output from other machines
+shows a further default whose right value follows from a measured rate, or
+adapting while serving is built.
 
 ## Prefix store
 
@@ -386,7 +522,18 @@ their checkpoints with them. Rewinding is exact: a rewound sequence fed a new
 continuation matches, bit for bit, one that prefilled just the prefix and then
 the continuation (`tests/checkpoint.rs`).
 
-Why: [D12: Prefix store and checkpoints](decisions.md#d12-prefix-store-and-checkpoints).
+**Why.** Agents come back to long contexts minutes or hours later, and the same
+documents get several questions. Restoring a 32k-token conversation took 0.9 s
+(5 s after a server restart, with cold expert tiers) against 28 s of prefill. A
+new question on the same 32k-token documents (max-perf config): first token
+after 0.64 s from the live sequence's checkpoint and 0.95 s from a stored entry,
+against 13.1 s of prefill (#6859). The cost: checkpoints take about 0.11 GB each
+and snapshots in flight 0.75 GB each at 32k tokens, all counted against the host
+tier, and the store uses disk (default budget 200 GiB, 72 h time to live).
+
+**Revisit when.** Restoring approaches prefill time (a slow disk, or much faster
+prefill), or the host memory the checkpoints take measurably slows decode on
+small machines.
 
 ## Speculative decoding
 
@@ -435,9 +582,43 @@ token list; rows of dropped positions are overwritten later.
 `tests/mtp_lookup.rs` checks that drafts after lookup runs match drafts made on
 every step (it tolerates one near-tie difference in 20 draft tokens).
 
-Why: [D13: MTP speculative decoding](decisions.md#d13-mtp-speculative-decoding),
-[D14: Prompt lookup on by default](decisions.md#d14-prompt-lookup-on-by-default),
-[D15: Keep residuals across lookup steps](decisions.md#d15-keep-residuals-across-lookup-steps).
+**Why.** Dense weights are read once per step whatever its width, so verifying
+a draft costs much less than a second step. The gain is bounded by the draft
+acceptance rate (55 to 75% measured) and by the extra routed experts the drafted
+token pulls in. The cost: rejected drafts must be rewound, and greedy output can
+differ from one-token decoding at near ties.
+
+**Revisit when.** Acceptance on a workload falls below 55%, or a verify step's
+extra routed experts cost more than the kept tokens save.
+
+**Why prompt lookup is on by default** (#6872). Coding agents print edited files
+whole, repeat code and quote input, so long spans of output already exist in the
+sequence. Measured end to end (`bench/lookup.py`, max-perf config): +22 to +40%
+output rate on file edits (92 to 95% of lookup drafts kept, about 7 tokens per
+step), level on tests, -2 to -9% on prose, quotes and a short diff
+([measurements](measurements.md#prompt-lookup)). An 8-token verification step
+costs 110 to 125 ms when its tokens are new against about 25 ms for one token,
+so it pays only when most of a draft is kept; matches shorter than 4 tokens
+drafted novel text often enough to lose.
+
+**Revisit when.** A deployment's traffic is mostly prose; then default it off
+there (`--prompt-lookup 0`) or make it adaptive.
+
+**Why keep residuals across lookup steps.** The ring used to hold only the last
+step's rows, so two lookup steps in a row made the head restart its cache and
+draft without the output's context. On the demo, model drafts kept 76% with
+lookup on against 83% with it off; catching up restores 83% and raises decode
+from 43.4 to 45.6 tok/s with lookup on, while the file-edit workloads keep their
+lookup gains ([measurements](measurements.md#draft-head-catch-up)). Catching up
+lazily at the next model draft is never more work than catching up after every
+lookup step (the same positions, in fuller steps). `tests/mtp_lookup.rs`
+measured 0 of 48 draft tokens differing, against 13 when the head restarts. A
+draft width growing from one to three tokens was measured and not kept: it tied
+one-token drafts on the demo and lost 3 to 7% on the edit workloads. The cost:
+10 MB per sequence and one MTP layer step per four caught-up positions.
+
+**Revisit when.** The catch-up cost grows (a heavier draft head), or a variable
+draft width beats one-token drafts on both the demo and the edit workloads.
 
 ## Concurrent requests
 
@@ -494,8 +675,34 @@ flowchart LR
   decoding request the step is exactly the one-request engine's (its
   configured drafts).
 
-Why: [D16: One batched step](decisions.md#d16-one-batched-step),
-[D17: Prefills not sliced by default](decisions.md#d17-prefills-not-sliced-by-default).
+**Why one batched step.** Decode is bound by routed-expert misses, and a step
+fetches the union of its rows' experts once per layer, so rows of different
+sequences share the misses their experts have in common and every dense weight
+is read once. Steady state (`oominf bench --streams`, max-perf config): 45 tok/s
+for one sequence, 73-77 tok/s for four, falling to 62-63 for sixteen, because
+unrelated requests share few experts and their working set outgrows the VRAM
+tier. Through the server, several streams raise aggregate throughput 1.1-1.3x
+and cut queueing before the first token 3-4x, at the cost of each stream's speed
+(about 31 tok/s each for two against about 43 for one)
+([measurements](measurements.md#concurrent-requests)). The default of 2 lets a
+second request start without waiting for the first.
+
+**Revisit when.** Many streams stop thrashing the VRAM tier (a larger GPU, or
+traffic whose requests share experts), so throughput keeps rising past 4
+streams.
+
+**Why prefills are not sliced by default** (`--prefill-slice 0`). A prefill of
+any size above a few hundred tokens touches most of every layer's experts, so
+its cost is about one sweep of the expert tiers whatever its length. Slicing a
+2k-token prompt between other streams' steps (4 concurrent requests, one long)
+cut the others' longest stall from 3.6 s to 2.2 s (512-token slices) or 2.7 s
+(1024) but raised the long request's time to first token from 3.5 s to 9.8 s or
+6.9 s and lowered aggregate throughput from 38 to 32-33 tok/s.
+`--prefill-slice` is there for workloads that prefer the shorter stall.
+
+**Revisit when.** Decoding streams' rows can ride along inside the layer-major
+prefill, which fetches every layer's experts anyway; that is the way to a stall
+shorter than a sweep.
 
 ## Correctness
 
@@ -505,7 +712,16 @@ and retirement, CUDA graph replay through a slot table) are specified in TLA+
 ([`specs/`](../../specs/README.md)) and model-checked, including deliberately
 broken variants that the invariants must catch.
 
-Why: [D18: Fixed references and checked protocols](decisions.md#d18-fixed-references-and-checked-protocols).
+**Why.** Numerical drift and use-after-overwrite bugs both produce output that
+looks plausible; fixed references and checked protocols make both fail loudly.
+The tier fault-injection tests found four defects, each fixed with the test that
+exposed it ([testing.md](testing.md#tier-fault-injection)). The cost: fixtures
+need the release checkpoint and a CPU run of the reference code, and the GPU
+gates take the machine's GPU.
+
+**Revisit when.** A new concurrent protocol lands without a spec (the prefix
+cache and the KV and scheduler allocation are listed as planned in
+[`specs/`](../../specs/README.md)).
 
 ## Adding a model
 

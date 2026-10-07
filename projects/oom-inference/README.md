@@ -21,4 +21,4 @@ and Anthropic APIs.
 | [API](docs/guide/api.md)                            | Endpoints, streaming, tool calls, clients      |
 | [Hardware sizing](docs/guide/hardware.md)           | What your machine will get                     |
 | [Troubleshooting](docs/guide/troubleshooting.md)    | Start-up errors, warnings, bug reports         |
-| [Contributing and how it works](docs/dev/README.md) | Architecture, decisions, testing, measurements |
+| [Contributing and how it works](docs/dev/README.md) | Architecture and the reasons behind it, testing, measurements |
