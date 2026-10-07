@@ -48,7 +48,7 @@ pub struct ExpertArgs {
     /// During decode, predict the next layer's experts and start reading predicted
     /// disk misses into the host tier: `on` or `off`. Off by default: on the served
     /// demo only about a quarter of those reads were used, and the rest cost disk
-    /// bandwidth and host-tier slots (see docs/dev/decisions.md, D9).
+    /// bandwidth and host-tier slots (see docs/dev/architecture.md, "Why no decode lookahead").
     #[arg(long, default_value = "off")]
     pub lookahead: String,
     /// Most routed experts per layer and decode step computed on the CPU from host

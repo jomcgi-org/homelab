@@ -9,14 +9,14 @@ and Anthropic APIs.
 | Platform                  | Status                                                              |
 | ------------------------- | ------------------------------------------------------------------- |
 | Linux x86-64 + NVIDIA GPU | Supported (tested on an RTX 4090)                                   |
-| macOS                     | Development build only: builds and runs the CPU tests, cannot serve |
+| macOS                     | In progress (Metal backend, #6896)                                  |
 | Windows                   | Untested                                                            |
 
 **Start here: [Quickstart](docs/guide/quickstart.md)**
 
 | Guide                                               |                                                |
 | --------------------------------------------------- | ---------------------------------------------- |
-| [Install](docs/guide/install.md)                    | Build on Linux, macOS or Windows               |
+| [Install](docs/guide/install.md)                    | Build on Linux; macOS and Windows status       |
 | [Configuration](docs/guide/configuration.md)        | The flags worth changing                       |
 | [API](docs/guide/api.md)                            | Endpoints, streaming, tool calls, clients      |
 | [Hardware sizing](docs/guide/hardware.md)           | What your machine will get                     |
