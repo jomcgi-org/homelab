@@ -7,8 +7,9 @@ used exactly as released. The CLI is `oominf`.
 
 Apple Silicon runs Qwen3.5-35B-A3B text inference through direct Metal. The
 released NVFP4 checkpoint is 23.59 GB; its converted text weights occupy 21.03 GB
-and stream routed experts from SSD. On a 16 GiB M1 Pro, the initial measured
-baseline is 2.5 to 2.7 generated tokens/sec with a 3.72 GiB peak process footprint.
+and stream routed experts from SSD. On a 16 GiB M1 Pro, the optimized measured
+run reached 2.8 to 2.9 generated tokens/sec with a 1 GiB expert cache and a
+3.70 GiB peak process footprint.
 See [Hardware](docs/HARDWARE.md#apple-silicon) for the command and limits.
 
 - [Architecture](docs/ARCHITECTURE.md): crates, interfaces, precision, tiers,

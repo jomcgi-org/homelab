@@ -445,7 +445,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
         "oominf: unified RAM reserve {reserve:.1} GiB; Metal and host buffers share one budget"
     );
     let cache = args.experts.vram_expert_gib.map(bytes);
-    oominf_models_qwen35::open(
+    Ok(oominf_models_qwen35::open(
         files,
         oominf_models_qwen35::Options {
             max_context: args.max_context,
@@ -456,7 +456,7 @@ pub fn open_model(args: &OpenArgs) -> Result<Box<dyn Model>> {
             host_policy: oominf_tiers::policy::parse(&args.experts.host_policy)?,
             disk_only: args.experts.experts == "disk",
         },
-    )
+    )?)
 }
 
 /// Checksum of the files that identify a converted checkpoint (its index lists

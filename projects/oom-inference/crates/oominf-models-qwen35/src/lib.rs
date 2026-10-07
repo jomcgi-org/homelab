@@ -313,7 +313,7 @@ pub fn memory_estimate(files: &Files, tokens: usize) -> Result<MemoryEstimate> {
     })
 }
 
-pub fn open(files: Arc<Files>, options: Options) -> Result<Box<dyn Model>> {
+pub fn open(files: Arc<Files>, options: Options) -> Result<Box<Qwen35>> {
     let d = Dims::load(&files)?;
     let host = oominf_tiers::resources::HostMemory::probe()?;
     let limit = host.usable().saturating_sub(options.reserve_bytes);
@@ -466,6 +466,12 @@ impl Model for Qwen35 {
         .saturating_sub(64 << 20)
     }
     fn new_session(&self, max: usize) -> Result<Box<dyn Session>> {
+        Ok(Box::new(self.new_sequence(max)?))
+    }
+}
+
+impl Qwen35 {
+    fn new_sequence(&self, max: usize) -> Result<Sequence> {
         ensure!(max > 0, "context must be positive");
         let g = &self.inner.gpu;
         let d = &self.inner.d;
@@ -491,14 +497,34 @@ impl Model for Qwen35 {
                 },
             });
         }
-        Ok(Box::new(Sequence {
+        Ok(Sequence {
             inner: self.inner.clone(),
             state,
             pos: 0,
             max,
-        }))
+        })
+    }
+    /// Capture each decoder layer's residual output for independent validation.
+    /// Synchronization and downloads occur only on this diagnostic path.
+    pub fn trace_tokens(
+        &self,
+        tokens: &[u32],
+        mut observer: impl FnMut(usize, usize, &[f32]) -> Result<()>,
+    ) -> Result<Vec<Vec<f32>>> {
+        let mut sequence = self.new_sequence(tokens.len())?;
+        let mut logits = Vec::with_capacity(tokens.len());
+        for (step, &token) in tokens.iter().enumerate() {
+            logits.push(sequence.token(
+                token,
+                true,
+                Some(&mut |layer, values| observer(step, layer, values)),
+            )?);
+        }
+        Ok(logits)
     }
 }
+
+type LayerObserver<'a> = dyn FnMut(usize, &[f32]) -> Result<()> + 'a;
 
 fn norm(
     g: &Gpu,
@@ -533,7 +559,12 @@ fn route(logits: &[f32], top: usize) -> Result<Vec<(u32, f32)>> {
 }
 
 impl Sequence {
-    fn token(&mut self, token: u32, need_logits: bool) -> Result<Vec<f32>> {
+    fn token(
+        &mut self,
+        token: u32,
+        need_logits: bool,
+        mut observer: Option<&mut LayerObserver<'_>>,
+    ) -> Result<Vec<f32>> {
         ensure!(self.pos < self.max, "context limit reached");
         let m = &self.inner;
         let g = &m.gpu;
@@ -639,47 +670,29 @@ impl Sequence {
                     .with_context(|| format!("missing {name}"))?
                     .offset as usize)
             };
-            for (address, (_, weight)) in addresses.iter().zip(&assignments) {
-                let mut gate = g.uninit(d.inter)?;
-                let mut up = g.uninit(d.inter)?;
-                g.gemm_record(
-                    &input,
-                    *address,
+            let weights: Vec<_> = assignments.iter().map(|v| v.1).collect();
+            g.routed_swiglu(
+                &input,
+                &addresses,
+                &weights,
+                [
                     part("gate.weight")?,
                     part("gate.weight_scale")?,
-                    0,
-                    &mut gate,
-                    d.inter,
-                    d.h,
-                )?;
-                g.gemm_record(
-                    &input,
-                    *address,
                     part("up.weight")?,
                     part("up.weight_scale")?,
-                    2,
-                    &mut up,
-                    d.inter,
-                    d.h,
-                )?;
-                let mut h = g.uninit(d.inter)?;
-                g.silu_mul(&gate, &up, &mut h, d.inter)?;
-                let mut out = g.uninit(d.h)?;
-                g.gemm_record(
-                    &h,
-                    *address,
                     part("down.weight")?,
                     part("down.weight_scale")?,
-                    4,
-                    &mut out,
-                    d.h,
-                    d.inter,
-                )?;
-                g.scaled_add(&out, &mut mixture, *weight, d.h)?;
-            }
+                ],
+                &mut mixture,
+                d.h,
+                d.inter,
+            )?;
             let mut next = g.uninit(d.h)?;
             g.add(&residual, &mixture, &mut next, d.h)?;
             x = next;
+            if let Some(observer) = observer.as_deref_mut() {
+                observer(i, &g.download_f32(&x)?)?;
+            }
             // The next layer's router read completes all kernels using fetched records.
             drop(source);
         }
@@ -713,7 +726,7 @@ impl Session for Sequence {
             if cancelled() {
                 return Ok(None);
             }
-            logits = self.token(t, i + 1 == tokens.len())?;
+            logits = self.token(t, i + 1 == tokens.len(), None)?;
         }
         Ok(Some(logits))
     }
@@ -721,7 +734,7 @@ impl Session for Sequence {
         ensure!(!tokens.is_empty(), "empty step");
         let mut logits = Vec::new();
         for (i, &t) in tokens.iter().enumerate() {
-            logits = self.token(t, i + 1 == tokens.len())?;
+            logits = self.token(t, i + 1 == tokens.len(), None)?;
         }
         Ok(logits)
     }

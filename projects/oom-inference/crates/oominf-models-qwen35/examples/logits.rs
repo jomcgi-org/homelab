@@ -26,9 +26,15 @@ fn main() -> anyhow::Result<()> {
             disk_only: false,
         },
     )?;
-    let mut session = model.new_session(tokens.len())?;
-    for (i, token) in tokens.iter().enumerate() {
-        let logits = session.step(&[*token])?;
+    let rows = model.trace_tokens(&tokens, |step, layer, values| {
+        let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(
+            Path::new(&args[2]).join(format!("{step}-layer-{layer}.f32")),
+            bytes,
+        )?;
+        Ok(())
+    })?;
+    for (i, (token, logits)) in tokens.iter().zip(rows).enumerate() {
         let bytes: Vec<_> = logits.iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(Path::new(&args[2]).join(format!("{i}.f32")), bytes)?;
         println!(

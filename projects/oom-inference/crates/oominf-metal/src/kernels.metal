@@ -8,7 +8,8 @@ kernel void embedding(device const ushort* w [[buffer(0)]], device float* out [[
 inline float bf16(ushort value) { return as_type<float>(uint(value) << 16); }
 inline float e4m3(uchar value) {
     uint e = (value >> 3) & 15, m = value & 7;
-    float mag = e == 0 ? float(m) / 512.0f : ldexp(1.0f + float(m)/8.0f, int(e)-7);
+    // Normal E4M3 values map directly into the fp32 exponent and mantissa.
+    float mag = e == 0 ? float(m) / 512.0f : as_type<float>(((e+120)<<23) | (m<<20));
     if (e == 15 && m == 7) mag = NAN;
     return value & 128 ? -mag : mag;
 }
@@ -157,4 +158,44 @@ kernel void gemm_nvfp4(device const float* x [[buffer(0)]], device const uchar* 
     }
     float sum = simd_sum(acc) * as_type<float>(p[3]);
     if (lane == 0) y[output] = sum;
+}
+
+// Binding records directly avoids pointer indirection and keeps Metal residency
+// and lifetime tracking for every selected cache allocation.
+#define ROUTED_BUFFERS device const uchar* r0 [[buffer(0)]], device const uchar* r1 [[buffer(1)]], device const uchar* r2 [[buffer(2)]], device const uchar* r3 [[buffer(3)]], device const uchar* r4 [[buffer(4)]], device const uchar* r5 [[buffer(5)]], device const uchar* r6 [[buffer(6)]], device const uchar* r7 [[buffer(7)]], device const float* x [[buffer(8)]], device float* y [[buffer(9)]], constant uint* p [[buffer(10)]], uint gid [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]
+
+kernel void routed_gate_up(ROUTED_BUFFERS) {
+    uint output=gid/32, row=output%p[2], expert=output/p[2], k=p[1];
+    device const uchar* records[8]={r0,r1,r2,r3,r4,r5,r6,r7};
+    device const uchar* record=records[expert];
+    float gate=0, up=0;
+    for(uint c=lane;c<k;c+=32) {
+        uint at=row*k+c;
+        uchar g=record[p[3]+at/2], u=record[p[5]+at/2];
+        float value=x[c];
+        gate += value*e2m1[(g>>((c&1)*4))&15]*e4m3(record[p[4]+row*(k/16)+c/16]);
+        up += value*e2m1[(u>>((c&1)*4))&15]*e4m3(record[p[6]+row*(k/16)+c/16]);
+    }
+    gate=simd_sum(gate)*as_type<float>(p[9+expert*4]);
+    up=simd_sum(up)*as_type<float>(p[10+expert*4]);
+    if(lane==0) y[output]=silu(gate)*up;
+}
+
+kernel void routed_down(ROUTED_BUFFERS) {
+    uint output=gid/32, row=output%p[1], expert=output/p[1], k=p[2];
+    device const uchar* records[8]={r0,r1,r2,r3,r4,r5,r6,r7};
+    device const uchar* record=records[expert];
+    float acc=0;
+    for(uint c=lane;c<k;c+=32) {
+        uchar packed=record[p[7]+(row*k+c)/2];
+        acc += x[expert*k+c]*e2m1[(packed>>((c&1)*4))&15]*e4m3(record[p[8]+row*(k/16)+c/16]);
+    }
+    float value=simd_sum(acc)*as_type<float>(p[11+expert*4]);
+    if(lane==0) y[output]=value;
+}
+
+kernel void routed_mix(device const float* x [[buffer(0)]], device float* out [[buffer(1)]], constant uint* p [[buffer(2)]], uint c [[thread_position_in_grid]]) {
+    float value=out[c];
+    for(uint expert=0;expert<p[0];++expert) value += x[expert*p[1]+c]*as_type<float>(p[12+expert*4]);
+    out[c]=value;
 }

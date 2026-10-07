@@ -20,6 +20,7 @@ mod elementwise;
 mod linear;
 mod memory;
 mod norm;
+mod routed;
 #[cfg(test)]
 mod tests;
 mod transfer;
@@ -95,6 +96,9 @@ impl Gpu {
                 "gqa_step",
                 "scaled_add",
                 "shared_gate",
+                "routed_gate_up",
+                "routed_down",
+                "routed_mix",
             ] {
                 let function = library
                     .get_function(name, None)

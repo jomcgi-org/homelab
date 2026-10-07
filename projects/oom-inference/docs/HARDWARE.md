@@ -163,6 +163,20 @@ records. Every converted checksum passed.
 | Maximum resident set size | 2,617,769,984 bytes (2.44 GiB) |
 | Swaps reported for this process | 0 |
 
+With a fixed 1 GiB cache, the same 18-token prompt and 32-token decode measured:
+
+| Expert implementation | Cold tokens/sec | Warm tokens/sec |
+|---|---|---|
+| Individual projections | 2.35 | 2.32 |
+| Batched gate/up/SiLU, down and accumulation | 2.71 | 2.59 |
+| Batched operations plus exact E4M3 bit decode | 2.90 | 2.84 |
+
+Cold and warm disk reads remained 221.3 and 206.4 records per generated token
+in every run. The optimized run took 5.95 s for cold prefill, 6.36 s for warm
+prefill and 37.41 s overall. Peak process footprint was 3,973,244,352 bytes
+(3.70 GiB); the process reported zero swaps. Use the command above with
+`--host-reserve-gib 1 --vram-expert-gib 1` to reproduce the fixed cache budget.
+
 These are short-context baseline results. The warm run retained an expert cache
 far smaller than all experts and did not improve throughput. The SSD-only probe
 (3.72 GB/s with eight readers) does not measure inference. System-wide swap

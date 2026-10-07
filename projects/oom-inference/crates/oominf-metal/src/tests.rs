@@ -345,3 +345,181 @@ fn uncached_disk_reads_copy_into_metal_buffers_by_gpu_address() {
     // SAFETY: deliberate invalid destination; validation rejects it before reading src.
     assert!(unsafe { gpu.copy_to_device(&queue, address + 8191, arena.slot_ptr(0), 2) }.is_err());
 }
+
+#[test]
+fn batched_routed_experts_match_f64_and_individual_projections() {
+    use oominf_core::Elementwise;
+    let gpu = Gpu::new().unwrap();
+    let (hidden, intermediate) = (32, 16);
+    let count = hidden * intermediate;
+    let offsets = [
+        32,
+        32 + count / 2,
+        32 + count / 2 + count / 16,
+        32 + count + count / 16,
+        32 + count + count / 8,
+        32 + count * 3 / 2 + count / 8,
+    ];
+    let stride = offsets[5] + count / 16;
+    let x: Vec<f32> = (0..hidden).map(|c| (c as f32 - 10.) / 113.).collect();
+    let device_x = gpu.upload_f32(&x).unwrap();
+    let codes = [
+        0f64, 0.5, 1., 1.5, 2., 3., 4., 6., -0., -0.5, -1., -1.5, -2., -3., -4., -6.,
+    ];
+    for top in [1, 8, 9, 17] {
+        let mut storage = Vec::new();
+        let mut raw_records = Vec::new();
+        let mut addresses = Vec::new();
+        let weights: Vec<f32> = (0..top)
+            .map(|i| (i + 1) as f32 / (top * (top + 1) / 2) as f32)
+            .collect();
+        for expert in 0..top {
+            let mut raw = vec![0u8; stride + 128];
+            let record = &mut raw[64..64 + stride];
+            for (at, scale) in [(0, 0.13f32), (8, 0.17), (16, 0.11)] {
+                record[at..at + 4].copy_from_slice(&(scale + expert as f32 / 101.).to_le_bytes());
+            }
+            for matrix in 0..3 {
+                for c in 0..count / 2 {
+                    record[offsets[matrix * 2] + c] =
+                        ((c * 13 + expert * 7 + matrix * 11) % 256) as u8;
+                }
+                for c in 0..count / 16 {
+                    record[offsets[matrix * 2 + 1] + c] =
+                        (0x28 + ((c + expert + matrix) % 3) * 8) as u8;
+                }
+            }
+            let device = gpu.upload_bytes(&raw).unwrap();
+            addresses.push(gpu.bytes_addr(&device) + 64);
+            storage.push(device);
+            raw_records.push(raw);
+        }
+        let projection = |record: &[u8], matrix: usize, input: &[f64], n: usize, k: usize| {
+            let scalar =
+                f32::from_le_bytes(record[matrix * 8..matrix * 8 + 4].try_into().unwrap()) as f64;
+            (0..n)
+                .map(|row| {
+                    (0..k)
+                        .map(|c| {
+                            let packed = record[offsets[matrix * 2] + (row * k + c) / 2];
+                            let nibble = (packed >> ((c % 2) * 4)) & 15;
+                            let raw = record[offsets[matrix * 2 + 1] + row * (k / 16) + c / 16];
+                            let scale = (1. + f64::from(raw & 7) / 8.)
+                                * 2f64.powi(i32::from((raw >> 3) & 15) - 7);
+                            input[c] * codes[nibble as usize] * scale
+                        })
+                        .sum::<f64>()
+                        * scalar
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut want = vec![0.25f64; hidden];
+        let input: Vec<f64> = x.iter().map(|&v| f64::from(v)).collect();
+        let mut old = gpu.upload_f32(&vec![0.25; hidden]).unwrap();
+        for (i, address) in addresses.iter().enumerate() {
+            let record = &raw_records[i][64..64 + stride];
+            let gate = projection(record, 0, &input, intermediate, hidden);
+            let up = projection(record, 1, &input, intermediate, hidden);
+            let product: Vec<_> = gate
+                .iter()
+                .zip(up)
+                .map(|(g, u)| g / (1. + (-g).exp()) * u)
+                .collect();
+            for (dst, value) in
+                want.iter_mut()
+                    .zip(projection(record, 2, &product, hidden, intermediate))
+            {
+                *dst += value * f64::from(weights[i]);
+            }
+            let mut gate = gpu.uninit(intermediate).unwrap();
+            let mut up = gpu.uninit(intermediate).unwrap();
+            let mut product = gpu.uninit(intermediate).unwrap();
+            let mut down = gpu.uninit(hidden).unwrap();
+            gpu.gemm_record(
+                &device_x,
+                *address,
+                offsets[0],
+                offsets[1],
+                0,
+                &mut gate,
+                intermediate,
+                hidden,
+            )
+            .unwrap();
+            gpu.gemm_record(
+                &device_x,
+                *address,
+                offsets[2],
+                offsets[3],
+                2,
+                &mut up,
+                intermediate,
+                hidden,
+            )
+            .unwrap();
+            gpu.silu_mul(&gate, &up, &mut product, intermediate)
+                .unwrap();
+            gpu.gemm_record(
+                &product,
+                *address,
+                offsets[4],
+                offsets[5],
+                4,
+                &mut down,
+                hidden,
+                intermediate,
+            )
+            .unwrap();
+            gpu.scaled_add(&down, &mut old, weights[i], hidden).unwrap();
+        }
+        let mut batched = gpu.upload_f32(&vec![0.25; hidden]).unwrap();
+        gpu.routed_swiglu(
+            &device_x,
+            &addresses,
+            &weights,
+            offsets,
+            &mut batched,
+            hidden,
+            intermediate,
+        )
+        .unwrap();
+        // Encoded commands retain each record even after the caller releases it.
+        drop(storage);
+        let got = gpu.download_f32(&batched).unwrap();
+        let individual = gpu.download_f32(&old).unwrap();
+        for c in 0..hidden {
+            assert!(
+                (f64::from(got[c]) - want[c]).abs() < 1e-5,
+                "top {top}, row {c}: {} != {}",
+                got[c],
+                want[c]
+            );
+            assert!((got[c] - individual[c]).abs() < 1e-6, "top {top}, row {c}");
+        }
+    }
+}
+
+#[test]
+fn fp8_decoder_preserves_every_finite_code_and_nan() {
+    use oominf_core::Linear;
+    let gpu = Gpu::new().unwrap();
+    let x = gpu.upload_f32(&[1.]).unwrap();
+    let codes: Vec<u8> = (0..=255).collect();
+    let q = gpu.upload_bytes(&codes).unwrap();
+    let scale = gpu.upload_f32(&vec![1.; 256]).unwrap();
+    let mut out = gpu.uninit(256).unwrap();
+    let mut scratch = gpu.uninit_bf16(0).unwrap();
+    gpu.gemm_fp8(&x, &q, &scale, &mut out, &mut scratch, 1, 256, 1)
+        .unwrap();
+    for (code, value) in gpu.download_f32(&out).unwrap().iter().enumerate() {
+        if code & 127 == 127 {
+            assert!(value.is_nan());
+        } else {
+            assert_eq!(
+                *value,
+                oominf_core::fp8::e4m3_to_f32(code as u8),
+                "code {code}"
+            );
+        }
+    }
+}

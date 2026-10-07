@@ -51,7 +51,16 @@ CUDA model loading remains on Linux. Thirty gated delta layers carry fp32
 recurrent state, and ten full attention layers keep fp32 K/V. Partial RoPE,
 head gates, shared experts and released BF16 normalization offsets are preserved.
 Matrix operations accumulate in fp32 with fast math disabled; NVFP4 weights and
-E4M3 scales are decoded directly. The independent MLX reference reads original
+E4M3 scales are decoded directly by expanding their exponent and mantissa bits.
+Selected routed experts share three dispatches per layer: fused gate/up/SiLU,
+down projection, and accumulation in routing order. Records are bound as Metal
+buffers with checked offsets, retaining every cache allocation until completion.
+
+**Why.** CPU sampling showed GPU waits dominated allocation overhead. Timing
+individual operations exposed thousands of small dispatches per token. Batching
+eight experts reduced their dispatch count from forty to three. The fixed 1 GiB
+cache benchmark improved by about 23% after batching and exact scale decoding;
+cache hits and disk reads were unchanged. The independent MLX reference reads original
 safetensors and compares all vocabulary logits across successive tokens.
 
 Shared copies are synchronous and ordered after compute. Disk reads use

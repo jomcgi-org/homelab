@@ -131,6 +131,7 @@ def run(args):
     mx.set_cache_limit(128 << 20)
     prefix = "model.language_model"
     for pos, token in enumerate(args.tokens):
+        layer_errors = []
         x = checkpoint.array(prefix + ".embed_tokens.weight", token, 1).reshape(-1)
         for layer in range(config["num_hidden_layers"]):
             p = f"{prefix}.layers.{layer}"
@@ -228,6 +229,25 @@ def run(args):
                 )
             x = residual + mixture
             mx.eval(x, *states[layer])
+            trace = pathlib.Path(args.metal) / f"{pos}-layer-{layer}.f32"
+            actual_layer = np.fromfile(trace, dtype="<f4")
+            reference_layer = np.array(x)
+            diff_layer = actual_layer - reference_layer
+            relative_layer = float(
+                np.linalg.norm(diff_layer) / np.linalg.norm(reference_layer)
+            )
+            maximum_layer = float(np.abs(diff_layer).max())
+            assert (
+                actual_layer.shape == reference_layer.shape
+                and np.isfinite(actual_layer).all()
+            )
+            assert relative_layer < 1e-4 and maximum_layer < 0.02, (
+                pos,
+                layer,
+                relative_layer,
+                maximum_layer,
+            )
+            layer_errors.append((relative_layer, maximum_layer))
         x = rms(x, checkpoint.array(prefix + ".norm.weight"), eps, 1.0)
         head = []
         for first in range(0, config["vocab_size"], 4096):
@@ -248,6 +268,11 @@ def run(args):
             "max_abs": float(np.abs(diff).max()),
             "seconds": time.monotonic() - started,
         }
+        assert len(layer_errors) == config["num_hidden_layers"]
+        report["layers_checked"] = len(layer_errors)
+        if layer_errors:
+            report["max_layer_relative_rmse"] = max(e[0] for e in layer_errors)
+            report["max_layer_abs"] = max(e[1] for e in layer_errors)
         print(json.dumps(report), flush=True)
         assert actual.shape == reference.shape and np.isfinite(actual).all()
         assert actual.argmax() == reference.argmax(), report
