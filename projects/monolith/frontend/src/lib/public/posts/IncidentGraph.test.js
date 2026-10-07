@@ -28,8 +28,9 @@ test("clicking a connection exposes its verified source and inferred analysis", 
     ...edge,
     ...recording.review?.[edge.id],
   }));
-  const monitor = graph.nodes.find((node) => node.role === "monitor");
-  const alertEdge = reviewedEdges.find((edge) => edge.from === monitor.id);
+  // The monitoring loop's feedback edge (into or out of the monitor, depending
+  // on how the recorded graph draws it).
+  const alertEdge = reviewedEdges.find((edge) => edge.kind === "feedback");
   const alert = [...target.querySelectorAll(".edge-hit")].find(
     (el) =>
       el.getAttribute("aria-label") ===

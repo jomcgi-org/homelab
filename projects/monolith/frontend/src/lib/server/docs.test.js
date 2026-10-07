@@ -227,6 +227,20 @@ describe("renderDoc", () => {
     pathIndex,
   );
 
+  it("allows only a bare details/summary wrapper through as HTML", () => {
+    const wrapped = renderDoc(
+      {
+        path: "docs/posts/x.md",
+        content:
+          "<details>\n<summary>More</summary>\n\nInside.\n\n</details>\n\n<details open onclick=x>\n<summary>Bad</summary>\n\n</details>\n",
+      },
+      pathIndex,
+    ).html;
+    expect(wrapped).toContain("<details><summary>More</summary>");
+    expect(wrapped).toContain("</details>");
+    expect(wrapped).toContain("&lt;details open onclick=x&gt;");
+  });
+
   it("rewrites intra-doc links to public document slugs", () => {
     expect(html).toContain('href="/docs/embervm/architecture"');
   });

@@ -2,10 +2,18 @@
   import { decodeSteps, rollingRate } from "./draft-steps.js";
 
   // Tokens per decode step, coloured by where its tokens came from, and the
-  // output rate over them: a step that kept a model (MTP) draft emits two tokens,
-  // one that verified a prompt-lookup draft (copied from the input) several, and
-  // the rate line rises where they land.
-  let { events, position, durationMs, tinted = false } = $props();
+  // output rate over them. Steps are inferred from token arrival groups: a
+  // two-token group is most likely a kept model (MTP) draft, a group of three or
+  // more a verified prompt-lookup draft (copied from the input) that may have
+  // been partly accepted, and the rate line rises where they land. Exact
+  // acceptance needs proposal/acceptance counters from the server.
+  let {
+    events,
+    position,
+    durationMs,
+    tinted = false,
+    compact = false,
+  } = $props();
 
   // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
   const steps = decodeSteps(events);
@@ -20,16 +28,34 @@
   const end = Math.max(steps.at(-1)?.at ?? 1, start + 1);
   const maxTokens = Math.max(4, ...steps.map((s) => s.tokens));
   const maxRate = Math.max(1, ...rates.map((r) => r.rate));
-  const W = 840;
-  const H = 120;
-  const BARS = 54;
+  // Narrow traces scale the 840-unit drawing down; wider ones widen the
+  // drawing instead. Height is 120 px, or on the landing 84 px, growing with a
+  // tall window (up to 160 px) so the bars don't flatten on large screens.
+  let measured = $state(0);
+  let innerHeight = $state(0);
+  const W = $derived(Math.max(840, Math.round(measured)));
+  const H = $derived(
+    compact
+      ? Math.round(Math.min(160, Math.max(84, 84 + (innerHeight - 1080) / 4)))
+      : 120,
+  );
+  // Keep the axis label at 10 px when the drawing is scaled down.
+  const axisSize = $derived(
+    measured && measured < W ? (10 * W) / measured : 10,
+  );
+  // Bars and the rate line share the full height; the line rides near the top
+  // because the rate is steady, so it rarely crosses more than a lookup spike.
+  const TOP = 16;
   const x = (at) => ((at - start) / (end - start)) * (W - 8) + 4;
-  const line = rates
-    .map(
-      (r) =>
-        `${x(r.at).toFixed(1)},${(BARS - (r.rate / maxRate) * (BARS - 6)).toFixed(1)}`,
-    )
-    .join(" ");
+  const barHeight = (tokens) => (tokens / maxTokens) * (H - TOP - 4);
+  const line = $derived(
+    rates
+      .map(
+        (r) =>
+          `${x(r.at).toFixed(1)},${(H - 4 - (r.rate / maxRate) * (H - TOP - 4)).toFixed(1)}`,
+      )
+      .join(" "),
+  );
   const counts = {
     lookup: steps.filter((s) => s.source === "lookup").length,
     draft: steps.filter((s) => s.source === "draft").length,
@@ -40,20 +66,22 @@
     .reduce((n, s) => n + s.tokens, 0);
 </script>
 
-<figure class="trace">
+<svelte:window bind:innerHeight />
+
+<figure class="trace" bind:clientWidth={measured}>
   <svg
     viewBox={`0 0 ${W} ${H}`}
     role="img"
-    aria-label={`Tokens per decode step and output rate: ${counts.lookup} steps verified prompt-lookup drafts (${lookupTokens} tokens), ${counts.draft} kept a model draft, ${counts.single} produced one token.`}
+    aria-label={`Tokens per decode step and output rate, inferred from token arrival groups: ${counts.lookup} steps of three or more tokens, likely verified prompt-lookup drafts (${lookupTokens} tokens); ${counts.draft} two-token steps, likely a kept model draft; ${counts.single} steps with one token.`}
   >
     {#each steps as step}
       <rect
         class={step.source}
         class:pending={step.at > position}
         x={x(step.at) - 1.5}
-        y={H - 4 - (step.tokens / maxTokens) * (H - BARS - 10)}
+        y={H - 4 - barHeight(step.tokens)}
         width="3"
-        height={(step.tokens / maxTokens) * (H - BARS - 10)}
+        height={barHeight(step.tokens)}
       />
     {/each}
     <polyline class="rate-line" points={line} />
@@ -66,13 +94,15 @@
         y2={H}
       />
     {/if}
-    <text class="axis" x="6" y="12">{Math.round(maxRate)} tok/s</text>
+    <text class="axis" x="6" y={axisSize + 2} font-size={axisSize}
+      >{Math.round(maxRate)} tok/s</text
+    >
   </svg>
   <figcaption>
     <span class="key lookup"
-      >Prompt lookup, 3+ tokens a step{tinted ? " (tinted code)" : ""}</span
+      >3+ tokens, likely prompt lookup{tinted ? " (tinted code)" : ""}</span
     >
-    <span class="key draft">Model draft kept, 2</span>
+    <span class="key draft">2 tokens, draft likely kept</span>
     <span class="key single">1 token</span>
     <span class="key rate-key">Output rate</span>
   </figcaption>
@@ -110,7 +140,7 @@
   }
   .axis {
     fill: var(--ink-2);
-    font: 10px var(--font-code);
+    font-family: var(--font-code);
   }
   figcaption {
     display: flex;
