@@ -14,7 +14,7 @@ vi.stubGlobal(
 );
 const data = {
   slug: "125b-on-a-4090",
-  title: "Serving larger-than-memory MoE models",
+  title: "Serving 134 GB of model weights with 24 GB of VRAM",
   date: "2026-09-01",
   summary: "The author's original summary.",
   preamble: "",
@@ -49,7 +49,10 @@ test("the 4090 demo opens before the article and its navigation, preserving auth
   expect(target.querySelector(".demo-landing .spine")).toBeNull();
   expect(target.querySelector(".journal .replay")).toBeNull();
   expect(target.querySelectorAll("h1")).toHaveLength(1);
-  expect(target.querySelector("h1").textContent).toBe("125B on a 4090");
+  expect(target.querySelector("h1").textContent).toBe(data.title);
+  expect(target.querySelector(".landing-hardware").textContent).toContain(
+    "Quantisation isn't always the answer",
+  );
   expect(target.querySelectorAll(".landing-header nav")).toHaveLength(1);
   expect(target.querySelector(".landing-header .trail")).toBeNull();
   expect(target.querySelector(".landing-header time")).toBeNull();

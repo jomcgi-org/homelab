@@ -1,6 +1,7 @@
 <script>
-  import SystemDiagram from "$lib/public/posts/SystemDiagram.svelte";
-  import { splitSystemDiagrams } from "$lib/public/posts/system-diagrams.js";
+  import { landingResults } from "$lib/public/posts/landing-results.js";
+  import Interactive from "$lib/public/posts/ix/Interactive.svelte";
+  import { splitInteractive } from "$lib/public/posts/ix/split.js";
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
   import { Seo } from "$lib/public/components";
@@ -190,7 +191,10 @@
             </nav>
             <SchemeToggle />
           </div>
-          <h1 id="landing-title">125B on a 4090</h1>
+          <h1 id="landing-title">{data.title}</h1>
+          <p class="landing-hardware">
+            Quantisation isn't always the answer
+          </p>
         </header>
         <section class="landing-demo" aria-labelledby="inference-demo">
           <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
@@ -204,7 +208,27 @@
             {/each}
           </div>
           {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")] )}
-            <p>Loading the inference demo…</p>
+            <table class="landing-results">
+              <caption>Recorded on the RTX 4090</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Request</th>
+                  <th scope="col">Input tokens</th>
+                  <th scope="col">First token</th>
+                  <th scope="col">Decode</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each landingResults as row}
+                  <tr>
+                    <th scope="row">{row.label}</th>
+                    <td>{row.inputTokens.toLocaleString("en-US")}</td>
+                    <td>{row.firstTokenSeconds.toFixed(2)} s</td>
+                    <td>{row.decodeRate.toFixed(1)} tok/s</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
           {:then [replay, coding]}
             {#key demo}
               {#if demo === "coding"}
@@ -330,13 +354,9 @@
             replayBoundary >= 0}
           {#if !hasLanding || !section.startsWith('<h2 id="inference-demo"')}
             <section class="edition post-body">
-              {#each data.slug === "125b-on-a-4090" ? splitSystemDiagrams(section) : [{ html: showReplay ? section.slice(0, replayBoundary) : section }] as part}
-                {#if part.diagram}
-                  <SystemDiagram
-                    mode={part.diagram}
-                    title={part.title}
-                    notes={part.notes}
-                  />
+              {#each splitInteractive(showReplay ? section.slice(0, replayBoundary) : section) as part}
+                {#if part.ix}
+                  <Interactive name={part.ix} fallback={part.fallback} />
                 {:else}
                   {@html part.html}
                 {/if}
@@ -408,6 +428,11 @@
     line-height: 1.15;
     letter-spacing: -0.025em;
   }
+  .landing-hardware {
+    margin: 0.5rem 0 0.25rem;
+    color: var(--ink-2);
+    font: 0.75rem / 1.5 var(--font-code);
+  }
   .landing-demo {
     min-width: 0;
   }
@@ -444,6 +469,23 @@
   .demo-switch button[aria-pressed="true"] {
     background: var(--ink);
     color: var(--sheet);
+  }
+  .landing-results {
+    width: 100%;
+    border-collapse: collapse;
+    font: 0.8rem var(--font-code);
+  }
+  .landing-results caption {
+    padding-bottom: 0.5rem;
+    text-align: left;
+    color: var(--ink-2);
+  }
+  .landing-results th,
+  .landing-results td {
+    padding: 0.4rem 0.5rem 0.4rem 0;
+    text-align: left;
+    font-weight: normal;
+    border-bottom: 1px solid currentColor;
   }
   .landing-demo h2 {
     /* Reloaded demo fragments keep the opening header in view. */
@@ -751,6 +793,23 @@
 
   .post-body :global(blockquote p) {
     color: inherit;
+  }
+
+  .post-body :global(details) {
+    margin: 1rem 0;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--stroke);
+  }
+
+  .post-body :global(summary) {
+    cursor: pointer;
+    padding-block: 0.8rem;
+    font: 0.8rem var(--font-code);
+    color: var(--ink);
+  }
+
+  .post-body :global(details[open] > summary) {
+    margin-bottom: 0.25rem;
   }
 
   .post-body :global(hr) {
