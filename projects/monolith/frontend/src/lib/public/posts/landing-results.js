@@ -6,15 +6,15 @@ export const landingResults = [
   {
     kind: "research",
     label: "Read an incident report",
-    inputTokens: 21877,
-    firstTokenSeconds: 6.98,
-    decodeRate: 46.0,
+    inputTokens: 21878,
+    firstTokenSeconds: 6.95,
+    decodeRate: 45.4,
   },
   {
     kind: "coding",
     label: "Rewrite a source file",
-    inputTokens: 23725,
-    firstTokenSeconds: 7.24,
-    decodeRate: 43.9,
+    inputTokens: 23723,
+    firstTokenSeconds: 7.33,
+    decodeRate: 46.3,
   },
 ];
