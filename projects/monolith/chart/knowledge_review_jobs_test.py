@@ -72,3 +72,45 @@ def test_backfill_requires_explicit_opt_in_without_enabling_admission(tmp_path):
     jobs = _render(DEPLOY, GKE, override)
     assert jobs["knowledge-review-backfill"]["suspend"] is False
     assert jobs["knowledge-review-admission"]["suspend"] is True
+
+
+@pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
+def test_review_pilot_jobs_require_manual_submission_and_preserve_bounds(values):
+    jobs = _render(*values)
+    expected = {
+        "knowledge-review-backfill-dry-run": [
+            "knowledge-review-backfill",
+            "--pending-only",
+            "--batch-size",
+            "20",
+            "--max-batches",
+            "1",
+        ],
+        "knowledge-review-backfill-pilot": [
+            "knowledge-review-backfill",
+            "--apply",
+            "--pending-only",
+            "--batch-size",
+            "20",
+            "--max-batches",
+            "1",
+        ],
+        "knowledge-review-admission-dry-run": [
+            "knowledge-review-admission",
+            "--batch-size",
+            "20",
+            "--max-requests",
+            "60",
+            "--deadline-seconds",
+            "240",
+        ],
+    }
+    for name, args in expected.items():
+        job = jobs[name]
+        assert job["suspend"] is True
+        assert job["concurrencyPolicy"] == "Forbid"
+        workflow = job["workflowSpec"]
+        assert workflow["activeDeadlineSeconds"] == 240
+        container = workflow["templates"][0]["container"]
+        assert container["args"] == args
+        assert "GITHUB_TOKEN" not in {item["name"] for item in container["env"]}

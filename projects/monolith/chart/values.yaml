@@ -440,6 +440,69 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # Manual #6812 pilot: review dry-run counts before submitting application.
+    - name: knowledge-review-backfill-dry-run
+      suspend: true
+      args:
+        [
+          "knowledge-review-backfill",
+          "--pending-only",
+          "--batch-size",
+          "20",
+          "--max-batches",
+          "1",
+        ]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 240
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+    - name: knowledge-review-backfill-pilot
+      suspend: true
+      args:
+        [
+          "knowledge-review-backfill",
+          "--apply",
+          "--pending-only",
+          "--batch-size",
+          "20",
+          "--max-batches",
+          "1",
+        ]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 240
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+    - name: knowledge-review-admission-dry-run
+      suspend: true
+      args:
+        [
+          "knowledge-review-admission",
+          "--batch-size",
+          "20",
+          "--max-requests",
+          "60",
+          "--deadline-seconds",
+          "240",
+        ]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 240
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
     # Evidence-age backfill is bounded and replayable. Unknown rows stay due.
     # Opt in only after an operator-approved dry run. Once enabled, catches up
     # notes from pre-migration pods; no-op when drained. See knowledge/README.md.

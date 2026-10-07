@@ -229,3 +229,55 @@ rows and no older writers remain.
 review interval limits its use as current context while keeping its historical
 value. Read-time enforcement makes that boundary independent of scheduler
 availability. Only evidence-backed review may establish a new freshness basis.
+
+
+### Run the bounded operational pilot
+
+The suspended `knowledge-review-backfill-dry-run`,
+`knowledge-review-backfill-pilot` and `knowledge-review-admission-dry-run`
+CronWorkflows provide fixed arguments for #6812. Backfill is limited to 20
+pending notes in one batch and a 240-second workflow deadline. Admission dry
+run counts at most 20 candidates without GitHub requests or writes. These
+entries do not enable recurring mutation jobs.
+
+After approved merge, chart publication and verified deployment, an operator
+with the existing Argo submission access can run:
+
+```bash
+argo submit --from cronworkflow/knowledge-review-backfill-dry-run -n monolith-workflows
+argo submit --from cronworkflow/knowledge-review-admission-dry-run -n monolith-workflows
+```
+
+Record each workflow's JSON result on #6812, including policy/freshness counts,
+`next_after`, candidate and blocked counts. Inspect the bounded backfill dry
+run before submitting `knowledge-review-backfill-pilot` with the same command
+shape. Save before/after note IDs, provenance, disputes, observation dates and
+deadlines; unknown dates must remain due. Repeat the dry run to confirm that
+applied rows leave the pending set. A nonempty continuation is further work,
+not permission to loop through the corpus.
+
+The existing `knowledge-review-admission` job applies one batch with limits of
+20 notes, 60 GitHub requests and 240 seconds. Submit it only after reviewing
+dry-run counts and confirming no admission workflow is active. `Forbid`
+controls scheduled runs; manual submissions must be serialized by the operator.
+Capture its outcome counts and authoritative evidence for actual renewed note
+IDs. Confirm `last_reviewed_at` and `review_after` moved from that evidence,
+original `observed_at` stayed unchanged, and unavailable/unsupported outcomes
+left notes due. The MCP `monolith_agent_trigger_job` path requires a legacy
+scheduler row and a matching `replaces` annotation; these jobs have neither
+configured by the chart. It cannot substitute for Argo submission.
+
+Keep recurring admission suspended until pilot evidence is reviewed. Enable
+its existing 15-minute schedule through a separate approved GitOps change,
+then verify live suspension state, schedules, limits and two scheduled workflow
+receipts. Roll back scheduling with `suspend: true` through GitOps and allow any
+bounded in-flight run to finish. Do not restore old deadlines or erase review
+history. Keep the manual pilot entries suspended throughout.
+
+This pilot selects already-due volatile notes only. Standard 90-day notes and
+pre-expiry review need separate scoped admission work with explicit source
+coverage and the same aggregate budgets. Labels such as `agent-ready`, checkout
+contents and free-text acceptance gates are unsupported by the GitHub verifier.
+Changed claims currently record failure; automatic supersession is still an
+operational acceptance gap on #6812. Never rewrite a note into a supported
+claim or extend its deadline merely to obtain a successful pilot result.
