@@ -133,6 +133,41 @@ prompts. Supports the speed modes being off by default
   With `--dense fp8` the expert tier already has the VRAM and host placement is
   slower at every length measured (32k-95k).
 
+## Task accuracy, exact against max-perf (October 7, 2026)
+
+Paired task runs with `oomeval`, exact (`serve` defaults) against max-perf
+(`--dense fp8 --expert-precision bf16`), the same items in both arms,
+temperature 0. GSM8K, MMLU-Pro and RULER at 8k and 32k ran on a0456e56c; RULER at
+95k ran on the build with the fragmentation fix below.
+
+| Task (items)                      | Exact | Max-perf | Max-perf - exact (95% CI) | Decode tok/s (exact, max-perf) |
+| --------------------------------- | ----- | -------- | ------------------------- | ------------------------------ |
+| GSM8K (300 of 1,319)              | 97.33 | 97.00    | -0.33 (-2.00 to +1.00)    | 33.0, 39.6                     |
+| MMLU-Pro (200 of 12,032)          | 77.00 | 77.50    | +0.50 (-2.50 to +3.50)    | 35.5, 42.4                     |
+| RULER 8k and 32k (104)            | 99.23 | 99.62    | +0.38                     | 18.6, 20.4                     |
+| RULER 95k (52)                    | 98.46 | 98.08    | -0.38 (-1.15 to 0.00)     | 16.7, 18.0                     |
+
+- No task moves beyond its interval: McNemar p = 1.0 on GSM8K (3 items right only
+  in exact, 2 only in max-perf; 98% the same answer) and MMLU-Pro (5 and 6; 93%).
+  Every RULER difference is variable tracking (one more or one fewer variable
+  found); single needle, multi-key and multi-value score 100 in both arms at
+  every length.
+- MMLU-Pro ran with `--max-tokens 4096` (the task default is 8192): 17.5% of
+  answers in both arms were cut off, so its absolute score understates the
+  model; the paired difference is unaffected.
+- Max-perf answers are slightly longer (GSM8K 405 against 390 completion tokens,
+  MMLU-Pro 1,407 against 1,359). 95k TTFT: 29.7 s max-perf, 36.9 s exact.
+
+Max-perf first failed 5 of 8 95k RULER requests with `CUDA_ERROR_OUT_OF_MEMORY`
+(#6854). Live device memory was within the prefill's estimate, but the
+stream-ordered pool's reserved memory grew about 65 MB per layer beyond it (3 GB
+by the last layer of a 95k prefill): small long-lived buffers allocated between
+the prefill's large transient ones (prefix-checkpoint copies, and FP8 weights
+dequantized for cuBLAS) each pinned a pool block. Allocating the checkpoint
+copies before the prefill and keeping the dequantized weights in one arena left
+2.3 GB free at the last layer instead of 0.6 GB, and all 104 95k requests above
+completed.
+
 ## Decode lookahead
 
 October 6-7, 2026, the served demo, warm, three requests per setting. Supports
