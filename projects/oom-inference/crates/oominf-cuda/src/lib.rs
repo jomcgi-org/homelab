@@ -91,9 +91,8 @@ pub struct Gpu {
     gemv_tickets: Mutex<Option<CudaSlice<u32>>>,
     /// [`oominf_core::KvFormat::codebooks`] on the device, uploaded on first use.
     kv_codebooks: Mutex<Option<Buf>>,
-    /// FP8 dense weights dequantized to bf16 for prefill GEMMs, by the FP8 buffer's
-    /// address, least recently used first (see [`linear::FP8_CACHE_BYTES`]).
-    fp8_cache: Mutex<std::collections::VecDeque<(u64, Bf16Buf)>>,
+    /// FP8 dense weights dequantized to bf16 for prefill GEMMs.
+    fp8_cache: Mutex<linear::Fp8Cache>,
 }
 
 pub(crate) fn grid(n: usize, block: u32) -> LaunchConfig {
@@ -131,7 +130,7 @@ impl Gpu {
             gemv_partial: Mutex::new(None),
             gemv_tickets: Mutex::new(None),
             kv_codebooks: Mutex::new(None),
-            fp8_cache: Mutex::new(std::collections::VecDeque::new()),
+            fp8_cache: Mutex::new(linear::Fp8Cache::default()),
         })
     }
 

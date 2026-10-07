@@ -32,6 +32,7 @@ pub struct Checkpoint {
 pub(crate) struct DevSnap<B: Backend> {
     gdn: Option<(B::F32, B::F32)>,
     ple: Option<(B::F32, Vec<u32>)>,
+    captured: bool,
 }
 
 /// Device bytes one layer's [`DevSnap`] takes.
@@ -44,36 +45,52 @@ pub(crate) fn snap_bytes<B: Backend>(st: &LayerState<B>) -> usize {
     (g + p) * std::mem::size_of::<f32>()
 }
 
-fn copy_of<B: Backend>(gpu: &B, src: &B::F32) -> Result<B::F32> {
-    let mut dst = gpu.uninit(src.len())?;
-    gpu.copy_range(src, 0, &mut dst, 0, src.len())?;
-    Ok(dst)
-}
-
-/// Copies `st`'s recurrent state on the device (queued after the layer's work).
-pub(crate) fn capture<B: Backend>(gpu: &B, st: &LayerState<B>) -> Result<DevSnap<B>> {
+/// Device buffers for one capture of `st`. Prefill allocates every capture's
+/// buffers before it starts: small copies allocated between its large transient
+/// buffers would each pin a block of the stream-ordered pool until the prefill
+/// ends, fragmenting gigabytes over a long prompt.
+pub(crate) fn alloc<B: Backend>(gpu: &B, st: &LayerState<B>) -> Result<DevSnap<B>> {
     Ok(DevSnap {
         gdn: match &st.gdn {
-            Some(g) => Some((copy_of(gpu, &g.conv)?, copy_of(gpu, &g.recurrent)?)),
+            Some(g) => Some((gpu.uninit(g.conv.len())?, gpu.uninit(g.recurrent.len())?)),
             None => None,
         },
         ple: match &st.ple {
-            Some(p) => Some((copy_of(gpu, &p.conv)?, p.tokens.clone())),
+            Some(p) => Some((gpu.uninit(p.conv.len())?, Vec::new())),
             None => None,
         },
+        captured: false,
     })
+}
+
+/// Copies `st`'s recurrent state into `snap` (queued after the layer's work).
+pub(crate) fn capture<B: Backend>(
+    gpu: &B,
+    st: &LayerState<B>,
+    snap: &mut DevSnap<B>,
+) -> Result<()> {
+    if let (Some(g), Some((c, r))) = (&st.gdn, snap.gdn.as_mut()) {
+        gpu.copy_range(&g.conv, 0, c, 0, g.conv.len())?;
+        gpu.copy_range(&g.recurrent, 0, r, 0, g.recurrent.len())?;
+    }
+    if let (Some(p), Some((c, t))) = (&st.ple, snap.ple.as_mut()) {
+        gpu.copy_range(&p.conv, 0, c, 0, p.conv.len())?;
+        t.clone_from(&p.tokens);
+    }
+    snap.captured = true;
+    Ok(())
 }
 
 /// Brings a checkpoint's device copies (one per layer) to host memory.
 pub(crate) fn download<B: Backend>(
     gpu: &B,
     pos: usize,
-    layers: Vec<Option<DevSnap<B>>>,
+    layers: Vec<DevSnap<B>>,
 ) -> Result<Checkpoint> {
     let layers = layers
         .into_iter()
         .map(|s| {
-            let s = s.ok_or_else(|| anyhow::anyhow!("checkpoint {pos} missed a layer"))?;
+            ensure!(s.captured, "checkpoint {pos} missed a layer");
             Ok(LayerSnap {
                 gdn: match s.gdn {
                     Some((c, r)) => Some((gpu.download_f32(&c)?, gpu.download_f32(&r)?)),

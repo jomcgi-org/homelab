@@ -942,10 +942,16 @@ impl<B: Backend> QwenModel<B> {
                 from = to;
             }
         }
-        let mut captures: Vec<Vec<Option<checkpoint::DevSnap<B>>>> = cuts
+        let mut captures = cuts
             .iter()
-            .map(|_| (0..self.layers.len()).map(|_| None).collect())
-            .collect();
+            .map(|_| {
+                state
+                    .layers
+                    .iter()
+                    .map(|st| checkpoint::alloc(gpu, st))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut xs = Vec::with_capacity(chunks.len());
         for c in &chunks {
             let mut x = gpu.uninit(c.len() * d.residual())?;
@@ -1001,7 +1007,7 @@ impl<B: Backend> QwenModel<B> {
                     // The mixers (GDN, PLE) have consumed the chunk: their state is
                     // the state after `pos` tokens.
                     if let Some(k) = cuts.iter().position(|&c| c + state.pos == pos) {
-                        captures[k][li] = Some(checkpoint::capture(gpu, st)?);
+                        checkpoint::capture(gpu, st, &mut captures[k][li])?;
                     }
                 }
                 let lens: Vec<usize> = chunks[lo..hi].iter().map(|c| c.len()).collect();

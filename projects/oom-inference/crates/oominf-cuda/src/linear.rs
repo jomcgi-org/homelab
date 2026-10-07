@@ -2,7 +2,7 @@
 
 use anyhow::{Result, ensure};
 use cudarc::cublas::sys as blas_sys;
-use cudarc::driver::{DevicePtr, DevicePtrMut, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaView, CudaViewMut, DevicePtr, DevicePtrMut, LaunchConfig, PushKernelArg};
 use oominf_core::{Linear, Memory};
 
 use crate::{Bf16Buf, Buf, Dev, Gpu, grid};
@@ -29,6 +29,124 @@ impl Linear for Gpu {
         if t <= GEMV_MAX_TOKENS && k.is_multiple_of(8) {
             return self.gemv_bf16(x, w, y, t, n, k);
         }
+        self.gemm_bf16_tc(x, &w.0.slice(0..n * k), y, scratch, t, n, k)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_fp8(
+        &self,
+        x: &Buf,
+        q: &Dev<u8>,
+        scale: &Buf,
+        y: &mut Buf,
+        scratch: &mut Bf16Buf,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
+        self.check(
+            x.len() >= t * k
+                && q.len() >= n * k
+                && scale.len() >= n * k.div_ceil(oominf_core::fp8::BLOCK)
+                && y.len() >= t * n,
+            "gemm_fp8 sizes",
+        )?;
+        if t <= GEMV_MAX_TOKENS && k.is_multiple_of(16) {
+            let (qp, _g) = q.device_ptr(&self.stream);
+            return self.gemv(x, qp, Some(scale), y, t, n, k);
+        }
+        // Larger steps (prefill) run cuBLAS on bf16 weights, dequantized once and
+        // kept: layer-major prefill reuses a layer's weights for every chunk.
+        let need = n * k;
+        if need > FP8_CACHE_ELEMS {
+            let mut w = self.uninit_bf16(need)?;
+            self.dequantize_fp8(q, scale, &mut w.0.slice_mut(0..need), n, k)?;
+            return self.gemm_bf16_tc(x, &w.0.slice(0..need), y, scratch, t, n, k);
+        }
+        let key = q.device_ptr(&self.stream).0;
+        let mut cache = self.fp8_cache.lock().unwrap();
+        if cache.arena.is_none() {
+            cache.arena = Some(self.uninit_bf16(FP8_CACHE_ELEMS)?);
+        }
+        let start = match cache.find(key) {
+            Some(start) => start,
+            None => {
+                let start = cache.place(key, need);
+                let arena = cache.arena.as_mut().unwrap();
+                self.dequantize_fp8(q, scale, &mut arena.0.slice_mut(start..start + need), n, k)?;
+                start
+            }
+        };
+        let w = cache.arena.as_ref().unwrap().0.slice(start..start + need);
+        self.gemm_bf16_tc(x, &w, y, scratch, t, n, k)
+    }
+
+    fn release_weight_cache(&self) {
+        *self.fp8_cache.lock().unwrap() = Fp8Cache::default();
+    }
+}
+
+/// Bytes of bf16 weights [`Linear::gemm_fp8`] keeps dequantized: one layer's dense
+/// weights (about 300 MB for Qwen 3.8 Flash) and then some.
+pub(crate) const FP8_CACHE_BYTES: usize = 512 << 20;
+const FP8_CACHE_ELEMS: usize = FP8_CACHE_BYTES / 2;
+
+/// Cached matrices start on 256-byte boundaries.
+const FP8_CACHE_ALIGN: usize = 128;
+
+/// [`Linear::gemm_fp8`]'s dequantized weights: one arena, allocated at the first
+/// prefill GEMM and freed by [`Linear::release_weight_cache`], filled as a ring
+/// (a new matrix evicts the ones it overlaps, the oldest). One allocation, because
+/// separate ones made between a prefill's transient buffers each pin blocks of the
+/// stream-ordered pool, fragmenting gigabytes over a long prompt.
+#[derive(Default)]
+pub(crate) struct Fp8Cache {
+    arena: Option<Bf16Buf>,
+    /// The FP8 buffer's address, start and length (elements) of each cached matrix.
+    entries: Vec<(u64, usize, usize)>,
+    top: usize,
+}
+
+impl Fp8Cache {
+    fn find(&self, key: u64) -> Option<usize> {
+        self.entries
+            .iter()
+            .find(|&&(k, _, _)| k == key)
+            .map(|&(_, start, _)| start)
+    }
+
+    /// Claims `len <= FP8_CACHE_ELEMS` elements for `key` and returns their start.
+    fn place(&mut self, key: u64, len: usize) -> usize {
+        if self.top + len > FP8_CACHE_ELEMS {
+            self.top = 0;
+        }
+        let (lo, hi) = (self.top, self.top + len);
+        self.entries
+            .retain(|&(_, start, l)| start + l <= lo || start >= hi);
+        self.entries.push((key, lo, len));
+        self.top = hi.next_multiple_of(FP8_CACHE_ALIGN);
+        lo
+    }
+}
+
+/// Most tokens a dense projection runs as a GEMV (weights read once, no
+/// dequantized copy): decode, and draft verification up to 16 tokens (a 32-token
+/// instance spills registers: 8 GB/s).
+const GEMV_MAX_TOKENS: usize = 16;
+
+impl Gpu {
+    /// The tensor-core path of [`Linear::gemm_bf16`]: rounds `x` to bf16 into
+    /// `scratch` and runs cuBLAS on `w` (`[n, k]`).
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_bf16_tc(
+        &self,
+        x: &Buf,
+        w: &CudaView<u16>,
+        y: &mut Buf,
+        scratch: &mut Bf16Buf,
+        t: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
         self.check(scratch.len() >= t * k, "gemm_bf16 scratch")?;
         self.f32_to_bf16(x, scratch, t * k)?;
         let (wp, _g1) = w.device_ptr(&self.stream);
@@ -60,78 +178,31 @@ impl Linear for Gpu {
         }
         Ok(())
     }
-    #[allow(clippy::too_many_arguments)]
-    fn gemm_fp8(
+
+    /// Dequantizes FP8 `[n, k]` weights to bf16 into `w`.
+    fn dequantize_fp8(
         &self,
-        x: &Buf,
         q: &Dev<u8>,
         scale: &Buf,
-        y: &mut Buf,
-        scratch: &mut Bf16Buf,
-        t: usize,
+        w: &mut CudaViewMut<u16>,
         n: usize,
         k: usize,
     ) -> Result<()> {
-        self.check(
-            x.len() >= t * k
-                && q.len() >= n * k
-                && scale.len() >= n * k.div_ceil(oominf_core::fp8::BLOCK)
-                && y.len() >= t * n,
-            "gemm_fp8 sizes",
-        )?;
-        if t <= GEMV_MAX_TOKENS && k.is_multiple_of(16) {
-            let (qp, _g) = q.device_ptr(&self.stream);
-            return self.gemv(x, qp, Some(scale), y, t, n, k);
-        }
-        // Larger steps (prefill) run cuBLAS on bf16 weights, dequantized once and
-        // kept: layer-major prefill reuses a layer's weights for every chunk.
-        let key = q.device_ptr(&self.stream).0;
-        let mut cache = self.fp8_cache.lock().unwrap();
-        if !cache.iter().any(|(k2, _)| *k2 == key) {
-            let mut w = self.uninit_bf16(n * k)?;
-            let f = self.func("fp8_dequantize_blocks")?;
-            let (n32, k32) = (n as i32, k as i32);
-            unsafe {
-                self.stream
-                    .launch_builder(&f)
-                    .arg(q)
-                    .arg(scale)
-                    .arg(&mut w)
-                    .arg(&n32)
-                    .arg(&k32)
-                    .launch(grid(n * k, 256))?
-            };
-            cache.push_back((key, w));
-            let mut bytes: usize = cache.iter().map(|(_, b)| b.len() * 2).sum();
-            while bytes > FP8_CACHE_BYTES && cache.len() > 1 {
-                let (_, old) = cache.pop_front().unwrap();
-                bytes -= old.len() * 2;
-            }
-        } else {
-            // Most recently used last.
-            let pos = cache.iter().position(|(k2, _)| *k2 == key).unwrap();
-            let e = cache.remove(pos).unwrap();
-            cache.push_back(e);
-        }
-        let w = &cache.back().unwrap().1;
-        self.gemm_bf16(x, w, y, scratch, t, n, k)
+        let f = self.func("fp8_dequantize_blocks")?;
+        let (n32, k32) = (n as i32, k as i32);
+        unsafe {
+            self.stream
+                .launch_builder(&f)
+                .arg(q)
+                .arg(scale)
+                .arg(w)
+                .arg(&n32)
+                .arg(&k32)
+                .launch(grid(n * k, 256))?
+        };
+        Ok(())
     }
 
-    fn release_weight_cache(&self) {
-        self.fp8_cache.lock().unwrap().clear();
-    }
-}
-
-/// Bytes of bf16 weights [`Linear::gemm_fp8`] keeps dequantized: one layer's dense
-/// weights (about 300 MB for Qwen 3.8 Flash) and then some.
-pub(crate) const FP8_CACHE_BYTES: usize = 512 << 20;
-
-/// Most tokens a dense projection runs as a GEMV (weights read once, no
-/// dequantized copy): decode, and draft verification up to 16 tokens (a 32-token
-/// instance spills registers: 8 GB/s).
-const GEMV_MAX_TOKENS: usize = 16;
-
-impl Gpu {
     /// Decode GEMV, `t <= 4`, `k % 8 == 0` (see `gemv_impl` in ops.cu).
     pub(crate) fn gemv_bf16(
         &self,
@@ -290,5 +361,25 @@ impl Gpu {
                 .launch(grid(n, 256))?
         };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fp8_cache_ring_evicts_only_overlapped_matrices() {
+        let q = FP8_CACHE_ELEMS / 4;
+        let mut c = Fp8Cache::default();
+        assert_eq!(c.place(1, q), 0);
+        assert_eq!(c.place(2, q), q);
+        assert_eq!(c.place(3, q), 2 * q);
+        // Too big for the space left: wraps and evicts the two it overlaps.
+        assert_eq!(c.place(4, 2 * q), 0);
+        assert_eq!(c.find(1), None);
+        assert_eq!(c.find(2), None);
+        assert_eq!(c.find(3), Some(2 * q));
+        assert_eq!(c.find(4), Some(0));
     }
 }
