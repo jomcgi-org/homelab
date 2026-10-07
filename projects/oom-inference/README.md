@@ -5,6 +5,12 @@ GPU plus host memory, tuned for one or two interactive streams on one machine.
 Routed experts are tiered across VRAM, pinned host memory and NVMe; weights are
 used exactly as released. The CLI is `oominf`.
 
+Apple Silicon support is in progress. The `oominf-metal` crate has tested GPU
+primitives, shared expert transfers and macOS disk/memory support. The converter
+accepts text-only Qwen3.5 MoE NVFP4 checkpoints, including a single safetensors
+file. The CLI still runs inference through CUDA; full Qwen3.5 generation on
+Metal is tracked in [#6896](https://github.com/jomcgi-org/homelab/issues/6896).
+
 - [Architecture](docs/ARCHITECTURE.md): crates, interfaces, precision, tiers,
   and how to add a model or a platform.
 - [Weight format](docs/FORMAT.md).

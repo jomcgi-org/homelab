@@ -6,16 +6,21 @@
 //! filesystem without O_DIRECT) it falls back to `pread` on a pool of threads,
 //! with O_DIRECT when the filesystem allows it ([`ReadMode`]).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::os::unix::fs::FileExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
+#[cfg(target_os = "linux")]
 use io_uring::{IoUring, opcode, types};
 use oominf_core::Transfer;
 
@@ -164,10 +169,16 @@ impl ReadMode {
     pub fn describe(self) -> &'static str {
         match self {
             ReadMode::Uring => "O_DIRECT through io_uring",
+            #[cfg(target_os = "macos")]
+            ReadMode::Pread => "F_NOCACHE pread on a thread pool",
+            #[cfg(not(target_os = "macos"))]
             ReadMode::Pread => "O_DIRECT pread on a thread pool (io_uring unavailable)",
+            #[cfg(target_os = "linux")]
             ReadMode::Buffered => {
                 "buffered pread on a thread pool, pages dropped after each read (O_DIRECT unavailable)"
             }
+            #[cfg(not(target_os = "linux"))]
+            ReadMode::Buffered => "buffered pread on a thread pool",
         }
     }
 
@@ -178,18 +189,32 @@ impl ReadMode {
 
 /// Opens `path` for reads in `mode`.
 fn open_for(path: &Path, mode: ReadMode) -> Result<File> {
+    #[cfg(not(target_os = "linux"))]
+    ensure!(mode != ReadMode::Uring, "io_uring requires Linux");
     let mut o = OpenOptions::new();
     o.read(true);
+    #[cfg(target_os = "linux")]
     if mode.direct() {
         o.custom_flags(libc::O_DIRECT);
     }
-    o.open(path).with_context(|| {
-        format!(
-            "open {}{}",
-            if mode.direct() { "O_DIRECT " } else { "" },
-            path.display()
-        )
-    })
+    let file = o
+        .open(path)
+        .with_context(|| format!("open {} for {}", path.display(), mode.name()))?;
+    #[cfg(target_os = "macos")]
+    if mode.direct() {
+        // SAFETY: these commands take integer flags on a live descriptor.
+        ensure!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_NOCACHE, 1) } == 0,
+            "F_NOCACHE: {}",
+            std::io::Error::last_os_error()
+        );
+        ensure!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_RDAHEAD, 0) } == 0,
+            "F_RDAHEAD: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(file)
 }
 
 /// A page-aligned heap buffer (for test reads).
@@ -218,24 +243,30 @@ fn try_mode(path: &Path, mode: ReadMode) -> Result<()> {
     let buf = Aligned::new(4096);
     match mode {
         ReadMode::Uring => {
-            let mut ring = IoUring::new(2).context("io_uring setup")?;
-            let sqe = opcode::Read::new(types::Fd(file.as_raw_fd()), buf.0, 4096)
-                .offset(0)
-                .build()
-                .user_data(1);
-            // SAFETY: the buffer outlives the read, which completes below.
-            unsafe { ring.submission().push(&sqe) }.map_err(|_| anyhow::anyhow!("ring full"))?;
-            ring.submit_and_wait(1).context("io_uring submit")?;
-            let res = ring
-                .completion()
-                .next()
-                .context("no io_uring completion")?
-                .result();
-            ensure!(
-                res >= 0,
-                "io_uring read: {}",
-                std::io::Error::from_raw_os_error(-res)
-            );
+            #[cfg(not(target_os = "linux"))]
+            bail!("io_uring requires Linux");
+            #[cfg(target_os = "linux")]
+            {
+                let mut ring = IoUring::new(2).context("io_uring setup")?;
+                let sqe = opcode::Read::new(types::Fd(file.as_raw_fd()), buf.0, 4096)
+                    .offset(0)
+                    .build()
+                    .user_data(1);
+                // SAFETY: the buffer outlives the read, which completes below.
+                unsafe { ring.submission().push(&sqe) }
+                    .map_err(|_| anyhow::anyhow!("ring full"))?;
+                ring.submit_and_wait(1).context("io_uring submit")?;
+                let res = ring
+                    .completion()
+                    .next()
+                    .context("no io_uring completion")?
+                    .result();
+                ensure!(
+                    res >= 0,
+                    "io_uring read: {}",
+                    std::io::Error::from_raw_os_error(-res)
+                );
+            }
         }
         ReadMode::Pread | ReadMode::Buffered => {
             // SAFETY: the buffer holds 4096 bytes.
@@ -297,7 +328,11 @@ impl IoConfig {
 
 impl Default for IoConfig {
     fn default() -> Self {
-        IoConfig::new(ReadMode::Uring)
+        IoConfig::new(if cfg!(target_os = "linux") {
+            ReadMode::Uring
+        } else {
+            ReadMode::Pread
+        })
     }
 }
 
@@ -306,6 +341,7 @@ type Report = (usize, std::result::Result<(), String>);
 /// Where submitted reads go.
 enum Sink {
     /// The io_uring worker's queue.
+    #[cfg(target_os = "linux")]
     Uring(mpsc::Sender<Vec<ReadJob>>),
     /// The `pread` pool's shared queue.
     Pool(Arc<Pool>),
@@ -356,12 +392,17 @@ impl DirectReader {
         let faults = io.faults.clone();
         let (sink, workers) = match io.mode {
             ReadMode::Uring => {
-                let ring = IoUring::new(depth).context("io_uring setup")?;
-                let (jobs_tx, jobs_rx) = mpsc::channel();
-                let worker = thread::Builder::new()
-                    .name("oominf-read".into())
-                    .spawn(move || uring_worker(file, ring, jobs_rx, done_tx, faults))?;
-                (Sink::Uring(jobs_tx), vec![worker])
+                #[cfg(not(target_os = "linux"))]
+                bail!("io_uring requires Linux");
+                #[cfg(target_os = "linux")]
+                {
+                    let ring = IoUring::new(depth).context("io_uring setup")?;
+                    let (jobs_tx, jobs_rx) = mpsc::channel();
+                    let worker = thread::Builder::new()
+                        .name("oominf-read".into())
+                        .spawn(move || uring_worker(file, ring, jobs_rx, done_tx, faults))?;
+                    (Sink::Uring(jobs_tx), vec![worker])
+                }
             }
             ReadMode::Pread | ReadMode::Buffered => {
                 let pool = Arc::new(Pool::default());
@@ -403,6 +444,7 @@ impl DirectReader {
         }
         let n = jobs.len();
         match self.sink.as_ref().expect("workers running") {
+            #[cfg(target_os = "linux")]
             Sink::Uring(tx) => tx
                 .send(jobs)
                 .map_err(|_| anyhow::anyhow!("read worker stopped"))?,
@@ -495,8 +537,11 @@ impl Drop for DirectReader {
     fn drop(&mut self) {
         // Closing the queue stops the workers once their reads are done, so no read
         // can still be writing into a destination after the reader is gone.
-        if let Some(Sink::Pool(pool)) = self.sink.take() {
-            pool.close();
+        match self.sink.take() {
+            Some(Sink::Pool(pool)) => pool.close(),
+            #[cfg(target_os = "linux")]
+            Some(Sink::Uring(_)) => {}
+            None => {}
         }
         for w in self.workers.drain(..) {
             let _ = w.join();
@@ -528,6 +573,7 @@ fn pread_job(file: &File, job: &ReadJob, fault: Fault, drop_cache: bool) -> Repo
             }
         }
     }
+    #[cfg(target_os = "linux")]
     if drop_cache {
         // SAFETY: plain advice on an open descriptor.
         unsafe {
@@ -539,6 +585,8 @@ fn pread_job(file: &File, job: &ReadJob, fault: Fault, drop_cache: bool) -> Repo
             )
         };
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = drop_cache;
     if fault.fail && res.is_ok() {
         res = Err("injected read failure".into());
     }
@@ -594,6 +642,7 @@ fn pool_worker(
 /// Keeps up to the ring's depth of reads in flight and reports each by tag. Reads
 /// with an injected fault run on their own thread instead, joined before the
 /// worker exits.
+#[cfg(target_os = "linux")]
 fn uring_worker(
     file: Arc<File>,
     mut ring: IoUring,
@@ -763,5 +812,17 @@ mod tests {
         let e = select_read_mode(missing, Some(ReadMode::Pread)).unwrap_err();
         assert!(format!("{e:#}").contains("read path pread"), "{e:#}");
         assert!(select_read_mode(missing, None).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_selects_uncached_pread_and_rejects_uring() {
+        let f = blocks(4);
+        let (mode, skipped) = select_read_mode(f.path(), None).unwrap();
+        assert_eq!(mode, ReadMode::Pread);
+        assert_eq!(IoConfig::default().mode, ReadMode::Pread);
+        assert!(skipped[0].contains("io_uring requires Linux"));
+        assert!(select_read_mode(f.path(), Some(ReadMode::Uring)).is_err());
+        read_all(f.path(), mode, 4, None).unwrap();
     }
 }

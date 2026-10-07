@@ -1,0 +1,18 @@
+[package]
+name = "oominf-metal"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+anyhow.workspace = true
+metal = "0.33.0"
+objc = "0.2.7"
+oominf-core = { path = "../oominf-core" }
+oominf-tiers = { path = "../oominf-tiers" }
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tempfile.workspace = true

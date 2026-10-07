@@ -14,13 +14,16 @@ struct Buf(*mut u8, usize);
 
 impl Buf {
     fn new(n: usize) -> Buf {
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+        #[cfg(target_os = "linux")]
+        let flags = flags | libc::MAP_POPULATE;
         // SAFETY: anonymous private mapping, checked below.
         let p = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 n,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_POPULATE,
+                flags,
                 -1,
                 0,
             )
