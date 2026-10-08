@@ -40,6 +40,10 @@ enum Command {
         /// Skip gather tables.
         #[arg(long)]
         no_tables: bool,
+        /// Upstream checkpoint to record, e.g. `org/repo@revision` (default: the
+        /// source directory's name and its Hugging Face download revision).
+        #[arg(long)]
+        origin: Option<String>,
     },
     /// Recompute every checksum in a converted model.
     Verify { model: PathBuf },
@@ -286,10 +290,12 @@ fn main() -> Result<()> {
             out,
             layers,
             no_tables,
+            origin,
         } => {
             let opts = oominf_convert::Options {
                 expert_layers: layers.as_deref().map(parse_layers).transpose()?,
                 tables: !no_tables,
+                origin,
             };
             let start = Instant::now();
             let (index, s) = oominf_convert::convert(&src, &out, &opts, |m| {
@@ -589,7 +595,7 @@ fn main() -> Result<()> {
             let i = m.index();
             println!(
                 "{} v{} from {} ({}, {})",
-                i.format, i.version, i.source.path, i.source.model_type, i.source.fingerprint
+                i.format, i.version, i.source.origin, i.source.model_type, i.source.fingerprint
             );
             println!(
                 "files: dense {:.2} GiB, experts {:.2} GiB, tables {:.2} GiB; {} tensors",

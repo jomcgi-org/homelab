@@ -81,7 +81,7 @@ their own tags and their own converted copy; v0 stores only the release layout.
 {
   "format": "oominf",
   "version": 0,
-  "source": { "path": "...", "model_type": "qwen4_exp", "fingerprint": "..." },
+  "source": { "origin": "org/repo@revision", "model_type": "qwen4_exp", "fingerprint": "..." },
   "files": { "dense": { "bytes": N }, "experts": { "bytes": N }, "tables": { "bytes": N } },
   "tensors": [
     { "name": "...", "file": "dense" | "tables", "dtype": "BF16", "shape": [..],

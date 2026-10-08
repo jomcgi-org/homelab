@@ -213,8 +213,10 @@ fn layer_filter_and_no_tables() {
     let opts = Options {
         expert_layers: Some(1..=1),
         tables: false,
+        origin: Some("org/repo@abc".into()),
     };
     let (index, summary) = convert(src.path(), out.path(), &opts, |_| {}).unwrap();
+    assert_eq!(index.source.origin, "org/repo@abc");
     assert_eq!(
         index
             .expert_groups
@@ -249,4 +251,16 @@ fn natural_order() {
     let mut v = vec!["l.10.a", "l.2.a", "l.02.b", "l.1.z", "a"];
     v.sort_by(|a, b| natural_cmp(a, b));
     assert_eq!(v, ["a", "l.1.z", "l.2.a", "l.02.b", "l.10.a"]);
+}
+
+#[test]
+fn default_origin_names_the_directory_and_revision() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("ckpt");
+    std::fs::create_dir(&src).unwrap();
+    assert_eq!(default_origin(&src), "ckpt");
+    let meta = src.join(".cache/huggingface/download");
+    std::fs::create_dir_all(&meta).unwrap();
+    std::fs::write(meta.join("config.json.metadata"), "7b71922\netag\n1.0\n").unwrap();
+    assert_eq!(default_origin(&src), "ckpt@7b71922");
 }

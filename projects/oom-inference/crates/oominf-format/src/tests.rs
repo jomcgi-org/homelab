@@ -43,7 +43,7 @@ fn qwen_record_geometry_matches_format_doc() {
 fn round_trip_and_verify() {
     let dir = tempfile::tempdir().unwrap();
     let src = Source {
-        path: "mem".into(),
+        origin: "mem".into(),
         model_type: "test".into(),
         fingerprint: String::new(),
     };
@@ -85,7 +85,7 @@ fn round_trip_and_verify() {
 fn verify_detects_corruption() {
     let dir = tempfile::tempdir().unwrap();
     let src = Source {
-        path: "mem".into(),
+        origin: "mem".into(),
         model_type: "test".into(),
         fingerprint: String::new(),
     };
@@ -109,7 +109,7 @@ fn verify_detects_corruption() {
 fn refuses_existing_conversion_and_size_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let src = Source {
-        path: "mem".into(),
+        origin: "mem".into(),
         model_type: "test".into(),
         fingerprint: String::new(),
     };
