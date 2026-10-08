@@ -212,7 +212,7 @@ async def inspect_kg_review_pilot(request_id: str | None = None) -> dict:
     """Inspect fixed KG review controls and an audited request, without manifests.
 
     Operator-only. Omit request_id to inspect the active receipt. Inspection
-    records terminal evidence; absent or inaccessible workflows stay fenced.
+    records terminal evidence. Absent or inaccessible workflows stay fenced.
     """
     from knowledge import review_pilot
 
@@ -236,7 +236,7 @@ async def submit_kg_review_pilot(
     knowledge-review-admission-dry-run or knowledge-review-admission. Use a
     canonical UUID request_id and reuse it after any uncertain response.
     Application requires a matching successful dry_run_request_id, at most
-    15 minutes old; each dry run can authorize only one application. Review
+    15 minutes old. Each dry run can authorize only one application. Review
     the dry-run counts before applying. No arguments, manifests or schedules
     can be overridden. Limits remain 20 notes / 60 GitHub requests / a
     240-second admission cutoff (300-second admission workflow deadline).
