@@ -101,7 +101,8 @@ pub struct Index {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Source {
-    pub path: String,
+    /// Upstream checkpoint, e.g. `org/repo@revision`; never a local path.
+    pub origin: String,
     pub model_type: String,
     /// Free-form provenance, e.g. upstream revision or checkpoint fingerprint.
     #[serde(default)]

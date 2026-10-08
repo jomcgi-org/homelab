@@ -29,7 +29,7 @@ fn byte(key: u32, i: usize) -> u8 {
 
 fn synthetic(dir: &std::path::Path) -> Arc<Model> {
     let source = Source {
-        path: "synthetic".into(),
+        origin: "synthetic".into(),
         model_type: "test".into(),
         fingerprint: String::new(),
     };

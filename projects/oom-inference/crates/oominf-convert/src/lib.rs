@@ -33,6 +33,9 @@ pub struct Options {
     pub expert_layers: Option<RangeInclusive<u32>>,
     /// Write gather tables (they can be very large).
     pub tables: bool,
+    /// Upstream checkpoint recorded in the index, e.g. `org/repo@revision`
+    /// (default: see [`default_origin`]).
+    pub origin: Option<String>,
 }
 
 impl Default for Options {
@@ -40,6 +43,7 @@ impl Default for Options {
         Options {
             expert_layers: None,
             tables: true,
+            origin: None,
         }
     }
 }
@@ -98,7 +102,7 @@ pub fn convert(
     }
 
     let source = Source {
-        path: src.display().to_string(),
+        origin: opts.origin.clone().unwrap_or_else(|| default_origin(src)),
         model_type: adapter.model_type().to_owned(),
         fingerprint: checksum(&index_raw),
     };
@@ -180,6 +184,24 @@ pub fn convert(
     }
     let index = writer.finish()?;
     Ok((index, summary))
+}
+
+/// The source directory's name, plus `@<revision>` when it was downloaded with
+/// the Hugging Face CLI (which records the commit of each file it fetched).
+pub fn default_origin(src: &Path) -> String {
+    let name = src
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let meta = src.join(".cache/huggingface/download/config.json.metadata");
+    match std::fs::read_to_string(meta) {
+        Ok(m) => match m.lines().next().filter(|r| !r.is_empty()) {
+            Some(rev) => format!("{name}@{rev}"),
+            None => name,
+        },
+        Err(_) => name,
+    }
 }
 
 /// Orders names with embedded numbers numerically (`layers.2` before `layers.10`).
