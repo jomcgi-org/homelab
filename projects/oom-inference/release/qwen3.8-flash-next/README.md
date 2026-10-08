@@ -21,12 +21,12 @@ model-index:
           type: text-generation
           name: Text Generation
         dataset:
-          name: GSM8K (300 of 1,319)
+          name: GSM8K
           type: gsm8k
         metrics:
           - type: accuracy
-            value: 97.33
-            name: Accuracy (greedy, oomeval)
+            value: 97.73
+            name: Accuracy (full 1,319, t0.6, top-p 0.95, max 8,192, oomeval)
         source:
           url: https://github.com/jomcgi-org/homelab/blob/main/projects/oom-inference/docs/dev/measurements.md
           name: oomeval
@@ -76,27 +76,46 @@ How it works: [How to serve 134 GB of model weights with 24 GB VRAM / 64 GB RAM]
 ## Quality
 
 Measured through `oominf serve`'s OpenAI-compatible API with
-[oomeval](https://github.com/jomcgi-org/homelab/tree/main/projects/oom-inference/evals),
-temperature 0, the same items in both oominf columns. **Defaults** are `serve` with no flags
-(fp32 compute, k8v6 KV cache). **Max-perf** adds `--dense fp8 --expert-precision bf16`.
+[oomeval](https://github.com/jomcgi-org/homelab/tree/main/projects/oom-inference/evals), on the
+files in this repository with `serve` defaults (fp32 compute, k8v6 KV cache).
 
-| Benchmark                | oominf defaults | oominf max-perf | Unquantised BF16 | NVFP4 on SGLang |
-| ------------------------ | --------------: | --------------: | ---------------: | --------------: |
-| GSM8K                    |           97.33 |           97.00 |   97.12 to 97.50 |           97.27 |
-| MMLU-Pro                 |           77.00 |           77.50 |                — |               — |
-| RULER, 8k and 32k        |           99.23 |           99.62 |                — |               — |
-| RULER, 95k               |           98.46 |           98.08 |                — |               — |
+### Against the published scores, same protocol
 
-- oominf: GSM8K is 300 of 1,319 items, MMLU-Pro 200 of 12,032 at a 4,096-token limit (17.5% of
-  answers were cut off in both columns, so its absolute score understates the model), RULER 104
-  items at 8k and 32k and 52 at 95k (single needle, multi-key, multi-value, variable tracking).
-  Defaults against max-perf differ by less than one point on every task, with no difference
-  outside its 95% interval.
-- BF16 and SGLang columns are RadixArk's, from their
-  [model card](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4): the full 1,319 items at
-  temperature 0.6, and the BF16 runs were on an earlier revision of the model. They are a sanity
-  check, not a same-protocol comparison. RadixArk also report AIME26 at 100 (BF16) and 98.75
-  pass@1 (NVFP4).
+Each row runs the full set with the sampling settings and sample count published for the score it
+is compared with (for GPQA-Diamond, where Qwen publish none, Qwen's recommended thinking-mode
+sampling).
+
+| Benchmark                  | Protocol                                   | oominf                  | Unquantised BF16 | NVFP4 on SGLang |
+| -------------------------- | ------------------------------------------ | ----------------------- | ---------------: | --------------: |
+| GSM8K (1,319)              | t0.6, top-p 0.95, max 8,192, 1 sample      | **97.73** (95% CI ±0.80) |   97.12 to 97.50 |           97.27 |
+| GPQA-Diamond (198)         | thinking, t1.0, top-p 0.95, top-k 20, max 65,536, 1 sample | running        |             91.7 |      not reported |
+| AIME26 (30 x 8)            | thinking, t1.0, top-p 0.95, max 130,000, pass@1 over 8 | queued     |              100 |           98.75 |
+
+- GSM8K: 0.3% of answers hit the 8,192-token limit; median decode 37.2 tok/s.
+- BF16 GSM8K and AIME26 and the SGLang column are RadixArk's, from their
+  [model card](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4); their BF16 runs were on
+  an earlier revision of the model. BF16 GPQA-Diamond is from the
+  [Qwen model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), which does not state its
+  harness or sample count.
+- Prompts and answer extraction differ between harnesses, so differences of a point or two are
+  within what the harness alone can move.
+
+### Defaults against max-perf
+
+Paired runs on the same items, temperature 0. **Max-perf** adds
+`--dense fp8 --expert-precision bf16`.
+
+| Benchmark (items)        | Defaults | Max-perf |
+| ------------------------ | -------: | -------: |
+| GSM8K (300 of 1,319)     |    97.33 |    97.00 |
+| MMLU-Pro (200 of 12,032) |    77.00 |    77.50 |
+| RULER, 8k and 32k (104)  |    99.23 |    99.62 |
+| RULER, 95k (52)          |    98.46 |    98.08 |
+
+- No difference is outside its 95% interval. RULER covers single needle, multi-key, multi-value
+  and variable tracking.
+- MMLU-Pro ran at a 4,096-token limit: 17.5% of answers were cut off in both columns, so its
+  absolute score understates the model.
 - Numerics are checked against the model's reference implementation on every change; see
   [testing](https://github.com/jomcgi-org/homelab/blob/main/projects/oom-inference/docs/dev/testing.md).
 
@@ -108,7 +127,7 @@ one request at a time.
 | Workload                                 | Defaults          | Max-perf          |
 | ---------------------------------------- | ----------------- | ----------------- |
 | Decode, short and medium prompts         | 33 to 36 tok/s    | 40 to 48 tok/s    |
-| Prefill, 21.9k-token prompt, warm        | —                 | 3,118 tok/s       |
+| Prefill, 21.9k-token prompt, warm        | not measured      | 3,118 tok/s       |
 | 95k-token prompt: time to first token    | 36.9 s            | 29.7 s            |
 | 95k-token prompt: decode                 | 16.7 tok/s        | 18.0 tok/s        |
 
@@ -132,7 +151,7 @@ one request at a time.
 ## Download and serve
 
 ```bash
-hf download ORG/Qwen3.8-Flash-Next-NVFP4-oominf \
+hf download jomcgi-org/Qwen3.8-Flash-Next-NVFP4-oominf \
   --revision oominf-format-0 \
   --local-dir ~/models/qwen3.8-flash-next.oom
 
@@ -165,7 +184,7 @@ it does not know.
 | Base model         | `Qwen/Qwen3.8-Flash-Next`                                             |
 | Quantised release  | `RadixArk/Qwen3.8-Flash-Next-NVFP4` at `7b719225242aacd3dbd3f9407468c2ee9a9d2594` |
 | Quantisation       | NVIDIA ModelOpt 0.46.0 NVFP4 W4A4, routed experts only (RadixArk)     |
-| Converted with     | `oominf convert`, homelab commit `COMMIT`                             |
+| Converted with     | `oominf convert`, homelab commit `3744eea70`                             |
 
 ## License
 
