@@ -114,3 +114,24 @@ def test_review_pilot_jobs_require_manual_submission_and_preserve_bounds(values)
         container = workflow["templates"][0]["container"]
         assert container["args"] == args
         assert "GITHUB_TOKEN" not in {item["name"] for item in container["env"]}
+
+
+@pytest.mark.parametrize("values", [(), (DEPLOY,), (DEPLOY, GKE)])
+def test_all_review_workflows_serialize_and_capture_receipts(values):
+    jobs = _render(*values)
+    names = [name for name in jobs if name.startswith("knowledge-review-")]
+    assert len(names) == 5
+    for name in names:
+        workflow = jobs[name]["workflowSpec"]
+        assert jobs[name]["suspend"] is True
+        assert workflow["synchronization"] == {
+            "mutexes": [{"name": "knowledge-review-pilot"}]
+        }
+        assert workflow["templates"][0]["outputs"] == {
+            "parameters": [
+                {
+                    "name": "review-report",
+                    "valueFrom": {"path": "/tmp/knowledge-review-report.json"},
+                }
+            ]
+        }

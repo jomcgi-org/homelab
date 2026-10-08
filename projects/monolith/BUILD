@@ -5280,6 +5280,18 @@ bdd_test(
 )
 
 py_test(
+    name = "knowledge_review_pilot_test",
+    srcs = ["knowledge/review_pilot_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_review_admission_test",
     srcs = ["knowledge/review_admission_test.py"],
     imports = ["."],

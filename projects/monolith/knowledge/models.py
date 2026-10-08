@@ -832,3 +832,23 @@ class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     pipeline_version: str = Field(sa_column=Column(String, nullable=False))
+
+
+class ReviewPilotRun(SQLModel, table=True):
+    """Durable idempotency and audit receipt for an operator's bounded workflow."""
+
+    __tablename__ = "review_pilot_runs"
+    __table_args__ = {"schema": "knowledge"}
+    request_id: str = Field(primary_key=True)
+    job: str
+    actor: str
+    workflow_name: str = Field(unique=True)
+    dry_run_request_id: str | None = Field(default=None, unique=True)
+    # A unique non-null slot serializes submissions across API replicas.
+    # Unknown submission outcomes retain the slot until terminal readback.
+    active_slot: int | None = Field(default=None, unique=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))

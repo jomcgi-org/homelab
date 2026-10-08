@@ -194,6 +194,68 @@ async def grant_kg_burst(extra_jobs: int, duration_minutes: int) -> dict:
         return {"error": str(exc)}
 
 
+def _review_operator() -> str:
+    from auth.api import Authority, PrincipalKind
+
+    principal = current_principal()
+    if (
+        principal.authority != Authority.STANDING
+        or principal.kind != PrincipalKind.HUMAN
+        or not principal.has_group("operators")
+    ):
+        raise ValueError("standing human operator authority is required")
+    return f"{principal.issuer}:{principal.subject}"
+
+
+@_knowledge_tool
+async def inspect_kg_review_pilot(request_id: str | None = None) -> dict:
+    """Inspect fixed KG review controls and an audited request, without manifests.
+
+    Operator-only. Omit request_id to inspect the active receipt. Inspection
+    records terminal evidence; absent or inaccessible workflows stay fenced.
+    """
+    from knowledge import review_pilot
+
+    try:
+        _review_operator()
+        return await review_pilot.inspect(request_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        logger.exception("KG review pilot inspection unavailable")
+        return {"error": "review pilot inspection unavailable; no submission was made"}
+
+
+@_knowledge_tool
+async def submit_kg_review_pilot(
+    job: str, request_id: str, dry_run_request_id: str | None = None
+) -> dict:
+    """Submit one fixed, suspended KG review job as a standing human operator.
+
+    job is knowledge-review-backfill-dry-run, knowledge-review-backfill-pilot,
+    knowledge-review-admission-dry-run or knowledge-review-admission. Use a
+    canonical UUID request_id and reuse it after any uncertain response.
+    Application requires a matching successful dry_run_request_id, at most
+    15 minutes old; each dry run can authorize only one application. Review
+    the dry-run counts before applying. No arguments, manifests or schedules
+    can be overridden. Limits remain 20 notes / 60 GitHub requests / a
+    240-second admission cutoff (300-second admission workflow deadline).
+    Other pilot jobs have a hard 240-second workflow deadline.
+    """
+    from knowledge import review_pilot
+
+    try:
+        actor = _review_operator()
+        return await review_pilot.submit(job, request_id, actor, dry_run_request_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        logger.exception("KG review pilot submission unavailable")
+        return {
+            "error": "review pilot submission unavailable; inspect and reuse the same request_id"
+        }
+
+
 @_knowledge_tool
 async def search_knowledge(
     query: str,

@@ -260,13 +260,39 @@ The existing `knowledge-review-admission` job applies one batch with at most
 20 notes and 60 GitHub requests, a 240-second cutoff before starting another
 note, and a 300-second workflow deadline. Submit it only after reviewing
 dry-run counts and confirming no admission workflow is active. `Forbid`
-controls scheduled runs; manual submissions must be serialized by the operator.
+controls scheduled runs; the shared mutex also serializes manual execution.
 Capture its outcome counts and authoritative evidence for actual renewed note
 IDs. Confirm `last_reviewed_at` and `review_after` moved from that evidence,
 original `observed_at` stayed unchanged, and unavailable/unsupported outcomes
-left notes due. The MCP `monolith_agent_trigger_job` path requires a legacy
-scheduler row and a matching `replaces` annotation; these jobs have neither
-configured by the chart. It cannot substitute for Argo submission.
+left notes due. The operator-only MCP `submit_kg_review_pilot` now submits these
+fixed jobs without a legacy scheduler row. `inspect_kg_review_pilot` returns
+only control status and audited JSON results; it does not return manifests,
+credential references or pod logs.
+
+Use a canonical UUID `request_id` for each proposed submission. Reuse that ID
+after a timeout or lost response. Inspect the dry-run result before requesting
+application, passing its ID as `dry_run_request_id`. The server requires a
+matching successful, nonempty dry run from the last 15 minutes, and each dry
+run can authorize one application. Neither tool accepts argument, namespace or
+manifest overrides. Both require standing human membership in `operators`.
+
+A durable database receipt records the operator, job, request ID, workflow name
+and observed results. A unique active slot serializes API submissions across
+replicas; all five review CronWorkflows also share an Argo controller mutex for
+manual and scheduled execution. Inspection records terminal results before
+releasing the slot. A failed Kubernetes call or missing Workflow leaves the
+receipt fenced. An operator must investigate that uncertainty; the tools offer
+no force release or resubmit path. Retained receipts prevent reuse of a request
+ID after Argo garbage collection. Submit refuses drifted arguments or bounds,
+active review workflows, and unsuspended review controls.
+
+The existing monolith Role supplies CronWorkflow list access. The platform's
+`monolith-workflow-submit` Role supplies Workflow create/get/list in
+`monolith-workflows`; this extension adds no RBAC grants. Tool discovery and
+operator identity must be verified on the deployed MCP before claiming that
+a client can run the pilot. JSON reports list the bounded candidate note IDs
+and committed outcomes; retrieve renewed notes to inspect authoritative review
+evidence and deadlines. These controls do not enable ongoing scheduling.
 
 Keep recurring admission suspended until pilot evidence is reviewed. Enable
 its existing 15-minute schedule through a separate approved GitOps change,
