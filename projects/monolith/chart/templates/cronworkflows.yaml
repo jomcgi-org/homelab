@@ -64,6 +64,12 @@ spec:
   failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 5 }}
   workflowSpec:
     entrypoint: run
+    {{- if .knowledgeReview }}
+    # Shared by manual and scheduled review jobs on this namespace's controller.
+    synchronization:
+      mutexes:
+        - name: knowledge-review-pilot
+    {{- end }}
     {{- with .parameters }}
     # Optional Argo parameters (an entry's `parameters` list of name/value). They
     # let `argo submit -p name=value` feed a manual-only job. Args reference them
@@ -112,6 +118,13 @@ spec:
       strategy: OnWorkflowSuccess
     templates:
       - name: run
+        {{- if .knowledgeReview }}
+        outputs:
+          parameters:
+            - name: review-report
+              valueFrom:
+                path: /tmp/knowledge-review-report.json
+        {{- end }}
         container:
           image: "{{ $.Values.jobs.image.repository }}@{{ $.Values.jobs.image.digest }}"
           args:

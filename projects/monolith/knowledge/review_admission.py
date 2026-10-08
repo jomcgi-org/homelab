@@ -143,9 +143,11 @@ def run_admission(
     started = utc(clock())
     candidates, blocked = due_candidates(session, now=started, limit=limits.batch)
     counts: Counter = Counter(candidates=len(candidates), blocked=blocked)
+    note_ids = [candidate.note_id for candidate in candidates]
+    outcomes = []
     if not apply:
         session.rollback()
-        return {"dry_run": True, **counts}
+        return {"dry_run": True, **counts, "note_ids": note_ids}
     counts.update(
         dict.fromkeys(
             (
@@ -198,6 +200,14 @@ def run_admission(
                 )
                 counts[verdict.status] += 1
             session.commit()
+            outcomes.append(
+                {
+                    "note_id": candidate.note_id,
+                    "outcome": ("renewed" if result.renewed else "aborted")
+                    if verdict.status == "success"
+                    else verdict.status,
+                }
+            )
         except OperationalError:
             session.rollback()
             raise
@@ -206,4 +216,4 @@ def run_admission(
             counts["errors"] += 1
             logger.exception("knowledge review admission failed for a note")
     counts["requests"] = verifier.requests
-    return {"dry_run": False, **counts}
+    return {"dry_run": False, **counts, "note_ids": note_ids, "outcomes": outcomes}

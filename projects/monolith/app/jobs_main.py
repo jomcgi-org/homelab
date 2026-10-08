@@ -27,6 +27,7 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import typer
 
@@ -502,6 +503,7 @@ def knowledge_review_backfill(
             max_batches=max_batches,
             pending_only=pending_only,
         )
+    Path("/tmp/knowledge-review-report.json").write_text(json.dumps(result))
     typer.echo(json.dumps(result))
 
 
@@ -542,6 +544,7 @@ def knowledge_review_admission(
                 limits=Limits(batch_size, max_requests, deadline_seconds),
                 apply=apply,
             )
+    Path("/tmp/knowledge-review-report.json").write_text(json.dumps(result))
     typer.echo(json.dumps(result))
 
 

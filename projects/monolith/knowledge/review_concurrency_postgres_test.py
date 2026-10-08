@@ -511,3 +511,42 @@ def test_competing_extractions_advance_revision_for_each_retelling(lane):
         refused = _review(session, lane, revision=lane.revision + 1)
         assert refused.reason == "revision_changed"
         session.commit()
+
+
+def test_review_pilot_reservations_serialize_in_postgres(pg, monkeypatch):
+    from knowledge import review_pilot
+    from knowledge.models import ReviewPilotRun
+
+    engine = create_engine(pg.url, poolclass=NullPool)
+    monkeypatch.setattr(review_pilot, "get_engine", lambda: engine)
+    keys = [str(uuid4()) for _ in range(4)]
+
+    def reserve(key):
+        try:
+            return review_pilot._reserve(
+                "knowledge-review-admission-dry-run", key, "test-operator", None
+            )
+        except ValueError:
+            return None
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(reserve, keys))
+        assert sum(result is not None for result in results) == 1
+        winner = next(result for result in results if result)
+        assert review_pilot._read(winner["request_id"])["active"]
+        # An uncertain result retains the unique slot across API instances.
+        review_pilot._record(winner["request_id"], {"phase": "Unknown"})
+        assert reserve(str(uuid4())) is None
+        review_pilot._record(winner["request_id"], {"phase": "Failed"})
+        assert not review_pilot._read(winner["request_id"])["active"]
+        replay = reserve(winner["request_id"])
+        assert replay["created"] is False
+    finally:
+        with Session(engine) as session:
+            for key in keys:
+                row = session.get(ReviewPilotRun, key)
+                if row:
+                    session.delete(row)
+            session.commit()
+        engine.dispose()

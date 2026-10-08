@@ -31,6 +31,7 @@ def backfill(
     policies = Counter()
     freshness = Counter()
     count = 0
+    note_ids = []
     cursor = after
     exhausted = False
     try:
@@ -64,6 +65,8 @@ def backfill(
                 if apply:
                     note.review_policy = projected.review_policy
                     note.review_after = projected.review_after
+                if len(note_ids) < 20:
+                    note_ids.append(str(note.note_id))
                 count += 1
             cursor = str(rows[-1].note_id)
             if len(rows) < batch_size:
@@ -80,6 +83,7 @@ def backfill(
     return {
         "dry_run": not apply,
         "count": count,
+        "note_ids": note_ids,
         "policies": dict(policies),
         "freshness": dict(freshness),
         "next_after": None if exhausted else cursor,

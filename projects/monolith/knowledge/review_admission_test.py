@@ -822,7 +822,12 @@ def test_dry_run_counts_without_requests_or_writes(session):
     add(session, volatile("a", 1), volatile("b", 2, title="Issue #2 is blocked"))
     github = Github()
     result = admit(session, github, Clock(), apply=False)
-    assert result == {"dry_run": True, "candidates": 2, "blocked": 0}
+    assert result == {
+        "dry_run": True,
+        "candidates": 2,
+        "blocked": 0,
+        "note_ids": ["a", "b"],
+    }
     assert github.calls == [] and outcomes(session) == []
 
 

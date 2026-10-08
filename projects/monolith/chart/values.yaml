@@ -442,6 +442,7 @@ jobs:
           memory: 512Mi
     # Manual #6812 pilot: review dry-run counts before submitting application.
     - name: knowledge-review-backfill-dry-run
+      knowledgeReview: true
       suspend: true
       args:
         [
@@ -462,6 +463,7 @@ jobs:
         limits:
           memory: 512Mi
     - name: knowledge-review-backfill-pilot
+      knowledgeReview: true
       suspend: true
       args:
         [
@@ -483,6 +485,7 @@ jobs:
         limits:
           memory: 512Mi
     - name: knowledge-review-admission-dry-run
+      knowledgeReview: true
       suspend: true
       args:
         [
@@ -507,6 +510,7 @@ jobs:
     # Opt in only after an operator-approved dry run. Once enabled, catches up
     # notes from pre-migration pods; no-op when drained. See knowledge/README.md.
     - name: knowledge-review-backfill
+      knowledgeReview: true
       suspend: true
       args: ["knowledge-review-backfill", "--apply", "--pending-only"]
       schedule: "*/5 * * * *"
@@ -523,6 +527,7 @@ jobs:
     # never overlap. Lands suspended until the scoped pilot in
     # knowledge/README.md; enabling it is a values-only change.
     - name: knowledge-review-admission
+      knowledgeReview: true
       args:
         [
           "knowledge-review-admission",

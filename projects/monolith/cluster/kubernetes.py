@@ -643,6 +643,35 @@ class KubernetesClient:
         )
         return created["metadata"]["name"]
 
+    async def get_workflow(self, namespace: str, name: str) -> dict | None:
+        """Read a Workflow for audited bounded submission reconciliation."""
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        try:
+            return await custom.get_namespaced_custom_object(
+                group="argoproj.io",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="workflows",
+                name=name,
+            )
+        except client.exceptions.ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
+
+    async def list_workflows(self, namespace: str) -> list[dict]:
+        """Read workflow inventory, including unlabelled manual submissions."""
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        result = await custom.list_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="workflows",
+        )
+        return result.get("items", [])
+
     async def list_cronworkflows(self, namespace: str) -> list[dict]:
         """List Argo CronWorkflow custom resources in ``namespace``."""
         api = await self._ensure_client()

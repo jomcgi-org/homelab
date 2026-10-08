@@ -930,3 +930,59 @@ def _result(value):
     r = MagicMock()
     r.first.return_value = value
     return r
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["inspect_kg_review_pilot", "submit_kg_review_pilot"])
+@pytest.mark.parametrize(
+    "kind,authority,groups",
+    [
+        (PrincipalKind.HUMAN, Authority.ANONYMOUS, ("operators",)),
+        (PrincipalKind.WORKLOAD, Authority.STANDING, ("operators",)),
+        (PrincipalKind.HUMAN, Authority.DELEGATED, ("operators",)),
+        (PrincipalKind.HUMAN, Authority.STANDING, ()),
+    ],
+)
+async def test_review_pilot_denies_nonstanding_human_operator(
+    tool, kind, authority, groups
+):
+    from dataclasses import replace
+    from knowledge import mcp, review_pilot
+
+    principal = replace(_principal(), kind=kind, authority=authority, groups=groups)
+    with (
+        patch.object(mcp, "current_principal", return_value=principal),
+        patch.object(review_pilot, "inspect", new_callable=AsyncMock) as inspect,
+        patch.object(review_pilot, "submit", new_callable=AsyncMock) as submit,
+    ):
+        args = (
+            {}
+            if tool == "inspect_kg_review_pilot"
+            else {"job": "knowledge-review-admission-dry-run", "request_id": "bad"}
+        )
+        result = await getattr(mcp, tool)(**args)
+    assert result == {"error": "standing human operator authority is required"}
+    inspect.assert_not_called()
+    submit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_review_pilot_carries_verified_operator_identity():
+    from knowledge import mcp, review_pilot
+
+    with (
+        patch.object(mcp, "current_principal", return_value=_principal()),
+        patch.object(
+            review_pilot,
+            "submit",
+            new_callable=AsyncMock,
+            return_value={"active": True},
+        ) as submit,
+    ):
+        result = await mcp.submit_kg_review_pilot(
+            "knowledge-review-admission-dry-run", "request"
+        )
+    assert result == {"active": True}
+    submit.assert_awaited_once_with(
+        "knowledge-review-admission-dry-run", "request", ":agent@example.com", None
+    )
