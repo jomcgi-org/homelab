@@ -1598,7 +1598,7 @@ def test_muse_prompt_is_readable_by_dropped_cli_and_outside_checkout(
 def test_muse_settings_json_has_mcp_servers_when_configured(tmp_path, monkeypatch):
     agent_mcp_url = "http://agents.test:8092/mcp"
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
-    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: True)
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url, **_kwargs: True)
     manager = _muse_manager(tmp_path, monkeypatch)
 
     manager.turn("settings", model="spark")
@@ -1616,12 +1616,9 @@ def test_muse_settings_json_has_mcp_servers_when_configured(tmp_path, monkeypatc
     assert "framing" not in agents
 
 
-@pytest.mark.parametrize("probe_succeeds", [True, False])
-def test_muse_settings_json_pins_plaintext_endpoint_transport(
-    tmp_path, monkeypatch, probe_succeeds
-):
+def test_muse_settings_json_pins_plaintext_endpoint_transport(tmp_path, monkeypatch):
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
-    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: probe_succeeds)
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url, **_kwargs: True)
     manager = _muse_manager(tmp_path, monkeypatch)
 
     manager.turn("settings", model="spark")
@@ -1632,7 +1629,7 @@ def test_muse_settings_json_pins_plaintext_endpoint_transport(
         "auth": "bearer",
     }
     assert settings["telemetry"] == {"enabled": False}
-    assert ("mcp_servers" in settings) is probe_succeeds
+    assert "mcp_servers" in settings
 
 
 def test_muse_base_url_argv_matches_settings_endpoint_transport(tmp_path, monkeypatch):
@@ -1658,34 +1655,35 @@ def test_muse_settings_json_omits_mcp_servers_when_url_unset(tmp_path, monkeypat
     assert "mcp_servers" not in settings
 
 
-def test_muse_settings_json_omits_mcp_servers_when_probe_fails(tmp_path, monkeypatch):
-    monkeypatch.setenv(
-        shim.AGENT_MCP_URL_ENV,
-        "http://agents.test:8092/mcp",
-    )
-    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: False)
+def test_muse_required_mcp_failure_aborts_before_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+
+    def unavailable(url, *, required):
+        assert required
+        raise shim.TransientTurnError("required agents MCP initialize failed: HTTP 503")
+
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", unavailable)
     manager = _muse_manager(tmp_path, monkeypatch)
-
-    manager.turn("settings", model="spark")
-
-    settings = json.loads((tmp_path / "muse-settings.json").read_text())
-    assert settings["schema_version"] == 1
-    assert "mcp_servers" not in settings
+    with pytest.raises(shim.TransientTurnError):
+        manager.turn("tier is down", model="spark")
+    assert not (tmp_path / "muse-args.jsonl").exists()
 
 
-def test_muse_mcp_probe_runs_once_per_adapter(tmp_path, monkeypatch):
+def test_muse_mcp_probe_runs_every_turn(tmp_path, monkeypatch):
     agent_mcp_url = "http://agents.test:8092/mcp"
     probes = []
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
     monkeypatch.setattr(
-        shim, "_agent_mcp_endpoint_alive", lambda url: probes.append(url) or True
+        shim,
+        "_agent_mcp_endpoint_alive",
+        lambda url, **_kwargs: probes.append(url) or True,
     )
     manager = _muse_manager(tmp_path, monkeypatch)
 
     manager.turn("first", model="spark")
     manager.turn("second", model="spark")
 
-    assert probes == [agent_mcp_url]
+    assert probes == [agent_mcp_url, agent_mcp_url]
 
 
 def test_muse_mcp_probe_recovers_after_negative_result(tmp_path, monkeypatch):
@@ -1693,14 +1691,19 @@ def test_muse_mcp_probe_recovers_after_negative_result(tmp_path, monkeypatch):
     probes = []
     results = iter((False, True))
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
-    monkeypatch.setattr(
-        shim,
-        "_agent_mcp_endpoint_alive",
-        lambda url: probes.append(url) or next(results),
-    )
+
+    def probe(url, *, required):
+        assert required
+        probes.append(url)
+        if not next(results):
+            raise shim.TransientTurnError("HTTP 503")
+        return True
+
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", probe)
     manager = _muse_manager(tmp_path, monkeypatch)
 
-    manager.turn("tier is down", model="spark")
+    with pytest.raises(shim.TransientTurnError):
+        manager.turn("tier is down", model="spark")
     manager.turn("tier recovered", model="spark")
 
     assert probes == [agent_mcp_url, agent_mcp_url]
@@ -11458,3 +11461,40 @@ def test_claude_turn_leaves_a_record_without_a_numeric_cost_alone(
     assert "cumulative_total_cost_usd" not in record
     assert record["modelUsage"]["model"]["costUSD"] == 0.01
     manager._close_process(kill=True)
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 408, 429, 500, 502, 503, 504])
+def test_required_mcp_probe_classifies_http_failures(monkeypatch, status):
+    class ErrorOpener:
+        def open(self, request, timeout):
+            raise shim.urllib.error.HTTPError(
+                request.full_url, status, "secret-body", {}, None
+            )
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda handler: ErrorOpener()
+    )
+    with pytest.raises(RuntimeError) as raised:
+        shim._agent_mcp_endpoint_alive(
+            "http://agents.test/mcp?secret-query", required=True
+        )
+    assert isinstance(raised.value, shim.TransientTurnError) is (
+        status >= 500 or status in (408, 429)
+    )
+    assert "HTTP %s" % status in str(raised.value)
+    assert "secret" not in str(raised.value)
+
+
+def test_required_mcp_probe_timeout_is_retryable(monkeypatch):
+    class TimeoutOpener:
+        def open(self, request, timeout):
+            raise socket.timeout("secret-url")
+
+    monkeypatch.setattr(
+        shim.urllib.request, "build_opener", lambda handler: TimeoutOpener()
+    )
+    with pytest.raises(
+        shim.TransientTurnError, match="required agents MCP initialize unavailable"
+    ) as raised:
+        shim._agent_mcp_endpoint_alive("http://agents.test/mcp", required=True)
+    assert "secret" not in str(raised.value)

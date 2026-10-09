@@ -1406,8 +1406,8 @@ def _create_claude_mcp_config_dir():
     os.chmod(CLAUDE_MCP_CONFIG_DIR, 0o755)
 
 
-def _agent_mcp_endpoint_alive(url, timeout=3.0):
-    """Return whether the MCP endpoint produces any HTTP response."""
+def _agent_mcp_endpoint_alive(url, timeout=3.0, *, required=False):
+    """Probe MCP; required callers fail closed and preserve dependency errors."""
     proxy_env = egress_proxy_env()
     proxy_handler = urllib.request.ProxyHandler(
         {
@@ -1441,9 +1441,19 @@ def _agent_mcp_endpoint_alive(url, timeout=3.0):
         response = opener.open(request, timeout=timeout)
         response.close()
         return True
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        if required:
+            message = "required agents MCP initialize failed: HTTP %s" % exc.code
+            if exc.code in (408, 429) or 500 <= exc.code < 600:
+                raise TransientTurnError(message) from None
+            raise RuntimeError(message) from None
         return True
-    except (urllib.error.URLError, socket.timeout, OSError):
+    except (urllib.error.URLError, socket.timeout, OSError) as exc:
+        if required:
+            raise TransientTurnError(
+                "required agents MCP initialize unavailable: %s" % type(exc).__name__
+            ) from None
         return False
 
 
@@ -4665,7 +4675,6 @@ class MuseProcess:
         self._stderr_thread = None
         self._stdout_queue = None
         self._prompt_file_path = None
-        self._mcp_probe_cached = None
         self._retained_tool_events = None
         # Set on every spawn; None until the first turn resolves a model.
         self._model = None
@@ -4716,8 +4725,8 @@ class MuseProcess:
         mode "required" aborts the whole run when the server cannot start,
         which is the point: a muse guest must not silently proceed without the
         knowledge graph. That couples every turn to the tier being reachable,
-        so the caller gates this on the same liveness probe the pi bridge
-        uses and writes no mcp_servers key at all when it fails.
+        so every spawn checks the dependency and aborts on failure. A probe
+        never removes a configured required server.
 
         Muse 1.0.3-R2198.1 was verified on 2026-09-10 to ignore every CA
         environment variable and the system trust store, trusting only its
@@ -4740,10 +4749,8 @@ class MuseProcess:
         the Bearer Authorization header the presence-keyed swap keys on.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
-        if not self._mcp_probe_cached:
-            self._mcp_probe_cached = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
-                agent_mcp_url
-            )
+        if agent_mcp_url:
+            _agent_mcp_endpoint_alive(agent_mcp_url, required=True)
 
         settings = {
             "schema_version": 1,
@@ -4753,12 +4760,8 @@ class MuseProcess:
                 "auth": "bearer",
             },
         }
-        # A successful probe is cached for the adapter lifetime. A failed probe
-        # is retried next turn so a brief tier outage cannot disable knowledge
-        # tools for the session's full lifetime. This work is inside
-        # _spawn, so its latency is included in cli_ready. If a cached-positive
-        # tier later goes away, required mode makes Muse abort loudly.
-        if self._mcp_probe_cached:
+        # Keep required MCP configured on every turn, including after recovery.
+        if agent_mcp_url:
             settings["mcp_servers"] = {
                 "agents": {
                     "transport": "streamable_http",
