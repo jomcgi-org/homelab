@@ -168,6 +168,28 @@ copies before the prefill and keeping the dequantized weights in one arena left
 2.3 GB free at the last layer instead of 0.6 GB, and all 104 95k requests above
 completed.
 
+## Published-protocol runs (October 8, 2026)
+
+The model-card evals: the files published as
+`jomcgi-org/Qwen3.8-Flash-Next-NVFP4-oominf` (`oominf-format-0`), `serve`
+defaults, build 3744eea70, one request at a time, each task's default
+`oomeval` protocol (the published one).
+
+| Task (items)              | Protocol                                     | oominf           | Published                                        |
+| ------------------------- | -------------------------------------------- | ---------------- | ------------------------------------------------ |
+| GSM8K (1,319)             | t0.6, top-p 0.95, max 8,192, 1 sample        | 97.73 (CI ±0.80) | RadixArk: BF16 97.12 to 97.50, SGLang NVFP4 97.27 |
+| GPQA-Diamond (198)        | thinking, t1.0, top-p 0.95, top-k 20, max 65,536 | 88.1 on the first 118 (CI ±5.8), partial | Qwen BF16 91.7 (harness not stated)              |
+| AIME26 (30 x 8)           | thinking, t1.0, top-p 0.95, max 130,000      | not yet run      | RadixArk: BF16 100, SGLang NVFP4 98.75           |
+
+- GSM8K: 0.3% of answers hit the token limit; 471 completion tokens and 37.2
+  tok/s median decode; 4.9 h wall.
+- GPQA-Diamond was paused to free the GPU after 118 questions, the first 118
+  rows of the dataset file (not a random subset; the file has no subject field,
+  so a subject bias cannot be ruled out). Answers that hit the 65,536-token limit
+  (4 of 118) score as wrong. Answers run 8k tokens at the median, about 7
+  minutes each.
+  `oomeval` resumes it by label (`hf-gpqa`).
+
 ## Decode lookahead
 
 October 6-7, 2026, the served demo, warm, three requests per setting. Supports

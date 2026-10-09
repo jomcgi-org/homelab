@@ -6,44 +6,48 @@ assume `oominf` is on your `PATH` (otherwise use `target/release/oominf`).
 
 ```mermaid
 flowchart LR
-  A["download the<br/>release checkpoint"] --> B["oominf convert"] --> C["oominf verify"] --> D["oominf doctor"] --> E["oominf serve"] --> F["first request"]
+  A["download the<br/>converted model"] --> C["oominf verify"] --> D["oominf doctor"] --> E["oominf serve"] --> F["first request"]
 ```
 
 ## 1. Disk space
 
-| What                          | Size                                                   | Where                                            |
-| ----------------------------- | ------------------------------------------------------ | ------------------------------------------------ |
-| Release checkpoint (download) | about 155 GB                                           | any disk; delete it after converting if you like |
-| Converted model (`model.oom`) | about 135 GB: dense 10 GB, experts 73 GB, tables 51 GB | a local NVMe drive                               |
+The converted model is about 135 GB (dense 10 GB, experts 73 GB, tables 51 GB)
+and belongs on a local NVMe drive. The engine reads experts from it while it
+serves, so a slow drive directly slows cold prompts and decode misses.
+`oominf doctor` measures the drive and warns (see [hardware.md](hardware.md)).
+Converting it yourself (below) also needs about 155 GB for the release
+checkpoint, on any disk.
 
-The engine reads experts from the converted model while it serves, so a slow
-drive directly slows cold prompts and decode misses. `oominf doctor` measures
-the drive and warns (see [hardware.md](hardware.md)).
-
-## 2. Get the checkpoint
+## 2. Download the converted model
 
 oom-inference serves **Qwen3.8-Flash-Next** in the NVFP4 release
-[`RadixArk/Qwen3.8-Flash-Next-NVFP4`](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4),
-tested at revision
-[`7b719225242aacd3dbd3f9407468c2ee9a9d2594`](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4/tree/7b719225242aacd3dbd3f9407468c2ee9a9d2594).
-Download it with the Hugging Face CLI (`hf`, from the `huggingface_hub` Python
-package):
+[`RadixArk/Qwen3.8-Flash-Next-NVFP4`](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4).
+A converted copy is published as
+[`jomcgi-org/Qwen3.8-Flash-Next-NVFP4-oominf`](https://huggingface.co/jomcgi-org/Qwen3.8-Flash-Next-NVFP4-oominf),
+tagged by weight format version. Download it with the Hugging Face CLI (`hf`,
+from the `huggingface_hub` Python package) and check it:
+
+    hf download jomcgi-org/Qwen3.8-Flash-Next-NVFP4-oominf \
+        --revision oominf-format-0 \
+        --local-dir ~/models/model.oom
+    oominf verify ~/models/model.oom      # recomputes every checksum; "0 mismatches"
+
+### Or convert it yourself
+
+Conversion re-lays the released bytes out for the engine (one record per expert)
+without changing any weight, and takes about two minutes on NVMe. Download the
+release at the tested revision, then convert it once; `--out` must not already
+hold a converted model.
 
     hf download RadixArk/Qwen3.8-Flash-Next-NVFP4 \
         --revision 7b719225242aacd3dbd3f9407468c2ee9a9d2594 \
         --local-dir ~/models/Qwen3.8-Flash-Next-NVFP4
-
-## 3. Convert and check it
-
-Conversion re-lays the released bytes out for the engine (one record per expert)
-without changing any weight. Run it once; `--out` must not already hold a
-converted model.
-
-    oominf convert --src ~/models/Qwen3.8-Flash-Next-NVFP4 --out ~/models/model.oom
-    oominf verify ~/models/model.oom      # recomputes every checksum; "0 mismatches"
+    oominf convert --src ~/models/Qwen3.8-Flash-Next-NVFP4 --out ~/models/model.oom \
+        --origin RadixArk/Qwen3.8-Flash-Next-NVFP4@7b719225242aacd3dbd3f9407468c2ee9a9d2594
+    oominf verify ~/models/model.oom
     oominf inspect ~/models/model.oom     # sizes and the expert record layout
 
-## 4. Check the machine
+## 3. Check the machine
 
     oominf doctor --model ~/models/model.oom
 
@@ -53,7 +57,7 @@ memory the expert tiers would get, and any warnings. If it reports that the
 smallest working configuration does not fit, see
 [troubleshooting](troubleshooting.md#start-up-says-memory-does-not-fit).
 
-## 5. Serve
+## 4. Serve
 
     oominf serve --model ~/models/model.oom
 
@@ -64,7 +68,7 @@ machine also measures the hardware for about a second and caches the result in
 
     curl -s localhost:8091/health          # "ok" once loaded, "loading" before
 
-## 6. First request
+## 5. First request
 
 OpenAI-style:
 
