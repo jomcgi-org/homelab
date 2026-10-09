@@ -88,10 +88,13 @@ sampling).
 | Benchmark                  | Protocol                                   | oominf                  | Unquantised BF16 | NVFP4 on SGLang |
 | -------------------------- | ------------------------------------------ | ----------------------- | ---------------: | --------------: |
 | GSM8K (1,319)              | t0.6, top-p 0.95, max 8,192, 1 sample      | **97.73** (95% CI ±0.80) |   97.12 to 97.50 |           97.27 |
-| GPQA-Diamond (198)         | thinking, t1.0, top-p 0.95, top-k 20, max 65,536, 1 sample | running        |             91.7 |      not reported |
-| AIME26 (30 x 8)            | thinking, t1.0, top-p 0.95, max 130,000, pass@1 over 8 | queued     |              100 |           98.75 |
+| GPQA-Diamond (198)         | thinking, t1.0, top-p 0.95, top-k 20, max 65,536, 1 sample | 88.1 on the first 118 of 198 (partial, 95% CI ±5.8) |             91.7 |      not reported |
+| AIME26 (30 x 8)            | thinking, t1.0, top-p 0.95, max 130,000, pass@1 over 8 | not yet run |              100 |           98.75 |
 
 - GSM8K: 0.3% of answers hit the 8,192-token limit; median decode 37.2 tok/s.
+- GPQA-Diamond is partial: the first 118 rows of the dataset file, not a random subset, so it
+  is not yet a comparison with the published score. 4 answers hit the 65,536-token limit and
+  score as wrong.
 - BF16 GSM8K and AIME26 and the SGLang column are RadixArk's, from their
   [model card](https://huggingface.co/RadixArk/Qwen3.8-Flash-Next-NVFP4); their BF16 runs were on
   an earlier revision of the model. BF16 GPQA-Diamond is from the
