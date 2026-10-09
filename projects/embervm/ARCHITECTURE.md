@@ -66,9 +66,9 @@ signals, and admission control are the product surface instead).
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Built, default off**: noded's second listener (`noded.spiffe`, #5757) and the control plane's file-based dial (`controlPlane.spiffe`, #5758) both render inert until flipped; phase 2 of #5706 in flight |
 | Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
-| Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
+| Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks are **Not planned** (ADR 028, #4182) |
 | Cells / multi-cell | **Not planned** | No cell seams exist; [#3855](https://github.com/jomcgi-org/homelab/issues/3855) and [#4753](https://github.com/jomcgi-org/homelab/issues/4753) closed without the unmerged [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069) |
-| Standalone packaging | **Decided direction** | Open-sourceable artifact |
+| Standalone packaging | **Built** | Quickstart merged (#3858, PR #6070); not yet validated on a clean KVM host |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
 
 **Why.** The original single-node RPC path had no durable task record, ownership,
@@ -305,10 +305,11 @@ embervm/038, `noded/server/activator.go`).
 
 **Open direction**:
 
-- **Gated isolated high-throughput lane**: each request gets a fresh VM, with
-  admission dependent on reusable implementation and evidence from
-  [#6132](https://github.com/jomcgi-org/homelab/issues/6132), as specified by
-  [#3864](https://github.com/jomcgi-org/homelab/issues/3864).
+- **Not planned, isolated high-throughput lane**: each request gets a fresh
+  VM, with admission dependent on reusable implementation and evidence from
+  [#6132](https://github.com/jomcgi-org/homelab/issues/6132);
+  [#3864](https://github.com/jomcgi-org/homelab/issues/3864) closed without it
+  and records the reopen gate.
 - **Decided direction, persistence as a declared property**: workloads declare
   persistence flags; memory and filesystem persistence decouple from class.
 
@@ -1365,7 +1366,7 @@ credential delivery path is supplied. It also disarms every application-level
 retention delete gate inherited from the base dev values, so validation does
 not introduce a second deletion path beside the reviewed bucket lifecycle.
 
-**Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
+**Not planned rootfs plane (ADR 028, #4182, closed until its gate is met)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
 `rootfs/account/<account>/...`; allow-listed published platform chunks may use
 `rootfs/platform/...`. A brick fully hydrates and verifies every chunk of an
@@ -1770,7 +1771,7 @@ Trust diagram legend: every edge is a current path.
 | ---------------------------- | ----------- |
 | Node storage access scoped to actors scheduled on it (36, 37) | **Built**: SigV4 at the gateway, `embervm` identity only (#4708); a brick receives a five-minute decryption capability for exactly the tuple it is waking (#4691), armed in dev and production. |
 | Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the anchor (section 4), and the bound token's pod-uid and node-name claims must match the registration. A brick registers only itself. |
-| Granular admin access and envelope encryption at rest (39, 40) | **Built** for mutable principal warmth: derived per-epoch KEKs or a customer KMS oracle (section 9). Immutable rootfs chunk encryption remains Planned (ADR 028, #4182); the op-log shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
+| Granular admin access and envelope encryption at rest (39, 40) | **Built** for mutable principal warmth: derived per-epoch KEKs or a customer KMS oracle (section 9). Immutable rootfs chunk encryption is **Not planned** (ADR 028, #4182); the op-log shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
 | Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append (invariant 7), prefix-compacted past 30 days; older audit lives in the observability stack. |
 | Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action (stop minting tokens, 402 at the edge). The volume quarantine is a data-integrity guard, not an adversary control; no brick- or principal-level quarantine exists and automatic containment is undecided. |
 
@@ -1935,16 +1936,8 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
-| EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | guide merged (PR #6070); clean-host KVM validation outstanding |
-| OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | deferred until EKS metal and per-Account KMS (2026-09-12) |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, hub dev 4gi bound-1 canary staged; live acceptance pending |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | CP-to-noded mTLS built default off on both sides (#5757, #5758), rest not started |
-| A guest-declared transient failure is retried inside EmberVM on a bounded session-invoke loop, so callers outside the monolith transport get it too | section 4 | #6185 | not started |
-| A guest reports memory pressure and OOM evidence, and VMM exits are classified | section 7 | #5805 | exit observations shipped; guest feedback Shipped-but-suspended, default-off pending rootfs rebake and live checks; automatic action needs a separate flag and issue |
-| Brick scratch survives Spot replacement | section 11 | #5773 | gated on a measured recovery gap |
-| Per-VM host resource gauges on an interval | section 7 | #4773 | gated on a named sizing decision |
-| Isolated per-request lane on the shared task library | section 3 | #3864 | gated on #6132 library plus a named workload |
-| Control-plane replica loss without a single-active gap | section 11 | #3862 | gated on a named availability requirement; fence first |
 
 ---
 
@@ -1963,13 +1956,13 @@ has the full text.
 | embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted |
 | embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted historically; Postgres Built, cell work closed unmerged and is not planned ([#4753](https://github.com/jomcgi-org/homelab/issues/4753), [#3855](https://github.com/jomcgi-org/homelab/issues/3855), [PR #6069](https://github.com/jomcgi-org/homelab/pull/6069)); tracker [#3853](https://github.com/jomcgi-org/homelab/issues/3853) closed | deleted |
 | embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
-| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart merged (#3856), clean-host KVM validation open (#3858) | deleted |
+| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart merged (#3856, #3858), clean-host KVM validation not yet done | deleted |
 | embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |
 | embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted |
-| embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted |
+| embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA not planned (#3862) | deleted |
 | embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |
 | embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted |
-| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, retained behind [#3864](https://github.com/jomcgi-org/homelab/issues/3864)'s #6132 reuse and evidence gate; fail-closed lease withdrawn by 020 | deleted |
+| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft; not planned ([#3864](https://github.com/jomcgi-org/homelab/issues/3864) closed, its #6132 reuse and evidence gate is the reopen criterion); fail-closed lease withdrawn by 020 | deleted |
 | embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted |
 | embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted |
 | embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A shipped, Fork B not started (gated, see section 4) | deleted |
@@ -1982,7 +1975,7 @@ has the full text.
 | embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted |
 | embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted |
 | embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction for persistence modes and retention; size budget superseded by the evidence gate in [#5074](https://github.com/jomcgi-org/homelab/issues/5074) | deleted |
-| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, Planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted |
+| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, not planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted |
 | embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
 | embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |
 | embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted |
