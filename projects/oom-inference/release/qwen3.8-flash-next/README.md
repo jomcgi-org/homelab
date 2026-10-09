@@ -187,7 +187,7 @@ it does not know.
 | Base model         | `Qwen/Qwen3.8-Flash-Next`                                             |
 | Quantised release  | `RadixArk/Qwen3.8-Flash-Next-NVFP4` at `7b719225242aacd3dbd3f9407468c2ee9a9d2594` |
 | Quantisation       | NVIDIA ModelOpt 0.46.0 NVFP4 W4A4, routed experts only (RadixArk)     |
-| Converted with     | `oominf convert`, homelab commit `3744eea70`                             |
+| Converted with     | `oominf convert`, homelab commit `069b1eec3`                             |
 
 ## License
 
