@@ -172,7 +172,7 @@ completed.
 
 The model-card evals: the files published as
 `jomcgi-org/Qwen3.8-Flash-Next-NVFP4-oominf` (`oominf-format-0`), `serve`
-defaults, build 3744eea70, one request at a time, each task's default
+defaults, build 069b1eec3, one request at a time, each task's default
 `oomeval` protocol (the published one).
 
 | Task (items)              | Protocol                                     | oominf           | Published                                        |
