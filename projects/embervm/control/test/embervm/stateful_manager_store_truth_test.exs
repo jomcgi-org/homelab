@@ -440,7 +440,10 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
     first = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
     assert_receive {:store_list_waiting, first_worker}
 
-    send(ctx.mgr, {:wake_done, "wl-a", {:error, :forced_finish}})
+    # Wake outcomes are fenced by the token of the wake they belong to, so a
+    # forced finish must carry the in-flight wake's token to be honoured.
+    first_token = :sys.get_state(ctx.mgr).waking["wl-a"].token
+    send(ctx.mgr, {:wake_done, "wl-a", first_token, {:error, :forced_finish}})
     assert {:error, {:wake_failed, :forced_finish}} = Task.await(first)
 
     successor = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
