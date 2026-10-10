@@ -1,5 +1,5 @@
 ALTER TABLE grimoire.embedding
-    DROP CONSTRAINT embedding_embeddable_kind_chk,
+    DROP CONSTRAINT embedding_embeddable_kind_check,
     ADD CONSTRAINT embedding_embeddable_kind_chk
         CHECK (embeddable_kind IN ('entity', 'chunk', 'transcript', 'note', 'event')),
     ADD COLUMN campaign_id uuid REFERENCES grimoire.campaign(id) ON DELETE CASCADE,
