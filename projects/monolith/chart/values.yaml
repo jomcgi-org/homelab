@@ -1276,10 +1276,6 @@ jobs:
           cpu: 100m
           memory: 256Mi
 
-# Origin retained for manually invoked diagnostics; demo probes have no schedule.
-emberSynthetic:
-  baseUrl: "https://jomcgi.dev"
-
 # OAuth token broker (ADR 048). The agent surface proxies its device-code
 # login endpoints so a grant login can be kicked off from a chat with the
 # code surfaced in the tool response. Empty disables the tools.
@@ -1708,11 +1704,6 @@ scratchPostgres:
   # The embervm serving Service listenPort the scratch-postgres workload is
   # exposed on (must match the embervm chart's scratchPostgres.listenPort).
   listenPort: 5400
-  # The demo-postgres workload's listenPort (must match the embervm chart's
-  # demoPostgres.listenPort). Non-empty renders DEMO_POSTGRES_DSN for the
-  # public Ember Postgres page's sleep/wake exhibit; empty leaves it unrendered.
-  # Same serving Service and password as scratch-postgres, different workload.
-  demoListenPort: ""
   # The embervm namespace the serving Service lives in (the DSN host is
   # <servingService>.<embervmNamespace>.svc).
   embervmNamespace: embervm

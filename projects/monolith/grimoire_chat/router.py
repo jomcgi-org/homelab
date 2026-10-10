@@ -1,6 +1,7 @@
 """Internal-only HTTP API for grimoire chat (ADR security/005 posture).
 
-Adapted from ``chat_public/router.py``: the anti-injection fencing posture, the
+Adapted from the retired notes chat's ``chat_public/router.py``: the
+anti-injection fencing posture, the
 server-authoritative session model, the reserved-headroom slot handling, the
 durable cache path, and the share/fork/transcript endpoints are all preserved
 exactly. Only three things change for the Grimoire corpus: retrieval grounds on

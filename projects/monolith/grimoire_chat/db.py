@@ -10,7 +10,8 @@ else, so keeping the two engines separate is the database half of the read/write
 split: a bug in grimoire_chat cannot turn the public read tier into a writer, and
 the chat write role cannot read any private schema.
 
-It is a verbatim copy of ``chat_public/db.py`` (same public_writer engine, same
+It is a verbatim copy of ``chat_public/db.py`` (the retention jobs still use that
+one; same public_writer engine, same
 ``PUBLIC_WRITER_DATABASE_URL`` env var): both public chat surfaces share the one
 write role, which now has grants on both schemas. It is self-contained (no import
 of any private write path) so it stays out of the forbidden import closure

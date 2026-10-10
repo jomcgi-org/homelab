@@ -1,6 +1,7 @@
 """Server-side session lifecycle for grimoire chat (ADR 005, layer 1+4).
 
-A verbatim copy of ``chat_public/sessions.py`` (the lifecycle is corpus-agnostic),
+A verbatim copy of the retired notes chat's ``chat_public/sessions.py`` (the
+lifecycle is corpus-agnostic),
 with imports repointed at ``grimoire_chat``. The session row is the single
 authority for every budget. The browser holds only an opaque cookie (the session
 id); it never sends conversation history, and the server ignores any

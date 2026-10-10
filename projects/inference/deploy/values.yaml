@@ -105,9 +105,9 @@ runtimeClassName: nvidia
 # ENABLING THIS IS A DELIBERATE OUTAGE for every in-cluster qwen consumer:
 # the monolith's Discord, summarize, chat, vision and classifier callsites,
 # monolith-dev, and EmberVM pi-runtime qwen sessions. They fail at DNS, so
-# expect fast errors and dead letters rather than hangs. The Service rename
-# also takes public /health unhealthy through the inference component in
-# chat_public/health.py.
+# expect fast errors and dead letters rather than hangs. (The public /health
+# inference component that used to latch on this rename left with the
+# retired notes chat, #6913.)
 # Embeddings are untouched, so retrieval keeps working.
 #
 # The Service rename does not roll the pod (the Deployment name is unchanged),

@@ -1,7 +1,8 @@
 """SSE frame helpers for the grimoire chat stream.
 
 The grimoire chat message endpoint streams real vLLM tokens incrementally. Like
-``chat_public.sse`` (this is a verbatim copy), the path is a single async
+``chat_public.sse`` (this is a verbatim copy; that module outlives the retired
+notes chat as ``moving.chat``'s frame helper), the path is a single async
 generator: the endpoint awaits the model stream and yields SSE frames directly as
 tokens arrive, so there is no second producer and no queue, sidestepping the
 cross-thread / cross-task safety concern entirely.

@@ -1,6 +1,6 @@
 // Client-side admission helper for the Grimoire chat (ADR 005 pattern,
-// grimoire_chat backend). Mirrors lib/public/chat/admission.js (the notes
-// chat seam) exactly; only the proxy paths differ.
+// grimoire_chat backend). Began as a copy of the retired notes chat's
+// admission seam; only the proxy paths differed.
 //
 // The browser never talks to the internal chat API: it POSTs the solved
 // Turnstile token to the same-origin SSR proxy (/app/grimoire/chat/session),

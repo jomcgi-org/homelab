@@ -1,7 +1,7 @@
 // Module-level cache of the parsed public knowledge graph.
 //
-// GraphView remounts every time the visitor toggles Chat <-> Graph, and its
-// onMount re-fetched and re-parsed the full ~3.4 MB graph on each toggle. A
+// GraphView remounts on every client-side navigation back to /app/notes, and
+// its onMount re-fetched and re-parsed the full ~3.4 MB graph each time. A
 // module-level singleton persists across those remounts within one page
 // session, so the second and later opens are instant: no fetch, no JSON parse,
 // no rebuild. A full page reload starts a fresh module and clears it, which is

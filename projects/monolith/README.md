@@ -24,8 +24,8 @@ The deployed application has distinct audience surfaces:
 
 - **Public tier**: read-only, unauthenticated routes served at jomcgi.dev
   (health, public apps, docs, and published factory and knowledge views). It is
-  a pruned binary on the restricted `public_reader` role, with narrowly scoped
-  writers for the two public chat domains.
+  a pruned binary on the restricted `public_reader` role, with a narrowly
+  scoped writer for Grimoire chat.
 - **Private tier**: authenticated apps, APIs, Discord integration, knowledge
   editing, and factory controls behind the private ingress.
 - **Agent tier**: a separate pruned MCP server for EmberVM guests. It exposes
@@ -96,4 +96,4 @@ Database schema changes go through Atlas migrations checked in under
 `chart/migrations/`, applied by an in-cluster Atlas operator rather than at
 application startup.
 
-Public Ember exhibits use the recorded Firecracker restore replay. The live Postgres and Bazel demo front doors and their combined synthetic schedule are retired. Public notes provide graph browsing; the homepage points visitors to the factory activity visuals. Production agent lane probes remain on the private tier.
+Public Ember exhibits use the recorded Firecracker restore replay. The live Postgres and Bazel demo front doors, their code (`ember_public` keeps only the agent-lane probes) and their combined synthetic schedule are retired. Public notes provide graph browsing; the notes chat (`chat_public`, now only its retention jobs) is retired and the homepage points visitors to the factory activity visuals. Production agent lane probes remain on the private tier.

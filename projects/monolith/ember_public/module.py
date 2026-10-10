@@ -1,7 +1,8 @@
 """FastMonolith module export for the ember_public domain (see framework/core.py).
 
 Lives in its own file (not __init__.py) so importing the domain package does
-not pull the framework or FastAPI, mirroring chat_public/module.py.
+not pull the framework or FastAPI. Private tier only: the public Ember
+exhibits were retired (#6913), so there is no ``register_public``.
 """
 
 import ember_public as _domain
@@ -25,7 +26,6 @@ _DURABILITY_CHECK = build_durability_health()
 MODULE = _Module(
     name="ember_public",
     register=_domain.register,
-    register_public=_domain.register_public,
     register_health={
         "ember_codex": synthetic_probe_health("codex", EMBER_CODEX_STALENESS_S),
         **({"ember-durability": _DURABILITY_CHECK} if _DURABILITY_CHECK else {}),

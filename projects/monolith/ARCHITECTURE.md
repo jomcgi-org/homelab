@@ -1132,7 +1132,7 @@ as a literal. Grimoire chat is a parallel public chat surface grounded by
 pgvector retrieval over the Grimoire corpus; it streams model output, compacts
 long conversations, and shares the same admission and resource-control pattern,
 but its chat input is text rather than a multimodal message payload.
-(see: /projects/monolith/chat_public/limits.py)
+(see: /projects/monolith/grimoire_chat/limits.py)
 (see: /projects/monolith-public/deploy/values-gke.yaml)
 (see: /projects/monolith/grimoire_chat/router.py)
 
@@ -1668,16 +1668,14 @@ allowance, and changes to either value must keep the pair consistent.
 (see: /projects/monolith/factory/orchestration/health.py)
 (see: /projects/monolith/chart/values.yaml)
 
-Each Bazel, pages, Postgres, Codex or Spark probe run has an independent
-`ember.probe.<demo>` root span with final `ember.probe.demo`, `ember.probe.ok`
-and bounded `ember.probe.detail` attributes (ERROR status on failure), set by
-one helper shared by the retrying and session probes. Retrying probes also set
-`ember.probe.retries` and give each attempt a current child span with separate
-`ember.probe.attempt.*` attributes; retry delays sit outside those children.
-The Honeycomb `ember-demo-probe-failed.yaml` trigger counts failed root outcomes
-in `monolith-backend`, grouped by demo and trace ID, over an hour every 15
-minutes. A recovered retry cannot match its final-failure
-filter. The trigger uses `on_change`, so it notifies once while open and a
+Each Codex or Spark probe run has an independent `ember.probe.<demo>` root
+span with final `ember.probe.demo`, `ember.probe.ok` and bounded
+`ember.probe.detail` attributes (ERROR status on failure). The retrying demo
+probes (Bazel, pages, Postgres) and their `ember.probe.attempt.*` child spans
+left with the public exhibits (#6913). The Honeycomb
+`ember-demo-probe-failed.yaml` trigger counts failed root outcomes in
+`monolith-backend`, grouped by demo and trace ID, over an hour every 15
+minutes. The trigger uses `on_change`, so it notifies once while open and a
 second component failing in the same window sends no new notification. Probe
 outcomes use spans; no OTLP probe metric is emitted.
 (see: /projects/monolith/ember_public/synthetic_probe.py)
@@ -2063,7 +2061,7 @@ mismatch without silently rewriting the decision record.
 | ADR | Title | Status | Disposition |
 | --- | --- | --- | --- |
 | `security/004` | Public Read-Only Service Isolation | Accepted, shipped: separate pruned binary, `public_reader` on the CNPG standby, ingress and egress policy where the CRDs exist (see: /projects/monolith-public/chart/values.yaml). Private-tier default-deny egress still open (#5143) | deleted |
-| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/chat_public/limits.py). Retention and takedown purge jobs implemented (see: /projects/monolith/chat_public/retention.py); live rollout not yet observed (#3899) | deleted |
+| `security/005` | Public Chat Adversarial Hardening | Implemented: Turnstile, per-session and global admission limits, single-host egress allow (see: /projects/monolith/grimoire_chat/limits.py). Retention and takedown purge jobs implemented (see: /projects/monolith/chat_public/retention.py); live rollout not yet observed (#3899). The notes chat the ADR hardened and the Ember exhibits were retired in 2026-10 (#6913); Grimoire chat carries the controls and the retention jobs keep purging the `chat_public` schema | deleted |
 | 006 | Crossing (`moving`) on `friends.jomcgi.dev` as a second authentik lane | Accepted, shipped (see: /projects/monolith/chart/templates/httproute-friends.yaml) | deleted |
 
 ### Platform
@@ -2109,7 +2107,7 @@ mismatch without silently rewriting the decision record.
 | `agents/029` | Discord Bot Feature ACL (per-server command and repo grants) | Accepted, shipped (see: /projects/monolith/chat/acl.py) | deleted |
 | 030 | fc-invoke, a Single Configurable Surface for Running Workloads in Firecracker | Draft, evolved into EmberVM | deleted |
 | 031 | Control-Plane / Data-Plane Split for the Agent Substrate (cluster + node) | Accepted, shipped through EmberVM | deleted |
-| 032 | Warm-Snapshot Bazel Worker as an MCP Tool Surface | Draft, partially shipped as an EmberVM demo (see: /projects/monolith/ember_public/bazel_router.py) | deleted |
+| 032 | Warm-Snapshot Bazel Worker as an MCP Tool Surface | Draft, partially shipped as the EmberVM Bazel demo, retired with the public Ember exhibits in 2026-10 (#6913) | deleted |
 | 033 | Golden-Template Distribution via Daemon-Pulled OCI Artifacts | Accepted, shipped through EmberVM | deleted |
 | 034 | Per-Tier MCP Tool ACLs for Goosecracker Guests | Draft, not shipped (#3838) | deleted |
 | `agents/035` | Discord Multiplayer Agent UX (Ambient Classifier, Thread Sessions, Live Task Checklist) | Accepted, shipped (see: /projects/monolith/chat/bot.py) | deleted |

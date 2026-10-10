@@ -1,7 +1,7 @@
 <script>
   import { browser } from "$app/environment";
   import { page } from "$app/state";
-  import GraphView from "$lib/public/chat/GraphView.svelte";
+  import GraphView from "$lib/public/notes/GraphView.svelte";
 </script>
 
 <svelte:head>

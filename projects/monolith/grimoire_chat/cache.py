@@ -1,6 +1,7 @@
 """Durable, cross-pod response cache for grimoire chat (ADR 005 follow-up).
 
-Adapted from ``chat_public/cache.py``: the caching mechanism, its fail-closed
+Adapted from the retired notes chat's ``chat_public/cache.py``: the caching
+mechanism, its fail-closed
 posture, and the cross-pod durability are copied verbatim; the ONE corpus-specific
 bit, the watermark query, is repointed from the notes view at the Grimoire corpus
 so a corpus change invalidates the cache.

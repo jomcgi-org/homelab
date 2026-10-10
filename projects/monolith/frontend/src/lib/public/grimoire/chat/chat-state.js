@@ -1,7 +1,7 @@
-// Pure, testable helper for the Grimoire chat view state. Mirrors
-// lib/public/chat/chat-state.js (the notes chat seam), minus the
-// graph-selection helpers: the Grimoire chat has no graph view to focus, so
-// only the fresh-conversation shape is needed here.
+// Pure, testable helper for the Grimoire chat view state. Began as a copy of
+// the retired notes chat's view-state helpers, minus the graph-selection
+// helpers (now lib/public/notes/graph-selection.js): the Grimoire chat has no
+// graph view to focus, so only the fresh-conversation shape is needed here.
 //
 // The Svelte page keeps each piece of chat state in its own `$state` rune, but
 // the SHAPE of a fresh conversation (an empty transcript, an empty grounding

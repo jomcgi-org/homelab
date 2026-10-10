@@ -161,11 +161,16 @@ def test_retired_private_demo_and_perf_routes_are_absent():
     }
 
 
-def test_retained_factory_and_public_ember_routes_are_registered():
-    """Route B removal must preserve factory ingress and the ember demos."""
+def test_retained_factory_and_ember_probe_routes_are_registered():
+    """Route B removal must preserve factory ingress and the ember probe trigger.
+
+    The public ember demo routes left with the exhibits (#6913); the private
+    tier keeps the agent-lane synthetic probe endpoints.
+    """
     paths = set(_iter_route_paths(app.routes))
     assert "/webhooks/github/factory" in paths
-    assert "/api/ember/postgres/status" in paths
+    assert "/internal/ember/codex-session-probe" in paths
+    assert "/api/ember/postgres/status" not in paths
 
 
 def test_schedule_router_today_endpoint_responds(client):

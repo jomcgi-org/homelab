@@ -8,9 +8,9 @@ from ember_public.synthetic_models import EmberSyntheticProbe
 
 def _row(**kwargs):
     values = {
-        "demo": "bazel",
+        "demo": "codex",
         "ok": True,
-        "detail": "warm",
+        "detail": "completed, destroyed",
         "latency_ms": 12.0,
         "checked_at": datetime.now(timezone.utc),
         "last_ok_at": datetime.now(timezone.utc),
@@ -26,7 +26,7 @@ async def test_missing_probe_is_fail_open(monkeypatch):
 
     monkeypatch.setattr(health, "read_probe", read)
     assert await health.synthetic_probe_health(
-        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+        "codex", health.EMBER_CODEX_STALENESS_S
     )() == {
         "ok": True,
         "detail": "no probe recorded yet",
@@ -41,7 +41,7 @@ async def test_failed_probe_stays_down(monkeypatch):
 
     monkeypatch.setattr(health, "read_probe", read)
     result = await health.synthetic_probe_health(
-        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+        "codex", health.EMBER_CODEX_STALENESS_S
     )()
     assert result["ok"] is False
     assert "connection refused" in result["detail"]
@@ -55,76 +55,11 @@ async def test_success_with_legacy_null_trace_serializes_null(monkeypatch):
 
     monkeypatch.setattr(health, "read_probe", read)
     result = await health.synthetic_probe_health(
-        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+        "codex", health.EMBER_CODEX_STALENESS_S
     )()
 
     assert result["ok"] is True
     assert result["trace_id"] is None
-
-
-@pytest.mark.asyncio
-async def test_postgres_failure_names_preemption_cause(monkeypatch):
-    async def read(_):
-        return _row(
-            demo="postgres",
-            ok=False,
-            detail="connection refused",
-            last_ok_at=datetime.now(timezone.utc) - timedelta(minutes=4),
-        )
-
-    async def live_status():
-        return {
-            "state": "failed",
-            "anchor": {
-                "health": "down",
-                "draining": False,
-                "missing_since_ms": 1_700_000_000_000,
-            },
-            "recovery": "restoring",
-        }
-
-    monkeypatch.setattr(health, "read_probe", read)
-    monkeypatch.setattr(health.core, "EMBERVM_URL", "http://embervm")
-    monkeypatch.setattr(health.core, "cached_demo_pg_status", live_status)
-    monkeypatch.setattr(health.core, "time", lambda: 1_700_000_300.0)
-
-    result = await health.synthetic_probe_health(
-        "postgres", health.EMBER_SYNTHETIC_STALENESS_S
-    )()
-
-    assert result["ok"] is False
-    assert result["cause"] == "preemption"
-    assert result["detail"].startswith(
-        "brick preempted, control plane restoring, down for 5m"
-    )
-    assert result["detail"].endswith(": connection refused")
-
-
-@pytest.mark.asyncio
-async def test_postgres_status_timeout_does_not_hide_probe_failure(monkeypatch):
-    async def read(_):
-        return _row(demo="postgres", ok=False, detail="connection refused")
-
-    async def live_status():
-        return {"recovery": "restoring"}
-
-    async def time_out(awaitable, timeout):
-        assert timeout == 2.0
-        awaitable.close()
-        raise TimeoutError
-
-    monkeypatch.setattr(health, "read_probe", read)
-    monkeypatch.setattr(health.core, "EMBERVM_URL", "http://embervm")
-    monkeypatch.setattr(health.core, "cached_demo_pg_status", live_status)
-    monkeypatch.setattr(health.asyncio, "wait_for", time_out)
-
-    result = await health.synthetic_probe_health(
-        "postgres", health.EMBER_SYNTHETIC_STALENESS_S
-    )()
-
-    assert result["ok"] is False
-    assert "connection refused" in result["detail"]
-    assert "cause" not in result
 
 
 @pytest.mark.asyncio
@@ -134,7 +69,7 @@ async def test_stale_success_is_down(monkeypatch):
 
     monkeypatch.setattr(health, "read_probe", read)
     result = await health.synthetic_probe_health(
-        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+        "codex", health.EMBER_CODEX_STALENESS_S
     )()
     assert result["ok"] is False
     assert "prober may be dead" in result["detail"]
@@ -148,11 +83,11 @@ async def test_hour_old_success_is_ok_until_next_scheduled_probe(monkeypatch):
     monkeypatch.setattr(health, "read_probe", read)
     assert (
         await health.synthetic_probe_health(
-            "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+            "codex", health.EMBER_CODEX_STALENESS_S
         )()
     )["ok"] is True
 
 
-def test_staleness_thresholds_match_cron_cadences():
-    assert health.EMBER_SYNTHETIC_STALENESS_S == 9000.0
+def test_staleness_threshold_matches_cron_cadence():
+    # 2.5x the hourly ember-codex-session-synthetic schedule.
     assert health.EMBER_CODEX_STALENESS_S == 9000.0

@@ -1,6 +1,7 @@
 """Opt-in, read-only chat-transcript snapshots ("share this chat").
 
-A verbatim copy of ``chat_public/snapshots.py`` with imports repointed at
+A verbatim copy of the retired notes chat's ``chat_public/snapshots.py`` with
+imports repointed at
 ``grimoire_chat``. A snapshot is minted SERVER-SIDE from the stored,
 server-authoritative transcript (``sessions.get_transcript``), never from
 client-supplied message content: a forged request body must not be able to put

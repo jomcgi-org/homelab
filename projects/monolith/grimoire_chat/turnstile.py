@@ -1,12 +1,12 @@
 """Cloudflare Turnstile siteverify for grimoire-chat admission (ADR 005 layer 1).
 
 This is the admission challenge: no solved Turnstile token, no session. A verbatim
-copy of ``chat_public/turnstile.py``. The siteverify call runs in THIS FastAPI
+copy of the retired notes chat's ``chat_public/turnstile.py``. The siteverify
+call runs in THIS FastAPI
 binary (the Turnstile *secret* is a backend-only OnePasswordItem, never in SSR);
 SSR forwards only the user's token and the real client IP. The site key is public
-by design; the secret key is a verification-only credential, shared with
-chat_public via the ``TURNSTILE_SECRET_KEY`` env var (one public-tier admission
-credential).
+by design; the secret key is a verification-only credential read from the
+``TURNSTILE_SECRET_KEY`` env var (one public-tier admission credential).
 
 Verification requires challenges.cloudflare.com:443. The inert public-tier
 Cilium template was removed in #5816; native egress isolation remains #5276.

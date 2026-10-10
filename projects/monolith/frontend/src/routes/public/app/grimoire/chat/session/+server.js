@@ -1,7 +1,7 @@
 import { json } from "@sveltejs/kit";
 
-// Server-only BFF for Grimoire chat session creation (mirrors
-// routes/public/chat/session/+server.js, the notes-chat proxy). The browser
+// Server-only BFF for Grimoire chat session creation (began as a copy of the
+// retired notes-chat proxy). The browser
 // POSTs here same-origin (/app/grimoire/chat/session); this handler is the
 // only thing that talks to the internal grimoire_chat API. That API is NOT on
 // the public HTTPRoute, so the browser never reaches it directly.

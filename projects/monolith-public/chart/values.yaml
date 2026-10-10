@@ -74,12 +74,12 @@ metaSpark:
 # public_writer DB credential (ADR 005, Public Chat V3 Phase 1). The generic
 # public-tier WRITE identity on the Postgres PRIMARY (monolith-pg-rw), distinct
 # from the read-only public_reader the rest of the public tier uses. Today it is
-# the write path for the chat_public module; the naming is generic so future
-# public-tier write paths can reuse it. databaseSecretName is the app-facing URI
-# secret (key "uri"), synced from 1Password by the second OnePasswordItem (see
-# onepassworditem.yaml); itemPath is set in deploy/values.yaml and left empty
-# here so a bare `helm template` does not emit a OnePasswordItem with a null
-# path. This URI secret is distinct from the CNPG basic-auth password secret
+# the write path for the grimoire_chat module (the notes chat that first used it
+# was retired, #6913); the naming is generic so future public-tier write paths
+# can reuse it. databaseSecretName is the app-facing URI secret (key "uri"),
+# synced from 1Password by the second OnePasswordItem (see onepassworditem.yaml);
+# itemPath is set in deploy/values.yaml and left empty here so a bare
+# `helm template` does not emit a OnePasswordItem with a null path. This URI secret is distinct from the CNPG basic-auth password secret
 # monolith-pg-public-writer (created out-of-band in the monolith namespace; see
 # projects/monolith/deploy/public-writer-secret.md).
 publicWriter:
@@ -87,14 +87,15 @@ publicWriter:
   onepassword:
     itemPath: ""
 
-# Public chat (ADR 005 / V3 plan Phase 1). The chat_public module is composed
-# into the public backend ("web"). It writes sessions + transcripts to the
-# Postgres PRIMARY (monolith-pg-rw) via the public_writer role (see the
-# publicWriter block above), distinct from the read-only public_reader the rest
-# of the public tier uses. These are the Phase 0 starting budget values from the
-# plan; they are also surfaced as CHAT_PUBLIC_* env on web.env below (Helm values
-# cannot self-reference, so the two must stay in sync, this block is the
-# documented source of truth). Grep the test tree before changing any of these
+# Public chat (ADR 005 / V3 plan Phase 1). The grimoire_chat module is composed
+# into the public backend ("web"); it reads these CHAT_PUBLIC_* budgets through
+# grimoire_chat/limits.py (the notes chat they were named for is retired). It
+# writes sessions + transcripts to the Postgres PRIMARY (monolith-pg-rw) via the
+# public_writer role (see the publicWriter block above), distinct from the
+# read-only public_reader the rest of the public tier uses. These are the
+# Phase 0 starting budget values from the plan; they are also surfaced as
+# CHAT_PUBLIC_* env on web.env below (Helm values cannot self-reference, so the
+# two must stay in sync, this block is the documented source of truth). Grep the test tree before changing any of these
 # (per CLAUDE.md).
 chatPublic:
   # Per-message character cap on the user's single submitted message.
@@ -167,22 +168,6 @@ turnstile:
   # (keys SITE_KEY / SECRET_KEY / IP_HASH_SALT, mapped from the 1Password field
   # labels). Backend secretKeyRefs in web.env reference this name.
   secretName: monolith-public-turnstile
-  onepassword:
-    itemPath: ""
-
-# Demo-postgres DSN password (the ember postgres exhibit's scale-to-zero VM,
-# EmberVM R4). SAME 1Password item the private monolith chart syncs
-# (scratchPostgres.onepassword.itemPath there), so both tiers connect to the
-# ONE demo workload with the same superuser password; a K8s Secret cannot be
-# read cross-namespace/cross-release, so this chart syncs its own copy into the
-# monolith-public namespace. The password surfaces as Secret key
-# POSTGRES_PASSWORD (mirroring the private chart's field mapping); web.env
-# below builds DEMO_POSTGRES_DSN from it via $(DEMO_PG_PASSWORD) kubelet
-# substitution. onepassword.itemPath is set in deploy/values.yaml and left
-# empty here so a bare `helm template` does not emit a OnePasswordItem with a
-# null path.
-demoPostgres:
-  secretName: monolith-public-demo-postgres
   onepassword:
     itemPath: ""
 
@@ -260,8 +245,9 @@ web:
   # DATABASE_URL is the read-only public_reader credential on monolith-pg-ro,
   # synced from 1Password. PUBLIC_WRITER_DATABASE_URL is the public_writer WRITE
   # credential on the primary monolith-pg-rw, a separate secret (ADR 005): the
-  # chat module owns DML on the chat_public schema only. The secretKeyRef names
-  # must match databaseSecretName / publicWriter.databaseSecretName above.
+  # chat write role owns DML on the chat_public and grimoire_chat schemas only.
+  # The secretKeyRef names must match databaseSecretName /
+  # publicWriter.databaseSecretName above.
   # The CHAT_PUBLIC_* budget values mirror the chatPublic block above (Helm
   # values cannot self-reference, so they are repeated here as literals).
   env:
@@ -288,8 +274,6 @@ web:
       value: "http://embervm-embervm.embervm.svc.cluster.local:8080"
     - name: K8S_AUTH_TOKEN_FILE
       value: "/var/run/secrets/embervm-public-faas/token"
-    # Demo-postgres DSN (ember_public router, /api/ember/postgres): the SAME
-    # serving Service, port, and password the private monolith chart uses for
     - name: CHAT_PUBLIC_CHAR_CAP
       value: "8000"
     - name: CHAT_PUBLIC_MAX_TURNS
@@ -484,9 +468,9 @@ frontend:
       value: "20"
     - name: API_BASE
       value: "http://monolith-public-web:8000"
-    # CHAT_API_BASE is the same backend Service; the public chat SSR proxy
-    # (/public/chat/session + /public/chat/message) calls the internal chat API
-    # at this address over in-cluster mTLS (ADR 005, Phase 1).
+    # CHAT_API_BASE is the same backend Service; the Grimoire chat SSR proxies
+    # (/app/grimoire/chat/session + /message + /share + /fork) call the internal
+    # chat API at this address over in-cluster mTLS (ADR 005, Phase 1).
     - name: CHAT_API_BASE
       value: "http://monolith-public-web:8000"
     # Public Turnstile site key for the SSR-rendered widget (ADR 005 layer 1).
@@ -752,15 +736,4 @@ cfIngress:
     # it if abuse appears.
     functionsRateLimit:
       requests: 120
-      unit: Minute
-    # Dedicated budget for the ember demo's cheap, wake-safe, server-cached
-    # lifecycle reads (/ember/postgres/api/status + /savings), carved onto their
-    # own HTTPRoute so their sub-second polling never sits inside the same
-    # per-client page budget as the page's own page loads and trips it. status is
-    # 500ms single-flight cached and savings 30s cached, so a high poll rate is
-    # nearly free upstream; 600/min gives comfortable headroom for concurrent
-    # viewers. Writes (/query, /session) stay on the page limit above,
-    # backstopped by the backend gates + Turnstile.
-    emberReadsRateLimit:
-      requests: 600
       unit: Minute

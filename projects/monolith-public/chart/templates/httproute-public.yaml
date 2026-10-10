@@ -141,8 +141,8 @@ spec:
 # too. It used to share one gateway-wide bucket, so a single scanner sweep (the
 # Laravel and Ignition probes such as /js/.env that fall to this catch-all) or
 # one lingering client could drain the budget and 429 local_rate_limited every
-# other visitor. That is the residue the ember-reads carve-out only worked
-# around; keying on the client address removes it.
+# other visitor. That is the residue the (since retired) ember-reads carve-out
+# only worked around; keying on the client address removes it.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
 metadata:

@@ -1,5 +1,5 @@
-// The public Turnstile site key gates the whole Grimoire app (mirrors the
-// /app/notes and /public/chat pattern: process.env.TURNSTILE_SITE_KEY read
+// The public Turnstile site key gates the whole Grimoire app (the pattern the
+// retired notes chat established: process.env.TURNSTILE_SITE_KEY read
 // server-side, ssr=false at the sibling +layout.js so the corpus itself never
 // renders server-side). The site key is PUBLIC by design (it identifies the
 // widget, not a credential); the Turnstile *secret* never leaves the FastAPI

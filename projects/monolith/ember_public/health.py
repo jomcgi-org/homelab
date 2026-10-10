@@ -1,27 +1,21 @@
-"""Ember public health components backed entirely by synthetic probe latches.
+"""Ember health components backed entirely by synthetic probe latches.
 
 The active prober replaced an earlier passive check. Each component reads the
-latest latch row written by its synthetic probe, so the public health endpoint
-has one source of truth for the ember demos.
+latest latch row written by its synthetic probe, so the health endpoint has
+one source of truth for the agent-lane probes.
 """
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
-import ember_public.core as core
 from ember_public.synthetic import read_probe
 
-# The combined demo probes (bazel, pages, postgres) run in the one
-# ember-synthetic CronWorkflow hourly (see the jobs.cronWorkflows entry).
-# 2.5x that cadence, so a single missed or slow run never flaps the check but
-# a dead prober still surfaces. Explicit probe failures still report
-# immediately; only the missing-probe staleness bound follows the cadence.
-EMBER_SYNTHETIC_STALENESS_S = 9000.0
-
-# The Codex lane synthetic runs hourly. Apply the same 2.5x cadence rule so one
-# missed or slow run does not flap the health check. The Spark lane probe is
+# The Codex lane synthetic runs hourly (the ember-codex-session-synthetic
+# CronWorkflow, see the jobs.cronWorkflows entry). 2.5x that cadence, so a
+# single missed or slow run never flaps the check but a dead prober still
+# surfaces. Explicit probe failures still report immediately; only the
+# missing-probe staleness bound follows the cadence. The Spark lane probe is
 # manual-only (its CronWorkflow is suspended), so it has no automatic health
 # component; probe_spark and its endpoint remain for manual diagnostics.
 EMBER_CODEX_STALENESS_S = 9000.0
@@ -32,8 +26,8 @@ def synthetic_probe_health(demo: str, staleness_s: float):
 
     async def check() -> dict:
         row = await read_probe(demo)
-        # Fail open on bootstrap: monolith-public rolls out before the migration
-        # creates the table, and a missing row means the prober has not run yet.
+        # Fail open on bootstrap: a missing row means the prober has not run
+        # yet (or the table is not migrated yet on a fresh database).
         if row is None:
             return {
                 "ok": True,
@@ -42,39 +36,6 @@ def synthetic_probe_health(demo: str, staleness_s: float):
             }
         if not row.ok:
             detail = row.detail
-            preempted = None
-            if demo == "postgres" and core.EMBERVM_URL:
-                try:
-                    live_status = await asyncio.wait_for(
-                        core.cached_demo_pg_status(), 2.0
-                    )
-                    preempted = core.preemption_status(live_status)
-                except TimeoutError:
-                    preempted = None
-                except Exception:  # noqa: BLE001 - attribution is best-effort
-                    preempted = None
-            if preempted is not None:
-                downtime_ms = preempted["since_ms"]
-                if downtime_ms is None and row.last_ok_at is not None:
-                    last_ok_at = (
-                        row.last_ok_at.replace(tzinfo=timezone.utc)
-                        if row.last_ok_at.tzinfo is None
-                        else row.last_ok_at
-                    )
-                    downtime_ms = max(
-                        0.0,
-                        (datetime.now(timezone.utc) - last_ok_at).total_seconds()
-                        * 1000,
-                    )
-                prefix = "brick preempted, control plane restoring"
-                if downtime_ms is not None:
-                    prefix += f", down for {downtime_ms / 60_000:.0f}m"
-                return {
-                    "ok": False,
-                    "detail": f"{prefix}: {detail}",
-                    "cause": "preemption",
-                    "trace_id": row.trace_id,
-                }
             if row.last_ok_at is not None:
                 now = datetime.now(timezone.utc)
                 last_ok_at = (

@@ -5,7 +5,8 @@ are declared on the models (in addition to the migration) so SQLite-backed unit
 tests using ``SQLModel.metadata.create_all()`` enforce them too (per CLAUDE.md
 sqlite-fixture rule); the migration owns the production DDL.
 
-This is a verbatim copy of ``chat_public/models.py`` with the schema renamed from
+This is a verbatim copy of ``chat_public/models.py`` (the retired notes chat's
+schema, which still exists for retention) with the schema renamed from
 ``chat_public`` to ``grimoire_chat`` (and the FK targets updated to match). The
 tables are corpus-agnostic; only the retrieval + system prompt differ between the
 two public chat surfaces.

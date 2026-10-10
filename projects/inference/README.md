@@ -143,11 +143,11 @@ Kubernetes startup, liveness, and readiness probes call NInfer's `/health`.
 Prometheus scrapes `/metrics` on the pod port.
 
 Public `https://jomcgi.dev/health` is a separate composite check. The frontend
-proxies it to the public backend's `/api/health`; the `chat_public` inference
-component calls `/v1/models` on the configured `CHAT_PUBLIC_INFERENCE_URL`.
-An unreachable endpoint or a non-2xx response is fatal and makes public health
-return HTTP 503 with `inference` among the failing components. An unset URL
-currently fails open.
+proxies it to the public backend's `/api/health`. The notes chat's inference
+component, which called `/v1/models` on the configured
+`CHAT_PUBLIC_INFERENCE_URL` and failed public health on a non-2xx, was retired
+with that chat (#6913), so public health no longer reports an `inference`
+component.
 
 The configured provider varies by environment. When that URL points to NInfer,
 an NInfer outage makes public health fail. The GKE overlay currently points it

@@ -54,7 +54,6 @@
 # gazelle:exclude public_faas_token_projection_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
-# gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -1334,9 +1333,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":pkg_chat_public",
         ":pkg_core",
-        ":pkg_faas",
         ":pkg_framework",
         ":pkg_shared",
         "@pip//certifi",
@@ -1924,13 +1921,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "app/main_domain.py",
     # Batch-jobs entrypoint: runs as :jobs_image, never in the public binary.
     "app/jobs_main.py",
-    # Ember synthetic prober and private trigger: run only in the private API
-    # and jobs images. The public tier ships the READ side (synthetic.py +
-    # synthetic_models.py, which health.py needs to answer /api/health) but must
-    # not carry the prober or internal endpoint that drives the workloads, same split as
-    # worldcup/jobs.py and campsites/jobs.py.
-    "ember_public/synthetic_probe.py",
-    "ember_public/synthetic_router.py",
     # Visibility write path must not ship in public or agents images.
     "knowledge/publish.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
@@ -2151,7 +2141,6 @@ py_library(
             "hikes/**/*.py",
             "stars/**/*.py",
             "dr_jobs/**/*.py",
-            "chat_public/**/*.py",
             "trips/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
@@ -2169,10 +2158,6 @@ py_library(
             # workload.py) plus the guest function code (functions/**) are pruned
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
-            # Ember public tier (docs/plans/2026-07-18-ember-public-pages.md Task 1):
-            # the demo-postgres core, public-safe by construction (EMBERVM_URL
-            # is read directly from the environment).
-            "ember_public/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -2232,7 +2217,6 @@ py_venv_binary(
             "hikes/**/*.py",
             "stars/**/*.py",
             "dr_jobs/**/*.py",
-            "chat_public/**/*.py",
             "trips/**/*.py",
             "worldcup/**/*.py",
             "campsites/**/*.py",
@@ -2245,7 +2229,6 @@ py_venv_binary(
             # workload.py) plus the guest function code (functions/**) are pruned
             # below; main_public_imports_test enforces they stay out of the closure.
             "faas/**/*.py",
-            "ember_public/**/*.py",
         ],
         exclude = _PUBLIC_PRUNE_EXCLUDE,
     ),  # keep
@@ -7366,36 +7349,6 @@ py_test(
     ],
 )
 
-# Hand-registered (chat_public is gazelle-excluded): fast SQLite + TestClient
-# unit tests for the public-chat session lifecycle, budgets, and SSE shape.
-py_test(
-    name = "chat_public_router_test",
-    srcs = ["chat_public/router_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "chat_public_health_test",
-    srcs = ["chat_public/health_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
 # Artifact service: TestClient unit tests for the publish and read endpoints
 # (S3 faked) and the S3 helper (boto3 mocked).
 py_test(
@@ -7418,105 +7371,6 @@ py_test(
         ":pkg_artifact",
         "@pip//boto3",
         "@pip//pytest",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): opt-in read-only transcript
-# snapshots ("share this chat"): server-side mint from the stored transcript,
-# round-trip via the read route, empty-transcript -> 400, missing -> 404.
-py_test(
-    name = "chat_public_snapshots_test",
-    srcs = ["chat_public/snapshots_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): a fork reads its snapshot
-# on the primary, so a takedown not yet replicated (or committed during the
-# Turnstile await) cannot be forked back into a live session (#6764).
-py_test(
-    name = "chat_public_fork_replica_lag_test",
-    srcs = ["chat_public/fork_replica_lag_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): Phase 2 admission + abuse
-# controls (Turnstile siteverify failure -> 403, global circuit-breaker shed via
-# the busy SSE event, salted ip_hash storage).
-py_test(
-    name = "chat_public_phase2_test",
-    srcs = ["chat_public/phase2_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): Phase 3 real inference +
-# compaction (streaming SSE shape, server-fixed system prompt, real-usage token
-# ceiling, rolling-summary compaction, in-flight slot release after stream).
-py_test(
-    name = "chat_public_phase3_test",
-    srcs = ["chat_public/phase3_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): Phase 4a public-graph
-# retrieval (mocked embedding + chunk search): delimited retrieved-context block,
-# no-tools inference payload, node_touched-per-note SSE before tokens, empty
-# retrieval still streams, and retrieve() embed+map+fail-open behaviour.
-py_test(
-    name = "chat_public_phase4_test",
-    srcs = ["chat_public/phase4_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): Phase 5 in-process response
-# cache (repeated identical message hits the cache and skips vLLM; a changed
-# notes watermark or prompt/model version misses; a cache hit still emits
-# token+done and persists the turn).
-py_test(
-    name = "chat_public_phase5_test",
-    srcs = ["chat_public/phase5_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -8600,49 +8454,6 @@ py_test(
     ],
 )
 
-# Hand-registered (ember_public is gazelle-excluded): mounts the demo-postgres
-# router standalone plus asserts it against the composed public app.
-py_test(
-    name = "ember_public_router_test",
-    srcs = ["ember_public/router_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (ember_public is gazelle-excluded): the bazel skyframe
-# query demo core (validation, session rate limit, semaphore, error mapping).
-py_test(
-    name = "ember_public_bazel_core_test",
-    srcs = ["ember_public/bazel_core_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_ember_public",
-        ":pkg_faas",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "ember_public_bazel_router_test",
-    srcs = ["ember_public/bazel_router_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
 py_test(
     name = "ember_public_durability_test",
     srcs = ["ember_public/durability_test.py"],
@@ -8655,9 +8466,9 @@ py_test(
 )
 
 # Hand-registered (ember_public is gazelle-excluded): the /api/health component
-# registration and the synthetic probe's fail-closed unconfigured branch. This
-# file had no target until 2026-07-28, so nothing in it ran; gazelle cannot
-# catch that here because the whole directory is excluded from it.
+# registration for the Codex latch. This file had no target until 2026-07-28,
+# so nothing in it ran; gazelle cannot catch that here because the whole
+# directory is excluded from it.
 py_test(
     name = "ember_public_health_test",
     srcs = ["ember_public/health_test.py"],
@@ -8918,21 +8729,11 @@ bdd_test(
     srcs = ["public_api_chunks_grants_test.py"],
 )
 
-# Real-Postgres test: public_writer can SELECT/INSERT/UPDATE demo_pg_savings
-# (the accrual write path used by both tiers' status poll) and public_reader
-# can SELECT it (the cached GET /savings endpoint) but not write it (Task 3,
-# ADR security/005's narrow-grant precedent).
-bdd_test(
-    name = "ember_public_savings_grants_test",
-    srcs = ["ember_public_savings_grants_test.py"],
-)
-
 # Real-Postgres test for ember_synthetic_probe public grants (PR #4065):
-# public_reader can SELECT from ember_synthetic_probe (the read path the public
-# tier's /api/health uses to detect probe timeouts and report service health),
-# but cannot INSERT or UPDATE it (Task 1, narrowing writes to the app role).
-# Unlike demo_pg_savings, there is no public_writer grant here: the writer is
-# the app role (the ember-synthetic CronWorkflows jobs pod), not the public tier.
+# public_reader can SELECT from ember_synthetic_probe but cannot INSERT or
+# UPDATE it (Task 1, narrowing writes to the app role). There is no
+# public_writer grant here: the writer is the app role (the API pod the
+# ember-*-session-synthetic CronWorkflows trigger), not the public tier.
 bdd_test(
     name = "ember_synthetic_probe_grants_test",
     srcs = ["ember_synthetic_probe_grants_test.py"],
@@ -9390,36 +9191,6 @@ py_test(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): rolling-summary helpers
-# (_format_turns, _build_messages, summarize) with mocked inference.complete.
-py_test(
-    name = "chat_public_summarizer_test",
-    srcs = ["chat_public/summarizer_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-# Hand-registered (chat_public is gazelle-excluded): unit tests for the
-# session lifecycle pure functions and DB helpers (hash_value, _as_utc,
-# _is_expired, load_active_session, touch, record_turn, get_transcript,
-# compact_if_needed). SQLite + StaticPool, no HTTP layer.
-py_test(
-    name = "chat_public_sessions_test",
-    srcs = ["chat_public/sessions_test.py"],
-    imports = ["."],
-    deps = [
-        ":monolith_public_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )

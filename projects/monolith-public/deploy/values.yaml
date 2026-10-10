@@ -41,11 +41,6 @@ turnstile:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/cloudflare-turnstile"
 
-# Retired live Postgres exhibit: no public demo credential is provisioned.
-demoPostgres:
-  onepassword:
-    itemPath: ""
-
 # Trip image URL signing: sync the imgproxy KEY/SALT from 1Password into the
 # monolith-public-imgproxy-signing Secret (keys IMGPROXY_KEY / IMGPROXY_SALT).
 # Both the imgproxy and frontend components reference it via secretKeyRef.

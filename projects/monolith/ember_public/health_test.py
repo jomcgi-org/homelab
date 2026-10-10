@@ -1,4 +1,4 @@
-"""Tests for ember public health registration and synthetic probe failures."""
+"""Tests for ember health registration and synthetic probe failures."""
 
 from __future__ import annotations
 
@@ -9,10 +9,9 @@ from fastapi.testclient import TestClient
 from sqlmodel import create_engine
 
 import ember_public.health as health
-import ember_public.synthetic_probe as probe
 from ember_public.module import MODULE
 from ember_public.synthetic_models import EmberSyntheticProbe
-from framework import PUBLIC_PROFILE, build_app
+from framework import PRIVATE_PROFILE, build_app
 
 
 def test_module_retains_only_production_agent_probe():
@@ -21,21 +20,6 @@ def test_module_retains_only_production_agent_probe():
 
 def test_module_has_no_advisory_health_components():
     assert MODULE.register_health_advisory is None
-
-
-@pytest.mark.asyncio
-async def test_probe_postgres_unconfigured_is_not_ok(monkeypatch):
-    monkeypatch.delenv("DEMO_POSTGRES_DSN", raising=False)
-
-    result = await probe.probe_postgres()
-
-    assert result == {
-        "ok": False,
-        "detail": "DEMO_POSTGRES_DSN not configured",
-        "latency_ms": None,
-        "trace_id": None,
-        "ember_session_id": None,
-    }
 
 
 def test_retired_demo_latch_cannot_fail_health(monkeypatch, tmp_path):
@@ -54,12 +38,12 @@ def test_retired_demo_latch_cannot_fail_health(monkeypatch, tmp_path):
         f"sqlite:///{tmp_path / 'health.db'}", connect_args={"check_same_thread": False}
     )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
-    response = TestClient(build_app(PUBLIC_PROFILE, [MODULE])).get("/api/health")
+    response = TestClient(build_app(PRIVATE_PROFILE, [MODULE])).get("/api/health")
     assert response.status_code == 200
     assert "ember_postgres" not in response.json()["components"]
 
 
-def test_public_app_api_health_surfaces_codex_probe(monkeypatch, tmp_path):
+def test_api_health_surfaces_codex_probe(monkeypatch, tmp_path):
     row = EmberSyntheticProbe(
         demo="codex",
         ok=False,
@@ -77,7 +61,7 @@ def test_public_app_api_health_surfaces_codex_probe(monkeypatch, tmp_path):
     )
     monkeypatch.setattr("core.db.get_engine", lambda: engine)
 
-    app = build_app(PUBLIC_PROFILE, [MODULE])
+    app = build_app(PRIVATE_PROFILE, [MODULE])
     response = TestClient(app).get("/api/health")
     body = response.json()
 

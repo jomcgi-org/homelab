@@ -1,7 +1,7 @@
 import { json } from "@sveltejs/kit";
 
-// Server-only BFF for a Grimoire chat turn (mirrors
-// routes/public/chat/message/+server.js, the notes-chat proxy). The browser
+// Server-only BFF for a Grimoire chat turn (began as a copy of the retired
+// notes-chat proxy). The browser
 // POSTs {message} here same-origin (/app/grimoire/chat/message); the session
 // id comes from the httpOnly "gcs" cookie set by /app/grimoire/chat/session,
 // never from the body. The upstream SSE response is passed straight back
