@@ -1007,4 +1007,48 @@ defmodule Embervm.TaskStoreTest do
     assert_receive {:charged, "p1", succeeded_at_charge}
     assert succeeded_at_charge >= 1
   end
+
+  # A worker outcome that lands after the task left the in-flight states (a
+  # node-down reassign re-queued it, or a retry already finished elsewhere) has
+  # no FSM edge. The store must answer :illegal_transition and stay up: the
+  # raising transition!/2 here used to take TaskStore and every rest_for_one
+  # sibling down on one stale outcome.
+  test "stale fail on a task that is no longer in flight is refused, not a crash", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, :created, done_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, done_id, "vm-1", "node-a")
+    {:ok, _} = TaskStore.start(store, done_id, "vm-1", "node-a")
+
+    {:ok, _} =
+      TaskStore.succeed(store, done_id, %{
+        status_code: 200,
+        body: "ok",
+        size_bytes: 2,
+        truncated: false
+      })
+
+    # The old worker's Assign deadline fires after a retry already succeeded.
+    assert {:error, {:illegal_transition, :succeeded, _event}} =
+             TaskStore.fail(store, done_id, :timeout)
+
+    # A reassigned (re-queued) task hit by its superseded worker's failure.
+    {:ok, :created, queued_id} =
+      TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+
+    {:ok, _} = TaskStore.assign(store, queued_id, "vm-2", "node-b")
+    {:ok, _} = TaskStore.start(store, queued_id, "vm-2", "node-b")
+    {:ok, 1} = TaskStore.reassign_in_flight(store, "node-b")
+    {:ok, %{state: :queued}} = TaskStore.retry(store, queued_id)
+
+    assert {:error, {:illegal_transition, :queued, _event}} =
+             TaskStore.fail(store, queued_id, :transport)
+
+    # The store survived both and still serves reads and legal transitions.
+    assert Process.alive?(store)
+    {:ok, %{state: :succeeded}} = TaskStore.get(store, done_id)
+    {:ok, %{state: :assigned}} = TaskStore.assign(store, queued_id, "vm-3", "node-c")
+  end
 end
