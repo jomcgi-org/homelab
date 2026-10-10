@@ -1041,19 +1041,6 @@ defmodule Embervm.StatefulManager do
         Map.has_key?(acc.waking, cleanup.workload) ->
           acc
 
-        stale_cleanup_owner_gone?(acc, facts, cleanup, now) ->
-          elapsed = now - Map.get(cleanup, :enqueued_at, now)
-
-          Logger.error("embervm stateful stale wake cleanup dropped after owner absence",
-            workload: cleanup.workload,
-            vm_id: vm_id,
-            dial_id: cleanup.dial_id,
-            elapsed_ms: elapsed,
-            escape_threshold_ms: acc.destroying_escape_ms
-          )
-
-          drop_stale_wake_cleanup(acc, vm_id)
-
         stop_stateful_destroy_on(acc, cleanup.dial_id, vm_id) ->
           Logger.info("embervm stateful stale wake cleanup confirmed",
             workload: cleanup.workload,
@@ -1067,7 +1054,9 @@ defmodule Embervm.StatefulManager do
             stale_wake_alarmed: Map.delete(acc.stale_wake_alarmed, vm_id)}
 
         true ->
-          maybe_alarm_stale_cleanup(acc, cleanup, now)
+          acc
+          |> track_stale_cleanup_owner(facts, cleanup, now)
+          |> maybe_alarm_stale_cleanup(cleanup, now)
       end
     end)
   end
@@ -1078,20 +1067,38 @@ defmodule Embervm.StatefulManager do
       stale_wake_alarmed: Map.delete(state.stale_wake_alarmed, vm_id)}
   end
 
-  # Bounded escape for a pending cleanup whose owning noded instance left the
-  # fleet: the VM and the daemon's in-memory attach lock went with the pod, so
-  # every DESTROY attempt fails at safe_channel with {:error, :unknown_node}
-  # and the workload would otherwise stay fenced until a control-plane restart.
-  # Once the exact dial_id has been unresolvable or missing from NodeCapacity
-  # for at least destroying_escape_ms, drop the entry so later wakes proceed.
-  # This mirrors fail_unconfirmed_destroy: no teardown was confirmed, so no
-  # release_confirmed and no cleaned id.
-  defp stale_cleanup_owner_gone?(state, facts, cleanup, now) do
-    elapsed = now - Map.get(cleanup, :enqueued_at, now)
+  # Bounded fence, unbounded retry. When the exact owning dial_id has been
+  # continuously absent (missing from NodeCapacity or unresolvable) for at
+  # least destroying_escape_ms, mark the entry escaped: it stops fencing
+  # placement so later wakes proceed, but it stays pending and keeps retrying
+  # DESTROY against that exact dial_id every reconcile. Absence is not proof of
+  # death (a drain, a partition or a same-pod_uid re-registration brings the
+  # owner back with the stale VM still holding its attach lock), and with
+  # node_confirmed_destroy off nothing else would ever destroy it. A resolvable
+  # owner resets the absence clock.
+  defp track_stale_cleanup_owner(state, facts, cleanup, now) do
+    absent? =
+      stale_cleanup_dial_missing?(facts, cleanup.dial_id) or
+        stale_cleanup_channel_dead?(state, cleanup.dial_id)
 
-    elapsed >= state.destroying_escape_ms and
-      (stale_cleanup_dial_missing?(facts, cleanup.dial_id) or
-         stale_cleanup_channel_dead?(state, cleanup.dial_id))
+    absent_since = if absent?, do: Map.get(cleanup, :absent_since) || now, else: nil
+
+    escaped? =
+      Map.get(cleanup, :escaped, false) or
+        (is_integer(absent_since) and now - absent_since >= state.destroying_escape_ms)
+
+    if escaped? and not Map.get(cleanup, :escaped, false) do
+      Logger.error("embervm stateful stale wake cleanup no longer fences placement, owner absent",
+        workload: cleanup.workload,
+        vm_id: cleanup.vm_id,
+        dial_id: cleanup.dial_id,
+        absent_ms: now - absent_since,
+        escape_threshold_ms: state.destroying_escape_ms
+      )
+    end
+
+    updated = Map.merge(cleanup, %{absent_since: absent_since, escaped: escaped?})
+    %{state | stale_wake_cleanups: Map.put(state.stale_wake_cleanups, cleanup.vm_id, updated)}
   end
 
   defp stale_cleanup_dial_missing?(facts, dial_id) do
@@ -1149,7 +1156,9 @@ defmodule Embervm.StatefulManager do
     # occasional durable eviction is part of that same wake boundary).
     wake_start = :opentelemetry.timestamp()
     plan =
-      if Enum.any?(state.stale_wake_cleanups, fn {_, cleanup} -> cleanup.workload == workload end) do
+      if Enum.any?(state.stale_wake_cleanups, fn {_, cleanup} ->
+           cleanup.workload == workload and not Map.get(cleanup, :escaped, false)
+         end) do
         {:error, :stale_wake_cleanup_pending}
       else
         plan_wake(state, workload)

@@ -4517,15 +4517,95 @@ defmodule Embervm.StatefulManagerTest do
 
     # The replacement pod serves the node under a new instance id, so the old
     # exact dial_id is gone from NodeCapacity too. Past the escape interval the
-    # entry drops and the fence lifts.
+    # fence lifts, but the entry stays pending (no confirmed release).
     stateful_node(ctx, "node-4", instance_id: "node-4/newpod")
     Agent.update(manager_clock, &(&1 + 101))
     :ok = StatefulManager.reconcile(ctx.mgr)
-    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+    assert %{"vm-stale" => %{escaped: true}} = :sys.get_state(ctx.mgr).stale_wake_cleanups
 
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     assert [%{vm_id: vm_id}] = StatefulStore.list(ctx.store, "wl-a")
     assert vm_id != "vm-stale"
+  end
+
+  test "an escaped stale cleanup is still destroyed once its owner returns" do
+    parent = self()
+    {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+    {:ok, owner_up} = Agent.start_link(fn -> false end)
+
+    ctx =
+      start_stack(
+        clock: fn -> Agent.get(manager_clock, & &1) end,
+        destroying_escape_ms: 100,
+        node_confirmed_destroy: false,
+        channel_fun: fn
+          "node-4/owner" -> if Agent.get(owner_up, & &1), do: {:ok, "node-4/owner"}, else: {:error, :connect_timeout}
+          key -> {:ok, key}
+        end,
+        stop_stateful_fun: fn ch, req ->
+          send(parent, {:destroyed, ch, req.vm_id})
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner")
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-stale")})
+    assert %{"vm-stale" => %{escaped: false}} = :sys.get_state(ctx.mgr).stale_wake_cleanups
+
+    # The owner stays partitioned past the escape interval: the fence lifts but
+    # the entry is kept and nothing is marked cleaned.
+    Agent.update(manager_clock, &(&1 + 101))
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    state = :sys.get_state(ctx.mgr)
+    assert %{"vm-stale" => %{escaped: true}} = state.stale_wake_cleanups
+    refute MapSet.member?(state.stale_wake_cleaned, "vm-stale")
+    refute_received {:destroyed, _, _}
+
+    # The owner heals still holding the VM: the next reconcile destroys it.
+    Agent.update(owner_up, fn _ -> true end)
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert_receive {:destroyed, "node-4/owner", "vm-stale"}
+    state = :sys.get_state(ctx.mgr)
+    assert state.stale_wake_cleanups == %{}
+    assert MapSet.member?(state.stale_wake_cleaned, "vm-stale")
+  end
+
+  test "stale cleanup attempts DESTROY on a resolvable owner whose capacity fact is missing" do
+    parent = self()
+    {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+    {:ok, confirm} = Agent.start_link(fn -> false end)
+
+    ctx =
+      start_stack(
+        clock: fn -> Agent.get(manager_clock, & &1) end,
+        destroying_escape_ms: 100,
+        node_confirmed_destroy: false,
+        channel_fun: fn key -> {:ok, key} end,
+        stop_stateful_fun: fn ch, req ->
+          send(parent, {:destroyed, ch, req.vm_id})
+          {:ok, %{teardown_confirmed: Agent.get(confirm, & &1)}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    # A draining owner drops out of NodeCapacity while its channel still resolves.
+    stateful_node(ctx, "node-4", instance_id: "node-4/other")
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-stale")})
+    assert_receive {:destroyed, "node-4/owner", "vm-stale"}
+    assert %{"vm-stale" => %{escaped: false}} = :sys.get_state(ctx.mgr).stale_wake_cleanups
+
+    # On the tick the absence budget elapses, DESTROY is still attempted first.
+    Agent.update(manager_clock, &(&1 + 101))
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert_receive {:destroyed, "node-4/owner", "vm-stale"}
+    assert %{"vm-stale" => %{escaped: true}} = :sys.get_state(ctx.mgr).stale_wake_cleanups
+
+    # Retries continue after the escape and the first confirmation clears it.
+    Agent.update(confirm, fn _ -> true end)
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert_receive {:destroyed, "node-4/owner", "vm-stale"}
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
   end
 
   test "StartStateful carries a deadline derived from the workload's wake bound" do
