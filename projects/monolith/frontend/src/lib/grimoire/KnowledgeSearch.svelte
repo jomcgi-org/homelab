@@ -110,7 +110,12 @@
       <button type="submit" disabled={loading}>Search knowledge</button>
     </div>
   </form>
-  <p role="status" aria-live="polite" aria-atomic="true">
+  <p
+    role="status"
+    aria-label="Knowledge search status"
+    aria-live="polite"
+    aria-atomic="true"
+  >
     {#if loading}Searching knowledge…
     {:else if searched}{`${results.length} ${results.length === 1 ? "result" : "results"} found.`}{/if}
   </p>

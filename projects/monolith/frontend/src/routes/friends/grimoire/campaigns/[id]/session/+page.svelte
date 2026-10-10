@@ -210,8 +210,9 @@
     </p>
     <h1>{state.campaign.name}</h1>
     <div class="status">
-      <span>{state.session?.status || "Not started"}</span><span role="status"
-        >{connection}</span
+      <span>{state.session?.status || "Not started"}</span><span
+        role="status"
+        aria-label="Session connection">{connection}</span
       >
     </div>
   </header>

@@ -105,6 +105,15 @@ describe("private session events from server projections", () => {
     expect(document.querySelector(`label[for="${input.id}"]`).textContent).toBe(
       "Search what your character knows",
     );
+    expect(
+      document.querySelector('[role="status"][aria-label="Session connection"]')
+        .textContent,
+    ).toBe("Live");
+    expect(
+      document.querySelector(
+        '[role="status"][aria-label="Knowledge search status"]',
+      ),
+    ).not.toBeNull();
     await unmount(instance);
     instance = null;
     document.body.innerHTML = "";
