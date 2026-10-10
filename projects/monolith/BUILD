@@ -6530,6 +6530,42 @@ bdd_test(
 )
 
 py_test(
+    name = "grimoire_play_embedding_predicate_test",
+    srcs = ["grimoire/play_embedding_predicate_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_play_embedding_predicate_postgres_test",
+    srcs = ["grimoire/play_embedding_predicate_postgres_test.py"],
+    deps = [
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//sqlalchemy",
+    ],
+)
+
+py_test(
+    name = "grimoire_knowledge_search_test",
+    srcs = ["grimoire/knowledge_search_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_notes_test",
     srcs = ["grimoire/notes_test.py"],
     imports = ["."],

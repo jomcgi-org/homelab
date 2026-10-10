@@ -11,6 +11,20 @@ predicate. Reads re-check the live source row. Embedding notes and player-safe
 event projections is offloaded to the five-minute `grimoire-embed-play`
 CronWorkflow (#6626).
 
+`GET /api/grimoire/campaigns/{campaign_id}/knowledge/search` is play-gated and
+available to every campaign member, including members without a character.
+It accepts a 1 to 200 character query and returns at most `k` (1 to 50, default
+10) scored hits with `type` (`entity`, `note`, `event`, or `chunk`) and `source`
+link fields: `entity_id`, `note_id`, `session_id` plus `seq`, or `book_id` plus
+`chunk_id`. The existing corpus `/search` endpoint is unchanged.
+
+**Why.** The candidate predicate uses the copied audience columns and the
+existing audience and note SQL contracts. Each candidate is resolved from the
+live source and checked again, including soft deletion, retraction and campaign
+scope. Partial grants expose only revealed details; recognition-only entities
+and reveal items are excluded from retrieval. A private note belongs to its
+author's knowledge, with DM access requiring `dm_readable`.
+
 - `grimoire/module.py` composes the domain into the private and public Monolith
   profiles.
 - Private routes live under `/api/grimoire` in `router.py`.

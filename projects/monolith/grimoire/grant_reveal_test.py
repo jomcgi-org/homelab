@@ -38,6 +38,13 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setattr(search, "knn_embeddings", fake_knn)
     with sqlite_harness(tmp_path / "reveals.db") as h:
+        # Grant-write assertions own their reveal stream and corpus candidates.
+        # The route inventory and knowledge search tests use the expanded seed.
+        for key in ("reveal_b", "reveal_partial", "reveal_name_only"):
+            h.session.delete(h.rows[f"embedding_{key}"])
+            h.session.delete(h.rows[key])
+        h.session.delete(h.rows["embedding_chunk"])
+        h.session.commit()
         yield h
 
 

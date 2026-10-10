@@ -175,6 +175,7 @@ CASES = {
         params={"entity_id": "$private.id"}
     ),
     ("GET", PREFIX + "/search"): Case(query={"q": "$private.name", "k": 50}),
+    ("GET", PREFIX + "/knowledge/search"): Case(query={"q": "knowledge", "k": 50}),
     ("POST", PREFIX + "/sessions"): Case(),
     ("GET", PREFIX + "/sessions"): Case(),
     ("GET", PREFIX + "/sessions/current"): Case(state="play"),
@@ -282,7 +283,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 48
+    assert len(enumerated) == 49
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -512,11 +513,11 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 200
+    assert len(tokens) == 208
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
-    assert len(embeddings) == 6
+    assert len(embeddings) == 25
     assert all(row.dim == 1024 and len(row.vector) == 1024 for row in embeddings)
     storage = str(harness.snapshot()).casefold()
     for token in tokens:

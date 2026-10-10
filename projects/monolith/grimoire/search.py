@@ -17,9 +17,16 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, select
 
-from grimoire.models import Book, Embedding, Entity, KnowledgeChunk
+from grimoire.audience import Member, can_see, can_see_note
+from grimoire.models import Book, Embedding, Entity, KnowledgeChunk, Note, SessionEvent
+from grimoire.play_embeddings import (
+    event_embedding_kind,
+    event_text,
+    play_embedding_predicate,
+)
 from grimoire.visibility import Viewer, project_entity, visible_entities_query
 
 # How many extra candidates to pull past ``k`` before visibility filtering and
@@ -40,6 +47,7 @@ def knn_embeddings(
     kinds: tuple[str, ...],
     limit: int,
     model: str | None = None,
+    where: ColumnElement[bool] | None = None,
 ) -> list[tuple[Embedding, float]]:
     """Nearest ``embedding`` rows to ``query_vector`` among ``kinds``.
 
@@ -55,6 +63,9 @@ def knn_embeddings(
     query against a vector from a different (incompatible) model. Defaults to
     None (no filter), preserving the single-model behaviour existing callers
     rely on.
+
+    ``where`` is an optional candidate clause composed before ranking and the
+    limit. Callers still resolve and authorize every candidate from live rows.
     """
     distance = Embedding.vector.cosine_distance(query_vector)
     stmt = select(Embedding, distance.label("distance")).where(
@@ -62,6 +73,8 @@ def knn_embeddings(
     )
     if model is not None:
         stmt = stmt.where(Embedding.model == model)
+    if where is not None:
+        stmt = stmt.where(where)
     stmt = stmt.order_by(distance.asc()).limit(limit)
     rows = session.execute(stmt).all()
     return [(row[0], float(row[1])) for row in rows]
@@ -194,5 +207,102 @@ async def search_campaign(
         session, query_vector, ("entity", "chunk"), k * OVERFETCH_FACTOR
     )
     results = _resolve_hits(session, campaign_id, viewer, hits, not_granted_to)
+    results.sort(key=lambda item: item["score"], reverse=True)
+    return results[:k]
+
+
+def _resolve_knowledge_hits(
+    session: Session,
+    campaign_id: str,
+    viewer: Viewer,
+    member: Member,
+    hits: list[tuple[Embedding, float]],
+) -> list[dict[str, Any]]:
+    """Resolve every candidate from live sources, ignoring cached audience copies."""
+    results = []
+    seen = set()
+    for embedding, distance in hits:
+        kind, source_id = embedding.embeddable_kind, embedding.embeddable_id
+        identity = ("event" if kind == "transcript" else kind, source_id)
+        if identity in seen:
+            continue
+        resolved = None
+        if kind == "entity":
+            resolved = _resolve_entity_hit(
+                session, campaign_id, viewer, source_id, distance
+            )
+            if resolved is not None:
+                resolved["type"] = "entity"
+                resolved["source"] = {"entity_id": source_id}
+        elif kind == "chunk":
+            resolved = _resolve_chunk_hit(session, source_id, distance)
+            if resolved is not None:
+                resolved["type"] = "chunk"
+                resolved["source"] = {
+                    "book_id": resolved["book_id"],
+                    "chunk_id": source_id,
+                }
+        elif kind == "note":
+            note = session.get(Note, source_id)
+            if (
+                note is not None
+                and note.campaign_id == campaign_id
+                and can_see_note(viewer, member, note)
+            ):
+                resolved = {
+                    "type": "note",
+                    "id": note.id,
+                    "title": note.title,
+                    "preview": note.markdown[:_CHUNK_PREVIEW_LEN],
+                    "score": 1.0 - distance,
+                    "source": {"note_id": note.id},
+                }
+        elif kind in ("event", "transcript"):
+            event = session.get(SessionEvent, source_id)
+            if (
+                event is not None
+                and event.campaign_id == campaign_id
+                and can_see(viewer, member, event)
+                and event_embedding_kind(event) == kind
+            ):
+                # This uses the feed's live reveal_items projection, drops
+                # recognition-only items and renders partial snapshots safely.
+                preview = event_text(event)
+                if preview:
+                    resolved = {
+                        "type": "event",
+                        "id": event.id,
+                        "session_id": event.session_id,
+                        "seq": event.seq,
+                        "kind": event.kind,
+                        "preview": preview[:_CHUNK_PREVIEW_LEN],
+                        "score": 1.0 - distance,
+                        "source": {"session_id": event.session_id, "seq": event.seq},
+                    }
+        if resolved is not None:
+            seen.add(identity)
+            results.append(resolved)
+    return results
+
+
+async def search_knowledge(
+    session: Session,
+    embed_client: _Embedder,
+    campaign_id: str,
+    viewer: Viewer,
+    member: Member,
+    q: str,
+    k: int = 10,
+) -> list[dict[str, Any]]:
+    """Search visible corpus and play knowledge, with a live-source re-check."""
+    query_vector = await embed_client.embed(q)
+    hits = knn_embeddings(
+        session,
+        query_vector,
+        ("entity", "chunk", "note", "event", "transcript"),
+        k * OVERFETCH_FACTOR,
+        where=play_embedding_predicate(campaign_id, viewer, member),
+    )
+    results = _resolve_knowledge_hits(session, campaign_id, viewer, member, hits)
     results.sort(key=lambda item: item["score"], reverse=True)
     return results[:k]

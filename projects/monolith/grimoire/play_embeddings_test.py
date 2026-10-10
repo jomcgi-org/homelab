@@ -28,6 +28,15 @@ from grimoire.testing.leak_harness import sqlite_harness
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "play.db") as h:
+        # These tests control embedding insertion and reveal-event creation.
+        # Retrieval tests separately exercise the harness's seeded stale rows.
+        for row in h.session.exec(
+            select(Embedding).where(Embedding.campaign_id.is_not(None))
+        ).all():
+            h.session.delete(row)
+        for key in ("reveal_b", "reveal_partial", "reveal_name_only"):
+            h.session.delete(h.rows[key])
+        h.session.commit()
         yield h
 
 

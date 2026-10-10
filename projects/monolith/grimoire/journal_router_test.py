@@ -19,6 +19,11 @@ from grimoire.testing.leak_harness import MEMBERS, ROLES, sqlite_harness
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "journal.db") as h:
+        # Keep this fixture's original narration-to-handout audience oracle.
+        # The route inventory separately exercises the expanded reveal seed.
+        for key in ("reveal_b", "reveal_partial", "reveal_name_only", "event_foreign"):
+            h.session.delete(h.rows[f"embedding_{key}"])
+            h.session.delete(h.rows[key])
         h.prepare("play")
         # Make the seeded audience/body canaries contribute to Received.
         rows = h.session.exec(select(SessionEvent)).all()

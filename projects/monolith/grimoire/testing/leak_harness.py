@@ -56,6 +56,7 @@ from grimoire.models import (
     Relationship,
     SessionEvent,
 )
+from grimoire.play_embeddings import audience_columns, event_embedding_kind
 
 ROLES = ("dm", "player_a", "player_b", "no_character", "outsider", "other_campaign")
 MEMBERS = frozenset(("dm", "player_a", "player_b", "no_character"))
@@ -492,6 +493,85 @@ def build_fixture(session: Session) -> LeakHarness:
                 vector=[0.0] * 1024,
             ),
         )
+    for key, entity_key, pc_key, scope, allowed in (
+        ("reveal_b", "b_only", "character", "full", ("dm", "player_b")),
+        ("reveal_partial", "partial", "character_a", "partial", ("dm", "player_a")),
+        (
+            "reveal_name_only",
+            "name_only",
+            "character_a",
+            "name_only",
+            ("dm", "player_a"),
+        ),
+    ):
+        entity = rows[entity_key]
+        item = {
+            "entity_id": entity.id,
+            "name": entity.name,
+            "entity_type": entity.entity_type,
+            "grant_scope": scope,
+            "text": mark(f"{key}.text", ("dm",) if scope == "name_only" else allowed),
+        }
+        if scope == "partial":
+            item["entity"] = {
+                "revealed_details": rows["grant_partial"].revealed_details
+            }
+        elif scope == "full":
+            item["entity"] = {"description": item["text"]}
+        keep(
+            key,
+            SessionEvent(
+                id=mark(f"{key}.id", allowed, True),
+                campaign_id=rows["campaign"].id,
+                session_id=rows["campaign_session"].id,
+                seq=1 + sum(isinstance(obj, SessionEvent) for obj in objects),
+                kind="reveal",
+                author_member_id=rows["member_dm"].id,
+                audience="pcs",
+                audience_pc_ids=[rows[pc_key].id],
+                body={"reveals": [item]},
+            ),
+        )
+    keep(
+        "event_foreign",
+        SessionEvent(
+            id=mark("event_foreign.id", ("other_campaign",), True),
+            campaign_id=rows["other"].id,
+            session_id=rows["other_session"].id,
+            seq=1,
+            kind="narration",
+            author_member_id=rows["member_other_campaign"].id,
+            audience="table",
+            body={"text": mark("event_foreign.body", ("other_campaign",))},
+        ),
+    )
+    # Seed stale vectors even for deleted notes and retracted events. The fake
+    # nearest-neighbor seam ignores all filters to exercise live-source checks.
+    for key, row in list(rows.items()):
+        if isinstance(row, (Note, SessionEvent)):
+            keep(
+                f"embedding_{key}",
+                Embedding(
+                    embeddable_kind="note"
+                    if isinstance(row, Note)
+                    else event_embedding_kind(row),
+                    embeddable_id=row.id,
+                    model="harness-play",
+                    dim=1024,
+                    vector=[0.0] * 1024,
+                    **audience_columns(row),
+                ),
+            )
+    keep(
+        "embedding_chunk",
+        Embedding(
+            embeddable_kind="chunk",
+            embeddable_id=rows["chunk_private"].id,
+            model="test",
+            dim=1024,
+            vector=[0.0] * 1024,
+        ),
+    )
     for key, allowed in (
         ("private", ("dm",)),
         ("b_only", ("dm",)),
@@ -524,6 +604,6 @@ def build_fixture(session: Session) -> LeakHarness:
     return h
 
 
-def fake_knn(session, query_vector, kinds, limit, model=None):
+def fake_knn(session, query_vector, kinds, limit, model=None, where=None):
     """Replace only pgvector distance: all seeded private candidates compete."""
     return [(row, 0.0) for row in session.exec(select(Embedding)).all()][:limit]

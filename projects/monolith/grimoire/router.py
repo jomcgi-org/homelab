@@ -71,13 +71,15 @@ from grimoire.models import (
     SessionEvent,
     SessionStatus,
 )
-from grimoire.reveals import reveal_items
 from grimoire.play_embeddings import (
     event_note_markdown as _event_note_markdown,
+)
+from grimoire.play_embeddings import (
     sync_event_embeddings,
     sync_note_embeddings,
 )
-from grimoire.search import search_campaign
+from grimoire.reveals import reveal_items
+from grimoire.search import search_campaign, search_knowledge
 from grimoire.session_events import (
     EventRequestConflictError,
     InvalidEventAudienceError,
@@ -2360,6 +2362,26 @@ async def search_campaign_route(
     )
 
 
+@router.get(
+    "/campaigns/{campaign_id}/knowledge/search",
+    dependencies=[Depends(require_play_enabled)],
+)
+async def search_knowledge_route(
+    campaign_id: str,
+    q: str = Query(min_length=1, max_length=200),
+    k: int = Query(default=10, ge=1, le=50),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+    embed_client: EmbeddingClient = Depends(get_embedding_client),
+) -> list[dict[str, Any]]:
+    """Visible entities, notes, journal events and corpus chunks for a member."""
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    return await search_knowledge(
+        session, embed_client, campaign_id, viewer, member, q, k
+    )
+
+
 # --- Game sessions ---------------------------------------------------
 
 
@@ -2525,8 +2547,20 @@ def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
     """Project retractions and avoid exposing other members' administrative ids."""
     dm = member.role == "dm"
     body = row.body if dm or row.retracted_at is None else None
-    if not dm and body and "reveals" in body:
-        body = {"reveals": reveal_items(body)}
+    if not dm and body and ("reveals" in body or row.kind == "reveal"):
+        items = [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in ("text", "entity", "projection")
+            }
+            if item.get("grant_scope") == "name_only"
+            else item
+            for item in reveal_items(body)
+        ]
+        body = (
+            {"reveals": items} if "reveals" in body else (items[0] if items else body)
+        )
     return SessionEventView(
         id=row.id,
         campaign_id=row.campaign_id,
