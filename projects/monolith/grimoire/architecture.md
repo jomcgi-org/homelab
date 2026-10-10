@@ -290,7 +290,24 @@ append one table `system` event, atomically. Hiding emits no event; unhiding doe
 Event text uses only the party pool or a character's inventory, never character,
 member or entity identity. With no current session both provenance FKs are NULL.
 There is no `public_reader` grant. The sheet engine, not inventory, owns derived
-encumbrance. The session-screen UI follows the backend in #6633.
+encumbrance.
+
+The play-enabled session screen has an Inventory tab after Notes. Players see
+the party pool and their own items, with quantity edits and partial moves.
+Hidden owned items retain a text badge and quantity edits; the backend refuses
+player moves of hidden items. The DM sees sections named for every campaign PC
+and can give, edit, move or delete items. Each item has an on-demand audit
+history disclosure. The session BFF keeps its play gate and private, no-store
+reads: `inventory=items` and `inventory=changes&item=<id>` proxy the inventory
+list and audit routes. `giveItem`, `updateItem`, `moveItem` and `deleteItem`
+proxy mutations; patches forward only supplied fields.
+
+DM-only Give item buttons on visible, non-retracted reveal entries and handouts
+open the tab with the name and source event prefilled. Reveals also carry their
+entity id and select the single addressed PC, or the party pool otherwise.
+Handouts use their first line and default to the party pool. Knowledge chips
+open the existing drawer. Feed system events read as Table update; handout
+events read as Handout.
 
 ## Notes
 
