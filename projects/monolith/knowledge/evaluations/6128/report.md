@@ -130,3 +130,55 @@ new observation run, not a replay or replacement of these measurements. Record
 the then-current declaration, timestamps, exact tool arguments, returned rank
 and metadata, client-only latency, redactions, and any newly available deployed
 revision separately.
+
+## Scoped rerun for #6713, 2026-10-10
+
+PR [#6737](https://github.com/jomcgi-org/homelab/pull/6737) added an optional
+`scope` argument to the `search_knowledge` MCP tool. Issue
+[#6713](https://github.com/jomcgi-org/homelab/issues/6713) asks for the ten
+baseline queries to be rerun with that scope and the off-scope slot count
+reported against the 42/200 baseline. This section records that rerun. The
+full record is `observations-scoped-6713.json`.
+
+Each query was sent once, in dataset order, with the exact query text,
+`limit=20`, `type=null` and `scope="repo:jomcgi-org/homelab"`. No query was
+rephrased or rerun and `get_note` was not called. The calls ran from
+2026-10-10T14:38:46.151Z through 2026-10-10T14:43:44.718Z.
+
+Returned candidates per query:
+
+| Query | Returned | Off-scope |
+| --- | ---: | ---: |
+| q01 | 1 | 0 |
+| q02 | 20 | 0 |
+| q03 | 20 | 0 |
+| q04 | 19 | 0 |
+| q05 | 18 | 0 |
+| q06 | 20 | 0 |
+| q07 | 20 | 0 |
+| q08 | 15 | 0 |
+| q09 | 20 | 0 |
+| q10 | 17 | 0 |
+
+Off-scope slots: 0/170 (0%), against the baseline 42/200 (21%). Every
+returned candidate carried `scope: repo:jomcgi-org/homelab`. No candidate was
+withheld, because no off-scope or personal candidate appeared.
+
+Five queries (q01, q04, q05, q08, q10) returned fewer than 20 candidates. The
+scope filter does not always fill the result budget, so the denominator is the
+170 candidates returned, not 200. The two ratios therefore have different
+denominators and are not a like-for-like comparison of result quality.
+
+Usefulness, evidence coverage, stale or conflicting handling, and safe
+no-answer handling were not re-judged. This rerun measures scope only. The
+returned candidate sets differ from the baseline because the corpus changed
+between 2026-09-20 and 2026-10-10, and that difference is out of scope here.
+
+Latency is approximate client wall time around an MCP call from a cloud
+session. Each timestamp came from `date -u` in a separate shell call before
+and after the tool call, so the interval includes model turn overhead and tool
+orchestration. It is not server processing latency. Over the nine calls with a
+clean measurement the minimum was 5,707 ms, the median 7,748 ms and the maximum
+15,320 ms. The q02 after timestamp was delayed by a refused client-side shell
+command, so its 49,794 ms overstates the call and is excluded from that
+summary. The JSON keeps both the full and the clean summary.
