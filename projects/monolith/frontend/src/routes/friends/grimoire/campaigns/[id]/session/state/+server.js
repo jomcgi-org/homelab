@@ -1,6 +1,7 @@
 import { error, json } from "@sveltejs/kit";
 import { grimoireJson } from "$lib/server/grimoire-auth.js";
 import { sessionState } from "$lib/server/grimoire-session.js";
+import { handoutEvent } from "$lib/grimoire/handout.js";
 
 export async function GET({ fetch, cookies, params, url }) {
   if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
@@ -257,6 +258,9 @@ export async function POST({ request, fetch, cookies, params }) {
         }
         if (input.kind === "narration" && input.speakerKey !== undefined)
           body.body.speaker_key = input.speakerKey;
+      } else if (input.operation === "handout") {
+        path += "/events";
+        body = handoutEvent(input);
       } else throw new Error("Unknown action.");
     }
     const result = await grimoireJson(fetch, cookies, path, {
