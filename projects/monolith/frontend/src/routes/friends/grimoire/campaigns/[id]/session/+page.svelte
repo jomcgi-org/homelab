@@ -247,7 +247,7 @@
     </div>
   </header>
 
-  {#key state.campaign.id}
+  {#key `${state.campaign.id}:${state.session?.id}`}
     <ReadAloud
       campaignId={state.campaign.id}
       role={state.campaign.role}
