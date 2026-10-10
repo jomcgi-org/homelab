@@ -270,6 +270,7 @@ defmodule Embervm.ServingSweeper do
       state
       |> scrape_and_record(now)
       |> arm_idle_banks(now)
+      |> recover_untracked_banks()
       |> sweep_lifetime(now)
       |> sweep_banked_ttl(now)
       |> sweep_stale_lineage(now)
@@ -747,6 +748,30 @@ defmodule Embervm.ServingSweeper do
     state
   end
 
+  # The daemon refused the bank outright: a bank of this vm_id is already in
+  # flight (a re-issued untracked bank racing the original) or the VM is unknown
+  # to it. Neither has the VM provably alive, so aborting back to the fan-out
+  # would republish a VM that is mid-bank or gone. Leave the row :banking and
+  # untracked; the next sweep reads the node's truth (recover_untracked/2) and
+  # adopts the snapshot, re-issues the bank or destroys the row.
+  # The worker reports the seam's own {:error, reason} wrapped once more, so the
+  # refusal arrives nested; the flat shape is matched too for a direct caller.
+  defp finish_bank_active(state, instance, _node_id, {:error, {:error, %GRPC.RPCError{status: 9} = error}}),
+    do: bank_refused(state, instance, error)
+
+  defp finish_bank_active(state, instance, _node_id, {:error, %GRPC.RPCError{status: 9} = error}),
+    do: bank_refused(state, instance, error)
+
+  defp bank_refused(state, instance, error) do
+    Logger.info("embervm serving: bank refused by the node, re-evaluating next sweep",
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      reason: inspect(error)
+    )
+
+    state
+  end
+
   defp finish_bank_active(state, instance, _node_id, {:error, reason}) do
     Logger.warning("embervm serving: bank failed, returning to fan-out",
       instance_id: instance.instance_id,
@@ -816,6 +841,135 @@ defmodule Embervm.ServingSweeper do
     end
 
     destroy_instance(state, instance, :lifetime)
+  end
+
+  # -- recovery of drains and banks this process is not tracking -------------
+  #
+  # The drain timer, the `draining` map and the bank worker's reply address all
+  # live in THIS process, while the row they describe lives in ServingStore (its
+  # own ETS). A sweeper restart therefore leaves `:draining` rows with
+  # drain_reason :bank that no timer will fire and `:banking` rows whose
+  # {:bank_done} is addressed to a dead pid. ServingManager's adoption guards
+  # deliberately leave both to the sweeper, so without this pass such a row sat
+  # unpublished, with its VM still live, until the lifetime sweep destroyed it.
+  defp recover_untracked_banks(state) do
+    ServingStore.all(state.store)
+    |> Enum.filter(&untracked_bank?(state, &1))
+    |> Enum.reduce(state, fn instance, acc -> recover_untracked(acc, instance) end)
+  end
+
+  defp untracked_bank?(state, instance) do
+    not Map.has_key?(state.draining, instance.instance_id) and
+      (instance.state == :banking or
+         (instance.state == :draining and Map.get(instance, :drain_reason) == :bank))
+  end
+
+  # A drain nobody is timing: re-arm the full drain window (the row is already out
+  # of the fan-out, so waiting it again costs nothing) and track it.
+  defp recover_untracked(state, %{state: :draining} = instance) do
+    case serving_cfg(state, instance.workload) do
+      {:ok, cfg} ->
+        drain_ms = max(cfg.drain_seconds, 0) * 1000
+        state.timer_fun.({:bank_drained, instance.instance_id}, drain_ms)
+
+        Logger.info("embervm serving: re-armed an untracked bank drain",
+          instance_id: instance.instance_id,
+          workload: instance.workload,
+          drain_ms: drain_ms
+        )
+
+        put_draining(state, instance)
+
+      :error ->
+        state
+    end
+  end
+
+  # A bank nobody is waiting on: read the node's truth. The VM still live means
+  # the bank never happened or the daemon is still writing it: re-issue the RPC
+  # (a bank already in flight is refused FailedPrecondition and re-evaluated next
+  # sweep, see finish_bank_active/4). The VM gone with an unclaimed snapshot of
+  # the workload on that node means the bank finished and its reply was lost:
+  # adopt it. The VM gone with no snapshot means the bank failed and the VM died:
+  # the row goes terminal. A node not reporting at all is left alone.
+  defp recover_untracked(state, %{state: :banking} = instance) do
+    case node_view_of(state, instance) do
+      :vm_live ->
+        if bank_at_cap?(state, instance.node_id) do
+          state
+        else
+          Logger.info("embervm serving: re-issuing an untracked bank",
+            instance_id: instance.instance_id,
+            workload: instance.workload
+          )
+
+          state = state |> put_draining(instance) |> incr_bank_inflight(instance.node_id)
+          spawn_bank_worker(state, instance, instance.node_id, instance.vm_id)
+          state
+        end
+
+      {:snapshot, snapshot} ->
+        Logger.info("embervm serving: adopted the snapshot of an untracked bank",
+          instance_id: instance.instance_id,
+          workload: instance.workload,
+          snapshot_ref: snapshot.snapshot_ref
+        )
+
+        size = Map.get(snapshot, :size_bytes) || 0
+        generation = (instance.generation || 0) + 1
+        finish_bank_active(state, instance, instance.node_id, {:ok, snapshot.snapshot_ref, size, generation})
+
+      :vanished ->
+        Logger.warning("embervm serving: untracked bank left neither VM nor snapshot, destroying the row",
+          instance_id: instance.instance_id,
+          workload: instance.workload
+        )
+
+        destroy_instance(state, instance, :bank_lost)
+
+      :unknown ->
+        state
+    end
+  end
+
+  # What the instance's node currently reports about it: every fact for that node
+  # name (co-located bricks share one) is consulted.
+  defp node_view_of(state, instance) do
+    facts =
+      NodeCapacity.all(state.capacity_table)
+      |> Enum.filter(&(Map.get(&1, :node_id) == instance.node_id))
+
+    vm_live? =
+      Enum.any?(facts, fn fact ->
+        Enum.any?(Map.get(fact, :serving_vms) || [], &(Map.get(&1, :vm_id) == instance.vm_id))
+      end)
+
+    cond do
+      facts == [] ->
+        :unknown
+
+      vm_live? ->
+        :vm_live
+
+      true ->
+        claimed =
+          ServingStore.all(state.store)
+          |> Enum.map(& &1.snapshot_ref)
+          |> Enum.reject(&is_nil/1)
+          |> MapSet.new()
+
+        facts
+        |> Enum.flat_map(&(Map.get(&1, :serving_snapshots) || []))
+        |> Enum.filter(fn snapshot ->
+          Map.get(snapshot, :workload) == instance.workload and
+            not MapSet.member?(claimed, Map.get(snapshot, :snapshot_ref))
+        end)
+        |> Enum.max_by(&(Map.get(&1, :created_at_unix_ms) || 0), fn -> nil end)
+        |> case do
+          nil -> :vanished
+          snapshot -> {:snapshot, snapshot}
+        end
+    end
   end
 
   # -- banked-TTL GC ---------------------------------------------------------
