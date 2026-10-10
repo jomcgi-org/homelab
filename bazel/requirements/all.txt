@@ -303,13 +303,6 @@ authlib==1.7.2 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
-babel==2.18.0 \
-    --hash=sha256:b80b99a14bd085fcacfa15c9165f651fbb3406e66cc603abf11c5750937c992d \
-    --hash=sha256:e2b422b277c2b9a9630c1d7903c2a00d0830c409c59ac8cae9081c92f1aeba35
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   courlan
 beartype==0.22.9 \
     --hash=sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f \
     --hash=sha256:d16c9bbc61ea14637596c5f6fbff2ee99cbe3573e46a716401734ef50c3060c2
@@ -526,7 +519,6 @@ certifi==2026.2.25 \
     #   pyproj
     #   rasterio
     #   requests
-    #   trafilatura
 cffi==2.0.0 \
     --hash=sha256:00bdf7acc5f795150faa6957054fbbca2439db2f775ce831222b66f192f03beb \
     --hash=sha256:07b271772c100085dd28b74fa0cd81c8fb1a3ba18b21e03d7c27f3436a10606b \
@@ -734,9 +726,7 @@ charset-normalizer==3.4.4 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   htmldate
     #   requests
-    #   trafilatura
 click==8.3.1 \
     --hash=sha256:12ff4785d337a1bb490bb7e9c2b1ee5da3112e94a8622f26a6c77f5d2fc6842a \
     --hash=sha256:981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6
@@ -802,13 +792,6 @@ copier==9.16.0 \
     --hash=sha256:4db1a9861d0760f745cc6241f99be37b476f849b8ad700133e2f620b7df92eb2 \
     --hash=sha256:fadc55a22db6fb0f99d52878d3df4df3fa9c314dd96b0d81fef785a5e803114b
     # via -r bazel/requirements/tools.in
-courlan==1.3.2 \
-    --hash=sha256:0b66f4db3a9c39a6e22dd247c72cfaa57d68ea660e94bb2c84ec7db8712af190 \
-    --hash=sha256:d0dab52cf5b5b1000ee2839fbc2837e93b2514d3cb5bb61ae158a55b7a04c6be
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   trafilatura
 cryptography==50.0.0 \
     --hash=sha256:031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03 \
     --hash=sha256:06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7 \
@@ -897,13 +880,6 @@ cyclopts==4.7.0 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   fastmcp
-dateparser==1.4.0 \
-    --hash=sha256:7902b8e85d603494bf70a5a0b1decdddb2270b9c6e6b2bc8a57b93476c0df378 \
-    --hash=sha256:97a21840d5ecdf7630c584f673338a5afac5dfe84f647baf4d7e8df98f9354a4
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   htmldate
 dbos==2.29.0 \
     --hash=sha256:49104b64b8917dc3d321704f1d20058486c86129420b96b910f1e725fbdebca6 \
     --hash=sha256:ae6015bba43b5842a4a99abcc7826ca00c758af767ebaf79e6304c0b4f58ec46
@@ -958,7 +934,6 @@ defusedxml==0.7.1 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   youtube-transcript-api
 discord-py==2.7.1 \
     --hash=sha256:24d5e6a45535152e4b98148a9dd6b550d25dc2c9fb41b6d670319411641249da \
     --hash=sha256:849dca2c63b171146f3a7f3f8acc04248098e9e6203412ce3cf2745f284f7439
@@ -1469,13 +1444,6 @@ hf-xet==1.4.2 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or 
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   huggingface-hub
-htmldate==1.9.4 \
-    --hash=sha256:1129063e02dd0354b74264de71e950c0c3fcee191178321418ccad2074cc8ed0 \
-    --hash=sha256:1b94bcc4e08232a5b692159903acf95548b6a7492dddca5bb123d89d6325921c
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   trafilatura
 httpcore==1.0.9 \
     --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55 \
     --hash=sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8
@@ -1831,13 +1799,6 @@ jsonschema-specifications==2025.9.1 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   jsonschema
-justext==3.0.2 \
-    --hash=sha256:13496a450c44c4cd5b5a75a5efcd9996066d2a189794ea99a49949685a0beb05 \
-    --hash=sha256:62b1c562b15c3c6265e121cc070874243a443bfd53060e869393f09d6b6cc9a7
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   trafilatura
 keyring==25.7.0 \
     --hash=sha256:be4a0b195f149690c166e850609a477c532ddbfbaed96a404d4e43f8d5e2689f \
     --hash=sha256:fe01bd85eb3f8fb3dd0405defdeac9a5b4f6f0439edbb3149577f244a2e8245b
@@ -2004,10 +1965,7 @@ lxml==6.1.0 \
     #   -c bazel/requirements/runtime.txt
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
-    #   htmldate
-    #   justext
     #   lxml-html-clean
-    #   trafilatura
 lxml-html-clean==0.4.4 \
     --hash=sha256:58f39a9d632711202ed1d6d0b9b47a904e306c85de5761543b90e3e3f736acfb \
     --hash=sha256:ce2ef506614ecb85ee1c5fe0a2aa45b06a19514ec7949e9c8f34f06925cfabcb
@@ -3798,9 +3756,7 @@ python-dateutil==2.9.0.post0 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   botocore
-    #   dateparser
     #   dbos
-    #   htmldate
     #   icalendar
     #   jsii
     #   kubernetes-asyncio
@@ -3829,7 +3785,6 @@ pytz==2024.2 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   dateparser
     #   open-gopro
 pywin32==311 ; sys_platform == 'win32' \
     --hash=sha256:0502d1facf1fed4839a9a51ccbcc63d952cf318f78ffc00a7e78528ac27d7a2b \
@@ -4116,7 +4071,6 @@ regex==2026.4.4 \
     # via
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
-    #   dateparser
     #   tiktoken
 requests==2.33.0 \
     --hash=sha256:3324635456fa185245e24865e810cecec7b4caf933d7eb133dcde67d48cee69b \
@@ -4134,7 +4088,6 @@ requests==2.33.0 \
     #   requests-cache
     #   semgrep
     #   tiktoken
-    #   youtube-transcript-api
 requests-cache==1.3.1 \
     --hash=sha256:43a67448c3b2964c631ac7027b84607f2f63438e28104b68ad2211f32d9f606c \
     --hash=sha256:784e9d07f72db4fe234830a065230c59eb446489528f271ba288c640897e47c4
@@ -4693,13 +4646,6 @@ tinydb==4.8.2 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   open-gopro
-tld==0.13.2 \
-    --hash=sha256:9b8fdbdb880e7ba65b216a4937f2c94c49a7226723783d5838fc958ac76f4e0c \
-    --hash=sha256:d983fa92b9d717400742fca844e29d5e18271079c7bcfabf66d01b39b4a14345
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   courlan
 tokenizers==0.22.2 \
     --hash=sha256:143b999bdc46d10febb15cbffb4207ddd1f410e2c755857b5a0797961bbdc113 \
     --hash=sha256:1a62ba2c5faa2dd175aaeed7b15abf18d20266189fb3406c5d0550dd34dd5f37 \
@@ -4787,12 +4733,6 @@ tqdm==4.67.3 \
     #   fastembed
     #   huggingface-hub
     #   openai
-trafilatura==2.0.0 \
-    --hash=sha256:77eb5d1e993747f6f20938e1de2d840020719735690c840b9a1024803a4cd51d \
-    --hash=sha256:ceb7094a6ecc97e72fea73c7dba36714c5c5b577b6470e4520dca893706d6247
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
 truststore==0.10.4 ; sys_platform != 'emscripten' \
     --hash=sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301 \
     --hash=sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981
@@ -4878,7 +4818,6 @@ tzlocal==5.3.1 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   apscheduler
-    #   dateparser
     #   open-gopro
 uncalled-for==0.2.0 \
     --hash=sha256:2c0bd338faff5f930918f79e7eb9ff48290df2cb05fcc0b40a7f334e55d4d85f \
@@ -4902,14 +4841,11 @@ urllib3==2.8.0 \
     #   --override bazel/requirements/overrides.txt
     #   -r bazel/requirements/runtime.txt
     #   botocore
-    #   courlan
     #   dulwich
-    #   htmldate
     #   kubernetes-asyncio
     #   requests
     #   requests-cache
     #   semgrep
-    #   trafilatura
 uvicorn[standard]==0.41.0 \
     --hash=sha256:09d11cf7008da33113824ee5a1c6422d89fbc2ff476540d69a34c87fab8b571a \
     --hash=sha256:29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187
@@ -5568,12 +5504,6 @@ yarl==1.23.0 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   aiohttp
-youtube-transcript-api==1.2.4 \
-    --hash=sha256:03878759356da5caf5edac77431780b91448fb3d8c21d4496015bdc8a7bc43ff \
-    --hash=sha256:b72d0e96a335df599d67cee51d49e143cff4f45b84bcafc202ff51291603ddcd
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
 zeroconf==0.150.0 \
     --hash=sha256:00fa39069437e68fe7c32856f7d041f46cd57f4f5a13ca75ae8f1c49e39932be \
     --hash=sha256:01a31f0ec4bc3f125ae541fb96259a081f3f83d201f1fca59929155b90185df4 \
