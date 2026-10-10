@@ -45,6 +45,10 @@ def test_real_inventory_migration_constraints_append_only_and_fk_lifecycle(pg):
         with engine.connect() as connection:
             transaction = connection.begin()
             try:
+                # Report a blocked statement instead of exhausting the CI test
+                # timeout, so FK lifecycle regressions identify their SQL.
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '15s'")
                 for sql in (
                     "INSERT INTO grimoire.campaign (id, name) VALUES (:campaign, 'Inventory')",
                     "INSERT INTO grimoire.app_user (id, email) VALUES (:user, :email)",
