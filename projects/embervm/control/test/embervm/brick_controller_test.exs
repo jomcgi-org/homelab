@@ -494,6 +494,12 @@ defmodule Embervm.BrickControllerTest do
       |> Keyword.merge(clock: clock, archive_ack_gate: true,
         facts_fun: fn -> Agent.get(facts, & &1) end,
         archive_instances_fun: fn -> Agent.get(facts, & &1) end,
+        pods_fun: fn _ns, _selector ->
+          {:ok, Enum.map(["a", "b", "c", "0"], fn suffix ->
+            %{name: "brick-#{suffix}", uid: "uid-#{suffix}",
+              replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash"}
+          end)}
+        end,
         archive_fun: fn node, volumes -> send(parent, {:archive, node, volumes}); :ok end)
       |> Keyword.merge(opts)
     opts = if Keyword.get(opts, :real_archive_registry, false),
@@ -769,6 +775,54 @@ defmodule Embervm.BrickControllerTest do
     if is_list(instances) do
       assert Enum.all?(instances, &(&1.node_id == &1.configured_id))
     end
+  end
+
+  test "an exported same-class floor cannot authorize deleting an unarchived elastic brick" do
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+      {:ok, [%{name: "brick-a", uid: "uid-a",
+               replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash"},
+             %{name: "floor", uid: "uid-floor",
+               replica_set: "embervm-embervm-noded-brick-2gi-node-5-hash", template_hash: "hash"}]}
+    end)
+    floor = %{ctx.fact | pod_uid: "uid-floor", node_id: "node-5",
+      instance_id: "node-5/uid-floor", session_volumes: []}
+    Agent.update(ctx.facts, fn facts -> facts ++ [floor] end)
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=archive_pending"
+    assert_receive {:archive, "node-4/uid-a", [_, _]}
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+  end
+
+  test "unknown pod ownership, another Deployment or a failed pod list cannot release the victim" do
+    for pods <- [
+      {:ok, [%{name: "brick-a", uid: "uid-a"}]},
+      {:ok, [%{name: "brick-a", uid: "uid-a", replica_set: "other-2gi-hash", template_hash: "hash"}]},
+      {:error, :timeout}
+    ] do
+      ctx = archive_gate_stack(pods_fun: fn _ns, _selector -> pods end)
+      Agent.update(ctx.facts, fn [victim] -> [%{victim | session_volumes: []}] end)
+      archive_gate_tick(ctx)
+      assert ctx.annotated.() == []
+      assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+      refute_receive {:archive, _, _}
+    end
+  end
+
+  test "ownership is checked again before directing a selected safe victim" do
+    {:ok, reads} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(reads) end)
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+      n = Agent.get_and_update(reads, fn n -> {n, n + 1} end)
+      owner = if n == 0, do: "embervm-embervm-noded-brick-2gi-hash", else: "other-hash"
+      {:ok, [%{name: "brick-a", uid: "uid-a", replica_set: owner, template_hash: "hash"}]}
+    end)
+    Agent.update(ctx.facts, fn [victim] -> [%{victim | session_volumes: []}] end)
+    archive_gate_tick(ctx)
+    assert Agent.get(reads, & &1) == 2
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+    refute_receive {:archive, _, _}
   end
 
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do
