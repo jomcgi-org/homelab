@@ -697,6 +697,57 @@ func TestServingBankRelightRoundTrip(t *testing.T) {
 	}
 }
 
+// Bank identity belongs to the started VM, not the caller's trace metadata.
+func TestStopServingBankPreservesWorkload(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		trace *nodev1.Trace
+	}{
+		{name: "empty_trace", trace: &nodev1.Trace{}},
+		{name: "different_workload", trace: &nodev1.Trace{Workload: "wl-other"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, port := healthServer(t, servingHealthPath)
+			s, _, _ := newServingTestServer(t)
+			started := startFresh(t, s, port)
+			// Capture the real enqueue without running the async export worker.
+			s.store = newFakeStore()
+			s.cfg.CpuVendor = "amd"
+			s.exportCh = make(chan exportJob, 1)
+
+			banked, err := s.StopServing(context.Background(), &nodev1.StopServingRequest{
+				VmId: started.GetVmId(), Mode: nodev1.StopServingMode_STOP_SERVING_MODE_BANK,
+				Trace: tc.trace,
+			})
+			if err != nil {
+				t.Fatalf("StopServing(bank): %v", err)
+			}
+			ns := s.nodeStatus()
+			if len(ns.GetServingVms()) != 0 {
+				t.Error("banked VM should no longer be live")
+			}
+			snapshots := ns.GetServingSnapshots()
+			if len(snapshots) != 1 {
+				t.Fatalf("serving_snapshots = %d want 1", len(snapshots))
+			}
+			if got := snapshots[0].GetWorkload(); got != "wl-serve" {
+				t.Errorf("snapshot workload = %q want wl-serve", got)
+			}
+			if got := snapshots[0].GetSnapshotRef(); got != banked.GetSnapshotRef() {
+				t.Errorf("snapshot ref = %q want %q", got, banked.GetSnapshotRef())
+			}
+			select {
+			case job := <-s.exportCh:
+				if job.ref.GetWorkload() != "wl-serve" || job.ref.GetRef() != banked.GetSnapshotRef() || job.ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SERVING {
+					t.Errorf("bank export identity = %+v want serving/wl-serve/%s", job.ref, banked.GetSnapshotRef())
+				}
+			default:
+				t.Error("bank did not enqueue a serving export")
+			}
+		})
+	}
+}
+
 // TestEvictServingSnapshotInUseGuard mirrors the session in-use guard: evicting a
 // serving ref a LIVE relit VM depends on is refused FailedPrecondition; evicting a
 // banked-but-not-live ref succeeds and removes the bundle. It proves the guard is

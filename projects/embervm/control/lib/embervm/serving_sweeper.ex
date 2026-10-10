@@ -684,7 +684,7 @@ defmodule Embervm.ServingSweeper do
             with {:ok, channel} <- safe_channel(channel_fun, dial_key),
                  {:ok, %StopServingResponse{snapshot_ref: ref, size_bytes: size}}
                  when is_binary(ref) and ref != "" <-
-                   stop_fun.(channel, bank_request(vm_id)) do
+                   stop_fun.(channel, bank_request(vm_id, workload)) do
               Tracer.set_attributes(%{"ember.snapshot_bytes" => size})
               {:ok, ref, size, generation}
             else
@@ -701,8 +701,8 @@ defmodule Embervm.ServingSweeper do
     end)
   end
 
-  defp bank_request(vm_id) do
-    %StopServingRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_SERVING_MODE_BANK}
+  defp bank_request(vm_id, workload) do
+    %StopServingRequest{trace: %Trace{workload: workload}, vm_id: vm_id, mode: :STOP_SERVING_MODE_BANK}
   end
 
   # The StopServing(BANK) completed: release the node slot + drain bookkeeping, then:
