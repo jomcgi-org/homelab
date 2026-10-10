@@ -546,7 +546,7 @@ slower boot mid-gate and the daemon reaped the healthy VM, while a deadline far
 past the stateful wake bound would leave the daemon booting a VM whose callers
 were already failed. Every stateful wake outcome carries the token of the wake
 that spawned it, so a worker that outlives its `wake_timeout` cannot complete a
-later wake with its VM; its exact StartStateful instance gets an immediate DESTROY retried on reconcile (orphan destroy skips those ids), and the pending entry is dropped with an error log once the owning instance has stayed unresolvable past the destroying escape interval, so later wakes are no longer fenced. Serving
+later wake with its VM; its exact StartStateful instance gets an immediate DESTROY retried on reconcile (orphan destroy skips those ids), and the entry stops fencing placement (with an error log) once the owning instance has been continuously absent (missing from NodeCapacity or unresolvable) for the destroying escape interval. The fence is bounded but the retry is not: an escaped entry stays pending and keeps attempting the exact-instance DESTROY every reconcile, so an owner that returns with the stale VM still alive is torn down, and orphan destroy keeps skipping the id. Serving
 drain-before-bank bookkeeping (the drain timer, the draining map, the bank
 worker's reply address) is sweeper-process state over ServingStore rows that
 `ServingManager` adoption deliberately leaves alone, so every sweep re-adopts
