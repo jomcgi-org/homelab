@@ -179,6 +179,39 @@ def test_entity_voice_upsert_and_narration_share_canonical_key(setup):
     assert event["body"]["speaker_key"] == speaker_ref(h.rows["campaign"].id, key)
 
 
+def test_existing_entity_preset_handles_uuid_case_without_duplicates(setup):
+    client, h = setup
+    key = h.rows["private"].id
+    original = h.session.exec(
+        select(CampaignVoice).where(CampaignVoice.speaker_key == key)
+    ).one()
+    original_id = original.id
+    response = client.put(
+        path(h, key.lower()), headers=h.headers("dm"), json={"rate": 1.5}
+    )
+    assert response.status_code == 200, response.text
+    h.session.expire_all()
+    voices = h.session.exec(select(CampaignVoice)).all()
+    assert len(voices) == 2
+    updated = next(row for row in voices if row.id == original_id)
+    assert updated.speaker_key == str(UUID(key))
+    assert updated.rate == 1.5
+    response = client.delete(path(h, key), headers=h.headers("dm"))
+    assert response.status_code == 204, response.text
+    assert h.session.get(CampaignVoice, original_id) is None
+
+
+def test_delete_entity_preset_finds_original_uuid_spelling(setup):
+    client, h = setup
+    key = h.rows["private"].id
+    original_id = h.session.exec(
+        select(CampaignVoice.id).where(CampaignVoice.speaker_key == key)
+    ).one()
+    response = client.delete(path(h, key.lower()), headers=h.headers("dm"))
+    assert response.status_code == 204, response.text
+    assert h.session.get(CampaignVoice, original_id) is None
+
+
 def test_retracted_narration_does_not_expose_speaker_key(setup):
     client, h = setup
     event_id = h.rows["event_table"].id

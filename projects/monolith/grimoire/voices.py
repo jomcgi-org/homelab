@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from grimoire.models import CampaignVoice, Entity
@@ -85,18 +86,30 @@ def voice_view(row: CampaignVoice, *, dm: bool) -> VoiceView:
     )
 
 
+def _find_voice(session: Session, campaign_id: str, key: str) -> CampaignVoice | None:
+    matches_key = CampaignVoice.speaker_key == key
+    try:
+        UUID(key)
+    except ValueError:
+        pass
+    else:
+        matches_key = func.lower(CampaignVoice.speaker_key) == key
+    return session.exec(
+        select(CampaignVoice).where(
+            CampaignVoice.campaign_id == campaign_id, matches_key
+        )
+    ).first()
+
+
 def upsert_voice(
     session: Session, campaign_id: str, key: str, body: VoiceRequest
 ) -> CampaignVoice:
     key = validate_speaker_key(session, campaign_id, key)
-    row = session.exec(
-        select(CampaignVoice).where(
-            CampaignVoice.campaign_id == campaign_id, CampaignVoice.speaker_key == key
-        )
-    ).first()
+    row = _find_voice(session, campaign_id, key)
     if row is None:
         row = CampaignVoice(campaign_id=campaign_id, speaker_key=key)
         session.add(row)
+    row.speaker_key = key
     row.voice_hint = body.voice_hint.model_dump()
     row.rate = body.rate
     row.pitch = body.pitch
@@ -108,11 +121,7 @@ def upsert_voice(
 
 def delete_voice(session: Session, campaign_id: str, key: str) -> None:
     key = validate_speaker_key(session, campaign_id, key)
-    row = session.exec(
-        select(CampaignVoice).where(
-            CampaignVoice.campaign_id == campaign_id, CampaignVoice.speaker_key == key
-        )
-    ).first()
+    row = _find_voice(session, campaign_id, key)
     if row is None:
         raise HTTPException(404, "voice not found")
     session.delete(row)
