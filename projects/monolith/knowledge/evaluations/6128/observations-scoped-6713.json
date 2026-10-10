@@ -51,13 +51,7 @@
     },
     "queries_returning_fewer_than_20": {
       "count": 5,
-      "ids": [
-        "q01",
-        "q04",
-        "q05",
-        "q08",
-        "q10"
-      ],
+      "ids": ["q01", "q04", "q05", "q08", "q10"],
       "note": "Under the scope filter the result budget is not always filled, so the denominator is the number of returned candidates, not 20 times the query count."
     },
     "scope_mismatch_candidates": {
