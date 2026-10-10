@@ -1,6 +1,7 @@
 <script>
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
+  import { composeMessage } from "$lib/grimoire/session-compose.js";
   import RevealEditor from "$lib/grimoire/RevealEditor.svelte";
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
   import JournalPanel from "$lib/grimoire/SessionJournalPanel.svelte";
@@ -98,15 +99,13 @@
 
   function post(event) {
     event.preventDefault();
-    const message = {
-      operation: "post",
+    const message = composeMessage({
       text: draft,
-      kind: dm ? "narration" : "action",
-      audience: audience.startsWith("pc:") ? "pcs" : audience,
-      pcIds: audience.startsWith("pc:") ? [audience.slice(3)] : [],
-      replyTo: replyTo?.id,
+      dm,
+      audience,
+      replyTo,
       resolved,
-    };
+    });
     const signature = JSON.stringify({
       sessionId: state.session?.id,
       ...message,
