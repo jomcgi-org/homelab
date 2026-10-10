@@ -1369,7 +1369,7 @@ defmodule Embervm.BrickController do
         # per-process, so only the victim's own export flips the victim's fact.
         # Shared volume attachments are per-process. Hold the whole node until
         # the registry sees only this instance, regardless of sibling health.
-        if not archive_node_held?(victim) and session_volumes_complete?(victim) do
+        if not archive_held?(victim) and session_volumes_complete?(victim) do
           case unexported_volumes(victim) do
             [] -> :ok
             volumes -> state.archive_fun.(victim_instance_id(victim), volumes)
@@ -1393,7 +1393,7 @@ defmodule Embervm.BrickController do
       Enum.filter(
         eligible,
         &(not state.archive_ack_gate or
-            (not archive_node_held?(&1) and session_volumes_complete?(&1) and
+            (not archive_held?(&1) and session_volumes_complete?(&1) and
                unexported_volumes(&1) == []))
       )
 
@@ -1427,10 +1427,12 @@ defmodule Embervm.BrickController do
   defp archive_deployment_facts(facts, state, class) do
     case state.pods_fun.(state.namespace, brick_pod_selector(class)) do
       {:ok, pods} ->
-        uids = pods
-          |> Enum.filter(&class_deployment_pod?(state, class, &1))
-          |> MapSet.new(& &1.uid)
-        Enum.filter(facts, &MapSet.member?(uids, Map.get(&1, :pod_uid)))
+        owned = Enum.filter(pods, &class_deployment_pod?(state, class, &1))
+        uids = MapSet.new(owned, & &1.uid)
+        mixed? = mixed_replica_sets?(owned)
+        facts
+        |> Enum.filter(&MapSet.member?(uids, Map.get(&1, :pod_uid)))
+        |> Enum.map(&Map.put(&1, :archive_rollout_held, mixed?))
       {:error, _} -> []
     end
   end
@@ -1445,14 +1447,22 @@ defmodule Embervm.BrickController do
       Map.get(pod, :replica_set) == state.deployment_prefix <> class <> "-" <> hash
   end
 
+  # Deployment /scale can reduce a different ReplicaSet during a partial roll.
+  # Pod deletion cost only directs deletion within one ReplicaSet.
+  defp mixed_replica_sets?(pods) do
+    pods |> Enum.map(& &1.replica_set) |> Enum.uniq() |> length() > 1
+  end
+
   # The channel key of the brick, by the repo's one dial-key rule.
   defp victim_instance_id(fact), do: Brick.dial_id(fact)
 
   defp archive_stalled?(fact) do
-    archive_node_held?(fact) or not session_volumes_complete?(fact)
+    archive_held?(fact) or not session_volumes_complete?(fact)
   end
 
   defp archive_node_held?(fact), do: Map.get(fact, :archive_node_held, false)
+  defp archive_held?(fact),
+    do: archive_node_held?(fact) or Map.get(fact, :archive_rollout_held, false)
 
   # NodeCapacity omits non-dispatchable instances. The full registry snapshot
   # enumerates node_runtime, including starting, unknown and draining siblings.
@@ -1509,7 +1519,9 @@ defmodule Embervm.BrickController do
   defp prune_archive_pending(state, facts) do
     pending_uids = for fact <- facts,
       legacy_victim?(fact, Map.get(fact, :size_class)) and
-        (archive_node_held?(fact) or not session_volumes_complete?(fact) or
+        # A fully exported candidate may still be held by a mixed ReplicaSet
+        # roll. Keep its wait until prepare_scale_down proves it safe or absent.
+        (state.archive_ack_gate or not session_volumes_complete?(fact) or
            unexported_volumes(fact) != []),
       into: MapSet.new(), do: Map.get(fact, :pod_uid)
     %{state | archive_pending: Map.filter(state.archive_pending, fn {uid, _wait} ->
@@ -1543,6 +1555,8 @@ defmodule Embervm.BrickController do
     selector = brick_pod_selector(class)
 
     with {:ok, pods} <- state.pods_fun.(state.namespace, selector),
+         true <- not state.archive_ack_gate or
+           not mixed_replica_sets?(Enum.filter(pods, &class_deployment_pod?(state, class, &1))),
          %{name: pod_name} <-
            Enum.find(pods, :no_pod, fn pod ->
              pod.uid == Map.get(victim, :pod_uid) and class_deployment_pod?(state, class, pod)
@@ -1553,6 +1567,7 @@ defmodule Embervm.BrickController do
            }) do
       :ok
     else
+      false -> {:skip, :rollout_in_progress}
       :no_pod -> {:skip, :victim_pod_not_found}
       {:error, reason} -> {:skip, inspect(reason)}
     end
