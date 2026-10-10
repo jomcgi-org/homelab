@@ -456,3 +456,80 @@ describe("reveal payload", () => {
     expect(body.grants[0].revealed_details).toBeNull();
   });
 });
+
+describe("handout payload", () => {
+  const eventsPath = `http://backend.test/api/grimoire/campaigns/${campaignId}/sessions/${sessionId}/events`;
+  const handout = (extra) => ({
+    operation: "handout",
+    title: "  A map of the pass  ",
+    markdown: "Mind the **ice**.",
+    audience: "table",
+    pcIds: [],
+    ...extra,
+  });
+
+  it("forwards a table handout with a trimmed title", async () => {
+    const { url, body } = await sent(post(handout({ requestId: "h-1" })));
+    expect(url).toBe(eventsPath);
+    expect(body).toEqual({
+      kind: "handout",
+      audience: "table",
+      audience_pc_ids: [],
+      body: { title: "A map of the pass", markdown: "Mind the **ice**." },
+      request_id: "h-1",
+    });
+  });
+
+  it("names the chosen PCs, the entity and an uploaded image", async () => {
+    const key = `campaigns/${campaignId}/handouts/${"a".repeat(32)}.png`;
+    const { body } = await sent(
+      post(
+        handout({
+          audience: "pcs",
+          pcIds: [pcA, pcB],
+          entityId: pcB,
+          image: { source: "upload", key, extra: "dropped" },
+        }),
+      ),
+    );
+    expect(body.audience).toBe("pcs");
+    expect(body.audience_pc_ids).toEqual([pcA, pcB]);
+    expect(body.body).toEqual({
+      title: "A map of the pass",
+      markdown: "Mind the **ice**.",
+      entity_id: pcB,
+      image: { source: "upload", key },
+    });
+  });
+
+  it("forwards a chunk image reference", async () => {
+    const { body } = await sent(
+      post(handout({ image: { source: "chunk", chunk_id: pcA } })),
+    );
+    expect(body.body.image).toEqual({ source: "chunk", chunk_id: pcA });
+  });
+
+  it.each([
+    ["a blank title", { title: "   " }],
+    ["an overlong title", { title: "t".repeat(201) }],
+    ["overlong markdown", { markdown: "m".repeat(20001) }],
+    ["a private handout with nobody picked", { audience: "pcs", pcIds: [] }],
+    ["the dm audience", { audience: "dm" }],
+    ["a malformed player character id", { audience: "pcs", pcIds: ["x/../y"] }],
+    ["a malformed entity id", { entityId: "not-a-uuid" }],
+    ["an unknown image source", { image: { source: "url", url: "http://x" } }],
+    ["an upload image without a key", { image: { source: "upload" } }],
+  ])("rejects %s before contacting the backend", async (_name, extra) => {
+    const { fetch, response } = post(handout(extra));
+    expect((await response).status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("accepts the limits exactly", async () => {
+    const { body } = await sent(
+      post(handout({ title: "t".repeat(200), markdown: "m".repeat(20000) })),
+    );
+    expect(body.body.title).toHaveLength(200);
+    expect(body.body.markdown).toHaveLength(20000);
+  });
+});
