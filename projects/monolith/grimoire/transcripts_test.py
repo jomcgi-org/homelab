@@ -6,10 +6,12 @@ from uuid import uuid4
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from grimoire.models import Campaign, GameSession, SessionEvent, TranscriptConsent
+from grimoire.router import _lock_consent_member
 from grimoire.session_events import require_transcript_enabled, transcript_enabled
 from grimoire.testing.leak_harness import sqlite_harness
 
@@ -81,6 +83,25 @@ def test_consent_grant_and_same_processor_retry_are_idempotent(http_harness):
     assert grant(h, client).json() == response.json()
     assert h.snapshot() == before
     assert len([r for r in own_rows(h) if r.revoked_at is None]) == 1
+
+
+def test_consent_member_lock_serializes_writers_without_blocking_author_fk(
+    http_harness, monkeypatch
+):
+    h, _ = http_harness
+    execute = h.session.exec
+    statements = []
+
+    def record(statement):
+        statements.append(statement)
+        return execute(statement)
+
+    monkeypatch.setattr(h.session, "exec", record)
+    _lock_consent_member(h.session, h.rows["member_player_a"])
+    assert len(statements) == 1
+    sql = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert sql.endswith("FOR NO KEY UPDATE")
+    assert statements[0].get_execution_options()["populate_existing"] is True
 
 
 def test_processor_change_revokes_old_row_and_preserves_history(http_harness):

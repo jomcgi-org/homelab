@@ -3125,10 +3125,12 @@ def _consent_view(row: TranscriptConsent, *, dm: bool = False) -> dict:
 
 def _lock_consent_member(session: Session, member: CampaignMember) -> None:
     # Serialize initial grants too: an absent consent row cannot be locked.
+    # NO KEY UPDATE permits event-author FK checks while ingest holds consent
+    # FOR SHARE, avoiding a member/consent lock cycle with revocation.
     locked = session.exec(
         select(CampaignMember)
         .where(CampaignMember.id == member.id)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     ).one_or_none()
     if locked is None:

@@ -117,8 +117,9 @@ members without characters. Consent records the named processor and grant and
 revocation times. Repeating an active grant for the same processor keeps the
 row; changing processor revokes it and creates a replacement in one transaction.
 Players read only their own history, without member ids. DMs read all campaign
-consent rows. Grant and revoke serialize on the member row; revocation updates
-the consent row so it will wait for an ingest reader's shared lock.
+consent rows. Grant and revoke serialize on the member row with `FOR NO KEY
+UPDATE`, permitting event-author foreign-key checks. Revocation updates the
+consent row so it will wait for an ingest reader's shared lock.
 
 Sessions start with transcripts off. DMs can set off, on or paused. Players can
 pause from on, and a repeated pause is a no-op. Ended sessions refuse all state
