@@ -2293,6 +2293,16 @@ py_test(
     ],
 )
 
+py_test(
+    name = "shared_postgres_capture_test",
+    srcs = ["shared/testing/postgres_capture_test.py"],
+    imports = ["."],
+    deps = [
+        ":shared_testing",
+        "@pip//pytest",
+    ],
+)
+
 # This is the deliberately bounded domain set enforced by import_boundaries_test.
 # Keep it aligned with DOMAINS in that test. Other top-level packages are not
 # silently claimed as architecture domains by this check.
