@@ -4193,8 +4193,15 @@ defmodule Embervm.StatefulManager do
     end
   end
 
+  # StartStateful blocks server-side for the readiness gate (noded's
+  # EMBERVM_NODED_BOOT_READY_TIMEOUT, 180 s in production); grpc-elixir's default
+  # unary deadline of 10 s cancelled any slower boot mid-gate and the daemon reaped
+  # the VM. Cover the daemon budget plus an RPC margin, as the group path does.
+  # The manager's own wake_timeout still bounds what parked callers wait for.
+  @start_rpc_timeout_ms 180_000 + 30_000
+
   defp default_start_stateful(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req)
+    Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req, timeout: @start_rpc_timeout_ms)
   end
 
   defp default_stop_stateful(channel, req) do

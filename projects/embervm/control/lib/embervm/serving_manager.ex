@@ -1508,8 +1508,17 @@ defmodule Embervm.ServingManager do
     kind, reason -> {:error, {:channel_raised, {kind, reason}}}
   end
 
+  # StartServing blocks server-side for the whole readiness gate (noded's
+  # EMBERVM_NODED_BOOT_READY_TIMEOUT, 180 s in production). grpc-elixir's default
+  # unary deadline is 10 s, so without an explicit timeout a healthy boot slower
+  # than that was cancelled, the daemon reaped the VM "context canceled", parked
+  # callers got 503, and the next miss repeated the same boot-and-reap loop. Same
+  # failure, same fix as default_start_group_member: cover the daemon budget plus
+  # an RPC margin.
+  @start_rpc_timeout_ms 180_000 + 30_000
+
   defp default_start_serving(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.start_serving(channel, req)
+    Embervm.Node.V1.NodeService.Stub.start_serving(channel, req, timeout: @start_rpc_timeout_ms)
   end
 
   defp stop_serving_destroy_confirmed(state, %{node_id: node_id, vm_id: vm_id})
