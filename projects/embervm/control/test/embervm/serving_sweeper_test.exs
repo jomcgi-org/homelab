@@ -936,14 +936,37 @@ defmodule Embervm.ServingSweeperTest do
     {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
 
     # The daemon finished the bank and the reply went to a dead sweeper: the node
-    # now reports no VM and a snapshot of the workload no row claims.
+    # now reports no VM and a snapshot of the workload no row claims, created
+    # after the bank was admitted (the row's updated_at, 10_000 on the test clock).
     serving_node(ctx, "node-4",
-      serving_snapshots: [%{snapshot_ref: "snap-lost", workload: "wl-a", size_bytes: 777, created_at_unix_ms: 5}]
+      serving_snapshots: [%{snapshot_ref: "snap-lost", workload: "wl-a", size_bytes: 777, created_at_unix_ms: 10_500}]
     )
 
     ServingSweeper.sweep(ctx.sweeper)
     assert {:ok, %{state: :banked, snapshot_ref: "snap-lost", snapshot_size_bytes: 777}} = ServingStore.get(ctx.store, id)
     assert stop_calls(ctx) == []
+  end
+
+  test "an untracked banking row does not adopt a snapshot older than its own bank" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", %{min_instances: 0, idle_bank_seconds: 60, drain_seconds: 5})
+    id = published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+    {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
+    # The bank is admitted well after a stale orphan snapshot of the workload
+    # (from an older base, left by a bank that raced a forced roll) was written.
+    Agent.update(ctx.clock_agent, fn _ -> 1_000_000 end)
+    {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
+
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "snap-stale", workload: "wl-a", size_bytes: 1, created_at_unix_ms: 5}]
+    )
+
+    # Neither VM nor an admissible snapshot: noted on the first sweep, terminal
+    # on the second, and the stale snapshot is never bound to the row.
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :banking, snapshot_ref: nil}} = ServingStore.get(ctx.store, id)
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :destroyed, snapshot_ref: nil}} = ServingStore.get(ctx.store, id)
   end
 
   test "an untracked banking row the node reports neither VM nor snapshot for goes terminal" do
@@ -954,6 +977,11 @@ defmodule Embervm.ServingSweeperTest do
     {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
     {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
 
+    # noded publishes the VM removal before it registers the snapshot, so one
+    # sighting of "neither" is not proof: the row survives the first sweep and
+    # goes terminal on the second consecutive one.
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :banking}} = ServingStore.get(ctx.store, id)
     ServingSweeper.sweep(ctx.sweeper)
     assert {:ok, %{state: :destroyed}} = ServingStore.get(ctx.store, id)
   end
@@ -972,14 +1000,15 @@ defmodule Embervm.ServingSweeperTest do
     Agent.update(ctx.bank_fail, fn _ -> %GRPC.RPCError{status: 9, message: "bank already in flight"} end)
     ServingSweeper.sweep(ctx.sweeper)
     wait_until(ctx, fn -> length(stop_calls(ctx)) == 1 end)
-    flush(ctx)
+    # The refusal outcome is processed once the worker's bookkeeping is released.
+    wait_until(ctx, fn -> :sys.get_state(ctx.sweeper).draining == %{} end)
     assert {:ok, %{state: :banking}} = ServingStore.get(ctx.store, id)
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
 
     # The daemon then finishes: the VM is gone and its snapshot is reported.
     Agent.update(ctx.bank_fail, fn _ -> false end)
     serving_node(ctx, "node-4",
-      serving_snapshots: [%{snapshot_ref: "snap-late", workload: "wl-a", size_bytes: 1, created_at_unix_ms: 9}]
+      serving_snapshots: [%{snapshot_ref: "snap-late", workload: "wl-a", size_bytes: 1, created_at_unix_ms: 10_500}]
     )
 
     ServingSweeper.sweep(ctx.sweeper)
