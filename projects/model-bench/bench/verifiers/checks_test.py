@@ -55,3 +55,36 @@ def test_helm_is_passed_to_the_script(tmp_path):
     script = 'import json, os\nprint(json.dumps({"checks": {"helm": os.environ["HELM"] == "/x/helm"}}))'
     r = get_verifier("checks")(tmp_path, _args(script=script, helm="/x/helm"))
     assert r.score == 1.0
+
+
+RESPONSE_SCRIPT = """import json, os
+from pathlib import Path
+
+captured = Path(os.environ["RESPONSE_FILE"])
+written = Path("response.txt").read_text() if Path("response.txt").exists() else ""
+print(json.dumps({"checks": {
+    "captured": captured.read_text() == "the model said this",
+    "file_ignored": written != captured.read_text(),
+    "outside_workdir": not captured.resolve().is_relative_to(Path.cwd().resolve()),
+}}))
+"""
+
+
+def test_captured_response_reaches_the_script_outside_the_workdir(tmp_path):
+    # A file the model wrote under the same name is not the response: the harness
+    # copy lives outside the workdir and carries what the model said.
+    (tmp_path / "response.txt").write_text("the model wrote this")
+    r = get_verifier("checks")(
+        tmp_path, _args(script=RESPONSE_SCRIPT, response="the model said this")
+    )
+    assert r.score == 1.0, r.feedback
+
+
+def test_missing_response_is_an_empty_file(tmp_path):
+    script = (
+        "import json, os\nfrom pathlib import Path\n"
+        'print(json.dumps({"checks": {'
+        '"empty": Path(os.environ["RESPONSE_FILE"]).read_text() == ""}}))'
+    )
+    r = get_verifier("checks")(tmp_path, _args(script=script))
+    assert r.score == 1.0, r.feedback

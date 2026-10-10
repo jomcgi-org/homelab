@@ -8,6 +8,13 @@ gets the change half right lands at 0.5 rather than at "fail".
 
 Tasks that render Helm resolve the binary from args["helm"] > $MODEL_BENCH_HELM >
 `helm` on PATH and receive it as $HELM, so the script never hard-codes a machine path.
+
+The agentic runners (bench.agent, bench.claude_code) set args["response"] to the final
+assistant message they captured from the harness. The script reads it from the file
+$RESPONSE_FILE points at, which lives outside the workdir, so a task that grades what
+the model said grades the captured message and never a file the model wrote. The file
+is empty when no runner captured a response (the single-shot path) or the model said
+nothing.
 """
 
 from __future__ import annotations
@@ -49,16 +56,19 @@ def verify(workdir: Path, args: dict) -> VerifyResult:
             f"[verifier setup] venv python not found at {python}; set MODEL_BENCH_VENV "
             "or install the monolith venv (see projects/model-bench/README.md)",
         )
-    # The script lives outside the workdir so the model's files cannot shadow it.
+    # The script and the captured response live outside the workdir so the model's
+    # files cannot shadow either.
     script_dir = Path(tempfile.mkdtemp())
     try:
         script = script_dir / "check.py"
         script.write_text(args["script"])
+        response_file = script_dir / "response.txt"
+        response_file.write_text(str(args.get("response") or ""))
         res = run_sandboxed(
             [str(python), str(script)],
             cwd=workdir,
             timeout_s=args.get("timeout_s", 120),
-            extra_env={"HELM": _helm(args)},
+            extra_env={"HELM": _helm(args), "RESPONSE_FILE": str(response_file)},
         )
     finally:
         shutil.rmtree(script_dir, ignore_errors=True)

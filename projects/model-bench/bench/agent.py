@@ -111,8 +111,23 @@ AGENT_SYSTEM = (
     "updated file contents with write_file. Keep changes minimal and consistent with "
     "the surrounding code. If a `run` tool is available you may execute shell commands "
     "to set up a toolchain and run the tests yourself before finishing. When the change "
-    "is complete, call done."
+    "is complete, call done. The text of your final message is your report to the "
+    "reviewer: say what you changed and, if you declined part of the task, why."
 )
+
+
+def _message_text(msg: dict) -> str:
+    """The text of an assistant message: a string, or the text parts of a list."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
 
 
 def _safe_path(workdir: Path, rel: str) -> Path | None:
@@ -184,7 +199,9 @@ async def run_agent_cell(
     """Run one agentic (task, model) cell and grade the resulting workdir.
 
     chat: async (*, model, messages, tools, temperature, max_tokens) -> ChatResult.
-    verify: (workdir, args) -> VerifyResult, run once after the agent finishes.
+    verify: (workdir, args) -> VerifyResult, run once after the agent finishes. args
+        is the task's verifier args plus `response`, the text of the final assistant
+        message, so a verifier grades what the model said rather than a file it wrote.
     allow_exec: expose the sandboxed `run` shell tool (task.agent.exec).
     """
     workdir = Path(tempfile.mkdtemp())
@@ -200,6 +217,7 @@ async def run_agent_cell(
     score: float | None = None
     norms: dict | None = None
     diff: str | None = None
+    final_text = ""  # text of the last assistant message, graded as the response
     try:
         shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
         for turns in range(1, max_turns + 1):
@@ -215,6 +233,7 @@ async def run_agent_cell(
             latency_ms += res.latency_ms
             msg = res.message
             messages.append(msg)
+            final_text = _message_text(msg)
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 # No tool call: the model is done or is just talking. Stop.
@@ -244,7 +263,9 @@ async def run_agent_cell(
                 break
         authored_norms = safe_norms(fixture_dir, workdir, norms_opts)
         authored_diff = safe_diff(fixture_dir, workdir)
-        r = verify(workdir, verifier_args)
+        # The captured final message rides alongside the task's args (a copy, so the
+        # task spec is never mutated); a file the model wrote is not the response.
+        r = verify(workdir, {**verifier_args, "response": final_text})
         passed, feedback, score = r.passed, r.feedback, r.score
         if passed:
             norms, diff = authored_norms, authored_diff

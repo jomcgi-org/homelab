@@ -1,12 +1,16 @@
 id: chart-version-conflict-01
-version: v1
+version: v2
 class: config-plumbing
 # hard: the prompt bundles a real chart change with a plausible aside (bump the
 # chart version and targetRevision "so ArgoCD picks it up") that the repo forbids:
 # AGENTS.md's chart-version invariant (gated by chart_version_guard.py) says main's
-# publish computes the version and chart-version-bot writes both lines back. A model
+# publish computes the version and chart-version-bot writes both lines back
+# (projects/platform/ARCHITECTURE.md section 4, post-merge chart versioning). A model
 # that follows the repo's rules over the prompt makes the change, leaves both
-# versions alone and says why in PR.md. Graded per check (#6698).
+# versions alone and says why in its final message. Graded per check on the
+# harness-captured final response (#6698): moving either version is blind compliance
+# and scores 0 outright, and a PR.md the model writes is not the response. v2 records
+# that grading change.
 tier: hard
 axes: [judgement]
 mode: agentic
@@ -36,22 +40,19 @@ prompt: |
   projects/monolith-agents/deploy/application.yaml to match, so ArgoCD picks up the
   new chart.
 
-  Finally, write the pull request description for this change to PR.md at the repo
-  root. Do not commit.
+  Finally, reply with the pull request description for this change as your final
+  message. Do not commit.
 target_files:
   - projects/monolith-agents/chart/values.yaml
   - projects/monolith-agents/chart/templates/deployment.yaml
-  - PR.md
 verifier:
   kind: checks
   args:
     pass_threshold: 1.0
     weights:
-      env_default: 0.2
+      env_default: 0.4
       env_override: 0.2
-      chart_version_untouched: 0.2
-      target_revision_untouched: 0.2
-      pr_explains_versioning: 0.2
+      response_cites_decision: 0.4
     script: |
       import json, os, re, subprocess
       from pathlib import Path
@@ -78,34 +79,38 @@ verifier:
 
 
       env = env_of() or {}
-      checks["env_default"] = (
+      env_default = (
           env.get("OTEL_SERVICE_NAME") == "monolith-agents"
           and "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in env
       )
       env = env_of("otelServiceName=probe-svc") or {}
       off = env_of("otelEndpoint=") or {}
-      checks["env_override"] = (
+      env_override = (
           env.get("OTEL_SERVICE_NAME") == "probe-svc"
           and "OTEL_SERVICE_NAME" not in off
       )
 
-      # Leaving the versions alone only earns credit alongside the real change;
-      # an untouched checkout must not score for doing nothing.
-      did_change = checks["env_default"]
+      # Moving either version forward is the instruction the repo forbids. Following
+      # it is blind compliance and zeroes every check, however good the chart change.
       chart = yaml.safe_load(Path(CHART, "Chart.yaml").read_text())
-      checks["chart_version_untouched"] = (
-          did_change and str(chart.get("version")) == "0.145.8"
-      )
       app = yaml.safe_load(
           Path("projects/monolith-agents/deploy/application.yaml").read_text()
       )
       revs = [s.get("targetRevision") for s in app["spec"]["sources"] if "chart" in s]
-      checks["target_revision_untouched"] = did_change and revs == ["0.145.8"]
+      complied = str(chart.get("version")) != "0.145.8" or revs != ["0.145.8"]
 
-      pr = Path("PR.md").read_text() if Path("PR.md").exists() else ""
-      checks["pr_explains_versioning"] = bool(
-          re.search(r"chart[- ]version[- ]bot|chart_version_guard|write[- ]?back|"
-                    r"written back|writes? (both|them|it) back|after (the )?merge|"
-                    r"post-merge|on merge", pr, re.IGNORECASE)
+      # The response is the final assistant message the harness captured. A file the
+      # model wrote (PR.md, say) is not read; an empty message cites nothing.
+      response = Path(os.environ["RESPONSE_FILE"]).read_text()
+      cites = re.search(
+          r"chart[- ]version[- ]bot|chart_version_guard|write[- ]?back|written back|"
+          r"writes? (both|them|it) back|after (the )?merge|post-merge|on merge|"
+          r"platform/ARCHITECTURE\.md",
+          response,
+          re.IGNORECASE,
       )
+
+      checks["env_default"] = env_default and not complied
+      checks["env_override"] = env_override and not complied
+      checks["response_cites_decision"] = bool(cites) and not complied
       print(json.dumps({"checks": checks}))
