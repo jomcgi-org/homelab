@@ -90,6 +90,53 @@ func TestTapSetupAndTeardownArgs(t *testing.T) {
 	}
 }
 
+// TestServingTapsAreIsolatedBridgePorts pins the L2 posture of the shared serving
+// bridge (#6159): every serving tap, on-demand or pre-created, is marked an
+// isolated bridge port after the attach and before the link comes up, so two
+// guests on the bridge cannot exchange frames while the host still reaches both.
+// The plain tapSetupArgs used for composite group members carries no such mark.
+func TestServingTapsAreIsolatedBridgePorts(t *testing.T) {
+	isolate := []string{"ip", "link", "set", "emtap0102", "type", "bridge_slave", "isolated", "on"}
+	setup := servingTapSetupArgs("emtap0102", "br0")
+	want := [][]string{
+		{"ip", "tuntap", "add", "dev", "emtap0102", "mode", "tap"},
+		{"ip", "link", "set", "emtap0102", "master", "br0"},
+		isolate,
+		{"ip", "link", "set", "emtap0102", "up"},
+	}
+	if fmt.Sprint(setup) != fmt.Sprint(want) {
+		t.Fatalf("servingTapSetupArgs:\n got %v\nwant %v", setup, want)
+	}
+	pre := tapPrecreateArgs("emtap0102", "br0")
+	if fmt.Sprint(pre[len(pre)-1]) != fmt.Sprint(isolate) {
+		t.Fatalf("tapPrecreateArgs must end with the isolate step, got %v", pre)
+	}
+	for _, argv := range tapSetupArgs("emtap0102", "br0") {
+		if fmt.Sprint(argv) == fmt.Sprint(isolate) {
+			t.Fatal("tapSetupArgs (group member taps) must not isolate the port")
+		}
+	}
+
+	// And the manager really issues it on the on-demand path.
+	fr := &fakeRunner{}
+	m, err := NewManager(fr, "br0", "172.31.0.0/24", "", 30000, 0)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if _, _, err := m.AllocateTap(context.Background()); err != nil {
+		t.Fatalf("AllocateTap: %v", err)
+	}
+	found := false
+	for _, c := range fr.calls {
+		if len(c) == 8 && c[5] == "bridge_slave" && c[6] == "isolated" && c[7] == "on" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("AllocateTap never isolated the tap; calls: %v", fr.calls)
+	}
+}
+
 // TestNftRulesetLocalFallback asserts that with an empty pod IP (local/test) the
 // ruleset is EXACTLY the v1 forward posture: a dedicated table, a forward chain,
 // established/related accept, and a drop of VM-originated NEW forwarding, with NO MSS
@@ -101,7 +148,12 @@ func TestNftRulesetLocalFallback(t *testing.T) {
 		"flush table inet embervm_serving",
 		"add chain inet embervm_serving forward { type filter hook forward priority 0; policy accept; }",
 		"add rule inet embervm_serving forward ct state established,related accept",
-		"add rule inet embervm_serving forward iifname \"br0\" ct state new drop",
+		"add rule inet embervm_serving forward iifname \"br0\" ct state new,invalid drop",
+		// Input hook (#6159): a guest reaches nothing on the host itself; only replies
+		// to host-originated flows (probes, readiness waits) pass.
+		"add chain inet embervm_serving input { type filter hook input priority 0; policy accept; }",
+		"add rule inet embervm_serving input ct state established,related accept",
+		"add rule inet embervm_serving input iifname \"br0\" drop",
 	}
 	for _, w := range wantLines {
 		if !strings.Contains(rs, w) {
@@ -118,6 +170,13 @@ func TestNftRulesetLocalFallback(t *testing.T) {
 	// apply (flushing a not-yet-created table errors).
 	if strings.Index(rs, "flush table") < strings.Index(rs, "add table") {
 		t.Error("nftRuleset: flush table must come after add table for first-apply idempotency")
+	}
+	// The input chain's established accept must precede its bridge drop, or the
+	// host's own probe replies would be dropped.
+	accept := strings.Index(rs, "input ct state established,related accept")
+	drop := strings.Index(rs, "input iifname \"br0\" drop")
+	if accept < 0 || drop < 0 || accept > drop {
+		t.Errorf("nftRuleset: input chain must accept established before dropping bridge traffic:\n%s", rs)
 	}
 }
 

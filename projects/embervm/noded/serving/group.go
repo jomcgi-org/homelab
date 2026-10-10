@@ -50,6 +50,11 @@ const nftGroupTable = "embervm_group"
 // accepted first so the entry-path DNAT return traffic is never caught.
 const nftGroupForwardChain = "group_forward"
 
+// nftGroupInputChain is the input-hook chain that denies every packet a group
+// member originates toward the host's own IP stack, accepting only replies to
+// host-originated flows. The serving table's input chain is its sibling.
+const nftGroupInputChain = "group_input"
+
 // nftGroupDNATChain is the prerouting nat chain that exposes each group's ENTRY
 // member as noded's routable pod IP + a per-entry port, the exact D-R3.11.4 lane
 // the serving_dnat chain uses (podIP:port -> tapIP:guestPort). Only the entry
@@ -219,7 +224,18 @@ func nftGroupRuleset(bridges []string, servingBridge, podIP string, entries []gr
 	// matches this drop, and its DNAT'd forward (oif=emgX) plus the established reply
 	// flow through the accept above.
 	for _, br := range sortedBridges {
-		fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" oifname != \"%s\" ct state new drop\n", nftGroupTable, nftGroupForwardChain, br, br)
+		fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" oifname != \"%s\" ct state new,invalid drop\n", nftGroupTable, nftGroupForwardChain, br, br)
+	}
+	// Input hook: a member reaches nothing on the host itself (its group gateway,
+	// noded's pod IP, the group and stateful activator ranges, the serving relay).
+	// Member-to-member traffic is bridged at L2 and never enters this hook; the
+	// entry-path DNAT arrives on the pod interface, not a group bridge; and replies
+	// to host-originated probes are ct established. Mirrors the serving table's
+	// input chain (#6159).
+	fmt.Fprintf(&b, "add chain inet %s %s { type filter hook input priority 0; policy accept; }\n", nftGroupTable, nftGroupInputChain)
+	fmt.Fprintf(&b, "add rule inet %s %s ct state established,related accept\n", nftGroupTable, nftGroupInputChain)
+	for _, br := range sortedBridges {
+		fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" drop\n", nftGroupTable, nftGroupInputChain, br)
 	}
 	// composite<->composite: drop every ordered pair of DISTINCT group bridges.
 	// Enumerating ordered pairs (A->B and B->A both appear) covers both directions
@@ -743,6 +759,9 @@ func (m *GroupManager) EnsureEntryDNAT(ctx context.Context, groupInstanceID stri
 	if m.podIP == "" {
 		return nil
 	}
+	if guestPort < 1 || guestPort > 65535 {
+		return fmt.Errorf("serving: entry guest port %d out of range 1..65535", guestPort)
+	}
 	vmPort, err := PortForIP(m.portBase, m.supernet, entryIP)
 	if err != nil {
 		return err
@@ -753,8 +772,17 @@ func (m *GroupManager) EnsureEntryDNAT(ctx context.Context, groupInstanceID stri
 	if !ok {
 		return fmt.Errorf("serving: group %q not found", groupInstanceID)
 	}
+	// Install into the map only once nft accepted the whole ruleset: a rejected
+	// entry left in place would poison every later re-apply of the group table
+	// (nft -f is all or nothing), taking the other groups' isolation and DNAT
+	// down with it.
+	prev := g.entry
 	g.entry = &groupEntry{tapIP: entryIP.String(), guestPort: guestPort, vmPort: vmPort}
-	return m.applyRulesetLocked(ctx)
+	if err := m.applyRulesetLocked(ctx); err != nil {
+		g.entry = prev
+		return err
+	}
+	return nil
 }
 
 // RemoveEntryDNAT drops a group's entry-member DNAT rule and re-applies the table
