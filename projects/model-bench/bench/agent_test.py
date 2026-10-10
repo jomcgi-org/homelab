@@ -5,6 +5,7 @@ import pytest
 
 from bench.agent import _execute_tool, _message_text, run_agent_cell
 from bench.openrouter import ChatResult
+from bench.schema import PerformanceRecord
 from bench.verifiers import VerifyResult
 
 
@@ -65,6 +66,46 @@ def test_norms_capture_precedes_hidden_verifier_writes(tmp_path, passed):
         assert "verifier" not in cell.diff
     else:
         assert cell.norms is None and cell.diff is None
+
+
+def test_run_agent_cell_preserves_performance(tmp_path):
+    record = PerformanceRecord(
+        correctness=True,
+        median_ratio=2,
+        highest_bucket=2,
+        score=1 / 3,
+        pass_threshold=1 / 3,
+        pair_count=7,
+        fixture_version="v1",
+    )
+
+    async def fake_chat(**kwargs):
+        return ChatResult(
+            message={
+                "tool_calls": [
+                    {"id": "1", "function": {"name": "done", "arguments": "{}"}}
+                ]
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=1,
+        )
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=fake_chat,
+            verify=lambda w, a: VerifyResult(True, "", 1 / 3, record),
+            verifier_args={},
+            cost_fn=lambda p, c: 0,
+        )
+    )
+    assert cell.attempts[0].performance == record
 
 
 def test_execute_tool_read_write_list(tmp_path):

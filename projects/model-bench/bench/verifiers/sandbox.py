@@ -46,6 +46,7 @@ def run_sandboxed(
     cwd: Path,
     timeout_s: int,
     extra_env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> SandboxResult:
     """Run an untrusted command with a scrubbed env in cwd. No cluster creds, no tokens.
 
@@ -72,6 +73,7 @@ def run_sandboxed(
             text=True,
             timeout=timeout_s,
             start_new_session=True,
+            input=input_text,
         )
         return SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)
     except subprocess.TimeoutExpired as e:

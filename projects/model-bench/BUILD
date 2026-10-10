@@ -17,6 +17,27 @@
 # turn fixtures into build targets or semgrep-scan deliberately flawed fixture code.
 # gazelle:exclude tasks
 
+# Hand-authored test data; Gazelle still generates the Python test targets.
+filegroup(
+    name = "stars_climatology_perf_data",
+    srcs = [
+        "tasks/stars-climatology-perf-01/reference/algorithmic.py",
+        "tasks/stars-climatology-perf-01/reference/micro.py",
+        "tasks/stars-climatology-perf-01/task.yaml",
+    ],
+    visibility = ["//projects/model-bench/bench:__pkg__"],
+)
+
+filegroup(
+    name = "campsites_rollup_perf_data",
+    srcs = [
+        "tasks/campsites-region-rollup-perf-01/reference/algorithmic.py",
+        "tasks/campsites-region-rollup-perf-01/reference/micro.py",
+        "tasks/campsites-region-rollup-perf-01/task.yaml",
+    ],
+    visibility = ["//projects/model-bench/bench:__pkg__"],
+)
+
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(
@@ -34,6 +55,7 @@ filegroup(
     srcs = [
         "tasks/authz-race-01/task.yaml",
         "tasks/campsites-region-rollup-01/task.yaml",
+        "tasks/campsites-region-rollup-perf-01/task.yaml",
         "tasks/chart-version-conflict-01/task.yaml",
         "tasks/chat-public-retention-review-01/task.yaml",
         "tasks/chat-public-retention-review-02/task.yaml",
@@ -63,6 +85,7 @@ filegroup(
         "tasks/security-review-01/task.yaml",
         "tasks/slo-budget-breach-01/task.yaml",
         "tasks/stars-climatology-months-01/task.yaml",
+        "tasks/stars-climatology-perf-01/task.yaml",
         "tasks/stars-grid-speedup-01/task.yaml",
         "tasks/tokenbroker-spiffe-wiring-01/task.yaml",
         "tasks/trace-correlation-multisite-01/task.yaml",

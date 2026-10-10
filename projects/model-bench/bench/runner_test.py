@@ -4,7 +4,35 @@ from pathlib import Path
 import pytest  # noqa: F401
 
 from bench.runner import _augment_prompt_with_files, extract_files, run_cell
+from bench.schema import PerformanceRecord
 from bench.verifiers import VerifyResult
+
+
+def test_single_shot_preserves_performance_on_both_attempts(tmp_path):
+    record = PerformanceRecord(
+        correctness=False,
+        score=0,
+        pass_threshold=1 / 3,
+        pair_count=7,
+        fixture_version="v1",
+    )
+    cell = asyncio.run(
+        run_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            target_files=["out.txt"],
+            prompt="p",
+            complete=make_model(["FILE out.txt\nx", "FILE out.txt\ny"]),
+            verify=lambda w, a: VerifyResult(False, "wrong", 0, record),
+            verifier_args={},
+            cost_fn=lambda p, c: 0,
+        )
+    )
+    assert len(cell.attempts) == 2
+    assert all(a.performance == record for a in cell.attempts)
 
 
 def test_extract_takes_first_fenced_block_not_last():

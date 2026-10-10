@@ -148,15 +148,281 @@ graded score. Failed cells without a score count as 0; harness errors are exclud
 
 ## Performance (speedup) tasks
 
-The `speedup` verifier grades a performance change. task.yaml carries the original
-module (`baseline`) and a hidden harness script. The harness first checks that the
-candidate's output equals the original's, on edge cases and on the benchmark inputs,
-then times both in one process, interleaved, on fresh inputs per pair so caching
-across calls cannot help. Any output difference scores 0. Wall-time ratios are noisy,
-so the score is bucketed (`buckets: [[min_speedup, score], ...]`) with gaps wide
-enough that run-to-run noise does not flip a bucket. `stars-grid-speedup-01` asks
-for a faster point-in-polygon grid generator: micro-optimisation stays in the bottom
-bucket, a per-row scanline reaches 0.75, and an edge-bucket scanline reaches 1.0.
+The `speedup` verifier grades correctness and performance separately. New tasks
+opt into `protocol: paired-v1`. The trusted helper checks the frozen baseline
+against independent oracle cases before importing the candidate. It checks the
+candidate against those cases and compares both outputs on every benchmark pair.
+A wrong answer earns zero credit, however fast it returns.
+
+There is one discarded warm-up pair, then seven measured pairs by default
+(`pairs` overrides the count). Measured pairs alternate baseline-first and
+candidate-first. The task's `make_input(seed)` builds identical positional
+arguments separately for both sides, using the fixed task seed plus the pair
+index. Arguments are deep-copied and retained throughout the run, preventing
+input mutation and object-identity reuse across calls. Only the function call is
+timed. Imports, fixture generation, argument construction, copying and correctness
+checks are excluded. The helper binds `time.perf_counter_ns` before candidate
+import and reports raw seconds, never a ratio.
+
+The verifier computes baseline/candidate for each measured pair, takes the median
+ratio, and awards the highest cleared bucket. Exact boundaries are inclusive.
+Bucket scores and `pass_threshold` are rounded to 12 decimal places so a YAML
+decimal for 1/3 qualifies at the 2x bucket. The #6696 ladder is 0 below 2x,
+1/3 at 2x, 2/3 at 10x and 1 at 50x, with a 1/3 pass threshold. A correct answer
+below the first bucket records correctness true and score zero.
+
+For a stdlib-only task, the interpreter defaults to the bench's own
+`sys.executable`; `python` overrides it. No monolith venv is needed. Grading uses
+a fresh temporary directory with only `editable` Python files, the trusted
+`baseline`, harness and helper. The interpreter runs with `-I -B -S` and a
+scrubbed environment. Candidate workdir files, site hooks and bytecode are
+excluded. The helper loads implementation files directly by path; candidate
+imports are restricted to the per-task stdlib `allowed_imports`, with no local
+or relative imports. The helper source participates in the verifier cache hash.
+
+Before import, AST checks reject dangerous imports, reflective builtins (including
+dynamic `type` construction), private, dunder or frame attributes, attribute
+writes, wildcard/private imports and dunder
+identifiers (except `__del__`, whose teardown output is suppressed). The default
+import set is `__future__`, `math`, `collections`, `itertools`, `functools`,
+`bisect` and `heapq`. Tasks may explicitly allow `random`, `statistics`, `json`,
+`re`, `array`, `decimal`, `fractions`, `operator`, `datetime` and `calendar`;
+reflective helpers such as
+`attrgetter` and `methodcaller` remain forbidden. Process and interpreter modules
+including `sys`, `os`, `gc`, `inspect`, `ctypes`, `importlib`, `builtins`, `time`,
+`threading`, `multiprocessing`, `subprocess`, `signal`, `atexit`, `io` and
+`pathlib` cannot be allowed.
+
+The verifier sends a random nonce on stdin. The helper reads it before candidate
+import, emits exactly one authenticated result, flushes and calls `os._exit`.
+Import-time prints and finalizer JSON cannot replace that result. The AST policy
+is a restricted Python contract, not a general security sandbox: memory/CPU
+exhaustion and undiscovered interpreter or library escapes remain possible.
+Keep harnesses trusted and run candidates in disposable workers. Timing remains
+sensitive to hardware, scheduling and the frozen dataset. Reports label those
+datasets; these ratios make no production-speedup claim.
+
+Outcome taxonomy:
+
+- `[harness error]`: missing interpreter, setup or harness failure, baseline oracle
+  failure, invalid/non-positive/non-finite samples, wrong pair counts/order, or an
+  unparsable, missing or ambiguous authenticated result. Aggregation excludes
+  these cells and they earn no credit.
+- Graded failure: rejected candidate source, import/call exception, or an oracle
+  or paired-output mismatch. Passed false, score zero, correctness false.
+- Timeout: the bounded `timeout_s` expired. Passed false, score zero, correctness
+  unknown. This is a graded failure.
+- Correct: correctness true, with score and pass status determined by the buckets.
+
+`VerifyResult.performance` and `Attempt.performance` carry the typed
+`PerformanceRecord`: metric identity, correctness, warm-up and measured samples
+(`baseline_s`, `candidate_s`, `order`), ratios, median ratio, highest bucket, score,
+threshold, pair count and `fixture_version`. Markdown reports show per-model
+performance rows, and JSON retains the whole record. Old cells default this field
+to null; their report rows and non-performance report output stay unchanged.
+
+Example verifier block (the injected `benchmark` function is the helper API;
+the task harness does not import or emit results itself):
+
+```yaml
+verifier:
+  kind: speedup
+  args:
+    protocol: paired-v1
+    editable: [mod.py]
+    allowed_imports: [__future__, collections, math]
+    pairs: 7
+    seed: 6696
+    fixture_version: toy-seeded-v1
+    timeout_s: 60
+    buckets: [[2, 0.3333333333333333], [10, 0.6666666666666666], [50, 1.0]]
+    pass_threshold: 0.3333333333333333
+    baseline:
+      path: _base.py
+      source: |
+        def total(xs):
+            return sum(xs)
+    harness: |
+      def build(seed):
+          return ([i + seed for i in range(200)],)
+      benchmark(candidate_path="mod.py", baseline_path="_base.py",
+                function="total", make_input=build,
+                oracle_cases=[(([],), 0), (([1, 2, 3],), 6)])
+```
+
+`oracle_cases` is a nonempty iterable of `(positional_args_tuple, expected_output)`.
+`make_input(seed)` returns a tuple of deepcopy-compatible positional arguments
+(plain rows, lists and mappings, for example). Call `benchmark` once.
+Both implementations export the named `function`. The fixed-seed builder must
+cover the task's benchmark workload; independent oracle cases cover its semantic
+edge cases. New tasks pin source provenance and a fixture version in task.yaml.
+For pure-function tasks, `benchmark(..., require_pure_inputs=True)` also rejects
+input mutation in oracle and timed calls. Input copies and comparisons happen
+outside timing. A mutating baseline is a harness error; a mutating candidate is a
+graded correctness failure. The default is false for existing harnesses.
+
+For task-local seeded implementations, `bench snapshot` also accepts:
+
+```yaml
+snapshot:
+  files:
+    mod.py: |
+      def total(xs):
+          return sum(xs)
+```
+
+`files` paths are validated relative to `fixture/`. With seeded files, `commit`
+and `paths` are optional; supplying both extracts the pinned source first, then
+adds or replaces the seeded files. Existing overlays, excludes and patches keep
+their behavior. Fixtures remain gitignored and reproducible from task.yaml.
+
+Legacy harnesses that print `{ok, speedup, detail}` remain supported in a fresh
+directory with inferred script/import paths and the bench interpreter. Their
+self-reported timing contract remains a compatibility limitation; they do not
+receive the authenticated paired protocol or structured samples.
+`stars-grid-speedup-01` retains its original task.yaml, buckets and threshold.
+
+### Stars climatology fixture
+
+`stars-climatology-perf-01` is an agentic hard-tier task with shell execution and
+40 turns. It seeds `climatology.py` and a runnable stdlib unittest file through
+`snapshot.files`. The module is a deliberately naive benchmark fixture derived
+from endpoint semantics, not current production code. Provenance is main commit
+`5086f428e23b64d40a9abc6eb450f0f62c9e3f83`, `stars/router.py:get_history`,
+`stars/models.py`, `stars/router_test.py` and `stars/climatology_test.py`, with the
+existing `stars-climatology-months-01` task as a functional-contract reference.
+Fixture and dataset version: `stars-climatology-seeded-v1`.
+
+The pure function takes site metadata and climatology rows as plain dictionaries.
+It returns the endpoint's `sites` and `count`, preserving only `id`, `name`, `lat`
+and `lon` alongside 12-element `clear` and `dark` arrays. Duplicate rows add their
+hours. Missing months contribute zero; invalid months and unknown sites are
+ignored. All-zero-dark sites are omitted. Yearly clear totals sort descending;
+ties retain first valid-row encounter order, derived from the endpoint's
+insertion-ordered aggregation and stable sort. A zero-hour valid row still sets
+that order. Hour quantities are nonnegative integers, including large integers,
+so equality is exact. Identity floats are copied unchanged; no tolerance applies.
+
+The baseline rescans all rows for each site/month cell, doing `12 * sites * rows`
+comparisons. Its YAML anchor is shared byte-for-byte with the seeded module.
+Only that module is editable. Protected copies of all 12 visible semantic cases
+and 50 independently computed fixed-seed oracle cases run before timing. They
+cover empty inputs, sites with no rows, missing months, invalid months (0, 13,
+-1), duplicate rows, zero-dark omissions, sort ties, a single site, unknown sites
+and long ids. The helper checks purity and output on every timed pair as well.
+
+The frozen timing dataset uses 220 sites, shuffled metadata/rows, three rows per
+populated month, missing months, omitted sites, invalid rows and unknown ids.
+The seed is 6696; each pair uses a fresh seed offset. There is one warm-up and
+seven alternating measured pairs, with a 120-second timeout. `harness_args: [N]`
+changes site count for local smoke testing; the default grading size is 220.
+Scores are 0 below 2x, 1/3 at 2x, 2/3 at 10x and 1 at 50x; the pass threshold is
+the same rounded 1/3 as the first bucket. Timing excludes fixture construction,
+imports, input copies, correctness checks and purity comparisons.
+
+The model-hidden `reference/` directory includes a preallocated-array
+micro-optimisation that retains the rescans, and an indexed algorithmic reference.
+It is outside `fixture/` and never materialized by snapshot. The Bazel smoke test
+loads the real YAML, materializes its files, runs visible tests and the real
+verifier with the bench interpreter, and checks baseline, wrong and algorithmic
+candidates. Its reduced 90-site workload uses a generous 2x reference floor.
+Adversarial probes include duplicate overwrites, incorrect month indexing, sort
+and identity changes, zero-dark leaks, poisoned visible tests, forged results and
+input mutations in both oracle and timed calls. Old-cache and forged-sample tests
+remain in the shared verifier/CLI suite.
+
+Local calibration on October 3, 2026 used a Firecracker guest with two vCPUs,
+Intel Xeon Processor at 2.80 GHz, Linux 6.18.35 x86_64 and Python 3.12.15. Three
+full-size grading runs per implementation produced these paired-median ratios:
+
+| Candidate | Run 1 | Run 2 | Run 3 | Highest bucket | Score |
+| --- | --- | --- | --- | --- | --- |
+| Seeded baseline | 1.018x | 1.000x | 1.001x | none | 0 |
+| Micro-optimisation | 0.981x | 1.012x | 1.016x | none | 0 |
+| Algorithmic reference | 301.81x | 284.37x | 290.05x | 50x | 1 |
+
+All runs passed correctness and stayed in the same bucket. Individual baseline
+calls took 0.748 to 0.882 seconds; whole grading runs took 7.493 to 15.097 seconds.
+These ratios describe this frozen fixture on this machine. They make no claim
+about production endpoint throughput or a model's ability to find an improvement.
+To reproduce without a model API, run from the repo root with the bench's Python
+dependencies available:
+
+```bash
+PYTHONPATH=projects/model-bench python projects/model-bench/tasks/stars-climatology-perf-01/reference/calibrate.py
+```
+
+### Campsites region rollup fixture
+
+`campsites-region-rollup-perf-01` seeds a hard-tier agentic task with shell
+execution and 40 turns. The only editable file is `rollup.py`; `test_rollup.py`
+provides visible stdlib unittest cases. This is a seeded benchmark fixture
+derived from endpoint semantics, not current production code. Provenance is main
+`a1d4b0f99b4f5e6fb5e9948dd0f2ba33df1d3cce`, the campsites `/snapshot`
+handler, models and router tests, plus the existing `campsites-region-rollup-01`
+task's regional aggregation contract. Fixture and dataset version are
+`campsites-rollup-seeded-v1`. The seeded source and verifier baseline share a
+YAML anchor; a smoke test asserts their bytes match.
+
+`summarize(campgrounds, availability, weather, today)` takes plain dictionaries
+and an explicit ISO date. It includes today minus one through today plus 13,
+inclusive. Duplicate campground/date rows use the last encountered row,
+independently for each table, matching the endpoint's per-day assignments.
+Missing availability is false; missing weather is score zero and good false.
+Unknown campgrounds and out-of-window rows contribute nothing. Campgrounds
+have unique integer ids; dates are valid `YYYY-MM-DD` strings, with the entire
+window representable. Scores are nonnegative integers. All counts and maxima
+compare by exact equality, with no floating-point aggregation or tolerance.
+Inputs must remain unchanged.
+
+The result is `{count, regions}`. Each region contains its string, all-park
+count, maximum score over available park-days, count of available good
+park-days, and count of parks with at least one such day. Regions with no
+available days have score zero. Sort by descending score and ascending Python
+region-string order. No campgrounds returns
+`{"status": 503, "detail": "campsites data unavailable"}`, a framework-free
+representation of the endpoint's HTTP 503.
+
+The deliberately naive hot path rescans all campgrounds per region and every
+availability and weather row for every campground/day. The frozen timing
+dataset has 180 campgrounds across five regions, missing rows, duplicate rows,
+unknown ids and dates on both sides of the window. Each pair gets fresh data
+from the fixed seed. The 120-second timeout bounds the whole verifier run.
+Imports and setup are excluded from timing. The grading contract is one
+warm-up and seven alternating pairs, with median-ratio buckets 2x, 10x and 50x.
+
+The protected harness repeats all 16 visible cases and adds 52 deterministic
+independent oracle cases. Checks cover empty inputs, missing rows, date-window
+boundaries across years and leap dates, unavailable good-weather days, available
+days without weather, ties, case-sensitive and Unicode ordering, duplicate
+last-row-wins behavior, large integer ids and exact scores. The real-verifier
+smoke test exercises the baseline near 1x, a wrong implementation at zero,
+and the algorithmic reference with a generous 2x floor at reduced size.
+Adversarial tests reject wrong counts, sorts, boundaries, duplicate handling,
+lossy numeric conversion, poisoned workdir grader files, forged JSON and input
+mutation. Shared tests cover old cached cells and grading-config invalidation.
+References and the calibration utility live outside `fixture/` and are never
+shown to candidates. Existing functional tasks and `stars-grid-speedup-01`
+remain unchanged.
+
+Local calibration on October 3, 2026 used a Firecracker guest with two vCPUs,
+Intel Xeon Processor at 2.80 GHz, Linux 6.18.35 x86_64 and Python 3.12.15.
+Three full-size real-verifier runs per implementation produced:
+
+| Candidate | Run 1 | Run 2 | Run 3 | Highest bucket | Score |
+| --- | --- | --- | --- | --- | --- |
+| Seeded baseline | 0.955x | 0.984x | 1.007x | none | 0 |
+| Micro-optimisation | 1.009x | 1.002x | 1.027x | none | 0 |
+| Algorithmic reference | 227.64x | 239.89x | 237.51x | 50x | 1 |
+
+All nine runs passed correctness with stable bucket classification. Baseline
+calls took 1.234 to 1.565 seconds; whole grading runs took 12.466 to 24.996
+seconds. These are frozen-fixture measurements on this machine, with no
+production-speedup or model-capability claim. Reproduce without any model API:
+
+```bash
+PYTHONPATH=projects/model-bench python projects/model-bench/tasks/campsites-region-rollup-perf-01/reference/calibrate.py
+```
 
 
 The `checks` verifier is the general form: a hidden task-authored script runs with
