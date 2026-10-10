@@ -702,7 +702,15 @@ does not re-check it; placement's memory admission and the per-principal
 wake-rate limit protect the receiving node.
 
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
-session memory, serving snapshots, session workspaces, and group sets.
+session memory, serving snapshots, session workspaces, and group sets. Its
+recheck-then-delete of a workspace prefix and a `restore_lineage` create of the
+same terminal lineage are mutually exclusive (**Built**, `Embervm.LineageFence`,
+#6736): the GC claims the lineage before its recheck and releases it after the
+delete, the SessionManager claims it before placing the restoring create and
+releases it once the heir row exists, each claim one atomic ETS insert, so a
+restore admitted inside the window is denied with the retryable
+`lineage_restore_in_flight` reason and a restore in flight holds the prefix for
+that sweep. The destructive GC gate stays off by default regardless.
 
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
@@ -877,8 +885,9 @@ against them.
    timeout.
 
 7. **Durable-before-observed for the journal.** Every lifecycle and
-   enforcement action is an ordered op-log append; callers await their
-   (group-committed) batch. The op-log doubles as the audit record.
+   enforcement action is an ordered op-log append; callers await the
+   durable commit (one transaction per append today; group commit is a
+   **Decided direction**, not built). The op-log doubles as the audit record.
 
 8. **Kubernetes arbitrates pods; EmberVM arbitrates VMs; the pod is the
    ABI.** No scheduler or autoscaler code is imported and no node
@@ -1036,7 +1045,8 @@ and principal-scoped erasure (ADR embervm/019).
 **A brick is the capacity unit everywhere**: a fixed-size noded
 Deployment pod in a T-shirt size class (`2gi` through `16gi`; small classes
 pack tasks densely, the largest hold 1-2 serving/session VMs), with honest
-Guaranteed requests, sized roughly 4-8x the largest VM of its class, a
+requests (Burstable: memory requests at roughly 75% of the limit, CPU
+request-only, see below), sized roughly 4-8x the largest VM of its class, a
 handful per node. The daemon is budget-agnostic: it reads its ceiling from
 its own cgroup, so a size class is a resources block, not a code fork, and
 a brick's size is fixed for its lifetime.
@@ -1483,6 +1493,22 @@ do not exist and are not planned
 not remove or weaken existing principal authentication, authorization or
 artifact isolation.
 
+**Object-level authorization on the management API** (**Built**): passing the
+submit allow-list says a ServiceAccount may use EmberVM, not that it may reach
+another principal's objects. A task (`GET /v1/tasks/:id`, its result, redrive,
+the dead-letter list) and a session (list, `GET` with a management token,
+`DELETE`) are addressable only by the principal that created them; another
+allow-listed principal receives the same 404 an unknown id gets, so the surface
+never confirms the object exists. The workload-level destructive verbs (serving
+force roll, stateful instance destroy, volume delete, handover, group force
+roll) have no single owner and are admin-only (403 otherwise). Admins are the
+values-configured `usageAdmins`, the platform's own ServiceAccount in the
+reference deployment. A session's own capability token still proves ownership
+on its routes. **Why.** Three principals share the production allow-list,
+including the public tier's ServiceAccount, which serves anonymous internet
+traffic; without object scoping a compromised public-tier pod could read the
+monolith's task results, destroy its sessions, or delete a stateful volume.
+
 `Embervm.KeyService` is the platform key custodian (ADR embervm/036): it
 derives per-principal, per-epoch KEKs on demand from one current root and
 stores only the current and minimum accepted epochs, whose floor is the
@@ -1747,8 +1773,8 @@ Trust diagram legend: every edge is a current path.
 | ---------------------------- | ----------- |
 | Hardened sandbox, never bare containers (15) | **Built.** Every guest is a Firecracker microVM; new execution technologies enter as lanes under existing classes (invariant 9). |
 | Default-deny actor networking (17) | **Built** for task and session guests: they have no NIC and use vsock only. For tap-bearing serving and stateful guests, the generated `embervm_serving` table accepts established/related replies and drops NEW traffic that enters the `inet` forward hook from the shared serving bridge (`iifname <bridge> ct state new drop`: VM-originated forwarding, including external egress). That rule carries no same-bridge exemption, so its effect on two guests sharing the bridge depends on whether bridged frames traverse the inet forward hook on the deployed host at all; whether such guests can exchange bridge-local unicast, broadcast, ARP, or IPv4 traffic is runtime-unverified (#6159), not established by the generated inet rules. Composite members intentionally share a per-group L2 bridge: the generated `embervm_group` table keeps same-bridge member traffic (`iifname <group> oifname != <group> ct state new drop`) while dropping NEW traffic that leaves the group bridge toward another group, the serving bridge, or the overlay. That is composite lifecycle connectivity, not independent service authorization. #5813 is closed as NOT_PLANNED, and EmberVM ships no platform VM-to-VM L7 authorization layer. Brokered external egress remains the deliberate exception described in section 9. |
-| No guest access to node-local endpoints or local substrate services (16, 19) | **Built** for task and session guests: with no NIC, their platform path is the vsock shim and brokered egress contract. **Source-level gap** for tap-bearing serving and stateful guests (audited 2026-09-26 against `noded/serving/net.go` and `group.go`): both generators register filter chains at the `inet` forward hook only (`nftRuleset`, `nftGroupRuleset`); neither registers an input-hook chain, and `net.go` documents the omission as deliberate v1 scope (host-local reach is folded into the standing-decision-6 brokered-egress follow-on). Neither table carries a per-tap source IPv4 or source MAC match (the group MAC in `groupMemberMAC` is derived for the guest NIC, never matched by a rule), and the serving bridge has no per-VM egress rule at all. The forward-hook drop therefore does not prove denial of the bridge gateway, noded pod IP, or other host-local wildcard listeners (health, activator, gRPC, stateful/group activator ranges), and does not prove that a packet can be attributed to one VM. Because #5813 (authenticated VM-to-VM service bindings) is closed as NOT_PLANNED, no platform L7 authorization layer sits above this: below-L7 denial is the only control, and the live proof must show no below-L7 bypass path exists for any future L7 authorization to depend on. Installed rules, actual listener reachability, authentication behavior, spoof outcomes, and deployed hook traversal remain live checks in #6159. |
-| No Kubernetes-internal topology discovery (34) | **Built** for task and session guests, which have no NIC and receive no cluster DNS path. For tap-bearing guests, the generated forward posture is not a runtime proof about guest DNS configuration, pod or Service ranges, CNI policy, or bridge-local discovery. #6159 separately retains live validation of cluster DNS and topology exposure; this is not inferred from the threat 16/19 host-input gap or from the normal NEW-forward drop. |
+| No guest access to node-local endpoints or local substrate services (16, 19) | **Built** for task and session guests: with no NIC, their platform path is the vsock shim and brokered egress contract. **Built at source level** for tap-bearing serving, stateful and composite guests: both generators (`nftRuleset`, `nftGroupRuleset`) register an `inet` input-hook chain beside the forward chain that accepts only established/related replies and drops everything else entering from a guest bridge, so the bridge gateway, noded's pod IP and every wildcard listener on it (gRPC, the HTTP and L4 activators, health, metrics, the egress sidecar's loopback) are unreachable from a guest while host-originated probes and DNAT'd requests keep working; the forward chains drop INVALID as well as NEW guest-originated traffic; and every tap on the shared serving bridge is attached as an isolated bridge port (`bridge_slave isolated on`), so serving and stateful guests cannot exchange frames (unicast, broadcast or ARP) at L2 although they share one bridge. What remains unproven at source: the serving table still has no per-tap source IPv4 or MAC match, so a guest can spoof another port's addresses toward the host (an isolated port cannot deliver the spoofed frames to its neighbour). Installed rules, actual listener reachability, spoof outcomes and deployed hook traversal remain live checks in #6159. |
+| No Kubernetes-internal topology discovery (34) | **Built** for task and session guests, which have no NIC and receive no cluster DNS path. For tap-bearing guests the generated input and forward posture denies every guest-originated flow toward the host and the overlay, which is where cluster DNS and the Service ranges live, but it is not a runtime proof about guest DNS configuration, pod or Service ranges or CNI policy. #6159 retains live validation of cluster DNS and topology exposure. |
 | No Kubernetes or management-API escalation from guests (20, 22) | **Built**: no cluster credential by construction; the SPIFFE guest identity is **Decided direction** (section 9). Definitions are CP-owned and there is no self-modification verb. |
 | Worker state fully reset between actors (18, 27, 30) | **Built**: no execution environment is reused across principals (invariant 3); placement is CP-owned, each VM sees an immutable rootfs plus private scratch, and ADR 028's planned chunk sharing exposes no other manifest or writable filesystem. |
 | Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 credentials enter PLATFORM-TRUSTED guests only and are revoked at bank; every other credential is injected at the sidecar hop for hosts in its `egressTo` (section 9). **Planned**: (principal, host) injection under SPIFFE (section 9). |
