@@ -22,6 +22,7 @@ go_test(
         "aead_test.go",
         "restore_sparse_linux_test.go",
         "sigv4_test.go",
+        "store_restore_name_test.go",
         "store_test.go",
     ],
     embed = [":store"],

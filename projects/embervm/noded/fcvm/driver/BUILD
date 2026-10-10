@@ -50,6 +50,7 @@ go_test(
         "exit_test.go",
         "group_test.go",
         "gueststats_test.go",
+        "launcher_env_test.go",
         "launcher_linux_test.go",
         "launcher_test.go",
         "logtag_test.go",
