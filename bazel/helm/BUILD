@@ -3,8 +3,6 @@ load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 
 # gazelle:exclude **/*.bzl
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load("@multitool//:tools.bzl", MULTITOOL_TOOLS = "TOOLS")
-load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files([
@@ -229,25 +227,6 @@ sh_test(
     name = "verify_published_images_test",
     srcs = ["verify-published-images_test.sh"],
     data = [":verify-published-images.sh"],
-)
-
-sh_binary(
-    name = "validate_manifests",
-    srcs = ["ci-validate-manifests.sh"],
-    data = [MULTITOOL_TOOLS["helm"]],
-    env = {
-        "HELM": "$(rootpath {})".format(MULTITOOL_TOOLS["helm"]),
-    },
-)
-
-sh_binary(
-    name = "render_all",
-    srcs = ["render-all-manifests.sh"],
-    data = [MULTITOOL_TOOLS["helm"]],
-    env = {
-        "HELM": "$(rootpath {})".format(MULTITOOL_TOOLS["helm"]),
-    },
-    visibility = ["//bazel/tools/format:__pkg__"],
 )
 
 # keep: Gazelle's bzl extension mis-resolves @rules_shell//shell:sh_test.bzl

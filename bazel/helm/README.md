@@ -191,10 +191,8 @@ helm_annotation_test(
 | `helm-assert-annotations.sh`                      | Render then assert `KEY:VALUE` annotations are present                        |
 | `render.sh`                                       | Standalone single-service render using the extracted Helm tool                |
 | `lint.sh`                                         | Standalone strict lint for charts changed from a Git base                      |
-| `ci-validate-manifests.sh`                        | CI gate: validate all rendered manifests                                      |
 | `ci-diff-manifests.sh`                            | CI gate: diff rendered manifests against the live cluster                     |
-| `render-manifests.sh` / `render-all-manifests.sh` | Pre-render manifests for inspection                                           |
-| `pre-commit-render-manifests.sh`                  | Local pre-commit manifest render                                              |
+| `render-manifests.sh`                             | Pre-render manifests for inspection                                           |
 
 ## Conventions
 
