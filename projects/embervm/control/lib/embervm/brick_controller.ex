@@ -117,8 +117,9 @@ defmodule Embervm.BrickController do
   observable alarm signals are a one-time `Logger.error` and the
   `archive_pending` reason on the decision span; the `[:embervm, :brick,
   :archive_ack_timeout]` telemetry event has no handler or exporter yet. The
-  request goes to the victim instance (never the bare node), withholding any
-  lineage whose workload runs a live session VM on a co-located sibling. A fresh
+  request goes to the victim instance (never the bare node). A node with another
+  registered instance, missing node identity or unavailable registry snapshot
+  stays pending without requesting any archive, even when fully exported. A fresh
   controller re-derives the rail from node facts after restart. A fact whose
   session workspace scan is incomplete (`session_volumes_complete` false: a scan
   error, a partial scan, or a daemon that predates the field) is never a safe
@@ -229,6 +230,9 @@ defmodule Embervm.BrickController do
       default derived from `Embervm.Brick.by_class/0` (injected in tests).
     * `:facts_fun`            - `() -> [facts]` raw capacity facts (idle/victim
       inputs), default `NodeCapacity.all/1` (injected in tests).
+    * `:archive_instances_fun` - `() -> [instances] | :unknown` full registration
+      snapshot for the archive gate, including non-dispatchable instances;
+      default derived from `NodeRegistry.status/0`. Unknown coverage holds.
     * `:catalog_fun`          - `() -> [catalog_entry]` declared workload floors,
       default `Embervm.WorkloadCatalog.all/0` (injected in tests).
     * `:up_threshold` / `:up_window_ms` / `:up_cooldown_ms` /
@@ -342,6 +346,7 @@ defmodule Embervm.BrickController do
       archive_pending: %{},
       registered_fun: Keyword.get(opts, :registered_fun, &registered_by_class/0),
       facts_fun: Keyword.get(opts, :facts_fun, fn -> NodeCapacity.all(NodeCapacity.table()) end),
+      archive_instances_fun: Keyword.get(opts, :archive_instances_fun, &archive_instances/0),
       catalog_fun: Keyword.get(opts, :catalog_fun, &WorkloadCatalog.all/0),
       up_threshold: Keyword.get(opts, :up_threshold, @default_up_threshold),
       up_window_ms: Keyword.get(opts, :up_window_ms, @default_up_window_ms),
@@ -528,7 +533,7 @@ defmodule Embervm.BrickController do
 
   defp reconcile(state) do
     registered = state.registered_fun.()
-    facts = state.facts_fun.()
+    facts = archive_facts(state)
     state = prune_archive_pending(state, facts)
     now = state.clock.()
     state = check_capacity_drift(state, facts)
@@ -685,7 +690,7 @@ defmodule Embervm.BrickController do
     # Observation is read-only: report the workspace rail without requesting RPCs.
     reason =
       if target < current and state.mode in [:observe, :up] and state.archive_ack_gate and
-           match?({:pending, _}, pick_archive_victim(state, state.facts_fun.(), name)),
+           match?({:pending, _}, pick_archive_victim(state, archive_facts(state), name)),
         do: :archive_pending, else: reason
     # What the decision span reports: the autoscale target and reason even when
     # the mode or the victim rail means nothing is written.
@@ -1330,7 +1335,7 @@ defmodule Embervm.BrickController do
   # preemption drain (noded SIGTERM -> registry drain edge -> DrainCoordinator
   # force-bank) is the backstop for exactly that window.
   defp prepare_scale_down(state, class, now) do
-    facts = state.facts_fun.()
+    facts = archive_facts(state)
 
     case pick_archive_victim(state, facts, class) do
       {:safe, victim} ->
@@ -1362,12 +1367,10 @@ defmodule Embervm.BrickController do
         # The request is addressed to the victim INSTANCE, never the bare node:
         # the inventory is node-shared but the exported/attached flags are
         # per-process, so only the victim's own export flips the victim's fact.
-        # A lineage whose workload runs a live session VM on a co-located
-        # sibling is held back (the victim cannot see that attachment, and an
-        # export of a live-mounted image would overwrite the store's last
-        # consistent copy); the victim stays pending until the sibling parks.
-        if session_volumes_complete?(victim) do
-          case archivable_volumes(victim, facts) do
+        # Shared volume attachments are per-process. Hold the whole node until
+        # the registry sees only this instance, regardless of sibling health.
+        if not archive_node_held?(victim) and session_volumes_complete?(victim) do
+          case unexported_volumes(victim) do
             [] -> :ok
             volumes -> state.archive_fun.(victim_instance_id(victim), volumes)
           end
@@ -1387,7 +1390,8 @@ defmodule Embervm.BrickController do
       Enum.filter(
         eligible,
         &(not state.archive_ack_gate or
-            (session_volumes_complete?(&1) and unexported_volumes(&1) == []))
+            (not archive_node_held?(&1) and session_volumes_complete?(&1) and
+               unexported_volumes(&1) == []))
       )
 
     case safe do
@@ -1396,15 +1400,14 @@ defmodule Embervm.BrickController do
         case eligible do
           [] -> nil
           pending ->
-            # Stalled facts rank last: an incomplete scan, or a complete one
-            # whose every unexported lineage is withheld by a live co-located
-            # sibling, requests no archive, so choosing one would stall the
+            # Stalled facts rank last: an incomplete scan or a held node
+            # requests no archive, so choosing one would stall the
             # class while an archivable brick sits idle. Then keep the prior
             # candidate across fact-order/count changes, else archive the
             # fewest workspaces; pod uid makes equal counts stable.
             victim = Enum.min_by(pending, fn fact ->
               uid = Map.get(fact, :pod_uid)
-              {if(archive_stalled?(fact, facts), do: 1, else: 0),
+              {if(archive_stalled?(fact), do: 1, else: 0),
                 if(Map.has_key?(state.archive_pending, uid), do: 0, else: 1),
                 length(unexported_volumes(fact)), uid}
             end)
@@ -1416,28 +1419,48 @@ defmodule Embervm.BrickController do
   # The channel key of the brick, by the repo's one dial-key rule.
   defp victim_instance_id(fact), do: Brick.dial_id(fact)
 
-  # A pending candidate that can request nothing: unknown inventory, or known
-  # unexported lineages that are all withheld (see archivable_volumes/2).
-  defp archive_stalled?(fact, facts) do
-    not session_volumes_complete?(fact) or
-      (unexported_volumes(fact) != [] and archivable_volumes(fact, facts) == [])
+  defp archive_stalled?(fact) do
+    archive_node_held?(fact) or not session_volumes_complete?(fact)
   end
 
-  # The victim's unexported volumes minus any whose workload has a live session
-  # VM on a co-located sibling instance (same node, different instance).
-  defp archivable_volumes(victim, facts) do
-    victim_id = victim_instance_id(victim)
-    node_id = Map.get(victim, :node_id)
+  defp archive_node_held?(fact), do: Map.get(fact, :archive_node_held, false)
 
-    live_workloads =
-      for sibling <- facts,
-          Map.get(sibling, :node_id) == node_id,
-          victim_instance_id(sibling) != victim_id,
-          vm <- Map.get(sibling, :session_vms) || [],
-          into: MapSet.new(),
-          do: Map.get(vm, :workload)
+  # NodeCapacity omits non-dispatchable instances. The full registry snapshot
+  # enumerates node_runtime, including starting, unknown and draining siblings.
+  # Missing registry coverage is a hold, never evidence of exclusive ownership.
+  defp archive_instances do
+    NodeRegistry.status()
+    |> Map.values()
+    |> Enum.map(&Map.put(&1, :node_id, Map.get(&1, :configured_id)))
+  catch
+    :exit, _ -> :unknown
+  end
 
-    Enum.reject(unexported_volumes(victim), &MapSet.member?(live_workloads, Map.get(&1, :workload)))
+  defp archive_facts(state) do
+    facts = state.facts_fun.()
+
+    if state.archive_ack_gate do
+      instances = state.archive_instances_fun.()
+
+      Enum.map(facts, fn fact ->
+        node_id = Map.get(fact, :node_id)
+        dial_id = victim_instance_id(fact)
+
+        exclusive? =
+          is_binary(node_id) and node_id != "" and is_binary(dial_id) and dial_id != "" and
+            is_list(instances) and
+            Enum.any?(instances, &(Map.get(&1, :node_id) == node_id and Brick.dial_id(&1) == dial_id)) and
+            Enum.all?(instances ++ facts, fn sibling ->
+              sibling_node = Map.get(sibling, :node_id)
+              is_binary(sibling_node) and sibling_node != "" and
+                (sibling_node != node_id or Brick.dial_id(sibling) == dial_id)
+            end)
+
+        Map.put(fact, :archive_node_held, not exclusive?)
+      end)
+    else
+      facts
+    end
   end
 
   defp unexported_volumes(fact) do
@@ -1457,7 +1480,8 @@ defmodule Embervm.BrickController do
   defp prune_archive_pending(state, facts) do
     pending_uids = for fact <- facts,
       legacy_victim?(fact, Map.get(fact, :size_class)) and
-        (not session_volumes_complete?(fact) or unexported_volumes(fact) != []),
+        (archive_node_held?(fact) or not session_volumes_complete?(fact) or
+           unexported_volumes(fact) != []),
       into: MapSet.new(), do: Map.get(fact, :pod_uid)
     %{state | archive_pending: Map.filter(state.archive_pending, fn {uid, _wait} ->
       MapSet.member?(pending_uids, uid)

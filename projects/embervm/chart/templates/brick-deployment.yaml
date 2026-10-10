@@ -6,9 +6,15 @@
 # capacity unit: the control plane places whole VMs onto them and the
 # BrickController scales each Deployment's replica COUNT (never resizing a live
 # pod). Unlike the interim noded DaemonSet (one pod per node) a brick Deployment's
+{{- if .Values.bricks.autoscale.archiveAckGate.enabled }}
+# replicas are scheduled by kube-scheduler. Gate-off replicas can bin-pack onto
+# one FC node. archiveAckGate.enabled couples archive acknowledgement with
+# required anti-affinity across all classes, floors and the interim DaemonSet.
+{{- else }}
 # replicas are scheduled by kube-scheduler, so several bricks bin-pack onto one FC
 # node - that is the point, and it is why brick pods deliberately carry NO
 # anti-affinity.
+{{- end }}
 #
 # Gated on bricks.enabled (false in brick-capacity PR-1: this whole file renders
 # nothing and the fleet stays on the DaemonSet). PR-3 flips it true for a canary

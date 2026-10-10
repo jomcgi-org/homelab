@@ -1193,17 +1193,7 @@ read as safe. The volume inventory is node-shared but the exported and attached
 flags are per brick process, so each request is addressed to the victim
 instance (never the node name or first-in-table owner) and its ledger is keyed
 `{instance_id, lineage_id}`; only the victim's own export flips the victim's
-fact. A lineage whose workload runs a live session VM on a co-located sibling
-is withheld from the request, because the victim cannot see that attachment
-and exporting a live-mounted image would overwrite the last consistent store
-copy. A candidate whose unexported lineages are all withheld ranks behind any
-archivable candidate, so it cannot starve the class. The hold reads only
-healthy, non-draining `NodeCapacity` rows and only `session_vms`, so it does
-not see a sibling that is draining, unknown or starting, or a primed VM that
-holds a lineage during `restore_then_prime` (counted in `live_vms`, absent from
-`session_vms`). Those windows, and the staleness of facts against the async
-export, are residual and are checked live rather than closed in code, since
-attach state is deliberately not shared on disk. The request ignores the workload persistence flag, like workspace
+fact. The request ignores the workload persistence flag, like workspace
 retirement, so a disarmed flag cannot strand a victim behind a silent success.
 A blocked victim stays alive;
 `timeoutMs: 180000` bounds the quiet wait to the `drain_node` default deadline,
@@ -1216,6 +1206,50 @@ the one-time error log and the span reason are the observable ones. The timeout 
 re-derive eligibility from node facts, independently of their request ledger.
 The gate lands default-off for staging. Enabling it in deploy values and live
 acceptance remain on #6533.
+
+**Why.** Joe chose one brick per node on 2026-10-10 (#6533). The single switch
+`bricks.autoscale.archiveAckGate.enabled` also renders required pod anti-affinity
+on `kubernetes.io/hostname` across every class and node floor. Its release-scoped
+selector includes `noded-brick` and the interim `noded` DaemonSet: both pod shapes
+mount the same host scratch and derive the same node-shared `VolumeRoot`. No
+size-class or floor label narrows that selector. The existing floor nodeSelector
+remains intact. Kubernetes' inter-pod affinity filter counts terminating pods
+still bound to the node, so with `maxSurge: 0` a replacement waits until the old
+pod leaves. Required anti-affinity is non-retroactive: already co-located pods
+remain until rolled or removed.
+
+The controller therefore holds the whole candidate node whenever another
+registered instance has the same node ID and a different `Brick.dial_id`, even
+if the victim reports every volume exported. Missing node identity, unavailable
+registry coverage or an absent victim registration also holds. `facts_fun` reads
+only dispatchable `NodeCapacity` rows; the gate additionally reads every
+`node_runtime` entry through `NodeRegistry.status`, including draining, starting,
+unknown and not-yet-reporting instances. A held candidate gets no archive request,
+stays `archive_pending` under the keep-and-alarm timeout and ranks behind an
+archivable single-instance candidate. When its sibling deregisters, normal
+per-process export acknowledgement resumes. The earlier per-workload sibling
+filter is removed because the whole-node hold covers it.
+
+Joe accepted losing brick bin-packing and the extra node spend. If the sum of
+class `maxReplicas` plus floor replicas exceeds eligible FC nodes, pods can stay
+Pending. A same-release DaemonSet also consumes those eligible slots. Pending
+pods have no dispatchable capacity row: desired replicas above registered count
+trigger fleet-full after the configured dwell (default 5 minutes); while flagged,
+denial-driven scale-up waits (`fleet_full_wait`). Floor Deployments remain outside
+the controller's scalable class pool. Capacity planning must account for floors
+and remove the interim DaemonSet during a staged transition. Multiple bricks per
+node would need a separate flock-epoch decision, outside this change.
+
+Residual windows remain between registry/fact reads, asynchronous export and
+ReplicaSet deletion. An unregistered process, a registration expired while its
+pod still runs, or a different release sharing the host path is outside this
+release-scoped placement rule and registered-instance hold. An acknowledged
+export may become stale before deletion; there is no node-wide lock or epoch.
+The existing preemption drain remains the backstop for placement races. A
+controller restart resets the quiet timeout and reconstructs eligibility from
+current reports. Live acceptance still needs placement across classes/floors,
+zero-surge roll completion, co-location and archive-failure hold/alarm drills,
+restart mid-drain, acknowledged export then shrink and cross-node export/rejoin.
 
 Catalog-derived class floors apply only to the scalable, unpinned class
 Deployment. Same-class `nodeFloors` are additive topology guarantees and are
@@ -2019,7 +2053,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Brick scale-down requires durable workspace archive acknowledgement | section 7 | #6533 | repository gate default-off; enabling and live acceptance pending |
+| Brick scale-down couples durable archive acknowledgement with one brick per node (Joe, 2026-10-10) | section 7 | #6533 | single repository gate default-off; staged enable and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, hub dev 4gi bound-1 canary staged; live acceptance pending |
