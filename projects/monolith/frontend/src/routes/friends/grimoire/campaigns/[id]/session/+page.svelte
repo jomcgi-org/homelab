@@ -144,11 +144,30 @@
     document.getElementById("message")?.focus();
   }
 
+  function rollModeSuffix() {
+    return rollMode === "normal" ? "" : rollMode;
+  }
+
+  function quickFormula(sides) {
+    if (sides === 20 && rollMode !== "normal") return `d${sides}${rollMode}`;
+    return `d${sides}`;
+  }
+
+  // A single bare d20 with no mode of its own takes the tray mode; every
+  // other formula, including explicit adv/dis, is left unchanged.
+  function formulaWithMode(raw) {
+    if (rollMode === "normal") return raw;
+    const match = /^\s*(d20|1d20)\s*([+-]\s*\d+)?\s*$/i.exec(String(raw));
+    if (!match) return raw;
+    const modifier = match[2] ? match[2].replace(/\s+/g, "") : "";
+    return `${match[1]}${rollModeSuffix()}${modifier}`;
+  }
+
   function roll(event) {
     event.preventDefault();
     act({
       operation: "roll",
-      formula,
+      formula: formulaWithMode(formula),
       label: rollLabel,
       visibility: rollVisibility,
     });
@@ -385,19 +404,42 @@
         </form>
         <details class="dice-tray">
           <summary>Roll dice</summary>
-          {#if !dm && state.characters[0]?.approved}
-            <div class="quick-dice">
+          <div class="quick-dice">
+            {#if !dm && state.characters[0]?.approved}
               <select bind:value={rollKind} aria-label="Sheet roll type"
                 ><option value="checks">Ability checks</option><option
                   value="saves">Saving throws</option
                 ><option value="attacks">Attacks</option></select
               >
-              <select bind:value={rollMode} aria-label="Sheet roll mode"
-                ><option value="normal">Normal</option><option value="adv"
-                  >Advantage</option
-                ><option value="dis">Disadvantage</option></select
+            {/if}
+            <div role="radiogroup" aria-label="Roll mode">
+              <label
+                ><input
+                  type="radio"
+                  name="roll-mode"
+                  value="normal"
+                  bind:group={rollMode}
+                />Normal</label
+              >
+              <label
+                ><input
+                  type="radio"
+                  name="roll-mode"
+                  value="adv"
+                  bind:group={rollMode}
+                />Advantage</label
+              >
+              <label
+                ><input
+                  type="radio"
+                  name="roll-mode"
+                  value="dis"
+                  bind:group={rollMode}
+                />Disadvantage</label
               >
             </div>
+          </div>
+          {#if !dm && state.characters[0]?.approved}
             <div class="quick-dice" aria-label="Approved sheet rolls">
               {#each sheetRolls(state.characters[0].approved, rollKind, rollMode) as preset}
                 <button
@@ -421,7 +463,7 @@
                 onclick={() =>
                   act({
                     operation: "roll",
-                    formula: `d${sides}`,
+                    formula: quickFormula(sides),
                     visibility: rollVisibility,
                   })}>d{sides}</button
               >{/each}
@@ -451,7 +493,7 @@
                   <option value="table">Everyone</option><option value="dm"
                     >{dm ? "DM only" : "DM and me"}</option
                   ><option value="self"
-                    >{dm ? "DM only" : "My character and DM"}</option
+                    >{dm ? "Just me" : "My character and DM"}</option
                   >
                 </select></label
               ><button disabled={busy}>Roll</button>
