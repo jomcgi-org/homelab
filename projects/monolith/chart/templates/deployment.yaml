@@ -690,6 +690,8 @@ spec:
             {{- end }}
             - name: GRIMOIRE_PLAY_ENABLED
               value: {{ .Values.grimoire.play.enabled | quote }}
+            - name: GRIMOIRE_TRANSCRIPT_ENABLED
+              value: {{ .Values.grimoire.transcript.enabled | quote }}
             - name: GRIMOIRE_INVITATION_LINKS_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED
@@ -982,6 +984,8 @@ spec:
               value: "6M"
             - name: GRIMOIRE_PLAY_ENABLED
               value: {{ .Values.grimoire.play.enabled | quote }}
+            - name: GRIMOIRE_TRANSCRIPT_ENABLED
+              value: {{ .Values.grimoire.transcript.enabled | quote }}
             - name: GRIMOIRE_INVITATION_LINKS_ENABLED
               value: {{ .Values.grimoire.invitationLinks.enabled | quote }}
             - name: PLATFORM_AUTH_MANAGEMENT_ENABLED

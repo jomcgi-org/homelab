@@ -83,6 +83,7 @@ CharacterSheetStatus = Literal["draft", "submitted", "approved", "returned"]
 EmbeddableKind = Literal["entity", "chunk", "transcript", "note", "event"]
 AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
+TranscriptState = Literal["off", "on", "paused"]
 EventKind = Literal[
     "narration", "action", "roll", "reveal", "handout", "turn", "system", "utterance"
 ]
@@ -764,7 +765,13 @@ class CampaignJoinLink(SQLModel, table=True):
 
 class Campaign(SQLModel, table=True):
     __tablename__ = "campaign"
-    __table_args__ = {"schema": "grimoire", "extend_existing": True}
+    __table_args__ = (
+        CheckConstraint(
+            "transcript_retention_days BETWEEN 1 AND 365",
+            name="campaign_transcript_retention_days_chk",
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
 
     # Generated app-side (not relying on the migration's DEFAULT
     # gen_random_uuid(), which SQLite create_all fixtures cannot run) so the
@@ -774,6 +781,10 @@ class Campaign(SQLModel, table=True):
         sa_column=_uuid_column(primary_key=True),
     )
     name: str
+    transcript_retention_days: int = Field(
+        default=30,
+        sa_column=Column(Integer, nullable=False, server_default=text("30")),
+    )
     dm_name: str | None = None
     notes_dm_readable_default: bool = Field(
         default=False,
@@ -976,12 +987,64 @@ class CampaignMember(SQLModel, table=True):
 # nosemgrep: sqlmodel-datetime-without-factory (ended_at is intentionally NULL until the session ends)
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (revoked_at is NULL until consent is revoked)
+class TranscriptConsent(SQLModel, table=True):
+    __tablename__ = "transcript_consent"
+    __table_args__ = (
+        CheckConstraint(
+            "length(processor) BETWEEN 1 AND 120",
+            name="transcript_consent_processor_chk",
+        ),
+        CheckConstraint(
+            "revoked_at IS NULL OR revoked_at >= granted_at",
+            name="transcript_consent_revoked_at_chk",
+        ),
+        Index(
+            "transcript_consent_active_idx",
+            "campaign_id",
+            "member_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign.id", ondelete="CASCADE"
+        ),
+    )
+    member_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign_member.id", ondelete="CASCADE"
+        ),
+    )
+    processor: str = Field(sa_column=Column(String, nullable=False))
+    granted_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    revoked_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (ended_at is NULL until the session ends)
 class GameSession(SQLModel, table=True):
     __tablename__ = "game_session"
     __table_args__ = (
         CheckConstraint(
             "status IN ('active', 'paused', 'ended')",
             name="game_session_status_chk",
+        ),
+        CheckConstraint(
+            "transcript_state IN ('off', 'on', 'paused')",
+            name="game_session_transcript_state_chk",
         ),
         {"schema": "grimoire", "extend_existing": True},
     )
@@ -998,6 +1061,10 @@ class GameSession(SQLModel, table=True):
     )
     status: SessionStatus = Field(
         default="active", sa_column=Column(String, nullable=False)
+    )
+    transcript_state: TranscriptState = Field(
+        default="off",
+        sa_column=Column(String, nullable=False, server_default=text("'off'")),
     )
     started_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
