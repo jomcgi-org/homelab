@@ -152,13 +152,8 @@ Their suites are genrules, not test rules, tagged `verification` so `affected-ta
 
 ## Direction
 
-Decided and not yet built, each with the issue that tracks it. A row leaves
-this table when the work ships or the issue closes without it.
-
-| Direction | Decided in | Tracks | State |
-| --- | --- | --- | --- |
-| Gate every CI chart render on offline strict Kubernetes and CRD schema validation | section 4 | #4831 | implemented |
-| A Copier template scaffolds new services instead of copying `projects/monolith/deploy/` by hand | Decision history (tooling/002) | #3918 | not started |
+Nothing is decided and unbuilt here at present; outstanding work is
+tracked in GitHub Issues.
 
 ## Decision history
 

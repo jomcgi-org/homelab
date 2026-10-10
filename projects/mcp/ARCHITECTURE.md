@@ -491,7 +491,6 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | ADR agents/059, Accepted 2026-09-11, execution #3832 | #3832, #3833 | chart route staged default-off in the monolith chart; live cutover and decommission remain open |
-| Guest egress tokens are swapped per tier so each tier reaches only its allow-listed tool set, and guests cannot reach the main MCP port | Routing | #3838 | not started |
 | `monolith-agents` federates upstream MCP servers (BuildBuddy, Honeycomb, GitHub, and more) as namespaced tools on its own endpoint | Tool catalogue refresh | #5636 | not started |
 
 ## Decision history
