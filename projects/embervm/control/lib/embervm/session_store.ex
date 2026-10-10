@@ -327,8 +327,11 @@ defmodule Embervm.SessionStore do
 
   @doc """
   Pages sessions for `workload`, newest-created first, by `:limit` (default 50)
-  and `:offset` (default 0). A full ETS scan (bounded, listing is rare), never
-  the op-log; serves `GET /v1/workloads/{name}/sessions`.
+  and `:offset` (default 0). `:principal` restricts the listing to that
+  principal's sessions BEFORE paging, so a non-admin caller's page and `total`
+  describe its own sessions rather than a slice of everyone's. A full ETS scan
+  (bounded, listing is rare), never the op-log; serves
+  `GET /v1/workloads/{name}/sessions`.
   """
   @spec list(GenServer.server(), String.t(), keyword()) :: {:ok, map()}
   def list(store \\ __MODULE__, workload, opts \\ []) do
@@ -693,11 +696,14 @@ defmodule Embervm.SessionStore do
   def handle_call({:list, workload, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 50)
     offset = Keyword.get(opts, :offset, 0)
+    principal = Keyword.get(opts, :principal)
 
     all =
       :ets.foldl(
         fn {_id, session}, acc ->
-          if session.workload == workload, do: [session | acc], else: acc
+          if session.workload == workload and (is_nil(principal) or session.principal == principal),
+            do: [session | acc],
+            else: acc
         end,
         [],
         state.sessions

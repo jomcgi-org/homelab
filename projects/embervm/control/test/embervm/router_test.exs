@@ -347,17 +347,23 @@ defmodule Embervm.RouterTest do
     def list(_srv, "wl-ok", _opts),
       do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
 
-    def list(_srv, "wl-many", _opts) do
-      items =
-        for {session_id, node_id} <- [
-          {"s-list-1", "node-a"},
-          {"s-list-2", "node-b"},
-          {"s-list-3", "node-a"}
-        ] do
+    def list(_srv, "wl-many", opts) do
+      principal = Keyword.get(opts, :principal)
+      limit = Keyword.get(opts, :limit, 50)
+      offset = Keyword.get(opts, :offset, 0)
+
+      all =
+        for {session_id, node_id, owner} <- [
+              {"s-list-1", "node-a", "p"},
+              {"s-list-2", "node-b", "p"},
+              {"s-list-3", "node-a", "p"},
+              {"s-list-mine", "node-b", "system:serviceaccount:embervm:embervm"}
+            ],
+            is_nil(principal) or owner == principal do
           %{
             session_id: session_id,
             workload: "wl-many",
-            principal: "p",
+            principal: owner,
             node_id: node_id,
             state: :running,
             generation: 0,
@@ -370,7 +376,8 @@ defmodule Embervm.RouterTest do
           }
         end
 
-      {:ok, %{items: items, total: length(items), limit: 50, offset: 0}}
+      page = all |> Enum.drop(offset) |> Enum.take(limit)
+      {:ok, %{items: page, total: length(all), limit: limit, offset: offset}}
     end
 
     def list(_srv, _wl, _opts), do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
@@ -2301,10 +2308,13 @@ defmodule Embervm.RouterTest do
     assert Enum.sort(node_ids) == ["node-a", "node-b"]
     refute_receive {:brick_statuses, _node_ids}, 50
 
-    assert [first, second, third] = json(resp.body)["items"]
+    # Four rows (the fourth, on node-b, belongs to the caller and exists for the
+    # scope-before-paging test): still exactly one registry call for both nodes.
+    assert [first, second, third, fourth] = json(resp.body)["items"]
     assert first["node"] == %{"node_id" => "node-a", "health" => "healthy", "draining" => false}
     assert second["node"] == %{"node_id" => "node-b", "health" => "healthy", "draining" => true}
     assert third["node"] == first["node"]
+    assert fourth["node"] == second["node"]
   end
 
   test "GET /v1/workloads/:name/sessions?idempotency_key= resolves one session by key (#4919)" do
@@ -2772,10 +2782,43 @@ defmodule Embervm.RouterTest do
       Application.put_env(:embervm, :node_registry_mod, FakeNodeRegistry)
       Application.put_env(:embervm, :node_registry, self())
 
-      resp = req(:get, "/v1/workloads/wl-many/sessions", auth("good"))
+      # Four sessions exist, three owned by "p" and the caller's own one LAST in
+      # store order. The scope is applied in the store BEFORE paging, so a page
+      # of two is not swallowed by the other principal's rows and total counts
+      # the caller's whole set, not the visible slice.
+      resp = req(:get, "/v1/workloads/wl-many/sessions?limit=2", auth("good"))
       assert resp.status == 200
-      assert json(resp.body)["items"] == []
-      assert json(resp.body)["total"] == 0
+      assert [%{"session_id" => "s-list-mine"}] = json(resp.body)["items"]
+      assert json(resp.body)["total"] == 1
+
+      Application.put_env(:embervm, :usage_admins, [@allowed])
+      admin = json(req(:get, "/v1/workloads/wl-many/sessions?limit=2", auth("good")).body)
+      assert length(admin["items"]) == 2
+      assert admin["total"] == 4
+    end
+
+    test "dead-letter paging applies the caller's scope before the page, not after" do
+      Application.put_env(:embervm, :usage_admins, [])
+      wl = unique("wl")
+
+      dead_letter = fn principal ->
+        {:ok, :created, task_id} = TaskStore.submit(%{tenant: "homelab", principal: principal, workload: wl})
+        {:ok, _} = TaskStore.assign(task_id)
+        {:ok, _} = TaskStore.start(task_id)
+        {:ok, %{state: :dead_lettered}} = TaskStore.fail(task_id, :guest4xx)
+        task_id
+      end
+
+      # The caller's task is the OLDEST; two newer ones belong to someone else, so
+      # a newest-first page of two holds only foreign rows unless the store
+      # filters first.
+      mine = dead_letter.(@allowed)
+      _ = dead_letter.("system:serviceaccount:other:other")
+      _ = dead_letter.("system:serviceaccount:other:other")
+
+      page = json(req(:get, "/v1/workloads/#{wl}/dead-letters?limit=2", auth("good")).body)
+      assert [%{"task_id" => ^mine}] = page["items"]
+      assert page["total"] == 1
     end
 
     test "destructive workload verbs require an admin" do
