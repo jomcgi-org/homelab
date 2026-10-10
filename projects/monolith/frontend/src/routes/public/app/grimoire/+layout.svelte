@@ -17,6 +17,11 @@
   // active tab reads correctly no matter which URL a visitor lands on.
   import { page } from "$app/stores";
   import TurnstileGate from "$lib/public/components/TurnstileGate.svelte";
+  // The Grimoire's own admission seam: it POSTs to /app/grimoire/chat/session,
+  // the BFF that fronts grimoire_chat. TurnstileGate's default `admit` is the
+  // notes-chat helper (/chat/session), which has no route under this app, so
+  // every solve 404ed and the gate never admitted anyone.
+  import { createChatSession } from "$lib/public/grimoire/chat/admission.js";
   import PageTurn from "$lib/public/grimoire/PageTurn.svelte";
   import ConstellationDock from "$lib/public/grimoire/ConstellationDock.svelte";
   import "$lib/grimoire/theme.css";
@@ -142,6 +147,7 @@
         </p>
         <TurnstileGate
           siteKey={data.turnstileSiteKey}
+          admit={createChatSession}
           onAdmitted={() => (admitted = true)}
         />
       </div>
