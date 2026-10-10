@@ -28,16 +28,20 @@ describe("approved sheet rolls", () => {
   });
   it("applies advantage and signed bonuses to attack chips", () => {
     expect(
-      sheetRolls({ attack_bonuses: { melee: -1, ranged: 5 } }, "attacks", "dis"),
+      sheetRolls(
+        { attack_bonuses: { melee: -1, ranged: 5 } },
+        "attacks",
+        "dis",
+      ),
     ).toEqual([
       { label: "Melee attack", formula: "d20dis-1" },
       { label: "Ranged attack", formula: "d20dis+5" },
     ]);
   });
   it("offers no attack chips when derived bonuses are missing", () => {
-    expect(sheetRolls({ ability_modifiers: { strength: 3 } }, "attacks")).toEqual(
-      [],
-    );
+    expect(
+      sheetRolls({ ability_modifiers: { strength: 3 } }, "attacks"),
+    ).toEqual([]);
     expect(sheetRolls(null, "attacks")).toEqual([]);
   });
   it("offers no rolls without an approved sheet", () => {
