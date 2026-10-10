@@ -3,17 +3,53 @@
 import hashlib
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from uuid import uuid4
 
+from sqlalchemy import and_, null, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
+from grimoire.audience import Member, Viewer, audience_predicate, note_predicate
 from grimoire.models import Embedding, Note, SessionEvent
 from grimoire.reveals import reveal_items
 
 PLAY_KINDS = ("note", "event", "transcript")
 EVENT_KINDS = ("narration", "handout", "reveal", "utterance")
+
+
+def play_embedding_predicate(campaign_id: str, viewer: Viewer, member: Member):
+    """One candidate clause, with the source audience contracts reused intact.
+
+    Note kind is copied into audience. Deleted sources have their vectors removed
+    transactionally; retrieval still checks deletion on the live row.
+    """
+    note_columns = SimpleNamespace(
+        kind=Embedding.audience,
+        author_member_id=Embedding.author_member_id,
+        dm_readable=Embedding.dm_readable,
+        deleted_at=null(),
+    )
+    return or_(
+        and_(
+            Embedding.embeddable_kind.in_(("entity", "chunk")),
+            Embedding.campaign_id.is_(None),
+        ),
+        and_(
+            Embedding.campaign_id == campaign_id,
+            or_(
+                and_(
+                    Embedding.embeddable_kind.in_(("event", "transcript")),
+                    audience_predicate(Embedding, viewer, member),
+                ),
+                and_(
+                    Embedding.embeddable_kind == "note",
+                    note_predicate(note_columns, viewer, member),
+                ),
+            ),
+        ),
+    )
 
 
 def event_note_markdown(body: dict) -> str:

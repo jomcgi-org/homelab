@@ -175,6 +175,10 @@ def _append(session, game_session, **changes):
 def http_harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     with sqlite_harness(tmp_path / "http-events.db") as h:
+        # These cases create and count their own reveal stream.
+        for key in ("reveal_b", "reveal_partial", "reveal_name_only"):
+            h.session.delete(h.rows[f"embedding_{key}"])
+            h.session.delete(h.rows[key])
         h.prepare("play")
         with TestClient(h.app()) as client:
             yield h, client
@@ -733,7 +737,13 @@ def test_journal_projection_random_audiences_never_include_hidden_canaries(
 
     h, _ = http_harness
     rng = Random(6617)
-    seeded = [row for key, row in h.rows.items() if key.startswith("event_")]
+    # journal() consumes already campaign-scoped rows; HTTP scope tests cover
+    # foreign events independently from this randomized audience oracle.
+    seeded = [
+        row
+        for key, row in h.rows.items()
+        if key.startswith("event_") and row.campaign_id == h.rows["campaign"].id
+    ]
     for role in ("dm", "player_a", "player_b", "no_character"):
         member = h.rows["member" if role == "player_b" else f"member_{role}"]
         viewer = "dm" if role == "dm" else member.player_character_id

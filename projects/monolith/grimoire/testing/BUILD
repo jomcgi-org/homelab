@@ -12,6 +12,7 @@ py_library(
         "audience_matrix.py",
         "leak_harness.py",
         "notes_matrix.py",
+        "play_embedding_matrix.py",
     ],
     imports = ["../.."],
     visibility = ["//projects/monolith:__pkg__"],
