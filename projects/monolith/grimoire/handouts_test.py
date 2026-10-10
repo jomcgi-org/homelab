@@ -75,7 +75,10 @@ def test_null_copyright_flag_fails_closed(env):
     h = env[0]
     book = h.session.get(Book, h.rows["book_open"].id)
     book.copyrighted_content = None
-    assert handouts.open_licensed_image_chunk(h.session, h.rows["chunk_image_open"].id) is None
+    assert (
+        handouts.open_licensed_image_chunk(h.session, h.rows["chunk_image_open"].id)
+        is None
+    )
     h.session.rollback()
 
 
@@ -102,7 +105,11 @@ def test_upload_key_must_match_this_campaigns_handout_prefix(env):
     assert (
         post_event(
             env,
-            {"title": "Map", "markdown": "", "image": {"source": "upload", "key": good}},
+            {
+                "title": "Map",
+                "markdown": "",
+                "image": {"source": "upload", "key": good},
+            },
         ).status_code
         == 200
     )
@@ -220,8 +227,7 @@ def test_sniff_image_uses_magic_bytes(data, expected):
 def upload(env, data, viewer="dm", declared="image/png", campaign=None):
     h, client, _ = env
     return client.post(
-        f"/api/grimoire/campaigns/{campaign or h.rows['campaign'].id}"
-        "/handouts/uploads",
+        f"/api/grimoire/campaigns/{campaign or h.rows['campaign'].id}/handouts/uploads",
         headers=h.headers(viewer),
         files={"file": ("any.bin", data, declared)},
     )
@@ -293,8 +299,7 @@ def test_upload_is_hidden_when_play_is_disabled(env, monkeypatch):
 
 def image_url(h, event):
     return (
-        base(h)
-        + f"/sessions/{h.rows['campaign_session'].id}/events/{event.id}/image"
+        base(h) + f"/sessions/{h.rows['campaign_session'].id}/events/{event.id}/image"
     )
 
 
@@ -377,3 +382,108 @@ def test_foreign_upload_key_in_a_stored_body_is_not_served(env):
     event.body = {**event.body, "image": {"source": "upload", "key": foreign}}
     h.session.commit()
     assert get_image(env, "dm", event).status_code == 404
+
+
+# --- projection and pinning ---------------------------------------------------
+
+
+def events_for(env, viewer):
+    h, client, _ = env
+    response = client.get(
+        base(h) + f"/sessions/{h.rows['campaign_session'].id}/events",
+        headers=h.headers(viewer),
+    )
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, viewer)
+    return {row["id"]: row for row in response.json()}
+
+
+def journal_received(env, viewer):
+    h, client, _ = env
+    response = client.get(
+        base(h) + f"/sessions/{h.rows['campaign_session'].id}/journal",
+        headers=h.headers(viewer),
+    )
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, viewer)
+    return {row["id"]: row for row in response.json()["received"]}
+
+
+def test_entity_id_is_dropped_unless_the_viewer_can_see_the_entity(env):
+    h = env[0]
+    seeded = h.rows["event_handout"]
+    # a_only is granted to player_a only; private is granted to nobody.
+    shared = post_event(
+        env, {"title": "t", "markdown": "m", "entity_id": h.rows["a_only"].id}
+    ).json()
+    for source in (events_for, journal_received):
+        dm = source(env, "dm")
+        assert dm[seeded.id]["body"]["entity_id"] == seeded.body["entity_id"]
+        assert dm[shared["id"]]["body"]["entity_id"] == shared["body"]["entity_id"]
+        player_a = source(env, "player_a")
+        assert "entity_id" not in player_a[seeded.id]["body"]
+        assert (
+            player_a[shared["id"]]["body"]["entity_id"] == shared["body"]["entity_id"]
+        )
+        assert player_a[seeded.id]["body"]["title"] == seeded.body["title"]
+        player_b = source(env, "player_b")
+        assert seeded.id not in player_b
+        assert "entity_id" not in player_b[shared["id"]]["body"]
+        assert player_b[shared["id"]]["body"]["title"] == "t"
+        assert "entity_id" not in source(env, "no_character")[shared["id"]]["body"]
+
+
+def pin(env, viewer, event_id):
+    h, client, _ = env
+    return client.post(
+        base(h) + "/notes",
+        headers=h.headers(viewer),
+        json={"kind": "character", "from_event_id": event_id},
+    )
+
+
+def test_pin_to_notes_snapshots_the_handout_and_links_only_visible_entities(env):
+    h = env[0]
+    seeded = h.rows["event_handout"]
+    response = pin(env, "player_a", seeded.id)
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, "player_a")
+    note = response.json()
+    assert note["title"] == seeded.body["title"]
+    assert note["markdown"] == seeded.body["markdown"]
+    assert note["pinned"] is True
+    assert note["links"]["entities"] == []
+    assert note["links"]["event_ids"] == [seeded.id]
+    assert h.session.get(Note, note["id"]).created_in_session == seeded.session_id
+
+    shared = post_event(
+        env, {"title": "Letter", "markdown": "Dear", "entity_id": h.rows["a_only"].id}
+    ).json()
+    linked = pin(env, "player_a", shared["id"]).json()
+    assert [e["id"] for e in linked["links"]["entities"]] == [h.rows["a_only"].id]
+    # A pin never fails because the entity is invisible: it just drops the link.
+    unlinked = pin(env, "player_b", shared["id"])
+    assert unlinked.status_code == 200, unlinked.text
+    h.assert_no_leak(unlinked, "player_b")
+    assert unlinked.json()["title"] == "Letter"
+    assert unlinked.json()["markdown"] == "Dear"
+    assert unlinked.json()["links"]["entities"] == []
+
+
+def test_pin_is_refused_for_non_recipients_and_retracted_handouts(env):
+    h = env[0]
+    assert pin(env, "player_b", h.rows["event_handout"].id).status_code == 404
+    assert pin(env, "player_a", h.rows["event_handout_retracted"].id).status_code == 404
+
+
+def test_dm_party_note_from_a_handout_links_the_entity(env):
+    h, client, _ = env
+    response = client.post(
+        base(h) + "/notes",
+        headers=h.headers("dm"),
+        json={"kind": "party", "from_event_id": h.rows["event_handout"].id},
+    )
+    assert response.status_code == 200, response.text
+    assert [e["id"] for e in response.json()["links"]["entities"]] == [
+        h.rows["private"].id
+    ]

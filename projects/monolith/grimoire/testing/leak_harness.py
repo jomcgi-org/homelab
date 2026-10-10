@@ -750,7 +750,10 @@ def seed_handouts(h: LeakHarness) -> FakeS3Client:
         objects.append(row)
         return row
 
-    keep("book_open", Book(id="open-book", display_name="Open", copyrighted_content=False))
+    keep(
+        "book_open",
+        Book(id="open-book", display_name="Open", copyrighted_content=False),
+    )
     for key, book_id in (
         ("open", "open-book"),
         ("closed", "corpus"),
@@ -773,7 +776,10 @@ def seed_handouts(h: LeakHarness) -> FakeS3Client:
         keep(
             key,
             SessionEvent(
-                id=h.token(f"{key}.id", ("dm", "player_a", "operator"), identifier=True),
+                # Lowercase: from_event_id is a UUID, so it round-trips lowercase.
+                id=h.token(
+                    f"{key}.id", ("dm", "player_a", "operator"), identifier=True
+                ).lower(),
                 campaign_id=rows["campaign"].id,
                 session_id=rows["campaign_session"].id,
                 seq=seq,
@@ -784,11 +790,15 @@ def seed_handouts(h: LeakHarness) -> FakeS3Client:
                 body={
                     "title": h.token(
                         f"{key}.title",
-                        ("dm", "operator") if retracted else ("dm", "player_a", "operator"),
+                        ("dm", "operator")
+                        if retracted
+                        else ("dm", "player_a", "operator"),
                     ),
                     "markdown": h.token(
                         f"{key}.markdown",
-                        ("dm", "operator") if retracted else ("dm", "player_a", "operator"),
+                        ("dm", "operator")
+                        if retracted
+                        else ("dm", "player_a", "operator"),
                     ),
                     "entity_id": str(uuid.UUID(rows["private"].id)),
                     "image": {
