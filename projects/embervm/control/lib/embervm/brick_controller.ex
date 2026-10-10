@@ -180,7 +180,7 @@ defmodule Embervm.BrickController do
   require Logger
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{BaseBuilder, Brick, K8s, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{BaseBuilder, Brick, K8s, NodeCapacity, NodeRegistry, WorkloadCatalog}
   alias Embervm.Brick.Portfolio
 
   @default_interval_ms 30_000

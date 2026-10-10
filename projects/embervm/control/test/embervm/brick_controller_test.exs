@@ -496,6 +496,8 @@ defmodule Embervm.BrickControllerTest do
         archive_instances_fun: fn -> Agent.get(facts, & &1) end,
         archive_fun: fn node, volumes -> send(parent, {:archive, node, volumes}); :ok end)
       |> Keyword.merge(opts)
+    opts = if Keyword.get(opts, :real_archive_registry, false),
+      do: Keyword.delete(opts, :archive_instances_fun), else: opts
     pid = start(opts)
     %{pid: pid, facts: facts, advance: advance, calls: calls, annotated: annotated, fact: fact}
   end
@@ -757,6 +759,15 @@ defmodule Embervm.BrickControllerTest do
       assert log =~ "reason=archive_pending"
       assert ctx.annotated.() == []
       refute_receive {:archive, _, _}
+    end
+  end
+
+  test "the default archive registry callback reads the real full registry snapshot" do
+    ctx = archive_gate_stack(real_archive_registry: true)
+    instances = :sys.get_state(ctx.pid).archive_instances_fun.()
+    assert is_list(instances) or instances == :unknown
+    if is_list(instances) do
+      assert Enum.all?(instances, &(&1.node_id == &1.configured_id))
     end
   end
 
