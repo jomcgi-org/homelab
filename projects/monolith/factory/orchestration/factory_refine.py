@@ -958,6 +958,15 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
         for label in issue.get("labels") or []
         if isinstance(label, dict)
     }
+    if "human" in issue_labels:
+        from factory.orchestration.factory_controls import (
+            HUMAN_HANDOFF_EVIDENCE,
+            human_handoff,
+        )
+
+        human_handoff(task["id"], ACTOR, observed=True)
+        finish_task(task["id"], "cancelled", ACTOR, evidence=HUMAN_HANDOFF_EVIDENCE)
+        return
     protected = bool(issue_labels & set(PROTECTED_LABELS)) or bool(
         issue.get("milestone")
     )

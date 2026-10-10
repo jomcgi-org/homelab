@@ -2,15 +2,17 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import QwenReplay from "./QwenReplay.svelte";
+import { incidentGraph } from "./incident-graph.js";
+import { decodeSteps } from "./draft-steps.js";
 import recording from "./qwen-replay.json";
 
 const turn = recording.turns[0];
 let component;
 let target;
-async function render() {
+async function render(props = {}) {
   target = document.createElement("div");
   document.body.append(target);
-  component = mount(QwenReplay, { target });
+  component = mount(QwenReplay, { target, props });
   await tick();
   return target;
 }
@@ -26,132 +28,214 @@ afterEach(async () => {
   target?.remove();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-test("first-token timing stays fixed when seeking, without a prefill rate or chart", async () => {
-  const view = await render();
-  const timing = view.querySelector(".measurements > div");
-  expect(timing.textContent).toContain("First token");
-  expect(timing.textContent).toContain((turn.metrics.ttftMs / 1000).toFixed(1));
-  const initial = timing.textContent;
-  for (const at of [1000, turn.metrics.ttftMs, turn.durationMs, 0]) {
-    await seek(at);
-    expect(timing.textContent).toBe(initial);
-    expect(view.querySelector(".prefill-history")).toBeNull();
-    expect(view.querySelector(".prefill-segment")).toBeNull();
-  }
-  await seek(turn.durationMs);
-  expect(view.querySelector(".answer").textContent.trim()).toBe(
-    turn.events.map((e) => e.content).join(""),
-  );
-});
-
-test("the single real-time session pauses cleanly and never calls inference", async () => {
-  vi.useFakeTimers();
-  const fetch = vi.spyOn(globalThis, "fetch");
-  const view = await render();
-  expect(recording.turns).toHaveLength(1);
-  expect(view.querySelector(".turns")).toBeNull();
-  expect(view.querySelector("select")).toBeNull();
-  expect(view.querySelector(".recording-notes")).toBeNull();
-  view.querySelector(".controls button").click();
-  await tick();
-  expect(vi.getTimerCount()).toBe(1);
-  vi.advanceTimersByTime(1000);
-  await tick();
-  expect(Number(view.querySelector("input[type=range]").value)).toBe(1000);
-  view.querySelector(".controls button").click();
-  await tick();
-  expect(vi.getTimerCount()).toBe(0);
-  vi.advanceTimersByTime(1000);
-  await tick();
-  expect(Number(view.querySelector("input[type=range]").value)).toBe(1000);
-  expect(fetch).not.toHaveBeenCalled();
-});
-
-test("tier keys highlight routing and history above the transcript", async () => {
-  const view = await render();
-  await seek(turn.durationMs);
-  expect(
-    view
-      .querySelector(".telemetry")
-      .compareDocumentPosition(view.querySelector(".answer")) &
-      Node.DOCUMENT_POSITION_FOLLOWING,
-  ).toBeTruthy();
-  const hot = view.querySelector("button.tier.hot");
-  hot.click();
-  await tick();
-  expect(hot.getAttribute("aria-pressed")).toBe("true");
-  expect(
-    view.querySelector(".activity-bar .warm").classList.contains("dimmed"),
-  ).toBe(true);
-  expect(
-    view
-      .querySelector(".routing-history rect.hot")
-      .classList.contains("dimmed"),
-  ).toBe(false);
-  hot.click();
-  await tick();
-  expect(view.querySelectorAll(".dimmed").length).toBe(0);
-});
-
-test("initial placement stays stable until polling and controls precede the instrument", async () => {
-  const view = await render();
-  const first = turn.samples.find(
-    (item, index) =>
-      index > 0 && turn.samples[index - 1].at >= turn.events[0].at,
-  );
-  const bar = view.querySelector(".activity-bar");
-  const starting = bar.innerHTML;
-  const capacity = turn.samples.find((item) => item.tiers).tiers.hotBytes;
-  expect(view.querySelector(".capacity").textContent).toContain(
-    (capacity / 1e9).toFixed(1) + " GB",
-  );
+test("the landing keeps playback first and captured output secondary", async () => {
+  const view = await render({ landing: true });
+  expect(view.querySelectorAll(".controls")).toHaveLength(1);
   expect(
     view
       .querySelector(".controls")
-      .compareDocumentPosition(view.querySelector(".instrument")) &
+      .compareDocumentPosition(view.querySelector(".demo-body")) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
-  await seek(first.at - 1);
-  expect(bar.innerHTML).toBe(starting);
-  expect(view.querySelector(".routing-history rect.hot")).toBeNull();
+  await seek(turn.durationMs);
+  const toggle = view.querySelector(".model-output button");
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  toggle.click();
+  await tick();
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(view.querySelector(".model-output code").textContent).toBe(
+    turn.events.map((event) => event.content).join(""),
+  );
+});
+
+test("reduced motion leaves the landing paused until Play is requested", async () => {
+  const observe = vi.fn();
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe = observe;
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal("matchMedia", () => ({ matches: true }));
+  const view = await render({ landing: true });
+  expect(observe).not.toHaveBeenCalled();
+  expect(view.querySelector(".controls button").textContent).toBe("Play");
+  view.querySelector(".controls button").click();
+  await tick();
+  expect(view.querySelector(".controls button").textContent).toBe("Pause");
+});
+
+test("measurements fill in as the replay reaches them, in request order", async () => {
+  const view = await render();
+  const slots = () =>
+    [...view.querySelectorAll(".measurements > div")].map((d) => d.textContent);
+  const labels = [...view.querySelectorAll(".measurements dt")].map((d) =>
+    d.textContent.trim(),
+  );
+  expect(labels).toEqual(["Prefill", "First token", "Decode"]);
+  const tokens = (
+    turn.usage.prompt_tokens - turn.usage.cached_tokens
+  ).toLocaleString("en-US");
+  await seek(1000);
+  let [prefill, first, decode] = slots();
+  expect(prefill).toContain(`reading ${tokens} tokens`);
+  expect(first).toContain("--");
+  expect(decode).toContain("--");
+  await seek(turn.metrics.ttftMs);
+  [prefill, first, decode] = slots();
+  expect(first).toContain((turn.metrics.ttftMs / 1000).toFixed(1));
+  expect(decode).toContain("tok/s now");
+  await seek(turn.durationMs);
+  [prefill, first, decode] = slots();
+  expect(decode).toContain(turn.metrics.tokensPerSecond.toFixed(1));
   expect(view.querySelector(".prefill-history")).toBeNull();
-  await seek(first.at);
-  expect(view.querySelector(".routing-heading").textContent).toContain(
-    "activations",
+  const output = turn.events.map((e) => e.content).join("");
+  expect(view.querySelector(".incident-graph pre").textContent).toBe(output);
+  expect(view.querySelectorAll(".graph-node").length).toBe(
+    incidentGraph(output, true).nodes.length,
   );
-  expect(bar.innerHTML).not.toBe(starting);
-  const firstHot = view.querySelector(".routing-history rect.hot");
-  expect(Number(firstHot.getAttribute("x"))).toBeCloseTo(0);
+  expect(view.querySelector(".answer > p")).toBeNull();
+});
+
+test("the output panel opens while the model writes and closes when it finishes", async () => {
+  const view = await render({ landing: true });
+  await seek(turn.events[0].at + 1);
+  const toggle = () => view.querySelector(".model-output button");
+  expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  await seek(turn.durationMs);
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+});
+
+test("playback advances in real time and cancels on pause", async () => {
+  const fetch = vi.spyOn(globalThis, "fetch");
+  let nextFrame;
+  vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+    (callback) => {
+      nextFrame = callback;
+      return 1;
+    },
+  );
+  const cancel = vi.spyOn(globalThis, "cancelAnimationFrame");
+  const view = await render();
+  view.querySelector(".controls button").click();
+  await tick();
+  nextFrame(0);
+  nextFrame(500);
+  await tick();
+  expect(Number(view.querySelector("input[type=range]").value)).toBe(500);
+  nextFrame(1000);
+  await tick();
+  expect(Number(view.querySelector("input[type=range]").value)).toBe(1000);
+  expect(view.querySelector(".speed-control")).toBeNull();
+  view.querySelector(".controls button").click();
+  await tick();
+  expect(cancel).toHaveBeenCalled();
+  expect(view.querySelector(".controls button").textContent).toBe("Play");
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test("the scrubber seeks across request phases and replay restarts", async () => {
+  const view = await render();
+  for (const [at, phase] of [
+    [0, "Prefill"],
+    [turn.events[0].at, "Decode"],
+    [turn.durationMs, "Complete"],
+  ]) {
+    await seek(at);
+    expect(Number(view.querySelector("input[type=range]").value)).toBe(at);
+    expect(view.querySelector('[role="status"]').textContent).toBe(phase);
+  }
+  expect(view.querySelector(".controls button").textContent).toBe("Replay");
+  view.querySelector(".controls button").click();
+  await tick();
+  expect(Number(view.querySelector("input[type=range]").value)).toBe(0);
+});
+
+test("current replay uses captured timings without fabricated routing", async () => {
+  const view = await render();
+  expect(recording.telemetry.routing).toBe(false);
+  expect(view.querySelector(".telemetry")).toBeNull();
+  await seek(turn.durationMs);
+  expect(view.querySelectorAll(".measurements dd")).toHaveLength(3);
+  expect(view.querySelectorAll(".measurements dd")[2].textContent).toContain(
+    turn.metrics.tokensPerSecond.toFixed(1),
+  );
+});
+
+test("shows effective uncached prefill throughput without speed or arrival-count clutter", async () => {
+  const view = await render();
+  const rate = Math.round(
+    ((turn.usage.prompt_tokens - turn.usage.cached_tokens) * 1000) /
+      turn.metrics.ttftMs,
+  );
+  await seek(turn.durationMs);
+  expect(view.querySelectorAll(".measurements dd")[0].textContent).toContain(
+    rate.toLocaleString("en-US"),
+  );
+  expect(view.querySelector(".speed-control")).toBeNull();
+  expect(view.querySelector(".arrival-count")).toBeNull();
+});
+
+test("the input scan follows seeking while thinking stays explicitly disabled", async () => {
+  const view = await render();
+  expect(recording.thinking).toBe(false);
+  expect(turn.events.every((event) => !event.reasoning)).toBe(true);
+  const initial = view.querySelector(".document-pages").getAttribute("style");
+  await seek(turn.metrics.ttftMs / 2);
+  expect(view.querySelector(".document-pages").getAttribute("style")).not.toBe(
+    initial,
+  );
+  expect(view.querySelector(".scan-heading").textContent).toContain(
+    "Thinking off",
+  );
   await seek(0);
-  expect(bar.innerHTML).toBe(starting);
-});
-
-test("the final routing split reaches the end without displaying idle samples as gaps", async () => {
-  const view = await render();
-  await seek(turn.durationMs);
-  expect(view.querySelector(".sample-status")).toBeNull();
-  const hot = [...view.querySelectorAll(".routing-history rect.hot")]
-    .filter((rect) => Number(rect.getAttribute("width")) > 0)
-    .at(-1);
-  expect(
-    Number(hot.getAttribute("x")) + Number(hot.getAttribute("width")),
-  ).toBeCloseTo(700);
-  expect(view.querySelector(".tier.hot strong").textContent).toContain(
-    "of routes",
+  expect(view.querySelector(".document-pages").getAttribute("style")).toBe(
+    initial,
   );
 });
 
-test("prefill and boundary intervals stay out of the decode routing chart", async () => {
+test("model output is open during decode and contains only arrived text", async () => {
   const view = await render();
-  await seek(turn.events[0].at);
-  expect(view.querySelectorAll(".routing-history rect")).toHaveLength(0);
-  expect(view.querySelector(".routing-heading").textContent).toContain(
-    "Initial placement",
+  const at = turn.events.find(
+    (event) => event.at > turn.events[0].at + 1000,
+  ).at;
+  await seek(at);
+  const pane = view.querySelector(".model-output");
+  const toggle = pane.querySelector("button");
+  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  const arrived = turn.events
+    .filter((event) => event.at <= at)
+    .map((event) => event.content)
+    .join("");
+  expect(pane.querySelector("code").textContent).toBe(arrived);
+  expect(arrived.length).toBeLessThan(
+    turn.events.map((event) => event.content).join("").length,
   );
+  expect(pane.querySelector(".stream-cursor")).not.toBeNull();
+  toggle.click();
+  await tick();
+  await seek(at + 500);
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(pane.querySelector(".disclosure-panel").inert).toBe(true);
   await seek(turn.durationMs);
-  expect(view.querySelectorAll(".routing-history rect").length).toBeGreaterThan(
-    0,
+  expect(pane.querySelector(".stream-cursor")).toBeNull();
+});
+
+test("the research answer shows a bar per decode step, mostly kept model drafts", async () => {
+  const view = await render();
+  const steps = decodeSteps(turn.events);
+  await seek(turn.durationMs);
+  expect(view.querySelectorAll(".trace rect")).toHaveLength(steps.length);
+  const drafts = view.querySelectorAll(".trace rect.draft").length;
+  expect(drafts).toBeGreaterThan(
+    view.querySelectorAll(".trace rect.lookup").length,
+  );
+  // The code tint only applies to the coding demo.
+  expect(view.querySelector(".trace figcaption").textContent).not.toContain(
+    "tinted",
   );
 });

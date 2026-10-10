@@ -33,17 +33,19 @@ describe("/public/slop/factory/search-index GET", () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
-      headers: makeHeaders({ etag: '"index"', "last-modified": "today" }),
+      headers: makeHeaders({
+        etag: '"index"',
+        "last-modified": "today",
+        "cache-control": "public, max-age=20, s-maxage=20, must-revalidate",
+      }),
       json: async () => ({ notes: [] }),
     });
 
     await GET({ fetch, setHeaders });
 
     expect(setHeaders).toHaveBeenCalledWith({
-      "cache-control":
-        "public, max-age=300, s-maxage=300, stale-while-revalidate=86400",
-      "cloudflare-cdn-cache-control":
-        "public, max-age=300, stale-while-revalidate=86400",
+      "cache-control": "public, max-age=20, s-maxage=20, must-revalidate",
+      "cloudflare-cdn-cache-control": "public, max-age=20, must-revalidate",
       etag: '"testbuild-index"',
       "last-modified": "today",
     });

@@ -100,6 +100,11 @@ exports_files(
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
+exports_files(
+    ["renovate.json"],
+    visibility = ["//projects/platform/renovate:__pkg__"],
+)
+
 # Produce aspect_rules_py targets rather than rules_python
 # gazelle:map_kind py_binary py_venv_binary @aspect_rules_py//py/private/py_venv:defs.bzl
 # gazelle:map_kind py_library py_library @aspect_rules_py//py:defs.bzl

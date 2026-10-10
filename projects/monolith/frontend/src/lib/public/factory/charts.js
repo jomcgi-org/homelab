@@ -1,8 +1,15 @@
-const SVG_WIDTH = 600;
-const SVG_HEIGHT = 120;
-const LEFT = 48;
-const BOTTOM = 20;
-const TOP = 6;
+// A phone-sized coordinate system keeps labels readable without stretching
+// the SVG or cropping a month's data. The old 600 x 120 viewBox made 13px
+// labels render at about 6px on a phone and flattened the colored bars.
+const SVG_WIDTH = 360;
+const SVG_HEIGHT = 192;
+const BOTTOM = 28;
+const TOP = 26;
+const TICK_SIZE = 15;
+// Reserve space for 200% text, not just the default mono glyph width.
+// Boundary dates matter more than a crowded intermediate weekly label.
+const DATE_LABEL_WIDTH = TICK_SIZE * 6.5;
+const LABEL_GAP = 8;
 
 function finite(value) {
   const number = Number(value);
@@ -77,7 +84,24 @@ function completeDays(rows) {
   return days;
 }
 
-export function barChartSvg(id, rows, series, colors) {
+function escapeText(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (character) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        character
+      ],
+  );
+}
+
+export function barChartSvg(
+  id,
+  rows,
+  series,
+  colors,
+  label = "Daily totals",
+  seriesLabels = series,
+) {
   const sorted = rows
     .map((row) => ({ ...row, d: isoDay(row.d) }))
     .filter((row) => row.d)
@@ -88,19 +112,39 @@ export function barChartSvg(id, rows, series, colors) {
     series.reduce((sum, key) => sum + finite(row?.[key]), 0);
   const maximum = Math.max(0, ...days.map((day) => total(byDay[day])));
   const { step, top } = chartScale(maximum);
+  const middleTick = Math.floor(top / step / 2) * step;
+  const tickFormat = new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
+  const axisDigits = Math.max(
+    ...[0, middleTick, top].map((value) => tickFormat.format(value).length),
+  );
+  // Reserve enlarged-text room only for the number of digits this scale
+  // actually needs. A small-count chart should not sacrifice its bar area.
+  const left = 44 + Math.max(0, axisDigits - 2) * 20;
   const y = (value) =>
     TOP + (SVG_HEIGHT - TOP - BOTTOM) * (1 - finite(value) / top);
-  const barWidth = days.length ? (SVG_WIDTH - LEFT - 4) / days.length : 0;
+  const barWidth = days.length ? (SVG_WIDTH - left - 4) / days.length : 0;
   const patternId = `hatch-${safeId(id)}`;
-  let svg = `<svg viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" role="img" aria-label="Bar chart">`;
+  const range = days.length
+    ? `${days[0]} to ${days.at(-1)}. ${series.map((key, index) => `${seriesLabels[index] ?? key}: ${days.reduce((sum, day) => sum + finite(byDay[day]?.[key]), 0)}`).join("; ")}.`
+    : "No recorded days.";
+  let svg = `<svg viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" role="img" data-axis-digits="${axisDigits}" aria-label="${escapeText(label)}"><title>${escapeText(label)}</title><desc>${escapeText(range)}</desc>`;
   svg += `<defs><pattern id="${patternId}" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="currentColor" stroke-width="1" opacity="0.55"/></pattern></defs>`;
   for (let value = 0; value <= top; value += step) {
-    svg += `<line x1="${LEFT}" y1="${y(value)}" x2="${SVG_WIDTH}" y2="${y(value)}" stroke="currentColor" stroke-width="0.5" opacity="${value === 0 ? 0.8 : 0.18}"/><text x="${LEFT - 6}" y="${y(value) + 3.5}" font-size="13" text-anchor="end" fill="currentColor" opacity="0.7">${value}</text>`;
+    svg += `<line x1="${left}" y1="${y(value)}" x2="${SVG_WIDTH}" y2="${y(value)}" stroke="currentColor" stroke-width="0.5" opacity="${value === 0 ? 0.8 : 0.18}"/>`;
+    // Keep the scale, but label only its bounds and midpoint so enlarged
+    // text cannot collide with the next gridline's number.
+    if (value === 0 || value === top || value === middleTick) {
+      svg += `<text x="${left - 6}" y="${y(value) + 3.5}" font-size="${TICK_SIZE}" text-anchor="end" fill="currentColor">${tickFormat.format(value)}</text>`;
+    }
   }
+  let previousLabelEnd = left + DATE_LABEL_WIDTH;
   days.forEach((day, dayIndex) => {
     const row = byDay[day];
     let accumulated = 0;
-    const x = LEFT + dayIndex * barWidth + 1;
+    const x = left + dayIndex * barWidth + 1;
     series.forEach((key, seriesIndex) => {
       const value = finite(row?.[key]);
       if (!value) return;
@@ -109,15 +153,26 @@ export function barChartSvg(id, rows, series, colors) {
       svg += `<rect x="${x}" y="${y(accumulated + value)}" width="${Math.max(0, barWidth - 2)}" height="${y(accumulated) - y(accumulated + value)}" fill="${fill}" stroke="${color === "hatch" ? "currentColor" : "none"}" stroke-width="0.5"/>`;
       accumulated += value;
     });
-    // Both ends of the range are always labelled. Between them a weekly tick
-    // is dropped when it would land within three bars of the last one, which
-    // is what printed "09·08 09·08" twice on every 30 day chart.
+    // Always retain the range boundaries. Intermediate weekly labels need
+    // room for their actual text, not a fixed number of bars: three bars can
+    // mean very different widths in a partial month or a long range.
     const isLast = dayIndex === days.length - 1;
     const isFirst = dayIndex === 0;
-    const crowdsLast = days.length - 1 - dayIndex < 3;
-    if (isLast || isFirst || (dayIndex % 7 === 0 && !crowdsLast)) {
+    const center = x + (barWidth - 2) / 2;
+    const labelStart = center - DATE_LABEL_WIDTH / 2;
+    const labelEnd = center + DATE_LABEL_WIDTH / 2;
+    const lastLabelStart = SVG_WIDTH - 4 - DATE_LABEL_WIDTH;
+    const fitsBetween =
+      labelStart >= previousLabelEnd + LABEL_GAP &&
+      labelEnd <= lastLabelStart - LABEL_GAP;
+    if (isLast || isFirst || (dayIndex % 7 === 0 && fitsBetween)) {
       const label = day.slice(5).replace("-", "·");
-      svg += `<text x="${x + (barWidth - 2) / 2}" y="${SVG_HEIGHT - 6}" font-size="13" text-anchor="middle" fill="currentColor" opacity="0.7">${label}</text>`;
+      // Anchor the boundary labels inside the plot. Centering the last date
+      // put half its text outside the SVG and widened a narrow phone page.
+      const labelX = isFirst ? left : isLast ? SVG_WIDTH - 4 : center;
+      if (!isFirst && !isLast) previousLabelEnd = labelEnd;
+      const anchor = isFirst ? "start" : isLast ? "end" : "middle";
+      svg += `<text x="${labelX}" y="${SVG_HEIGHT - 7}" font-size="${TICK_SIZE}" text-anchor="${anchor}" fill="currentColor">${label}</text>`;
     }
   });
   return `${svg}</svg>`;

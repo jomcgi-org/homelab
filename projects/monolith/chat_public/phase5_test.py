@@ -25,15 +25,18 @@ wiring against pg_try_advisory_lock).
 
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from core.db import get_session
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from knowledge.public_models import PublicNote
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from core.db import get_session
 from chat_public import cache, inference, limits, retrieval, sessions
 from chat_public.db import get_chat_session
 from chat_public.models import ChatMessage
@@ -41,6 +44,7 @@ from chat_public.retrieval import RetrievedNote
 from chat_public.router import router
 
 _FAKE_REPLY = "The TSA method is Thread State Analysis."
+_NOW = datetime(2024, 6, 1, 12, tzinfo=timezone.utc)
 
 
 def _counting_stream(counter: dict, reply: str = _FAKE_REPLY):
@@ -73,10 +77,13 @@ def _fake_retrieve(notes: list[RetrievedNote]):
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache_state():
+def _clear_cache_state(monkeypatch):
     """Each test starts with a fresh watermark memo (the cache table itself is
     fresh per test via a new SQLite engine)."""
     cache.reset_watermark_memo()
+    monkeypatch.setattr(cache, "_utcnow", lambda: _NOW)
+    monkeypatch.setattr(cache, "_monotonic", lambda: 100.0)
+    monkeypatch.setattr(cache._public_notes, "schema", None)
     yield
     cache.reset_watermark_memo()
 
@@ -95,7 +102,31 @@ def session_fixture():
             table.schema = None
     try:
         SQLModel.metadata.create_all(engine)
+        with engine.connect() as connection:
+            connection.connection.driver_connection.create_function(
+                "md5",
+                1,
+                lambda value: (
+                    hashlib.md5(value.encode()).hexdigest()
+                    if value is not None
+                    else None
+                ),
+            )
         with Session(engine) as session:
+            session.add_all(
+                [
+                    PublicNote(
+                        note_id=note_id,
+                        title=note_id,
+                        path=f"{note_id}.md",
+                        indexed_at=_NOW,
+                        observed_at=_NOW,
+                        review_after=_NOW + timedelta(days=1),
+                    )
+                    for note_id in ("n1", "n2")
+                ]
+            )
+            session.commit()
             yield session
     finally:
         for table in SQLModel.metadata.tables.values():
@@ -430,8 +461,8 @@ class _StubScalarResult:
     def __init__(self, value):
         self._value = value
 
-    def scalar(self):
-        return self._value
+    def one(self):
+        return self._value, None
 
 
 class _StubReadDb:
@@ -450,26 +481,36 @@ class _StubReadDb:
             raise self.error
         return _StubScalarResult(self.scalar_value)
 
+    def rollback(self):
+        pass
+
 
 def test_watermark_query_covers_membership_and_review_state():
     read_db = _StubReadDb(scalar="abc123")
-    assert cache._query_watermark(read_db) == "abc123"
+    assert cache._query_watermark(read_db, now=_NOW) == ("abc123", None)
     assert len(read_db.statements) == 1
     sql = read_db.statements[0]
     # Membership (note_id), review state (verification_state, disputed) and the
     # freshness column (indexed_at) all feed the hash, over the public view.
-    assert "public_api.knowledge_notes" in sql
+    assert "knowledge_notes" in sql
     assert "note_id" in sql
     assert "verification_state" in sql
     assert "disputed" in sql
     assert "indexed_at" in sql
+    assert "review_after" in sql
+    assert "last_reviewed_at" in sql
+    assert ":now" in sql
+    assert "now()" not in sql
 
 
 def test_watermark_empty_view_yields_stable_empty():
     # No rows (or a NULL aggregate): the watermark is the stable 'empty' value,
     # so an empty public view still has a usable cache key.
-    assert cache._query_watermark(_StubReadDb(scalar=None)) == "empty"
-    assert cache._query_watermark(_StubReadDb(scalar="empty")) == "empty"
+    assert cache._query_watermark(_StubReadDb(scalar=None), now=_NOW) == ("empty", None)
+    assert cache._query_watermark(_StubReadDb(scalar="empty"), now=_NOW) == (
+        "empty",
+        None,
+    )
 
 
 def test_watermark_change_propagates_through_memo():
@@ -489,3 +530,109 @@ def test_watermark_failure_disables_caching():
     assert (
         cache.current_watermark(_StubReadDb(error=RuntimeError("no such view"))) is None
     )
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_cached_grounding_expires_without_row_update(session, monkeypatch, offset):
+    note = session.get(PublicNote, "n1")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.commit()
+    key, hit = cache.lookup(session, session, "question", "prompt", "model")
+    assert key is not None and hit is None
+    cache.store(session, key, "grounded answer", [{"id": "n1", "title": "Fact"}])
+    _, hit = cache.lookup(session, session, "question", "prompt", "model")
+    assert hit is not None and hit.text == "grounded answer"
+    assert cache._watermark_deadline == 113.0
+    assert cache._watermark_review_after == _NOW + timedelta(seconds=13)
+
+    # Advance only the module-local wall clock. No row or shared clock changes.
+    monkeypatch.setattr(cache, "_utcnow", lambda: _NOW + timedelta(seconds=13 + offset))
+    after_key, hit = cache.lookup(session, session, "question", "prompt", "model")
+    assert hit is None
+    assert after_key.notes_watermark != key.notes_watermark
+    session.refresh(note)
+    assert note.review_after.replace(tzinfo=timezone.utc) == _NOW + timedelta(
+        seconds=13
+    )
+    assert note.last_reviewed_at is None
+
+
+def test_touched_note_rechecked_even_with_memoized_watermark(session, monkeypatch):
+    note = session.get(PublicNote, "n1")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.commit()
+    _fix_watermark(monkeypatch)
+    key, _ = cache.lookup(session, session, "question", "prompt", "model")
+    cache.store(session, key, "grounded answer", [{"id": "n1"}])
+    assert cache.lookup(session, session, "question", "prompt", "model")[1] is not None
+    monkeypatch.setattr(cache, "_utcnow", lambda: _NOW + timedelta(seconds=13))
+    assert cache.lookup(session, session, "question", "prompt", "model")[1] is None
+
+
+def test_watermark_memo_stops_at_ttl_for_long_lease(session, monkeypatch):
+    cache.current_watermark(session)
+    assert cache._watermark_deadline == 100.0 + cache.WATERMARK_TTL_SECONDS
+    monkeypatch.setattr(cache, "_monotonic", lambda: cache._watermark_deadline)
+    note = session.get(PublicNote, "n1")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.commit()
+    cache.current_watermark(session)
+    assert cache._watermark_review_after == _NOW + timedelta(seconds=13)
+
+
+@pytest.mark.parametrize("basis", ["missing", "future", "due"])
+def test_watermark_and_citations_fail_closed(session, basis):
+    note = session.get(PublicNote, "n1")
+    if basis == "missing":
+        note.observed_at = None
+    elif basis == "future":
+        note.observed_at = _NOW + timedelta(seconds=1)
+    else:
+        note.review_after = _NOW
+    session.commit()
+    assert not cache._touched_current(session, [{"id": "n1"}])
+    without, _ = cache._query_watermark(session, now=_NOW)
+    note.observed_at = _NOW
+    note.review_after = _NOW + timedelta(days=1)
+    session.commit()
+    with_current, _ = cache._query_watermark(session, now=_NOW)
+    assert without != with_current
+
+
+def test_chat_route_does_not_replay_due_grounding(client, session, monkeypatch):
+    note = session.get(PublicNote, "n1")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.commit()
+    counter = {"calls": 0}
+    monkeypatch.setattr(inference, "stream_chat", _counting_stream(counter))
+
+    async def retrieve_current(read_db, query, **kwargs):
+        return (
+            [RetrievedNote("n1", "Fact", "Grounding", 0.9)]
+            if cache._touched_current(read_db, [{"id": "n1"}])
+            else []
+        )
+
+    monkeypatch.setattr(retrieval, "retrieve", retrieve_current)
+    row = sessions.create_session(session)
+    assert _post(client, row.id, "question").status_code == 200
+    assert _post(client, row.id, "question").status_code == 200
+    assert counter["calls"] == 1
+    monkeypatch.setattr(cache, "_utcnow", lambda: _NOW + timedelta(seconds=13))
+    after = _post(client, row.id, "question")
+    assert after.status_code == 200
+    assert counter["calls"] == 2
+    assert not any(frame["type"] == "node_touched" for frame in _parse_sse(after.text))
+
+
+def test_unreachable_citations_disable_even_an_ungrounded_cache_hit(session):
+    key, _ = cache.lookup(session, session, "question", "prompt", "model")
+    cache.store(session, key, "ungrounded answer", [])
+    # The watermark is still memoized, but every hit checks view reachability.
+    assert cache.lookup(
+        session,
+        _StubReadDb(error=RuntimeError("view unavailable")),
+        "question",
+        "prompt",
+        "model",
+    ) == (None, None)

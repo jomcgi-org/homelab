@@ -269,13 +269,15 @@ def test_flag_off_preserves_grants_and_unfiltered_reads(harness, monkeypatch):
         ("name_only", "partial", 1),
         ("partial", "full", 1),
         ("name_only", "full", 1),
-        ("full", "partial", 0),
-        ("partial", "name_only", 0),
-        ("partial", "partial", 0),
-        ("partial", None, 0),
+        ("full", "partial", 1),
+        ("partial", "name_only", 1),
+        ("partial", "partial", 1),
+        ("partial", None, 1),
     ],
 )
-def test_strict_upgrades_only_after_details(harness, old, new, count):
+def test_scope_and_partial_detail_changes_emit_current_projection(
+    harness, old, new, count
+):
     h = harness
     h.prepare("play")
     grant = h.rows["grant_a_only"]
@@ -291,8 +293,8 @@ def test_strict_upgrades_only_after_details(harness, old, new, count):
         )
         assert len(events(h)) == count
         if count:
-            assert events(h)[0].body["grant_scope"] == new
-            if new == "partial":
+            assert events(h)[0].body["grant_scope"] == (new or old)
+            if (new or old) == "partial":
                 assert (
                     events(h)[0].body["entity"]["revealed_details"]
                     == body["revealed_details"]
@@ -325,7 +327,7 @@ def test_retract_identity_and_original_unchanged(harness, silent):
         assert response.status_code == 204
         first, second = events(h)
         assert first.body == original
-        assert first.retracted_at is None
+        assert first.retracted_at is not None
         expected = {"retracted": True, "silent": silent}
         if not silent:
             expected.update(
@@ -341,7 +343,7 @@ def test_retract_identity_and_original_unchanged(harness, silent):
         reveals = [
             event for event in responses["player_a"].json() if event["kind"] == "reveal"
         ]
-        assert [event["body"] for event in reveals] == [original, expected]
+        assert [event["body"] for event in reveals] == [None, expected]
         for value in (h.rows["partial"].id, h.rows["partial"].name):
             assert value.casefold() not in responses["player_b"].text.casefold()
 
@@ -800,4 +802,27 @@ def test_create_reveal_uses_resolved_character_id(harness, monkeypatch, enabled)
         if enabled:
             assert events(h)[0].audience_pc_ids == [h.rows["character_a"].id]
         monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+        poll_all(client, h)
+
+
+def test_unchanged_partial_details_do_not_emit_reveal(harness):
+    h = harness
+    h.prepare("play")
+    grant = h.rows["grant_a_only"]
+    grant.grant_scope = "partial"
+    grant.revealed_details = {"public": "already known"}
+    h.session.commit()
+    with TestClient(h.app()) as client:
+        response = call(
+            client,
+            h,
+            "PATCH",
+            f"/grants/{grant.id}",
+            json={
+                "grant_scope": "partial",
+                "revealed_details": {"public": "already known"},
+            },
+        )
+        assert response.status_code == 200
+        assert events(h) == []
         poll_all(client, h)

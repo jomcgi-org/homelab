@@ -11,6 +11,7 @@ mode: agentic
 # how wide each label renders. The snapshot pins the fix's PARENT and keeps only
 # moving.js, which is dependency-free ESM.
 source_commit: 069d25d1a96b5fea85928a570f9ae102b0ede874
+gold_diff_lines: 40
 snapshot:
   commit: c4e0a1395ea728ac50283fe3df14588e8814e9c7
   paths:

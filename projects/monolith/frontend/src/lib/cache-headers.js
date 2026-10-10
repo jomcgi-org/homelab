@@ -29,6 +29,12 @@ export function versionedEtag(dataEtag) {
 // max-age instead. The hostname Cache Rule still decides which responses are
 // eligible for storage.
 export function cloudflareCacheHeaders(cacheControl) {
+  if (cacheControl === "no-store") {
+    return {
+      "cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+    };
+  }
   const directives = cacheControl.split(",").map((part) => part.trim());
   const sharedTtl = directives.find((part) => part.startsWith("s-maxage="));
   if (!sharedTtl) {
@@ -47,6 +53,74 @@ export function cloudflareCacheHeaders(cacheControl) {
     "cache-control": cacheControl,
     "cloudflare-cdn-cache-control": cloudflareDirectives.join(", "),
   };
+}
+
+// Public facts carry a review deadline. Apply both policies and consume any
+// upstream response age before giving this proxy response its own Date.
+// Missing/malformed origin policies fail closed, including older backends.
+export function boundedCacheHeaders(defaultPolicy, upstream, now = Date.now()) {
+  const parse = (policy) => {
+    const directives = new Map();
+    for (const part of (policy || "").toLowerCase().split(",")) {
+      const [name, raw] = part.trim().split("=");
+      if (!name) continue;
+      const value = raw === undefined ? true : Number(raw.replaceAll('"', ""));
+      if (typeof value === "number" && (!Number.isFinite(value) || value < 0)) {
+        return null;
+      }
+      directives.set(
+        name,
+        directives.has(name) ? Math.min(directives.get(name), value) : value,
+      );
+    }
+    return directives;
+  };
+  const origin = parse(upstream?.get?.("cache-control"));
+  const defaults = parse(defaultPolicy);
+  const noStore = () => cloudflareCacheHeaders("no-store");
+  if (!origin || !defaults || !origin.size) return noStore();
+  for (const restriction of ["no-store", "no-cache", "private"]) {
+    if (origin.has(restriction) || defaults.has(restriction)) return noStore();
+  }
+  const ageHeader = Number(upstream?.get?.("age") || 0);
+  const date = Date.parse(upstream?.get?.("date"));
+  const age = Math.max(
+    0,
+    Number.isFinite(ageHeader) ? ageHeader : Infinity,
+    Number.isFinite(date) ? Math.ceil((now - date) / 1000) : 0,
+  );
+  const bound = (name, fallback = 0) =>
+    Math.floor(
+      Math.max(
+        0,
+        Math.min(
+          defaults.get(name) ?? Infinity,
+          (origin.get(name) ?? fallback) - age,
+        ),
+      ),
+    );
+  const shared = bound("s-maxage", origin.get("max-age") ?? 0);
+  if (!shared) return noStore();
+  const directives = [
+    "public",
+    `max-age=${bound("max-age")}`,
+    `s-maxage=${shared}`,
+  ];
+  for (const name of ["stale-while-revalidate", "stale-if-error"]) {
+    if (origin.has(name) && defaults.has(name)) {
+      directives.push(`${name}=${bound(name)}`);
+    }
+  }
+  if (origin.has("must-revalidate") || defaults.has("must-revalidate")) {
+    directives.push("must-revalidate");
+  }
+  const headers = cloudflareCacheHeaders(directives.join(", "));
+  // Keep the original age basis as well as consuming its elapsed lifetime.
+  // This also covers body parsing/rendering time after this helper runs.
+  if (Number.isFinite(date)) headers.date = new Date(date).toUTCString();
+  if (ageHeader > 0 && Number.isFinite(ageHeader))
+    headers.age = String(ageHeader);
+  return headers;
 }
 
 // 60s fresh · 24h SWR (background refresh) · 1y SIE (cluster-down resilience)

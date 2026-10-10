@@ -14,6 +14,9 @@ already used elsewhere (e.g. knowledge/router.py's `-> dict` handlers).
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -35,15 +38,22 @@ from grimoire import aliases, library
 from grimoire.access import (
     get_authenticated_email,
     get_authenticated_identity,
+    get_game_creator_email,
     get_grimoire_operator_email,
 )
+from grimoire.accounts import find_registered_user
 from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
+from grimoire.invitation_provider import enrollment_enabled
+from grimoire.join_links import links_enabled
+from grimoire.join_links import router as join_links_router
+from grimoire.journal import Journal, journal, narration_entity_ids, visible_rows
 from grimoire.models import (
     ENTITY_DETAIL_MODELS,
     AppUser,
     Campaign,
     CampaignInvitation,
+    CampaignJoinLink,
     CampaignMember,
     CharacterSheetStatus,
     CharacterSheetVersion,
@@ -61,8 +71,10 @@ from grimoire.models import (
     SessionEvent,
     SessionStatus,
 )
+from grimoire.reveals import reveal_items
 from grimoire.search import search_campaign
 from grimoire.session_events import (
+    EventRequestConflictError,
     InvalidEventAudienceError,
     SessionEndedError,
     append_event,
@@ -297,7 +309,7 @@ def _get_or_create_user(session: Session, email: str) -> AppUser:
 @router.post("/campaigns", response_model=CampaignView)
 def create_campaign(
     body: CampaignCreateRequest,
-    email: str = Depends(get_authenticated_email),
+    email: str = Depends(get_game_creator_email),
     session: Session = Depends(get_session),
 ) -> Campaign:
     user = _request_user(session, email) or _get_or_create_user(session, email)
@@ -344,6 +356,44 @@ def get_campaign(
     return _get_campaign_or_404(session, campaign_id)
 
 
+def _event_note_markdown(body: dict) -> str:
+    """Human-readable snapshot of an already audience-filtered event body."""
+    if "reveals" in body:
+        return "\n\n".join(_event_note_markdown(item) for item in reveal_items(body))
+    if body.get("text"):
+        return body["text"]
+    title = body.get("name") or body.get("label") or "Session update"
+    projection = body.get("projection") or body.get("entity") or body
+    details = projection.get("revealed_details") or projection
+    hidden = {
+        "id",
+        "entity_id",
+        "name",
+        "entity_type",
+        "grant_scope",
+        "source_type",
+        "source_book",
+        "site",
+        "created_in_session",
+        "created_at",
+        "is_global",
+        "recognition_only",
+    }
+    lines = [f"## {title}"]
+    if body.get("grant_scope") == "name_only":
+        lines.append("You recognize this name.")
+    for key, value in details.items():
+        if key in hidden or value is None:
+            continue
+        text = (
+            json.dumps(value, ensure_ascii=False)
+            if isinstance(value, (dict, list))
+            else str(value)
+        )
+        lines.append(f"**{key.replace('_', ' ').capitalize()}:** {text}")
+    return "\n\n".join(lines)
+
+
 # --- Player and party notes --------------------------------------------
 
 
@@ -375,12 +425,19 @@ class NoteLinks(BaseModel):
 class NoteCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["character", "party"]
-    title: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="", max_length=200)
     markdown: str = Field(default="", max_length=20000)
     dm_readable: bool | None = None
     links: NoteLinks = Field(default_factory=NoteLinks)
     pinned: bool = False
     created_in_session: str | None = None
+    from_event_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def title_or_event(self):
+        if not self.title and self.from_event_id is None:
+            raise ValueError("Choose a note title")
+        return self
 
     @field_validator("created_in_session")
     @classmethod
@@ -567,6 +624,33 @@ def create_note(
     if viewer is None or (viewer == "dm" and body.kind != "party"):
         raise HTTPException(403, detail="note creation not permitted")
     campaign = _get_campaign_or_404(session, campaign_id)
+    if body.from_event_id is not None:
+        event = session.exec(
+            select(SessionEvent).where(
+                SessionEvent.id == str(body.from_event_id),
+                SessionEvent.campaign_id == campaign_id,
+                audience_predicate(SessionEvent, viewer, member),
+            )
+        ).first()
+        if event is None or event.retracted_at is not None:
+            raise HTTPException(404, detail="event not found")
+        projection = _event_view(event, member).body
+        if not projection or projection.get("retracted"):
+            raise HTTPException(404, detail="event not found")
+        body.markdown = _event_note_markdown(projection)
+        items = reveal_items(projection)
+        body.title = (
+            projection.get("name")
+            or ", ".join(item["name"] for item in items)
+            or body.title
+            or "Session note"
+        )
+        body.links = NoteLinks(
+            entity_ids=[item["entity_id"] for item in reveal_items(projection)],
+            event_ids=[event.id],
+        )
+        body.created_in_session = event.session_id
+        body.pinned = True
     if body.created_in_session is not None:
         if (
             session.exec(
@@ -1349,6 +1433,11 @@ def revoke_player(
     session: Session = Depends(get_session),
 ) -> None:
     _require_owner(session, campaign_id, email)
+    session.exec(
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update(key_share=True)
+    ).one()
     member = session.get(CampaignMember, member_id)
     if member is None or member.campaign_id != campaign_id or member.role != "player":
         raise HTTPException(status_code=404, detail="player membership not found")
@@ -1363,6 +1452,17 @@ def revoke_player(
     if invitation is not None:
         invitation.status = "revoked"
         session.add(invitation)
+    links = session.exec(
+        select(CampaignJoinLink)
+        .where(
+            CampaignJoinLink.campaign_id == campaign_id,
+            CampaignJoinLink.recipient_id == member.app_user_id,
+            CampaignJoinLink.status.in_(["pending", "accepted"]),
+        )
+        .with_for_update()
+    ).all()
+    for link in links:
+        link.status = "revoked"
     session.delete(member)
     session.commit()
 
@@ -1432,6 +1532,44 @@ def _validate_reveal_id(value: str, detail: str) -> None:
             raise ValueError("identifier must use dashed UUID spelling")
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=detail) from exc
+
+
+@router.post("/campaigns/{campaign_id}/grants/preview")
+def preview_grants(
+    campaign_id: str,
+    body: BulkGrantRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    _require_dm(session, campaign_id, email)
+    previews = []
+    for item in body.grants:
+        _get_character_in_campaign_or_404(
+            session, campaign_id, item.player_character_id
+        )
+        entity = session.get(Entity, item.entity_id)
+        if entity is None or not entity_belongs_to_campaign(
+            session, campaign_id, entity
+        ):
+            raise HTTPException(status_code=404, detail="entity not found")
+        detail_model = ENTITY_DETAIL_MODELS.get(entity.entity_type)
+        detail = session.get(detail_model, entity.id) if detail_model else None
+        grant = KnowledgeGrant(campaign_id=campaign_id, **item.model_dump())
+        previews.append(
+            {
+                "player_character_id": item.player_character_id,
+                "projection": jsonable_encoder(
+                    project_entity(
+                        entity,
+                        detail,
+                        grant,
+                        item.player_character_id,
+                        context="relationship",
+                    )
+                ),
+            }
+        )
+    return previews
 
 
 def _get_character_in_campaign_or_404(
@@ -1661,6 +1799,44 @@ def list_grants(
     ).all()
 
 
+def _retract_grant_history(session: Session, grant: KnowledgeGrant) -> None:
+    previous = session.exec(
+        select(SessionEvent).where(
+            SessionEvent.campaign_id == grant.campaign_id,
+            SessionEvent.kind == "reveal",
+            SessionEvent.retracted_at.is_(None),
+        )
+    ).all()
+    changed = []
+    for event in previous:
+        if (
+            "reveals" in event.body
+            and grant.player_character_id in event.audience_pc_ids
+        ):
+            if any(
+                item["entity_id"] == grant.entity_id
+                for item in reveal_items(event.body)
+            ):
+                event.body = {
+                    **event.body,
+                    "retracted_entity_ids": [
+                        *event.body.get("retracted_entity_ids", []),
+                        grant.entity_id,
+                    ],
+                }
+                if not reveal_items(event.body):
+                    event.retracted_at = datetime.now(timezone.utc)
+                changed.append(event)
+            continue
+        if (
+            event.body.get("entity_id") == grant.entity_id
+            and grant.player_character_id in event.audience_pc_ids
+        ):
+            event.retracted_at = datetime.now(timezone.utc)
+            changed.append(event)
+    session.add_all(changed)
+
+
 @router.patch(
     "/campaigns/{campaign_id}/grants/{grant_id}",
     response_model=GrantView,
@@ -1678,14 +1854,18 @@ def update_grant(
         raise HTTPException(status_code=404, detail="grant not found")
 
     previous_scope = grant.grant_scope
+    previous_details = grant.revealed_details
     if body.grant_scope is not None:
         grant.grant_scope = body.grant_scope
     if body.revealed_details is not None:
         grant.revealed_details = body.revealed_details
 
     session.add(grant)
-    ranks = {"name_only": 0, "partial": 1, "full": 2}
-    if ranks[grant.grant_scope] > ranks[previous_scope]:
+    if grant.grant_scope != previous_scope or (
+        grant.grant_scope == "partial" and grant.revealed_details != previous_details
+    ):
+        if play_enabled():
+            _retract_grant_history(session, grant)
         current = _current_reveal_session(session, campaign_id)
         if current is not None:
             session.flush()
@@ -1717,6 +1897,8 @@ def delete_grant(
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
+    if play_enabled():
+        _retract_grant_history(session, grant)
     current = _current_reveal_session(session, campaign_id)
     if current is not None:
         body = {"retracted": True, "silent": silent}
@@ -1752,6 +1934,8 @@ def _aggregate_dm_rows(
     for entity, grant in rows:
         projected = project_entity(entity, detail, grant, "dm", context=context)
         grant_dict = projected.pop("grant")
+        if grant_dict is not None:
+            grant_dict = {"id": grant.id, **grant_dict}
         existing = aggregated.get(entity.id)
         if existing is None:
             projected["grants"] = [grant_dict] if grant_dict else []
@@ -2326,6 +2510,7 @@ class SessionEventRequest(BaseModel):
     audience: AudienceKind
     audience_pc_ids: list[str] = Field(default_factory=list)
     body: dict[str, Any]
+    request_id: UUID | None = None
 
     @field_validator("audience_pc_ids")
     @classmethod
@@ -2368,6 +2553,9 @@ def _session_in_campaign(
 def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
     """Project retractions and avoid exposing other members' administrative ids."""
     dm = member.role == "dm"
+    body = row.body if dm or row.retracted_at is None else None
+    if not dm and body and "reveals" in body:
+        body = {"reveals": reveal_items(body)}
     return SessionEventView(
         id=row.id,
         campaign_id=row.campaign_id,
@@ -2383,7 +2571,7 @@ def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
         author_member_id=(
             row.author_member_id if dm or row.author_member_id == member.id else None
         ),
-        body=row.body if dm or row.retracted_at is None else None,
+        body=body,
         created_at=row.created_at,
         retracted_at=row.retracted_at,
     )
@@ -2420,6 +2608,283 @@ def _require_roll_scope(
     """
     _get_member_or_404(session, campaign_id, email)
     _session_in_campaign(session, campaign_id, session_id)
+
+
+def _require_journal_campaign_scope(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _validate_reveal_id(campaign_id, "campaign not found")
+    _get_member_or_404(session, campaign_id, email)
+
+
+def _require_journal_session_scope(
+    campaign_id: str,
+    session_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _require_journal_campaign_scope(campaign_id, email, session)
+    _validate_reveal_id(session_id, "game session not found")
+    _session_in_campaign(session, campaign_id, session_id)
+
+
+def _journal_context(session, campaign_id, viewer, member, events, view):
+    rows = visible_rows(viewer, member, events, view)
+    candidates = narration_entity_ids(rows)
+    entities = {}
+    if candidates:
+        for entity, grant in session.exec(
+            visible_entities_query(campaign_id, viewer).where(
+                Entity.id.in_(candidates | {value.upper() for value in candidates})
+            )
+        ).all():
+            projection = project_entity(
+                entity, None, grant, viewer, context="relationship"
+            )
+            if projection is not None:
+                entities[str(UUID(entity.id))] = {
+                    key: projection[key] for key in ("id", "name", "entity_type")
+                }
+    # Only pairs referenced by reveal rows are needed for silent revocation.
+    reveal_ids = set()
+    for row in rows:
+        if row.kind != "reveal":
+            continue
+        bodies = row.body.get("reveals", [row.body])
+        if isinstance(bodies, list):
+            for body in bodies:
+                if isinstance(body, dict) and isinstance(body.get("entity_id"), str):
+                    try:
+                        reveal_ids.add(str(UUID(body["entity_id"])))
+                    except ValueError:
+                        continue
+    grants = set()
+    if reveal_ids:
+        query = select(
+            KnowledgeGrant.player_character_id, KnowledgeGrant.entity_id
+        ).where(
+            KnowledgeGrant.campaign_id == campaign_id,
+            KnowledgeGrant.entity_id.in_(
+                reveal_ids | {value.upper() for value in reveal_ids}
+            ),
+        )
+        if viewer != "dm":
+            query = query.where(KnowledgeGrant.player_character_id == viewer)
+        grants = set(session.exec(query).all())
+    return grants, entities
+
+
+# Bound on audience-visible events folded into one session journal. A single
+# long-running session must not make a journal read materialize unbounded
+# rows, so reads stop at the earliest budgeted events per session and say so
+# via Journal.truncated instead of silently folding a truncated stream.
+JOURNAL_EVENTS_PER_SESSION = 500
+
+
+def _journal_events(session, campaign_id, session_ids, viewer, member, view):
+    """Load at most JOURNAL_EVENTS_PER_SESSION projected events per session.
+
+    The budget counts only rows the journal can project: retracted rows and,
+    for the party view, non-table rows are excluded before ranking so they
+    never consume it.
+
+    Returns (events, truncated_by_session): events holds the earliest
+    budgeted rows per session in (session_id, seq, id) order, and the map
+    flags the sessions whose visible stream exceeded the budget. The probe
+    row per session is read but never folded, so overflow is explicit.
+    """
+    if not session_ids:
+        return [], {}
+    projected = [
+        SessionEvent.campaign_id == campaign_id,
+        SessionEvent.session_id.in_(session_ids),
+        SessionEvent.retracted_at.is_(None),
+        audience_predicate(SessionEvent, viewer, member),
+    ]
+    if view == "party":
+        projected.append(SessionEvent.audience == "table")
+    ranked = (
+        select(
+            SessionEvent.id,
+            func.row_number()
+            .over(
+                partition_by=SessionEvent.session_id,
+                order_by=[SessionEvent.seq, SessionEvent.id],
+            )
+            .label("rn"),
+        )
+        .where(*projected)
+        .subquery("journal_ranked")
+    )
+    # Belt and braces: the per-session rn filter already caps rows at
+    # len(session_ids) * (budget + 1), so this outer LIMIT never engages.
+    # It keeps an explicit LIMIT in the journal event SQL even if the
+    # window predicate is ever altered.
+    outer_limit = len(session_ids) * (JOURNAL_EVENTS_PER_SESSION + 1) + 1
+    rows = session.exec(
+        select(SessionEvent)
+        .where(
+            SessionEvent.id.in_(
+                select(ranked.c.id).where(ranked.c.rn <= JOURNAL_EVENTS_PER_SESSION + 1)
+            )
+        )
+        .order_by(SessionEvent.session_id, SessionEvent.seq, SessionEvent.id)
+        .limit(outer_limit)
+    ).all()
+    events: list[SessionEvent] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row.session_id] = counts.get(row.session_id, 0) + 1
+        if counts[row.session_id] <= JOURNAL_EVENTS_PER_SESSION:
+            events.append(row)
+    truncated = {
+        session_id: counts.get(session_id, 0) > JOURNAL_EVENTS_PER_SESSION
+        for session_id in session_ids
+    }
+    return events, truncated
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/{session_id}/journal",
+    response_model=Journal,
+    dependencies=[
+        Depends(require_play_enabled),
+        Depends(_require_journal_session_scope),
+    ],
+)
+def get_session_journal(
+    campaign_id: str,
+    session_id: str,
+    view: Literal["mine", "party"] = "mine",
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> Journal:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    events, truncated = _journal_events(
+        session, campaign_id, [session_id], viewer, member, view
+    )
+    grants, entities = _journal_context(
+        session, campaign_id, viewer, member, events, view
+    )
+    result = journal(
+        viewer,
+        member,
+        events,
+        current_grants=grants,
+        visible_entities=entities,
+        view=view,
+    )
+    result.truncated = truncated.get(session_id, False)
+    return result
+
+
+class SessionJournalView(BaseModel):
+    session_id: str
+    started_at: datetime
+    journal: Journal
+
+
+class CampaignJournalView(BaseModel):
+    sessions: list[SessionJournalView]
+    next_cursor: str | None
+
+
+def _journal_cursor(row: GameSession) -> str:
+    timestamp = row.started_at
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    value = json.dumps([timestamp.isoformat(), row.id]).encode()
+    return base64.urlsafe_b64encode(value).decode()
+
+
+def _read_journal_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        timestamp, session_id = json.loads(
+            base64.b64decode(cursor, altchars=b"-_", validate=True)
+        )
+        if not isinstance(timestamp, str) or not isinstance(session_id, str):
+            raise TypeError("invalid journal cursor")
+        timestamp = datetime.fromisoformat(timestamp)
+        if timestamp.tzinfo is None or session_id.casefold() != str(UUID(session_id)):
+            raise ValueError("invalid journal cursor")
+        return timestamp, session_id
+    except (ValueError, TypeError, binascii.Error, UnicodeError) as exc:
+        raise HTTPException(422, detail="invalid journal cursor") from exc
+
+
+@router.get(
+    "/campaigns/{campaign_id}/journal",
+    response_model=CampaignJournalView,
+    dependencies=[
+        Depends(require_play_enabled),
+        Depends(_require_journal_campaign_scope),
+    ],
+)
+def get_campaign_journal(
+    campaign_id: str,
+    view: Literal["mine", "party"] = "mine",
+    limit: int = Query(default=10, ge=1, le=50),
+    cursor: str | None = Query(default=None, max_length=256),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CampaignJournalView:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    query = select(GameSession).where(GameSession.campaign_id == campaign_id)
+    if cursor is not None:
+        timestamp, session_id = _read_journal_cursor(cursor)
+        query = query.where(
+            or_(
+                GameSession.started_at < timestamp,
+                (GameSession.started_at == timestamp) & (GameSession.id < session_id),
+            )
+        )
+    sessions = session.exec(
+        query.order_by(GameSession.started_at.desc(), GameSession.id.desc()).limit(
+            limit + 1
+        )
+    ).all()
+    page = sessions[:limit]
+    events, truncated = (
+        _journal_events(
+            session, campaign_id, [row.id for row in page], viewer, member, view
+        )
+        if page
+        else ([], {})
+    )
+    grants, entities = _journal_context(
+        session, campaign_id, viewer, member, events, view
+    )
+    by_session = {row.id: [] for row in page}
+    for event in events:
+        by_session[event.session_id].append(event)
+    views = []
+    for row in page:
+        entry = journal(
+            viewer,
+            member,
+            by_session[row.id],
+            current_grants=grants,
+            visible_entities=entities,
+            view=view,
+        )
+        entry.truncated = truncated.get(row.id, False)
+        views.append(
+            SessionJournalView(
+                session_id=row.id,
+                started_at=row.started_at.replace(tzinfo=timezone.utc)
+                if row.started_at.tzinfo is None
+                else row.started_at,
+                journal=entry,
+            )
+        )
+    return CampaignJournalView(
+        sessions=views,
+        next_cursor=_journal_cursor(page[-1]) if len(sessions) > limit else None,
+    )
 
 
 @router.post(
@@ -2511,8 +2976,9 @@ def create_session_event(
             audience=audience,
             author_member_id=member.id,
             body=body.body,
+            request_id=body.request_id,
         )
-    except SessionEndedError as exc:
+    except (SessionEndedError, EventRequestConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (InvalidEventAudienceError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2615,6 +3081,9 @@ class InvitationView(BaseModel):
 
 class LobbyView(BaseModel):
     can_administer_accounts: bool
+    invitation_links_enabled: bool = False
+    invitation_enrollment_enabled: bool = False
+    can_create_game: bool = True
     user: LobbyUserView
     campaigns: list[LobbyCampaignView]
     invitations: list[InvitationView]
@@ -2676,7 +3145,18 @@ def get_lobby(
         )
         .order_by(CampaignInvitation.created_at)
     ).all()
+    from auth.api import platform_enforcement_enabled, require_application_permission
+
+    can_create = True
+    if platform_enforcement_enabled():
+        try:
+            require_application_permission(session, principal, "grimoire.create_game")
+        except HTTPException:
+            can_create = False
     return LobbyView(
+        can_create_game=can_create,
+        invitation_links_enabled=links_enabled(),
+        invitation_enrollment_enabled=enrollment_enabled(),
         can_administer_accounts=principal.has_group("operators"),
         user=LobbyUserView(
             id=user.id, email=user.email, display_name=user.display_name
@@ -2703,14 +3183,11 @@ def invite_registered_player(
     session.exec(
         select(Campaign).where(Campaign.id == campaign_id).with_for_update()
     ).one()
-    recipient = session.exec(
-        select(AppUser).where(
-            AppUser.email == body.email.lower(),
-            AppUser.issuer.is_not(None),
-        )
-    ).first()
+    recipient = find_registered_user(session, body.email)
     if recipient is None:
-        raise HTTPException(404, detail="no registered player with that email")
+        raise HTTPException(
+            404, detail="no registered player with that email or username"
+        )
     existing = session.exec(
         select(CampaignMember).where(
             CampaignMember.campaign_id == campaign_id,
@@ -2825,3 +3302,7 @@ def decide_invitation(
     session.add(row)
     session.commit()
     return _invitation_view(session, row)
+
+
+# Specific public-capability endpoints stay behind their own default-off gate.
+router.include_router(join_links_router)

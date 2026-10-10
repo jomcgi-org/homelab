@@ -1,0 +1,17 @@
+\* Template for the buggy variants: run.sh substitutes @BUG@ and @MODE@.
+CONSTANTS
+    Experts = {e1, e2, e3}
+    Slots = {s1, s2}
+    MinSlots = 1
+    HostBufs = {h1, h2}
+    StageBufs = {}
+    TopK = 2
+    MaxInflight = 2
+    GraphMax = 1
+    None = None
+    Garbage = Garbage
+    Mode = "@MODE@"
+    Bug = "@BUG@"
+SPECIFICATION Spec
+SYMMETRY Symmetry
+INVARIANTS TypeOK KernelReadsValid CopySourceValid TableConsistent GraphValid NoDuplicates TableReadValid

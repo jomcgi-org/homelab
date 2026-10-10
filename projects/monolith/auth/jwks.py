@@ -11,6 +11,7 @@ failed".
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -27,6 +28,8 @@ TimeFunction = Callable[[], float]
 # held, so an unbounded wait stalls every other verification behind it. 5s total
 # with 2s to connect keeps a slow IdP from becoming a monolith-wide stall.
 _TIMEOUT = httpx.Timeout(5.0, connect=2.0)
+_FAILURE_TTL_S = 5.0
+_logger = logging.getLogger("monolith.auth")
 
 
 async def fetch_jwks(url: str) -> JwksDocument:
@@ -66,8 +69,8 @@ class JwksCache:
     The forced-refresh FLOOR governs the unknown-kid path, and it exists
     because that path is caller-triggered: without it, N requests bearing
     random key ids each cause an outbound fetch, serialized behind this lock.
-    A failed fetch is remembered for the same window, so a down IdP fails fast
-    instead of every request paying the full timeout.
+    Failed fetches have a separate short cooldown, so a down IdP fails fast
+    without pinning a recovered dependency behind the successful-key TTL.
     """
 
     def __init__(
@@ -90,6 +93,7 @@ class JwksCache:
         # floor only ever suppresses a second one inside the window.
         self._forced_at = float("-inf")
         self._error: AuthError | None = None
+        self._failed_at = float("-inf")
         self._lock = asyncio.Lock()
 
     async def get_key(
@@ -102,23 +106,23 @@ class JwksCache:
         async with self._lock:
             now = self._now()
 
+            # Failure recovery takes precedence over both successful-cache clocks.
+            # Never serve stale keys or let forced refresh bypass the cooldown.
+            if self._error is not None:
+                if now - self._failed_at < min(self._ttl_s, _FAILURE_TTL_S):
+                    raise self._error
+                return await self._fetch_locked(now)
+
             if force_refresh:
                 if now - self._forced_at < self._ttl_s:
-                    # Inside the floor. Re-raise a remembered failure rather
-                    # than retrying it, and otherwise serve what we hold so the
-                    # caller gets an honest "kid not present" rather than a
-                    # second fetch.
-                    if self._error is not None:
-                        raise self._error
+                    # Inside the floor, serve what we hold so the caller gets
+                    # an honest "kid not present" rather than a second fetch.
                     return self._document if self._document is not None else {}
                 self._forced_at = now
                 return await self._fetch_locked(now)
 
-            if now - self._fetched_at < self._ttl_s:
-                if self._error is not None:
-                    raise self._error
-                if self._document is not None:
-                    return self._document
+            if now - self._fetched_at < self._ttl_s and self._document is not None:
+                return self._document
 
             return await self._fetch_locked(now)
 
@@ -128,16 +132,26 @@ class JwksCache:
         try:
             document = await self._fetch(self._url)
         except AuthError as exc:
-            self._remember_failure(exc, now)
+            self._remember_failure(exc)
             raise
         except Exception as exc:
             error = AuthError(AuthErrorReason.JWKS_UNREACHABLE)
-            self._remember_failure(error, now)
+            # Exception text, URLs and tracebacks can carry credentials. Keep
+            # only types and HTTP status, including a transport cause if present.
+            _logger.warning(
+                "JWKS fetch failed: exception=%s cause=%s status=%s",
+                type(exc).__name__,
+                type(exc.__cause__).__name__ if exc.__cause__ else "none",
+                exc.response.status_code
+                if isinstance(exc, httpx.HTTPStatusError)
+                else "none",
+            )
+            self._remember_failure(error)
             raise error from exc
 
         if not isinstance(document, Mapping):
             error = AuthError(AuthErrorReason.JWKS_MALFORMED)
-            self._remember_failure(error, now)
+            self._remember_failure(error)
             raise error
 
         self._document = document
@@ -145,6 +159,7 @@ class JwksCache:
         self._error = None
         return document
 
-    def _remember_failure(self, error: AuthError, now: float) -> None:
+    def _remember_failure(self, error: AuthError) -> None:
         self._error = error
-        self._fetched_at = now
+        # Start at completion so a timeout cannot consume its own cooldown.
+        self._failed_at = self._now()

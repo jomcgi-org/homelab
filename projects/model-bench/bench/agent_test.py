@@ -1,11 +1,70 @@
 import asyncio
 
-import pytest  # noqa: F401
+import pytest
 
 from bench.agent import _execute_tool, run_agent_cell
 from bench.openrouter import ChatResult
 from bench.schema import PerformanceRecord
 from bench.verifiers import VerifyResult
+
+
+@pytest.mark.parametrize("passed", [True, False])
+def test_norms_capture_precedes_hidden_verifier_writes(tmp_path, passed):
+    (tmp_path / "m.py").write_text("x = 1\n")
+    dirs = []
+
+    async def chat(**kwargs):
+        return ChatResult(
+            message={
+                "tool_calls": [
+                    {
+                        "id": "1",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path":"m.py","content":"x = 2\\n"}',
+                        },
+                    },
+                    {"id": "2", "function": {"name": "done", "arguments": "{}"}},
+                ]
+            },
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=1,
+        )
+
+    def verify(workdir, args):
+        dirs.append(workdir)
+        (workdir / "test_hidden.py").write_text("# SECRET GRADER\nassert True\n")
+        (workdir / "m.py").write_text("# verifier overwrote the model's edit\n")
+        return VerifyResult(passed, "")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="fix",
+            chat=chat,
+            verify=verify,
+            verifier_args={},
+            cost_fn=lambda p, c: 0,
+            norms_opts={"lint": False, "target_files": ["m.py"]},
+        )
+    )
+    assert cell.first_attempt_passed is passed
+    assert not dirs[0].exists()
+    if passed:
+        assert cell.norms["test_added"] is False
+        assert cell.norms["files_changed"] == 1
+        assert cell.norms["files_outside_targets"] == 0
+        assert cell.norms["lines_added"] == cell.norms["lines_removed"] == 1
+        assert "+x = 2" in cell.diff
+        assert "hidden" not in cell.diff and "GRADER" not in cell.diff
+        assert "verifier" not in cell.diff
+    else:
+        assert cell.norms is None and cell.diff is None
 
 
 def test_run_agent_cell_preserves_performance(tmp_path):
@@ -307,3 +366,45 @@ def test_run_agent_cell_scores_norms_only_on_a_pass(tmp_path):
     assert ok.norms is not None and ok.norms["files_changed"] == 0
     assert ok.norms_score == 1.0
     assert run(False).norms is None
+
+
+def test_run_agent_cell_cleans_workdir_when_fixture_copy_fails(tmp_path, monkeypatch):
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    (tmp_path / "f.py").write_text("x = 1\n")
+    created = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def _mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created.append(Path(path))
+        return path
+
+    def _copytree(*args, **kwargs):
+        raise OSError("fixture unreadable")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(shutil, "copytree", _copytree)
+
+    async def fake_chat(**kwargs):
+        raise AssertionError("chat must not run when setup fails")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=fake_chat,
+            verify=lambda w, a: VerifyResult(True, ""),
+            verifier_args={},
+            cost_fn=lambda p, c: 0.0,
+        )
+    )
+    assert cell.outcome == "fail"
+    assert "[harness error]" in cell.attempts[0].feedback
+    assert created and all(not p.exists() for p in created)

@@ -26,23 +26,207 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from core.db import get_session
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from core.db import get_session
+from knowledge.public_limits import reset_semantic_search_limits
 from knowledge.public_models import (
+    PublicChunk,
     PublicEntity,
     PublicNote,
     PublicNoteEntity,
     PublicNoteLink,
 )
-from knowledge.public_limits import reset_semantic_search_limits
 from knowledge.public_router import router
 
 _UTC = timezone.utc
 _NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=_UTC)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/knowledge/public/search?q=deadline",
+        "/api/knowledge/public/search-index",
+        "/api/knowledge/public/graph",
+        "/api/knowledge/public/entities",
+        "/api/knowledge/public/entities/project/embervm/notes",
+        "/api/knowledge/public/notes/deadline",
+    ],
+)
+@pytest.mark.parametrize("offset", [0, 1])
+def test_public_cache_expires_without_row_update(
+    client, session, monkeypatch, path, offset
+):
+    note = _make_note("deadline", "Deadline fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add_all([note, _make_entity(), _link_entity(1, "deadline")])
+    session.commit()
+    before = client.get(path)
+    assert before.status_code == 200
+    if path == "/api/knowledge/public/entities":
+        assert before.json()[0]["note_counts"]["verified"] == 1
+    else:
+        assert "deadline" in before.text.lower()
+    assert (
+        before.headers["cache-control"]
+        == "public, max-age=13, s-maxage=13, must-revalidate"
+    )
+    assert "stale-" not in before.headers["cache-control"]
+    conditional = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+    assert conditional.status_code == 304
+    assert conditional.headers["cache-control"] == before.headers["cache-control"]
+    # The app sets no explicit Date: uvicorn sends the single Date header
+    # in prod, so TestClient responses carry none and proxies plus
+    # Cloudflare start the TTL at receipt.
+    assert "date" not in before.headers
+    assert "date" not in conditional.headers
+
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13 + offset)
+    )
+    after = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+    assert after.status_code == (404 if "/notes/deadline" in path else 200)
+    assert "deadline" not in after.text.lower()
+    if path == "/api/knowledge/public/entities":
+        assert after.json()[0]["note_counts"]["verified"] == 0
+    assert after.headers["cache-control"] == "no-store"
+    session.refresh(note)
+    assert note.review_after.replace(tzinfo=_UTC) == _NOW + timedelta(seconds=13)
+    assert note.last_reviewed_at is None
+
+
+def test_graph_validator_changes_when_count_and_indexed_at_do_not(
+    client, session, monkeypatch
+):
+    first = _make_note("first", "First")
+    first.review_after = _NOW + timedelta(seconds=13)
+    second = _make_note("second", "Second")
+    second.observed_at = first.review_after
+    session.add_all([first, second])
+    session.commit()
+    before = client.get("/api/knowledge/public/graph")
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13)
+    )
+    after = client.get(
+        "/api/knowledge/public/graph", headers={"If-None-Match": before.headers["etag"]}
+    )
+    assert after.status_code == 200
+    assert before.json()["indexed_at"] == after.json()["indexed_at"]
+    assert len(before.json()["nodes"]) == len(after.json()["nodes"]) == 1
+    assert after.json()["nodes"][0]["id"] == "second"
+    assert after.headers["etag"] != before.headers["etag"]
+
+
+def test_public_cache_uses_earliest_deadline_and_floor(client, session):
+    short = _make_note("short", "Short")
+    short.review_after = _NOW + timedelta(seconds=1.9)
+    session.add_all([short, _make_note("long", "Long")])
+    session.commit()
+    assert (
+        client.get("/api/knowledge/public/graph").headers["cache-control"]
+        == "public, max-age=1, s-maxage=1, must-revalidate"
+    )
+    short.review_after = _NOW + timedelta(milliseconds=900)
+    session.commit()
+    assert (
+        client.get("/api/knowledge/public/graph").headers["cache-control"] == "no-store"
+    )
+
+
+def test_public_cache_lease_uses_serve_time(client, session, monkeypatch):
+    """The lease is measured from the serve-time clock, not request start.
+
+    Request handling (embedding, DB work) takes time: the handler reads the
+    request-start clock once, then _cache_response reads the serve-time clock
+    again. A 5s gap with a 13s deadline must yield an 8s lease. Measuring
+    from request start would yield 13s and keep the fact past its deadline
+    once proxies and Cloudflare start the TTL at receipt.
+    """
+    note = _make_note("fact", "Fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    clock = iter([_NOW, _NOW + timedelta(seconds=5)])
+    monkeypatch.setattr("knowledge.public_router._now", lambda: next(clock))
+    response = client.get("/api/knowledge/public/graph")
+    assert response.status_code == 200
+    assert (
+        response.headers["cache-control"]
+        == "public, max-age=8, s-maxage=8, must-revalidate"
+    )
+
+
+def test_deadline_crossed_during_response_computation_fails_closed(
+    client, session, monkeypatch
+):
+    note = _make_note("short", "Short")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    clock = iter([_NOW, note.review_after.replace(tzinfo=_UTC)])
+    monkeypatch.setattr("knowledge.public_router._now", lambda: next(clock))
+    response = client.get("/api/knowledge/public/graph")
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    assert "Short" not in response.text
+
+
+def test_304_uses_remaining_lease_at_revalidation(client, session, monkeypatch):
+    note = _make_note("fact", "Fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+    before = client.get("/api/knowledge/public/graph")
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=5)
+    )
+    after = client.get(
+        "/api/knowledge/public/graph", headers={"If-None-Match": before.headers["etag"]}
+    )
+    assert after.status_code == 304
+    assert (
+        after.headers["cache-control"]
+        == "public, max-age=8, s-maxage=8, must-revalidate"
+    )
+
+
+def test_semantic_search_cache_expires_without_row_update(client, session, monkeypatch):
+    note = _make_note("deadline", "Deadline fact")
+    note.review_after = _NOW + timedelta(seconds=13)
+    session.add(note)
+    session.commit()
+
+    class Embeddings:
+        base_url = "configured"
+
+        async def embed(self, query):
+            return [0.0]
+
+    monkeypatch.setattr("knowledge.public_router.EmbeddingClient", Embeddings)
+    monkeypatch.setattr(
+        "knowledge.public_router.search_public_chunks",
+        lambda *args, **kwargs: [{"note_id": "deadline"}],
+    )
+    path = "/api/knowledge/public/search?q=deadline&mode=semantic"
+    before = client.get(path)
+    assert before.status_code == 200
+    assert before.json()[0]["note_id"] == "deadline"
+    assert (
+        before.headers["cache-control"]
+        == "public, max-age=13, s-maxage=13, must-revalidate"
+    )
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(seconds=13)
+    )
+    after = client.get(path, headers={"If-None-Match": before.headers["etag"]})
+    assert after.status_code == 200
+    assert after.json() == []
+    assert after.headers["cache-control"] == "no-store"
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +258,8 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session):
+def client_fixture(session, monkeypatch):
+    monkeypatch.setattr("knowledge.public_router._now", lambda: _NOW)
     reset_semantic_search_limits()
     app = FastAPI()
     app.include_router(router)
@@ -111,6 +296,9 @@ def _make_note(
         layout_y=y,
         verification_state=verification_state,
         disputed=disputed,
+        observed_at=_NOW,
+        review_after=_NOW + timedelta(days=1),
+        review_policy="standard-90d/v1",
     )
 
 
@@ -181,7 +369,7 @@ class TestPublicGraphEmpty:
     def test_empty_graph_has_cache_control_header(self, client):
         resp = client.get("/api/knowledge/public/graph")
         assert "Cache-Control" in resp.headers
-        assert "public" in resp.headers["Cache-Control"]
+        assert resp.headers["Cache-Control"] == "no-store"
 
     def test_empty_graph_has_etag_header(self, client):
         resp = client.get("/api/knowledge/public/graph")
@@ -631,6 +819,8 @@ class TestPublicSearchIndex:
             "Unobserved",
             indexed_at=datetime(2024, 6, 4, tzinfo=_UTC),
         )
+        no_observation.observed_at = None
+        no_observation.last_reviewed_at = _NOW
         session.add_all([oldest, newest, no_observation])
         session.commit()
 
@@ -653,12 +843,15 @@ class TestPublicSearchIndex:
         )
 
         assert first.headers["cache-control"] == (
-            "public, max-age=300, s-maxage=300, stale-while-revalidate=86400"
+            "public, max-age=300, s-maxage=300, must-revalidate"
         )
         assert second.status_code == 304
 
     def test_truncates_at_hard_ceiling(self, client, session, monkeypatch, caplog):
         monkeypatch.setattr("knowledge.public_router._SEARCH_INDEX_NOTE_LIMIT", 2)
+        monkeypatch.setattr(
+            "knowledge.public_router._now", lambda: _NOW + timedelta(minutes=3)
+        )
         for index in range(3):
             note = _make_note(f"fact-{index}", f"Fact {index}")
             note.observed_at = _NOW + timedelta(minutes=index)
@@ -774,7 +967,7 @@ class TestPublicRecordSearch:
         )
         monkeypatch.setattr(
             "knowledge.public_router.search_public_chunks",
-            lambda _session, vector, limit: [
+            lambda _session, vector, limit, now: [
                 {
                     "note_id": "semantic",
                     "title": "Semantic match",
@@ -811,7 +1004,7 @@ class TestPublicRecordSearch:
         )
         monkeypatch.setattr(
             "knowledge.public_router.search_public_chunks",
-            lambda _session, vector, limit: [
+            lambda _session, vector, limit, now: [
                 {"note_id": "repo:README.md"},
                 {"note_id": "disputed"},
                 {"note_id": "kept"},
@@ -836,7 +1029,7 @@ class TestPublicRecordSearch:
         )
         monkeypatch.setattr(
             "knowledge.public_router.search_public_chunks",
-            lambda _session, vector, limit: [],
+            lambda _session, vector, limit, now: [],
         )
 
         for _ in range(10):
@@ -919,6 +1112,179 @@ class TestPublicFactsDaily:
 # ---------------------------------------------------------------------------
 # search_public_chunks: orphan chunks fail closed (G3)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "review_after,observed_at,last_reviewed_at,policy",
+    [
+        (_NOW - timedelta(seconds=1), _NOW, None, "standard-90d/v1"),
+        (_NOW, _NOW, None, "standard-90d/v1"),
+        (None, _NOW, None, "standard-90d/v1"),
+        (None, _NOW, None, None),
+        (
+            _NOW + timedelta(days=1),
+            _NOW + timedelta(seconds=1),
+            None,
+            "standard-90d/v1",
+        ),
+        (
+            _NOW + timedelta(days=1),
+            _NOW,
+            _NOW + timedelta(seconds=1),
+            "standard-90d/v1",
+        ),
+        (_NOW + timedelta(days=1), None, None, "standard-90d/v1"),
+    ],
+    ids=[
+        "due",
+        "equality",
+        "classified-null",
+        "unclassified-null",
+        "future-observed",
+        "future-reviewed",
+        "missing-basis",
+    ],
+)
+def test_public_surfaces_exclude_noncurrent_before_limits(
+    client, session, monkeypatch, review_after, observed_at, last_reviewed_at, policy
+):
+    from pgvector.sqlalchemy import Vector
+    from sqlalchemy import case
+
+    from knowledge.api import _PUBLIC_CHUNK_OVERFETCH, search_public_chunks
+
+    current = _make_note("current", "Needle current", disputed=True)
+    current.content = "[[excluded]] and [[current]]"
+    excluded = _make_note("excluded", "Needle excluded")
+    excluded.review_after = review_after
+    excluded.observed_at = observed_at
+    excluded.last_reviewed_at = last_reviewed_at
+    excluded.review_policy = policy
+    excluded.indexed_at = _NOW + timedelta(seconds=1)
+    link = _make_link(1, "current", "excluded", kind="edge")
+    link.edge_type = "contradicts"
+    session.add_all(
+        [
+            current,
+            excluded,
+            _make_entity(),
+            _link_entity(1, "current"),
+            _link_entity(2, "excluded"),
+            link,
+            _make_link(2, "excluded", "current"),
+            PublicChunk(
+                note_id="excluded",
+                chunk_index=0,
+                title="Needle excluded",
+                chunk_text="expired",
+                embedding=[0.1] * 1024,
+            ),
+            PublicChunk(
+                note_id="current",
+                chunk_index=0,
+                title="Needle current",
+                chunk_text="current",
+                embedding=[0.1] * 1024,
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            PublicChunk(
+                note_id="excluded",
+                chunk_index=index,
+                title="Needle excluded",
+                chunk_text="expired",
+                embedding=[0.1] * 1024,
+            )
+            for index in range(1, _PUBLIC_CHUNK_OVERFETCH + 1)
+        ]
+    )
+    session.commit()
+
+    missing = client.get("/api/knowledge/public/notes/missing")
+    hidden = client.get("/api/knowledge/public/notes/excluded")
+    assert hidden.status_code == missing.status_code == 404
+    assert hidden.json() == missing.json()
+    detail = client.get("/api/knowledge/public/notes/current").json()
+    assert detail["disputed"] is True
+    assert "[[excluded]]" not in detail["body"]
+    assert "[[current]]" in detail["body"]
+    graph = client.get("/api/knowledge/public/graph").json()
+    assert {node["id"] for node in graph["nodes"]} == {"current"}
+    assert graph["edges"] == []
+    chapter = client.get(
+        "/api/knowledge/public/entities/project/embervm/notes?limit=1"
+    ).json()
+    assert [note["note_id"] for note in chapter["notes"]] == ["current"]
+    assert chapter["notes"][0]["disputed"] is True
+    assert chapter["contradictions"] == []
+    counts = client.get("/api/knowledge/public/entities").json()[0]["note_counts"]
+    assert counts["verified"] == 1
+    assert sum(counts.values()) == 1
+    search = client.get("/api/knowledge/public/search?q=Needle&limit=1").json()
+    assert [note["note_id"] for note in search] == ["current"]
+    assert search[0]["disputed"] is True
+    index = client.get("/api/knowledge/public/search-index").json()
+    assert [note[0] for note in index["notes"]] == ["current"]
+
+    # SQLite lacks pgvector's distance operator. Keep the real joined query,
+    # WHERE and LIMIT, replacing only distance; Postgres covers the operator.
+    monkeypatch.setattr(
+        Vector.comparator_factory,
+        "cosine_distance",
+        lambda self, vector: case((PublicChunk.note_id == "excluded", 0.0), else_=0.1),
+    )
+    chunks = search_public_chunks(session, [0.1] * 1024, limit=1, now=_NOW)
+    assert [row["note_id"] for row in chunks] == ["current"]
+    assert chunks[0]["disputed"] is True
+
+    class Embedder:
+        base_url = "http://embedding.test"
+
+        async def embed(self, query):
+            return [0.1] * 1024
+
+    monkeypatch.setattr("knowledge.public_router.EmbeddingClient", Embedder)
+    # Hydration must reject stale candidates independently of vector retrieval.
+    monkeypatch.setattr(
+        "knowledge.public_router.search_public_chunks",
+        lambda *args, **kwargs: [{"note_id": "excluded"}, {"note_id": "current"}],
+    )
+    semantic = client.get("/api/knowledge/public/search?q=Needle&mode=semantic").json()
+    assert [note["note_id"] for note in semantic] == ["current"]
+
+
+def test_public_surfaces_recheck_deadline_without_row_update(
+    client, session, monkeypatch
+):
+    note = _make_note("current", "Needle current")
+    note.last_reviewed_at = _NOW
+    note.observed_at = None
+    session.add_all([note, _make_entity(), _link_entity(1, "current")])
+    session.commit()
+    paths = [
+        "/api/knowledge/public/search?q=Needle",
+        "/api/knowledge/public/search-index",
+        "/api/knowledge/public/graph",
+        "/api/knowledge/public/entities/project/embervm/notes",
+        "/api/knowledge/public/entities",
+    ]
+    before = [client.get(path).json() for path in paths]
+    assert client.get("/api/knowledge/public/notes/current").status_code == 200
+    monkeypatch.setattr(
+        "knowledge.public_router._now", lambda: _NOW + timedelta(days=1)
+    )
+    after = [client.get(path).json() for path in paths]
+    assert before != after
+    assert after[0] == []
+    assert after[1]["notes"] == []
+    assert after[2]["nodes"] == []
+    assert after[3]["notes"] == []
+    assert after[4][0]["note_counts"]["verified"] == 0
+    assert client.get("/api/knowledge/public/notes/current").status_code == 404
+    session.refresh(note)
+    assert note.review_after.replace(tzinfo=_UTC) == _NOW + timedelta(days=1)
 
 
 class TestSearchPublicChunksOrphans:

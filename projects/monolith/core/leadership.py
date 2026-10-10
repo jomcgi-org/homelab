@@ -19,6 +19,8 @@ import asyncio
 import logging
 import platform
 import random
+import threading
+import time
 from collections.abc import Awaitable, Callable
 
 from sqlmodel import Session, text
@@ -92,6 +94,11 @@ class LeaderElector:
         self._is_leader = False
         self._lease_key = lease_key
         self._consecutive_acquire_failures = 0
+        # Monotonic time of the last successful acquisition/renewal, taken
+        # before the query runs so measured latency only makes the shutdown
+        # deadline conservative. Refreshes on every success; guard_shutdown
+        # derives the remaining lease lifetime from it.
+        self._last_success_monotonic: float | None = None
 
     @property
     def is_leader(self) -> bool:
@@ -120,6 +127,101 @@ class LeaderElector:
         )
         return min(jittered, ACQUIRE_BACKOFF_MAX)
 
+    def guard_shutdown(
+        self, exit_process: Callable[[int], None], timeout: float
+    ) -> Callable[[], None]:
+        """Renew until process cessation, even if asyncio cleanup blocks.
+
+        An independent watchdog ceases the process before the last heartbeat
+        can go stale if renewal hangs. The watchdog is armed against the
+        remaining lifetime of the last successful heartbeat, not a fresh
+        interval, because renewal latency is unbounded: a renewal that blocks
+        on the database leaves the previously armed deadline standing, and an
+        already-overdue heartbeat ceases the process immediately (fail closed).
+        Successful renewal extends that watchdog from the attempt's start, so
+        query latency only makes the deadline conservative; an absolute
+        deadline bounds the entire drain. Neither thread releases the lease.
+        The returned cleanup exists for tests whose fake exit returns.
+        """
+        stopped = threading.Event()
+        lock = threading.Lock()
+        lease_timer: threading.Timer | None = None
+        entered_at = time.monotonic()
+        last_success = self._last_success_monotonic
+        if last_success is None:
+            # No observed success on this elector; keep the historical margin
+            # and assume the heartbeat is already one interval old.
+            last_success = entered_at - RENEW_INTERVAL
+        # Absolute monotonic deadline after which a successor may hold the
+        # lease. Only a successful renewal moves it; a blocked renewal leaves
+        # the previous value standing so the old timer still fires in time.
+        lease_deadline = last_success + (LEASE_TTL - RENEW_INTERVAL)
+
+        def cease() -> None:
+            stopped.set()
+            exit_process(1)
+
+        def arm_lease_watchdog() -> None:
+            nonlocal lease_timer
+            with lock:
+                if stopped.is_set():
+                    return
+                if lease_timer is not None:
+                    lease_timer.cancel()
+                    lease_timer = None
+                remaining = lease_deadline - time.monotonic()
+                if remaining <= 0:
+                    expired = True
+                else:
+                    lease_timer = threading.Timer(remaining, cease)
+                    lease_timer.daemon = True
+                    lease_timer.start()
+                    expired = False
+            if expired:
+                cease()
+
+        def renew() -> None:
+            nonlocal lease_deadline
+            while not stopped.is_set():
+                # Stamp before the query: the heartbeat lands server-side
+                # during it, so the pre-query time is the conservative base.
+                attempt_started = time.monotonic()
+                try:
+                    if not _acquire_or_renew(self._lease_key):
+                        cease()
+                        return
+                except Exception:
+                    logger.exception("shutdown lease renewal failed; ceasing executors")
+                    cease()
+                    return
+                if stopped.is_set():
+                    # Cessation already fired while this renewal blocked; a
+                    # late success must not re-arm an unguarded window.
+                    return
+                with lock:
+                    lease_deadline = attempt_started + (LEASE_TTL - RENEW_INTERVAL)
+                arm_lease_watchdog()
+                stopped.wait(RENEW_INTERVAL)
+
+        deadline = threading.Timer(timeout, cease)
+        deadline.daemon = True
+        deadline.start()
+        arm_lease_watchdog()
+        thread = threading.Thread(
+            target=renew, name="leader-shutdown-renewal", daemon=True
+        )
+        thread.start()
+
+        def close() -> None:
+            stopped.set()
+            deadline.cancel()
+            with lock:
+                if lease_timer is not None:
+                    lease_timer.cancel()
+            thread.join(timeout=RENEW_INTERVAL)
+
+        return close
+
     async def run(
         self,
         on_acquire: Callable[[], Awaitable[None]],
@@ -134,11 +236,16 @@ class LeaderElector:
         try:
             while True:
                 sleep_interval = RENEW_INTERVAL
+                # Stamp before the query for the same conservative shutdown
+                # deadline guard_shutdown derives from this timestamp.
+                attempt_started = time.monotonic()
                 try:
                     leader = await asyncio.to_thread(_acquire_or_renew, self._lease_key)
                 except Exception:
                     logger.exception("leader lease check failed; treating as follower")
                     leader = False
+                if leader:
+                    self._last_success_monotonic = attempt_started
 
                 if not leader:
                     self._consecutive_acquire_failures = 0

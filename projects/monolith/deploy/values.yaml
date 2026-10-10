@@ -351,8 +351,23 @@ agents:
 # on a fresh book instead, set extractModel/extractBaseUrl to the in-cluster Qwen
 # vLLM (free, keyless): "qwen3.6-27b" +
 # "http://inference.inference.svc.cluster.local:8080/v1/chat/completions".
+# Operator bootstrap precedes enrollment and enforcement to preserve existing
+# Grimoire access. Requires a fresh login for the protected account-type claim.
+platformAuth:
+  managementEnabled: true
+  enrollmentEnabled: false
+  enforcementEnabled: false
+  enrollmentFlowUrl: ""
+
 grimoire:
+  # Registered-player pilot (#6858). Account enrollment remains disabled;
+  # this path requires no Authentik invitation credential or permission grant.
+  invitationLinks:
+    enabled: true
+    enrollmentEnabled: false
   enabled: true
+  play:
+    enabled: true
   s3Bucket: "grimoire"
   # Production default: direct DeepSeek (first-party, native precision, no fp4
   # quantization, prompt cache preserved). Model id is the bare DeepSeek id (not
@@ -446,7 +461,7 @@ scratchPostgres:
   # the embervm side disables the demo, clear this to "" in the same change, or
   # the DSN points at a nonexistent workload and the synthetic probe latches
   # red (503 /api/health).
-  demoListenPort: 5401
+  demoListenPort: ""
   onepassword:
     itemPath: "vaults/k8s-homelab/items/scratch-postgres"
 

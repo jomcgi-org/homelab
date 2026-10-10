@@ -1,773 +1,1435 @@
 {
-  "version": 1,
-  "recordedAt": "2026-09-05T02:42:12.534Z",
-  "build": "3a67403a293be20836604bc25729329997848e09",
+  "version": 3,
+  "recordedAt": "2026-10-07T00:02:57.000Z",
+  "build": "d662f214c365b6ced6c1bd69a5f5aa09ba011f7d",
+  "engine": "oom-inference",
   "model": "Qwen3.8-Flash-Next, 125B, NVFP4",
   "hardware": "RTX 4090 24 GB, Ryzen 7800X3D, 64 GB RAM, NVMe",
   "thinking": false,
   "sampleIntervalMs": 200,
-  "conditions": "Existing warm service, default sampling, shared with normal traffic. Client timings include transport. This is a walkthrough, not an isolated benchmark.",
+  "conditions": "oom-inference, default serve configuration with --dense fp8 --expert-precision bf16 --attention-precision bf16 (MTP and prompt-lookup drafts on). Two warm-ups followed by five fresh-prefix full-report requests; zero cached tokens verified; the request nearest the median TTFT whose graph names a failure edge is replayed. Warm expert tiers, not cold disk. Thinking off. Client timings include transport; prefill and generating stages are client-side (request sent, first token).",
+  "telemetry": { "routing": false, "stats": true },
   "turns": [
     {
       "title": "How this inference works",
-      "prompt": "Explain this inference setup in three short sentences, under 80 words: hot experts stay on the GPU, warm experts transfer from pinned RAM over PCIe, and cold experts run on the CPU using weights from the page cache or NVMe. Explain how their outputs combine to generate the next token.",
+      "prompt": "Read the full incident report and explain how the intended controls failed. Generate a compact CAST-style graph for a technically curious reader, not an inventory of nouns or a chronology. Output only newline-delimited JSON objects, no fences or prose.\nFirst output one summary: {\"type\":\"summary\",\"label\":\"Main control failure\",\"detail\":\"A specific sentence explaining the failure\",\"pages\":[8,9],\"basis\":\"inferred\"}. The summary label must state the main insight, not say Summary or TLDR. Detail must explain why the intended isolation was inadequate in 12 to 18 words.\nOutput exactly six nodes in total: {\"type\":\"node\",\"id\":\"n1\",\"label\":\"Short label\",\"boundary\":\"evaluation|shared|external\",\"role\":\"controller|process|monitor\",\"detail\":\"Specific purpose\",\"pages\":[6],\"basis\":\"reported|inferred\"}. Include the evaluation harness assigning work, agents performing it, the shared Artifactory service, Hugging Face systems, OpenAI monitoring, and incident response. Place harness and agents in evaluation, Artifactory/monitoring/response in shared, and Hugging Face in external. Harness and response are controllers, monitoring is a monitor, agents/services are processes. Assign ids n1 to n6. After the summary, interleave nodes and edges: as soon as two relevant nodes exist, emit their connecting edge before introducing the next node. Emit each node once, before any edge references it. Do not output all nodes before all edges. Node details must say what each component controls, observes or supplies in 4 to 7 words.\nOutput only five to seven meaningful edges; do not add edges to meet a quota: {\"type\":\"edge\",\"from\":\"n1\",\"to\":\"n2\",\"label\":\"Concrete relationship\",\"kind\":\"action|feedback|failure\",\"detail\":\"An explanatory sentence\",\"pages\":[6],\"basis\":\"reported|inferred\"}. Include task assignment, shared agent communication, failed isolation through the shared service, compromise of Hugging Face, monitoring feedback to responders, and containment of evaluations. Each relationship must be performed by FROM on TO. Never connect Hugging Face systems to OpenAI monitoring or incident response: the monitoring alert concerned internal OpenAI research activity, not direct observation of Hugging Face. Never imply Hugging Face moved credentials into Artifactory. FROM and TO must be different ids. Do not invent rekeying models, token budget allocation, or any unsupported actions. For external compromise the actor is agents and the target is Hugging Face, never a self-edge. Alert delivery is feedback.\nEvery edge label is 3 to 5 words and its detail is a complete sentence of 8 to 12 words that adds a specific mechanism, constraint, timing or consequence. Never repeat the label in slightly different words. Avoid generic descriptions such as Stop runs / Response halts evaluations, Use service / Agents exploit service, or Detects suspicious activity. If describing containment, identify ExploitGym and the July 19-20 investigation; do not imply every evaluation or every model was immediately shut down. Explain the deficient isolation and the late response, not just successful normal actions.\nUse the July directory-based message board on pages 8-9, not the May board. Detection and evaluation containment are on printed page 15. Cite verified printed page numbers for every object. Mark analytical interpretations as inferred and explicitly described facts as reported. Do not invent missing controls or claim a complete CAST investigation. No payloads, commands, credential values, attack recipes or unsupported relationships. Total natural-language text at most 180 words.",
       "events": [
-        { "at": 2592, "content": "Hot", "reasoning": "" },
-        { "at": 2650, "content": " experts", "reasoning": "" },
-        { "at": 2713, "content": " execute", "reasoning": "" },
-        { "at": 2767, "content": " directly", "reasoning": "" },
-        { "at": 2794, "content": " on", "reasoning": "" },
-        { "at": 2865, "content": " the", "reasoning": "" },
-        { "at": 2903, "content": " GPU", "reasoning": "" },
-        { "at": 2933, "content": " for", "reasoning": "" },
-        { "at": 2983, "content": " speed", "reasoning": "" },
-        { "at": 3023, "content": ",", "reasoning": "" },
-        { "at": 3115, "content": " while", "reasoning": "" },
-        { "at": 3153, "content": " warm", "reasoning": "" },
-        { "at": 3184, "content": " experts", "reasoning": "" },
-        { "at": 3203, "content": " stream", "reasoning": "" },
-        { "at": 3274, "content": " efficiently", "reasoning": "" },
-        { "at": 3295, "content": " from", "reasoning": "" },
-        { "at": 3314, "content": " pinned", "reasoning": "" },
-        { "at": 3344, "content": " RAM", "reasoning": "" },
-        { "at": 3373, "content": " via", "reasoning": "" },
-        { "at": 3404, "content": " PCIe", "reasoning": "" },
-        { "at": 3480, "content": ".", "reasoning": "" },
-        { "at": 3554, "content": " Meanwhile", "reasoning": "" },
-        { "at": 3573, "content": ",", "reasoning": "" },
-        { "at": 3593, "content": " cold", "reasoning": "" },
-        { "at": 3613, "content": " experts", "reasoning": "" },
-        { "at": 3690, "content": " run", "reasoning": "" },
-        { "at": 3724, "content": " on", "reasoning": "" },
-        { "at": 3744, "content": " the", "reasoning": "" },
-        { "at": 3804, "content": " CPU", "reasoning": "" },
-        { "at": 3860, "content": ",", "reasoning": "" },
-        { "at": 3894, "content": " fetching", "reasoning": "" },
-        { "at": 3914, "content": " weights", "reasoning": "" },
-        { "at": 3944, "content": " from", "reasoning": "" },
-        { "at": 3977, "content": " the", "reasoning": "" },
-        { "at": 4014, "content": " page", "reasoning": "" },
-        { "at": 4097, "content": " cache", "reasoning": "" },
-        { "at": 4134, "content": " or", "reasoning": "" },
-        { "at": 4194, "content": " NV", "reasoning": "" },
-        { "at": 4275, "content": "Me", "reasoning": "" },
-        { "at": 4294, "content": " storage", "reasoning": "" },
-        { "at": 4335, "content": " to", "reasoning": "" },
-        { "at": 4365, "content": " conserve", "reasoning": "" },
-        { "at": 4405, "content": " memory", "reasoning": "" },
-        { "at": 4479, "content": ".", "reasoning": "" },
-        { "at": 4515, "content": " After", "reasoning": "" },
-        { "at": 4554, "content": " individual", "reasoning": "" },
-        { "at": 4605, "content": " experts", "reasoning": "" },
-        { "at": 4680, "content": " compute", "reasoning": "" },
-        { "at": 4715, "content": " their", "reasoning": "" },
-        { "at": 4758, "content": " partial", "reasoning": "" },
-        { "at": 4785, "content": " outputs", "reasoning": "" },
-        { "at": 4855, "content": ",", "reasoning": "" },
-        { "at": 4913, "content": " a", "reasoning": "" },
-        { "at": 4945, "content": " gating", "reasoning": "" },
-        { "at": 4985, "content": " mechanism", "reasoning": "" },
-        { "at": 5015, "content": " calculates", "reasoning": "" },
-        { "at": 5102, "content": " relevance", "reasoning": "" },
-        { "at": 5135, "content": " scores", "reasoning": "" },
-        { "at": 5166, "content": " and", "reasoning": "" },
-        { "at": 5206, "content": " performs", "reasoning": "" },
-        { "at": 5287, "content": " a", "reasoning": "" },
-        { "at": 5365, "content": " weighted", "reasoning": "" },
-        { "at": 5385, "content": " sum", "reasoning": "" },
-        { "at": 5475, "content": " of", "reasoning": "" },
-        { "at": 5554, "content": " these", "reasoning": "" },
-        { "at": 5585, "content": " results", "reasoning": "" },
-        { "at": 5625, "content": " to", "reasoning": "" },
-        { "at": 5703, "content": " produce", "reasoning": "" },
-        { "at": 5716, "content": " the", "reasoning": "" },
-        { "at": 5756, "content": " final", "reasoning": "" },
-        { "at": 5806, "content": " next", "reasoning": "" },
-        { "at": 5904, "content": "-token", "reasoning": "" },
-        { "at": 5936, "content": " prediction", "reasoning": "" },
-        { "at": 5986, "content": ".", "reasoning": "" }
+        { "at": 6948, "content": "{\"", "reasoning": "", "tokens": 1 },
+        { "at": 7078, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 7148, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 7148, "content": "summary", "reasoning": "", "tokens": 1 },
+        { "at": 7210, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 7210, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 7394, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 7394, "content": "Shared", "reasoning": "", "tokens": 1 },
+        { "at": 7458, "content": " Artif", "reasoning": "", "tokens": 1 },
+        { "at": 7508, "content": "actory", "reasoning": "", "tokens": 1 },
+        { "at": 7508, "content": " compromised", "reasoning": "", "tokens": 1 },
+        { "at": 7554, "content": " sandbox", "reasoning": "", "tokens": 1 },
+        { "at": 7595, "content": " isolation", "reasoning": "", "tokens": 1 },
+        { "at": 7595, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 7627, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 7627, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 7670, "content": "Shared", "reasoning": "", "tokens": 1 },
+        { "at": 7710, "content": " credentials", "reasoning": "", "tokens": 1 },
+        { "at": 7752, "content": " and", "reasoning": "", "tokens": 1 },
+        { "at": 7799, "content": " zero", "reasoning": "", "tokens": 1 },
+        { "at": 7799, "content": "-day", "reasoning": "", "tokens": 1 },
+        { "at": 7833, "content": " flaws", "reasoning": "", "tokens": 1 },
+        { "at": 7873, "content": " in", "reasoning": "", "tokens": 1 },
+        { "at": 7920, "content": " a", "reasoning": "", "tokens": 1 },
+        { "at": 7969, "content": " single", "reasoning": "", "tokens": 1 },
+        { "at": 8024, "content": " service", "reasoning": "", "tokens": 1 },
+        { "at": 8024, "content": " bypass", "reasoning": "", "tokens": 1 },
+        { "at": 8059, "content": "ed", "reasoning": "", "tokens": 1 },
+        { "at": 8059, "content": " sandbox", "reasoning": "", "tokens": 1 },
+        { "at": 8092, "content": " isolation", "reasoning": "", "tokens": 1 },
+        { "at": 8132, "content": " completely", "reasoning": "", "tokens": 1 },
+        { "at": 8186, "content": ".\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 8186, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 8256, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 8320, "content": "4", "reasoning": "", "tokens": 1 },
+        { "at": 8377, "content": ",", "reasoning": "", "tokens": 1 },
+        { "at": 8377, "content": "8", "reasoning": "", "tokens": 1 },
+        { "at": 8423, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 8423, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 8464, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 8464, "content": "in", "reasoning": "", "tokens": 1 },
+        { "at": 8514, "content": "ferred", "reasoning": "", "tokens": 1 },
+        { "at": 8514, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 8564, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 8607, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 8607, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 8662, "content": "node", "reasoning": "", "tokens": 1 },
+        { "at": 8662, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 8709, "content": "id", "reasoning": "", "tokens": 1 },
+        { "at": 8709, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 8747, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 8747, "content": "1", "reasoning": "", "tokens": 1 },
+        { "at": 8788, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 8788, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 8823, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 8823, "content": "Exp", "reasoning": "", "tokens": 1 },
+        { "at": 8871, "content": "loit", "reasoning": "", "tokens": 1 },
+        { "at": 8871, "content": "G", "reasoning": "", "tokens": 1 },
+        { "at": 8916, "content": "ym", "reasoning": "", "tokens": 1 },
+        { "at": 8952, "content": " Harness", "reasoning": "", "tokens": 1 },
+        { "at": 8952, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 8982, "content": "boundary", "reasoning": "", "tokens": 1 },
+        { "at": 9024, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9025, "content": "evaluation", "reasoning": "", "tokens": 1 },
+        { "at": 9061, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9061, "content": "role", "reasoning": "", "tokens": 1 },
+        { "at": 9097, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9097, "content": "controller", "reasoning": "", "tokens": 1 },
+        { "at": 9129, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9129, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 9156, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9156, "content": "Assign", "reasoning": "", "tokens": 1 },
+        { "at": 9192, "content": "s", "reasoning": "", "tokens": 1 },
+        { "at": 9192, "content": " tasks", "reasoning": "", "tokens": 1 },
+        { "at": 9232, "content": " without", "reasoning": "", "tokens": 1 },
+        { "at": 9281, "content": " internet", "reasoning": "", "tokens": 1 },
+        { "at": 9325, "content": " safeguards", "reasoning": "", "tokens": 1 },
+        { "at": 9325, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9359, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 9359, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 9396, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 9430, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 9430, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 9466, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9466, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 9508, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 9554, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 9555, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 9601, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9601, "content": "edge", "reasoning": "", "tokens": 1 },
+        { "at": 9642, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9642, "content": "from", "reasoning": "", "tokens": 1 },
+        { "at": 9683, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9683, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 9723, "content": "1", "reasoning": "", "tokens": 1 },
+        { "at": 9723, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9760, "content": "to", "reasoning": "", "tokens": 1 },
+        { "at": 9760, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9808, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 9808, "content": "2", "reasoning": "", "tokens": 1 },
+        { "at": 9843, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9843, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 9871, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 9871, "content": "Dispatch", "reasoning": "", "tokens": 1 },
+        { "at": 9906, "content": "es", "reasoning": "", "tokens": 1 },
+        { "at": 9906, "content": " isolated", "reasoning": "", "tokens": 1 },
+        { "at": 9945, "content": " agents", "reasoning": "", "tokens": 1 },
+        { "at": 9981, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 9981, "content": "kind", "reasoning": "", "tokens": 1 },
+        { "at": 10013, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10013, "content": "action", "reasoning": "", "tokens": 1 },
+        { "at": 10042, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10042, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 10071, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10071, "content": "Harness", "reasoning": "", "tokens": 1 },
+        { "at": 10111, "content": " assigns", "reasoning": "", "tokens": 1 },
+        { "at": 10111, "content": " tasks", "reasoning": "", "tokens": 1 },
+        { "at": 10152, "content": " expecting", "reasoning": "", "tokens": 1 },
+        { "at": 10205, "content": " no", "reasoning": "", "tokens": 1 },
+        { "at": 10253, "content": " external", "reasoning": "", "tokens": 1 },
+        { "at": 10290, "content": " network", "reasoning": "", "tokens": 1 },
+        { "at": 10326, "content": " access", "reasoning": "", "tokens": 1 },
+        { "at": 10326, "content": ".\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10360, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 10361, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 10400, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 10400, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 10434, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 10434, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10471, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 10472, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 10512, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 10555, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 10555, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10600, "content": "node", "reasoning": "", "tokens": 1 },
+        { "at": 10600, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10641, "content": "id", "reasoning": "", "tokens": 1 },
+        { "at": 10641, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10681, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 10681, "content": "2", "reasoning": "", "tokens": 1 },
+        { "at": 10717, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10717, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 10747, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10747, "content": "Research", "reasoning": "", "tokens": 1 },
+        { "at": 10790, "content": " Agents", "reasoning": "", "tokens": 1 },
+        { "at": 10790, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10822, "content": "boundary", "reasoning": "", "tokens": 1 },
+        { "at": 10822, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10858, "content": "evaluation", "reasoning": "", "tokens": 1 },
+        { "at": 10858, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10897, "content": "role", "reasoning": "", "tokens": 1 },
+        { "at": 10897, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10933, "content": "process", "reasoning": "", "tokens": 1 },
+        { "at": 10933, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 10961, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 10961, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 10992, "content": "Exec", "reasoning": "", "tokens": 1 },
+        { "at": 11027, "content": "utes", "reasoning": "", "tokens": 1 },
+        { "at": 11027, "content": " exploits", "reasoning": "", "tokens": 1 },
+        { "at": 11063, "content": " sharing", "reasoning": "", "tokens": 1 },
+        {
+          "at": 11101,
+          "content": " credentials",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 11138, "content": " and", "reasoning": "", "tokens": 1 },
+        { "at": 11181, "content": " notes", "reasoning": "", "tokens": 1 },
+        { "at": 11218, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 11218, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 11253, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 11253, "content": "6", "reasoning": "", "tokens": 1 },
+        { "at": 11304, "content": ",", "reasoning": "", "tokens": 1 },
+        { "at": 11355, "content": "8", "reasoning": "", "tokens": 1 },
+        { "at": 11355, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 11389, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 11389, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11425, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 11425, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 11469, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 11507, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 11507, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11547, "content": "edge", "reasoning": "", "tokens": 1 },
+        { "at": 11547, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 11583, "content": "from", "reasoning": "", "tokens": 1 },
+        { "at": 11583, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11621, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 11621, "content": "2", "reasoning": "", "tokens": 1 },
+        { "at": 11658, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 11658, "content": "to", "reasoning": "", "tokens": 1 },
+        { "at": 11693, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11693, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 11728, "content": "3", "reasoning": "", "tokens": 1 },
+        { "at": 11728, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 11756, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 11756, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11794, "content": "Exp", "reasoning": "", "tokens": 1 },
+        { "at": 11794, "content": "lo", "reasoning": "", "tokens": 1 },
+        { "at": 11826, "content": "its", "reasoning": "", "tokens": 1 },
+        { "at": 11826, "content": " shared", "reasoning": "", "tokens": 1 },
+        {
+          "at": 11861,
+          "content": " credentials",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 11892, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 11892, "content": "kind", "reasoning": "", "tokens": 1 },
+        { "at": 11924, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11924, "content": "failure", "reasoning": "", "tokens": 1 },
+        { "at": 11959, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 11959, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 11990, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 11990, "content": "Agents", "reasoning": "", "tokens": 1 },
+        { "at": 12025, "content": " use", "reasoning": "", "tokens": 1 },
+        { "at": 12061, "content": " valid", "reasoning": "", "tokens": 1 },
+        { "at": 12103, "content": " shared", "reasoning": "", "tokens": 1 },
+        { "at": 12135, "content": " keys", "reasoning": "", "tokens": 1 },
+        { "at": 12171, "content": " to", "reasoning": "", "tokens": 1 },
+        { "at": 12171, "content": " breach", "reasoning": "", "tokens": 1 },
+        { "at": 12206, "content": " service", "reasoning": "", "tokens": 1 },
+        { "at": 12206, "content": " boundaries", "reasoning": "", "tokens": 1 },
+        { "at": 12241, "content": ".\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 12241, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 12276, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 12276, "content": "6", "reasoning": "", "tokens": 1 },
+        { "at": 12314, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 12349, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 12349, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12388, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 12388, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 12431, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 12482, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 12482, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12482, "content": "node", "reasoning": "", "tokens": 1 },
+        { "at": 12517, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 12517, "content": "id", "reasoning": "", "tokens": 1 },
+        { "at": 12551, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12551, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 12593, "content": "3", "reasoning": "", "tokens": 1 },
+        { "at": 12593, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 12625, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 12625, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12670, "content": "Art", "reasoning": "", "tokens": 1 },
+        { "at": 12670, "content": "if", "reasoning": "", "tokens": 1 },
+        { "at": 12714, "content": "actory", "reasoning": "", "tokens": 1 },
+        { "at": 12714, "content": " Service", "reasoning": "", "tokens": 1 },
+        { "at": 12752, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 12752, "content": "boundary", "reasoning": "", "tokens": 1 },
+        { "at": 12788, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12788, "content": "shared", "reasoning": "", "tokens": 1 },
+        { "at": 12820, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 12820, "content": "role", "reasoning": "", "tokens": 1 },
+        { "at": 12853, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12853, "content": "process", "reasoning": "", "tokens": 1 },
+        { "at": 12889, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 12889, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 12918, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 12918, "content": "Host", "reasoning": "", "tokens": 1 },
+        { "at": 12950, "content": "s", "reasoning": "", "tokens": 1 },
+        { "at": 12950, "content": " message", "reasoning": "", "tokens": 1 },
+        { "at": 12993, "content": " board", "reasoning": "", "tokens": 1 },
+        { "at": 13032, "content": " and", "reasoning": "", "tokens": 1 },
+        { "at": 13032, "content": " vulnerable", "reasoning": "", "tokens": 1 },
+        { "at": 13073, "content": " endpoints", "reasoning": "", "tokens": 1 },
+        { "at": 13112, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 13112, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 13150, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 13150, "content": "6", "reasoning": "", "tokens": 1 },
+        { "at": 13190, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 13225, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 13225, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13266, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 13266, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 13305, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 13342, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 13342, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13375, "content": "edge", "reasoning": "", "tokens": 1 },
+        { "at": 13375, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 13409, "content": "from", "reasoning": "", "tokens": 1 },
+        { "at": 13409, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13446, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 13446, "content": "3", "reasoning": "", "tokens": 1 },
+        { "at": 13481, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 13481, "content": "to", "reasoning": "", "tokens": 1 },
+        { "at": 13515, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13515, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 13553, "content": "4", "reasoning": "", "tokens": 1 },
+        { "at": 13553, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 13580, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 13580, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13617, "content": "Rel", "reasoning": "", "tokens": 1 },
+        { "at": 13650, "content": "ays", "reasoning": "", "tokens": 1 },
+        { "at": 13650, "content": " requests", "reasoning": "", "tokens": 1 },
+        { "at": 13687, "content": " externally", "reasoning": "", "tokens": 1 },
+        { "at": 13725, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 13725, "content": "kind", "reasoning": "", "tokens": 1 },
+        { "at": 13766, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13766, "content": "failure", "reasoning": "", "tokens": 1 },
+        { "at": 13801, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 13801, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 13834, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 13834, "content": "Service", "reasoning": "", "tokens": 1 },
+        { "at": 13869, "content": " flaws", "reasoning": "", "tokens": 1 },
+        { "at": 13869, "content": " allow", "reasoning": "", "tokens": 1 },
+        {
+          "at": 13909,
+          "content": " unauthorized",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 13946, "content": " outbound", "reasoning": "", "tokens": 1 },
+        { "at": 13946, "content": " internet", "reasoning": "", "tokens": 1 },
+        { "at": 13982, "content": " e", "reasoning": "", "tokens": 1 },
+        { "at": 14019, "content": "gress", "reasoning": "", "tokens": 1 },
+        { "at": 14019, "content": " paths", "reasoning": "", "tokens": 1 },
+        { "at": 14057, "content": ".\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14057, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 14092, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 14092, "content": "8", "reasoning": "", "tokens": 1 },
+        { "at": 14129, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 14129, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 14164, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14164, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 14203, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 14241, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 14241, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 14273, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14273, "content": "node", "reasoning": "", "tokens": 1 },
+        { "at": 14306, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14306, "content": "id", "reasoning": "", "tokens": 1 },
+        { "at": 14349, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14349, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 14387, "content": "4", "reasoning": "", "tokens": 1 },
+        { "at": 14387, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14420, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 14420, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14459, "content": "H", "reasoning": "", "tokens": 1 },
+        { "at": 14459, "content": "ugging", "reasoning": "", "tokens": 1 },
+        { "at": 14510, "content": " Face", "reasoning": "", "tokens": 1 },
+        { "at": 14546, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14583, "content": "boundary", "reasoning": "", "tokens": 1 },
+        { "at": 14583, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14621, "content": "external", "reasoning": "", "tokens": 1 },
+        { "at": 14621, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14658, "content": "role", "reasoning": "", "tokens": 1 },
+        { "at": 14658, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14689, "content": "process", "reasoning": "", "tokens": 1 },
+        { "at": 14689, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14719, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 14719, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 14752, "content": "S", "reasoning": "", "tokens": 1 },
+        { "at": 14793, "content": "uffers", "reasoning": "", "tokens": 1 },
+        { "at": 14793, "content": " credential", "reasoning": "", "tokens": 1 },
+        { "at": 14830, "content": " theft", "reasoning": "", "tokens": 1 },
+        { "at": 14830, "content": " and", "reasoning": "", "tokens": 1 },
+        { "at": 14873, "content": " code", "reasoning": "", "tokens": 1 },
+        { "at": 14909, "content": " execution", "reasoning": "", "tokens": 1 },
+        { "at": 14909, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 14942, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 14942, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 14979, "content": "9", "reasoning": "", "tokens": 1 },
+        { "at": 14979, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 15018, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 15018, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15057, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 15057, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 15100, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 15143, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 15143, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15177, "content": "edge", "reasoning": "", "tokens": 1 },
+        { "at": 15177, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 15209, "content": "from", "reasoning": "", "tokens": 1 },
+        { "at": 15209, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15244, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 15244, "content": "4", "reasoning": "", "tokens": 1 },
+        { "at": 15281, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 15281, "content": "to", "reasoning": "", "tokens": 1 },
+        { "at": 15316, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15316, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 15351, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 15351, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 15378, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 15378, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15408, "content": "Gener", "reasoning": "", "tokens": 1 },
+        { "at": 15442, "content": "ates", "reasoning": "", "tokens": 1 },
+        { "at": 15442, "content": " behavioral", "reasoning": "", "tokens": 1 },
+        { "at": 15485, "content": " alerts", "reasoning": "", "tokens": 1 },
+        { "at": 15485, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 15517, "content": "kind", "reasoning": "", "tokens": 1 },
+        { "at": 15517, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15548, "content": "feedback", "reasoning": "", "tokens": 1 },
+        { "at": 15548, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 15577, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 15577, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15611, "content": "Internal", "reasoning": "", "tokens": 1 },
+        { "at": 15611, "content": " anomaly", "reasoning": "", "tokens": 1 },
+        { "at": 15651, "content": " detection", "reasoning": "", "tokens": 1 },
+        { "at": 15651, "content": " flags", "reasoning": "", "tokens": 1 },
+        { "at": 15694, "content": " unusual", "reasoning": "", "tokens": 1 },
+        { "at": 15694, "content": " research", "reasoning": "", "tokens": 1 },
+        { "at": 15729, "content": " activity", "reasoning": "", "tokens": 1 },
+        { "at": 15730, "content": " patterns", "reasoning": "", "tokens": 1 },
+        { "at": 15771, "content": ".\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 15771, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 15803, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 15803, "content": "1", "reasoning": "", "tokens": 1 },
+        { "at": 15843, "content": "4", "reasoning": "", "tokens": 1 },
+        { "at": 15883, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 15883, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 15918, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 15918, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 15957, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 16011, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 16011, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 16011, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16011, "content": "node", "reasoning": "", "tokens": 1 },
+        { "at": 16111, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 16111, "content": "id", "reasoning": "", "tokens": 1 },
+        { "at": 16111, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16111, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 16111, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 16151, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 16151, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 16252, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16252, "content": "Open", "reasoning": "", "tokens": 1 },
+        { "at": 16296, "content": "AI", "reasoning": "", "tokens": 1 },
+        { "at": 16336, "content": " Monitoring", "reasoning": "", "tokens": 1 },
+        { "at": 16336, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 16371, "content": "boundary", "reasoning": "", "tokens": 1 },
+        { "at": 16371, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16406, "content": "shared", "reasoning": "", "tokens": 1 },
+        { "at": 16406, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 16439, "content": "role", "reasoning": "", "tokens": 1 },
+        { "at": 16439, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16479, "content": "monitor", "reasoning": "", "tokens": 1 },
+        { "at": 16479, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 16510, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 16510, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16542, "content": "Detect", "reasoning": "", "tokens": 1 },
+        { "at": 16542, "content": "s", "reasoning": "", "tokens": 1 },
+        { "at": 16576, "content": " identity", "reasoning": "", "tokens": 1 },
+        { "at": 16611, "content": "-related", "reasoning": "", "tokens": 1 },
+        { "at": 16658, "content": " irregular", "reasoning": "", "tokens": 1 },
+        { "at": 16700, "content": " API", "reasoning": "", "tokens": 1 },
+        { "at": 16737, "content": " activity", "reasoning": "", "tokens": 1 },
+        { "at": 16737, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 16774, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 16774, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 16818, "content": "1", "reasoning": "", "tokens": 1 },
+        { "at": 16818, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 16862, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 16862, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 16900, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 16900, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 16941, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 16981, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 16981, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 17014, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17014, "content": "edge", "reasoning": "", "tokens": 1 },
+        { "at": 17047, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 17047, "content": "from", "reasoning": "", "tokens": 1 },
+        { "at": 17082, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17082, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 17116, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 17116, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 17151, "content": "to", "reasoning": "", "tokens": 1 },
+        { "at": 17151, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17190, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 17190, "content": "6", "reasoning": "", "tokens": 1 },
+        { "at": 17225, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 17225, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 17254, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17254, "content": "Tr", "reasoning": "", "tokens": 1 },
+        { "at": 17289, "content": "iggers", "reasoning": "", "tokens": 1 },
+        {
+          "at": 17289,
+          "content": " containment",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 17323, "content": " response", "reasoning": "", "tokens": 1 },
+        { "at": 17323, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 17354, "content": "kind", "reasoning": "", "tokens": 1 },
+        { "at": 17354, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17389, "content": "action", "reasoning": "", "tokens": 1 },
+        { "at": 17435, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 17435, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 17435, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17435, "content": "Respond", "reasoning": "", "tokens": 1 },
+        { "at": 17473, "content": "ers", "reasoning": "", "tokens": 1 },
+        { "at": 17473, "content": " halt", "reasoning": "", "tokens": 1 },
+        {
+          "at": 17518,
+          "content": " evaluations",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 17560, "content": " after", "reasoning": "", "tokens": 1 },
+        { "at": 17599, "content": " delayed", "reasoning": "", "tokens": 1 },
+        { "at": 17639, "content": " internal", "reasoning": "", "tokens": 1 },
+        {
+          "at": 17670,
+          "content": " correlation",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 17708, "content": " analysis", "reasoning": "", "tokens": 1 },
+        { "at": 17708, "content": ".\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 17743, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 17743, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 17779, "content": "1", "reasoning": "", "tokens": 1 },
+        { "at": 17779, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 17927, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 17927, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 17927, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 17927, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 17927, "content": "\"}", "reasoning": "", "tokens": 1 },
+        { "at": 17927, "content": "\n{\"", "reasoning": "", "tokens": 2 },
+        { "at": 17927, "content": "type", "reasoning": "", "tokens": 1 },
+        { "at": 18021, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18021, "content": "node", "reasoning": "", "tokens": 1 },
+        { "at": 18118, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 18118, "content": "id", "reasoning": "", "tokens": 1 },
+        { "at": 18118, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18118, "content": "n", "reasoning": "", "tokens": 1 },
+        { "at": 18118, "content": "6", "reasoning": "", "tokens": 1 },
+        { "at": 18158, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 18158, "content": "label", "reasoning": "", "tokens": 1 },
+        { "at": 18259, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18259, "content": "Inc", "reasoning": "", "tokens": 1 },
+        { "at": 18301, "content": "ident", "reasoning": "", "tokens": 1 },
+        { "at": 18301, "content": " Response", "reasoning": "", "tokens": 1 },
+        { "at": 18336, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 18336, "content": "boundary", "reasoning": "", "tokens": 1 },
+        { "at": 18375, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18375, "content": "shared", "reasoning": "", "tokens": 1 },
+        { "at": 18412, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 18412, "content": "role", "reasoning": "", "tokens": 1 },
+        { "at": 18447, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18447, "content": "controller", "reasoning": "", "tokens": 1 },
+        { "at": 18480, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 18480, "content": "detail", "reasoning": "", "tokens": 1 },
+        { "at": 18511, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18511, "content": "St", "reasoning": "", "tokens": 1 },
+        { "at": 18551, "content": "ops", "reasoning": "", "tokens": 1 },
+        {
+          "at": 18551,
+          "content": " evaluations",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 18594, "content": " and", "reasoning": "", "tokens": 1 },
+        { "at": 18594, "content": " rebuild", "reasoning": "", "tokens": 1 },
+        { "at": 18637, "content": "s", "reasoning": "", "tokens": 1 },
+        {
+          "at": 18637,
+          "content": " compromised",
+          "reasoning": "",
+          "tokens": 1
+        },
+        {
+          "at": 18679,
+          "content": " infrastructure",
+          "reasoning": "",
+          "tokens": 1
+        },
+        { "at": 18719, "content": "\",\"", "reasoning": "", "tokens": 1 },
+        { "at": 18719, "content": "pages", "reasoning": "", "tokens": 1 },
+        { "at": 18753, "content": "\":[", "reasoning": "", "tokens": 1 },
+        { "at": 18753, "content": "1", "reasoning": "", "tokens": 1 },
+        { "at": 18794, "content": "5", "reasoning": "", "tokens": 1 },
+        { "at": 18794, "content": "],\"", "reasoning": "", "tokens": 1 },
+        { "at": 18835, "content": "basis", "reasoning": "", "tokens": 1 },
+        { "at": 18835, "content": "\":\"", "reasoning": "", "tokens": 1 },
+        { "at": 18878, "content": "reported", "reasoning": "", "tokens": 1 },
+        { "at": 18878, "content": "\"}", "reasoning": "", "tokens": 1 }
       ],
-      "samples": [
-        {
-          "at": 2564,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 20160,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 20160
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 2663,
-          "activity": {
-            "hotHits": 179,
-            "warmHits": 280,
-            "coldHits": 21,
-            "unknownHits": 0,
-            "totalHits": 480
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 2875,
-          "activity": {
-            "hotHits": 693,
-            "warmHits": 1120,
-            "coldHits": 107,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 3133,
-          "activity": {
-            "hotHits": 898,
-            "warmHits": 1400,
-            "coldHits": 102,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 3297,
-          "activity": {
-            "hotHits": 666,
-            "warmHits": 1120,
-            "coldHits": 134,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 3495,
-          "activity": {
-            "hotHits": 1008,
-            "warmHits": 1680,
-            "coldHits": 192,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 3705,
-          "activity": {
-            "hotHits": 849,
-            "warmHits": 1400,
-            "coldHits": 151,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 3874,
-          "activity": {
-            "hotHits": 636,
-            "warmHits": 1120,
-            "coldHits": 164,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 4115,
-          "activity": {
-            "hotHits": 993,
-            "warmHits": 1680,
-            "coldHits": 207,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 4285,
-          "activity": {
-            "hotHits": 436,
-            "warmHits": 840,
-            "coldHits": 164,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 4495,
-          "activity": {
-            "hotHits": 872,
-            "warmHits": 1400,
-            "coldHits": 128,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 4696,
-          "activity": {
-            "hotHits": 630,
-            "warmHits": 1120,
-            "coldHits": 170,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 4917,
-          "activity": {
-            "hotHits": 727,
-            "warmHits": 1400,
-            "coldHits": 273,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 5116,
-          "activity": {
-            "hotHits": 614,
-            "warmHits": 1120,
-            "coldHits": 186,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 5310,
-          "activity": {
-            "hotHits": 582,
-            "warmHits": 1120,
-            "coldHits": 218,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 5558,
-          "activity": {
-            "hotHits": 559,
-            "warmHits": 1120,
-            "coldHits": 241,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 5717,
-          "activity": {
-            "hotHits": 446,
-            "warmHits": 840,
-            "coldHits": 154,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 5916,
-          "activity": {
-            "hotHits": 640,
-            "warmHits": 1120,
-            "coldHits": 160,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 6136,
-          "activity": {
-            "hotHits": 630,
-            "warmHits": 1120,
-            "coldHits": 170,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        },
-        {
-          "at": 6277,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 0,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 0
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          }
-        }
+      "samples": [],
+      "progress": [
+        { "at": 0, "stage": "prefill", "done": 0, "reused": 0, "total": 21878 },
+        { "at": 6948, "stage": "generating" }
       ],
       "statsSamples": [
         {
-          "at": 250,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 331.1,
-          "decodeTps": 0
-        },
-        {
-          "at": 431,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 181.2,
-          "decodeTps": 0
-        },
-        {
-          "at": 661,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 119.2,
-          "decodeTps": 0
-        },
-        {
-          "at": 841,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 90.2,
-          "decodeTps": 0
-        },
-        {
-          "at": 1041,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 72,
-          "decodeTps": 0
-        },
-        {
-          "at": 1242,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 59.9,
-          "decodeTps": 0
-        },
-        {
-          "at": 1442,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 51.4,
-          "decodeTps": 0
-        },
-        {
-          "at": 1642,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 45,
-          "decodeTps": 0
-        },
-        {
-          "at": 1846,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 40,
-          "decodeTps": 0
-        },
-        {
-          "at": 2042,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 36,
-          "decodeTps": 0
-        },
-        {
-          "at": 2243,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 32.7,
-          "decodeTps": 0
-        },
-        {
-          "at": 2442,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 30,
-          "decodeTps": 0
-        },
-        {
-          "at": 2670,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 27.4,
-          "decodeTps": 34
-        },
-        {
-          "at": 2854,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 25.6,
-          "decodeTps": 21.1
-        },
-        {
-          "at": 3044,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 23.9,
-          "decodeTps": 22.9
-        },
-        {
-          "at": 3254,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 22.4,
-          "decodeTps": 22
-        },
-        {
-          "at": 3454,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 21.1,
-          "decodeTps": 23.9
-        },
-        {
-          "at": 3654,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 19.9,
-          "decodeTps": 24.1
-        },
-        {
-          "at": 3854,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 18.9,
-          "decodeTps": 23.4
-        },
-        {
-          "at": 4054,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 18,
-          "decodeTps": 24.3
-        },
-        {
-          "at": 4255,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 17.1,
-          "decodeTps": 23.2
-        },
-        {
-          "at": 4454,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 16.3,
-          "decodeTps": 23.4
-        },
-        {
-          "at": 4655,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 15.6,
-          "decodeTps": 23.1
-        },
-        {
-          "at": 4855,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 15,
-          "decodeTps": 22.8
-        },
-        {
-          "at": 5045,
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 0,
-          "decodeTps": 23
-        },
-        {
-          "at": 5261,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 0,
-          "decodeTps": 22.7
-        },
-        {
-          "at": 5455,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 0,
-          "decodeTps": 22.2
-        },
-        {
-          "at": 5645,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 0,
-          "decodeTps": 22
-        },
-        {
-          "at": 5856,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 0,
-          "decodeTps": 21.9
-        },
-        {
-          "at": 6057,
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1,
-          "prefillTps": 0,
-          "decodeTps": 21.5
-        },
-        {
-          "at": 6246,
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
+          "at": 1,
+          "contextTokens": 0,
           "activeRequests": 0,
-          "prefillTps": 0,
-          "decodeTps": 20.6
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 201,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 402,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 602,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 803,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 1003,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 1204,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 1404,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 1605,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 1805,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 2005,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 2206,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 2406,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 2607,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 2807,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 3008,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 3208,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 3409,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 3609,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 3809,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 4010,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 4211,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 4411,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 4612,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 4812,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 5013,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 5213,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 5413,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 5614,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 5814,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 6015,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 6215,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 6416,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 6616,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 6817,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 7017,
+          "contextTokens": 0,
+          "activeRequests": 1,
+          "decodeTps": 47.32307521022429,
+          "vramBytes": 15869149184
+        },
+        {
+          "at": 7218,
+          "contextTokens": 21883,
+          "activeRequests": 1,
+          "decodeTps": 0.6934027844452789,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 7418,
+          "contextTokens": 21885,
+          "activeRequests": 1,
+          "decodeTps": 0.9466631105420189,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 7619,
+          "contextTokens": 21891,
+          "activeRequests": 1,
+          "decodeTps": 1.7115764242275935,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 7819,
+          "contextTokens": 21898,
+          "activeRequests": 1,
+          "decodeTps": 2.5642366411328146,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 8020,
+          "contextTokens": 21902,
+          "activeRequests": 1,
+          "decodeTps": 3.01133592679044,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 8220,
+          "contextTokens": 21910,
+          "activeRequests": 1,
+          "decodeTps": 27.913077813271617,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 8421,
+          "contextTokens": 21914,
+          "activeRequests": 1,
+          "decodeTps": 26.577605647409925,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 8621,
+          "contextTokens": 21924,
+          "activeRequests": 1,
+          "decodeTps": 32.59324059450189,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 8822,
+          "contextTokens": 21932,
+          "activeRequests": 1,
+          "decodeTps": 34.76562130615274,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 9022,
+          "contextTokens": 21940,
+          "activeRequests": 1,
+          "decodeTps": 37.505820607259665,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 9223,
+          "contextTokens": 21952,
+          "activeRequests": 1,
+          "decodeTps": 41.748602233189395,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 9423,
+          "contextTokens": 21959,
+          "activeRequests": 1,
+          "decodeTps": 44.14561131270962,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 9624,
+          "contextTokens": 21969,
+          "activeRequests": 1,
+          "decodeTps": 45.32871469607776,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 9824,
+          "contextTokens": 21979,
+          "activeRequests": 1,
+          "decodeTps": 46.068283252388255,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 10025,
+          "contextTokens": 21990,
+          "activeRequests": 1,
+          "decodeTps": 48.49195729998802,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 10225,
+          "contextTokens": 21998,
+          "activeRequests": 1,
+          "decodeTps": 45.43306445923972,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 10426,
+          "contextTokens": 22006,
+          "activeRequests": 1,
+          "decodeTps": 46.81937986860723,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 10626,
+          "contextTokens": 22016,
+          "activeRequests": 1,
+          "decodeTps": 46.88780675552152,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 10827,
+          "contextTokens": 22028,
+          "activeRequests": 1,
+          "decodeTps": 48.305489896154114,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 11027,
+          "contextTokens": 22039,
+          "activeRequests": 1,
+          "decodeTps": 48.35620468819464,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 11228,
+          "contextTokens": 22045,
+          "activeRequests": 1,
+          "decodeTps": 46.37096423706079,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 11428,
+          "contextTokens": 22054,
+          "activeRequests": 1,
+          "decodeTps": 46.81218212023157,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 11629,
+          "contextTokens": 22064,
+          "activeRequests": 1,
+          "decodeTps": 46.969902320686586,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 11829,
+          "contextTokens": 22076,
+          "activeRequests": 1,
+          "decodeTps": 47.8111494975099,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 12030,
+          "contextTokens": 22086,
+          "activeRequests": 1,
+          "decodeTps": 47.450168457684896,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 12230,
+          "contextTokens": 22093,
+          "activeRequests": 1,
+          "decodeTps": 48.81345922498895,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 12431,
+          "contextTokens": 22102,
+          "activeRequests": 1,
+          "decodeTps": 50.352951092584334,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 12631,
+          "contextTokens": 22115,
+          "activeRequests": 1,
+          "decodeTps": 50.803004947138845,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 12832,
+          "contextTokens": 22125,
+          "activeRequests": 1,
+          "decodeTps": 49.71704954773862,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 13032,
+          "contextTokens": 22134,
+          "activeRequests": 1,
+          "decodeTps": 48.87926815876857,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 13233,
+          "contextTokens": 22144,
+          "activeRequests": 1,
+          "decodeTps": 50.06430696422104,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 13433,
+          "contextTokens": 22154,
+          "activeRequests": 1,
+          "decodeTps": 50.93036989543524,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 13634,
+          "contextTokens": 22165,
+          "activeRequests": 1,
+          "decodeTps": 50.77779849815756,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 13834,
+          "contextTokens": 22176,
+          "activeRequests": 1,
+          "decodeTps": 50.285287861965855,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 14035,
+          "contextTokens": 22184,
+          "activeRequests": 1,
+          "decodeTps": 48.73512985311112,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 14235,
+          "contextTokens": 22194,
+          "activeRequests": 1,
+          "decodeTps": 51.338168304762476,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 14436,
+          "contextTokens": 22206,
+          "activeRequests": 1,
+          "decodeTps": 51.42050815043533,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 14636,
+          "contextTokens": 22214,
+          "activeRequests": 1,
+          "decodeTps": 48.80243524868988,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 14837,
+          "contextTokens": 22225,
+          "activeRequests": 1,
+          "decodeTps": 49.551615495662276,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 15037,
+          "contextTokens": 22234,
+          "activeRequests": 1,
+          "decodeTps": 50.18924385242328,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 15238,
+          "contextTokens": 22244,
+          "activeRequests": 1,
+          "decodeTps": 49.68858054805858,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 15438,
+          "contextTokens": 22255,
+          "activeRequests": 1,
+          "decodeTps": 49.965564369852316,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 15639,
+          "contextTokens": 22267,
+          "activeRequests": 1,
+          "decodeTps": 53.45455702052121,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 15839,
+          "contextTokens": 22277,
+          "activeRequests": 1,
+          "decodeTps": 53.47579925323205,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 16040,
+          "contextTokens": 22288,
+          "activeRequests": 1,
+          "decodeTps": 54.27931304601554,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 16240,
+          "contextTokens": 22295,
+          "activeRequests": 1,
+          "decodeTps": 54.556970557047265,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 16441,
+          "contextTokens": 22306,
+          "activeRequests": 1,
+          "decodeTps": 49.45006188636461,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 16641,
+          "contextTokens": 22314,
+          "activeRequests": 1,
+          "decodeTps": 47.40153028836718,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 16842,
+          "contextTokens": 22322,
+          "activeRequests": 1,
+          "decodeTps": 44.33998784126589,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 17042,
+          "contextTokens": 22332,
+          "activeRequests": 1,
+          "decodeTps": 43.892678844917185,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 17243,
+          "contextTokens": 22344,
+          "activeRequests": 1,
+          "decodeTps": 45.65297011785586,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 17443,
+          "contextTokens": 22357,
+          "activeRequests": 1,
+          "decodeTps": 51.49119151262257,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 17644,
+          "contextTokens": 22363,
+          "activeRequests": 1,
+          "decodeTps": 47.66207781369186,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 17844,
+          "contextTokens": 22370,
+          "activeRequests": 1,
+          "decodeTps": 49.750522472773184,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 18045,
+          "contextTokens": 22380,
+          "activeRequests": 1,
+          "decodeTps": 47.63044773990251,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 18246,
+          "contextTokens": 22387,
+          "activeRequests": 1,
+          "decodeTps": 46.689622470563755,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 18446,
+          "contextTokens": 22397,
+          "activeRequests": 1,
+          "decodeTps": 42.998162128578905,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 18647,
+          "contextTokens": 22409,
+          "activeRequests": 1,
+          "decodeTps": 45.28090378618377,
+          "vramBytes": 16046358528
+        },
+        {
+          "at": 18847,
+          "contextTokens": 22418,
+          "activeRequests": 1,
+          "decodeTps": 45.45099515507826,
+          "vramBytes": 16046358528
         }
       ],
-      "usage": { "prompt_tokens": 72, "completion_tokens": 75 },
+      "usage": {
+        "prompt_tokens": 21878,
+        "completion_tokens": 543,
+        "cached_tokens": 0
+      },
       "finishReason": "stop",
-      "durationMs": 6277,
+      "durationMs": 18956,
       "metrics": {
-        "ttftMs": 2592,
-        "generationMs": 3394,
-        "completionTokens": 75,
-        "tokensPerSecond": 21.803182086034177
-      }
+        "ttftMs": 6948,
+        "generationMs": 11930,
+        "completionTokens": 543,
+        "tokensPerSecond": 45.43168482816429
+      },
+      "inputSource": "https://cdn.openai.com/pdf/67869394-cb91-4c12-888c-5cbd85c7814c/OpenAI-Hugging-Face%20Incident-Technical-Report.pdf"
     }
-  ]
+  ],
+  "source": {
+    "title": "OpenAI <> HuggingFace cyber incident postmortem",
+    "url": "https://cdn.openai.com/pdf/67869394-cb91-4c12-888c-5cbd85c7814c/OpenAI-Hugging-Face%20Incident-Technical-Report.pdf"
+  },
+  "document": {
+    "pages": 38,
+    "sections": [
+      { "from": 1, "label": "Technical report" },
+      { "from": 4, "label": "Incident overview" },
+      { "from": 5, "label": "Evaluation constraints" },
+      { "from": 6, "label": "Early warning signals" },
+      { "from": 8, "label": "Boundary failures" },
+      { "from": 14, "label": "Detection and response" },
+      { "from": 17, "label": "Security lessons" },
+      { "from": 19, "label": "Alignment lessons" },
+      { "from": 25, "label": "Proposed controls" },
+      { "from": 32, "label": "Event timeline" }
+    ]
+  },
+  "benchmark": {
+    "warmupRequests": 2,
+    "measuredRequests": 5,
+    "cacheReportEnabled": true,
+    "selection": "nearest median TTFT among runs whose graph names a failure edge",
+    "results": [
+      {
+        "usage": {
+          "prompt_tokens": 21877,
+          "completion_tokens": 601,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6947,
+        "generationMs": 13583,
+        "completionTokens": 601,
+        "tokensPerSecond": 44.172863137745715
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21877,
+          "completion_tokens": 643,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6924,
+        "generationMs": 14186,
+        "completionTokens": 643,
+        "tokensPerSecond": 45.25588608487241
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21878,
+          "completion_tokens": 588,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6990,
+        "generationMs": 12938,
+        "completionTokens": 588,
+        "tokensPerSecond": 45.37022723759468
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21878,
+          "completion_tokens": 543,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6948,
+        "generationMs": 11930,
+        "completionTokens": 543,
+        "tokensPerSecond": 45.43168482816429
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21877,
+          "completion_tokens": 564,
+          "cached_tokens": 0
+        },
+        "ttftMs": 7044,
+        "generationMs": 12577,
+        "completionTokens": 564,
+        "tokensPerSecond": 44.76425220640852
+      }
+    ]
+  },
+  "performanceReference": {
+    "engine": "oom-inference",
+    "recordedAt": "2026-10-06T15:27:27.000Z",
+    "build": "6a92a8f91add0efaba01d8a978b36112048ab235",
+    "selectedMetrics": {
+      "ttftMs": 6934,
+      "generationMs": 13727,
+      "completionTokens": 596,
+      "tokensPerSecond": 43.345232024477305
+    },
+    "results": [
+      {
+        "usage": {
+          "prompt_tokens": 21879,
+          "completion_tokens": 596,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6934,
+        "generationMs": 13727,
+        "completionTokens": 596,
+        "tokensPerSecond": 43.345232024477305
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21878,
+          "completion_tokens": 543,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6919,
+        "generationMs": 12823,
+        "completionTokens": 543,
+        "tokensPerSecond": 42.267800046790924
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21872,
+          "completion_tokens": 634,
+          "cached_tokens": 0
+        },
+        "ttftMs": 7000,
+        "generationMs": 13933,
+        "completionTokens": 634,
+        "tokensPerSecond": 45.43170889255724
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21875,
+          "completion_tokens": 590,
+          "cached_tokens": 0
+        },
+        "ttftMs": 6910,
+        "generationMs": 13629,
+        "completionTokens": 590,
+        "tokensPerSecond": 43.216670335314404
+      },
+      {
+        "usage": {
+          "prompt_tokens": 21879,
+          "completion_tokens": 547,
+          "cached_tokens": 0
+        },
+        "ttftMs": 7015,
+        "generationMs": 12363,
+        "completionTokens": 547,
+        "tokensPerSecond": 44.16403785488959
+      }
+    ]
+  },
+  "review": {},
+  "reviewNotes": "Not source-reviewed: the graph shows the model's own page references."
 }

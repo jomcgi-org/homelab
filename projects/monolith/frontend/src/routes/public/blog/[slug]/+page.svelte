@@ -1,31 +1,31 @@
 <script>
+  import { landingResults } from "$lib/public/posts/landing-results.js";
+  import Interactive from "$lib/public/posts/ix/Interactive.svelte";
+  import { splitInteractive } from "$lib/public/posts/ix/split.js";
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
   import { Seo } from "$lib/public/components";
+  import SchemeToggle from "$lib/public/components/SchemeToggle.svelte";
   import { formatDate } from "../blog.js";
   import Trail from "../Trail.svelte";
 
   let { data } = $props();
   let activeId = $state("");
-
-  // A post's recording is a client-only component spliced into one section:
-  // it mounts just before the `before` heading of the section that contains
-  // `within`, so the markdown around it stays server-rendered.
+  let hasLanding = $derived(data.slug === "125b-on-a-4090");
+  // The landing's two recorded demos: reading a long report (prefill-heavy) and
+  // writing a change to a codebase (decode with draft tokens).
+  const demos = [
+    { kind: "research", label: "Long-context research" },
+    { kind: "coding", label: "Agentic coding" },
+  ];
+  let demo = $state("research");
   const replays = {
-    "125b-on-a-4090": {
-      within: '<h3 id="31-4090-demo"',
-      before: '<h3 id="32-improvements"',
-      load: () => import("$lib/public/posts/QwenReplay.svelte"),
-    },
-    // A post with no sections mounts its recording after the intro.
     "ember-conformance": {
       load: () => import("$lib/public/posts/ConformanceReplay.svelte"),
     },
   };
-  const replay = replays[data.slug];
-  // A single-page post has no index to follow, so the spine column goes and
-  // the breadcrumb sits above the article instead.
-  const single = !data.toc.length;
+  let replay = $derived(replays[data.slug]);
+  let single = $derived(!data.toc.length && !hasLanding);
 
   // "5.1 Prefill was copying whole layers" -> ["5.1", "Prefill was ..."] so
   // the number sits in its own fixed column and the titles align.
@@ -87,13 +87,15 @@
       .matches
       ? "auto"
       : "smooth";
-    if (target) target.scrollIntoView({ behavior, block: "start" });
-    else window.scrollTo({ top: 0, behavior });
+    if (target) {
+      target.scrollIntoView({ behavior, block: "start" });
+      if (id === "post-body") target.focus({ preventScroll: true });
+    } else window.scrollTo({ top: 0, behavior });
   }
 
   $effect(() => {
     const headings = document.querySelectorAll(
-      ".post-frame h2[id], .post-frame h3[id]",
+      ".post-page h2[id], .post-page h3[id]",
     );
     if (!headings.length) return;
     first = headings[0].id;
@@ -176,9 +178,84 @@
   type="article"
 />
 
-<main class="td post-page">
+<main class="td post-page" class:with-landing={hasLanding}>
   <div class="frame">
-    <div class="journal" class:single>
+    {#if hasLanding}
+      <section class="demo-landing" aria-labelledby="landing-title">
+        <header class="landing-header">
+          <div class="landing-topline">
+            <nav aria-label="Blog navigation">
+              <a href="/">jomcgi.dev</a><span aria-hidden="true">/</span><a
+                href="/blog">blog</a
+              >
+            </nav>
+            <SchemeToggle />
+          </div>
+          <h1 id="landing-title">{data.title}</h1>
+          <p class="landing-hardware">Quantisation isn't always the answer</p>
+        </header>
+        <section class="landing-demo" aria-labelledby="inference-demo">
+          <h2 class="sr-only" id="inference-demo">Inference Demo</h2>
+          <div class="demo-switch" role="group" aria-label="Demo">
+            {#each demos as d}
+              <button
+                type="button"
+                aria-pressed={demo === d.kind}
+                onclick={() => (demo = d.kind)}>{d.label}</button
+              >
+            {/each}
+          </div>
+          {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")] )}
+            <table class="landing-results">
+              <caption>Recorded on the RTX 4090</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Request</th>
+                  <th scope="col">Input tokens</th>
+                  <th scope="col">First token</th>
+                  <th scope="col">Decode</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each landingResults as row}
+                  <tr>
+                    <th scope="row">{row.label}</th>
+                    <td>{row.inputTokens.toLocaleString("en-US")}</td>
+                    <td>{row.firstTokenSeconds.toFixed(2)} s</td>
+                    <td>{row.decodeRate.toFixed(1)} tok/s</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {:then [replay, coding]}
+            {#key demo}
+              {#if demo === "coding"}
+                <replay.default
+                  landing
+                  kind="coding"
+                  recording={coding.default}
+                />
+              {:else}
+                <replay.default landing />
+              {/if}
+            {/key}
+          {:catch}
+            <p>
+              The inference demo could not load. Refresh the page to try again.
+            </p>
+          {/await}
+        </section>
+        <a class="read-post" href="#post-body" onclick={onIndexClick}
+          >Read the post ↓</a
+        >
+      </section>
+    {/if}
+    <div
+      class="journal"
+      class:single
+      id={hasLanding ? "post-body" : undefined}
+      tabindex="-1"
+    >
       {#if single}
         <div class="trail-inline"><Trail post={data.title} /></div>
       {:else}
@@ -187,13 +264,14 @@
             <Trail post={data.title} />
           </div>
           {#if data.toc.length}
-            <nav class="toc" aria-label="Sections" onclick={onIndexClick}>
+            <nav class="toc" aria-label="Sections">
               <p class="sec-label">/ Index</p>
               <ol>
                 {#each data.toc as section}
                   <li>
                     <a
                       href={`#${section.id}`}
+                      onclick={onIndexClick}
                       class:active={activeId === section.id}
                       aria-current={activeId === section.id
                         ? "location"
@@ -208,6 +286,7 @@
                           <li>
                             <a
                               href={`#${sub.id}`}
+                              onclick={onIndexClick}
                               class:active={activeId === sub.id}
                               aria-current={activeId === sub.id
                                 ? "location"
@@ -224,19 +303,24 @@
               </ol>
             </nav>
           {/if}
-        </aside>
-      {/if}
+        </aside>{/if}
 
       <div class="post-frame">
         <article class="edition">
-          <p class="ed-head">
-            <time datetime={data.date}>{formatDate(data.date)}</time>
-          </p>
+          {#if !hasLanding}<p class="ed-head">
+              <time datetime={data.date}>{formatDate(data.date)}</time>
+            </p>
 
-          <header class="ed-lead">
-            <h1>{data.title}</h1>
-            {#if !single}<p>{data.summary}</p>{/if}
-          </header>
+            <header class="ed-lead">
+              <h1>{data.title}</h1>
+              {#if !single}<p>{data.summary}</p>{/if}
+            </header>{:else}<p class="ed-head">
+              <time datetime={data.date}>{formatDate(data.date)}</time>
+            </p>
+            <header class="ed-lead">
+              <h2>{data.title}</h2>
+              <p>{data.summary}</p>
+            </header>{/if}
 
           {#if data.preamble}
             <!-- Server-rendered, constrained first-party markdown. -->
@@ -266,21 +350,28 @@
             replay?.within &&
             section.includes(replay.within) &&
             replayBoundary >= 0}
-          <section class="edition post-body">
-            {@html showReplay ? section.slice(0, replayBoundary) : section}
-            {#if showReplay}
-              {#await replay.load()}
-                <p>Loading the recording...</p>
-              {:then module}
-                <module.default />
-              {:catch}
-                <p>
-                  The recording could not load. Refresh the page to try again.
-                </p>
-              {/await}
-              {@html section.slice(replayBoundary)}
-            {/if}
-          </section>
+          {#if !hasLanding || !section.startsWith('<h2 id="inference-demo"')}
+            <section class="edition post-body">
+              {#each splitInteractive(showReplay ? section.slice(0, replayBoundary) : section) as part}
+                {#if part.ix}
+                  <Interactive name={part.ix} fallback={part.fallback} />
+                {:else}
+                  {@html part.html}
+                {/if}
+              {/each}
+              {#if showReplay}
+                {#await replay.load()}
+                  <p>Loading the recording...</p>
+                {:then module}
+                  <module.default />
+                {:catch}
+                  <p>
+                    The recording could not load. Refresh the page to try again.
+                  </p>
+                {/await}
+                {@html section.slice(replayBoundary)}
+              {/if}
+            </section>{/if}
         {/each}
       </div>
     </div>
@@ -298,6 +389,121 @@
     font-size: 1rem;
   }
 
+  .demo-landing {
+    min-height: calc(100svh - 1.5rem);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding-bottom: 0.75rem;
+  }
+  .landing-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.8rem;
+  }
+  .landing-topline nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--ink-2);
+    font: 0.7rem var(--font-code);
+  }
+  .landing-topline a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.25rem;
+    color: inherit;
+    text-decoration: none;
+  }
+  .landing-topline a:hover {
+    color: var(--accent-ink);
+  }
+  .landing-header h1 {
+    margin: 0;
+    font-size: clamp(1.4rem, 2.8vw, 2rem);
+    line-height: 1.15;
+    letter-spacing: -0.025em;
+  }
+  .landing-hardware {
+    margin: 0.5rem 0 0.25rem;
+    color: var(--ink-2);
+    font: 0.75rem / 1.5 var(--font-code);
+  }
+  .landing-demo {
+    min-width: 0;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .demo-switch {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--ink);
+    width: fit-content;
+  }
+  .demo-switch button {
+    padding: 0.4rem 0.8rem;
+    min-height: 2.75rem;
+    border: 0;
+    background: var(--sheet);
+    color: var(--ink);
+    font: 0.75rem var(--font-code);
+    cursor: pointer;
+  }
+  .demo-switch button + button {
+    border-left: 1px solid var(--ink);
+  }
+  .demo-switch button[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--sheet);
+  }
+  .landing-results {
+    width: 100%;
+    border-collapse: collapse;
+    font: 0.8rem var(--font-code);
+  }
+  .landing-results caption {
+    padding-bottom: 0.5rem;
+    text-align: left;
+    color: var(--ink-2);
+  }
+  .landing-results th,
+  .landing-results td {
+    padding: 0.4rem 0.5rem 0.4rem 0;
+    text-align: left;
+    font-weight: normal;
+    border-bottom: 1px solid currentColor;
+  }
+  .landing-demo h2 {
+    /* Reloaded demo fragments keep the opening header in view. */
+    scroll-margin-top: 12rem;
+  }
+  .read-post {
+    align-self: flex-start;
+    margin-top: auto;
+    color: var(--accent-ink);
+    font: 0.75rem var(--font-code);
+    text-underline-offset: 0.2em;
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+  .with-landing .journal {
+    padding-top: 2rem;
+    scroll-margin-top: 1.5rem;
+    border-top: 1px solid var(--stroke);
+  }
   .post-page a:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: 3px;
@@ -322,7 +528,6 @@
     grid-column: 1;
     margin-bottom: 1.25rem;
   }
-
   .spine {
     position: sticky;
     top: 1.5rem;
@@ -425,7 +630,8 @@
     padding: 1rem;
   }
 
-  .ed-lead h1 {
+  .ed-lead h1,
+  .ed-lead h2 {
     max-width: 40ch;
     margin: 0;
     font-size: clamp(1.25rem, 2.5vw, 1.6rem);
@@ -585,6 +791,23 @@
 
   .post-body :global(blockquote p) {
     color: inherit;
+  }
+
+  .post-body :global(details) {
+    margin: 1rem 0;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--stroke);
+  }
+
+  .post-body :global(summary) {
+    cursor: pointer;
+    padding-block: 0.8rem;
+    font: 0.8rem var(--font-code);
+    color: var(--ink);
+  }
+
+  .post-body :global(details[open] > summary) {
+    margin-bottom: 0.25rem;
   }
 
   .post-body :global(hr) {
@@ -760,12 +983,34 @@
     font-weight: 600;
   }
 
+  @media (min-width: 761px) {
+    /* Keep the scheme switch reachable while reading the full article. */
+    .landing-topline :global(.scheme) {
+      position: fixed;
+      top: 1.5rem;
+      right: 1.2rem;
+      z-index: 1000;
+    }
+  }
+
   @media (max-width: 760px) {
     /* The chrome row sits at 1em; the page follows it from here down. */
     .post-page {
       padding-top: 1rem;
       padding-right: 1em;
       padding-left: 1em;
+    }
+
+    /* One quiet header leaves the recording in the first phone viewport.
+       Expanded details keep their natural height rather than clipping. */
+    .post-page.with-landing {
+      padding-top: 0.5rem;
+    }
+    .demo-landing {
+      min-height: calc(100svh - 0.5rem);
+    }
+    .landing-topline {
+      margin-bottom: 0.5rem;
     }
 
     .journal {

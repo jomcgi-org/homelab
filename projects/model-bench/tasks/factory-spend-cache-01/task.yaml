@@ -17,6 +17,7 @@ class: code-fix
 tier: hard
 mode: agentic
 source_commit: a9709564c7cf1f648c0c092454977c12a2fb746a
+gold_diff_lines: 18
 snapshot:
   preset: monolith-backend
   commit: b75979f65380dcc41fc3b439265782443bc34608

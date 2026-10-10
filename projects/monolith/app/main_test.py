@@ -21,6 +21,21 @@ from core.db import get_session  # noqa: E402
 from app.main import _start_singletons, _stop_singletons, app  # noqa: E402
 
 
+class _AwaitableTask(MagicMock):
+    """Task double: lifespan awaits the cancelled elector task at shutdown."""
+
+    def __await__(self):
+        return iter(())
+
+
+@pytest.fixture(autouse=True)
+def _reset_leader_shutdown_state():
+    """Lifespan teardown leaves the shared app fenced; startup tests need it open."""
+    app.state.leader_singletons_shutting_down = False
+    yield
+    app.state.leader_singletons_shutting_down = False
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -218,7 +233,7 @@ async def test_lifespan_creates_background_tasks_on_startup():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        mock_task = MagicMock()
+        mock_task = _AwaitableTask()
         created_tasks.append(mock_task)
         return mock_task
 
@@ -240,7 +255,7 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        mock_task = MagicMock()
+        mock_task = _AwaitableTask()
         mock_tasks.append(mock_task)
         return mock_task
 
@@ -265,7 +280,7 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        mock_task = MagicMock()
+        mock_task = _AwaitableTask()
         mock_tasks.append(mock_task)
         return mock_task
 
@@ -365,7 +380,7 @@ async def test_lifespan_logs_monolith_started_on_startup():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        return MagicMock()
+        return _AwaitableTask()
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
@@ -388,7 +403,7 @@ async def test_lifespan_logs_shutting_down_on_exit():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        return MagicMock()
+        return _AwaitableTask()
 
     patches = _lifespan_patches_no_discord()
     with patch("asyncio.create_task", side_effect=capture_create_task):
@@ -433,7 +448,7 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
 
-    bot_task_mock = MagicMock()
+    bot_task_mock = _AwaitableTask()
     task_counter = [0]
 
     def capture_create_task(coro, **kwargs):
@@ -443,7 +458,7 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
         # Tasks created: 1=bot, 2=scheduler, 3=ships ingest, 4=sweep
         if task_counter[0] == 1:
             return bot_task_mock
-        return MagicMock()
+        return _AwaitableTask()
 
     patches = _lifespan_patches_with_discord(mock_bot)
     with patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "fake-test-token"}):
@@ -474,7 +489,7 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        return MagicMock()
+        return _AwaitableTask()
 
     patches = _lifespan_patches_with_discord(mock_bot)
     with patch.dict(os.environ, {"DISCORD_BOT_TOKEN": "fake-test-token"}):
@@ -510,7 +525,7 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        task = MagicMock()
+        task = _AwaitableTask()
         created_tasks.append(task)
         return task
 
@@ -545,7 +560,7 @@ async def test_lifespan_does_not_log_discord_bot_starting_when_token_absent():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        return MagicMock()
+        return _AwaitableTask()
 
     patches = _lifespan_patches_no_discord()
     with patch.dict(os.environ, env_without_token, clear=True):

@@ -289,3 +289,11 @@ swarm:
 rbac:
   kargoPromote:
     enabled: false
+
+# Production management requires its verified Authentik audience. The local
+# development deployment has no such audience or operator bootstrap.
+platformAuth:
+  managementEnabled: false
+  enrollmentEnabled: false
+  enforcementEnabled: false
+  enrollmentFlowUrl: ""

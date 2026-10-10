@@ -1,5 +1,5 @@
 import {
-  cloudflareCacheHeaders,
+  boundedCacheHeaders,
   NOTES_PAGE_CACHE_CONTROL,
   versionedEtag,
 } from "../../../../../lib/cache-headers.js";
@@ -74,14 +74,26 @@ export async function load({ fetch, setHeaders, url }) {
   const chapter = entity && !q ? (content?.data ?? null) : null;
   const results = q ? (content?.data ?? []) : [];
 
-  const headers = cloudflareCacheHeaders(NOTES_PAGE_CACHE_CONTROL);
-  const validators = [
+  const upstreamResponses = [
     ...baseSections
       .filter((section) => section.status === "fulfilled")
       .map((section) => section.value.response),
     content?.response,
-  ]
-    .filter(Boolean)
+  ].filter(Boolean);
+  let policy = NOTES_PAGE_CACHE_CONTROL;
+  for (const response of upstreamResponses) {
+    policy = boundedCacheHeaders(policy, response.headers)["cache-control"];
+  }
+  // Already bounded above. This final conversion consumes no additional age.
+  const headers = boundedCacheHeaders(
+    policy,
+    new Headers({ "cache-control": policy }),
+  );
+  const dates = upstreamResponses
+    .map((response) => Date.parse(response.headers?.get?.("date")))
+    .filter(Number.isFinite);
+  if (dates.length) headers.date = new Date(Math.min(...dates)).toUTCString();
+  const validators = upstreamResponses
     .map((response) => response.headers?.get?.("etag"))
     .filter(Boolean)
     .join("-");

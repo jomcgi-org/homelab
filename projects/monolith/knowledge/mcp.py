@@ -194,6 +194,68 @@ async def grant_kg_burst(extra_jobs: int, duration_minutes: int) -> dict:
         return {"error": str(exc)}
 
 
+def _review_operator() -> str:
+    from auth.api import Authority, PrincipalKind
+
+    principal = current_principal()
+    if (
+        principal.authority != Authority.STANDING
+        or principal.kind != PrincipalKind.HUMAN
+        or not principal.has_group("operators")
+    ):
+        raise ValueError("standing human operator authority is required")
+    return f"{principal.issuer}:{principal.subject}"
+
+
+@_knowledge_tool
+async def inspect_kg_review_pilot(request_id: str | None = None) -> dict:
+    """Inspect fixed KG review controls and an audited request, without manifests.
+
+    Operator-only. Omit request_id to inspect the active receipt. Inspection
+    records terminal evidence. Absent or inaccessible workflows stay fenced.
+    """
+    from knowledge import review_pilot
+
+    try:
+        _review_operator()
+        return await review_pilot.inspect(request_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        logger.exception("KG review pilot inspection unavailable")
+        return {"error": "review pilot inspection unavailable; no submission was made"}
+
+
+@_knowledge_tool
+async def submit_kg_review_pilot(
+    job: str, request_id: str, dry_run_request_id: str | None = None
+) -> dict:
+    """Submit one fixed, suspended KG review job as a standing human operator.
+
+    job is knowledge-review-backfill-dry-run, knowledge-review-backfill-pilot,
+    knowledge-review-admission-dry-run or knowledge-review-admission. Use a
+    canonical UUID request_id and reuse it after any uncertain response.
+    Application requires a matching successful dry_run_request_id, at most
+    15 minutes old. Each dry run can authorize only one application. Review
+    the dry-run counts before applying. No arguments, manifests or schedules
+    can be overridden. Limits remain 20 notes / 60 GitHub requests / a
+    240-second admission cutoff (300-second admission workflow deadline).
+    Other pilot jobs have a hard 240-second workflow deadline.
+    """
+    from knowledge import review_pilot
+
+    try:
+        actor = _review_operator()
+        return await review_pilot.submit(job, request_id, actor, dry_run_request_id)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        logger.exception("KG review pilot submission unavailable")
+        return {
+            "error": "review pilot submission unavailable; inspect and reuse the same request_id"
+        }
+
+
 @_knowledge_tool
 async def search_knowledge(
     query: str,
@@ -209,6 +271,9 @@ async def search_knowledge(
     Embeds the query and searches notes by cosine similarity.
     Returns ranked results with title, type, tags, best-matching
     section, a 240-char snippet, and graph edges.
+    Results include observation time, review deadline, policy and freshness.
+    Volatile facts require a new authoritative observation before any action
+    relies on them, even while freshness is current.
 
     Args:
         query: Natural language search query (minimum 2 characters).
@@ -220,7 +285,8 @@ async def search_knowledge(
         include_deployment_observations: Include server-projected deployment
             observation facts (one per app per cd poll). Hidden by default so
             they cannot crowd ordinary knowledge out of the top results.
-        include_history: Include invalidated and expired notes for investigations.
+        include_history: Include invalidated, review-due and unknown-freshness
+            notes for investigations, with dated evidence and review deadlines.
             Hidden by default. Other retrieval filters still apply.
         scope: Optionally narrow to one scope the caller is already authorized
             for, e.g. "repo:jomcgi-org/homelab". Exact membership only. A value
@@ -272,6 +338,7 @@ async def search_knowledge(
                 include_unscoped=authorization.include_unscoped,
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=not include_history,
+                include_history=include_history,
             )
         else:
             results = KnowledgeStore(session).search_notes_with_context(
@@ -283,6 +350,7 @@ async def search_knowledge(
                 include_unscoped=False,
                 include_deployment_observations=include_deployment_observations,
                 exclude_invalidated=not include_history,
+                include_history=include_history,
             )
     from knowledge.audit import count_retrievals
 

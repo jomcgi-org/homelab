@@ -1,0 +1,126 @@
+import { afterAll, describe, expect, it } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { load as overview } from "../src/routes/public/slop/factory/+page.server.js";
+import { load as activity } from "../src/routes/public/slop/factory/activity/+page.server.js";
+import { load as context } from "../src/routes/public/slop/factory/context/+page.server.js";
+import { ledger, ledgerMeta } from "../src/lib/public/factory/activity-view.js";
+import { decodeSearchIndex } from "../src/lib/public/factory/search-index.js";
+import { NOW, payloads, LONG_TITLE } from "./fixtures.js";
+
+const generated = {};
+const views = {
+  overview: [overview, "/slop/factory"],
+  activity: [activity, "/slop/factory/activity"],
+  context: [context, "/slop/factory/context"],
+  chapter: [context, "/slop/factory/context?entity=synthetic-project"],
+  search: [context, "/slop/factory/context?q=Synthetic"],
+};
+describe("same-commit factory server-load fixtures", () => {
+  for (const scenario of ["live", "empty", "error"]) {
+    for (const [view, [load, path]] of Object.entries(views)) {
+      it(`${scenario} ${view} only reads invented fixture endpoints`, async () => {
+        const endpoints = payloads(scenario);
+        const unexpected = [];
+        let headers;
+        const data = await load({
+          url: new URL(path, "https://fixture.invalid"),
+          setHeaders: (value) => {
+            headers = value;
+          },
+          fetch: async (url) => {
+            if (!(url in endpoints)) {
+              unexpected.push(url);
+              throw new Error(`No synthetic fixture for ${url}`);
+            }
+            return new Response(JSON.stringify(endpoints[url]), {
+              status: scenario === "error" ? 503 : 200,
+              headers: {
+                "content-type": "application/json",
+                etag: '"synthetic"',
+                "cache-control":
+                  scenario === "live"
+                    ? "public, max-age=13, s-maxage=13, must-revalidate"
+                    : "no-store",
+              },
+            });
+          },
+        });
+        expect(unexpected).toEqual([]);
+        if (
+          ["context", "chapter", "search"].includes(view) &&
+          scenario !== "error"
+        ) {
+          expect(headers["cache-control"]).toBe(
+            scenario === "live"
+              ? "public, max-age=13, s-maxage=13, must-revalidate"
+              : "no-store",
+          );
+          expect(headers["cloudflare-cdn-cache-control"]).toBe(
+            scenario === "live"
+              ? "public, max-age=13, must-revalidate"
+              : "no-store",
+          );
+        } else {
+          expect(headers["cache-control"]).toContain("public");
+        }
+        if (scenario === "error") {
+          expect(
+            typeof data.unavailable === "boolean"
+              ? data.unavailable
+              : Object.values(data.unavailable).some(Boolean),
+          ).toBe(true);
+        } else if (view === "overview" || view === "activity") {
+          const book = ledger(data.board, NOW);
+          expect(book.live).toHaveLength(scenario === "live" ? 2 : 0);
+          if (scenario === "live") {
+            expect(book.live[0].title).toBe(LONG_TITLE);
+            expect(ledgerMeta(book.live[0], data.board.policy, NOW)).toContain(
+              "review",
+            );
+            expect(book.done).toHaveLength(25);
+          }
+        } else if (view === "chapter" && scenario === "live") {
+          expect(data.projects).toHaveLength(1);
+          expect(data.chapter.notes).toHaveLength(26);
+          expect(data.chapter.notes[0].title).toBe(LONG_TITLE);
+        } else if (view === "search" && scenario === "live") {
+          expect(data.results).toHaveLength(26);
+        }
+        generated[`${scenario}/${view}`] = data;
+      });
+    }
+  }
+  it("instant-search fixtures use the production decoder", () => {
+    expect(
+      decodeSearchIndex(payloads()["/slop/factory/search-index"]),
+    ).toHaveLength(26);
+  });
+  it("context refuses to cache fact fixtures without an upstream policy", async () => {
+    let headers;
+    const endpoints = payloads("live");
+    await context({
+      url: new URL("https://fixture.invalid/slop/factory/context"),
+      setHeaders: (value) => {
+        headers = value;
+      },
+      fetch: async (url) => new Response(JSON.stringify(endpoints[url])),
+    });
+    expect(headers["cache-control"]).toBe("no-store");
+    expect(headers["cloudflare-cdn-cache-control"]).toBe("no-store");
+  });
+});
+
+// The browser artifact consumes the actual loaders' return values. This is
+// generated locally/CI, never a hand-maintained snapshot of production data.
+afterAll(() => {
+  expect(Object.keys(generated)).toHaveLength(15);
+  // Bazel test runfiles are read-only. A test never feeds a later build action:
+  // only the direct local/Actions command writes beside the Vite harness.
+  const directory = process.env.TEST_TMPDIR
+    ? join(process.env.TEST_TMPDIR, "factory-fixtures")
+    : fileURLToPath(new URL("./.generated/", import.meta.url));
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "pages.json"), JSON.stringify(generated));
+});

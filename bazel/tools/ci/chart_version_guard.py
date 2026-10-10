@@ -102,10 +102,14 @@ def findings(
 
     out: list[str] = []
     for path in changed:
+        p = PurePosixPath(path)
+        if path not in apps and not (
+            p.name == "Chart.yaml" and str(p.parent) in published
+        ):
+            continue
         before, after = read(base, path), read(head, path)
         if before is None or after is None:
             continue
-        p = PurePosixPath(path)
         if p.name == "Chart.yaml" and str(p.parent) in published:
             if chart_version(before) != chart_version(after):
                 out.append(
@@ -137,6 +141,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("head", nargs="?", default="HEAD")
     args = parser.parse_args(argv)
 
+    # Only changes introduced by this branch belong to the author. The bot
+    # may have published newer versions on main since the branch diverged.
+    args.base = _git_lines("merge-base", args.base, args.head)[0]
     changed = _git_lines("diff", "--name-only", args.base, args.head)
     if not changed:
         return 0

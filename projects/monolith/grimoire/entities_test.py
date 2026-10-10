@@ -11,9 +11,9 @@ import pytest
 from core.db import get_session
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire.access import get_authenticated_email
+from grimoire.access import get_authenticated_email, get_game_creator_email
 from grimoire.models import (
     AppUser,
     Campaign,
@@ -62,6 +62,7 @@ def client_fixture(session):
         return request.headers.get("X-Test-Auth-Email", "dm@example.test")
 
     app.dependency_overrides[get_authenticated_email] = authenticated_email
+    app.dependency_overrides[get_game_creator_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -266,6 +267,14 @@ class TestListEntities:
         assert by_name["Umbrasyl"]["grants"] == []
         assert by_name["Strahd"]["grants"] == [
             {
+                "id": session.exec(
+                    select(KnowledgeGrant).where(
+                        KnowledgeGrant.entity_id == seed.npc.id,
+                        KnowledgeGrant.player_character_id == seed.alice.id,
+                    )
+                )
+                .one()
+                .id,
                 "player_character_id": seed.alice.id,
                 "grant_scope": "full",
                 "revealed_details": None,
@@ -379,6 +388,14 @@ class TestGetEntity:
         spell_body = spell_response.json()
         assert spell_body["grants"] == [
             {
+                "id": session.exec(
+                    select(KnowledgeGrant).where(
+                        KnowledgeGrant.entity_id == seed.spell.id,
+                        KnowledgeGrant.player_character_id == seed.alice.id,
+                    )
+                )
+                .one()
+                .id,
                 "player_character_id": seed.alice.id,
                 "grant_scope": "name_only",
                 "revealed_details": None,

@@ -197,6 +197,7 @@ entries:
             [managed, goauthentik.io/providers/oauth2/scope-profile],
           ]
         - !KeyOf mcp-audience
+        # PLATFORM_MANAGEMENT_PROFILE
 
   # This confidential client is for the kg-agent-sa service account and uses
   # the client_credentials flow only. It is gated to kg-agents below.

@@ -18,6 +18,21 @@ os.environ.pop("STATIC_DIR", None)
 from app.main import _start_singletons, _stop_singletons, app, lifespan  # noqa: E402
 
 
+class _AwaitableTask(MagicMock):
+    """Task double: lifespan awaits the cancelled elector task at shutdown."""
+
+    def __await__(self):
+        return iter(())
+
+
+@pytest.fixture(autouse=True)
+def _reset_leader_shutdown_state():
+    """Lifespan teardown leaves the shared app fenced; startup tests need it open."""
+    app.state.leader_singletons_shutting_down = False
+    yield
+    app.state.leader_singletons_shutting_down = False
+
+
 def _singleton_patches_no_discord():
     """Patches for _start_singletons without a discord token."""
     mock_session = MagicMock()
@@ -49,7 +64,7 @@ def _capture():
     def capture_create_task(coro, **kwargs):
         if hasattr(coro, "close"):
             coro.close()
-        task = MagicMock()
+        task = _AwaitableTask()
         created.append(task)
         return task
 

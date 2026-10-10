@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import threading
 from unittest import mock
 
 import core.leadership as leadership
@@ -50,6 +51,220 @@ _OTEL_PRIVATE = dataclasses.replace(
 )
 
 _WHOAMI_CORE_TEST_REGISTERED = False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_renews_past_lease_ttl_and_exits_before_release(monkeypatch):
+    # Scale heartbeat and TTL together. Drain outlasts a complete ownership
+    # window without making the unit suite sleep five seconds.
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.02)
+    renewals = []
+    released = mock.Mock()
+    monkeypatch.setattr(
+        leadership, "_acquire_or_renew", lambda *_args: renewals.append(True) or True
+    )
+    monkeypatch.setattr(leadership, "_release", released)
+    acquired = asyncio.Event()
+    exits = []
+    shutdowns = []
+
+    async def start(app):
+        app.state.leader_shutdown_exit = lambda status: exits.append(
+            (status, released.call_count)
+        )
+        acquired.set()
+        return []
+
+    async def stop(app):
+        before = len(renewals)
+        assert app.state.elector.is_leader
+        await asyncio.sleep(leadership.LEASE_TTL * 3)
+        assert len(renewals) > before + 2
+        released.assert_not_called()
+
+    async def shutdown(_app):
+        shutdowns.append(True)
+
+    app = FastAPI()
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE,
+        [Module(name="owned", leader_start=start, leader_stop=stop, shutdown=shutdown)],
+    )(app):
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+    assert exits == [(0, 0)]
+    assert shutdowns == [True]
+    # The fake exit returns only in this test. Real os._exit cannot reach the
+    # later cancellation and release callback.
+    await asyncio.sleep(0.01)
+    released.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("startup_failure", [False, True])
+async def test_process_bound_resignation_exits_before_other_domains(
+    monkeypatch, startup_failure
+):
+    class ProcessCeased(BaseException):
+        pass
+
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    lease = mock.Mock(side_effect=[True, False])
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lease)
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    exits = []
+    stops = []
+
+    def exit_process(status):
+        exits.append(status)
+        raise ProcessCeased()
+
+    async def start(app):
+        app.state.leader_shutdown_exit = exit_process
+        if startup_failure:
+            raise RuntimeError("partial singleton startup")
+        return []
+
+    async def stop(_app):
+        stops.append(True)
+
+    app = FastAPI()
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE,
+        [Module(name="before-factory", leader_start=start, leader_stop=stop)],
+    )(app):
+        elector_task = next(
+            task
+            for task in asyncio.all_tasks()
+            if task.get_coro().__qualname__ == "LeaderElector.run"
+        )
+        with pytest.raises(ProcessCeased):
+            await elector_task
+        assert exits == [1]
+        assert stops == []
+        assert lease.call_count == (1 if startup_failure else 2)
+        # Real exit never returns. Clear the fake callback for test cleanup.
+        app.state.leader_shutdown_exit = None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_deadline_ceases_hung_cleanup(monkeypatch):
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_args: True)
+    monkeypatch.setattr(leadership, "_release", lambda *_args: None)
+    assert framework_core.LEADER_SHUTDOWN_TIMEOUT_SECONDS == 20
+    assert 15 < framework_core.LEADER_SHUTDOWN_TIMEOUT_SECONDS < 30
+    monkeypatch.setattr(framework_core, "LEADER_SHUTDOWN_TIMEOUT_SECONDS", 0.03)
+    acquired = asyncio.Event()
+    ceased = asyncio.Event()
+    exits = []
+    loop = asyncio.get_running_loop()
+
+    async def start(app):
+        def exit_process(status):
+            exits.append(status)
+            loop.call_soon_threadsafe(ceased.set)
+
+        app.state.leader_shutdown_exit = exit_process
+        acquired.set()
+        return []
+
+    async def stop(_app):
+        await asyncio.wait_for(ceased.wait(), timeout=1)
+
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE, [Module(name="hung", leader_start=start, leader_stop=stop)]
+    )(FastAPI()):
+        await asyncio.wait_for(acquired.wait(), timeout=1)
+    assert exits == [1, 0]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_fences_acquisition_granted_mid_drain(monkeypatch):
+    # A follower granted the lease after shutdown begins must not launch
+    # singletons under a lease the teardown is about to release, and must
+    # never publish an exit callback for DBOS it never launched.
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.05)
+    grant = threading.Event()
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_args: grant.is_set())
+    released = mock.Mock()
+    monkeypatch.setattr(leadership, "_release", released)
+    events = []
+    exits = []
+
+    async def start(app):
+        events.append("launched-during-shutdown")
+        app.state.leader_shutdown_exit = lambda status: exits.append(status)
+        return []
+
+    async def stop(_app):
+        events.append("stop")
+
+    async def shutdown(_app):
+        events.append("shutdown")
+
+    app = FastAPI()
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE,
+        [
+            Module(
+                name="fenced", leader_start=start, leader_stop=stop, shutdown=shutdown
+            )
+        ],
+    )(app):
+        await asyncio.sleep(0.02)
+        assert events == []
+        # Shutdown begins while the election is still live; only then is the
+        # lease granted. The fenced acquisition must observe the grant (the
+        # elector still records leadership) without launching anything.
+        app.state.leader_singletons_shutting_down = True
+        grant.set()
+        for _ in range(200):
+            if app.state.elector.is_leader:
+                break
+            await asyncio.sleep(0.005)
+        assert app.state.elector.is_leader
+        assert events == []
+        assert app.state.leader_shutdown_exit is None
+    assert events == ["stop", "shutdown"]
+    assert exits == []
+    released.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_in_flight_acquire_before_teardown_mode(monkeypatch):
+    # An acquisition already running when shutdown begins passed the fence,
+    # so the teardown must let it settle and then take the guarded path for
+    # the DBOS it launched instead of releasing the lease under it.
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0.005)
+    monkeypatch.setattr(leadership, "LEASE_TTL", 0.05)
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_args: True)
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    monkeypatch.setattr(framework_core, "LEADER_SHUTDOWN_TIMEOUT_SECONDS", 5)
+    release_start = asyncio.Event()
+    launched = []
+    exits = []
+
+    async def start(app):
+        await asyncio.wait_for(release_start.wait(), timeout=1)
+        launched.append(True)
+        app.state.leader_singletons_dbos_launched = True
+        app.state.leader_shutdown_exit = lambda status: exits.append(status)
+        return []
+
+    async def stop(_app):
+        launched.append("stop")
+
+    app = FastAPI()
+    async with build_private_lifespan(
+        _PLAIN_PRIVATE, [Module(name="in-flight", leader_start=start, leader_stop=stop)]
+    )(app):
+        while not app.state.leader_acquire_active:
+            await asyncio.sleep(0.005)
+        release_start.set()
+    assert launched[0] is True
+    assert exits == [0]
 
 
 def _register_whoami_core_test() -> None:

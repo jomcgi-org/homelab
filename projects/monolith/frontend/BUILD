@@ -1,5 +1,6 @@
 # gazelle:ignore
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")
+load("@aspect_rules_py//py:defs.bzl", "py_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/monolith/frontend:vite/package_json.bzl", vite_bin = "bin")
@@ -9,6 +10,18 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 npm_link_all_packages(name = "node_modules")
 
 vite_bin.vite_binary(name = "vite")
+
+# The frontend package now owns a fixture-harness README. Keep it in the
+# same indexed documentation closure as every other repository package.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        ["**/*.md"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
+)
 
 # The public /docs manifest is a build output, not a committed file (#6446).
 # The generator selects its exact allowlisted project docs from the same
@@ -229,6 +242,10 @@ js_library(
         # private Qwen route was removed.
         "scripts/qwen-replay-metrics.mjs",
         "scripts/qwen-replay-metrics.test.mjs",
+        "test/data-display/ChartHarness.svelte",
+        "test/data-display/Fixture.svelte",
+        "test/data-display/server.js",
+        "test/data-display/server-render.js",
         "vitest.config.js",
         # Resolved by the $app/environment alias in vitest.config.js; lives
         # outside src/ so it never reaches the app bundle.
@@ -245,6 +262,8 @@ js_library(
     deps = [
         ":node_modules/vitest",
         ":src",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
     ],
 )
 
@@ -283,4 +302,312 @@ apko_image(
     contents = "@monolith_frontend_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-frontend",
     tars = [":build_tar_public"],
+)
+
+# Keep synthetic preview fixtures out of the production source/build closure.
+# The dedicated Actions job compiles these real route components and runs
+# Chromium. This independent contract target makes fixture edits participate
+# in affected-target CI without making a test output an input to a build.
+js_library(
+    name = "factory_fixture_src",
+    srcs = glob(
+        ["factory-preview/**"],
+        exclude = [
+            "factory-preview/.generated/**",
+            "factory-preview/__pycache__/**",
+        ],
+    ) + [
+        "package.json",
+        "src/lib/cache-headers.js",
+        "src/lib/global.css",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/factory/activity.css",
+        "src/lib/public/factory/activity-view.js",
+        "src/lib/public/factory/activity-view.test.js",
+        "src/lib/public/factory/charts.js",
+        "src/lib/public/factory/charts.test.js",
+        "src/lib/public/factory/factory.css",
+        "src/lib/public/factory/marks.js",
+        "src/lib/public/factory/model.js",
+        "src/lib/public/factory/model.test.js",
+        "src/lib/public/factory/search-index.js",
+        "src/lib/public/factory/search-index.test.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/lib/styles/shared/tokens.css",
+        "src/routes/public/slop/Trail.svelte",
+        "src/routes/public/slop/factory/+page.server.js",
+        "src/routes/public/slop/factory/+page.svelte",
+        "src/routes/public/slop/factory/activity/+page.server.js",
+        "src/routes/public/slop/factory/activity/+page.svelte",
+        "src/routes/public/slop/factory/context/+page.server.js",
+        "src/routes/public/slop/factory/context/+page.svelte",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "factory_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "factory-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":factory_fixture_src"],
+)
+
+# Static fixture harness: production presentation code, synthetic inputs only.
+# This does not change the adapter-node application or its server loaders.
+js_library(
+    name = "fixture_preview_src",
+    srcs = glob(
+        ["preview/**"],
+        exclude = [
+            "preview/**/*.py",
+            "preview/__pycache__/**",
+        ],
+    ) + [
+        "package.json",
+        "src/lib/public/components/SchemeToggle.svelte",
+        "src/lib/public/components/TechnicalDrawingChrome.svelte",
+        "src/lib/public/posts/CodeOutput.svelte",
+        "src/lib/public/posts/DemoDisclosure.svelte",
+        "src/lib/public/posts/DraftTrace.svelte",
+        "src/lib/public/posts/IncidentGraph.svelte",
+        "src/lib/public/posts/QwenReplay.svelte",
+        "src/lib/public/posts/draft-steps.js",
+        "src/lib/public/posts/incident-graph.js",
+        "src/lib/public/posts/ix/Concurrency.svelte",
+        "src/lib/public/posts/ix/Context.svelte",
+        "src/lib/public/posts/ix/CopyQueue.svelte",
+        "src/lib/public/posts/ix/DraftPays.svelte",
+        "src/lib/public/posts/ix/Fig.svelte",
+        "src/lib/public/posts/ix/Fit.svelte",
+        "src/lib/public/posts/ix/Interactive.svelte",
+        "src/lib/public/posts/ix/Precision.svelte",
+        "src/lib/public/posts/ix/PrefixRace.svelte",
+        "src/lib/public/posts/ix/Published.svelte",
+        "src/lib/public/posts/ix/Residency.svelte",
+        "src/lib/public/posts/ix/Routing.svelte",
+        "src/lib/public/posts/ix/data.js",
+        "src/lib/public/posts/ix/data-concurrency.js",
+        "src/lib/public/posts/ix/data-context.js",
+        "src/lib/public/posts/ix/data-copy-queue.js",
+        "src/lib/public/posts/ix/data-draft-pays.js",
+        "src/lib/public/posts/ix/data-fit.js",
+        "src/lib/public/posts/ix/data-precision.js",
+        "src/lib/public/posts/ix/data-prefix-race.js",
+        "src/lib/public/posts/ix/data-published.js",
+        "src/lib/public/posts/ix/data-routing.js",
+        "src/lib/public/posts/ix/index.js",
+        "src/lib/public/posts/ix/split.js",
+        "src/lib/public/posts/landing-results.js",
+        "src/lib/public/styles/design-system.css",
+        "src/lib/public/styles/technical-drawing.css",
+        "src/routes/public/blog/+layout.svelte",
+        "src/routes/public/blog/Trail.svelte",
+        "src/routes/public/blog/[slug]/+page.svelte",
+        "src/routes/public/blog/blog.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+    ],
+)
+
+js_run_binary(
+    name = "fixture_preview",
+    srcs = [":fixture_preview_src"],
+    args = [
+        "build",
+        "--config",
+        "preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "fixture_preview_build_test",
+    targets = [":fixture_preview"],
+)
+
+vitest_bin.vitest_test(
+    name = "fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [
+        "test/app-environment-stub.js",
+        ":fixture_preview_src",
+        ":node_modules/vitest",
+        ":src",
+    ],
+)
+
+# Shared controls fixture only, never part of :src or :src_public.
+js_library(
+    name = "controls_fixture_src",
+    srcs = [
+        "controls-preview/ControlsFixture.svelte",
+        "controls-preview/README.md",
+        "controls-preview/browser_check.py",
+        "controls-preview/hydration.test.js",
+        "controls-preview/index.html",
+        "controls-preview/main.js",
+        "controls-preview/resolution.test.js",
+        "controls-preview/server.js",
+        "controls-preview/server-render.js",
+        "controls-preview/ssr.test.js",
+        "controls-preview/vite.config.js",
+        "controls-preview/vitest.config.js",
+        "package.json",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "controls_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "controls-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":controls_fixture_src"],
+)
+
+js_run_binary(
+    name = "controls_fixture_preview",
+    srcs = [":controls_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "controls-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["controls-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "controls_fixture_preview_build_test",
+    targets = [":controls_fixture_preview"],
+)
+
+# Opt-in token fixture only, never part of :src or :src_public.
+py_test(
+    name = "gallery_evidence_test",
+    srcs = [
+        "theme-preview/gallery_check.py",
+        "theme-preview/gallery_check_test.py",
+    ],
+    imports = ["theme-preview"],
+    main = "theme-preview/gallery_check_test.py",
+)
+
+js_library(
+    name = "theme_fixture_src",
+    srcs = [
+        "BUILD",
+        "factory-preview/fonts.css",
+        "factory-preview/fonts/SchibstedGrotesk.ttf",
+        "package.json",
+        "src/app.html",
+        "svelte.config.js",
+        "theme-preview/DataDisplayFixture.svelte",
+        "theme-preview/README.md",
+        "theme-preview/ThemeFixture.svelte",
+        "theme-preview/browser_check.py",
+        "theme-preview/gallery.html",
+        "theme-preview/gallery/GalleryFixture.svelte",
+        "theme-preview/gallery/contract.test.js",
+        "theme-preview/gallery/fixtures.js",
+        "theme-preview/gallery/hydration.test.js",
+        "theme-preview/gallery/integration.test.js",
+        "theme-preview/gallery/main.js",
+        "theme-preview/gallery/resolution.test.js",
+        "theme-preview/gallery/server.js",
+        "theme-preview/gallery/server-render.js",
+        "theme-preview/gallery/ssr.test.js",
+        "theme-preview/gallery_check.py",
+        "theme-preview/hydration.test.js",
+        "theme-preview/index.html",
+        "theme-preview/main.js",
+        "theme-preview/server.js",
+        "theme-preview/server-render.js",
+        "theme-preview/ssr.test.js",
+        "theme-preview/vite.config.js",
+        "theme-preview/vitest.config.js",
+        "vite.config.js",
+    ],
+    deps = [
+        ":node_modules/@esbuild/linux-x64",
+        ":node_modules/@homelab/design-system",
+        ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sveltejs/adapter-node",
+        ":node_modules/@sveltejs/kit",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/mdsvex",
+        ":node_modules/svelte",
+        ":node_modules/vite",
+        ":node_modules/vitest",
+        "//:node_modules/happy-dom",
+        "//projects/design-system:pkg",
+    ],
+)
+
+vitest_bin.vitest_test(
+    name = "theme_fixture_contract_test",
+    args = [
+        "run",
+        "--config",
+        "theme-preview/vitest.config.js",
+    ],
+    chdir = package_name(),
+    data = [":theme_fixture_src"],
+)
+
+js_run_binary(
+    name = "theme_fixture_preview",
+    srcs = [":theme_fixture_src"],
+    args = [
+        "build",
+        "--config",
+        "theme-preview/vite.config.js",
+    ],
+    chdir = package_name(),
+    out_dirs = ["theme-fixture-preview"],
+    tool = ":vite",
+)
+
+build_test(
+    name = "theme_fixture_preview_build_test",
+    targets = [":theme_fixture_preview"],
 )

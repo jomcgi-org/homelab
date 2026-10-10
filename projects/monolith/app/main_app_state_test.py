@@ -24,6 +24,21 @@ os.environ.pop("STATIC_DIR", None)
 from app.main import _start_singletons, _wait_for_sidecar, app, lifespan  # noqa: E402
 
 
+class _AwaitableTask(MagicMock):
+    """Task double: lifespan awaits the cancelled elector task at shutdown."""
+
+    def __await__(self):
+        return iter(())
+
+
+@pytest.fixture(autouse=True)
+def _reset_leader_shutdown_state():
+    """Lifespan teardown leaves the shared app fenced; startup tests need it open."""
+    app.state.leader_singletons_shutting_down = False
+    yield
+    app.state.leader_singletons_shutting_down = False
+
+
 # ---------------------------------------------------------------------------
 # Helpers (mirrors main_sidecar_test.py helper style)
 # ---------------------------------------------------------------------------
@@ -136,7 +151,7 @@ class TestLifespanAppStateBotAssignment:
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
                 coro.close()
-            return MagicMock()
+            return _AwaitableTask()
 
         patches = _lifespan_patches_with_discord(mock_bot)
         with (
@@ -163,7 +178,7 @@ class TestLifespanAppStateBotAssignment:
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
                 coro.close()
-            return MagicMock()
+            return _AwaitableTask()
 
         env_without_token = {
             k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"
@@ -192,7 +207,7 @@ class TestLifespanAppStateBotAssignment:
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
                 coro.close()
-            return MagicMock()
+            return _AwaitableTask()
 
         env_without_token = {
             k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"

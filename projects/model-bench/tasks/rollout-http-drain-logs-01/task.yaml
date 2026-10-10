@@ -1,0 +1,102 @@
+id: rollout-http-drain-logs-01
+version: v2
+class: code-fix
+tier: hard
+mode: agentic
+# Author provenance: #6695 Agent brief; historical fix 497aaebf50c45db54463e0ff1509f744966edf27.
+# Snapshot: the fix's untouched parent. fixture/ is generated and gitignored.
+# Synthetic excerpt: reconstructed from the parent's unbounded uvicorn HTTP
+# drain preceding lifespan handoff. Times, client and pod identity are invented;
+# no production log or credentials are included. Budget facts come from the
+# historical rollout contract (30s termination grace, up to 15s executor handoff).
+# The hidden grader adapts the historical response_lost_test.py entrypoint
+# neighbour: execute the complete entrypoint with the real uvicorn Config and
+# signal server, intercept serving and isolate unrelated application composition.
+# Module-level imports, constants and helpers remain available to the bootstrap.
+# No socket or elapsed-time verdict is used.
+# Accept any effective positive HTTP drain bound <= 15s in the enabled path;
+# retain the legacy uvicorn.run path with its unbounded default when disabled.
+source_commit: 497aaebf50c45db54463e0ff1509f744966edf27
+snapshot:
+  preset: monolith-backend
+  commit: ff5fd6444184ff1e6dc89765a48b35d76917fb51
+agent:
+  max_turns: 40
+prompt: |
+  This FastAPI backend sends factory turns to guest VMs. Production enables
+  rollout handoff. During rolling deployments, a long-lived client connection
+  keeps the terminating pod draining HTTP requests. The kubelet kills that pod
+  before its in-flight turn handoff runs; the guest continues working, but the
+  replacement cannot recover the turn and the factory reports an unknown outcome.
+
+  The pod has 30 seconds of termination grace. Executor handoff after HTTP drain
+  may use up to 15 seconds. HTTP shutdown must leave that handoff time available.
+
+  Synthetic shutdown excerpt from a controlled reproduction of this snapshot
+  (invented times, client and pod identity, UTC):
+
+    14:02:10.951 INFO    transport: guest turn accepted guest=guest-42
+    14:02:11.403 INFO    uvicorn: Shutting down
+    14:02:11.419 INFO    uvicorn: Waiting for connections to close. (CTRL+C to force quit)
+    14:02:41.403 WARNING kubelet: termination grace expired pod=backend-old
+    14:02:42.006 WARNING executor: previous turn outcome unknown guest=guest-42
+
+  Fix the shutdown behaviour so the handoff can run within the pod's budget.
+  Preserve the existing HTTP serving behaviour when rollout handoff is disabled.
+target_files: []
+verifier:
+  kind: pytest
+  args:
+    targets:
+      - factory/execution/rollout_http_drain_gold_test.py
+    tests:
+      factory/execution/rollout_http_drain_gold_test.py: |
+        """Budget-based entrypoint regression and the source disabled neighbour."""
+        from pathlib import Path
+        import runpy
+        import sys
+        from types import ModuleType
+
+        import framework
+        import pytest
+        import uvicorn
+
+        from factory.module import RolloutHandoffServer
+
+
+        @pytest.mark.parametrize("enabled", [True, False])
+        def test_http_drain_leaves_executor_handoff_budget(monkeypatch, enabled):
+            monkeypatch.setenv("AGENT_ROLLOUT_HANDOFF_ENABLED", str(enabled).lower())
+            app = object()
+            served = []
+
+            def handoff_run(server):
+                served.append(("handoff", server.config))
+
+            def legacy_run(application, **kwargs):
+                served.append(("legacy", uvicorn.Config(application, **kwargs)))
+
+            monkeypatch.setattr(RolloutHandoffServer, "run", handoff_run)
+            monkeypatch.setattr(uvicorn, "run", legacy_run)
+            # Composition starts unrelated domains and telemetry. Keep that seam
+            # inert while executing all entrypoint code, including repair helpers.
+            modules = ModuleType("app.modules_private")
+            modules.ALL_MODULES = []
+            monkeypatch.setitem(sys.modules, "app.modules_private", modules)
+            monkeypatch.setattr(framework, "build_app", lambda *args: app)
+            monkeypatch.setattr(framework, "build_private_lifespan", lambda *args: None)
+            path = Path(__file__).resolve().parents[2] / "app" / "main.py"
+            runpy.run_path(str(path), run_name="__main__")
+            assert len(served) == 1
+            mode, config = served[0]
+            assert mode == ("handoff" if enabled else "legacy")
+            assert (config.app, config.host, config.port, config.log_level) == (
+                app, "0.0.0.0", 8000, "warning",
+            )
+            bound = config.timeout_graceful_shutdown
+            if enabled:
+                assert bound is not None and 0 < bound <= 30 - 15, (
+                    "enabled HTTP drain must leave the 15-second executor handoff budget"
+                )
+            else:
+                assert bound is None, "disabled HTTP serving must retain its legacy unbounded drain"

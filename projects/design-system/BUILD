@@ -11,13 +11,35 @@ npm_link_all_packages(name = "node_modules")
 js_library(
     name = "pkg",
     srcs = [
+        # The token tests verify the README's measured contrast table.
+        "README.md",
+        "components/Breadcrumb.svelte",
+        "components/Button.svelte",
+        "components/Disclosure.svelte",
+        "components/Field.svelte",
+        "components/PageHeader.svelte",
+        "components/Tabs.svelte",
+        "components/index.js",
+        "data-display/ChartFrame.svelte",
+        "data-display/KeyValue.svelte",
+        "data-display/Legend.svelte",
+        "data-display/Metric.svelte",
+        "data-display/Panel.svelte",
+        "data-display/Status.svelte",
+        "data-display/contracts.js",
+        "data-display/core.js",
+        "data-display/fixtures.js",
+        "data-display/format.js",
+        "data-display/index.js",
         "package.json",
         "tokens/contract.css",
+        "tokens/technical-drawing.css",
     ],
     visibility = [
         "//:__pkg__",
         "//projects/monolith/frontend:__pkg__",
     ],
+    deps = ["//:node_modules/svelte"],
 )
 
 # Markdown read by the monolith doc-manifest genrules (#6446). See

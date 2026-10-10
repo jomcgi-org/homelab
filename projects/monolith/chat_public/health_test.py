@@ -58,8 +58,8 @@ def test_module_registers_fatal_inference_health():
     assert MODULE.register_health_advisory is None
 
 
-def test_chat_public_module_is_wired_into_public_app():
-    assert chat_public.module.MODULE in PUBLIC_MODULES
+def test_retired_notes_chat_module_is_absent_from_public_app():
+    assert chat_public.module.MODULE not in PUBLIC_MODULES
 
 
 @pytest.mark.asyncio

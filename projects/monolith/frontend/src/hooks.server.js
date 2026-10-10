@@ -59,6 +59,37 @@ export function pickEncoding(accept) {
 export async function handle({ event, resolve }) {
   const response = await resolve(event);
 
+  // The Activity index still accepts legacy JSON clients at its HTML URL.
+  // Cloudflare's URL cache key does not distinguish Accept, so neither
+  // representation can be stored here. Keep the exception at the response
+  // boundary to cover HTML, JSON, navigation data, HEAD and error responses.
+  // Cacheable JSON lives at /slop/factory/data/activity (agent aggregates)
+  // and /slop/factory/data/board (the factory ledger).
+  if (event.route?.id === "/public/slop/factory/activity") {
+    response.headers.set("cache-control", "no-store");
+    response.headers.set("cloudflare-cdn-cache-control", "no-store");
+    // Do not revalidate a previously cached representation into a 304. Kit
+    // evaluates If-None-Match after this hook, so remove its validator too.
+    response.headers.delete("etag");
+  }
+
+  // Campaign pages contain private roster data and one-time invitation action
+  // results. Apply at the response boundary so action failures, navigation
+  // payloads and redirects cannot be cached even when no page load runs.
+  if (
+    event.route?.id === "/friends/grimoire" ||
+    event.route?.id?.startsWith("/friends/grimoire/")
+  ) {
+    response.headers.set("cache-control", "private, no-store");
+    response.headers.set("cloudflare-cdn-cache-control", "no-store");
+    // Native form POSTs need their same-origin Origin for CSRF checks.
+    // no-referrer makes navigation POST Origin null (Fetch section 3.2).
+    // same-origin still omits referrers to other origins; invitation fragments
+    // are cleared by the standalone landing before it sends any request.
+    response.headers.set("referrer-policy", "same-origin");
+    response.headers.delete("etag");
+  }
+
   // HEAD must not have its body materialised; pass through untouched.
   if (event.request.method === "HEAD") return response;
   // Respect anything upstream already encoded.

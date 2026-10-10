@@ -1,6 +1,7 @@
 <script>
   import { renderMarkdown } from "./markdown.js";
   import { colorFor, labelFor } from "./clusters.js";
+  import { describeFreshness } from "./freshness.js";
 
   let {
     selectedId,
@@ -47,6 +48,24 @@
   );
 
   let body = $state("");
+  let detail = $state(null);
+  let now = $state(Date.now());
+  // Review freshness is the private detail payload's; the public endpoint has
+  // none, so the block simply does not render there.
+  let freshness = $derived(describeFreshness(detail, now));
+  $effect(() => {
+    const deadline = Date.parse(detail?.review_after);
+    let timer;
+    // Refresh the countdown coarsely, but cross a near deadline at equality.
+    function tick() {
+      const clock = Date.now();
+      now = clock;
+      const delay = deadline - clock;
+      timer = setTimeout(tick, delay > 0 ? Math.min(delay, 60_000) : 60_000);
+    }
+    tick();
+    return () => clearTimeout(timer);
+  });
   let loading = $state(false);
   let error = $state("");
 
@@ -71,6 +90,7 @@
   $effect(() => {
     if (!selectedId) {
       body = "";
+      detail = null;
       error = "";
       loading = false;
       return;
@@ -79,6 +99,7 @@
     loading = true;
     error = "";
     body = "";
+    detail = null;
     fetch(`${apiBase}/${encodeURIComponent(selectedId)}`, {
       signal: controller.signal,
     })
@@ -90,6 +111,7 @@
         // trimmed client-side); public endpoint returns `body` (already
         // stripped + wikilink-sanitized server-side). Accept either.
         body = data.content ?? data.body ?? "";
+        detail = data;
       })
       .catch((e) => {
         if (e.name !== "AbortError") error = "couldn't load note body";
@@ -122,6 +144,17 @@
       <button class="panel-close" onclick={onClose} aria-label="close">×</button
       >
     </div>
+
+    {#if freshness}
+      <div class="panel-freshness" data-state={freshness.state}>
+        <span class="fresh-badge">{freshness.label}</span>
+        <ul class="fresh-lines">
+          {#each freshness.lines as line}
+            <li>{line}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
 
     <div
       class="panel-body"
@@ -255,6 +288,36 @@
   .panel-close:hover {
     background: #141414;
     color: #ffffff;
+  }
+  .panel-freshness {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 16px;
+    border-bottom: 1.5px dashed #141414;
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+  .fresh-badge {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border: 1.5px solid #141414;
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    font-weight: 700;
+    background: #5dd879;
+  }
+  .panel-freshness[data-state="due"] .fresh-badge {
+    background: #ff6b5b;
+  }
+  .panel-freshness[data-state="unknown"] .fresh-badge {
+    background: #f5d90a;
+  }
+  .fresh-lines {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: #141414;
   }
   .panel-body {
     padding: 14px 18px 18px;

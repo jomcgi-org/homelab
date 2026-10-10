@@ -1,14 +1,16 @@
 """Tests for KnowledgeStore."""
 
-from datetime import datetime, timedelta, timezone
 import os
+from datetime import datetime, timedelta, timezone
+from unittest.mock import ANY
 
 import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.entities import Entity, NoteEntity
+from knowledge.freshness import utc
+from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.links import Link
 from knowledge.models import Chunk, Note, NoteLink
 from knowledge.store import KnowledgeStore, _rank_search_chunks
@@ -150,6 +152,54 @@ class TestUpsertNote:
         assert len(notes) == 1
         assert notes[0].path == "_processed/foo.md"
         assert notes[0].content_hash == "h2"
+
+    def test_upsert_carries_revision_forward_so_it_never_resets(self, store, session):
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        note = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        assert note.revision == 0
+        # A reindex of identical content and a move into _processed/ both
+        # replace the row; the counter still advances.
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        _upsert(store, note_id="rev", path="_processed/rev.md", content_hash="h1")
+        _upsert(store, note_id="rev", path="_processed/rev.md", content_hash="h2")
+        note = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        assert note.revision == 3
+
+    def test_upsert_refreshes_a_stale_revision_before_replacing_a_note(
+        self, store, session
+    ):
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        stale = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        with Session(session.get_bind()) as other:
+            row = other.exec(select(Note).where(Note.note_id == "rev")).one()
+            row.confidence = 0.8
+            other.commit()
+        assert stale.revision == 0
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        current = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        assert current.revision == 2
+
+    def test_a_review_captured_before_a_reindex_cannot_renew(self, store, session):
+        from knowledge.freshness import commit_successful_review
+
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        captured = session.exec(select(Note).where(Note.note_id == "rev")).one()
+        revision, content_hash = captured.revision, captured.content_hash
+        # Retelling then same-content reindex: the old reset-to-zero let (0, h1)
+        # pass both checks.
+        _upsert(store, note_id="rev", path="rev.md", content_hash="h1")
+        _upsert(store, note_id="rev", path="_processed/rev.md", content_hash="h1")
+        result = commit_successful_review(
+            session,
+            note_id="rev",
+            expected_revision=revision,
+            expected_content_hash=content_hash,
+            evidence=["PR #1 is open"],
+            evidence_observed_at=now,
+            now=now,
+        )
+        assert not result.renewed and result.reason == "revision_changed"
 
     def test_upsert_preserves_published_at(self, store, session):
         _upsert(store, note_id="published", path="published.md", content_hash="h1")
@@ -431,6 +481,8 @@ def test_context_search_forwards_all_ranking_filters(
                 "exclude_invalidated": exclude_invalidated,
                 "include_legacy": include_legacy,
                 "include_deployment_observations": include_deployment_observations,
+                "include_history": False,
+                "now": ANY,
             },
         )
     ]
@@ -463,7 +515,12 @@ class TestSearchNotesWithContext:
     @pytest.fixture(autouse=True)
     def _setup(self, pg_session):
         self.session = pg_session
-        self.store = KnowledgeStore(session=pg_session)
+        self.now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        self.store = KnowledgeStore(session=pg_session, now=self.now)
+
+    def _meta(self, **fields):
+        fields.setdefault("observed_at", self.now - timedelta(hours=1))
+        return _meta(**fields)
 
     def test_returns_type_tags_snippet_and_section(self):
         # Insert a note with a distinctive chunk under "## Architecture".
@@ -473,7 +530,7 @@ class TestSearchNotesWithContext:
             path="attention.md",
             content_hash="h1",
             title="Attention",
-            metadata=_meta(
+            metadata=self._meta(
                 title="Attention",
                 type="paper",
                 tags=["ml", "transformers"],
@@ -509,6 +566,11 @@ class TestSearchNotesWithContext:
             "valid_from",
             "valid_until",
             "observed_at",
+            "review_after",
+            "review_policy",
+            "last_reviewed_at",
+            "freshness",
+            "requires_authoritative_observation",
             "disputed",
             "provenance",
             "entities",
@@ -534,7 +596,7 @@ class TestSearchNotesWithContext:
                 path=f"{note_id}.md",
                 content_hash=note_id,
                 title=note_id,
-                metadata=_meta(
+                metadata=self._meta(
                     title=note_id,
                     type="fact",
                     scope=scope,
@@ -563,7 +625,7 @@ class TestSearchNotesWithContext:
             path="multi.md",
             content_hash="h1",
             title="Multi",
-            metadata=_meta(
+            metadata=self._meta(
                 title="Multi",
                 type="paper",
                 tags=["ml"],
@@ -599,7 +661,7 @@ class TestSearchNotesWithContext:
             path="projected.md",
             content_hash="projected-hash",
             title="Projected",
-            metadata=_meta(
+            metadata=self._meta(
                 title="Projected",
                 type="fact",
                 tags=["query"],
@@ -668,7 +730,9 @@ class TestSearchNotesWithContext:
             note_id="n1",
             path="a.md",
             title="Paper",
-            metadata=_meta(title="Paper", type="paper", verification_state="verified"),
+            metadata=self._meta(
+                title="Paper", type="paper", verification_state="verified"
+            ),
             n_chunks=1,
         )
         _upsert(
@@ -676,7 +740,7 @@ class TestSearchNotesWithContext:
             note_id="n2",
             path="b.md",
             title="Journal",
-            metadata=_meta(
+            metadata=self._meta(
                 title="Journal", type="journal", verification_state="verified"
             ),
             n_chunks=1,
@@ -696,7 +760,7 @@ class TestSearchNotesWithContext:
                 path=f"{note_id}.md",
                 content_hash=note_id,
                 title=note_id,
-                metadata=_meta(
+                metadata=self._meta(
                     title=note_id, type="fact", verification_state="verified"
                 ),
                 chunks=[{"index": 0, "section_header": "", "text": content}],
@@ -710,14 +774,16 @@ class TestSearchNotesWithContext:
         future_expiry = self.session.exec(
             select(Note).where(Note.note_id == "future-expiry")
         ).one()
-        now = datetime.now(timezone.utc)
+        now = self.now
         expired.valid_until = now - timedelta(days=30)
         future_expiry.valid_until = now + timedelta(days=365)
         invalidated.verification_state = "invalidated"
         self.session.add_all([expired, invalidated, future_expiry])
         self.session.commit()
 
-        public_results = self.store.search_notes_with_context([0.0] * 1024)
+        public_results = self.store.search_notes_with_context(
+            [0.0] * 1024, include_history=True
+        )
         dedupe_results = self.store.search_notes_with_context(
             [0.0] * 1024, exclude_invalidated=True
         )
@@ -748,7 +814,7 @@ class TestSearchNotesWithContext:
                 path=f"{note_id}.md",
                 content_hash=note_id,
                 title=note_id,
-                metadata=_meta(
+                metadata=self._meta(
                     title=note_id,
                     type="fact",
                     verification_state=(
@@ -765,7 +831,7 @@ class TestSearchNotesWithContext:
         if excluded == "invalidated":
             top.verification_state = "invalidated"
         else:
-            top.valid_until = datetime.now(timezone.utc) - timedelta(days=30)
+            top.valid_until = self.now - timedelta(days=30)
         self.session.add(top)
         self.session.commit()
 
@@ -792,7 +858,7 @@ class TestSearchNotesWithContext:
                 path=f"{note_id}.md",
                 content_hash=note_id,
                 title=note_id,
-                metadata=_meta(
+                metadata=self._meta(
                     title=note_id,
                     type="fact",
                     verification_state=state,
@@ -831,7 +897,7 @@ class TestSearchNotesWithContext:
                 path=f"{note_id}.md",
                 content_hash=note_id,
                 title=note_id,
-                metadata=_meta(
+                metadata=self._meta(
                     title=note_id,
                     type="fact",
                     scope=(
@@ -888,6 +954,29 @@ class TestSearchNotesWithContext:
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)
         assert results == []
 
+    def test_due_notes_require_explicit_history(self):
+        for note_id, observed_at in (
+            ("current", self.now - timedelta(hours=1)),
+            ("due", self.now - timedelta(days=90)),
+        ):
+            _upsert(
+                self.store,
+                note_id=note_id,
+                path=f"{note_id}.md",
+                metadata=self._meta(
+                    title=note_id,
+                    observed_at=observed_at,
+                    verification_state="verified",
+                ),
+            )
+        current = self.store.search_notes_with_context([0.0] * 1024)
+        history = self.store.search_notes_with_context(
+            [0.0] * 1024, include_history=True
+        )
+        assert {row["note_id"] for row in current} == {"current"}
+        assert {row["note_id"] for row in history} == {"current", "due"}
+        assert {row["note_id"]: row["freshness"] for row in history}["due"] == "due"
+
 
 class TestGetNoteById:
     def test_returns_note_metadata(self, store):
@@ -917,10 +1006,38 @@ class TestGetNoteById:
             "valid_from": None,
             "valid_until": None,
             "observed_at": None,
+            "review_after": None,
+            "review_policy": "standard-90d/v1",
+            "last_reviewed_at": None,
+            "freshness": "unknown",
+            "requires_authoritative_observation": False,
+            "last_review_outcome": None,
             "disputed": False,
             "provenance": [],
             "entities": [],
         }
+
+    def test_surfaces_why_a_due_fact_is_still_due(self, store):
+        from knowledge.freshness import record_outcome
+
+        _upsert(store, note_id="n1", path="n1.md", title="My Note", metadata=_meta())
+        now = datetime(2026, 10, 4, tzinfo=timezone.utc)
+        record_outcome(
+            store.session,
+            note_id="n1",
+            revision=0,
+            status="unsupported",
+            reason="state 'ready' is not verifiable from GitHub",
+            now=now,
+        )
+        store.session.commit()
+        got = store.get_note_by_id("n1")["last_review_outcome"]
+        assert (got["status"], got["reason"], got["next_attempt_at"]) == (
+            "unsupported",
+            "state 'ready' is not verifiable from GitHub",
+            None,
+        )
+        assert utc(got["attempted_at"]) == now
 
     def test_returns_content_when_set(self, store):
         """ADR 006: get_note_by_id surfaces the authoritative body."""

@@ -410,7 +410,7 @@ def ingest_eligible(policy: dict) -> None:
         issue = github_get(policy["repo"], f"issues/{number}")
         if issue.get("state") != "open" or "pull_request" in issue:
             continue
-        if issue.get("assignees"):
+        if issue.get("assignees") or "human" in _label_names(issue):
             continue
         # An operator naming an issue says which work to do, not how hard it
         # is. The class comes off the same labels either path reads, so a
@@ -1618,7 +1618,11 @@ def _planner_context(
                 "prompt_budget": 0,
             },
         }
-        context_followups = current.get("followups") or []
+        from factory.orchestration.conductor_context import (
+            _refresh_followup_notes,
+        )
+
+        context_followups = _refresh_followup_notes(current.get("followups") or [])
         current_direction = current.get("operator_direction")
         # Keep the compatibility field, but source it from the current receipt.
         # The complete acceptance lives separately and is protected from the
@@ -6128,7 +6132,9 @@ def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
     return True
 
 
-def reconcile_task(task_id: str, policy: dict, dbos) -> None:
+def reconcile_task(
+    task_id: str, policy: dict, dbos, *, human_owned: bool = False
+) -> None:
     from factory.orchestration.factory_controls import (
         DEFAULT_MAX_REVIEW_ROUNDS,
         DEFAULT_MAX_REVIEW_RECOVERY_ROUNDS,
@@ -6166,6 +6172,22 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             )
             if not charged["ok"]:
                 raise ValueError(f"factory outcome refused: {charged['reason']}")
+    from factory.orchestration.factory_controls import (
+        HUMAN_HANDOFF_EVIDENCE,
+        finish_task,
+    )
+
+    if human_owned:
+        # Drain existing invocations through their normal outcome accounting.
+        # Do not plan, retry, dispatch, verify a brief or claim delivery here.
+        for run in runs:
+            if run["status"] not in graph.TERMINAL_RUN_STATUSES:
+                _submit_or_reconcile(task, run, dbos)
+        if all(
+            r["status"] in graph.TERMINAL_RUN_STATUSES for r in graph.node_runs(task_id)
+        ):
+            finish_task(task_id, "cancelled", ACTOR, evidence=HUMAN_HANDOFF_EVIDENCE)
+        return
     parallel = parallel_limit(policy)
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
     if active:
@@ -7829,7 +7851,7 @@ def _escalate_ceased_task(task: dict) -> bool:
     return True
 
 
-def _supervise_cessation(task: dict, dbos) -> None:
+def _supervise_cessation(task: dict, dbos, *, human_owned: bool = False) -> None:
     """Produce cessation evidence for this task's stranded attempts, then escalate.
 
     Runs after reconcile_task, so every proof that waits for evidence has
@@ -7839,7 +7861,21 @@ def _supervise_cessation(task: dict, dbos) -> None:
     from factory.orchestration import factory_cessation
 
     factory_cessation.supervise_task(task, dbos)
-    _escalate_ceased_task(task)
+    if not human_owned:
+        _escalate_ceased_task(task)
+
+
+def _observe_human_ownership(task: dict) -> bool:
+    """Read current ownership before dispatch; persist a sticky receipt fence."""
+    from factory.orchestration.factory_controls import human_handoff
+    from factory.orchestration.factory_intake_loop import _label_names
+
+    if human_handoff(task["task_id"], ACTOR):
+        return True
+    issue = github_get(task["repo"], f"issues/{task['issue_number']}")
+    return human_handoff(
+        task["task_id"], ACTOR, observed="human" in _label_names(issue)
+    )
 
 
 def tick() -> None:
@@ -7853,6 +7889,13 @@ def tick() -> None:
     uncertain_tasks.emit_uncertain_task_snapshot()
 
     snapshot = status()
+    # Check publication is independent of admission, guest runtime and landing.
+    try:
+        from factory import dependency_gate
+
+        dependency_gate.tick(snapshot["policy"])
+    except Exception:  # noqa: BLE001 - a check failure cannot stop reconciliation
+        logger.exception("factory dependency gate publication failed")
     if snapshot["state"] == "disabled":
         return
     dbos = runtime.init_dbos()
@@ -7887,21 +7930,33 @@ def tick() -> None:
                     "factory sessionless-start sweep failed for task %s",
                     task["task_id"],
                 )
+        owned = False
         try:
-            if task.get("task_paused") and _expire_reconciler_pause(task["task_id"]):
-                continue
-            _watch_progress(task)
-            reconcile_task(task["task_id"], task["policy"], dbos)
+            owned = _observe_human_ownership(task)
+            if owned:
+                reconcile_task(task["task_id"], task["policy"], dbos, human_owned=True)
+            else:
+                if task.get("task_paused") and _expire_reconciler_pause(
+                    task["task_id"]
+                ):
+                    continue
+                _watch_progress(task)
+                reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])
         # Its own guard as well: a control plane that cannot be read must not
         # keep the backstop below, or the next task, from its tick.
         try:
-            _supervise_cessation(task, dbos)
+            if owned:
+                _supervise_cessation(task, dbos, human_owned=True)
+            else:
+                _supervise_cessation(task, dbos)
         except Exception:  # noqa: BLE001 - supervision must not stall the lane
             logger.exception(
                 "factory supervised cessation failed for task %s", task["task_id"]
             )
+        if owned:
+            continue
         # Last, and in its own guard. Proof-based release always gets this
         # tick first, and a task whose reconcile raises every time is exactly
         # the one that must still reach the backstop.

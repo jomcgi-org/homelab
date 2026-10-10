@@ -20,21 +20,23 @@ so ``/api/knowledge/public/*`` behaves identically there.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
-import asyncio
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from shared.embedding import EmbeddingClient
 from sqlalchemy import case, func, or_
 from sqlmodel import Session, select
 
-from core.db import get_session
 from knowledge.api import search_public_chunks
+from knowledge.freshness import current_predicate
 from knowledge.gardener import _slugify
-from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
+from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, public_cache_control
 from knowledge.notes import resolve_note_body
 from knowledge.public_limits import allow_semantic_search
 from knowledge.public_models import (
@@ -45,7 +47,6 @@ from knowledge.public_models import (
 )
 from knowledge.store import GRAPH_NOTE_TYPES
 from knowledge.visibility import strip_private_wikilinks
-from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,10 @@ _SEARCH_INDEX_NOTE_LIMIT = 20_000
 _SEARCH_INDEX_CACHE_CONTROL = (
     "public, max-age=300, s-maxage=300, stale-while-revalidate=86400"
 )
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _client_key(request: Request) -> str:
@@ -91,7 +96,30 @@ def _cache_response(
     etag: str,
     last_modified=None,
     cache_control: str = _GRAPH_CACHE_CONTROL,
+    notes=None,
+    now: datetime | None = None,
 ) -> Response | None:
+    if notes is not None:
+        served_at = _now()
+        if any(_as_utc(note.review_after) <= served_at for note in notes):
+            # A deadline can pass during embedding or database work. Refuse
+            # that snapshot rather than send it, including on a 304 path.
+            raise HTTPException(
+                status_code=503,
+                detail="Knowledge snapshot expired; retry",
+                headers={"Cache-Control": "no-store"},
+            )
+        cache_control = public_cache_control(
+            notes, now=served_at, default=cache_control
+        )
+        etag = _record_etag(
+            etag,
+            sorted((note.note_id, _as_utc(note.review_after)) for note in notes),
+        )
+    # No explicit Date header here: uvicorn sends a single Date (request
+    # start) and proxies plus Cloudflare start the TTL at receipt, so the
+    # lease above is measured from serve time and each hop dates its own
+    # response instead of forwarding upstream Date/Age as a new lease basis.
     headers = {"Cache-Control": cache_control, "ETag": etag}
     latest = _as_utc(last_modified)
     if latest is not None:
@@ -149,6 +177,7 @@ def get_public_entities(
     session: Session = Depends(get_session),
 ):
     """List public entities with public-note counts by verification state."""
+    now = _now()
     entities = session.exec(
         select(PublicEntity).order_by(PublicEntity.kind, PublicEntity.slug)
     ).all()
@@ -157,7 +186,10 @@ def get_public_entities(
             PublicNoteEntity.entity_id,
             PublicNoteEntity.verification_state,
             func.count(func.distinct(PublicNoteEntity.note_id)).label("note_count"),
-        ).group_by(
+        )
+        .join(PublicNote, PublicNote.note_id == PublicNoteEntity.note_id)
+        .where(current_predicate(now=now, model=PublicNote))
+        .group_by(
             PublicNoteEntity.entity_id,
             PublicNoteEntity.verification_state,
         )
@@ -199,14 +231,22 @@ def get_public_entities(
     linked_note_count = sum(
         sum(counts.values()) for counts in counts_by_entity.values()
     )
-    etag = _graph_etag(len(entities) + linked_note_count, indexed_at)
-    headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
-    if indexed_at is not None:
-        headers["Last-Modified"] = format_datetime(indexed_at, usegmt=True)
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-    for key, value in headers.items():
-        response.headers[key] = value
+    contributing_notes = session.execute(
+        select(PublicNote.note_id, PublicNote.review_after)
+        .join(PublicNoteEntity, PublicNoteEntity.note_id == PublicNote.note_id)
+        .where(current_predicate(now=now, model=PublicNote))
+        .distinct()
+    ).all()
+    cached = _cache_response(
+        request,
+        response,
+        etag=_record_etag("entities", payload),
+        last_modified=indexed_at,
+        notes=contributing_notes,
+        now=now,
+    )
+    if cached is not None:
+        return cached
     logger.info(
         "public.entities.served entities=%d linked_notes=%d",
         len(entities),
@@ -231,6 +271,7 @@ def get_public_graph(
     Same Cache-Control + ETag semantics so the CDN treats this payload
     identically.
     """
+    now = _now()
     # The view already restricts to public + non-deleted notes; keep the type
     # filter so gap stubs (type='gap') and other non-renderable types stay out,
     # matching get_graph().
@@ -241,12 +282,16 @@ def get_public_graph(
             PublicNote.type,
             PublicNote.verification_state,
             PublicNote.indexed_at,
+            PublicNote.review_after,
             # The view already COALESCEs layout_x_public/layout_x (and y), so
             # these columns are the public-preferred positions. Keep both
             # nullable in the response; the client handles either.
             PublicNote.layout_x.label("x"),
             PublicNote.layout_y.label("y"),
-        ).where(PublicNote.type.in_(list(GRAPH_NOTE_TYPES)))
+        ).where(
+            PublicNote.type.in_(list(GRAPH_NOTE_TYPES)),
+            current_predicate(now=now, model=PublicNote),
+        )
     ).all()
 
     public_note_ids = {row.note_id for row in public_note_rows}
@@ -262,7 +307,7 @@ def get_public_graph(
                 PublicNoteLink.target,
                 PublicNoteLink.kind,
                 PublicNoteLink.edge_type,
-            )
+            ).where(PublicNoteLink.source.in_(public_note_ids))
         ).all()
     else:
         link_rows = []
@@ -302,16 +347,16 @@ def get_public_graph(
     indexed_at = _as_utc(
         max((row.indexed_at for row in public_note_rows), default=None)
     )
-    etag = _graph_etag(len(public_note_rows), indexed_at)
-    headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
-    if indexed_at is not None:
-        headers["Last-Modified"] = format_datetime(indexed_at, usegmt=True)
-
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
-
-    for key, value in headers.items():
-        response.headers[key] = value
+    cached = _cache_response(
+        request,
+        response,
+        etag=_record_etag("graph", {"nodes": nodes, "edges": edges}),
+        last_modified=indexed_at,
+        notes=public_note_rows,
+        now=now,
+    )
+    if cached is not None:
+        return cached
     logger.info("public.graph.served nodes=%d edges=%d", len(nodes), len(edges))
     return {
         "nodes": nodes,
@@ -334,6 +379,7 @@ def get_public_entity_notes(
     session: Session = Depends(get_session),
 ):
     """Return the newest public notes and contradictions for one entity."""
+    now = _now()
     entity = session.exec(
         select(PublicEntity).where(
             PublicEntity.kind == kind,
@@ -350,6 +396,7 @@ def get_public_entity_notes(
         .where(
             PublicNoteEntity.entity_id == entity.id,
             PublicNote.verification_state.in_(states),
+            current_predicate(now=now, model=PublicNote),
         )
         .order_by(
             case((PublicNoteEntity.role == "subject", 0), else_=1),
@@ -388,6 +435,7 @@ def get_public_entity_notes(
         .join(PublicNoteEntity, PublicNoteEntity.note_id == PublicNote.note_id)
         .where(
             PublicNoteEntity.entity_id == entity.id,
+            current_predicate(now=now, model=PublicNote),
             PublicNote.verification_state.in_(
                 ("verified", "unverified", "disputed", "invalidated")
             ),
@@ -445,7 +493,18 @@ def get_public_entity_notes(
         (_as_utc(note.indexed_at) for note in contradiction_rows.values()), default=None
     )
     etag = _record_etag(f"entity-{kind}-{slug}-{','.join(states)}-{limit}", payload)
-    cached = _cache_response(request, response, etag=etag, last_modified=latest)
+    served_ids = set(note_rows)
+    for pair in contradictions:
+        served_ids.update((pair["a"]["note_id"], pair["b"]["note_id"]))
+    served_notes = {**contradiction_rows, **note_rows}
+    cached = _cache_response(
+        request,
+        response,
+        etag=etag,
+        last_modified=latest,
+        notes=[served_notes[note_id] for note_id in served_ids],
+        now=now,
+    )
     if cached is not None:
         return cached
     return payload
@@ -458,6 +517,7 @@ def get_public_search_index(
     session: Session = Depends(get_session),
 ):
     """Return a compact, cacheable title index for the public record."""
+    now = _now()
     # Only the four columns the index carries: loading whole notes pulled
     # every note body through the ORM to throw it away.
     rows = session.exec(
@@ -466,8 +526,12 @@ def get_public_search_index(
             PublicNote.title,
             PublicNote.verification_state,
             PublicNote.indexed_at,
+            PublicNote.review_after,
         )
-        .where(PublicNote.verification_state.in_(_RECORD_STATES))
+        .where(
+            PublicNote.verification_state.in_(_RECORD_STATES),
+            current_predicate(now=now, model=PublicNote),
+        )
         .order_by(
             PublicNote.observed_at.desc().nulls_last(),
             PublicNote.indexed_at.desc(),
@@ -541,6 +605,8 @@ def get_public_search_index(
         etag=etag,
         last_modified=latest,
         cache_control=_SEARCH_INDEX_CACHE_CONTROL,
+        notes=rows,
+        now=now,
     )
     if cached is not None:
         return cached
@@ -558,9 +624,11 @@ async def search_public_record(
     session: Session = Depends(get_session),
 ):
     """Search public, governed knowledge notes by text or embedding."""
+    now = _now()
     query = q.strip()
     result_rows: list[dict] = []
     indexed_by_id: dict[str, object] = {}
+    served_notes: dict[str, PublicNote] = {}
     if query and mode == "grep":
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped}%"
@@ -568,6 +636,7 @@ async def search_public_record(
             select(PublicNote)
             .where(
                 PublicNote.verification_state.in_(_RECORD_STATES),
+                current_predicate(now=now, model=PublicNote),
                 or_(
                     PublicNote.title.ilike(pattern, escape="\\"),
                     PublicNote.content.ilike(pattern, escape="\\"),
@@ -580,6 +649,7 @@ async def search_public_record(
             .limit(limit)
         ).all()
         for note in rows:
+            served_notes[note.note_id] = note
             indexed_by_id[note.note_id] = note.indexed_at
             result_rows.append(
                 {
@@ -600,7 +670,9 @@ async def search_public_record(
         if client.base_url:
             try:
                 vector = await asyncio.wait_for(client.embed(query), timeout=5.0)
-                semantic_rows = search_public_chunks(session, vector, limit=limit)
+                semantic_rows = search_public_chunks(
+                    session, vector, limit=limit, now=now
+                )
             except Exception:  # noqa: BLE001 - search degrades to no matches
                 logger.exception("public.record.semantic_search_failed")
                 semantic_rows = []
@@ -609,6 +681,7 @@ async def search_public_record(
                 select(PublicNote).where(
                     PublicNote.note_id.in_(semantic_ids),
                     PublicNote.verification_state.in_(_RECORD_STATES),
+                    current_predicate(now=now, model=PublicNote),
                 )
             ).all()
             public_by_id = {note.note_id: note for note in public_rows}
@@ -616,6 +689,7 @@ async def search_public_record(
                 note = public_by_id.get(row["note_id"])
                 if note is None:
                     continue
+                served_notes[note.note_id] = note
                 indexed_by_id[note.note_id] = note.indexed_at
                 result_rows.append(
                     {
@@ -633,7 +707,14 @@ async def search_public_record(
     ]
     latest = max((_as_utc(value) for value in indexed_by_id.values()), default=None)
     etag = _record_etag(f"search-{mode}-{query}-{limit}", payload)
-    cached = _cache_response(request, response, etag=etag, last_modified=latest)
+    cached = _cache_response(
+        request,
+        response,
+        etag=etag,
+        last_modified=latest,
+        notes=list(served_notes.values()),
+        now=now,
+    )
     if cached is not None:
         return cached
     return payload
@@ -717,8 +798,10 @@ def get_public_facts_daily(
 @router.get("/public/notes/{note_id}")
 def get_public_note(
     note_id: str,
+    request: Request,
+    response: Response,
     session: Session = Depends(get_session),
-) -> dict:
+):
     """Return a single note iff its effective visibility is ``public``.
 
     The 404 response is identical for missing notes AND for notes that
@@ -730,14 +813,20 @@ def get_public_note(
     :func:`strip_private_wikilinks`; wikilinks targeting public notes are left
     intact for the frontend renderer to resolve.
     """
+    now = _now()
     note = session.exec(
-        select(PublicNote).where(PublicNote.note_id == note_id)
+        select(PublicNote).where(
+            PublicNote.note_id == note_id,
+            current_predicate(now=now, model=PublicNote),
+        )
     ).one_or_none()
     if note is None:
         # Identical 404 for missing and private: never expose existence.
         # The reason is logged but not surfaced in the response.
         logger.info("public.note.404 note_id=%s reason=not_found", note_id)
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(
+            status_code=404, detail="Not Found", headers={"Cache-Control": "no-store"}
+        )
 
     # ADR 006: body of record is Postgres ``content`` (Obsidian decommissioned).
     body = resolve_note_body(note.content)
@@ -745,7 +834,9 @@ def get_public_note(
         # Same identical 404: don't leak that the DB row exists but
         # the body is unavailable.
         logger.info("public.note.404 note_id=%s reason=no_body", note_id)
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(
+            status_code=404, detail="Not Found", headers={"Cache-Control": "no-store"}
+        )
 
     # The public service cannot enumerate private notes (it reads only the
     # public_api views), so invert the sanitiser: keep wikilinks that resolve
@@ -754,12 +845,18 @@ def get_public_note(
     # deleted rows, so this list is exactly the public note set.
     # session.exec on a single-column select yields scalar values directly
     # (SQLModel SelectOfScalar), so these are note_id strings, not Row tuples.
-    public_ids = list(session.exec(select(PublicNote.note_id)).all())
+    public_ids = list(
+        session.exec(
+            select(PublicNote.note_id).where(
+                current_predicate(now=now, model=PublicNote)
+            )
+        ).all()
+    )
     sanitized = strip_private_wikilinks(body, public_ids)
 
     indexed_at = _as_utc(note.indexed_at)
     logger.info("public.note.served note_id=%s", note_id)
-    return {
+    payload = {
         "note_id": note.note_id,
         "title": note.title,
         "tags": list(note.tags or []),
@@ -775,3 +872,12 @@ def get_public_note(
         "disputed": note.disputed,
         "body": sanitized,
     }
+    cached = _cache_response(
+        request,
+        response,
+        etag=_record_etag(f"note-{note_id}", payload),
+        last_modified=indexed_at,
+        notes=[note],
+        now=now,
+    )
+    return cached if cached is not None else payload

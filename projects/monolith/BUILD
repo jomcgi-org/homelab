@@ -127,7 +127,6 @@ _BACKEND_SRCS = glob(
         "agent/**/*.py",
         "agent_sessions/**/*.py",
         "app/**/*.py",
-        "auth/**/*.py",
         "core/**/*.py",
         "factory/**/*.py",
         "framework/**/*.py",
@@ -259,8 +258,11 @@ filegroup(
         "//projects/mcp/context-forge-gateway/deploy:repo_docs",
         "//projects/model-bench:repo_docs",
         "//projects/model-bench/probe:repo_docs",
+        "//projects/monolith/auth:repo_docs",
         "//projects/monolith/deploy:repo_docs",
         "//projects/monolith/dev/deploy:repo_docs",
+        "//projects/monolith/dev/grimoire:repo_docs",
+        "//projects/monolith/frontend:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
@@ -483,28 +485,10 @@ py_venv_binary(
 # change under grimoire/ invalidates grimoire's tests, not all 354. The
 # The packages in the agent/chat/home import cycle share one
 # target because Bazel deps must be acyclic; everything else is a DAG.
-py_library(
+alias(
     name = "pkg_auth",
-    srcs = glob(
-        [
-            "auth/**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
-    imports = ["."],
+    actual = "//projects/monolith/auth:auth",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//opentelemetry_sdk",
-        # PyJWT is currently locked transitively through mcp and semgrep.
-        "@pip//pyjwt",
-        "@pip//starlette",
-    ],
 )
 
 py_library(
@@ -1279,6 +1263,7 @@ py_library(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
         "@pip//opentelemetry_sdk",
@@ -1662,7 +1647,6 @@ py_library(
             "agent/**/*.py",
             "agent_sessions/**/*.py",
             "app/**/*.py",
-            "auth/**/*.py",
             "core/**/*.py",
             "factory/**/*.py",
             "framework/**/*.py",
@@ -1717,6 +1701,7 @@ py_library(
     data = ["knowledge/entities.yaml"],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_platform_auth",
         "@pip//dbos",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -2066,7 +2051,6 @@ py_library(
     srcs = glob(
         [
             "app/**/*.py",
-            "auth/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
             "knowledge/**/*.py",
@@ -2084,6 +2068,7 @@ py_library(
     ],  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         "//projects/monolith/agent_kubernetes",
         "@pip//astral",
         "@pip//beautifulsoup4",
@@ -2126,7 +2111,6 @@ py_venv_binary(
     srcs = glob(
         [
             "app/**/*.py",
-            "auth/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
             "knowledge/**/*.py",
@@ -2194,6 +2178,7 @@ py_library(
     ),  # keep
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         "@pip//astral",
         "@pip//beautifulsoup4",
         "@pip//boto3",
@@ -2324,9 +2309,30 @@ monolith_domain_images(
     main = "app/main_domain.py",
 )
 
+alias(
+    name = "pkg_platform_auth",
+    actual = "//projects/monolith/auth:platform_auth",
+    visibility = ["//:__subpackages__"],
+)
+
+py_test(
+    name = "platform_auth_service_test",
+    srcs = ["//projects/monolith/auth:platform/service_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_platform_auth",
+        "@pip//cryptography",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pyjwt",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "auth_verifier_test",
-    srcs = ["auth/verifier_test.py"],
+    srcs = ["//projects/monolith/auth:verifier_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -2340,7 +2346,7 @@ py_test(
 
 py_test(
     name = "auth_plumbing_test",
-    srcs = ["auth/plumbing_test.py"],
+    srcs = ["//projects/monolith/auth:plumbing_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
@@ -2384,13 +2390,13 @@ _IMPORT_BOUNDARY_DOMAINS = [
 ]
 
 _IMPORT_BOUNDARY_SRCS = glob(
-    [domain + "/**/*.py" for domain in _IMPORT_BOUNDARY_DOMAINS],
+    [domain + "/**/*.py" for domain in _IMPORT_BOUNDARY_DOMAINS if domain != "auth"],
     exclude = [
         "**/*_test.py",
         "**/test_*.py",
         "*/tests/**/*.py",
     ],
-)
+) + ["//projects/monolith/auth:boundary_sources"]
 
 # Capture Bazel's exact source selection independently of the test runfiles.
 # The test compares this manifest to what it can actually discover at runtime,
@@ -4910,6 +4916,18 @@ py_test(
 )
 
 py_test(
+    name = "factory_leader_recovery_test",
+    srcs = ["factory/orchestration/leader_recovery_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//dbos",
+        "@pip//fastapi",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_runtime_test",
     srcs = ["factory/orchestration/runtime_test.py"],
     imports = ["."],
@@ -5233,6 +5251,59 @@ bdd_test(
 )
 
 py_test(
+    name = "knowledge_freshness_test",
+    srcs = ["knowledge/freshness_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_review_verifier_test",
+    srcs = ["knowledge/review_verifier_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+# Real PostgreSQL row-lock ordering for review, dispute and extraction writers.
+bdd_test(
+    name = "knowledge_review_concurrency_postgres_test",
+    srcs = ["knowledge/review_concurrency_postgres_test.py"],
+)
+
+py_test(
+    name = "knowledge_review_pilot_test",
+    srcs = ["knowledge/review_pilot_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_review_admission_test",
+    srcs = ["knowledge/review_admission_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_work_item_links_test",
     srcs = ["factory/orchestration/work_item_links_test.py"],
     imports = ["."],
@@ -5305,6 +5376,20 @@ py_test(
 py_test(
     name = "factory_review_publisher_test",
     srcs = ["factory/review_publisher_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_factory",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "factory_dependency_gate_test",
+    srcs = ["factory/dependency_gate_test.py"],
     imports = ["."],
     deps = [
         ":pkg_factory",
@@ -6454,6 +6539,35 @@ py_test(
     deps = [
         ":pkg_grimoire",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "grimoire_journal_test",
+    srcs = ["grimoire/journal_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_journal_router_test",
+    srcs = ["grimoire/journal_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 
@@ -9580,6 +9694,46 @@ py_test(
         ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "grimoire_join_links_test",
+    srcs = ["grimoire/join_links_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_join_links_postgres_test",
+    srcs = ["grimoire/join_links_postgres_test.py"],
+)
+
+bdd_test(
+    name = "platform_auth_postgres_test",
+    srcs = ["//projects/monolith/auth:platform/postgres_test.py"],
+)
+
+py_test(
+    name = "platform_auth_grimoire_test",
+    srcs = ["//projects/monolith/auth:platform/grimoire_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        ":pkg_platform_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
         "@pip//sqlmodel",
     ],
 )

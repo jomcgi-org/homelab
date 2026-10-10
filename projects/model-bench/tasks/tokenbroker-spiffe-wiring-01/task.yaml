@@ -20,6 +20,7 @@ class: config-plumbing
 tier: hard
 mode: agentic
 source_commit: 4e3d39b00763315e26b1e5677eeae2ad8f098b57
+gold_diff_lines: 57
 snapshot:
   commit: a939802603b96c63f3101606e34783869f228829
   paths:

@@ -120,6 +120,7 @@ Top-level projects/ directories:
 - monolith
 - monolith-agents
 - monolith-public
+- oom-inference
 - operators
 - platform
 - platform-gke

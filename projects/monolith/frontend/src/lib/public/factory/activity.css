@@ -306,6 +306,10 @@
   white-space: nowrap;
 }
 
+.factory-page.activity-page .row .mobile-label {
+  display: none;
+}
+
 .factory-page.activity-page .row .of {
   color: var(--ink-3);
 }
@@ -1467,20 +1471,66 @@
 }
 
 @media (max-width: 900px) {
-  /* The ledger drops to issue, task and the chevron: the right-hand numbers are
-     the first thing to go, and the header must drop the same cells or its
-     labels sit over the wrong columns. */
-  .factory-page.activity-page .rows {
-    --cols: 4.6rem minmax(0, 1fr) 1rem;
-  }
-
+  /* The ledger becomes a readable task card. Keep every metric and its
+     label rather than dropping the time, spend and plan on a narrow screen. */
   .factory-page.activity-page .rows .hd {
     display: none;
   }
 
-  .factory-page.activity-page .row .r,
+  .factory-page.activity-page .row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.4rem 0.65rem;
+    padding: 0.65rem 0.4rem;
+  }
+
+  .factory-page.activity-page .row > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .factory-page.activity-page .row .id {
+    grid-column: 1 / 3;
+    grid-row: 1;
+  }
+
+  .factory-page.activity-page .row .go {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .factory-page.activity-page .row > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .factory-page.activity-page .row .t,
+  .factory-page.activity-page .row .m {
+    overflow: visible;
+    white-space: normal;
+    text-overflow: clip;
+  }
+
+  .factory-page.activity-page .row .r {
+    display: block;
+    grid-row: 3;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .factory-page.activity-page .row .mobile-label {
+    display: block;
+    font-size: 0.9em;
+  }
+
   .factory-page.activity-page .row .strip-cell {
-    display: none;
+    display: block;
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+
+  .factory-page.activity-page .row .strip {
+    max-width: 100%;
+    flex-wrap: wrap;
   }
 
   .factory-page.activity-page .task-head,
@@ -1492,7 +1542,28 @@
 
 @media (max-width: 760px) {
   .factory-page.activity-page {
-    padding: 1rem 1em 4em;
+    padding: 0.5rem 0.75rem 2rem;
+  }
+
+  /* The line state is text, so it needs a wider cell than an overview count.
+     Let enlarged text reduce the column count rather than overlap its peers. */
+  .factory-page.activity-page .stats {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 8em), 1fr));
+    gap: 1px;
+    margin-bottom: 1rem;
+    background: var(--stroke);
+  }
+
+  .factory-page.activity-page .stats > div {
+    padding: 0.5rem 0.65rem;
+    border: 0;
+    background: var(--sheet);
+  }
+
+  .factory-page.activity-page .stats .v {
+    font-size: 1.2rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   /* The trail wraps rather than pushing the page wide: a session crumb

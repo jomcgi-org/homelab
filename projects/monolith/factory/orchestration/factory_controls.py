@@ -28,6 +28,7 @@ from factory.orchestration.factory_models import (
     FactoryReceipt,
     FactoryStart,
     MAX_CAPACITY_DENIED_ATTEMPTS,
+    WorkItem,
 )
 from factory.orchestration.models import SwarmNodeRun, SwarmTask
 
@@ -196,6 +197,8 @@ DEFAULT_INTAKE = {
     "refine_enabled": False,
     # Author authority permits inspection, never approval or merge.
     "dependency_pr_authors": [],
+    # Numeric IDs force security evidence; they grant no intake authority.
+    "dependency_pr_author_ids": [],
     # Closing an issue is the one refine outcome that destroys something an
     # operator would have to undo by hand, so it is a flag of its own and the
     # rest of the refine path works without it.
@@ -750,6 +753,14 @@ def _validate_intake(value: object) -> dict:
     ):
         raise ValueError("invalid dependency_pr_authors")
     result["dependency_pr_authors"] = sorted({author.lower() for author in authors})
+    author_ids = value.get("dependency_pr_author_ids", [])
+    if (
+        not isinstance(author_ids, list)
+        or len(author_ids) > 32
+        or any(type(author_id) is not int or author_id <= 0 for author_id in author_ids)
+    ):
+        raise ValueError("invalid dependency_pr_author_ids")
+    result["dependency_pr_author_ids"] = sorted(set(author_ids))
     for key in ("enabled", "refine_enabled", "close_enabled"):
         setting = value.get(key, DEFAULT_INTAKE[key])
         if type(setting) is not bool:
@@ -2229,7 +2240,7 @@ def escalations(receipts: list[dict]) -> list[dict]:
 
 
 def intake_state(policy: dict, *, session: Session | None = None) -> dict:
-    """What the board shows: the block, the last two audits, today's usage.
+    """What the board shows: policy, usage and durable intake observations.
 
     This lives beside status rather than beside the intake loop because the
     board reads it, and the board must not link the reconciler to render a
@@ -2265,6 +2276,11 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
             "max_per_day": block["max_per_day"],
             "last_admitted": latest("intake_admitted"),
             "last_idle": latest("intake_idle"),
+            # A not_due idle tick is not a candidate evaluation. Keep the
+            # actual sweep evidence and sanitized listing errors visible.
+            "last_swept": latest("intake_swept"),
+            "last_evaluated": latest("intake_evaluated"),
+            "last_error": latest("intake_error"),
         }
 
 
@@ -3297,6 +3313,51 @@ def landing_recovery_barrier(task_id: str, *, session=None) -> dict | None:
         }
 
 
+def human_handoff(task_id: str, actor: str, *, observed: bool = False) -> bool:
+    """Persist an observed human ownership fence, or recover it on replay.
+
+    Work-item labels are synchronized by the webhook and intake sweep. Once
+    observed, ownership is sticky for this receipt even if the label changes.
+    finish_task still requires every start to be accounted before cancellation.
+    """
+    with _locked_session() as (db, _control):
+        row = _receipt(db, task_id)
+        if row is None or row.state not in ("admitted", "uncertain", "landing"):
+            return False
+        prior = db.exec(
+            select(FactoryAudit.id).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "human_handoff",
+            )
+        ).first()
+        if prior is not None:
+            return True
+        item = db.get(WorkItem, row.work_item_id) if row.work_item_id else None
+        labelled = item is not None and "human" in {
+            label.lower() for label in item.labels
+        }
+        if not observed and not labelled:
+            return False
+        row.cancellation_requested = True
+        row.updated_at = _now()
+        db.add(row)
+        _audit(
+            db,
+            actor,
+            "human_handoff",
+            task_id=task_id,
+            issue_number=row.issue_number,
+            label="human",
+        )
+        return True
+
+
+HUMAN_HANDOFF_EVIDENCE = {
+    "state": "human_handoff",
+    "reason": "Issue labelled human; ownership handed to a person, factory delivery not claimed.",
+}
+
+
 def finish_task(
     task_id: str,
     outcome: str,
@@ -3347,7 +3408,19 @@ def finish_task(
                 and json.loads(last.detail_json).get("evidence") == evidence
             )
             return {"ok": same, "reason": None if same else "conflicting_outcome"}
-        if row.state == "landing":
+        handed_off = (
+            outcome == "cancelled"
+            and evidence == HUMAN_HANDOFF_EVIDENCE
+            and row.cancellation_requested
+            and db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.task_id == task_id,
+                    FactoryAudit.action == "human_handoff",
+                )
+            ).first()
+            is not None
+        )
+        if row.state == "landing" and not handed_off:
             ready = db.exec(
                 select(FactoryAudit)
                 .where(

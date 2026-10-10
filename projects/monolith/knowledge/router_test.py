@@ -1,7 +1,7 @@
 """Unit tests for knowledge/router.py — /search and /notes endpoints."""
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -106,6 +106,24 @@ def client(fake_session, fake_embed_client):
 
 
 class TestSearchEndpoint:
+    @pytest.mark.parametrize("history", [False, True])
+    def test_history_mode_preserves_authorization_and_disables_http_cache(
+        self, client, history
+    ):
+        with patch("knowledge.router.KnowledgeStore") as store:
+            store.return_value.search_notes_with_context.return_value = []
+            response = client.get(
+                f"/api/knowledge/search?q=evidence&include_history={str(history).lower()}"
+            )
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, no-store"
+        filters = store.return_value.search_notes_with_context.call_args.kwargs
+        assert filters["scope_filters"] == DEFAULT_SCOPES
+        assert filters["include_unscoped"] is False
+        assert filters["include_legacy"] is True
+        assert filters["include_history"] is history
+        assert filters["exclude_invalidated"] is not history
+
     """Tests for GET /api/knowledge/search."""
 
     def test_happy_path_returns_canned_results(self, client, fake_embed_client):
@@ -174,6 +192,8 @@ class TestSearchEndpoint:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
+                include_history=False,
+                exclude_invalidated=True,
             )
 
     def test_limit_forwarded_to_store(self, client):
@@ -190,6 +210,8 @@ class TestSearchEndpoint:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
+                include_history=False,
+                exclude_invalidated=True,
             )
 
     def test_raw_exact_query_is_forwarded(self, client, fake_embed_client):
@@ -269,6 +291,8 @@ class TestSearchEndpoint:
             scope_filters=(*DEFAULT_SCOPES, "personal:browser@example.com"),
             include_unscoped=True,
             include_legacy=True,
+            include_history=False,
+            exclude_invalidated=True,
         )
 
     def test_cross_subject_personal_grant_is_denied_without_audit(
@@ -340,6 +364,8 @@ class TestSearchEndpoint:
                 scope_filters=DEFAULT_SCOPES,
                 include_unscoped=False,
                 include_legacy=True,
+                include_history=False,
+                exclude_invalidated=True,
             )
 
     def test_search_results_include_edges(self, client, fake_embed_client):
@@ -979,8 +1005,10 @@ def _seed_public_note(
     tags=None,
     aliases=None,
     path=None,
+    verification_state="legacy",
 ):
     """Insert a public_api.knowledge_notes view row (a plain SQLite table here)."""
+    now = datetime.now(timezone.utc)
     note = PublicNote(
         note_id=note_id,
         title=title,
@@ -992,6 +1020,10 @@ def _seed_public_note(
         tags=tags or [],
         aliases=aliases or [],
         path=path or f"{note_id}.md",
+        observed_at=now,
+        review_after=now + timedelta(days=1),
+        review_policy="standard-90d/v1",
+        verification_state=verification_state,
     )
     session.add(note)
     session.commit()
@@ -1026,6 +1058,12 @@ def _seed_public_entity(session, *, slug="monolith", kind="project"):
 class TestPublicEntitiesEndpoint:
     def test_lists_entities_with_public_note_counts_and_cache(self, real_session):
         entity = _seed_public_entity(real_session)
+        _seed_public_note(
+            real_session, note_id="verified-note", verification_state="verified"
+        )
+        _seed_public_note(
+            real_session, note_id="disputed-note", verification_state="disputed"
+        )
         now = datetime.now(timezone.utc)
         real_session.add_all(
             [
@@ -1144,9 +1182,13 @@ class TestPublicGraphEndpoint:
         node_ids = {n["id"] for n in body["nodes"]}
         assert node_ids == {"pub-A"}
 
-    def test_public_graph_cache_headers(self, real_session):
-        """Public graph carries the same CDN cache directives as /graph."""
-        _seed_public_note(real_session, note_id="pub-A", title="Pub A", type="atom")
+    def test_public_graph_cache_headers(self, real_session, monkeypatch):
+        """Public graph bounds browser/shared lifetimes and forbids stale facts."""
+        note = _seed_public_note(
+            real_session, note_id="pub-A", title="Pub A", type="atom"
+        )
+        now = note.observed_at.replace(tzinfo=timezone.utc)
+        monkeypatch.setattr("knowledge.public_router._now", lambda: now)
 
         app.dependency_overrides[get_session] = lambda: real_session
         try:
@@ -1156,8 +1198,7 @@ class TestPublicGraphEndpoint:
             app.dependency_overrides.clear()
 
         cc = res.headers.get("cache-control", "")
-        assert "s-maxage=3600" in cc
-        assert "stale-while-revalidate=86400" in cc
+        assert cc == "public, max-age=3600, s-maxage=3600, must-revalidate"
         # Conditional GET prerequisites: a stable ETag and a Last-Modified.
         assert res.headers["etag"]
         assert res.headers["last-modified"]

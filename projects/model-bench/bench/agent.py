@@ -188,7 +188,6 @@ async def run_agent_cell(
     allow_exec: expose the sandboxed `run` shell tool (task.agent.exec).
     """
     workdir = Path(tempfile.mkdtemp())
-    shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
     tools = TOOLS + [RUN_TOOL] if allow_exec else TOOLS
     messages: list[dict] = [
         {"role": "system", "content": AGENT_SYSTEM},
@@ -203,6 +202,7 @@ async def run_agent_cell(
     norms: dict | None = None
     diff: str | None = None
     try:
+        shutil.copytree(fixture_dir, workdir, dirs_exist_ok=True)
         for turns in range(1, max_turns + 1):
             res = await chat(
                 model=model_id,
@@ -243,12 +243,13 @@ async def run_agent_cell(
                     finished = True
             if finished:
                 break
+        authored_norms = safe_norms(fixture_dir, workdir, norms_opts)
+        authored_diff = safe_diff(fixture_dir, workdir)
         r = verify(workdir, verifier_args)
         passed, feedback, score = r.passed, r.feedback, r.score
         performance = r.performance
         if passed:
-            norms = safe_norms(fixture_dir, workdir, norms_opts)
-            diff = safe_diff(fixture_dir, workdir)
+            norms, diff = authored_norms, authored_diff
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
         passed, feedback = False, f"[harness error] {type(exc).__name__}: {exc}"
     finally:

@@ -74,6 +74,9 @@ class TestPublicNote:
         assert note.content is None
         assert note.layout_x is None
         assert note.layout_y is None
+        assert note.review_after is None
+        assert note.review_policy is None
+        assert note.last_reviewed_at is None
 
     def test_tags_default_to_empty_list(self):
         note = PublicNote(
@@ -104,6 +107,9 @@ class TestPublicNote:
             path="atoms/p.md",
             layout_x=1.5,
             layout_y=2.5,
+            review_after=datetime(2024, 6, 2, tzinfo=timezone.utc),
+            review_policy="standard-90d/v1",
+            last_reviewed_at=datetime(2024, 6, 1, tzinfo=timezone.utc),
         )
         session.add(note)
         session.commit()
@@ -116,6 +122,13 @@ class TestPublicNote:
         assert retrieved.content == "Some body text"
         assert retrieved.layout_x == pytest.approx(1.5)
         assert retrieved.layout_y == pytest.approx(2.5)
+        assert retrieved.review_after.replace(tzinfo=timezone.utc) == datetime(
+            2024, 6, 2, tzinfo=timezone.utc
+        )
+        assert retrieved.review_policy == "standard-90d/v1"
+        assert retrieved.last_reviewed_at.replace(tzinfo=timezone.utc) == datetime(
+            2024, 6, 1, tzinfo=timezone.utc
+        )
 
     def test_query_by_type(self, session):
         session.add_all(

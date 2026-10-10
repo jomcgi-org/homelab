@@ -289,11 +289,11 @@ def test_qualified_table_shows_mean_norms():
         frontier={},
         retired=[],
         agentic={
-            "scored/m": _agentic_stats(mean_norms=0.875),
+            "scored/m": _agentic_stats(mean_norms=0.875, norms_n=7),
             "unscored/m": _agentic_stats(),
         },
     )
     scored = next(ln for ln in md.splitlines() if ln.startswith("| scored/m"))
     unscored = next(ln for ln in md.splitlines() if ln.startswith("| unscored/m"))
-    assert "| 0.88 |" in scored
+    assert "| 0.88 (n=7) |" in scored
     assert "| n/a |" in unscored

@@ -17,11 +17,15 @@ from knowledge.extraction import (
     KG_JOB_KIND,
     ExtractionOutputInvalid,
 )
+from knowledge.freshness import VOLATILE as VOLATILE_REVIEW_POLICY
+from knowledge.freshness import current_predicate, result_current
+from knowledge.freshness import state as freshness_state
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.recall import (
     append_message_recall,
     attach_recall,
     defer_recall,
+    expire_recall,
     matches_message_recall,
     recall_prompt_ready,
 )
@@ -37,6 +41,7 @@ __all__ = [
     "EXTRACTION_VERSION",
     "KG_JOB_KIND",
     "MAX_GARDENER_RETRIES",
+    "VOLATILE_REVIEW_POLICY",
     "ExtractionOutputInvalid",
     "KnowledgeStore",
     "active_blocker_topics_for_poll",
@@ -51,9 +56,12 @@ __all__ = [
     "build_repo_diff_prompt",
     "count_gaps_review_queue",
     "count_notes_review_queue",
+    "current_predicate",
     "defer_audit_if_over_budget",
     "defer_recall",
     "enqueue_extraction",
+    "expire_recall",
+    "freshness_state",
     "get_embedding_client",
     "get_store",
     "ingest_raw",
@@ -69,6 +77,7 @@ __all__ = [
     "record_audit_cost",
     "record_extraction_failure",
     "render_correction_prompt",
+    "result_current",
     "search_notes",
     "search_public_chunks",
     "sweep_unqueued_raws",
@@ -305,7 +314,11 @@ def raw_extras_by_id(session: Session, raw_ids: list[str]) -> dict[str, dict]:
 
 
 def search_public_chunks(
-    session: Session, query_embedding: list[float], *, limit: int = 6
+    session: Session,
+    query_embedding: list[float],
+    *,
+    limit: int = 6,
+    now: datetime | None = None,
 ) -> list[dict]:
     """pgvector cosine search over the public-only chunk view.
 
@@ -319,6 +332,8 @@ def search_public_chunks(
     Returns dicts with note identity, title, chunk text, verification state,
     dispute status, and ``score = 1 - cosine_distance`` (higher is closer).
     """
+    from datetime import datetime, timezone
+
     from sqlmodel import select
 
     from knowledge.public_models import PublicChunk, PublicNote
@@ -338,6 +353,9 @@ def search_public_chunks(
             distance.label("distance"),
         )
         .join(PublicNote, PublicNote.note_id == PublicChunk.note_id)
+        .where(
+            current_predicate(now=now or datetime.now(timezone.utc), model=PublicNote)
+        )
         .order_by(distance.asc())
         .limit(max(1, limit) * _PUBLIC_CHUNK_OVERFETCH)
     )

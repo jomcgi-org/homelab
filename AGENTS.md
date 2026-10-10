@@ -97,6 +97,26 @@ loudly in CI or a git hook. Gotchas marked "Gated" are caught by
   sub_issue_id=<child database id>`; `-F`, because `-f` sends a string and
   returns 422). Closing the issue records "shipped".
 
+## Human ownership of factory work
+
+Label an issue `human` when Joe or another person takes ownership, including
+implementation, coordination or observation acceptance. This label excludes
+both delivery and advisory refinement even when `agent-ready` is present.
+Add it before removing `agent-ready`; leave a comment naming the owner, why
+work is handed off and what remains. Assignment is useful but not required.
+`needs-human` means the factory needs a decision; `human` means a person owns
+the work. Agents must not add or remove `human` without an explicit handoff
+instruction, relabel owned work `agent-ready`, or start competing work.
+
+The factory fences new starts after observing `human`, reconciles existing
+attempts and their costs, then records cancellation with `human_handoff`
+evidence. This is neither a delivery success nor an escalation. Unknown
+invocations and reservations remain fenced until normal reconciliation proves
+their outcome. A handoff is sticky for an admitted receipt: removing the label
+does not resume it. Return work through explicit factory re-admission after
+the old task settles; removing `human` only restores intake eligibility.
+Issues and existing PRs stay open for the human owner.
+
 ## Commands
 
 ```bash

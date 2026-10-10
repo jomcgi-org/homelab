@@ -72,6 +72,7 @@ _EXCLUSION_REASONS = (
     "pull_request",
     "not_open",
     "assigned",
+    "human",
     "excluded_label",
     "linked_pr",
     "delivered",
@@ -378,6 +379,9 @@ def _local_candidates(
             )
             continue
         labels = {label.lower() for label in work_item.labels}
+        if "human" in labels:
+            excluded["human"] += 1
+            continue
         if labels & exclude_labels:
             excluded["excluded_label"] += 1
             continue
@@ -730,6 +734,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     exclude("pull_request")
                 elif item.get("state") != "open":
                     exclude("not_open")
+                elif "human" in labels:
+                    exclude("human")
                 elif item.get("assignees"):
                     exclude("assigned")
                 elif labels & exclude_labels:
@@ -909,6 +915,33 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 )
         candidates.sort(key=lambda candidate: candidate["sort"])
         excluded = {reason: count for reason, count in excluded.items() if count}
+        if listing_due:
+            # The idle audit has an independent hourly throttle. Its next
+            # write can be a not_due tick, and suppress the actual sweep's
+            # exclusions forever. Preserve one bounded evaluation per real
+            # sweep, separately from both its attempt clock and idle ticks.
+            with _locked_session() as (db, _control):
+                _audit(
+                    db,
+                    ACTOR,
+                    "intake_evaluated",
+                    generation=generation,
+                    github=(
+                        "failed"
+                        if len(read_failed) == len(repos)
+                        else "partial"
+                        if read_failed
+                        else "completed"
+                    ),
+                    listed=listed_total,
+                    local_listed=local_listed,
+                    excluded=excluded,
+                    candidates={
+                        lane: sum(candidate["lane"] == lane for candidate in candidates)
+                        for lane in LANES
+                    },
+                    truncated=truncated,
+                )
         if not candidates:
             _idle(
                 {

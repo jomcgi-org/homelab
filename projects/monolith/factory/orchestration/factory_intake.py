@@ -605,6 +605,26 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         # only a tier with room in `available` admits anything.
         row = None
         for candidate in candidates:
+            item = (
+                db.get(WorkItem, candidate.work_item_id)
+                if candidate.work_item_id
+                else None
+            )
+            if item is not None and "human" in {label.lower() for label in item.labels}:
+                from factory.orchestration.factory_controls import (
+                    _cancel_queued_receipt,
+                )
+
+                _cancel_queued_receipt(db, candidate.id, actor)
+                _audit(
+                    db,
+                    actor,
+                    "human_handoff",
+                    receipt_id=candidate.id,
+                    issue_number=candidate.issue_number,
+                    label="human",
+                )
+                continue
             tier = routes[receipt_task_class(candidate)]["tier"]
             if tier not in available:
                 continue
@@ -619,8 +639,11 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             row = candidate
             break
         if row is None:
-            if candidates:
-                full = sorted({candidate.repo for candidate in candidates})
+            remaining = [
+                candidate for candidate in candidates if candidate.state == "queued"
+            ]
+            if remaining:
+                full = sorted({candidate.repo for candidate in remaining})
                 return {
                     "ok": False,
                     "reason": "wip_limit",

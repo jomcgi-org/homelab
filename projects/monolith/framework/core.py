@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("monolith.framework")
 
+# Native rollout handoff spends at most 15 seconds draining. Leave five more
+# for module cleanup, within the chart's 30-second process termination grace.
+LEADER_SHUTDOWN_TIMEOUT_SECONDS = 20.0
+
 # Sentinel: the private tier may hold any secret the deployment injects. The
 # real control is runtime injection (ADR 010: the runtime capability set, not
 # artifact contents, is the boundary); this set exists so a PUBLIC profile can
@@ -546,6 +550,11 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         app.state.singleton_tasks = []
         app.state.leader_singleton_failures = set()
         app.state.leader_singletons_dbos_launched = False
+        app.state.leader_singletons_shutting_down = False
+        app.state.leader_shutdown_exit = None
+        app.state.leader_acquire_active = False
+        app.state.leader_acquire_settled = asyncio.Event()
+        app.state.leader_acquire_settled.set()
 
         # Per-module startup hooks run on every replica (best-effort priming;
         # scheduled Argo CronWorkflows own the refresh cadence thereafter).
@@ -590,20 +599,41 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             app.state.elector = elector
 
             async def acquire_singletons() -> None:
-                await start_leader_singletons(app, modules)
-                failures = app.state.leader_singleton_failures
-                if failures:
-                    # Module startup records failures so every module gets its
-                    # hook. Propagate the aggregate to the elector afterward:
-                    # it owns cleanup, lease release and backoff before retry.
-                    raise RuntimeError(
-                        "leader startup incomplete: " + ", ".join(sorted(failures))
-                    )
+                if getattr(app.state, "leader_singletons_shutting_down", False):
+                    # Shutdown already began: never launch singletons (or DBOS)
+                    # under a lease the teardown is about to release. The
+                    # check and the in-flight marker below are synchronous, so
+                    # the teardown cannot miss an acquisition that passed here.
+                    return
+                app.state.leader_acquire_active = True
+                app.state.leader_acquire_settled.clear()
+                try:
+                    await start_leader_singletons(app, modules)
+                    failures = app.state.leader_singleton_failures
+                    if failures:
+                        # Module startup records failures so every module gets
+                        # its hook. Propagate the aggregate to the elector
+                        # afterward: it owns cleanup, lease release and
+                        # backoff before retry.
+                        raise RuntimeError(
+                            "leader startup incomplete: " + ", ".join(sorted(failures))
+                        )
+                finally:
+                    app.state.leader_acquire_active = False
+                    app.state.leader_acquire_settled.set()
+
+            async def resign_singletons() -> None:
+                exit_process = app.state.leader_shutdown_exit
+                if exit_process is not None:
+                    # A DBOS process which lost ownership must cease before
+                    # another domain's slow stop hook can delay factory stop.
+                    exit_process(1)
+                await stop_leader_singletons(app, modules)
 
             elector_task = asyncio.create_task(
                 elector.run(
                     on_acquire=acquire_singletons,
-                    on_resign=lambda: stop_leader_singletons(app, modules),
+                    on_resign=resign_singletons,
                 )
             )
             elector_task.add_done_callback(log_task_exception)
@@ -612,8 +642,27 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             logger.info("Monolith started")
         yield
 
-        if elector_task is not None:
-            elector_task.cancel()
+        app.state.leader_singletons_shutting_down = True
+        if getattr(app.state, "leader_acquire_active", False):
+            # An acquisition passed the fence before shutdown began and may
+            # still launch DBOS. Let it settle first so the teardown mode
+            # below reflects what it published.
+            await app.state.leader_acquire_settled.wait()
+        exit_process = app.state.leader_shutdown_exit
+        close_shutdown_guard = None
+        if exit_process is None:
+            # No launched DBOS: cancel the election first, so the lease
+            # releases promptly and no late acquisition can launch singletons
+            # while the stop and shutdown hooks below are awaited.
+            if elector_task is not None:
+                elector_task.cancel()
+                await asyncio.gather(elector_task, return_exceptions=True)
+        else:
+            close_shutdown_guard = app.state.elector.guard_shutdown(
+                exit_process, LEADER_SHUTDOWN_TIMEOUT_SECONDS
+            )
+            # Keep election renewing throughout drain. Cancellation releases
+            # the lease, so it must never precede cessation of DBOS threads.
         await stop_leader_singletons(app, modules)
 
         # Per-module teardown runs on every replica, after the singletons stop
@@ -623,8 +672,14 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
             if m.shutdown is not None:
                 try:
                     await m.shutdown(app)
-                except Exception:  # noqa: BLE001 - shutdown is best effort
+                except Exception:
                     logger.exception("Module %s failed to shut down", m.name)
+        if exit_process is not None:
+            exit_process(0)
+        if close_shutdown_guard is not None:
+            close_shutdown_guard()
+        if elector_task is not None and exit_process is not None:
+            elector_task.cancel()
         backfill_task = getattr(app.state, "backfill_task", None)
         if backfill_task and not backfill_task.done():
             backfill_task.cancel()

@@ -134,14 +134,17 @@
         {/if}
       </span>
       <span class="r num"
+        ><span class="mobile-label">starts</span
         >{#if startsOf(task) === null}–{:else}{task.turns_used}<span class="of"
             >/{task.allowance_turns}</span
           >{/if}</span
       >
       <span class="r num"
-        >{task.state === "queued" ? "–" : money(task.cost_usd)}</span
+        ><span class="mobile-label">spend</span>{task.state === "queued"
+          ? "–"
+          : money(task.cost_usd)}</span
       >
-      <span class="r num">{time}</span>
+      <span class="r num"><span class="mobile-label">time</span>{time}</span>
       <span class="go" aria-hidden="true">›</span>
     </a>
   </li>

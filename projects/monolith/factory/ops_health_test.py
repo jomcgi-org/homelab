@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import core.db
 import pytest
 from core.platform_probe import PlatformProbe
-from knowledge.models import Dispute
+from knowledge.models import Dispute, Note
 from sqlmodel import Session, SQLModel, create_engine
 
 from factory import ops_health
@@ -49,6 +49,7 @@ def engine(tmp_path, monkeypatch):
                 WorkItem,
                 FactoryControl,
                 FactoryReceipt,
+                Note,
                 Dispute,
             )
         ],

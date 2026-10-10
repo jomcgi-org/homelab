@@ -8,6 +8,7 @@ from pgvector.sqlalchemy import Vector
 from pydantic import field_validator
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -17,6 +18,8 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    event,
+    inspect,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
@@ -277,6 +280,16 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
             "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
             name="notes_confidence_chk",
         ),
+        CheckConstraint(
+            "review_after IS NULL OR (COALESCE(last_reviewed_at, observed_at) IS NOT NULL "
+            "AND review_after <= COALESCE(last_reviewed_at, observed_at) + INTERVAL '2160 hours')",
+            name="notes_review_deadline_chk",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "review_after IS NULL OR (COALESCE(last_reviewed_at, observed_at) IS NOT NULL "
+            "AND julianday(review_after) <= julianday(COALESCE(last_reviewed_at, observed_at)) + 90)",
+            name="notes_review_deadline_chk",
+        ).ddl_if(dialect="sqlite"),
         {"schema": "knowledge", "extend_existing": True},
     )
 
@@ -322,6 +335,21 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     observed_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
+    review_after: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    review_policy: str | None = None
+    last_reviewed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # Monotonic counter bumped by every ORM update that changes what the note
+    # asserts or how it is supported (content, confidence, state, validity,
+    # retelling). A review captures it at admission and renews only if it is
+    # unchanged, because content_hash alone cannot see a duplicate retelling.
+    revision: int = Field(
+        default=0,
+        sa_column=Column(BigInteger, nullable=False, server_default="0"),
+    )
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     aliases: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -355,6 +383,39 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     pre_delete_path: str | None = Field(
         default=None, sa_column=Column(String, nullable=True)
     )
+
+
+# Columns whose change is housekeeping, not a change to the claim: the review
+# lease itself, the reindex and frontmatter-updated stamps and layout positions.
+_REVISION_EXEMPT = frozenset(
+    {
+        "revision",
+        "review_after",
+        "review_policy",
+        "last_reviewed_at",
+        "indexed_at",
+        "updated_at",
+        "layout_x",
+        "layout_y",
+        "layout_x_public",
+        "layout_y_public",
+    }
+)
+
+
+@event.listens_for(Note, "before_update")
+def _bump_note_revision(mapper, connection, target) -> None:
+    """Advance ``revision`` on any ORM update that touches the claim itself."""
+    changed = {attr.key for attr in inspect(target).attrs if attr.history.has_changes()}
+    if "revision" in changed or changed - _REVISION_EXEMPT:
+        # Database arithmetic serializes concurrent stale ORM writers. A local
+        # integer increment could overwrite a newer retelling's revision.
+        target.revision = Note.revision + 1
+
+
+def bump_revision(note: "Note") -> None:
+    """Record evidence that changes no persisted column (a duplicate retelling)."""
+    note.revision = Note.revision + 1
 
 
 class Chunk(SQLModel, table=True):
@@ -589,6 +650,69 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     )
 
 
+@event.listens_for(Dispute, "before_insert")
+@event.listens_for(Dispute, "before_update")
+def _serialize_open_dispute(mapper, connection, target) -> None:
+    """Put contested evidence in the same serialization order as note review.
+
+    The UPDATE takes the note row lock before the dispute is visible and
+    advances revision in the caller's transaction. A renewal holding that
+    lock completes before this dispute, or reads the dispute and new revision
+    after it commits. Neither path can renew over an intervening dispute.
+    """
+    if target.state in {"open", "resolution_failed"}:
+        connection.execute(
+            Note.__table__.update()
+            .where(Note.note_id == target.note_id)
+            .values(revision=Note.revision + 1)
+        )
+
+
+ReviewStatus = Literal["success", "failed", "unavailable", "unsupported"]
+
+
+class ReviewOutcome(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
+    """Durable record of one evidence review attempt, kept for every outcome.
+
+    ``next_attempt_at`` is the admission gate: NULL after ``unsupported`` means
+    do not retry until the note's revision moves, a future time is a backoff.
+    Only a ``success`` row accompanies a renewed lease.
+    """
+
+    __tablename__ = "review_outcomes"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('success', 'failed', 'unavailable', 'unsupported')",
+            name="review_outcomes_status_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    note_id: str = Field(sa_column=Column(String, nullable=False, index=True))
+    status: str = Field(sa_column=Column(String, nullable=False))
+    reason: str = Field(sa_column=Column(String, nullable=False))
+    note_revision: int = Field(sa_column=Column(BigInteger, nullable=False))
+    attempts: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default="1")
+    )
+    evidence: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    evidence_observed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    attempted_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    next_attempt_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+
+
 class Intervention(
     SQLModel, table=True
 ):  # nosemgrep: sqlmodel-datetime-without-factory
@@ -708,3 +832,23 @@ class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     pipeline_version: str = Field(sa_column=Column(String, nullable=False))
+
+
+class ReviewPilotRun(SQLModel, table=True):
+    """Durable idempotency and audit receipt for an operator's bounded workflow."""
+
+    __tablename__ = "review_pilot_runs"
+    __table_args__ = {"schema": "knowledge"}
+    request_id: str = Field(primary_key=True)
+    job: str
+    actor: str
+    workflow_name: str = Field(unique=True)
+    dry_run_request_id: str | None = Field(default=None, unique=True)
+    # A unique non-null slot serializes submissions across API replicas.
+    # Unknown submission outcomes retain the slot until terminal readback.
+    active_slot: int | None = Field(default=None, unique=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))

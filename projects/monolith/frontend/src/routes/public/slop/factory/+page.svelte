@@ -88,31 +88,37 @@
   const stats = $derived([
     {
       key: "Live",
+      unavailable: data.unavailable.activity,
       value: formatCount(tiles.live.value),
       spark: tiles.live.spark,
     },
     {
       key: "Sessions, 7d",
+      unavailable: data.unavailable.activity,
       value: formatCount(tiles.sessions.value),
       spark: tiles.sessions.spark,
     },
     {
       key: "Merged, 7d",
+      unavailable: data.unavailable.merges,
       value: formatCount(tiles.merged.value),
       spark: tiles.merged.spark,
     },
     {
       key: "Tokens, 7d",
+      unavailable: data.unavailable.activity,
       value: shortNumber(tiles.tokens.input),
       spark: tiles.tokens.spark,
     },
     {
       key: "Spend, 7d (list)",
+      unavailable: data.unavailable.activity,
       value: formatSpend(tiles.spend.value),
       spark: tiles.spend.spark,
     },
     {
       key: "Facts",
+      unavailable: data.unavailable.facts,
       value: formatCount(tiles.facts.value),
       spark: tiles.facts.spark,
     },
@@ -234,24 +240,54 @@
       {#if Object.values(data.unavailable).some(Boolean)}
         <p class="unavailable">Unavailable right now.</p>
       {/if}
-      <div class="stats">
+      <details class="mobile-stats">
+        <summary>
+          <span class="summary-numbers">
+            <span
+              >{#if data.unavailable.activity}Live unavailable{:else}<strong
+                  >{formatCount(tiles.live.value)}</strong
+                > live{/if}</span
+            >
+            <span class="summary-divider" aria-hidden="true">·</span>
+            <span
+              >{#if data.unavailable.merges}Merges unavailable{:else}<strong
+                  >{formatCount(tiles.merged.value)}</strong
+                > merged this week{/if}</span
+            >
+          </span>
+          <span class="all-stats-label">All stats</span>
+        </summary>
+        <dl class="mobile-stat-values" aria-label="All factory totals">
+          {#each stats as stat}
+            <div>
+              <dt>{stat.key}</dt>
+              <dd class="num">
+                {stat.unavailable ? "unavailable" : stat.value}
+              </dd>
+            </div>
+          {/each}
+        </dl>
+      </details>
+      <dl class="stats" aria-label="Factory headline numbers">
         {#each stats as stat}
           <div>
-            <div class="k">{stat.key}</div>
-            <div class="v num">
+            <dt class="k">{stat.key}</dt>
+            <dd class="v num">
               {#if stat.additions}
                 <span class="added">+{stat.additions}</span>
                 <span class="deleted">−{stat.deletions}</span>
               {:else}
-                {stat.value}{#if stat.unit}<small>{stat.unit}</small>{/if}
+                {stat.unavailable
+                  ? "unavailable"
+                  : stat.value}{#if stat.unit}<small>{stat.unit}</small>{/if}
               {/if}
-            </div>
+            </dd>
             {@html sparkSvg(stat.spark)}
           </div>
         {/each}
-      </div>
+      </dl>
 
-      <div class="charts">
+      <div class="charts" aria-label="Factory trends">
         <div class="chart">
           <p class="sec-label">/ Sessions per day</p>
           {#if data.unavailable.activity}
@@ -268,6 +304,8 @@
                 "var(--ink-3)",
                 "hatch",
               ],
+              "Sessions per day",
+              ["luna", "sol, terra", "claude", "spark", "other"],
             )}
           {/if}
           <p class="legend">
@@ -288,6 +326,8 @@
               merges,
               ["feat", "fix", "docs", "rest"],
               ["var(--tone-ram)", "var(--tone-gpu)", "var(--accent)", "hatch"],
+              "Merged to main per day",
+              ["feat", "fix", "docs", "chore, test, other"],
             )}
           {/if}
           <p class="legend">
@@ -308,6 +348,8 @@
               facts,
               ["v", "u"],
               ["var(--tone-ram)", "hatch"],
+              "Facts written per day",
+              ["verified", "unverified"],
             )}
           {/if}
           <p class="legend">
@@ -396,7 +438,7 @@
 
         <div class="goals">
           <p class="sec-label">
-            / Lane
+            / Current work
             <a class="win" href="/slop/factory/activity">all activity ›</a>
           </p>
           {#if data.unavailable.board}
@@ -406,11 +448,12 @@
               {#each lane.live as task, index (`${task.issue_number}-${index}`)}
                 <li>
                   <a href={`/slop/factory/activity/${task.issue_number}`}>
-                    <span class="mark {taskMark(task.state)}"></span>
+                    <span class="mark {taskMark(task.state)}" aria-hidden="true"
+                    ></span>
                     <span class="n num">#{task.issue_number}</span>
                     <span class="t">{task.title}</span>
                     <span class="m"
-                      >{task.phase} · {relative(
+                      >{task.phase || task.state} · {relative(
                         task.admitted_at,
                         laneNow,
                       )}</span
@@ -421,7 +464,8 @@
               {#each lane.done as task, index (`${task.issue_number}-${index}`)}
                 <li class="done">
                   <a href={`/slop/factory/activity/${task.issue_number}`}>
-                    <span class="mark {taskMark(task.state)}"></span>
+                    <span class="mark {taskMark(task.state)}" aria-hidden="true"
+                    ></span>
                     <span class="n num">#{task.issue_number}</span>
                     <span class="t">{task.title}</span>
                     <span class="m"

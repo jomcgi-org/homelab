@@ -1,5 +1,14 @@
 import { fail, isRedirect, redirect } from "@sveltejs/kit";
 import { grimoireJson } from "$lib/server/grimoire-auth.js";
+import {
+  JOIN_PATH,
+  JoinLinkError,
+  JOIN_UNAVAILABLE,
+  joinMetadata,
+  joinToken,
+  linksEnabled,
+  safeJoinMessage,
+} from "$lib/server/grimoire-join-links.js";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -19,12 +28,14 @@ function characterName(data) {
 export async function load({ fetch, cookies, setHeaders }) {
   setHeaders({ "cache-control": "private, no-store" });
   const lobby = await grimoireJson(fetch, cookies, "/lobby");
+  const invitation_links_enabled =
+    linksEnabled() && lobby.invitation_links_enabled === true;
   const campaigns = await Promise.all(
     lobby.campaigns.map(async (campaign) => {
       const needs_character =
         campaign.role === "player" && !campaign.player_character_id;
       if (campaign.role !== "dm") return { ...campaign, needs_character };
-      const [members, characters, invitations] = await Promise.all([
+      const [members, characters, invitations, joinLinks] = await Promise.all([
         grimoireJson(fetch, cookies, `/campaigns/${campaign.id}/members`),
         grimoireJson(fetch, cookies, `/campaigns/${campaign.id}/characters`),
         campaign.is_owner
@@ -33,6 +44,13 @@ export async function load({ fetch, cookies, setHeaders }) {
               cookies,
               `/campaigns/${campaign.id}/invitations`,
             )
+          : [],
+        campaign.is_owner && invitation_links_enabled
+          ? grimoireJson(
+              fetch,
+              cookies,
+              `/campaigns/${campaign.id}/join-links`,
+            ).catch(() => null)
           : [],
       ]);
       const assigned = new Set(
@@ -47,14 +65,23 @@ export async function load({ fetch, cookies, setHeaders }) {
         members,
         unassigned_characters,
         invitations,
+        join_links: (joinLinks || []).map(joinMetadata),
+        ...(joinLinks === null ? { join_links_error: JOIN_UNAVAILABLE } : {}),
       };
     }),
   );
-  return { ...lobby, campaigns };
+  return {
+    ...lobby,
+    campaigns,
+    invitation_links_enabled,
+    invitation_enrollment_enabled:
+      invitation_links_enabled && lobby.invitation_enrollment_enabled === true,
+    playEnabled: process.env.GRIMOIRE_PLAY_ENABLED === "true",
+  };
 }
 
-function action(run) {
-  return async ({ request, fetch, cookies }) => {
+function action(run, invitationAction = false) {
+  return async ({ request, fetch, cookies, url }) => {
     const data = await request.formData();
     const api = (path, method = "POST", body) =>
       grimoireJson(fetch, cookies, path, {
@@ -67,16 +94,54 @@ function action(run) {
           : {}),
       });
     try {
-      await run(data, api);
-      return { ok: true };
+      const result = await run(data, api, url);
+      return result?.new_link ? result : { ok: true };
     } catch (error) {
       if (isRedirect(error)) throw error;
-      return fail(400, { error: error.message });
+      return fail(400, {
+        error: invitationAction ? safeJoinMessage(error) : error.message,
+      });
     }
   };
 }
 
 export const actions = {
+  createLink: action(async (data, api, url) => {
+    if (!linksEnabled()) throw new JoinLinkError(JOIN_UNAVAILABLE);
+    const campaignId = id(data, "campaign_id");
+    const email = data.get("email");
+    if (
+      typeof email !== "string" ||
+      email.trim().length > 320 ||
+      !/^(?:[^\s@]+@[^\s@]+\.[^\s@]+|@[a-z0-9][a-z0-9_.-]{2,31})$/.test(
+        email.trim(),
+      )
+    ) {
+      throw new JoinLinkError("Enter the player's email or @username.");
+    }
+    const enrollment = data.get("allow_enrollment");
+    if (enrollment !== null && enrollment !== "on")
+      throw new JoinLinkError("Invalid account invitation selection.");
+    const created = await api(`/campaigns/${campaignId}/join-links`, "POST", {
+      email: email.trim(),
+      allow_enrollment: enrollment === "on",
+    });
+    return {
+      ok: true,
+      new_link: {
+        ...joinMetadata(created),
+        campaign_id: campaignId,
+        url: `${url.origin}${JOIN_PATH}#${joinToken(created.token)}`,
+      },
+    };
+  }, true),
+  revokeLink: action(async (data, api) => {
+    if (!linksEnabled()) throw new JoinLinkError(JOIN_UNAVAILABLE);
+    await api(
+      `/campaigns/${id(data, "campaign_id")}/join-links/${id(data, "join_link_id")}`,
+      "DELETE",
+    );
+  }, true),
   create: action((data, api) =>
     api("/campaigns", "POST", { name: String(data.get("name") || "") }),
   ),

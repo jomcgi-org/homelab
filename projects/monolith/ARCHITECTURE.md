@@ -54,7 +54,7 @@ Discord agent, agent console, Grimoire, and public applications.
 The deployed service has three audience tiers, plus the agents tier of sections
 2 and 7: the private monolith carries the full route and MCP surface, the public
 deployment is a pruned composition on a read-only database role with a
-separately scoped writer for the two public chat domains, and the friends tier
+separately scoped writer for Grimoire chat, and the friends tier
 exposes only the moving planner, its browser API, and the SvelteKit bundle. The
 friends hostname has no Cloudflare Access application in front of it, only an
 authentik `SecurityPolicy` that is a separate object from its route, so verify
@@ -1501,6 +1501,12 @@ architecture, identity limitations, and catalogue refresh behavior are documente
 
 ### Current authentication trust boundary
 
+The next platform enrollment and access boundary is recorded in
+[auth/architecture.md](auth/architecture.md). Joe's 2026-10-05 direction requires
+a platform invitation before account creation, Authentik-backed identity,
+separate application permissions and shared HTTP/MCP management commands. That
+module is not implemented or enabled; the current mechanisms below remain live.
+
 **Status: Accepted for the current source boundary.** This record describes
 mechanisms present at the current task head. The future delegation design in
 #4940 remains gated. The deployment values declare both standing issuers and
@@ -1612,11 +1618,11 @@ by trust in the guest.
 - `/app/wc2026`: cached dynamic tournament summary and odds data. (see: /projects/monolith/worldcup/router.py)
 - `/app/campsites`: cached recreation-area search with weather-enriched snapshots. (see: /projects/monolith/campsites/router.py)
 - `/app/grimoire`: public knowledge graph, entity explorer, adventure index, and open-book reader with extracted illustrations. (see: /projects/monolith/grimoire/router_public.py)
-- `/app/notes`: Turnstile-gated, rate-limited public chat over the public knowledge graph, with a lazy graph view. (see: /projects/monolith/chat_public/router.py)
+- `/app/notes`: public knowledge graph browsing, including note links from the factory context viewer. Notes chat is retired.
 - `/app/grimoire/chat`: Turnstile-gated Grimoire RAG chat. (see: /projects/monolith/grimoire_chat/router.py)
 - `/app/dr-jobs`: NHS job search over the scraped listings feed. (see: /projects/monolith/dr_jobs/router.py)
 - `/app/llm-leaderboard`: model-bench results scatter. (see: /projects/monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte)
-- `/ember/{bazel,postgres,agents,firecracker}`: the EmberVM demo pages the synthetic probes in section 9 exercise, which say when a brick was preempted and recovery is under way. (see: /projects/monolith/ember_public/bazel_router.py)
+- `/ember/firecracker`: recorded restore timings and a local replay. The retired Bazel and Postgres exhibit URLs redirect to this replay; `/ember/agents` remains an explainer.
 - `/artifact/{id}`: agent-built HTML served from object storage in a sandboxed opaque origin. (see: /projects/monolith/artifact/router.py)
 - `/blog`, `/docs`, `/engineering`: the posts, the published repository documents (this file among them), and the engineering index. (see: /projects/monolith/frontend/src/routes/public/docs)
 - `/agents` (private hostname): the agent console of section 4. (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
@@ -1648,13 +1654,12 @@ when the backend is unhealthy or unreachable.
 (see: /projects/monolith/framework/core.py)
 (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
-Current fatal components are stars health plus the EmberVM synthetic latches
-for Bazel, pages, Postgres, and the Codex session. Continuous-delivery
-health and the drainer's stall signal are advisory latches computed by a
-private leader and read by both tiers. The combined demo probes run one hourly
-CronWorkflow and the Codex lane probe runs its own hourly CronWorkflow, each
-with a 2.5x staleness allowance. Codex is the one automatically scheduled
-agent probe; the Spark session probe is manual-only with no health component.
+The public tier checks its database and stars data. The private tier retains the
+Codex session probe and configured Ember durability check for production agent
+execution. The live public demo latches and combined hourly demo CronWorkflow
+are retired. **Why.** Recorded Firecracker replays explain the VM lifecycle
+without coupling public-site health to an exhibit workload. Codex remains the
+one automatically scheduled agent probe; Spark is manual-only.
 The CD latch writer defaults to a 300-second interval, while its public reader
 uses an independent 750-second constant. That is currently the same 2.5x
 allowance, and changes to either value must keep the pair consistent.
@@ -1780,6 +1785,8 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Platform invitations create Authentik-linked platform users; application grants and campaign membership remain separate, with reusable HTTP/MCP management commands | [Platform enrollment and access](auth/architecture.md) | #6858 | design recorded; API, enrollment binding, permissions and MCP implementation remain unbuilt; signup remains disabled |
+| The human issue label excludes both factory lanes and durably hands admitted work off after normal attempt accounting | The factory conductor, human ownership | #6781 | implemented in repository; rollout pending |
 | Factory outcomes use mature delivery predicates, complete attempt accounting, and task-class/role/model cohorts with explicit unknown evidence | section 4, recorded Conductor rescope | #6716 | repository report staged for manual read-only invocation; standby accounting, CI, revert, metadata, and query-cost checks remain |
 | Proposed graph envelopes are preflighted inside the planner turn | section 4, planner preview | #6650 | implemented in repository behind `swarm.factoryPlannerPreviewEnabled=false`, with no production planner binding or serving route; binding provisioning, enablement and the 72-hour rejected-run/cost comparison remain live checks |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
@@ -1870,12 +1877,37 @@ operator; missing access to Dependabot alerts is never treated as no alerts.
 The GitHub read identity needs Dependabot alerts read permission in addition
 to access to the repository and dependency graph. This lane never dismisses
 alerts. Dependency auto-merge is unconditionally disabled, even with approved
-assessments and repository auto-merge enabled. A required trusted queue-time
-validation gate must bind approval to the actual queued base and current
-vulnerability evidence before this lane can arm merges (#6799). Polling after
-arming cannot guarantee that evidence is current at merge time. Existing
-Renovate platform auto-merge must also pass that gate before automation is
-activated. For separately authorized merges, landing verifies publication and managed rollout
+assessments and repository auto-merge enabled. The trusted
+`factory/dependency-evidence` publisher is staged off by default
+(`factory.dependencyGate.enabled: false`). It checks PR heads and GitHub
+merge-queue entry heads using each entry's actual base, through a dedicated
+`FACTORY_DEPENDENCY_GATE_TOKEN` App installation identity for reads and writes.
+Missing credentials publish nothing and return a silent skip without an
+audit, database session, control lock or GitHub call. The publisher never
+uses `GITHUB_API_TOKEN`.
+
+Server-fetched Bot identity, an explicit numeric ID in
+`intake.dependency_pr_author_ids`, or a `renovate/` or `dependabot/` branch forces
+dependency evidence. Numeric IDs and refs grant no intake or approval authority.
+Both author lists remain empty by default. Human and factory issue PRs receive
+a passing context after identity checks. Dependency PRs require the latest
+settled receipt generation and independent safe assessments on its exact PR
+head. Queue comparison permits different commit IDs only when the reviewed
+file inventory (including blob SHAs), dependency changes and open alerts are
+identical. Missing file SHAs in older receipts require fresh review. Combined
+queue prefixes containing a dependency PR are conservatively refused. A moved
+head, unsafe assessment or changed evidence invalidates that generation in the
+audit ledger; reverting the evidence does not restore its approval. The
+publisher never changes generation or starts a review itself.
+
+Renovate and apko lock maintenance no longer request auto-merge for any update
+type. Activation still requires the operator checklist in `FACTORY.md`, including
+App-pinned ruleset enforcement on both PR and merge-group commits and resolving
+the BuildBuddy credential boundary (#6799). Tick-time checks and revocation
+cannot guarantee atomic freshness when an advisory appears after a successful
+check and before merge. The live stale/advisory canary must establish the
+merge-time acceptance before any automated dependency merging is authorized.
+For separately authorized merges, landing verifies publication and managed rollout
 before recording repository delivery complete. It never closes a PR through
 the issue-close API. Runtime activation is a live policy update after rollout;
 shipping this code alone enables no author accounts. BuildBuddy currently
@@ -1888,8 +1920,12 @@ boundary.
 a plausible version bump and green CI. Author reputation, semver and a clean
 vulnerability feed do not establish safety. Independent adversarial judgment
 plus server-fetched, commit-bound evidence makes those claims inspectable and
-keeps merge authority outside the guest. Adopting the original PR preserves
-Dependabot's history without creating replacement dependency changes.
+keeps merge authority outside the guest. Queue commit identities can change
+without changing the reviewed dependency content; the comparison binds blob
+SHAs and advisory data as well as package versions. The default-off publisher
+and unconditional landing refusal retain the activation boundary while the
+required context and CI credential isolation are unverified. Adopting the
+original PR preserves Dependabot's history without replacement changes.
 
 ### The factory conductor
 
@@ -1904,6 +1940,16 @@ capacity to finish and verify what it started. The monolith owns the durable
 state and the deterministic enforcement; planning and execution stay in EmberVM
 guests. Tracked by #5784 and the six sub-issues in the table below; the full
 design text is on #5784.
+
+**Why.** The `human` issue label declares human ownership independently of
+assignment and readiness. Both intake lanes exclude it, queued receipts check
+the synchronized work item at admission, and the reconciler reads live ownership
+before further starts. An observed handoff durably fences the receipt and drains
+existing attempts through normal accounting before cancellation with
+`human_handoff` provenance. It does not manufacture a delivery success or a
+missing-label escalation, release unknown reservations, close issues or PRs,
+or resume a receipt when the label is removed. Refinement also checks the live
+label at settlement to cover a handoff during briefing.
 
 | Aspect | Decision | Owner |
 | --- | --- | --- |
@@ -2096,3 +2142,14 @@ mismatch without silently rewriting the decision record.
 | `agents/062` | A Mutable DAG Owned by an Opus Conductor, Executed Per-Node in VMs | Accepted, partially shipped: typed artifact channel, rationale records, and the factory lane's plan-time graph with per-node dispatch exist; legacy swarm runs still execute `implement_then_review` (#5419, #4781) | deleted |
 | `agents/063` | The Factory Knowledge Graph Learns From Evidence Lanes | Accepted, shipped with its 2026-09-03 amendment: schema, `kg-drain` lane, feeds, report tools, recall (see: /projects/monolith/knowledge/extraction.py); #5527 tracks the program | deleted |
 | 064 | A factory conductor coordinating conductors under a charter | Proposed in PR #5792, never merged; rolled into the Direction subsection above on 2026-09-06 and the full text preserved on #5784 | not merged |
+
+Public frontend rollouts keep terminating servers alive for ten seconds while
+endpoint removal propagates, require ten seconds of stable readiness before
+retiring the previous replica, and reserve 45 seconds for termination. The
+frontend has two replicas. Its gateway policy permits two retries only on
+connection failure, reset before request delivery, or refused stream, with a
+one-second connection timeout and 50ms to 250ms jittered backoff. **Why.** A
+retiring frontend returned connection refused for `/docs/mcp` while its
+replacement was coming online. Serving through endpoint propagation addresses
+the race; retries cover a transient connection failure without re-executing a
+request that reached the application.

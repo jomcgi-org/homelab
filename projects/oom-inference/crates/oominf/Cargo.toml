@@ -1,0 +1,24 @@
+[package]
+name = "oominf"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+oominf-convert = { path = "../oominf-convert" }
+oominf-core = { path = "../oominf-core" }
+oominf-cpu = { path = "../oominf-cpu" }
+oominf-cuda = { path = "../oominf-cuda" }
+oominf-format = { path = "../oominf-format" }
+oominf-models = { path = "../oominf-models" }
+oominf-models-qwen = { path = "../oominf-models-qwen" }
+oominf-server = { path = "../oominf-server" }
+oominf-tiers = { path = "../oominf-tiers" }
+serde.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+
+[lints]
+workspace = true

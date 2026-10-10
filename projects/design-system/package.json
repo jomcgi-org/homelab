@@ -4,6 +4,17 @@
   "type": "module",
   "exports": {
     ".": "./tokens/contract.css",
-    "./tokens/contract.css": "./tokens/contract.css"
+    "./tokens/contract.css": "./tokens/contract.css",
+    "./tokens/technical-drawing.css": "./tokens/technical-drawing.css",
+    "./components": {
+      "svelte": "./components/index.js",
+      "default": "./components/index.js"
+    },
+    "./components/*.svelte": {
+      "svelte": "./components/*.svelte",
+      "default": "./components/*.svelte"
+    },
+    "./data-display": "./data-display/index.js",
+    "./data-display/core": "./data-display/core.js"
   }
 }

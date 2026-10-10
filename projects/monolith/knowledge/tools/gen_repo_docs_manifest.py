@@ -65,9 +65,19 @@ def derive_title(content: str, rel_path: str) -> str:
     return m.group(1).strip() if m else rel_path
 
 
+# Trees in .bazelignore: no Bazel filegroup can carry their docs into the
+# manifest genrules, so the coverage check could never pass for them. Remove an
+# entry when its project moves to Bazel and gains a ``repo_docs`` filegroup.
+_EXCLUDE_PREFIXES = ("projects/oom-inference/",)
+
+
 def _excluded(rel_path: str) -> bool:
     p = f"/{rel_path}/"
-    return any(seg in p for seg in _EXCLUDE_SEGMENTS) or rel_path == MANIFEST_REL
+    return (
+        any(seg in p for seg in _EXCLUDE_SEGMENTS)
+        or rel_path.startswith(_EXCLUDE_PREFIXES)
+        or rel_path == MANIFEST_REL
+    )
 
 
 def _should_index(rel_path: str) -> bool:

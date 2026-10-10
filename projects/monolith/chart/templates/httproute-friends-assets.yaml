@@ -1,6 +1,12 @@
 {{- if or .Values.cfIngress.friends.enabled .Values.cfIngress.grimoire.enabled }}
-# Shared compiled assets, authenticated independently of either app's OIDC
-# redirects. JWT providers are ORed. This route serves no page or API data.
+# SvelteKit emits shared /_app URLs. Dispatch them to the requesting app's
+# existing OIDC lane: Envoy must decrypt that lane's session cookies before
+# JWT verification. A JWT-only route cannot read the encrypted browser cookie.
+#
+# Referer selects a destination, NEVER an identity. This route has no backend
+# and serves no assets. Missing/foreign Referer gets an uncacheable 404. Spoofing it can
+# only select a lane whose unchanged OIDC/JWT policy still gates every byte.
+# Relative module imports and CSS url() resolve from the final, scoped URL.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -14,41 +20,73 @@ spec:
       namespace: {{ .Values.cfIngress.friends.gateway.namespace }}
   hostnames: [{{ .Values.cfIngress.friends.hostname | quote }}]
   rules:
+    {{- range $app, $enabled := dict "moving" .Values.cfIngress.friends.enabled "grimoire" .Values.cfIngress.grimoire.enabled }}
+    {{- if $enabled }}
     - matches:
         - path:
             type: PathPrefix
-            value: /_app/
-      backendRefs:
-        - name: {{ include "monolith.fullname" . }}
-          port: {{ .Values.cfIngress.friends.servicePort | int }}
+            value: /_app
+          headers:
+            - name: Referer
+              type: RegularExpression
+              value: {{ printf "^https://%s/%s([/?].*)?$" (regexQuoteMeta $.Values.cfIngress.friends.hostname) $app | quote }}
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            # cloudflared uses HTTP to the listener; preserve browser HTTPS.
+            scheme: https
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: {{ printf "/%s/_app" $app }}
+            statusCode: 302
+        # A shared cache must never reuse one app's redirect for the other.
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Cloudflare-CDN-Cache-Control
+                value: no-store
+              - name: Cache-Control
+                value: no-store
+              - name: Vary
+                value: Referer
+    {{- end }}
+    {{- end }}
+    # A generic route-miss 404 has no cache controls. Cloudflare can cache it
+    # by URL and poison a later valid Referer request for the same asset.
+    # Header matches outrank this path-only fallback under Gateway API rules.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /_app
+      filters:
+        # Envoy Gateway stops processing filters after a direct response.
+        # These headers MUST come before ExtensionRef or the 404 is cacheable.
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Cloudflare-CDN-Cache-Control
+                value: no-store
+              - name: Cache-Control
+                value: no-store
+              - name: Vary
+                value: Referer
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: {{ include "monolith.fullname" . }}-friends-assets-not-found
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: SecurityPolicy
+kind: HTTPRouteFilter
 metadata:
-  name: {{ include "monolith.fullname" . }}-friends-assets
+  name: {{ include "monolith.fullname" . }}-friends-assets-not-found
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
 spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: {{ include "monolith.fullname" . }}-friends-assets
-  jwt:
-    providers:
-      {{- if .Values.cfIngress.friends.enabled }}
-      - name: moving
-        issuer: {{ .Values.cfIngress.friends.authentik.issuer | quote }}
-        audiences: [{{ .Values.cfIngress.friends.authentik.clientID | quote }}]
-        remoteJWKS:
-          uri: {{ .Values.cfIngress.friends.authentik.jwksUri | quote }}
-        extractFrom:
-          cookies: [moving-id-token]
-      {{- end }}
-      {{- if .Values.cfIngress.grimoire.enabled }}
-      - name: grimoire
-        issuer: {{ .Values.cfIngress.grimoire.issuer | quote }}
-        audiences: [{{ .Values.cfIngress.grimoire.clientID | quote }}]
-        remoteJWKS:
-          uri: {{ .Values.cfIngress.grimoire.jwksUri | quote }}
-        extractFrom:
-          cookies: [grimoire-id-token]
-      {{- end }}
+  directResponse:
+    contentType: text/plain
+    statusCode: 404
+    body:
+      type: Inline
+      inline: Not Found
 {{- end }}

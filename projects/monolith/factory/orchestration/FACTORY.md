@@ -1,5 +1,44 @@
 # Bounded issue delivery lane
 
+## DBOS recovery needs process cessation
+
+Issue #6798's accepted investigation reproduced a DBOS 2.29.0 duplicate-step
+conflict with two processes sharing a workflow identity. The recovered executor
+abandons its workflow body and waits for the terminal result. If the original
+executor then exits, native session completion cannot resume that waiter. A
+third process recovery resumes the original workflow. The SQLite reproduction
+confirms this mechanism; the October 3, 2026 production incident's conflicting
+checkpoint and original executor were not observed, so historical attribution
+remains inconclusive.
+
+**Why.** DBOS `destroy()` shuts down its synchronous executor with `wait=False`.
+Running workflow threads can survive destruction and race recovery after an
+in-process relaunch. Teardown reordering alone also leaves the five-second lease
+shorter than the native executor's fifteen-second rollout drain. A launched
+factory therefore exits the process after orderly shutdown instead of destroying
+and relaunching DBOS in that process. The framework leaves election running and
+adds an independent shutdown renewal thread. A renewal watchdog fails closed
+before the lease can become stale, and a twenty-second absolute watchdog bounds
+cleanup within the thirty-second termination grace. The lease expires after
+process cessation; it is never explicitly released while DBOS threads survive.
+
+Loss of leadership or failed singleton startup with launched DBOS exits promptly
+without draining under assumed ownership. Other binaries retain normal election
+and release behavior. Normal rollout still fences admission on SIGTERM, drains
+native executor handoffs under #5938, and runs module shutdown hooks. Unknown
+native invocation outcomes and operator pauses remain fenced. Node workflow
+member sources and the derived application version are unchanged.
+
+The CI-wired `leader_recovery_test.py` uses real DBOS processes and the unchanged
+`execute_node` workflow. It covers the duplicate-result race, persisted polling
+sleep recovery followed by a late native result and an existing plan artifact,
+one dispatch per original attempt/session, live waiting, unknown invocation,
+and an operator pause retained across recovery. Native I/O uses isolated file
+seams. Live acceptance still requires a future GitOps rollout with node and drain
+checkpoints continuing past their recorded sleep wake times. The original
+sessions 17053 and 17055 settled SUCCESS on October 3 at 05:10 UTC and must never
+be retried or recreated.
+
 ## Domain ownership
 
 Factory is one domain inside the monolith. It owns private interactions and
@@ -640,6 +679,17 @@ create, which fails the turn rather than making it wait.
 
 ### Autonomous intake and refine
 
+The `human` issue label declares human ownership and takes precedence over
+`agent-ready`, task class and allowlisting. It excludes both intake lanes and
+queued admission. Observing it on admitted work durably fences further starts;
+existing invocations drain through normal accounting before the receipt settles
+`cancelled` with `human_handoff` evidence. Unknown invocation costs remain held.
+Refine settlement checks the live label before readiness-label verification.
+Landing disarms pending auto-merge and leaves the issue and PR to the human;
+PR lifecycle does not draft or retire handed-off work. The handoff survives
+label removal and requires explicit re-admission to restart the receipt.
+`needs-human` remains the separate decision-request label.
+
 `FACTORY_AGENT_BOARD_POLL_ENABLED` stages one board consumer at the
 between-job boundary, before autonomous intake lists or claims another receipt.
 It is false by default and independent of `AGENT_BOARD_ENABLED`. When enabled,
@@ -714,6 +764,16 @@ before it reaches the clock at all. A tick that cannot read GitHub audits
 and open pull requests oldest first, up to five pages of one hundred each; a
 read that hits that cap records `truncated` on the audit, so a partial sweep
 reads as partial.
+
+The intake status exposes `last_swept` (the attempt clock), `last_evaluated`
+(the completed candidate evaluation), and `last_error` (sanitized listing
+failure evidence), each with its own timestamp. Every real sweep records its
+listed counts, exclusions, candidate counts by lane, listing result and
+truncation flag independently of the hourly idle audit. A later `not_due`
+tick cannot erase this evidence. Candidate counts precede the daily cap and
+the final locked admission checks; they are not admission counts. A failed
+or partial GitHub read is explicit, and local candidates remain independent.
+An old error is historical evidence, not proof that a newer sweep failed.
 
 Intake admits at most one issue per lane per tick, and never opens more than
 `max_per_day` deliveries over a rolling 24 hours. The cap bounds delivery
@@ -1846,6 +1906,80 @@ honours: `#123`, `owner/repo#123` and the full issue URL. Only this task's own
 issue in this task's own repository counts.
 
 ### Landing
+
+#### Dependency queue evidence
+
+`factory/dependency-evidence` is a trusted monolith check, staged off by default
+with `factory.dependencyGate.enabled: false`. The conductor tick runs it
+independently of guest execution, intake and merge landing. It publishes on
+server-fetched open PR heads and merge-queue entry heads. GraphQL supplies the
+entry's actual `baseCommit`, `headCommit` and PR `headRefOid`; the gate re-reads
+the queue and PR after collecting evidence. Bounded, unavailable or malformed
+discovery never produces a success. Publications, refusals and discovery
+failures are audited. Disabled and token-missing ticks return without an audit,
+database session or control lock.
+
+The publisher uses only `FACTORY_DEPENDENCY_GATE_TOKEN`, an App installation
+token supplied to monolith through the 1Password Operator and the trusted
+broker path. Both reads and check writes use that identity. No token fallback
+or chart Secret binding is included. A missing token publishes nothing. These
+configuration skips deliberately have no per-tick audit.
+
+Every enabled tick revalidates current evidence before reading existing check
+runs with the dedicated token. `FACTORY_DEPENDENCY_GATE_APP_ID` identifies the
+App whose latest completed conclusion may suppress an unchanged publication.
+Other Apps' checks grant no publication authority. Missing or invalid App IDs,
+incomplete or malformed inventories, and failed check reads always publish.
+A changed conclusion publishes, including success revocation and recovery.
+Provision the numeric App ID alongside the token and verify both belong to the
+integration pinned in the ruleset before activation.
+
+Numeric `intake.dependency_pr_author_ids`, GitHub `user.type == Bot`, and
+`renovate/` or `dependabot/` refs force review evidence. Refs and numeric IDs
+grant no authority. Non-dependency human and factory issue PRs pass identity
+validation. For dependency PRs, the latest receipt generation must be settled,
+unpaused and uncancelled, with both safe independent assessment artifacts on
+the exact PR head. The approved digest is checked before comparing evidence.
+The queued base/head dependency comparison, file inventory with blob SHAs and
+all open alerts must equal the reviewed content. Only comparison commit IDs
+may differ. GitHub's compare file cap is a refusal, even at exactly the cap;
+an empty dependency comparison is also a refusal. Combined queue prefixes
+containing dependency PRs fail closed instead of attributing aggregated changes
+to one receipt.
+
+Changed, moved, unsafe or invalid approval evidence records
+`dependency_approval_invalidated`. That receipt cannot pass again even if the
+old evidence returns. Fresh adversarial review requires the existing authorized
+generation mechanism. Unavailable, incomplete or malformed fresh evidence
+refuses this tick without permanently invalidating the approved generation.
+Success still requires a fresh positive match after the API recovers. This
+publisher neither changes policy nor starts work.
+Dependency landing still refuses `dependency_auto_merge_disabled`
+unconditionally, and `intake.dependency_pr_authors` remains empty by default.
+Renovate platform auto-merge and apko auto-merge requests are disabled.
+
+Live checks outstanding for #6799, outside this repository-only slice:
+
+1. Provision the dedicated App installation token to trusted monolith, with
+   repository, dependency graph and Dependabot alert reads plus checks write.
+   Keep the token out of guests and untrusted same-repository CI.
+2. Enable the flag separately and canary `factory/dependency-evidence` on a
+   real PR head and a merge-group commit. Verify the actual entry base and
+   complete server evidence, including a refused combined dependency group.
+3. Require this context in ruleset 9180009, pinned to the numeric App integration
+   ID, alongside Linux `pr-checks`. Audit bypass and any-App sources.
+4. Verify a stale or advisory-changed queued dependency PR is refused and needs
+   a new authorized generation. Polling cannot guarantee freshness if an advisory
+   arrives between success and merge; establish merge-time acceptance before
+   authorizing automated merges. Missing token/API failures also cannot revoke
+   a check already held by GitHub; test that boundary before activation.
+5. Verify an unapproved Renovate PR with auto-merge already armed cannot merge.
+   This repository edit stops new requests; it does not disarm existing PRs.
+6. Resolve and verify BuildBuddy's same-repository secret boundary. A merge
+   check does not isolate PR-branch workflow execution or its injected secrets.
+7. Create and verify a dedicated Renovate author identity before allowlisting
+   any author. Historical maintenance PRs use `jomcgi`; never allowlist the
+   human account to activate this lane.
 
 #### Review publisher
 

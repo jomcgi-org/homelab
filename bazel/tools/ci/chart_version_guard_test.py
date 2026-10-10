@@ -88,6 +88,24 @@ def test_other_edits_are_allowed():
     assert _run(_tree(), head) == []
 
 
+def test_unrelated_binary_files_are_not_read():
+    def read(ref: str, path: str) -> str | None:
+        if path.endswith(".png"):
+            raise UnicodeDecodeError("utf-8", b"\x89", 0, 1, "binary image")
+        return _tree().get(path)
+
+    assert (
+        guard.findings(
+            ["projects/svc/evidence/screen.png", CHART],
+            {CHART_DIR},
+            read,
+            "base",
+            "head",
+        )
+        == []
+    )
+
+
 def test_dependency_versions_are_not_the_chart_version():
     chart = CHART_V1 + "dependencies:\n  - name: dep\n    version: 9.9.9\n"
     assert _run(_tree(chart=chart), _tree(chart=chart.replace("9.9.9", "9.9.10"))) == []
@@ -127,3 +145,32 @@ def test_app_colocated_in_chart_dir_is_covered():
     head = {**base, app: OURS.replace("0.10.0", "0.11.0")}
     [problem] = _run(base, head)
     assert app in problem
+
+
+def test_changed_binary_dependency_is_never_read():
+    archive = f"{CHART_DIR}/charts/library.tgz"
+    trees = {"base": _tree(), "head": _tree()}
+
+    def read(ref, path):
+        if path == archive:
+            raise UnicodeDecodeError("utf-8", b"\x8b", 0, 1, "binary archive")
+        return trees[ref].get(path)
+
+    assert guard.findings([archive], {CHART_DIR}, read, "base", "head") == []
+
+
+def test_main_compares_against_branch_point(monkeypatch):
+    trees = {"fork": _tree(), "head": _tree(), "main": _tree(chart=CHART_V2)}
+
+    def lines(*args):
+        if args == ("merge-base", "main", "head"):
+            return ["fork"]
+        if args == ("diff", "--name-only", "fork", "head"):
+            return [CHART]
+        if args[0] == "ls-tree":
+            return list(trees[args[-1]])
+        raise AssertionError(args)
+
+    monkeypatch.setattr(guard, "_git_lines", lines)
+    monkeypatch.setattr(guard, "_git_read", lambda ref, path: trees[ref].get(path))
+    assert guard.main(["main", "head"]) == 0

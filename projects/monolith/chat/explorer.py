@@ -2,13 +2,14 @@
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from pydantic_ai import Agent, ModelSettings, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from chat.sse import SSEEmitter
-from knowledge.api import KnowledgeStore
+from knowledge.api import KnowledgeStore, result_current
 from shared.embedding import EmbeddingClient
 import shared.inference
 
@@ -25,6 +26,16 @@ Your workflow:
 Always search before answering. Expand at least one promising node to discover \
 deeper connections. Discard results that aren't relevant — be decisive. \
 Reference notes by title when answering."""
+
+
+_FRESHNESS_KEYS = (
+    "review_after",
+    "review_policy",
+    "freshness",
+    "observed_at",
+    "last_reviewed_at",
+    "requires_authoritative_observation",
+)
 
 
 @dataclass
@@ -75,11 +86,16 @@ def create_explorer_agent() -> Agent[ExplorerDeps]:
     return agent
 
 
-async def _search_kg(deps: ExplorerDeps, query: str) -> str:
+async def _search_kg(
+    deps: ExplorerDeps, query: str, *, now: datetime | None = None
+) -> str:
     vector = await deps.embed_client.embed(query)
     results = deps.store.search_notes_with_context(query_embedding=vector, limit=5)
+    now = now if now is not None else datetime.now(timezone.utc)
     lines = []
     for r in results:
+        if not result_current(r, now=now):
+            continue
         deps.emitter.emit(
             "node_discovered",
             {
@@ -89,18 +105,29 @@ async def _search_kg(deps: ExplorerDeps, query: str) -> str:
                 "tags": r["tags"],
                 "snippet": r["snippet"],
                 "edges": r.get("edges", []),
+                **{key: r.get(key) for key in _FRESHNESS_KEYS},
             },
         )
         lines.append(
-            f"- {r['title']} (score: {r['score']:.2f}, type: {r['type']}): "
+            f"- {r['title']} (score: {r['score']:.2f}, type: {r['type']}, "
+            f"observed: {r.get('observed_at')}, freshness: {r.get('freshness')}, "
+            f"review after: {r.get('review_after')}): "
             f"{r['snippet'][:200]}"
         )
+        if r.get("requires_authoritative_observation"):
+            lines.append("New authoritative observation required before action.")
     if not lines:
         return "No results found."
     return "Found notes:\n" + "\n".join(lines)
 
 
-async def _expand_node(deps: ExplorerDeps, note_id: str) -> str:
+async def _expand_node(
+    deps: ExplorerDeps, note_id: str, *, now: datetime | None = None
+) -> str:
+    now = now if now is not None else datetime.now(timezone.utc)
+    source = deps.store.get_note_by_id(note_id)
+    if source is None or not result_current(source, now=now):
+        return f"No current evidence for {note_id}; use history search to investigate."
     links = deps.store.get_note_links(note_id)
     if not links:
         return f"No edges found from {note_id}."
@@ -108,6 +135,9 @@ async def _expand_node(deps: ExplorerDeps, note_id: str) -> str:
     lines = []
     for link in links:
         target_id = link.get("resolved_note_id") or link["target_id"]
+        target = deps.store.get_note_by_id(target_id)
+        if target is None or not result_current(target, now=now):
+            continue
         deps.emitter.emit(
             "edge_traversed",
             {
@@ -116,23 +146,27 @@ async def _expand_node(deps: ExplorerDeps, note_id: str) -> str:
                 "edge_type": link.get("edge_type", "link"),
             },
         )
-        target = deps.store.get_note_by_id(target_id)
-        if target:
-            deps.emitter.emit(
-                "node_discovered",
-                {
-                    "note_id": target["note_id"],
-                    "title": target["title"],
-                    "type": target["type"],
-                    "tags": target.get("tags", []),
-                    "snippet": "",
-                    "edges": [],
-                },
-            )
-            edge_label = link.get("edge_type", "link")
-            lines.append(f"- {target['title']} ({edge_label})")
-        else:
-            lines.append(f"- {target_id} (unresolved)")
+        deps.emitter.emit(
+            "node_discovered",
+            {
+                "note_id": target["note_id"],
+                "title": target["title"],
+                "type": target["type"],
+                "tags": target.get("tags", []),
+                "snippet": "",
+                "edges": [],
+                **{key: target.get(key) for key in _FRESHNESS_KEYS},
+            },
+        )
+        edge_label = link.get("edge_type", "link")
+        lines.append(
+            f"- {target['title']} ({edge_label}; "
+            f"observed: {target.get('observed_at')}, "
+            f"freshness: {target.get('freshness')}, "
+            f"review after: {target.get('review_after')})"
+        )
+        if target.get("requires_authoritative_observation"):
+            lines.append("New authoritative observation required before action.")
 
     return f"Edges from {note_id}:\n" + "\n".join(lines)
 

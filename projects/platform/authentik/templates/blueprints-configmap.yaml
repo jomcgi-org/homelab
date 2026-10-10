@@ -11,6 +11,22 @@ Blueprint entries match on `identifiers`, so re-application is idempotent and a
 re-applied entry updates in place rather than creating duplicates.
 */}}
 {{- $files := .Files.Glob "blueprints/*.yaml" }}
+{{- if .Values.platformEnrollment.enabled }}
+{{- if not .Values.platformManagement.enabled }}
+{{- fail "platform enrollment requires the protected management identity claims" }}
+{{- end }}
+{{- if .Values.grimoireLinkEnrollment.enabled }}
+{{- fail "platform enrollment cannot coexist with the cross-flow invitation integration" }}
+{{- end }}
+{{- $api := "" }}
+{{- $issuer := "" }}
+{{- range .Values.authentik.global.env }}
+{{- if eq .name "PLATFORM_AUTH_API_URL" }}{{- $api = .value | default "" }}{{- end }}
+{{- if eq .name "PLATFORM_AUTH_ENROLLMENT_ISSUER" }}{{- $issuer = .value | default "" }}{{- end }}
+{{- end }}
+{{- $_ := required "platform enrollment requires PLATFORM_AUTH_API_URL in authentik.global.env" $api }}
+{{- $_ := required "platform enrollment requires PLATFORM_AUTH_ENROLLMENT_ISSUER in authentik.global.env" $issuer }}
+{{- end }}
 {{- if $files }}
 apiVersion: v1
 kind: ConfigMap
@@ -20,5 +36,28 @@ metadata:
     app.kubernetes.io/name: authentik
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 data:
-{{ ($files.AsConfig) | indent 2 }}
+{{- range $path, $_ := $files }}
+  {{ base $path }}: |
+{{- $content := $.Files.Get $path }}
+{{- if and (or $.Values.platformEnrollment.enabled $.Values.platformManagement.enabled) (eq $path "blueprints/grimoire-auth.yaml") }}
+{{- $content = replace "        # PLATFORM_PROFILE_MAPPING" "        - !KeyOf platform-profile" $content }}
+{{- if $.Values.platformEnrollment.enabled }}
+{{- $content = replace "return request.user.is_active and request.user.type != \"service_account\" and bool(request.user.email)" "return request.user.is_active and request.user.type in (\"internal\", \"external\") and bool(request.user.username)" $content }}
+{{- end }}
+{{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/platform-profile.yaml")) $content }}
+{{- end }}
+{{- if and $.Values.platformManagement.enabled (eq $path "blueprints/mcp-auth.yaml") }}
+{{- $content = replace "        # PLATFORM_MANAGEMENT_PROFILE" "        - !KeyOf platform-management-profile" $content }}
+{{- $content = replace "entries:\n" (printf "entries:\n%s\n" ($.Files.Get "optional/platform-management-profile.yaml")) $content }}
+{{- end }}
+{{ $content | indent 4 }}
+{{- end }}
+{{- if .Values.grimoireLinkEnrollment.enabled }}
+  grimoire-link-enrollment.yaml: |
+{{ .Files.Get "optional/grimoire-link-enrollment.yaml" | indent 4 }}
+{{- end }}
+{{- if .Values.platformEnrollment.enabled }}
+  platform-enrollment.yaml: |
+{{ .Files.Get "optional/platform-enrollment.yaml" | indent 4 }}
+{{- end }}
 {{- end }}

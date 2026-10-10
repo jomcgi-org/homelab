@@ -1,0 +1,987 @@
+// Rotary attention with block-sparse (QSA) key selection: prefill and flash-decode.
+// All arithmetic is fp32.
+
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
+#include <math.h>
+#include <stdint.h>
+
+// KV cache rows (KvFormat). bits == 0: D fp32 values. bits 3 or 4 (Turbo): the head
+// vector was rotated by kv_rotate_forward and is stored as D/32 blocks of 32
+// coordinates: an fp16 scale per block (the block's RMS; the scales padded to 16 bytes),
+// then per block `bits` 32-bit words, word j holding bit j of the 32 coordinates'
+// codebook indices (bit-planes, so lane l of a warp reads bit l). A coordinate is
+// level[idx] * scale, with Lloyd-Max levels for a unit Gaussian (KvFormat::codebooks:
+// the levels for b bits start at 2^b - 4).
+__device__ __forceinline__ int kv_scale_bytes(int D) { return ((D / 32) * 2 + 15) & ~15; }
+
+__device__ __forceinline__ size_t kv_row_bytes(int D, int bits) {
+    return bits ? (size_t)kv_scale_bytes(D) + (size_t)(D / 32) * bits * 4 : (size_t)D * 4;
+}
+
+// Copies the `bits` codebook into shared `lv` (the caller synchronises before use).
+__device__ __forceinline__ void kv_levels_load(float* lv, const float* levels, int bits) {
+    if (!bits) return;
+    for (int i = threadIdx.x; i < (1 << bits); i += blockDim.x) lv[i] = levels[(1 << bits) - 4 + i];
+}
+
+// Coordinate d of a cache row (rotated space for Turbo rows); `lv` is its codebook.
+__device__ __forceinline__ float kv_value(const uint8_t* row, int d, int D, int bits,
+                                          const float* lv) {
+    if (!bits) return reinterpret_cast<const float*>(row)[d];
+    int b = d >> 5, lane = d & 31;
+    float sc = __half2float(reinterpret_cast<const __half*>(row)[b]);
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(row + kv_scale_bytes(D)) + b * bits;
+    int idx = 0;
+    for (int j = 0; j < bits; j++) idx |= ((w[j] >> lane) & 1) << j;
+    return lv[idx] * sc;
+}
+
+// The fixed random sign of coordinate i in the rotation.
+__device__ __forceinline__ float kv_sign(int i) {
+    return (((unsigned)i * 2654435761u) >> 31) ? -1.0f : 1.0f;
+}
+
+// Unnormalised Walsh-Hadamard transform of s[0..D) in shared memory (D a power of two,
+// blockDim >= D); synchronises before and after.
+__device__ void kv_wht(float* s, int D) {
+    for (int h = 1; h < D; h <<= 1) {
+        __syncthreads();
+        int i = threadIdx.x;
+        if (i < D && (i & h) == 0) {
+            float a = s[i], b = s[i + h];
+            s[i] = a + b;
+            s[i + h] = a - b;
+        }
+    }
+    __syncthreads();
+}
+
+// Rotates rows of D coordinates in place: forward y = H (s . x) / sqrt(D), inverse
+// x = s . (H y) / sqrt(D) (H symmetric, H H = D I). One block of D threads per row.
+extern "C" __global__ void kv_rotate(float* x, int D, int inverse) {
+    __shared__ float s[256];
+    float* r = x + (size_t)blockIdx.x * D;
+    int i = threadIdx.x;
+    float norm = 1.0f / sqrtf((float)D);
+    s[i] = inverse ? r[i] : r[i] * kv_sign(i);
+    kv_wht(s, D);
+    r[i] = inverse ? s[i] * kv_sign(i) * norm : s[i] * norm;
+}
+
+// Appends rows of `src` ([n, D], cache order) to the cache at row `row0`, rotating and
+// quantising them for bits 3 or 4. One block of D threads (a multiple of 32) per row.
+extern "C" __global__ void kv_append(const float* src, uint8_t* cache, long long row0, int D,
+                                     int bits, const float* levels) {
+    __shared__ float s[256];
+    __shared__ float lv[256];
+    size_t r = blockIdx.x;
+    int i = threadIdx.x;
+    const float* x = src + r * D;
+    uint8_t* row = cache + ((size_t)row0 + r) * kv_row_bytes(D, bits);
+    if (!bits) {
+        reinterpret_cast<float*>(row)[i] = x[i];
+        return;
+    }
+    kv_levels_load(lv, levels, bits);
+    s[i] = x[i] * kv_sign(i);
+    kv_wht(s, D);
+    float y = s[i] / sqrtf((float)D);
+    float ss = y * y;
+    for (int o = 16; o > 0; o >>= 1) ss += __shfl_xor_sync(0xffffffff, ss, o);
+    __half hs = __float2half_rn(sqrtf(ss / 32.0f));
+    float sc = __half2float(hs);
+    float u = sc > 0.0f ? y / sc : 0.0f;
+    // Nearest level: binary search the ascending codebook, then the closer neighbour.
+    int lo = 0, hi = (1 << bits) - 1;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) >> 1;
+        if (lv[mid] <= u) lo = mid;
+        else hi = mid;
+    }
+    int idx = fabsf(u - lv[lo]) <= fabsf(u - lv[hi]) ? lo : hi;
+    int lane = i & 31, b = i >> 5;
+    if (lane == 0) reinterpret_cast<__half*>(row)[b] = hs;
+    uint32_t* w = reinterpret_cast<uint32_t*>(row + kv_scale_bytes(D)) + b * bits;
+    for (int j = 0; j < bits; j++) {
+        unsigned m = __ballot_sync(0xffffffff, (idx >> j) & 1);
+        if (lane == j) w[j] = m;
+    }
+}
+
+// Reads cache rows back as fp32 [n, D] (decoded and un-rotated for bits 3 or 4). One
+// block of D threads per row.
+extern "C" __global__ void kv_read(const uint8_t* cache, float* dst, int D, int bits,
+                                   const float* levels) {
+    __shared__ float s[256];
+    __shared__ float lv[256];
+    size_t r = blockIdx.x;
+    int i = threadIdx.x;
+    const uint8_t* row = cache + r * kv_row_bytes(D, bits);
+    float* out = dst + r * D;
+    if (!bits) {
+        out[i] = reinterpret_cast<const float*>(row)[i];
+        return;
+    }
+    kv_levels_load(lv, levels, bits);
+    __syncthreads();
+    s[i] = kv_value(row, i, D, bits, lv);
+    kv_wht(s, D);
+    out[i] = s[i] * kv_sign(i) / sqrtf((float)D);
+}
+
+__device__ __forceinline__ float attn_sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
+
+// Splits the fused query/gate projection [T, H, 2*D] into q [T, H, D] and gate [T, H*D].
+extern "C" __global__ void split_q_gate(const float* qg, float* q, float* gate, int T, int H, int D) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)T * H * D) return;
+    int d = i % D;
+    size_t th = i / D;  // t * H + h
+    q[i] = qg[th * 2 * D + d];
+    gate[i] = qg[th * 2 * D + D + d];
+}
+
+// Copies `cols` columns starting at `col` from each row of `src` [rows, stride] into
+// dst [rows, cols].
+extern "C" __global__ void copy_cols(const float* src, float* dst, int rows, int stride, int col,
+                                     int cols) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)rows * cols) return;
+    int r = i / cols, c = i % cols;
+    dst[i] = src[(size_t)r * stride + col + c];
+}
+
+// Rotate-half RoPE on the first `rd` dims of each head row (NeoX layout: pairs (i, i + rd/2)),
+// leaving the remaining dims untouched. x: [ntok, nheads, D]; token i has position
+// pos_base + i * pos_stride. inv_freq: [rd / 2].
+extern "C" __global__ void rope_rotate_half(float* x, int ntok, int nheads, int D, int rd,
+                                            const float* inv_freq, int pos_base, int pos_stride) {
+    int half = rd / 2;
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)ntok * nheads * half) return;
+    int f = i % half;
+    size_t row = i / half;  // tok * nheads + head
+    int tok = row / nheads;
+    float pos = (float)(pos_base + tok * pos_stride);
+    float ang = pos * inv_freq[f];
+    float c = cosf(ang), s = sinf(ang);
+    float* p = x + row * D;
+    float x1 = p[f], x2 = p[f + half];
+    p[f] = x1 * c - x2 * s;
+    p[f + half] = x2 * c + x1 * s;
+}
+
+// Mean of each consecutive group of `ratio` rows: out[b, :] = mean(raw[b*ratio .. +ratio, :]).
+extern "C" __global__ void pool_rows(const float* raw, float* out, int nblocks, int ratio, int D) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)nblocks * D) return;
+    int b = i / D, d = i % D;
+    float acc = 0.0f;
+    for (int r = 0; r < ratio; r++) acc += raw[((size_t)b * ratio + r) * D + d];
+    out[i] = acc / ratio;
+}
+
+// QSA block scores. Block b covers key positions [b*ratio, (b+1)*ratio); query t at
+// position p = start + t sees nb = (p+1)/ratio complete blocks, and
+// score[t, b] = sum_h relu(q[t,h] . kb[b]) / sqrt(Di). Row stride: kv_stride/ratio + 1.
+// Tiled: a CUDA block stages QSA_TQ queries and QSA_TB key blocks in shared memory and
+// each thread scores one key block for 4 queries; every score is summed in the same
+// order as a plain loop over h then d. Grid (ceil(nb_max / QSA_TB), ceil(T / QSA_TQ)),
+// block 256, dynamic shared memory QSA_SMEM_FLOATS * 4 bytes. nheads * Di <= 512,
+// Di <= 128.
+#define QSA_TQ 16
+#define QSA_TB 64
+#define QSA_KSTRIDE 129  // odd stride: threads reading different key blocks hit distinct banks
+#define QSA_SMEM_FLOATS (QSA_TQ * 512 + QSA_TB * QSA_KSTRIDE)
+
+extern "C" __global__ void __launch_bounds__(256)
+qsa_scores(const float* q, const float* kb, float* scores, int T, int start, int nheads, int Di,
+           int ratio, int kv_stride) {
+    extern __shared__ float qsa_smem[];
+    float* qs = qsa_smem;                  // [TQ][nheads * Di]
+    float* ks = qs + QSA_TQ * 512;         // [TB][KSTRIDE]
+    int b0 = blockIdx.x * QSA_TB, t0 = blockIdx.y * QSA_TQ;
+    int tlast = min(t0 + QSA_TQ, T) - 1;
+    int nb_last = (start + tlast + 1) / ratio;
+    if (b0 >= nb_last) return;  // no query of this tile sees these blocks
+    int tid = threadIdx.x, qd = nheads * Di;
+    for (int i = tid; i < QSA_TQ * qd; i += 256) {
+        int tq = i / qd, e = i % qd;
+        qs[tq * 512 + e] = t0 + tq < T ? q[(size_t)(t0 + tq) * qd + e] : 0.0f;
+    }
+    for (int i = tid; i < QSA_TB * Di; i += 256) {
+        int bb = i / Di, d = i % Di;
+        ks[bb * QSA_KSTRIDE + d] = b0 + bb < nb_last ? kb[(size_t)(b0 + bb) * Di + d] : 0.0f;
+    }
+    __syncthreads();
+    int bb = tid % QSA_TB, tg = tid / QSA_TB;  // key block, group of 4 queries
+    int b = b0 + bb;
+    const float* kr = ks + bb * QSA_KSTRIDE;
+    float sum[4] = {0.f, 0.f, 0.f, 0.f};
+    for (int h = 0; h < nheads; h++) {
+        float dot[4] = {0.f, 0.f, 0.f, 0.f};
+        for (int d = 0; d < Di; d++) {
+            float kv = kr[d];
+#pragma unroll
+            for (int i = 0; i < 4; i++) dot[i] += qs[(tg * 4 + i) * 512 + h * Di + d] * kv;
+        }
+#pragma unroll
+        for (int i = 0; i < 4; i++) sum[i] += fmaxf(dot[i], 0.0f);
+    }
+    float div = sqrtf((float)Di);
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        int t = t0 + tg * 4 + i;
+        if (t < T && b < (start + t + 1) / ratio)
+            scores[(size_t)t * (kv_stride / ratio + 1) + b] = sum[i] / div;
+    }
+}
+
+// Order-preserving map from float to unsigned (larger float, larger key).
+__device__ __forceinline__ unsigned qsa_key(float f) {
+    unsigned u = __float_as_uint(f);
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+
+// QSA selection mask from block scores: per query, keep the top `topk` complete blocks
+// (equal scores go to the lower block index) and the incomplete tail; every block when
+// nb <= topk. mask: [T, kv_stride] bytes, 1 where key position j (j <= p) is kept.
+// The k-th largest score is found by an 8-bit radix select over its float key, so a
+// query costs O(nb) rather than O(nb^2). Dynamic shared memory: the per-block keep
+// flags as bits, (kv_stride/ratio + 1) / 32 words rounded up. blockDim.x == QSA_MASK_THREADS: lanes that hit the
+// same histogram bin add once per warp (most keys share their top digits), and the
+// first `k` equal keys are found with a block-wide prefix count instead of a serial
+// walk, so a decode step's few queries do not idle the GPU.
+#define QSA_MASK_THREADS 1024
+
+// Inclusive block-wide sum of `v` over threads in index order (QSA_MASK_THREADS
+// threads, 32 warps); `scratch` holds 32 values.
+__device__ unsigned qsa_block_scan(unsigned v, unsigned* scratch) {
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int o = 1; o < 32; o <<= 1) {
+        unsigned n = __shfl_up_sync(0xffffffff, v, o);
+        if (lane >= o) v += n;
+    }
+    if (lane == 31) scratch[warp] = v;
+    __syncthreads();
+    if (warp == 0) {
+        unsigned w = scratch[lane];
+        for (int o = 1; o < 32; o <<= 1) {
+            unsigned n = __shfl_up_sync(0xffffffff, w, o);
+            if (lane >= o) w += n;
+        }
+        scratch[lane] = w;
+    }
+    __syncthreads();
+    unsigned before = warp ? scratch[warp - 1] : 0;
+    __syncthreads();
+    return v + before;
+}
+
+extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
+qsa_mask(const float* scores, uint8_t* mask, int T, int start, int ratio, int topk,
+         int kv_stride) {
+    extern __shared__ unsigned keep[];
+    __shared__ unsigned hist[256];
+    __shared__ unsigned scan[32];
+    __shared__ unsigned s_prefix, s_k;
+    int t = blockIdx.x;
+    int p = start + t;
+    int nb = (p + 1) / ratio;
+    const float* sc = scores + (size_t)t * (kv_stride / ratio + 1);
+    for (int w = threadIdx.x; w < (nb + 31) / 32; w += blockDim.x) keep[w] = 0;
+    __syncthreads();
+    if (nb > topk) {
+        unsigned prefix = 0, pmask = 0, k = topk;
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            if (threadIdx.x < 256) hist[threadIdx.x] = 0;
+            __syncthreads();
+            for (int b0 = 0; b0 < nb; b0 += blockDim.x) {
+                int b = b0 + threadIdx.x;
+                bool in = false;
+                unsigned bin = 0;
+                if (b < nb) {
+                    unsigned key = qsa_key(sc[b]);
+                    in = (key & pmask) == prefix;
+                    bin = (key >> shift) & 255u;
+                }
+                // One atomic per distinct bin per warp.
+                unsigned active = __ballot_sync(0xffffffff, in);
+                if (in) {
+                    unsigned same = __match_any_sync(active, bin);
+                    if ((threadIdx.x & 31) == __ffs(same) - 1) atomicAdd(&hist[bin], __popc(same));
+                }
+            }
+            __syncthreads();
+            if (threadIdx.x == 0) {
+                // Walk bins from the largest digit down to the one holding the k-th key.
+                unsigned acc = 0;
+                int bin = 255;
+                for (; bin > 0; bin--) {
+                    if (acc + hist[bin] >= k) break;
+                    acc += hist[bin];
+                }
+                s_k = k - acc;
+                s_prefix = prefix | ((unsigned)bin << shift);
+            }
+            __syncthreads();
+            prefix = s_prefix;
+            k = s_k;
+            pmask |= 255u << shift;
+        }
+        // `prefix` is now the k-th largest key exactly; keep everything above it, then
+        // the first `k` equal keys in block order: each thread owns a contiguous slice,
+        // and a prefix count of equal keys tells it how many come before its slice.
+        int per = (nb + blockDim.x - 1) / blockDim.x;
+        int lo = min(nb, (int)threadIdx.x * per), hi = min(nb, lo + per);
+        unsigned eq = 0;
+        for (int b = lo; b < hi; b++) eq += qsa_key(sc[b]) == prefix;
+        unsigned taken = qsa_block_scan(eq, scan) - eq;
+        for (int b = lo; b < hi; b++) {
+            unsigned key = qsa_key(sc[b]);
+            bool kept = key > prefix;
+            if (key == prefix) kept = taken++ < k;
+            if (kept) atomicOr(&keep[b >> 5], 1u << (b & 31));
+        }
+    } else {
+        for (int b = threadIdx.x; b < nb; b += blockDim.x) atomicOr(&keep[b >> 5], 1u << (b & 31));
+    }
+    __syncthreads();
+    uint8_t* m = mask + (size_t)t * kv_stride;
+    for (int j = threadIdx.x; j < kv_stride; j += blockDim.x) {
+        int b = j / ratio;
+        m[j] = j <= p && (b >= nb || (keep[b >> 5] >> (b & 31)) & 1u);
+    }
+}
+
+// The positions j < n with mask[j] set, in order: sel[0] = count, sel[1..] = positions.
+// One block of QSA_MASK_THREADS threads; each owns a contiguous slice, and a prefix
+// count places its positions. Decode attention splits this list evenly over warps, so
+// clustered selections (sinks, recent tokens) do not leave one warp with all the work.
+extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
+mask_compact(const uint8_t* mask, int* sel, int n) {
+    __shared__ unsigned scan[32];
+    int per = (n + blockDim.x - 1) / blockDim.x;
+    int lo = min(n, (int)threadIdx.x * per), hi = min(n, lo + per);
+    unsigned c = 0;
+    for (int j = lo; j < hi; j++) c += mask[j] != 0;
+    unsigned incl = qsa_block_scan(c, scan);
+    unsigned at = incl - c;
+    for (int j = lo; j < hi; j++)
+        if (mask[j]) sel[1 + at++] = j;
+    if (threadIdx.x == blockDim.x - 1) sel[0] = incl;
+}
+
+// Per group of TQ consecutive query rows of `mask` ([T, kv_stride]), the key
+// positions j < n any of them may see, in order: sel[g * sel_stride] = count, then the
+// positions. Grid ceil(T / TQ), block QSA_MASK_THREADS; each round covers
+// QSA_MASK_THREADS consecutive positions (coalesced reads) and a block-wide prefix
+// count places them.
+extern "C" __global__ void __launch_bounds__(QSA_MASK_THREADS)
+mask_union_compact(const uint8_t* mask, int* sel, int T, int TQ, int n, int kv_stride,
+                   int sel_stride) {
+    __shared__ unsigned scan[32], total;
+    int t0 = blockIdx.x * TQ, rows = min(TQ, T - t0);
+    const uint8_t* m = mask + (size_t)t0 * kv_stride;
+    int* out = sel + (size_t)blockIdx.x * sel_stride;
+    unsigned base = 0;
+    for (int j0 = 0; j0 < n; j0 += blockDim.x) {
+        int j = j0 + threadIdx.x;
+        bool any = false;
+        if (j < n)
+            for (int r = 0; r < rows; r++) any |= m[(size_t)r * kv_stride + j] != 0;
+        unsigned incl = qsa_block_scan(any, scan);
+        if (any && base + incl < sel_stride) out[base + incl] = j;  // 1 + base + (incl - 1)
+        if (threadIdx.x == blockDim.x - 1) total = incl;
+        __syncthreads();
+        base += total;
+        __syncthreads();  // every thread has read `total` before the next round
+    }
+    if (threadIdx.x == 0) out[0] = min(base, (unsigned)sel_stride - 1);
+}
+
+// Masked GQA attention for several query tokens, flash style: one block owns one KV
+// head and TQ tokens x G query heads (the heads sharing that KV head), R = TQ * G <= 48
+// rows. Key and value tiles of 16 rows are staged in shared memory once and read by
+// every row, and the online softmax keeps no score matrix. Tiles are gathered from
+// the keys any of the block's tokens may see (its `sel` list from mask_union_compact),
+// so a sparse selection costs its selected keys, not every tile they touch.
+// Arithmetic is fp32 throughout (dots, expf, accumulation), as the reference.
+// Grid (ceil(T / TQ), Hkv), block 256, dynamic shared memory ATTN_SMEM_BYTES.
+// q: [T, H, D]; k, v caches: [kv_len_max, Hkv, D]; mask: [T, kv_stride]; out: [T, H, D].
+#define ATTN_R 48
+#define ATTN_KT 16
+#define ATTN_STRIDE 260  // floats per Q/K row: 256 + 4 keeps float4 reads conflict-free
+#define ATTN_SMEM_FLOATS \
+    (ATTN_R * ATTN_STRIDE + ATTN_KT * ATTN_STRIDE + ATTN_KT * 256 + ATTN_R * ATTN_KT + 3 * ATTN_R)
+
+extern "C" __global__ void __launch_bounds__(256)
+attn_prefill(const float* q, const uint8_t* k, const uint8_t* v, const uint8_t* mask, float* out,
+             int T, int H, int Hkv, int D, int kv_len, int kv_stride, float scale, int TQ, int kb,
+             int vb, const float* levels, const int* sel, int sel_stride) {
+    extern __shared__ __align__(16) float smem[];
+    __shared__ float lvk[256], lvv[256];
+    __shared__ int js[ATTN_KT];
+    kv_levels_load(lvk, levels, kb);
+    kv_levels_load(lvv, levels, vb);
+    size_t krow = kv_row_bytes(D, kb), vrow = kv_row_bytes(D, vb);
+    float* qs = smem;                          // [R][STRIDE]
+    float* ks = qs + ATTN_R * ATTN_STRIDE;     // [KT][STRIDE]
+    float* vs = ks + ATTN_KT * ATTN_STRIDE;    // [KT][256]
+    float* ps = vs + ATTN_KT * 256;            // [R][KT] scores, then probabilities
+    float* rm = ps + ATTN_R * ATTN_KT;         // running max per row
+    float* rl = rm + ATTN_R;                   // running sum per row
+    float* rc = rl + ATTN_R;                   // this tile's rescale per row
+    int G = H / Hkv, R = TQ * G;
+    int t0 = blockIdx.x * TQ, kvh = blockIdx.y;
+    int tid = threadIdx.x;
+    // Row r is token t0 + r / G, head kvh * G + r % G.
+    for (int i = tid; i < ATTN_R * (D / 4); i += 256) {
+        int r = i / (D / 4), d = (i % (D / 4)) * 4;
+        int t = t0 + r / G;
+        float4 val = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (r < R && t < T)
+            val = *reinterpret_cast<const float4*>(q + ((size_t)t * H + kvh * G + r % G) * D + d);
+        *reinterpret_cast<float4*>(qs + r * ATTN_STRIDE + d) = val;
+    }
+    if (tid < ATTN_R) {
+        rm[tid] = -INFINITY;
+        rl[tid] = 0.0f;
+    }
+    // Scores: thread (rg, kk) dots rows 3 rg .. 3 rg + 2 with key kk of the tile.
+    int kk = tid & 15, rg = tid >> 4;
+    // Values: thread (rgo, dg) accumulates rows 12 rgo .. 12 rgo + 11, columns 4 dg .. 4 dg + 3.
+    int dg = tid & 63, rgo = tid >> 6;
+    float acc[12][4] = {};
+    const int* gs = sel + (size_t)blockIdx.x * sel_stride;
+    int nsel = gs[0];
+    for (int i0 = 0; i0 < nsel; i0 += ATTN_KT) {
+        if (tid < ATTN_KT) js[tid] = i0 + tid < nsel ? gs[1 + i0 + tid] : -1;
+        __syncthreads();
+        for (int i = tid; i < ATTN_KT * (D / 4); i += 256) {
+            int key = i / (D / 4), d = (i % (D / 4)) * 4;
+            int j = js[key];
+            float4 kv4 = make_float4(0.f, 0.f, 0.f, 0.f), vv4 = kv4;
+            if (j >= 0) {
+                size_t r = (size_t)j * Hkv + kvh;
+                const uint8_t* kr = k + r * krow;
+                const uint8_t* vr = v + r * vrow;
+                kv4 = kb ? make_float4(kv_value(kr, d, D, kb, lvk), kv_value(kr, d + 1, D, kb, lvk),
+                                       kv_value(kr, d + 2, D, kb, lvk),
+                                       kv_value(kr, d + 3, D, kb, lvk))
+                         : *reinterpret_cast<const float4*>(kr + 4 * d);
+                vv4 = vb ? make_float4(kv_value(vr, d, D, vb, lvv), kv_value(vr, d + 1, D, vb, lvv),
+                                       kv_value(vr, d + 2, D, vb, lvv),
+                                       kv_value(vr, d + 3, D, vb, lvv))
+                         : *reinterpret_cast<const float4*>(vr + 4 * d);
+            }
+            *reinterpret_cast<float4*>(ks + key * ATTN_STRIDE + d) = kv4;
+            *reinterpret_cast<float4*>(vs + key * 256 + d) = vv4;
+        }
+        __syncthreads();
+        {
+            float dot[3] = {0.f, 0.f, 0.f};
+            const float* kr = ks + kk * ATTN_STRIDE;
+            for (int d = 0; d < D; d += 4) {
+                float4 kv4 = *reinterpret_cast<const float4*>(kr + d);
+#pragma unroll
+                for (int i = 0; i < 3; i++) {
+                    float4 qv = *reinterpret_cast<const float4*>(qs + (rg * 3 + i) * ATTN_STRIDE + d);
+                    dot[i] += qv.x * kv4.x;
+                    dot[i] += qv.y * kv4.y;
+                    dot[i] += qv.z * kv4.z;
+                    dot[i] += qv.w * kv4.w;
+                }
+            }
+            // Online softmax in registers: a row's 16 keys are 16 adjacent lanes.
+            int j = js[kk];
+#pragma unroll
+            for (int i = 0; i < 3; i++) {
+                int r = rg * 3 + i, t = t0 + r / G;
+                bool ok = r < R && t < T && j >= 0 && mask[(size_t)t * kv_stride + j];
+                float s = ok ? dot[i] * scale : -INFINITY;
+                float mt = s;
+#pragma unroll
+                for (int o = 8; o > 0; o >>= 1) mt = fmaxf(mt, __shfl_xor_sync(0xffffffff, mt, o, 16));
+                float mo = rm[r], mn = fmaxf(mo, mt);
+                float e = mn == -INFINITY || s == -INFINITY ? 0.0f : expf(s - mn);
+                float sum = e;
+#pragma unroll
+                for (int o = 8; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffff, sum, o, 16);
+                ps[r * ATTN_KT + kk] = e;
+                if (kk == 0) {
+                    // Every lane of the row read `rm[r]` before the shuffles above.
+                    float corr = mn == -INFINITY ? 1.0f : expf(mo - mn);
+                    rl[r] = rl[r] * corr + sum;
+                    rm[r] = mn;
+                    rc[r] = corr;
+                }
+            }
+        }
+        __syncthreads();
+        if (dg * 4 < D) {
+#pragma unroll
+            for (int i = 0; i < 12; i++) {
+                float c = rc[rgo * 12 + i];
+#pragma unroll
+                for (int c4 = 0; c4 < 4; c4++) acc[i][c4] *= c;
+            }
+            for (int key = 0; key < ATTN_KT; key++) {
+                float4 vv = *reinterpret_cast<const float4*>(vs + key * 256 + dg * 4);
+#pragma unroll
+                for (int i = 0; i < 12; i++) {
+                    float p = ps[(rgo * 12 + i) * ATTN_KT + key];
+                    acc[i][0] += p * vv.x;
+                    acc[i][1] += p * vv.y;
+                    acc[i][2] += p * vv.z;
+                    acc[i][3] += p * vv.w;
+                }
+            }
+        }
+        __syncthreads();  // tiles and probabilities are rewritten by the next tile
+    }
+    if (dg * 4 >= D) return;
+#pragma unroll
+    for (int i = 0; i < 12; i++) {
+        int r = rgo * 12 + i, t = t0 + r / G;
+        if (r >= R || t >= T) continue;
+        float l = rl[r];
+        float4 o = make_float4(acc[i][0] / l, acc[i][1] / l, acc[i][2] / l, acc[i][3] / l);
+        *reinterpret_cast<float4*>(out + ((size_t)t * H + kvh * G + r % G) * D + dg * 4) = o;
+    }
+}
+
+// x *= sigmoid(gate), elementwise.
+extern "C" __global__ void mul_sigmoid(float* x, const float* gate, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) x[i] *= attn_sigmoidf(gate[i]);
+}
+
+// dst[offset + i] = src[i]
+extern "C" __global__ void copy_at(const float* src, float* dst, size_t offset, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[offset + i] = src[i];
+}
+
+// Swaps the first two axes: dst[b, a, :] = src[a, b, :] for src [A, B, D].
+extern "C" __global__ void swap01(const float* src, float* dst, int A, int B, int D) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= (size_t)A * B * D) return;
+    int d = i % D;
+    size_t ab = i / D;
+    int b = ab % B, a = ab / B;
+    dst[((size_t)b * A + a) * D + d] = src[i];
+}
+
+// dst[dst_off + i] = src[src_off + i] for i < n.
+extern "C" __global__ void copy_range(const float* src, size_t src_off, float* dst, size_t dst_off,
+                                      int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[dst_off + i] = src[src_off + i];
+}
+
+// Flash-decode for one query token (T = 1), GQA-aware, over the selected positions
+// listed by mask_compact. Each warp owns an even share of the list and all G = H / Hkv
+// query heads that share KV head blockIdx.y, so each K/V row is read once per group. Per (warp, head) it keeps an
+// online-softmax partial (max m, sum l, unnormalised acc[D]); attn_decode_combine
+// merges the partials. D is 256: lane `l` owns elements l, l + 32, ..., so global
+// and shared loads are both conflict-free. G is a compile-time constant so the
+// accumulators stay in registers.
+// part: [Hkv, P, G, D + 2] with P = gridDim.x * warps per block.
+#define FD_D 256
+template <int G>
+__device__ void attn_decode_partial_impl(const float* q, const uint8_t* k, const uint8_t* v,
+                                         const int* sel, float* part, int Hkv, float scale,
+                                         int kb, int vb, const float* levels) {
+    __shared__ float qs[G * FD_D];
+    __shared__ float lvk[256], lvv[256];
+    kv_levels_load(lvk, levels, kb);
+    kv_levels_load(lvv, levels, vb);
+    size_t krow = kv_row_bytes(FD_D, kb), vrow = kv_row_bytes(FD_D, vb);
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int wpb = blockDim.x >> 5;
+    int kvh = blockIdx.y;
+    int P = gridDim.x * wpb;
+    int p = blockIdx.x * wpb + warp;
+    for (int i = threadIdx.x; i < G * FD_D; i += blockDim.x) qs[i] = q[(size_t)kvh * G * FD_D + i];
+    __syncthreads();
+    float acc[G][8];
+    float m[G], l[G];
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+        m[g] = -INFINITY;
+        l[g] = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 8; i++) acc[g][i] = 0.0f;
+    }
+    // This warp's share of the selected positions (`sel`: count, then positions).
+    int count = sel[0];
+    int chunk = (count + P - 1) / P;
+    int i0 = min(count, p * chunk), i1 = min(count, i0 + chunk);
+    for (int i = i0; i < i1; i++) {
+        int j = sel[1 + i];
+        const uint8_t* kr = k + ((size_t)j * Hkv + kvh) * krow;
+        const uint8_t* vr = v + ((size_t)j * Hkv + kvh) * vrow;
+        float kk[8], vv[8];
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            kk[i] = kv_value(kr, i * 32 + lane, FD_D, kb, lvk);
+            vv[i] = kv_value(vr, i * 32 + lane, FD_D, vb, lvv);
+        }
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+            float dot = 0.0f;
+#pragma unroll
+            for (int i = 0; i < 8; i++) dot += qs[g * FD_D + i * 32 + lane] * kk[i];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) dot += __shfl_xor_sync(0xffffffff, dot, o);
+            float s = dot * scale;
+            float mn = fmaxf(m[g], s);
+            float corr = expf(m[g] - mn);
+            float e = expf(s - mn);
+            l[g] = l[g] * corr + e;
+#pragma unroll
+            for (int i = 0; i < 8; i++) acc[g][i] = acc[g][i] * corr + e * vv[i];
+            m[g] = mn;
+        }
+    }
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+        float* out = part + (((size_t)kvh * P + p) * G + g) * (FD_D + 2);
+#pragma unroll
+        for (int i = 0; i < 8; i++) out[i * 32 + lane] = acc[g][i];
+        if (lane == 0) {
+            out[FD_D] = m[g];
+            out[FD_D + 1] = l[g];
+        }
+    }
+}
+
+extern "C" __global__ void __launch_bounds__(256)
+attn_decode_partial_g12(const float* q, const uint8_t* k, const uint8_t* v, const int* sel,
+                        float* part, int Hkv, float scale, int kb, int vb, const float* levels) {
+    attn_decode_partial_impl<12>(q, k, v, sel, part, Hkv, scale, kb, vb, levels);
+}
+
+// Merges flash-decode partials: out[h, d] = sum_p e^(m_p - M) acc_p[d] / sum_p e^(m_p - M) l_p.
+// One block per query head, one thread per d (blockDim.x == 256).
+extern "C" __global__ void attn_decode_combine(const float* part, float* out, int H, int Hkv,
+                                               int P) {
+    int h = blockIdx.x, d = threadIdx.x;
+    int G = H / Hkv;
+    int kvh = h / G, g = h % G;
+    float M = -INFINITY;
+    for (int p = 0; p < P; p++) M = fmaxf(M, part[(((size_t)kvh * P + p) * G + g) * (FD_D + 2) + FD_D]);
+    float num = 0.0f, den = 0.0f;
+    for (int p = 0; p < P; p++) {
+        const float* pr = part + (((size_t)kvh * P + p) * G + g) * (FD_D + 2);
+        float mp = pr[FD_D];
+        if (mp == -INFINITY) continue;
+        float w = expf(mp - M);
+        num += w * pr[d];
+        den += w * pr[FD_D + 1];
+    }
+    out[(size_t)h * FD_D + d] = num / den;
+}
+
+// Sparse prefill attention for many query tokens, G = 12 heads per KV head, D = 256:
+// one block per (token, KV head) over that token's own selected positions (`sel`: per
+// token, count then positions, stride sel_stride; mask_union_compact with TQ = 1), so
+// work follows each token's selection rather than a union with its neighbours. Each of
+// the SP_WARPS warps takes an even share of the list, four keys at a time: lane `l`
+// owns elements l, l + 32, ... of the K/V rows, the four partial dots of a head
+// reduce together (6 shuffles rather than 20), and the online softmax rescales once
+// per four keys. The warps' partials merge in shared memory. fp32 throughout.
+// q: [T, H, D] (H = 12 Hkv); out: [T, H, D]. Grid (T, Hkv), block 32 * SP_WARPS.
+#define SP_WARPS 4
+#define SP_KB 4
+
+// Sum over the warp of v[0..3]; returns the total of key `sp_key(lane)` (lanes whose
+// bits 4, 3 are (b4, b3) hold key 2 * b4 + b3).
+__device__ __forceinline__ float sp_reduce4(float v0, float v1, float v2, float v3, int lane) {
+    bool hi = lane & 16;
+    // xor 16: the lower half keeps keys 0, 1; the upper half keys 2, 3.
+    float a = (hi ? v2 : v0) + __shfl_xor_sync(0xffffffff, hi ? v0 : v2, 16);
+    float b = (hi ? v3 : v1) + __shfl_xor_sync(0xffffffff, hi ? v1 : v3, 16);
+    bool mid = lane & 8;
+    // xor 8: keep the first or second of the pair.
+    float c = (mid ? b : a) + __shfl_xor_sync(0xffffffff, mid ? a : b, 8);
+    c += __shfl_xor_sync(0xffffffff, c, 4);
+    c += __shfl_xor_sync(0xffffffff, c, 2);
+    c += __shfl_xor_sync(0xffffffff, c, 1);
+    return c;
+}
+
+extern "C" __global__ void __launch_bounds__(32 * SP_WARPS)
+attn_sparse_g12(const float* q, const uint8_t* k, const uint8_t* v, const int* sel,
+                int sel_stride, float* out, int Hkv, float scale, int kb, int vb,
+                const float* levels) {
+    constexpr int G = 12;
+    __shared__ float qs[G * FD_D];
+    __shared__ float lvk[256], lvv[256];
+    // Partials of two warps at a time while merging: (acc[D], m, l) per head.
+    __shared__ float mp[2][G][FD_D + 2];
+    kv_levels_load(lvk, levels, kb);
+    kv_levels_load(lvv, levels, vb);
+    size_t krow = kv_row_bytes(FD_D, kb), vrow = kv_row_bytes(FD_D, vb);
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int t = blockIdx.x, kvh = blockIdx.y, H = Hkv * G;
+    const float* qt = q + ((size_t)t * H + kvh * G) * FD_D;
+    for (int i = threadIdx.x; i < G * FD_D; i += blockDim.x) qs[i] = qt[i];
+    __syncthreads();
+    const int* ts = sel + (size_t)t * sel_stride;
+    int count = ts[0];
+    int share = (count + SP_WARPS - 1) / SP_WARPS;
+    int i0 = min(count, warp * share), i1 = min(count, i0 + share);
+    float acc[G][8], m[G], l[G];
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+        m[g] = -INFINITY;
+        l[g] = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 8; i++) acc[g][i] = 0.0f;
+    }
+    for (int i = i0; i < i1; i += SP_KB) {
+        float kk[SP_KB][8], vv[SP_KB][8];
+#pragma unroll
+        for (int b = 0; b < SP_KB; b++) {
+            int j = i + b < i1 ? ts[1 + i + b] : -1;
+            const uint8_t* kr = k + ((size_t)max(j, 0) * Hkv + kvh) * krow;
+            const uint8_t* vr = v + ((size_t)max(j, 0) * Hkv + kvh) * vrow;
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                kk[b][e] = j >= 0 ? kv_value(kr, e * 32 + lane, FD_D, kb, lvk) : 0.0f;
+                vv[b][e] = j >= 0 ? kv_value(vr, e * 32 + lane, FD_D, vb, lvv) : 0.0f;
+            }
+        }
+        int valid = min(SP_KB, i1 - i);
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+            float d[SP_KB];
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) d[b] = 0.0f;
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                float qv = qs[g * FD_D + e * 32 + lane];
+#pragma unroll
+                for (int b = 0; b < SP_KB; b++) d[b] += qv * kk[b][e];
+            }
+            float mine = sp_reduce4(d[0], d[1], d[2], d[3], lane) * scale;
+            float s[SP_KB];
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) {
+                // Lane 8 * b (bits 4, 3 = b) holds key b's score.
+                s[b] = __shfl_sync(0xffffffff, mine, (b >> 1) * 16 + (b & 1) * 8);
+                if (b >= valid) s[b] = -INFINITY;
+            }
+            float mn = m[g];
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) mn = fmaxf(mn, s[b]);
+            float corr = expf(m[g] - mn), e[SP_KB], sum = 0.0f;
+#pragma unroll
+            for (int b = 0; b < SP_KB; b++) {
+                e[b] = expf(s[b] - mn);
+                sum += e[b];
+            }
+            l[g] = l[g] * corr + sum;
+            m[g] = mn;
+#pragma unroll
+            for (int x = 0; x < 8; x++) {
+                float a = acc[g][x] * corr;
+#pragma unroll
+                for (int b = 0; b < SP_KB; b++) a += e[b] * vv[b][x];
+                acc[g][x] = a;
+            }
+        }
+    }
+    // Merge: warps 2, 3 hand their partials to warps 0, 1, then warp 1 to warp 0.
+    for (int half = SP_WARPS / 2; half >= 1; half /= 2) {
+        if (warp >= half && warp < 2 * half) {
+            int slot = warp - half;
+#pragma unroll
+            for (int g = 0; g < G; g++) {
+#pragma unroll
+                for (int x = 0; x < 8; x++) mp[slot][g][x * 32 + lane] = acc[g][x];
+                if (lane == 0) {
+                    mp[slot][g][FD_D] = m[g];
+                    mp[slot][g][FD_D + 1] = l[g];
+                }
+            }
+        }
+        __syncthreads();
+        if (warp < half) {
+#pragma unroll
+            for (int g = 0; g < G; g++) {
+                float mo = mp[warp][g][FD_D], lo = mp[warp][g][FD_D + 1];
+                float mn = fmaxf(m[g], mo);
+                float ca = mn == -INFINITY ? 0.0f : expf(m[g] - mn);
+                float cb = mn == -INFINITY ? 0.0f : expf(mo - mn);
+                l[g] = l[g] * ca + lo * cb;
+                m[g] = mn;
+#pragma unroll
+                for (int x = 0; x < 8; x++)
+                    acc[g][x] = acc[g][x] * ca + mp[warp][g][x * 32 + lane] * cb;
+            }
+        }
+        __syncthreads();
+    }
+    if (warp == 0) {
+        float* ot = out + ((size_t)t * H + kvh * G) * FD_D;
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+            float inv = 1.0f / l[g];
+#pragma unroll
+            for (int x = 0; x < 8; x++) ot[g * FD_D + x * 32 + lane] = acc[g][x] * inv;
+        }
+    }
+}
+
+// attn_sparse_g12 on bf16 tensor cores (opt-in, lossy): the same per-token selections
+// over an fp32 cache (the prefill shadow), with q, k, v rounded to bf16 and the
+// products accumulated in fp32 (standard flash attention). A block takes one
+// (token, KV head): its 12 query heads (padded to 16) are the rows of one m16 tile,
+// keys go through in tiles of SB_KEYS gathered from the token's list. Four warps:
+// each scores 8 keys of a tile (S = Q K^T, 16 k-steps), one thread per row updates
+// the online softmax, then each warp adds P V for 64 of the 256 dims.
+// q: [T, H, D] (H = 12 Hkv); k, v: fp32 rows [*, Hkv, D]; out: [T, H, D].
+// Grid (T, Hkv), block 128.
+#define SB_KEYS 32
+#define SB_QS (FD_D + 8)   // bf16 per Q / K row in shared memory (padding: no bank conflicts)
+#define SB_VS (SB_KEYS + 8) // bf16 per transposed V row
+#define SB_SS (SB_KEYS + 1) // fp32 per score row
+
+__device__ __forceinline__ void sb_mma(float c[4], const uint32_t a[4], const uint32_t b[2]) {
+    asm volatile(
+        "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+        "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+__device__ __forceinline__ uint16_t sb_bf16(float x) {
+    __nv_bfloat16 b = __float2bfloat16_rn(x);
+    return *reinterpret_cast<uint16_t*>(&b);
+}
+
+extern "C" __global__ void __launch_bounds__(128)
+attn_sparse_g12_bf16(const float* q, const float* k, const float* v, const int* sel,
+                     int sel_stride, float* out, int Hkv, float scale) {
+    constexpr int G = 12;
+    __shared__ __align__(16) uint16_t qs[16][SB_QS];
+    // Keys of the tile; once scored, the same space holds the fp32 scores.
+    __shared__ __align__(16) uint16_t ks[SB_KEYS][SB_QS];
+    __shared__ __align__(16) uint16_t vt[FD_D][SB_VS];
+    __shared__ __align__(16) uint16_t ps[16][SB_VS];
+    __shared__ float m_s[16], l_s[16], corr_s[16];
+    float* ss = reinterpret_cast<float*>(&ks[0][0]);
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int g = lane >> 2, qd = lane & 3;
+    int t = blockIdx.x, kvh = blockIdx.y, H = Hkv * G;
+    const float* qt = q + ((size_t)t * H + kvh * G) * FD_D;
+    for (int i = tid; i < 16 * FD_D; i += 128) {
+        int r = i / FD_D, c = i % FD_D;
+        qs[r][c] = r < G ? sb_bf16(qt[r * FD_D + c]) : 0;
+    }
+    if (tid < 16) {
+        m_s[tid] = -INFINITY;
+        l_s[tid] = 0.0f;
+    }
+    const int* ts = sel + (size_t)t * sel_stride;
+    int count = ts[0];
+    // This warp's output: rows g, g + 8, dims warp * 64 + n * 8 + 2 qd (+1).
+    float o[8][4] = {};
+    __syncthreads();
+    for (int base = 0; base < count; base += SB_KEYS) {
+        // Gather the tile's keys (rows) and values (transposed) as bf16.
+        for (int i = tid; i < SB_KEYS * FD_D / 4; i += 128) {
+            int key = i / (FD_D / 4), c = (i % (FD_D / 4)) * 4;
+            int j = base + key < count ? ts[1 + base + key] : -1;
+            float4 kv4 = make_float4(0.f, 0.f, 0.f, 0.f), vv4 = kv4;
+            if (j >= 0) {
+                size_t row = ((size_t)j * Hkv + kvh) * FD_D + c;
+                kv4 = *reinterpret_cast<const float4*>(k + row);
+                vv4 = *reinterpret_cast<const float4*>(v + row);
+            }
+            *reinterpret_cast<uint2*>(&ks[key][c]) =
+                make_uint2(uint32_t(sb_bf16(kv4.x)) | (uint32_t(sb_bf16(kv4.y)) << 16),
+                           uint32_t(sb_bf16(kv4.z)) | (uint32_t(sb_bf16(kv4.w)) << 16));
+            vt[c][key] = sb_bf16(vv4.x);
+            vt[c + 1][key] = sb_bf16(vv4.y);
+            vt[c + 2][key] = sb_bf16(vv4.z);
+            vt[c + 3][key] = sb_bf16(vv4.w);
+        }
+        __syncthreads();
+        // Scores of keys warp * 8 .. + 8 for the 16 rows.
+        float s[4] = {};
+#pragma unroll
+        for (int k0 = 0; k0 < FD_D; k0 += 16) {
+            uint32_t a[4] = {*reinterpret_cast<const uint32_t*>(&qs[g][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&qs[g + 8][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&qs[g][k0 + 8 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&qs[g + 8][k0 + 8 + 2 * qd])};
+            const uint16_t* kr = &ks[warp * 8 + g][k0 + 2 * qd];
+            uint32_t b[2] = {*reinterpret_cast<const uint32_t*>(kr),
+                             *reinterpret_cast<const uint32_t*>(kr + 8)};
+            sb_mma(s, a, b);
+        }
+        __syncthreads();  // every warp has read ks: its space now takes the scores
+        int col = warp * 8 + 2 * qd;
+        ss[g * SB_SS + col] = s[0] * scale;
+        ss[g * SB_SS + col + 1] = s[1] * scale;
+        ss[(g + 8) * SB_SS + col] = s[2] * scale;
+        ss[(g + 8) * SB_SS + col + 1] = s[3] * scale;
+        __syncthreads();
+        if (tid < 16) {
+            int valid = min(SB_KEYS, count - base);
+            float mo = m_s[tid], mn = mo;
+            for (int j = 0; j < valid; j++) mn = fmaxf(mn, ss[tid * SB_SS + j]);
+            float sum = 0.0f;
+            for (int j = 0; j < SB_KEYS; j++) {
+                float p = j < valid ? expf(ss[tid * SB_SS + j] - mn) : 0.0f;
+                sum += p;
+                ps[tid][j] = sb_bf16(p);
+            }
+            float c = expf(mo - mn);
+            corr_s[tid] = c;
+            l_s[tid] = l_s[tid] * c + sum;
+            m_s[tid] = mn;
+        }
+        __syncthreads();
+        float c0 = corr_s[g], c1 = corr_s[g + 8];
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            o[n][0] *= c0;
+            o[n][1] *= c0;
+            o[n][2] *= c1;
+            o[n][3] *= c1;
+        }
+#pragma unroll
+        for (int k0 = 0; k0 < SB_KEYS; k0 += 16) {
+            uint32_t a[4] = {*reinterpret_cast<const uint32_t*>(&ps[g][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&ps[g + 8][k0 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&ps[g][k0 + 8 + 2 * qd]),
+                             *reinterpret_cast<const uint32_t*>(&ps[g + 8][k0 + 8 + 2 * qd])};
+#pragma unroll
+            for (int n = 0; n < 8; n++) {
+                const uint16_t* vr = &vt[warp * 64 + n * 8 + g][k0 + 2 * qd];
+                uint32_t b[2] = {*reinterpret_cast<const uint32_t*>(vr),
+                                 *reinterpret_cast<const uint32_t*>(vr + 8)};
+                sb_mma(o[n], a, b);
+            }
+        }
+        __syncthreads();  // before the next tile overwrites ks, vt and ps
+    }
+    float* ot = out + ((size_t)t * H + kvh * G) * FD_D;
+    float inv0 = 1.0f / l_s[g], inv1 = 1.0f / l_s[g + 8];
+#pragma unroll
+    for (int n = 0; n < 8; n++) {
+        int d = warp * 64 + n * 8 + 2 * qd;
+        ot[g * FD_D + d] = o[n][0] * inv0;
+        ot[g * FD_D + d + 1] = o[n][1] * inv0;
+        if (g + 8 < G) {
+            ot[(g + 8) * FD_D + d] = o[n][2] * inv1;
+            ot[(g + 8) * FD_D + d + 1] = o[n][3] * inv1;
+        }
+    }
+}

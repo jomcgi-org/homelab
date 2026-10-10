@@ -1,13 +1,24 @@
 import argparse
+import ast
+import hashlib
+import io
 import json
+from pathlib import Path
+import re
 import shutil
+import subprocess
+import sys
+import tarfile
+from types import ModuleType, SimpleNamespace
 
 import pytest
+import yaml
 
 from bench.cache import HARNESS_VERSION, cell_key
 from bench.cli import (
     _aggregate_agentic_group,
     _apply_snapshot_patches,
+    _gold_sizes,
     _leaderboard_task_data,
     _parse_headers,
     _prune_stale,
@@ -216,6 +227,238 @@ def test_cli_report_performance_markdown_and_json(tmp_path):
         data["models"][0]["tasks"][0]["performance"]
         == cell.attempts[0].performance.model_dump()
     )
+
+
+ROLLOUT_PINS = {
+    "rollout-handoff-logs-01": (
+        "ff5fd6444184ff1e6dc89765a48b35d76917fb51",
+        "d04e1d47a38249ec45ff294c4ac50e0be64150f4",
+    ),
+    "rollout-http-drain-logs-01": (
+        "497aaebf50c45db54463e0ff1509f744966edf27",
+        "ff5fd6444184ff1e6dc89765a48b35d76917fb51",
+    ),
+    "factory-rollout-fence-01": (
+        "76244f3cd87198013ef7b50b1a24d2f2a502514c",
+        "497aaebf50c45db54463e0ff1509f744966edf27",
+    ),
+}
+ROLLOUT_TASKS = Path(__file__).resolve().parents[1] / "tasks"
+
+
+@pytest.mark.parametrize(
+    "declaration, expression",
+    [
+        ("HTTP_DRAIN_SECONDS = 10", "HTTP_DRAIN_SECONDS"),
+        ("def http_drain_seconds():\n    return 3", "http_drain_seconds()"),
+    ],
+)
+def test_http_drain_gold_accepts_module_level_repairs(
+    tmp_path, monkeypatch, declaration, expression
+):
+    """Run the actual hidden grader on an offline bootstrap with top-level helpers."""
+    mapping = yaml.safe_load(
+        (ROLLOUT_TASKS / "rollout-http-drain-logs-01" / "task.yaml").read_text()
+    )
+    source = mapping["verifier"]["args"]["tests"][
+        "factory/execution/rollout_http_drain_gold_test.py"
+    ]
+
+    class Config:
+        def __init__(self, app, **kwargs):
+            self.app = app
+            self.timeout_graceful_shutdown = None
+            self.__dict__.update(kwargs)
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            raise AssertionError("serving must be intercepted")
+
+    def legacy_run(*args, **kwargs):
+        raise AssertionError("serving must be intercepted")
+
+    framework = ModuleType("framework")
+    framework.build_app = lambda *args: None
+    framework.build_private_lifespan = lambda *args: None
+    monkeypatch.setitem(sys.modules, "framework", framework)
+    monkeypatch.setitem(
+        sys.modules, "uvicorn", SimpleNamespace(Config=Config, run=legacy_run)
+    )
+    monkeypatch.setitem(
+        sys.modules, "factory.module", SimpleNamespace(RolloutHandoffServer=Server)
+    )
+    entrypoint = tmp_path / "app" / "main.py"
+    entrypoint.parent.mkdir()
+    entrypoint.write_text(
+        "import os\n"
+        "from framework import build_app\n"
+        f"{declaration}\n"
+        "app = build_app(None, [])\n"
+        "if __name__ == '__main__':\n"
+        "    import uvicorn\n"
+        "    from factory.module import RolloutHandoffServer\n"
+        "    if os.environ['AGENT_ROLLOUT_HANDOFF_ENABLED'] == 'true':\n"
+        "        RolloutHandoffServer(uvicorn.Config(app, host='0.0.0.0', "
+        f"port=8000, log_level='warning', timeout_graceful_shutdown={expression})).run()\n"
+        "    else:\n"
+        "        uvicorn.run(app, host='0.0.0.0', port=8000, log_level='warning')\n"
+    )
+    namespace = {
+        "__file__": str(tmp_path / "factory/execution/rollout_http_drain_gold_test.py")
+    }
+    exec(compile(source, namespace["__file__"], "exec"), namespace)
+    for enabled in (True, False):
+        namespace["test_http_drain_leaves_executor_handoff_budget"](
+            monkeypatch, enabled
+        )
+
+
+@pytest.mark.parametrize("task_id", ROLLOUT_PINS)
+def test_rollout_task_loads_with_exact_contract(task_id):
+    mapping = yaml.safe_load((ROLLOUT_TASKS / task_id / "task.yaml").read_text())
+    task = TaskSpec.model_validate(mapping)
+    assert task.id == task_id
+    assert (task.tier, task.task_class, task.mode) == ("hard", "code-fix", "agentic")
+    assert task.target_files == []
+    fix, parent = ROLLOUT_PINS[task_id]
+    assert task.source_commit == fix
+    assert re.fullmatch("[0-9a-f]{40}", task.source_commit)
+    assert mapping["snapshot"] == {"preset": "monolith-backend", "commit": parent}
+    assert task.verifier.kind == "pytest"
+    assert task.verifier.args["tests"]
+    for target in task.verifier.args["targets"]:
+        assert target.split("::")[0] in task.verifier.args["tests"]
+    for source in task.verifier.args["tests"].values():
+        ast.parse(source)
+        assert "timeout=0.03" not in source
+        assert 'kwargs["timeout"] = 0.03' not in source
+    if task_id == "factory-rollout-fence-01":
+        assert any(
+            "test_shutdown_during_final_admission_recheck_fences_the_physical_post[True]"
+            in target
+            for target in task.verifier.args["targets"]
+        )
+    assert task_id in {loaded.id for loaded in load_tasks(ROLLOUT_TASKS)}
+
+
+@pytest.mark.parametrize("task_id", ROLLOUT_PINS)
+def test_rollout_prompt_has_no_repair_or_hidden_grader_pointers(task_id):
+    mapping = yaml.safe_load((ROLLOUT_TASKS / task_id / "task.yaml").read_text())
+    prompt = mapping["prompt"]
+    assert "synthetic" in prompt.lower()
+    for fix, _parent in ROLLOUT_PINS.values():
+        assert fix not in prompt and fix[:9] not in prompt
+    for path in (
+        "projects/monolith",
+        "app/main.py",
+        "factory/execution/mcp.py",
+        "factory/execution/store.py",
+        "factory/execution/transport.py",
+        "factory/module.py",
+    ):
+        assert path not in prompt
+    assert not re.search(r"\b(?:factory|uvicorn|chat)\.[\w.]+:", prompt)
+    for name in (
+        "_execute_pending_message",
+        "shared_admission_check",
+        "drain_inflight_executors",
+    ):
+        assert name not in prompt
+    if task_id == "rollout-handoff-logs-01":
+        for symbol in (
+            "AGENT_ROLLOUT_HANDOFF_ENABLED",
+            "rollout_handoff_enabled",
+            "RolloutHandoffServer",
+            "begin_rollout_shutdown",
+            "rollout_shutdown_in_progress",
+            "_rollout_handoffs",
+            "_rollout_shutdown_started",
+            "_rollout_drain_started",
+            "observer_record",
+        ):
+            assert symbol not in prompt
+    if task_id == "rollout-http-drain-logs-01":
+        assert "timeout_graceful_shutdown" not in prompt
+    for name in mapping["verifier"]["args"]["tests"]:
+        assert name not in prompt
+        assert Path(name).name not in prompt
+
+
+@pytest.mark.parametrize("task_id", ROLLOUT_PINS)
+def test_rollout_snapshot_reproducible_and_gold_hidden(tmp_path, monkeypatch, task_id):
+    """Exercise the real extractor using a controlled archive, with no git or network."""
+    task_dir = tmp_path / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    shutil.copyfile(ROLLOUT_TASKS / task_id / "task.yaml", task_dir / "task.yaml")
+    mapping = yaml.safe_load((task_dir / "task.yaml").read_text())
+    hidden = mapping["verifier"]["args"]["tests"]
+    files = {
+        "app/main.py": b"# historical bootstrap\n",
+        "factory/execution/mcp.py": b"# historical executor\n",
+        "core/db.py": b"# backend navigation context\n",
+        "factory/execution/response_lost_test.py": b"# parent tests must be hidden\n",
+        "ARCHITECTURE.md": b"# decisions must be hidden\n",
+        "chart/values.yaml": b"# deployment must be hidden\n",
+        **{name: b"# gold must be hidden\n" for name in hidden},
+    }
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        for name, content in sorted(files.items()):
+            info = tarfile.TarInfo("projects/monolith/" + name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    calls = []
+
+    def controlled_run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "git":
+            assert command == [
+                "git",
+                "-C",
+                "offline-source",
+                "archive",
+                ROLLOUT_PINS[task_id][1],
+                "--",
+                "projects/monolith",
+            ]
+            return SimpleNamespace(stdout=archive.getvalue())
+        assert command[0] == "tar"
+        assert command[-1] == "--strip-components=2"
+        with tarfile.open(fileobj=io.BytesIO(kwargs["input"])) as tar:
+            for member in tar.getmembers():
+                destination = Path(command[3]) / Path(member.name).relative_to(
+                    "projects/monolith"
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(tar.extractfile(member).read())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", controlled_run)
+    args = argparse.Namespace(
+        repo="offline-source", tasks=str(tmp_path / "tasks"), task=task_id
+    )
+    fixture = task_dir / "fixture"
+
+    def manifest():
+        return {
+            str(path.relative_to(fixture)): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in fixture.rglob("*")
+            if path.is_file()
+        }
+
+    _snapshot(args)
+    first = manifest()
+    (fixture / "stray.py").write_text("# regeneration must remove this\n")
+    _snapshot(args)
+    assert manifest() == first
+    assert set(first) == {"app/main.py", "factory/execution/mcp.py", "core/db.py"}
+    assert not set(hidden) & first.keys()
+    assert len(calls) == 4
 
 
 def test_resolve_snapshot_preset_expands_and_lets_task_override():
@@ -434,6 +677,7 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     assert data["models"][0]["cost_per_solve_usd"] == 0.001
     assert data["models"][0]["errored"] == 0
     assert data["models"][0]["errored_tasks"] == []
+    assert data["models"][0]["norms_n"] == 0
     # Per-task breakdown is embedded for the deep-dive: one entry per graded task,
     # carrying pass/fail plus the per-task tokens and turns.
     (mt,) = data["models"][0]["tasks"]
@@ -609,6 +853,7 @@ def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
         "cost_per_solve": None,
         "tool_ok_rate": 0.0,
         "mean_norms": None,
+        "norms_n": 0,
         "errored": 1,
         "errored_tasks": ["floor-error"],
     }
@@ -859,9 +1104,91 @@ def test_aggregate_agentic_group_means_norms_over_passed_cells():
     passed2.norms = {"norms_score": 1.0}
     unscored = _agentic_cell("c", "m", True, 2, 100, True)
     failed = _agentic_cell("d", "m", False, 2, 100, True)
+    failed.norms = {"norms_version": 2, "norms_score": 0.1}
     stats = _aggregate_agentic_group([passed, passed2, unscored, failed], {})
     assert stats["mean_norms"] == 0.75
+    assert stats["norms_n"] == 2
     assert _aggregate_agentic_group([failed], {})["mean_norms"] is None
+    assert _aggregate_agentic_group([failed], {})["norms_n"] == 0
+
+
+@pytest.mark.parametrize("norms", [None, {"norms_score": 0.83}])
+def test_old_cell_json_loads_and_renders_with_coverage(tmp_path, norms):
+    from bench.report import render_leaderboard
+
+    old = {
+        "task_id": "old",
+        "task_version": "v1",
+        "model_id": "m",
+        "content_hash": "h",
+        "outcome": "pass@1",
+        "attempts": [
+            {
+                "passed": True,
+                "feedback": "",
+                "latency_ms": 1,
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+            }
+        ],
+        "cost_usd": 0.0,
+        "harness_version": "0.1.4",
+        "prompt_template_hash": "agent",
+    }
+    if norms:
+        old["norms"] = norms
+    cell = ResultCell.model_validate_json(json.dumps(old))
+    stats = _aggregate_agentic_group([cell], {"old": "easy"})
+    assert stats["norms_n"] == (1 if norms else 0)
+    markdown = render_leaderboard(
+        per_class={}, anchors={}, frontier={}, retired=[], agentic={"m": stats}
+    )
+    assert ("0.83 (n=1)" if norms else "n/a") in markdown
+    out = tmp_path / "leaderboard.json"
+    _write_leaderboard_json(
+        out,
+        agentic={"m": stats},
+        cells=[cell],
+        tasks=[],
+        anchor_ids=set(),
+        generated_at="2026-10-03",
+    )
+    model = json.loads(out.read_text())["models"][0]
+    assert model["norms_n"] == stats["norms_n"]
+    assert cell.norms == norms
+
+
+def test_gold_size_cli_writes_only_metadata(tmp_path, monkeypatch, capsys):
+    from bench import cli
+
+    task_file = tmp_path / "t" / "task.yaml"
+    task_file.parent.mkdir()
+    original = "# keep this comment\nid: t\nsource_commit: fix\nsnapshot:\n  preset: monolith-backend\n  commit: parent\n"
+    task_file.write_text(original)
+    observed = []
+
+    def size(repo, source, snap):
+        observed.append(snap)
+        return 12, None
+
+    monkeypatch.setattr(cli, "gold_diff_size", size)
+    args = build_parser().parse_args(
+        ["gold-size", "--tasks", str(tmp_path), "--repo", str(tmp_path)]
+    )
+    _gold_sizes(args)
+    assert task_file.read_text() == original
+    args.write = True
+    _gold_sizes(args)
+    assert task_file.read_text().replace("gold_diff_lines: 12\n", "") == original
+    assert observed[0]["paths"] == ["projects/monolith"]
+    _gold_sizes(args)
+    assert task_file.read_text().count("gold_diff_lines:") == 1
+    assert "t: 12" in capsys.readouterr().out
+    monkeypatch.setattr(
+        cli, "gold_diff_size", lambda *args: (None, "not a pre-fix snapshot")
+    )
+    _gold_sizes(args)
+    assert task_file.read_text() == original
 
 
 def test_write_leaderboard_json_embeds_index_block(tmp_path):

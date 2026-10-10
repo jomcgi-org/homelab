@@ -1,0 +1,138 @@
+version: 1
+metadata:
+  name: homelab - grimoire link enrollment (opt-in)
+entries:
+  - model: authentik_flows.flow
+    id: enrollment
+    identifiers:
+      slug: grimoire-link-enrollment
+    attrs:
+      name: Grimoire link enrollment
+      title: Join Grimoire
+      designation: enrollment
+      authentication: require_unauthenticated
+  - model: authentik_stages_invitation.invitationstage
+    id: invitation
+    identifiers:
+      name: grimoire-join-invitation
+    attrs:
+      continue_flow_without_invitation: false
+  - model: authentik_stages_prompt.prompt
+    id: name
+    identifiers:
+      name: grimoire-join-name
+    attrs:
+      field_key: name
+      label: Display name
+      type: text
+      required: true
+      order: 1
+  - model: authentik_stages_prompt.prompt
+    id: password
+    identifiers:
+      name: grimoire-join-password
+    attrs:
+      field_key: password
+      label: Password
+      type: password
+      required: true
+      order: 2
+  - model: authentik_stages_prompt.prompt
+    id: password-repeat
+    identifiers:
+      name: grimoire-join-password-repeat
+    attrs:
+      field_key: password_repeat
+      label: Repeat password
+      type: password
+      required: true
+      order: 3
+  - model: authentik_policies_expression.expressionpolicy
+    id: validate-invitation
+    identifiers:
+      name: grimoire-join-validate-invitation
+    attrs:
+      expression: |
+        import hashlib
+        from django.utils import timezone
+        from authentik.core.models import User
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        plan = request.context.get("flow_plan")
+        invitation = plan.context.get("invitation") if plan else None
+        if invitation is None or not invitation.single_use:
+            ak_message("Ask the administrator for a single-use Grimoire invitation.")
+            return False
+        if not invitation.flow or invitation.flow.slug != "grimoire-link-enrollment":
+            return False
+        if invitation.expires is None or invitation.expires <= timezone.now():
+            ak_message("This invitation has expired. Ask for a new campaign link.")
+            return False
+        username = str(invitation.fixed_data.get("username", ""))
+        email = str(invitation.fixed_data.get("email", "")).strip().lower()
+        if username != "grimoire-" + hashlib.sha256(email.encode()).hexdigest():
+            return False
+        try:
+            validate_email(email)
+        except ValidationError:
+            ak_message("The invitation must include your email in Fixed data.")
+            return False
+        if User.objects.filter(email__iexact=email).exists():
+            ak_message("An account already uses this email. Sign in with that account.")
+            return False
+        data = request.context.get("prompt_data", {})
+        if len(data.get("password", "")) < 12:
+            ak_message("Use a password with at least 12 characters.")
+            return False
+        # Never pass arbitrary fixed_data through UserWrite. Both identity
+        # fields are immutable; unique username closes concurrent retry races.
+        safe_data = {key: data[key] for key in ("name", "password", "password_repeat") if key in data}
+        safe_data.update({"email": email, "username": username})
+        data.clear()
+        data.update(safe_data)
+        plan.context["prompt_data"] = safe_data
+        plan.context["user_type"] = "external"
+        plan.context["user_path"] = "grimoire"
+        plan.context.pop("groups", None)
+        plan.context["redirect"] = "https://friends.jomcgi.dev/grimoire/join/accept"
+        return True
+  - model: authentik_stages_prompt.promptstage
+    id: prompt
+    identifiers:
+      name: grimoire-join-details
+    attrs:
+      fields: [!KeyOf name, !KeyOf password, !KeyOf password-repeat]
+      validation_policies: [!KeyOf validate-invitation]
+  - model: authentik_stages_user_write.userwritestage
+    id: write
+    identifiers:
+      name: grimoire-join-create-user
+    attrs:
+      user_creation_mode: always_create
+      user_type: external
+      create_users_group: null
+      user_path_template: grimoire
+  - model: authentik_stages_user_login.userloginstage
+    id: login
+    identifiers:
+      name: grimoire-join-login
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf invitation
+      order: 0
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf prompt
+      order: 10
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf write
+      order: 20
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf enrollment
+      stage: !KeyOf login
+      order: 30

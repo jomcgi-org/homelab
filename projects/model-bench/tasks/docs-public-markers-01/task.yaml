@@ -13,6 +13,7 @@ mode: agentic
 # wires both generators to it. The snapshot pins the fix's PARENT (no shared
 # module yet, posts unchecked).
 source_commit: 1897c3d209ce7593fe8da96086105ba90bf86144
+gold_diff_lines: 93
 snapshot:
   commit: 7bbcc70e0f575caf9d5026910934ce13b695f7e6
   paths:

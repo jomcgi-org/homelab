@@ -5,10 +5,12 @@ from math import sqrt
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, create_engine
 
 from knowledge.entities import Entity, NoteEntity
-from knowledge.models import AtomRawProvenance, Chunk, Note, RawInput
+from knowledge.freshness import STANDARD, VOLATILE
+from knowledge.models import AtomRawProvenance, Chunk, Dispute, Note, RawInput
 from knowledge.store import KnowledgeStore, _rank_search_chunks
 
 _QUERY = [1.0] + [0.0] * 1023
@@ -22,6 +24,7 @@ def ranked_session(pg):
     with engine.connect() as connection:
         transaction = connection.begin()
         with Session(bind=connection) as session:
+            session.info["now"] = datetime.now(timezone.utc)
             yield session
         transaction.rollback()
     engine.dispose()
@@ -29,6 +32,7 @@ def ranked_session(pg):
 
 def _note(session, name, score=0.9, *, chunk_text="ordinary evidence", **fields):
     identity = f"exact-{name}-{uuid4().hex}"
+    now = session.info["now"]
     defaults = dict(
         note_id=identity,
         path=f"notes/{identity}.md",
@@ -38,6 +42,9 @@ def _note(session, name, score=0.9, *, chunk_text="ordinary evidence", **fields)
         type="fact",
         scope=_SCOPE,
         verification_state="verified",
+        observed_at=now - timedelta(days=2),
+        review_after=now + timedelta(days=30),
+        review_policy=STANDARD,
     )
     defaults.update(fields)
     note = Note(**defaults)
@@ -237,7 +244,13 @@ def test_current_then_recency_then_semantic_score(ranked_session):
         observed_at=now - timedelta(days=1),
         valid_until=now + timedelta(days=1),
     )
-    undated = _note(session, "undated #12", 0.8)
+    undated = _note(
+        session,
+        "undated #12",
+        0.8,
+        observed_at=None,
+        last_reviewed_at=now - timedelta(days=2),
+    )
     semantic = _note(session, "semantic", 0.999, valid_from=now)
     assert [row[0] for row in _rank(session)] == [
         newer.id,
@@ -271,3 +284,86 @@ def test_exact_score_ties_use_note_id(ranked_session):
     first = _note(ranked_session, "first #12", 0.9)
     second = _note(ranked_session, "second #12", 0.9)
     assert [row[0] for row in _rank(ranked_session)] == [first.id, second.id]
+
+
+def test_temporal_predicate_history_scope_visibility_and_disputes(ranked_session):
+    session = ranked_session
+    now = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
+    common = {"observed_at": now - timedelta(hours=24), "review_policy": VOLATILE}
+    current = _note(
+        session,
+        "PR open #12",
+        review_after=now + timedelta(seconds=1),
+        visibility="private",
+        **common,
+    )
+    due = _note(session, "PR checks passing #12", review_after=now, **common)
+    unknown = _note(session, "unknown #12", review_after=None, observed_at=None)
+    _note(
+        session, "other repo #12", scope="repo:someone/else", review_after=now, **common
+    )
+    _note(
+        session,
+        "other personal #12",
+        scope="personal:someone",
+        review_after=now,
+        **common,
+    )
+    _note(session, "unscoped #12", scope=None, review_after=now, **common)
+    session.add_all(
+        [Dispute(note_id=due.note_id, reason="still disputed", state="open")]
+    )
+    session.flush()
+    store = KnowledgeStore(session, now=now)
+    results = store.search_notes_with_context(
+        _QUERY, query_text="#12", scope_filters=(_SCOPE,)
+    )
+    assert [row["note_id"] for row in results] == [current.note_id]
+    assert results[0]["freshness"] == "current"
+    assert results[0]["requires_authoritative_observation"] is True
+    assert _rank(session, now=now, exclude_invalidated=True)[0][0] == current.id
+    history = store.search_notes_with_context(
+        _QUERY,
+        query_text="#12",
+        scope_filters=(_SCOPE,),
+        include_history=True,
+        exclude_invalidated=False,
+    )
+    assert {row["note_id"] for row in history} == {
+        current.note_id,
+        due.note_id,
+        unknown.note_id,
+    }
+    dated = next(row for row in history if row["note_id"] == due.note_id)
+    assert dated["freshness"] == "due"
+    assert dated["disputed"] is True
+    assert dated["review_after"] == now.isoformat()
+    assert dated["observed_at"] == common["observed_at"].isoformat()
+    assert store.get_note_by_id(due.note_id)["freshness"] == "due"
+    at_boundary = KnowledgeStore(session, now=now + timedelta(seconds=1))
+    assert at_boundary.search_notes_with_context(_QUERY, scope_filters=(_SCOPE,)) == []
+
+
+def test_postgres_review_check_uses_evidence_basis_and_elapsed_hours(ranked_session):
+    session = ranked_session
+    basis = datetime(2026, 3, 8, 8, tzinfo=timezone.utc)
+    _note(
+        session, "max age", observed_at=basis, review_after=basis + timedelta(days=90)
+    )
+    _note(
+        session,
+        "reviewed historical",
+        observed_at=basis - timedelta(days=500),
+        last_reviewed_at=basis,
+        review_after=basis + timedelta(days=90),
+    )
+    for fields in (
+        {
+            "observed_at": basis,
+            "review_after": basis + timedelta(days=90, microseconds=1),
+        },
+        {"observed_at": None, "review_after": basis},
+    ):
+        with pytest.raises(IntegrityError, match="notes_review_deadline_chk"):
+            with session.begin_nested():
+                _note(session, "illegal lease", **fields)

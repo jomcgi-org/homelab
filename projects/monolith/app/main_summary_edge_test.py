@@ -19,6 +19,13 @@ os.environ.pop("STATIC_DIR", None)
 from app.main import app, lifespan  # noqa: E402
 
 
+class _AwaitableTask(MagicMock):
+    """Task double: lifespan awaits the cancelled elector task at shutdown."""
+
+    def __await__(self):
+        return iter(())
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -53,7 +60,7 @@ class TestLifespanShutdownBackfillDone:
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
                 coro.close()
-            return MagicMock()
+            return _AwaitableTask()
 
         env_without_token = {
             k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"
@@ -80,13 +87,13 @@ class TestLifespanShutdownBackfillDone:
     @pytest.mark.asyncio
     async def test_backfill_task_cancelled_when_not_done(self):
         """If backfill_task.done() returns False, lifespan MUST call cancel()."""
-        backfill_mock = MagicMock()
+        backfill_mock = _AwaitableTask()
         backfill_mock.done.return_value = False  # task still running
 
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
                 coro.close()
-            return MagicMock()
+            return _AwaitableTask()
 
         env_without_token = {
             k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"

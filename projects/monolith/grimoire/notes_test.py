@@ -149,7 +149,6 @@ def test_note_creation_roles_and_identity_are_server_owned(http):
         "player_character_id",
         "viewer",
         "as",
-        "from_event_id",
     ):
         before = h.snapshot()
         assert (
@@ -421,3 +420,11 @@ def test_model_defaults_and_note_identity(http):
     assert isinstance(row.created_at, datetime)
     assert isinstance(row.updated_at, datetime)
     assert row.deleted_at is None
+
+
+def test_missing_source_event_does_not_create_note(http):
+    h, _ = http
+    before = h.snapshot()
+    response = create(http, from_event_id=str(uuid4()))
+    assert response.status_code == 404
+    assert h.snapshot() == before

@@ -6,6 +6,48 @@ import (
 	"testing"
 )
 
+func TestModelBenchTaskSpecs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"tasks/z/task.yaml",
+		"tasks/a/task.yaml",
+		"tasks/a/fixture/task.yaml",
+		"tasks/a/fixture/private_test.py",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("id: fixture\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	specs := generateModelBenchTaskSpecs(dir, "projects/model-bench")
+	if specs == nil {
+		t.Fatal("task contracts did not generate a filegroup")
+	}
+	if specs.Kind() != "filegroup" || specs.Name() != "task_specs" {
+		t.Fatalf("generated %s %s, want filegroup task_specs", specs.Kind(), specs.Name())
+	}
+	srcs := specs.AttrStrings("srcs")
+	if len(srcs) != 2 || srcs[0] != "tasks/a/task.yaml" || srcs[1] != "tasks/z/task.yaml" {
+		t.Fatalf("srcs = %v, want sorted contracts without fixture content", srcs)
+	}
+	visibility := specs.AttrStrings("visibility")
+	if len(visibility) != 1 || visibility[0] != "//projects/model-bench:__subpackages__" {
+		t.Fatalf("visibility = %v", visibility)
+	}
+	if specs := generateModelBenchTaskSpecs(dir, "projects/other"); specs != nil {
+		t.Fatal("benchmark filegroup leaked into another package")
+	}
+}
+
+func TestModelBenchTaskSpecsEmpty(t *testing.T) {
+	if specs := generateModelBenchTaskSpecs(t.TempDir(), "projects/model-bench"); specs != nil {
+		t.Fatal("empty task directory generated a filegroup")
+	}
+}
+
 func TestParseApplication(t *testing.T) {
 	tests := []struct {
 		name        string

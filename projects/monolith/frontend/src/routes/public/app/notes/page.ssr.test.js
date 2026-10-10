@@ -20,9 +20,7 @@ describe("/app/notes SSR", () => {
       },
     });
 
-    expect(html).toContain("Chat with my knowledge graph");
-    expect(html.replace(/\s+/g, " ")).toContain(
-      "Ask questions of my public notes; every answer cites the notes it came from.",
-    );
+    expect(html).toContain("Public notes");
+    expect(html.replace(/\s+/g, " ")).toContain("Watch the factory");
   });
 });

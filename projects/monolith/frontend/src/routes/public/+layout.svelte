@@ -4,7 +4,7 @@
   import { personLdScript } from "$lib/public/seo.js";
   let { data, children } = $props();
 
-  // Slop drafts are their own surface, so the site-wide migration notice is
+  // Slop drafts are their own surface, so the site-wide maintenance notice is
   // not theirs to carry.
   const showBanner = $derived(
     Boolean(data.maintenanceBanner) &&

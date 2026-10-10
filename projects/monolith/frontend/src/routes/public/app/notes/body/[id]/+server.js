@@ -1,4 +1,9 @@
 import { error, json } from "@sveltejs/kit";
+import {
+  boundedCacheHeaders,
+  NOTES_PAGE_CACHE_CONTROL,
+  versionedEtag,
+} from "../../../../../../lib/cache-headers.js";
 
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
@@ -10,7 +15,7 @@ const API_BASE = process.env.API_BASE || "http://localhost:8000";
 // the backend is reachable only by the frontend in-cluster (mirrors the
 // ships/stars +server.js proxies). The backend's effective_visibility gate + the
 // public_api views remain the confidentiality boundary regardless.
-export async function GET({ params, fetch }) {
+export async function GET({ params, fetch, setHeaders }) {
   const res = await fetch(
     `${API_BASE}/api/knowledge/public/notes/${encodeURIComponent(params.id)}`,
     { signal: AbortSignal.timeout(10_000) },
@@ -19,5 +24,11 @@ export async function GET({ params, fetch }) {
     // Preserve the identical-404 semantics (missing and private both 404).
     throw error(res.status === 404 ? 404 : 503, "note unavailable");
   }
+  const headers = boundedCacheHeaders(NOTES_PAGE_CACHE_CONTROL, res.headers);
+  const etag = versionedEtag(res.headers?.get?.("etag"));
+  if (etag) headers.etag = etag;
+  const lastModified = res.headers?.get?.("last-modified");
+  if (lastModified) headers["last-modified"] = lastModified;
+  setHeaders(headers);
   return json(await res.json());
 }

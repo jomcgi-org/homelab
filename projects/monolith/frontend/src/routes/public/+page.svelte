@@ -118,10 +118,14 @@
         <a href="https://semgrep.dev" class="hero-mono">semgrep</a> online.
       </h1>
       <div class="hero-cta-row">
-        <a href="#homelab" class="btn btn-primary"
-          >SEE MY HOMELAB <span class="btn-arr">→</span></a
+        <a
+          href="/slop/factory"
+          class="btn btn-primary factory-cta"
+          aria-label="Slop Factory"
+          ><span><s aria-hidden="true">Software</s> Slop Factory</span>
+          <span class="btn-arr" aria-hidden="true">→</span></a
         >
-        <a href="/app/notes" class="btn btn-secondary">TALK TO MY NOTES</a>
+        <a href="#homelab" class="btn btn-secondary">SEE MY HOMELAB</a>
       </div>
       <Sticker color="var(--coral)" rotate={-5} class="sticker-hero"
         >← BUILT THIS SITE TOO</Sticker
@@ -244,6 +248,10 @@
 
   .btn-arr {
     margin-left: 6px;
+  }
+
+  .factory-cta {
+    max-width: 100%;
   }
 
   :global(.sticker-hero) {

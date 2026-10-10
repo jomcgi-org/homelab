@@ -106,6 +106,36 @@ async def test_valid_human_token_maps_all_identity_facts():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "opt_in,user_type,email,expected",
+    [
+        (True, "external", None, PrincipalKind.HUMAN),
+        (True, "internal", None, PrincipalKind.HUMAN),
+        (True, "service_account", None, PrincipalKind.WORKLOAD),
+        (True, "service_account", "bot@example.test", PrincipalKind.WORKLOAD),
+        (True, "internal_service_account", None, PrincipalKind.WORKLOAD),
+        (True, None, None, PrincipalKind.WORKLOAD),
+        (False, "external", None, PrincipalKind.WORKLOAD),
+    ],
+)
+async def test_username_identity_requires_scoped_opt_in_and_protected_user_type(
+    opt_in, user_type, email, expected
+):
+    key, jwk = _key_and_jwk()
+    fetch, _ = _fetcher({"keys": [jwk]})
+    verifier = AuthentikStandingVerifier(
+        _settings(allow_username_identity=opt_in), fetch=fetch
+    )
+    principal = await verifier.verify(
+        _token(
+            key, email=email, preferred_username="player", platform_user_type=user_type
+        )
+    )
+    assert principal.kind is expected
+    assert principal.username == "player"
+
+
+@pytest.mark.asyncio
 async def test_valid_service_account_without_email_is_workload():
     private_key, jwk = _key_and_jwk()
     fetch, _ = _fetcher({"keys": [jwk]})
@@ -699,8 +729,8 @@ async def test_forced_refresh_rate_limited_by_ttl():
 
 
 @pytest.mark.asyncio
-async def test_failed_refresh_cached_within_ttl():
-    """A failed JWKS fetch is re-raised quickly within the TTL."""
+async def test_failed_refresh_cached_within_cooldown():
+    """A failed JWKS fetch is re-raised quickly within the short cooldown."""
     private_key, _ = _key_and_jwk()
     call_count = 0
 
@@ -725,8 +755,8 @@ async def test_failed_refresh_cached_within_ttl():
     assert raised.value.reason is AuthErrorReason.JWKS_UNREACHABLE
     assert call_count == 1
 
-    # Within TTL: re-raise the cached error without a new fetch.
-    clock.advance(5)
+    # Within cooldown: re-raise the cached error without a new fetch.
+    clock.advance(4)
     with pytest.raises(AuthError) as raised:
         await verifier.verify(_token(private_key, kid="another"))
     assert raised.value.reason is AuthErrorReason.JWKS_UNREACHABLE
@@ -795,3 +825,88 @@ async def test_empty_ttl_falls_back_to_default():
         assert settings_from_env.jwks_cache_ttl_s == 300.0
     finally:
         os.getenv = original_getenv
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_refresh", [False, True])
+async def test_jwks_failure_recovers_before_success_ttl(force_refresh):
+    from auth.jwks import JwksCache
+
+    clock = Clock()
+    calls = 0
+
+    async def fetch(url):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            clock.advance(6)  # Even a slow fetch gets a full cooldown.
+            raise OSError("temporary outage")
+        return {"keys": [{"kid": "good"}]}
+
+    cache = JwksCache(JWKS_URL, 300, fetch=fetch, now=clock)
+    assert await cache.get_key("good") == {"kid": "good"}
+    with pytest.raises(AuthError):
+        await cache.get_key("missing", force_refresh=True)
+    clock.advance(4)
+    with pytest.raises(AuthError) as raised:
+        await cache.get_key("good", force_refresh=force_refresh)
+    assert raised.value.status_code == 503
+    assert calls == 2  # No stale keys, no forced-refresh bypass.
+    clock.advance(1)
+    assert await cache.get_key("good", force_refresh=force_refresh) == {"kid": "good"}
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_jwks_failure_diagnostics_do_not_log_secrets(caplog):
+    import httpx
+
+    from auth.jwks import JwksCache
+
+    async def fetch(url):
+        response = httpx.Response(503, request=httpx.Request("GET", url))
+        raise httpx.HTTPStatusError(
+            "secret-body", request=response.request, response=response
+        )
+
+    cache = JwksCache(
+        "https://secret-user:secret-password@example.test/?secret-query",
+        300,
+        fetch=fetch,
+    )
+    with pytest.raises(AuthError):
+        await cache.get_key("good")
+    assert "exception=HTTPStatusError" in caplog.text
+    assert "status=503" in caplog.text
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_jwks_cold_failure_recovery_coalesces_concurrent_requests():
+    import asyncio
+
+    from auth.jwks import JwksCache
+
+    clock = Clock()
+    calls = 0
+
+    async def fetch(url):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        if calls == 1:
+            raise OSError("temporary outage")
+        return {"keys": [{"kid": "good"}]}
+
+    cache = JwksCache(JWKS_URL, 300, fetch=fetch, now=clock)
+    failures = await asyncio.gather(
+        *(cache.get_key("good") for _ in range(10)), return_exceptions=True
+    )
+    assert all(
+        isinstance(error, AuthError) and error.status_code == 503 for error in failures
+    )
+    assert calls == 1
+    clock.advance(5)
+    keys = await asyncio.gather(*(cache.get_key("good") for _ in range(10)))
+    assert keys == [{"kid": "good"}] * 10
+    assert calls == 2

@@ -1904,6 +1904,32 @@ def test_clone_merge_job_is_weekly_suspended_and_receives_database(renders):
     assert _env_by_name(container["env"])["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]["value"]
 
 
+def test_review_admission_job_is_bounded_suspended_and_reads_github(renders):
+    jobs = _cron_docs(renders["prod"])
+    admission = jobs["knowledge-review-admission"]
+    assert admission["spec"]["suspend"] is True
+    assert admission["spec"]["concurrencyPolicy"] == "Forbid"
+    workflow = admission["spec"]["workflowSpec"]
+    assert workflow["activeDeadlineSeconds"] == 300
+    container = workflow["templates"][0]["container"]
+    assert container["args"] == [
+        "knowledge-review-admission",
+        "--apply",
+        "--batch-size",
+        "20",
+        "--max-requests",
+        "60",
+        "--deadline-seconds",
+        "240",
+    ]
+    env = _env_by_name(container["env"])
+    assert env["GITHUB_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "monolith-chat-secrets",
+        "key": "GITHUB_TOKEN",
+    }
+    assert env["DATABASE_URL"]
+
+
 def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
     docs = [doc for doc in yaml.safe_load_all(renders["prod"]) if doc]
     routes = {
@@ -1919,7 +1945,7 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
         match["path"]["value"]
         for rule in route["spec"]["rules"]
         for match in rule["matches"]
-    ] == ["/grimoire"]
+    ] == ["/grimoire/_app", "/grimoire"]
     assert policies[name]["spec"]["targetRefs"][0]["name"] == name
     provider = policies[name]["spec"]["jwt"]["providers"][0]
     assert provider["audiences"] == ["grimoire-friends"]
@@ -1928,22 +1954,6 @@ def test_grimoire_friend_routes_are_isolated_and_backend_revalidates(renders):
         policies[name]["spec"]["oidc"]["redirectURL"]
         == "https://friends.jomcgi.dev/grimoire/oauth2/callback"
     )
-    asset_routes = [
-        row
-        for row in routes.values()
-        if any(
-            match["path"]["value"] == "/_app/"
-            for rule in row["spec"]["rules"]
-            for match in rule.get("matches", [])
-        )
-        and row["spec"]["hostnames"] == ["friends.jomcgi.dev"]
-    ]
-    assert len(asset_routes) == 1
-    asset_name = asset_routes[0]["metadata"]["name"]
-    assert {p["name"] for p in policies[asset_name]["spec"]["jwt"]["providers"]} == {
-        "moving",
-        "grimoire",
-    }
     assert "GRIMOIRE_AUTH_ISSUER" in renders["prod"]
     assert "GRIMOIRE_AUTH_AUDIENCE" in renders["prod"]
     assert "GRIMOIRE_AUTH_JWKS_URL" in renders["prod"]
@@ -1956,3 +1966,212 @@ def test_dev_cannot_promote_production_kargo_stages(renders):
     assert not [key for key in dev if key[2].endswith("-kargo-promote")]
     prod = _rbac_objects(renders["prod"])
     assert [key for key in prod if key[2].endswith("-kargo-promote")]
+
+
+@pytest.mark.parametrize("environment", ["prod", "gke"])
+def test_friends_assets_use_each_existing_oidc_lane(renders, environment):
+    """Render contract only: live OAuth/deny-path checks remain rollout gates."""
+    docs = [doc for doc in yaml.safe_load_all(renders[environment]) if doc]
+    routes = {
+        doc["metadata"]["name"]: doc
+        for doc in docs
+        if doc["kind"] == "HTTPRoute"
+        and doc["spec"].get("hostnames") == ["friends.jomcgi.dev"]
+    }
+    policies = {
+        doc["metadata"]["name"]: doc["spec"]
+        for doc in docs
+        if doc["kind"] == "SecurityPolicy"
+    }
+    dispatch = next(
+        route for name, route in routes.items() if name.endswith("-friends-assets")
+    )
+    # The unauthenticated root route only redirects or returns a static 404.
+    # It cannot serve upstream bytes,
+    # including if a caller supplies a forged Referer or Cookie header.
+    assert len(dispatch["spec"]["rules"]) == 3
+    assert dispatch["metadata"]["name"] not in policies
+    _assert_friends_assets_not_found(docs, dispatch)
+    for rule in dispatch["spec"]["rules"][:-1]:
+        assert "backendRefs" not in rule
+        filters = {entry["type"]: entry for entry in rule["filters"]}
+        assert set(filters) == {"RequestRedirect", "ResponseHeaderModifier"}
+        redirect = filters["RequestRedirect"]["requestRedirect"]
+        assert set(redirect) == {"path", "statusCode", "scheme"}
+        assert redirect["scheme"] == "https"
+        assert redirect["statusCode"] == 302
+        assert redirect["path"]["type"] == "ReplacePrefixMatch"
+        prefix = redirect["path"]["replacePrefixMatch"]
+        assert prefix in {"/moving/_app", "/grimoire/_app"}
+        app = prefix.split("/")[1]
+        assert rule["matches"] == [
+            {
+                "path": {"type": "PathPrefix", "value": "/_app"},
+                "headers": [
+                    {
+                        "name": "Referer",
+                        "type": "RegularExpression",
+                        "value": rf"^https://friends\.jomcgi\.dev/{app}([/?].*)?$",
+                    }
+                ],
+            }
+        ]
+        pattern = rule["matches"][0]["headers"][0]["value"]
+        for suffix in [
+            "",
+            "/",
+            "/campaign/42",
+            "/_app/immutable/chunks/one.js",
+            "?next=https://evil.invalid/",
+        ]:
+            assert re.fullmatch(pattern, f"https://friends.jomcgi.dev/{app}{suffix}")
+        for referer in [
+            "",
+            "https://friends.jomcgi.dev/",
+            f"https://friends.jomcgi.dev/{app}evil",
+            f"https://friendsXjomcgiXdev/{app}",
+            f"https://friends.jomcgi.dev.evil.invalid/{app}",
+            f"http://friends.jomcgi.dev/{app}",
+            f"https://evil.invalid/{app}",
+        ]:
+            assert not re.fullmatch(pattern, referer)
+        headers = filters["ResponseHeaderModifier"]["responseHeaderModifier"]["set"]
+        assert {h["name"]: h["value"] for h in headers} == {
+            "Cache-Control": "no-store",
+            "Cloudflare-CDN-Cache-Control": "no-store",
+            "Vary": "Referer",
+        }
+        # The redirect's fixed prefix, never Referer content, selects the
+        # destination. That rule belongs to the ORIGINAL authenticated route.
+        route = next(row for name, row in routes.items() if name.endswith(f"-{app}"))
+        policy = policies[route["metadata"]["name"]]
+        assert policy["targetRefs"][0]["name"] == route["metadata"]["name"]
+        assert policy["oidc"]["cookieNames"] == {
+            "accessToken": f"{app}-access-token",
+            "idToken": f"{app}-id-token",
+        }
+        assert policy["oidc"]["cookieDomain"] == "friends.jomcgi.dev"
+        assert policy["oidc"].get("disableTokenEncryption", False) is False
+        assert (
+            policy["oidc"]["redirectURL"]
+            == f"https://friends.jomcgi.dev/{app}/oauth2/callback"
+        )
+        assert len(policy["jwt"]["providers"]) == 1
+        assert policy["jwt"]["providers"][0]["extractFrom"] == {
+            "cookies": [f"{app}-id-token"]
+        }
+        if app == "moving":
+            assert policy["authorization"]["defaultAction"] == "Deny"
+            assert policy["authorization"]["rules"][0]["principal"]["jwt"]["claims"][0][
+                "values"
+            ] == ["family"]
+        else:
+            assert policy["jwt"]["providers"][0]["audiences"] == ["grimoire-friends"]
+        asset = next(
+            rule
+            for rule in route["spec"]["rules"]
+            if rule["matches"][0]["path"]["value"] == prefix
+        )
+        assert asset["backendRefs"][0]["port"] == 3000
+        asset_filters = {entry["type"]: entry for entry in asset["filters"]}
+        assert asset_filters["URLRewrite"]["urlRewrite"] == {
+            "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/_app"},
+        }
+        assert asset_filters["ResponseHeaderModifier"]["responseHeaderModifier"][
+            "set"
+        ] == [
+            {"name": "Cloudflare-CDN-Cache-Control", "value": "no-store"},
+            {"name": "Cache-Control", "value": "private, no-cache"},
+        ]
+
+
+def _assert_friends_assets_not_found(docs, dispatch):
+    """The final, less-specific rule cannot poison the URL's valid redirects."""
+    rule = dispatch["spec"]["rules"][-1]
+    assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/_app"}}]
+    assert "backendRefs" not in rule
+    # Envoy Gateway 1.8.3 stops processing filters at a direct response.
+    # A header modifier after ExtensionRef renders, but silently loses headers.
+    assert [entry["type"] for entry in rule["filters"]] == [
+        "ResponseHeaderModifier",
+        "ExtensionRef",
+    ]
+    filters = {entry["type"]: entry for entry in rule["filters"]}
+    assert set(filters) == {"ExtensionRef", "ResponseHeaderModifier"}
+    name = dispatch["metadata"]["name"] + "-not-found"
+    assert filters["ExtensionRef"]["extensionRef"] == {
+        "group": "gateway.envoyproxy.io",
+        "kind": "HTTPRouteFilter",
+        "name": name,
+    }
+    headers = filters["ResponseHeaderModifier"]["responseHeaderModifier"]["set"]
+    assert {h["name"]: h["value"] for h in headers} == {
+        "Cache-Control": "no-store",
+        "Cloudflare-CDN-Cache-Control": "no-store",
+        "Vary": "Referer",
+    }
+    response = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "HTTPRouteFilter" and doc["metadata"]["name"] == name
+    )
+    assert response["apiVersion"] == "gateway.envoyproxy.io/v1alpha1"
+    assert response["spec"] == {
+        "directResponse": {
+            "statusCode": 404,
+            "contentType": "text/plain",
+            "body": {"type": "Inline", "inline": "Not Found"},
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "moving,grimoire", [(True, False), (False, True), (False, False)]
+)
+def test_disabled_friends_app_has_no_asset_dispatch(tmp_path, moving, grimoire):
+    override = tmp_path / "friends.yaml"
+    override.write_text(
+        yaml.safe_dump(
+            {
+                # This test disables OIDC lanes, so platform management cannot
+                # inherit the production Grimoire audience prerequisite.
+                "platformAuth": {
+                    "managementEnabled": False,
+                    "enrollmentEnabled": False,
+                    "enforcementEnabled": False,
+                },
+                "cfIngress": {
+                    "friends": {"enabled": moving},
+                    "grimoire": {"enabled": grimoire},
+                },
+            }
+        )
+    )
+    rendered = _render("monolith", [Path(os.environ["DEPLOY_VALUES"]), override])
+    docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
+    dispatch = next(
+        (
+            doc
+            for doc in docs
+            if doc["kind"] == "HTTPRoute"
+            and doc["metadata"]["name"].endswith("-friends-assets")
+        ),
+        None,
+    )
+    if not moving and not grimoire:
+        assert dispatch is None
+        assert not any(
+            doc["metadata"]["name"].endswith("-friends-assets-not-found")
+            for doc in docs
+        )
+        return
+    assert len(dispatch["spec"]["rules"]) == 2
+    _assert_friends_assets_not_found(docs, dispatch)
+    rule = dispatch["spec"]["rules"][0]
+    redirect = next(
+        f["requestRedirect"] for f in rule["filters"] if f["type"] == "RequestRedirect"
+    )
+    assert (
+        redirect["path"]["replacePrefixMatch"]
+        == f"/{'moving' if moving else 'grimoire'}/_app"
+    )

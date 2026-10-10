@@ -40,6 +40,8 @@ from knowledge.raw_write import write_raw
 # broad: the agent tier may import only agent_kubernetes, never the private
 # client's mutation helpers or broader credential paths.
 FORBIDDEN_MODULES = [
+    "auth.module",
+    "auth.platform",
     # Private domains.
     "agent",
     "agent_sessions",
