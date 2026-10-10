@@ -118,6 +118,11 @@ defmodule Embervm.Application do
       # rest_for_one chain costs nothing.
       {Registry, keys: :duplicate, name: Embervm.TaskWaiters},
       Embervm.SyncWait,
+      # The restore-versus-GC lineage fence (#6736): one public ETS table the
+      # SessionManager and the S3WarmthGc claim from their own processes. It
+      # owns nothing but that table and must outlive both claimants, so it sits
+      # with the other dependency-free ETS owners at the head of the chain.
+      Embervm.LineageFence,
       op_log_child_spec(),
       # The async lifecycle-write queue (ADR embervm/014 decision 2), gated by
       # EMBERVM_ASYNC_LIFECYCLE_WRITES. Placed AFTER the op-log (it appends through

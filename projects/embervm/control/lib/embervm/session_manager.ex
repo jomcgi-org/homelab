@@ -417,6 +417,9 @@ defmodule Embervm.SessionManager do
 
   @impl true
   def init(opts) do
+    # #6736: a fresh manager has no restore in flight, so any fence claim left by
+    # a crashed predecessor is stale and would hold the GC off that lineage forever.
+    Embervm.LineageFence.clear(:restore)
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     op_log = Keyword.get(opts, :op_log, op_log_mod)
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
@@ -1360,7 +1363,8 @@ defmodule Embervm.SessionManager do
              ),
            pin_node_id =
              restore_lineage_volume_node(state, restore_holder, restore_lineage, workload),
-           {:ok, node_id, dial_id, snapshot_ref} <- place_create(state, workload, entry, pin_node_id) do
+           {:ok, node_id, dial_id, snapshot_ref} <-
+             place_create_fenced(state, workload, entry, pin_node_id, restore_lineage) do
         {:ok,
          %{
            entry: entry,
@@ -1393,6 +1397,33 @@ defmodule Embervm.SessionManager do
   # prohibition), or its newest holder is not terminal yet (exclusivity: at
   # most one live heir per lineage). nil/empty restore_lineage is always a
   # normal create and always validates.
+  # #6736: a restoring create claims the lineage in Embervm.LineageFence for the
+  # whole restore, so the S3 warmth GC cannot delete the workspace's last durable
+  # copy between its recheck and its delete while the worker is about to read it.
+  # The claim is taken as the LAST validation step, immediately before placement,
+  # so an earlier denial never has a claim to undo, and a placement failure
+  # releases it here. On success the claim is held until finish_create releases
+  # it beside inflight_restore_lineages. A GC sweep holding the lineage denies
+  # the create with the same retryable reason a racing restore does; the sweep
+  # releases within one prefix delete. A non-restoring create (nil lineage) is
+  # unaffected, and an absent fence table fails open for this warmth path.
+  defp place_create_fenced(state, workload, entry, pin_node_id, restore_lineage) do
+    case Embervm.LineageFence.claim_restore(restore_lineage) do
+      :ok ->
+        case place_create(state, workload, entry, pin_node_id) do
+          {:ok, _node_id, _dial_id, _snapshot_ref} = ok ->
+            ok
+
+          {:error, _reason} = err ->
+            Embervm.LineageFence.release_restore(restore_lineage)
+            err
+        end
+
+      {:error, _gc_or_restore} ->
+        {:error, :lineage_restore_in_flight}
+    end
+  end
+
   defp validate_restore_lineage(_state, nil, _workload, _principal), do: {:ok, nil}
 
   defp validate_restore_lineage(state, restore_lineage, workload, principal) do
@@ -1757,6 +1788,12 @@ defmodule Embervm.SessionManager do
 
               {{:error, {:denied, reason}}, state}
           end
+
+        # #6736: release the lineage fence only now. On success register_and_start
+        # has written the heir row, so the GC's recheck sees the lineage referenced
+        # before the fence stops holding it off; releasing before that row exists
+        # would reopen the A1 window for the instant between the two.
+        Embervm.LineageFence.release_restore(restore_lineage)
 
         GenServer.reply(from, result)
 

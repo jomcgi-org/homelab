@@ -434,6 +434,41 @@ defmodule Embervm.S3WarmthGcTest do
       assert length(deleted(agent)) == 2
     end
 
+    test "a workspace lineage whose restore is in flight is fenced off the delete (#6736)" do
+      prefix = "session-workspace/wl/lineage-fenced"
+      objects = artifact(prefix, @wall - 8 * @day)
+      table = new_cap_table()
+      put_node_fact(table, "node-4", [], [])
+
+      common = [
+        enabled: true,
+        capacity_table: table,
+        stateful_store: start_store([stateful_row(:destroyed, "wl", "none")]),
+        group_store: start_store([]),
+        serving_store: start_store([]),
+        volume_fun: fn _ -> nil end,
+        session_store: start_store([session_row(:destroyed, "wl", "lineage-fenced", nil)])
+      ]
+
+      # A restoring create holds the lineage exactly as SessionManager does for
+      # the whole restore: the plan still names the prefix (nothing durable
+      # references a terminal lineage), but the delete is skipped.
+      assert :ok = Embervm.LineageFence.claim_restore("lineage-fenced")
+      {agent, s3} = new_s3(objects)
+      gc = start_gc(s3, common)
+      assert {:ok, %{plan: [%{prefix: ^prefix}], deleted: []}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+      # The sweep released nothing it did not hold and left no GC claim behind.
+      assert Embervm.LineageFence.held?("lineage-fenced", :restore)
+      refute Embervm.LineageFence.held?("lineage-fenced", :gc)
+
+      # Once the restore finishes the next sweep deletes, and releases its own claim.
+      assert :ok = Embervm.LineageFence.release_restore("lineage-fenced")
+      assert {:ok, %{plan: [%{prefix: ^prefix}], deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+      assert length(deleted(agent)) == 2
+      refute Embervm.LineageFence.held?("lineage-fenced", :gc)
+    end
+
     test "actively live session and serving refs are held" do
       session_prefix = "session/amd/wl/session-live-ref"
       serving_prefix = "serving/amd/wl/serving-live-ref"
