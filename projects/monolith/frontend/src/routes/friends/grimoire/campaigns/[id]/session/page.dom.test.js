@@ -456,3 +456,98 @@ describe("audience picker", () => {
     ]);
   });
 });
+
+describe("dice tray roll mode", () => {
+  const modeSelect = () =>
+    document.querySelector('[aria-label="Roll mode"]');
+  async function chooseMode(value) {
+    const input = document.querySelector(
+      `input[name="roll-mode"][value="${value}"]`,
+    );
+    input.checked = true;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+  }
+  const quickButton = (label) =>
+    [
+      ...document.querySelectorAll('div[aria-label="Quick rolls"] button'),
+    ].find((button) => button.textContent.trim() === label);
+  async function submitFormula(text) {
+    const input = document.querySelector(
+      'details.dice-tray input[placeholder="d20, 2d6+3, 1d20adv"]',
+    );
+    input.value = text;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    document
+      .querySelector("details.dice-tray form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+  }
+
+  it("shows the mode control to the DM, and Advantage on quick d20 posts d20adv", async () => {
+    const fetch = stubFetch(() => pageData("dm", []));
+    await render(pageData("dm", []));
+    expect(modeSelect()).not.toBeNull();
+    // Sheet controls stay player-only and approved-sheet-only.
+    expect(
+      document.querySelector('select[aria-label="Sheet roll type"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('div[aria-label="Approved sheet rolls"]'),
+    ).toBeNull();
+
+    await chooseMode("adv");
+    quickButton("d20").click();
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({ operation: "roll", formula: "d20adv" }),
+    ]);
+
+    // Other dice ignore the mode.
+    quickButton("d6").click();
+    await settle();
+    expect(posted(fetch)[1]).toMatchObject({
+      operation: "roll",
+      formula: "d6",
+    });
+  });
+
+  it("shows the mode control to a player without an approved sheet", async () => {
+    const fetch = stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    expect(modeSelect()).not.toBeNull();
+    expect(
+      document.querySelector('div[aria-label="Approved sheet rolls"]'),
+    ).toBeNull();
+
+    await chooseMode("dis");
+    quickButton("d20").click();
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({ operation: "roll", formula: "d20dis" }),
+    ]);
+  });
+
+  it("applies the mode to a bare d20 formula but leaves other formulas alone", async () => {
+    const fetch = stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    await chooseMode("adv");
+
+    await submitFormula("d20");
+    expect(posted(fetch)[0]).toMatchObject({
+      operation: "roll",
+      formula: "d20adv",
+    });
+    await submitFormula("2d6+3");
+    expect(posted(fetch)[1]).toMatchObject({
+      operation: "roll",
+      formula: "2d6+3",
+    });
+    await submitFormula("1d20dis");
+    expect(posted(fetch)[2]).toMatchObject({
+      operation: "roll",
+      formula: "1d20dis",
+    });
+  });
+});
