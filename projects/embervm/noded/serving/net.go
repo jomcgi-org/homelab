@@ -4,11 +4,11 @@
 // package owns the host side of that: the per-node bridge, one tap per VM attached
 // to it, static IP allocation from a reserved CIDR, the forward-hook nftables posture
 // on the bridge, and the per-VM health-probe loop the daemon REPORTS (but never acts
-// on) in NodeStatus. v1 filters only the forward hook: it drops VM-originated NEW
-// FORWARDING (external egress) while allowing established/related return traffic. It
-// does NOT filter the input hook, so a serving guest can still reach host-local
-// services (the bridge gateway, the node IP); constraining that is folded into the
-// recorded egress-hardening follow-on (standing decision 6, brokered egress).
+// on) in NodeStatus. The forward hook drops VM-originated NEW and INVALID forwarding
+// (external egress) while allowing established/related return traffic, and the input
+// hook drops everything a guest originates toward the host's own IP stack (the bridge
+// gateway, the pod IP and its wildcard listeners), so a tap guest reaches nothing but
+// the replies to flows the host opened (#6159).
 //
 // Networking is done by execing the host `ip` and `nft` binaries (baked into the
 // noded image via apko), NOT a netlink library: there is no netlink dependency in
@@ -34,13 +34,17 @@ import (
 // any other host firewall state (kube-proxy, CNI, node firewall).
 const nftTable = "embervm_serving"
 
-// nftChain is the forward-hook chain inside nftTable. v1 filters the forward hook
-// only: established/related return traffic is accepted (so responses to inbound
-// requests flow), and VM-originated NEW forwarding is dropped (external egress is
-// deny-by-default in v1). It does NOT filter the input hook, so VM-to-host-local
-// traffic is unconstrained in v1; that is part of the recorded egress-hardening
-// follow-on (standing decision 6, brokered egress).
+// nftChain is the forward-hook chain inside nftTable: established/related return
+// traffic is accepted (so responses to inbound requests flow), and VM-originated NEW
+// or INVALID forwarding is dropped (external egress is deny-by-default). The input
+// hook is nftInputChain.
 const nftChain = "forward"
+
+// nftInputChain is the input-hook chain inside nftTable: it denies every packet a
+// guest originates toward the host's own IP stack (the bridge gateway, noded's pod
+// IP and the wildcard listeners on it) while accepting replies to host-originated
+// flows such as the health probes. See nftRuleset.
+const nftInputChain = "input"
 
 // nftDNATChain is the nat-hook chain inside nftTable that exposes each live serving
 // VM as noded's routable pod IP + a per-VM port (D-R3.11.4). It is a prerouting DNAT
@@ -96,13 +100,39 @@ func tapSetupArgs(tap, bridge string) [][]string {
 	}
 }
 
-// tapPrecreateArgs is tapSetupArgs' pre-provisioning sibling: it creates a tap and
-// attaches it to the bridge but leaves it DOWN, since a pre-created pool tap sits
-// idle until AllocateTap draws it and brings it up. Pure for table testing.
+// tapIsolateArgs marks a serving-bridge port isolated: the bridge then forwards
+// frames between an isolated port and the non-isolated bridge device (the host,
+// which is where DNAT'd requests and the health probes come from) but never
+// between two isolated ports. Serving and stateful guests share one bridge and
+// have no reason to exchange frames, so this closes guest-to-guest reach at L2
+// (bridge-local unicast, broadcast, ARP) without a per-tap address rule (#6159).
+// Composite groups keep their own bridges with member-to-member traffic and
+// never use this.
+func tapIsolateArgs(tap string) []string {
+	return []string{"ip", "link", "set", tap, "type", "bridge_slave", "isolated", "on"}
+}
+
+// servingTapSetupArgs is tapSetupArgs plus the isolated-port mark, for taps on the
+// shared serving bridge. The mark follows the attach (it is a bridge_slave
+// attribute) and precedes the link up, so the port is never live unisolated.
+func servingTapSetupArgs(tap, bridge string) [][]string {
+	return [][]string{
+		{"ip", "tuntap", "add", "dev", tap, "mode", "tap"},
+		{"ip", "link", "set", tap, "master", bridge},
+		tapIsolateArgs(tap),
+		{"ip", "link", "set", tap, "up"},
+	}
+}
+
+// tapPrecreateArgs is servingTapSetupArgs' pre-provisioning sibling: it creates a
+// tap, attaches it to the bridge isolated, but leaves it DOWN, since a pre-created
+// pool tap sits idle until AllocateTap draws it and brings it up. Pure for table
+// testing.
 func tapPrecreateArgs(tap, bridge string) [][]string {
 	return [][]string{
 		{"ip", "tuntap", "add", "dev", tap, "mode", "tap"},
 		{"ip", "link", "set", tap, "master", bridge},
+		tapIsolateArgs(tap),
 	}
 }
 
@@ -133,11 +163,10 @@ type dnatEntry struct {
 // the bridge as a self-contained, idempotent script: it flushes and recreates ONLY the
 // dedicated embervm_serving table, so applying it is safe to repeat and never touches
 // other tables. The FORWARD chain accepts established/related return traffic and drops
-// NEW traffic whose input interface is the bridge (VM-originated forwarding, i.e.
-// external egress), leaving inbound request forwarding (dest = a VM) to the kernel's
-// normal forward path. This filters the forward hook ONLY: v1 does not constrain
-// VM-to-host-local traffic on the input hook (that is the recorded egress follow-on,
-// standing decision 6).
+// NEW or INVALID traffic whose input interface is the bridge (VM-originated
+// forwarding, i.e. external egress), leaving inbound request forwarding (dest = a VM)
+// to the kernel's normal forward path. The INPUT chain drops everything a guest
+// originates toward the host itself and accepts only replies to host-opened flows.
 //
 // When podIP is non-empty (the deployed DNAT-through-noded posture, D-R3.11.4) it ALSO
 // installs: an MSS clamp on the bridge-egress (VM-return) path so the guest-side MSS
@@ -158,10 +187,25 @@ func nftRuleset(bridge, podIP string, entries []dnatEntry) string {
 	fmt.Fprintf(&b, "add chain inet %s %s { type filter hook forward priority 0; policy accept; }\n", nftTable, nftChain)
 	// Return traffic for an established inbound flow is always allowed.
 	fmt.Fprintf(&b, "add rule inet %s %s ct state established,related accept\n", nftTable, nftChain)
-	// VM-originated NEW forwarding (packets entering the forward path FROM the bridge,
-	// i.e. sourced by a serving VM) is dropped: v1 denies external egress at the forward
-	// hook. VM-to-host-local traffic on the input hook is not filtered in v1.
-	fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" ct state new drop\n", nftTable, nftChain, bridge)
+	// VM-originated forwarding (packets entering the forward path FROM the bridge,
+	// i.e. sourced by a serving VM) is dropped unless it belongs to an accepted flow:
+	// NEW is external egress, denied by default; INVALID is a packet conntrack cannot
+	// attribute to any flow (a forged RST, FIN or SYN-ACK, an ICMP error for an unknown
+	// connection), which must never reach the overlay either (#6159).
+	fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" ct state new,invalid drop\n", nftTable, nftChain, bridge)
+	// Input hook: nothing a guest originates may reach the host's own IP stack. The
+	// bridge gateway (.1), noded's pod IP and every wildcard listener on it (gRPC,
+	// the HTTP and L4 activators, health, metrics, the egress sidecar's loopback
+	// forward) sit behind this hook, so without it a tap guest could drive another
+	// tenant's wake or proxy through the activator (#6159). Replies to host-originated
+	// flows (health probes, readiness waits) are ct established and pass; everything
+	// else from the bridge is dropped. Guests need nothing from the host over IP:
+	// their egress is the vsock lane and the kernel ip= directive gives them a static
+	// address, so no DNS or DHCP ever crosses here. ARP is below this family and is
+	// unaffected.
+	fmt.Fprintf(&b, "add chain inet %s %s { type filter hook input priority 0; policy accept; }\n", nftTable, nftInputChain)
+	fmt.Fprintf(&b, "add rule inet %s %s ct state established,related accept\n", nftTable, nftInputChain)
+	fmt.Fprintf(&b, "add rule inet %s %s iifname \"%s\" drop\n", nftTable, nftInputChain, bridge)
 	if podIP != "" {
 		// MSS clamp on the VM-return (bridge-egress) path: cap the SYN maxseg to the
 		// route MTU so a guest with a 1500-MTU eth0 cannot advertise an MSS the CNI
@@ -453,14 +497,28 @@ func (m *Manager) EnsureDNAT(ctx context.Context, ip net.IP, guestPort uint32) e
 	if m.podIP == "" {
 		return nil
 	}
+	if guestPort < 1 || guestPort > 65535 {
+		return fmt.Errorf("serving: guest port %d out of range 1..65535", guestPort)
+	}
 	vmPort, err := PortForIP(m.portBase, m.cidr, ip)
 	if err != nil {
 		return err
 	}
 	m.dnatMu.Lock()
 	defer m.dnatMu.Unlock()
+	// Keep the map consistent with the kernel: a rejected ruleset must not leave
+	// an entry behind that poisons every later re-apply (nft -f is all or nothing).
+	prev, had := m.dnat[ip.String()]
 	m.dnat[ip.String()] = dnatEntry{tapIP: ip.String(), guestPort: guestPort, vmPort: vmPort}
-	return m.applyRulesetLocked(ctx)
+	if err := m.applyRulesetLocked(ctx); err != nil {
+		if had {
+			m.dnat[ip.String()] = prev
+		} else {
+			delete(m.dnat, ip.String())
+		}
+		return err
+	}
+	return nil
 }
 
 // RemoveDNAT drops a VM's DNAT rule and re-applies the table. It is folded into
@@ -527,7 +585,7 @@ func (m *Manager) AllocateTap(ctx context.Context) (tap string, ip net.IP, err e
 	// leaked emtap left demo-postgres unable to relight and 503'd jomcgi.dev/health).
 	// Deleting an absent tap is a tolerated error.
 	_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
-	for _, argv := range tapSetupArgs(tap, m.bridge) {
+	for _, argv := range servingTapSetupArgs(tap, m.bridge) {
 		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
 			// Roll back: delete whatever tap fragment exists, release the IP.
 			_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
@@ -568,7 +626,7 @@ func (m *Manager) AllocateTapForIP(ctx context.Context, ip net.IP) (tap string, 
 	// recreating over it would fail EBUSY and wedge every retry (see AllocateTap).
 	// Deleting an absent tap is a tolerated error.
 	_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
-	for _, argv := range tapSetupArgs(tap, m.bridge) {
+	for _, argv := range servingTapSetupArgs(tap, m.bridge) {
 		if _, rerr := m.runner.Run(ctx, argv[0], argv[1:]...); rerr != nil {
 			_, _ = m.runner.Run(ctx, "ip", tapTeardownArgs(tap)[1:]...)
 			m.alloc.release(ip)

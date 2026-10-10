@@ -132,12 +132,28 @@ func TestNftGroupRulesetIsolation(t *testing.T) {
 	// external/CNI). This is the primary egress denial; the cross-group and
 	// composite->serving drops below are redundant belt-and-braces.
 	for _, w := range []string{
-		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname != \"emgAAAAAA\" ct state new drop",
-		"add rule inet embervm_group group_forward iifname \"emgBBBBBB\" oifname != \"emgBBBBBB\" ct state new drop",
+		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname != \"emgAAAAAA\" ct state new,invalid drop",
+		"add rule inet embervm_group group_forward iifname \"emgBBBBBB\" oifname != \"emgBBBBBB\" ct state new,invalid drop",
 	} {
 		if !strings.Contains(rs, w) {
 			t.Errorf("group ruleset missing per-bridge zero-egress drop:\n  %q\nfull:\n%s", w, rs)
 		}
+	}
+
+	// Input hook (#6159): a member reaches nothing on the host itself; replies to
+	// host-originated flows pass, and the accept precedes every bridge drop.
+	for _, w := range []string{
+		"add chain inet embervm_group group_input { type filter hook input priority 0; policy accept; }",
+		"add rule inet embervm_group group_input ct state established,related accept",
+		"add rule inet embervm_group group_input iifname \"emgAAAAAA\" drop",
+		"add rule inet embervm_group group_input iifname \"emgBBBBBB\" drop",
+	} {
+		if !strings.Contains(rs, w) {
+			t.Errorf("group ruleset missing input-hook denial:\n  %q\nfull:\n%s", w, rs)
+		}
+	}
+	if strings.Index(rs, "group_input ct state established,related accept") > strings.Index(rs, "group_input iifname") {
+		t.Errorf("group ruleset: input chain must accept established before dropping bridge traffic:\n%s", rs)
 	}
 
 	// composite<->composite BOTH directions.
@@ -187,16 +203,20 @@ func TestNftGroupRulesetEntryDNAT(t *testing.T) {
 		"add chain inet embervm_group group_dnat { type nat hook prerouting priority dstnat; policy accept; }",
 		"add rule inet embervm_group group_dnat ip daddr 10.42.0.9 tcp dport 41802 dnat ip to 10.101.7.10:8080",
 		// The lone group's own egress denial: present even with no peers/serving.
-		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname != \"emgAAAAAA\" ct state new drop",
+		"add rule inet embervm_group group_forward iifname \"emgAAAAAA\" oifname != \"emgAAAAAA\" ct state new,invalid drop",
 	} {
 		if !strings.Contains(rs, w) {
 			t.Errorf("group entry-DNAT ruleset missing:\n  %q\nfull:\n%s", w, rs)
 		}
 	}
-	// The per-bridge egress drop is the ONLY drop for a lone group (no cross-group
-	// pair, no composite->serving). Assert exactly one "drop" in the forward chain.
-	if n := strings.Count(rs, " drop\n"); n != 1 {
-		t.Errorf("lone group must emit exactly one drop (its own egress denial), got %d:\n%s", n, rs)
+	// The per-bridge egress drop is the ONLY forward-chain drop for a lone group (no
+	// cross-group pair, no composite->serving); the input chain adds exactly one
+	// host-reach drop for the same bridge.
+	if n := strings.Count(rs, "group_forward iifname \"emgAAAAAA\" oifname"); n != 1 {
+		t.Errorf("lone group must emit exactly one forward drop (its own egress denial), got %d:\n%s", n, rs)
+	}
+	if n := strings.Count(rs, " drop\n"); n != 2 {
+		t.Errorf("lone group must emit exactly two drops (forward egress + input host reach), got %d:\n%s", n, rs)
 	}
 }
 
