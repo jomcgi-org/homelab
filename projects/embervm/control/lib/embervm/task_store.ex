@@ -277,13 +277,24 @@ defmodule Embervm.TaskStore do
   (the dispatcher's `retry/2` later moves it back to `queued`) and one whose
   budget is exhausted becomes `failed_permanent`, then enters the dead-letter
   queue when the workload enables it. There is no special node-down code path.
-  In v1 there is exactly one node, so "in-flight" is precisely "on the downed
-  node"; multi-node filtering by assigned node is Task 11's concern once tasks
-  record where they were dispatched.
+  With `node_id`, only the tasks dispatched to that brick (the `node_id` the
+  dispatcher recorded on :assign/:start, the registry's instance id) are
+  reassigned, plus any in-flight task whose placement is unknown (a legacy
+  assign without a node, or a row rebuilt from a projection that predates the
+  field): at-least-once for an unknown placement beats leaving it stranded.
+  Without `node_id` every in-flight task is reassigned, the pre-multi-brick
+  behaviour. A brick's down edge must never re-run the tasks that are still
+  executing on every healthy brick (`adoption.tla` reassigns node n's tasks
+  only).
   """
   @spec reassign_in_flight(GenServer.server()) :: {:ok, non_neg_integer()}
   def reassign_in_flight(store \\ __MODULE__) do
-    GenServer.call(store, {:reassign_in_flight, :transport})
+    GenServer.call(store, {:reassign_in_flight, :transport, nil})
+  end
+
+  @spec reassign_in_flight(GenServer.server(), String.t() | nil) :: {:ok, non_neg_integer()}
+  def reassign_in_flight(store, node_id) do
+    GenServer.call(store, {:reassign_in_flight, :transport, node_id})
   end
 
   # -- GenServer callbacks ---------------------------------------------------
@@ -660,11 +671,11 @@ defmodule Embervm.TaskStore do
     end
   end
 
-  def handle_call({:reassign_in_flight, reason}, _from, state) do
+  def handle_call({:reassign_in_flight, reason, node_id}, _from, state) do
     in_flight =
       :ets.foldl(
         fn {_id, task}, acc ->
-          if task.state in [:assigned, :running], do: [task | acc], else: acc
+          if task.state in [:assigned, :running] and on_node?(task, node_id), do: [task | acc], else: acc
         end,
         [],
         state.tasks
@@ -754,12 +765,28 @@ defmodule Embervm.TaskStore do
           %{}
         end
 
-      case append_and_update(state, task, op_kind, next, payload) do
+      case append_and_update(state, with_node(task, node_id), op_kind, next, payload) do
         {:ok, updated} -> {:reply, {:ok, updated}, state}
         {:error, _reason} = error -> {:reply, error, state}
       end
     else
       {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  # The brick a task was dispatched to, kept on the ETS row so a node's down edge
+  # can reassign exactly its tasks (reassign_in_flight/2). Only :assign/:start
+  # carry one; a nil leaves whatever the row already holds.
+  defp with_node(task, nil), do: task
+  defp with_node(task, node_id), do: Map.put(task, :node_id, node_id)
+
+  defp on_node?(_task, nil), do: true
+
+  defp on_node?(task, node_id) do
+    case Map.get(task, :node_id) do
+      nil -> true
+      ^node_id -> true
+      _other -> false
     end
   end
 
@@ -786,7 +813,7 @@ defmodule Embervm.TaskStore do
     with {:ok, task} <- fetch_task(state, task_id),
          {:ok, next} <- TaskState.transition(task.state, event) do
       ts = state.clock.()
-      updated = %{task | state: next, updated_at: ts}
+      updated = %{with_node(task, node_id) | state: next, updated_at: ts}
       # ETS advances NOW (synchronous), so reads and the later terminal transition
       # see the advanced state; the durable append is deferred.
       :ets.insert(state.tasks, {task_id, updated})

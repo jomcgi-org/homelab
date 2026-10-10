@@ -272,6 +272,36 @@ defmodule Embervm.TaskStoreTest do
     assert length(submitted) == 1
   end
 
+  test "reassign_in_flight/2 reassigns only the downed brick's tasks, plus unplaced ones", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    submit = fn ->
+      {:ok, :created, id} = TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"})
+      id
+    end
+
+    on_a = submit.()
+    on_b = submit.()
+    unplaced = submit.()
+    {:ok, _} = TaskStore.assign(store, on_a, "vm-a", "brick-a/pod-1")
+    {:ok, _} = TaskStore.start(store, on_a, "vm-a", "brick-a/pod-1")
+    {:ok, _} = TaskStore.assign(store, on_b, "vm-b", "brick-b/pod-2")
+    {:ok, _} = TaskStore.start(store, on_b, "vm-b", "brick-b/pod-2")
+    # A legacy assign without a node: placement unknown.
+    {:ok, _} = TaskStore.assign(store, unplaced)
+
+    # brick-a goes down: its task and the unplaced one are reassigned, brick-b's
+    # task keeps running (re-queuing it would run it twice).
+    assert {:ok, 2} = TaskStore.reassign_in_flight(store, "brick-a/pod-1")
+    assert {:ok, %{state: :failed_retryable}} = TaskStore.get(store, on_a)
+    assert {:ok, %{state: :failed_retryable}} = TaskStore.get(store, unplaced)
+    assert {:ok, %{state: :running, node_id: "brick-b/pod-2"}} = TaskStore.get(store, on_b)
+
+    # Without a node every in-flight task is reassigned (the pre-multi-brick sweep).
+    assert {:ok, 1} = TaskStore.reassign_in_flight(store)
+    assert {:ok, %{state: :failed_retryable}} = TaskStore.get(store, on_b)
+  end
+
   test "retry path: retryable failures decrement toward permanent, then dead-letter", %{path: path} do
     {_op_log, store} = start_pair(path)
 
