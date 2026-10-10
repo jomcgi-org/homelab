@@ -1167,6 +1167,19 @@ defmodule Embervm.ServingManager do
       Map.has_key?(state.waking, instance.workload) ->
         state
 
+      # The sweeper is banking this instance: the VM is still reported live while
+      # it drains (unpublished with reason :bank) and while the snapshot is taken,
+      # so rebinding it to :published here would re-add a draining endpoint to the
+      # fan-out and make the sweeper's bank_ready transition illegal, losing the
+      # durable bank record. :banking is ETS-only and drain_reason is cleared by a
+      # rebuild, so after a CP restart these rows fall through to the live-VM or
+      # snapshot clauses below and heal as before.
+      instance.state == :banking ->
+        state
+
+      instance.state == :draining and Map.get(instance, :drain_reason) == :bank ->
+        state
+
       # The node reports a LIVE serving VM matching the instance's vm_id: rebind the
       # endpoint + force published.
       is_binary(instance.vm_id) and Map.has_key?(live_vms, instance.vm_id) ->
@@ -1308,6 +1321,12 @@ defmodule Embervm.ServingManager do
           # for the window where adoption's durable backfill failed but the ETS row
           # is minted: never destroy a live node-woken VM, let adoption retry.
           activator_origin?(vm) ->
+            acc
+
+          # This manager is mid-wake for the VM's workload: the node reports the
+          # fresh VM before {:wake_done} has written its row, so it has no row yet
+          # and is not an orphan. The wake owns it until the row lands.
+          Map.has_key?(acc.waking, Map.get(vm, :workload)) ->
             acc
 
           match?(:none, find_instance_by_vm(acc, vm.vm_id)) ->

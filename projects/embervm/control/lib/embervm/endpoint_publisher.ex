@@ -406,12 +406,14 @@ defmodule Embervm.EndpointPublisher do
     # as the publish_flush span start so gate 4's fact-change -> ACK p95 is derivable.
     dirty_since = state.dirty_since
     endpoint_count = total_endpoint_count(ctx)
+    # The desired document is the same for every node (desired_for_node reads
+    # only ctx), so render and hash it once: per node it was O(nodes x workloads)
+    # store calls for identical output.
+    canonical = desired_for_node(ctx, "")
+    hash = snapshot_hash(canonical)
 
     state =
       Enum.reduce(nodes, state, fn node_id, acc ->
-        canonical = desired_for_node(ctx, "")
-        hash = snapshot_hash(canonical)
-
         if push_required?(acc, node_id, hash, now_ms) do
           {version, acc} = next_version(acc, node_id)
           desired = Map.put(canonical, :version, version)
