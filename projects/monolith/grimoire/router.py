@@ -3263,6 +3263,43 @@ def get_transcript_consent(
 
 
 @router.get(
+    "/campaigns/{campaign_id}/transcript/settings",
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def get_transcript_settings(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    _require_dm(session, campaign_id, email)
+    campaign = session.get(Campaign, campaign_id)
+    return {"retention_days": campaign.transcript_retention_days}
+
+
+class TranscriptSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    retention_days: int = Field(ge=1, le=365)
+
+
+@router.patch(
+    "/campaigns/{campaign_id}/transcript/settings",
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def set_transcript_settings(
+    campaign_id: str,
+    body: TranscriptSettingsRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    _require_dm(session, campaign_id, email)
+    campaign = session.get(Campaign, campaign_id)
+    campaign.transcript_retention_days = body.retention_days
+    session.commit()
+    return {"retention_days": campaign.transcript_retention_days}
+
+
+@router.get(
     "/campaigns/{campaign_id}/sessions/{session_id}/transcript",
     dependencies=[Depends(require_transcript_enabled)],
 )

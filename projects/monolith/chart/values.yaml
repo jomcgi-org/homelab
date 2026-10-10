@@ -1132,6 +1132,20 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # Privacy retention runs regardless of the transcript capture flag.
+    - name: grimoire-redact-transcripts
+      args: ["grimoire-redact-transcripts"]
+      schedule: "30 3 * * *" # daily 03:30 UTC
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      grimoire: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     - name: grimoire-load-chunks
       args: ["grimoire-load-chunks"]
       schedule: "0 2 * * *" # daily 02:00 UTC

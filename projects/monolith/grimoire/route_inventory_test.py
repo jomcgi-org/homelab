@@ -71,6 +71,12 @@ CASES = {
     ("DELETE", PREFIX + "/inventory/{item_id}"): Case(
         params={"item_id": "$item_party.id"}, success=204
     ),
+    ("GET", PREFIX + "/transcript/settings"): Case(
+        denials={"player_a": 403, "player_b": 403, "no_character": 403},
+    ),
+    ("PATCH", PREFIX + "/transcript/settings"): Case(
+        body={"retention_days": 14},
+    ),
     ("POST", PREFIX + "/sessions/{session_id}/utterances"): Case(
         params={"session_id": "$campaign_session.id"},
         body={
@@ -369,8 +375,8 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    # Main: 60 (58 plus handout upload and image); 5 transcript routes -> 66.
-    assert len(enumerated) == 66
+    # Main's 60 (handout upload and image included) plus 8 transcript routes.
+    assert len(enumerated) == 68
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):

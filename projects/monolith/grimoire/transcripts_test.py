@@ -19,7 +19,10 @@ PREFIX = "/api/grimoire/campaigns/{campaign_id}"
 CONSENT = PREFIX + "/transcript/consent"
 STATE = PREFIX + "/sessions/{session_id}/transcript"
 UTTERANCES = PREFIX + "/sessions/{session_id}/utterances"
+SETTINGS = PREFIX + "/transcript/settings"
 EXPECTED_ROUTES = {
+    ("GET", SETTINGS),
+    ("PATCH", SETTINGS),
     ("POST", UTTERANCES),
     ("PUT", CONSENT),
     ("DELETE", CONSENT),
@@ -671,7 +674,9 @@ def test_every_derived_transcript_route_is_hidden_when_either_flag_is_off(
                 "started_at": "2026-10-10T12:00:00Z",
                 "ended_at": "2026-10-10T12:00:01Z",
             }
-        kwargs = {"json": body} if method in ("PUT", "POST") else {}
+        if path == SETTINGS:
+            body = {"retention_days": 30}
+        kwargs = {"json": body} if method in ("PUT", "POST", "PATCH") else {}
         response = client.request(
             method,
             path.format(

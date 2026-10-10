@@ -27,10 +27,12 @@ import gzip
 import json
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
-from grimoire.models import KnowledgeChunk
+from grimoire.models import Campaign, Embedding, KnowledgeChunk, SessionEvent
 import shared.inference
 
 logger = logging.getLogger("monolith.grimoire.jobs")
@@ -43,11 +45,72 @@ _BOOKS_PREFIX = "books/"
 DEFAULT_EXTRACT_LIMIT = 25
 DEFAULT_VERIFY_LIMIT = 25
 DEFAULT_VERIFY_EVIDENCE_LIMIT = 6
+TRANSCRIPT_REDACTION_BATCH_SIZE = 500
 # Concurrent extract calls. Extraction is asynchronous bulk work, so it gets the
 # async slot budget of one decode slot and never makes an interactive caller
 # queue. See shared.inference.ASYNC_SLOT_BUDGET and
 # grimoire.extract.DEFAULT_CONCURRENCY.
 DEFAULT_EXTRACT_CONCURRENCY = shared.inference.ASYNC_SLOT_BUDGET
+
+
+def redact_transcripts(session: Session, *, now: datetime | None = None) -> int:
+    """Redact expired utterances and their vectors, committing each bounded batch."""
+    now = now or datetime.now(timezone.utc)
+    campaigns = session.exec(
+        select(Campaign.id, Campaign.transcript_retention_days).order_by(Campaign.id)
+    ).all()
+    redacted = 0
+    for campaign_id, retention_days in campaigns:
+        cutoff = now - timedelta(days=retention_days)
+        while True:
+            rows = session.exec(
+                select(SessionEvent)
+                .where(
+                    SessionEvent.campaign_id == campaign_id,
+                    SessionEvent.kind == "utterance",
+                    SessionEvent.created_at < cutoff,
+                    SessionEvent.body["redacted"].as_boolean().is_not(True),
+                )
+                .order_by(SessionEvent.created_at, SessionEvent.id)
+                .limit(TRANSCRIPT_REDACTION_BATCH_SIZE)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).all()
+            if not rows:
+                break
+            for row in rows:
+                row.body = {
+                    "redacted": True,
+                    **{
+                        key: row.body[key]
+                        for key in ("started_at", "ended_at", "source", "speaker_label")
+                        if key in row.body
+                    },
+                }
+            # The play embedder locks the same source rows before persisting.
+            # Remove both current transcript and legacy event-keyed vectors.
+            session.execute(
+                delete(Embedding).where(
+                    Embedding.embeddable_kind.in_(("transcript", "event")),
+                    Embedding.embeddable_id.in_([row.id for row in rows]),
+                )
+            )
+            session.commit()
+            redacted += len(rows)
+    return redacted
+
+
+def _redact_transcripts() -> int:
+    from core.db import get_engine
+
+    with Session(get_engine()) as session:
+        return redact_transcripts(session)
+
+
+async def grimoire_redact_transcripts(session: Session) -> None:
+    """Enforce retention even when transcript capture or play is disabled."""
+    count = await asyncio.to_thread(_redact_transcripts)
+    logger.info("grimoire_redact_transcripts: redacted %d utterances", count)
 
 
 def _embedding_client():
