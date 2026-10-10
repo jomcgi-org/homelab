@@ -47,7 +47,7 @@ data:
         --extra_execution_platforms=//bazel/tools/platforms:linux_x86_64 \
         @rules_apko//apko -- lock "$config"
     done < <(
-      find projects buck2 -type f \( -name apko.yaml -o -name 'apko-*.yaml' \) -print0
+      find projects -type f \( -name apko.yaml -o -name 'apko-*.yaml' \) -print0
     )
 
     ./bazel/tools/format/run-generators.sh
