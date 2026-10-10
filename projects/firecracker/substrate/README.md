@@ -7,7 +7,7 @@ components used by EmberVM and its guest images:
 | --- | --- |
 | `egress-proxy/` | Applies the guest egress allowlist and injects credentials outside the microVM. |
 | `rootfs-builder/` | Exports OCI images into Firecracker root filesystems. |
-| `shim/` | Shared in-guest HTTP server and capability hooks. |
+| `shim/` | Shared in-guest HTTP server (/invoke dispatch and the /shim/* control surface). |
 | `vsockproto/` | Host/guest message types and vsock port constants. |
 
 The current request flow, lifecycle, and security invariants are documented in

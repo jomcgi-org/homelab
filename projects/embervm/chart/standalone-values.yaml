@@ -78,9 +78,6 @@ noded:
 
 # Keep the ordinary workload surface to one zero-egress Python sandbox. The
 # same pinned guest image is registered as a session later in the walkthrough.
-sampleWorkload:
-  enabled: false
-
 sandboxWorkloads:
   sandboxPython:
     enabled: true
