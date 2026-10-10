@@ -359,7 +359,7 @@ services. The hub's Application
 `projects/mcp/context-forge-gateway/chart` directly and layers
 `deploy/values.yaml` and then `deploy/values-gke.yaml` on top, with the
 subchart's schema validation skipped. `deploy/application.yaml` is the
-home-cluster shape of the same Application and is referenced by no root.
+retired home cluster's shape (#6914) of the same Application and is referenced by no root.
 
 The practical consequence: **merging deploys instantly**, and there is no chart
 version bump in the loop. Nothing waits for a `chart-version-bot` write-back.

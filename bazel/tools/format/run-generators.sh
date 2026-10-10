@@ -11,9 +11,9 @@
 #
 # Generators covered (each self-locates via BUILD_WORKSPACE_DIRECTORY, so this
 # wrapper only cd's to the workspace and invokes them):
-#   - home-cluster kustomization, the push-all BUILD list, monolith routes,
-#     the posts manifest, the ADR 036 orchestrator context bundle
-#     (orchestrator_bundle.md), and the guest env-readmes (ADR agents/044:
+#   - the push-all BUILD list, monolith routes, the posts manifest, the ADR 036
+#     orchestrator context bundle (orchestrator_bundle.md), and the guest
+#     env-readmes (ADR agents/044:
 #     environment.md per guest image, derived from that guest's
 #     apko.lock.json + env-notes.md).
 #
@@ -50,7 +50,6 @@ for sandbox_lang in python go rust elixir ocaml javascript; do
 		--out "projects/firecracker/sandbox/${sandbox_lang}/environment.md" || exit 1
 done
 
-run ./bazel/images/generate-home-cluster.sh
 run ./bazel/images/generate-push-all.sh
 run ./projects/monolith/generate-routes.sh
 run python3 ./projects/monolith/knowledge/tools/gen_posts_manifest.py

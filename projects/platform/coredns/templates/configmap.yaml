@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ .Values.configMap.name }}
-  namespace: {{ .Values.configMap.namespace }}
-  labels: {{- include "coredns.labels" . | nindent 4 }}
-data:
-  Corefile: {{ .Values.corefile | quote }}

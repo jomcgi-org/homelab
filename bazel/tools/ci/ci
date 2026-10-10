@@ -157,7 +157,7 @@ need_generators() {
 	local f
 	while IFS= read -r f; do
 		case "$f" in
-		projects/*/deploy/* | projects/home-cluster/* | bazel/images/* | projects/*/image/*)
+		projects/*/deploy/* | bazel/images/* | projects/*/image/*)
 			return 0
 			;;
 		projects/monolith/generate-routes.sh | projects/monolith/*/router.py | \

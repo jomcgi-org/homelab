@@ -81,16 +81,6 @@ stars:
     suspend: true
 
 postgres:
-  # Nightly logical refresh of monolith-dev-pg, dumped from the production
-  # PRIMARY (monolith-pg-rw), not the -ro replica: standby recovery conflicts
-  # killed every run (see the env comment in
-  # chart/templates/cnpg-dev-refresh-cronworkflow.yaml).
-  # Enabled here rather than in the chart default so the chart stays inert for
-  # anyone rendering it, matching how every other environment choice is made in
-  # this repo. The hand-made half of its credentials (monolith-pg-dump-reader)
-  # exists; the dev half is CNPG-generated.
-  devRefresh:
-    enabled: true
   # Two instances: a primary (-rw) plus a hot standby (-ro) for the Phase 5
   # public read-only service (ADR 004 security/004) and for availability. CNPG
   # auto-creates the -ro / -r services and streams replication.

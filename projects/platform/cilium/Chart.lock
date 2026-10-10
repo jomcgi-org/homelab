@@ -1,6 +1,0 @@
-dependencies:
-- name: cilium
-  repository: oci://quay.io/cilium/charts
-  version: 1.20.0
-digest: sha256:3290ff21561c67887f241d0d829a159c37aae17d6e5c2d1ad8c2f9b5e5a3ff09
-generated: "2026-08-08T07:56:47.535011741Z"

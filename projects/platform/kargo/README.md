@@ -110,10 +110,9 @@ sufficient evidence. The check that matters is that it survives a `canada`
 sync, which you can force by merging anything it renders, or observe via
 `.status.operationState.finishedAt` moving on `canada`.
 
-The repo already uses this option for the same reason in
-`projects/platform/coredns/application.yaml` and
-`projects/platform/kyverno/application.yaml`: ArgoCD owns the resource, another
-controller owns one field.
+The home cluster's coredns and kyverno Applications (retired in #6914) used
+this option for the same reason: ArgoCD owns the resource, another controller
+owns one field.
 
 **Send the whole list every time.** A `--type=merge` patch REPLACES an array
 rather than appending to it, so patching in the production entry alone deletes

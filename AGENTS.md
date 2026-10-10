@@ -7,10 +7,10 @@ factory decides which model does which work.
 A Kubernetes homelab at
 [jomcgi-org/homelab](https://github.com/jomcgi-org/homelab). The GKE hub
 (`homelab-hub`) runs every workload and is the only management plane.
-`projects/home-cluster/` is residual configuration: do not deploy to it, and do
-not tear it down without an issue. `projects/platform/ARCHITECTURE.md` has the
-shape. Services, operators and websites live under `projects/<name>/`, each
-colocating its Helm `chart/` with the `deploy/` config ArgoCD ships it from.
+The home-cluster configuration was retired in #6914; the hub is the only
+cluster. `projects/platform/ARCHITECTURE.md` has the shape. Services,
+operators and websites live under `projects/<name>/`, each colocating its
+Helm `chart/` with the `deploy/` config ArgoCD ships it from.
 Everything builds with Bazel (bzlmod) and deploys from Git. Go, Python,
 JavaScript and Starlark.
 

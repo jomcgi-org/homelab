@@ -123,37 +123,7 @@ extract_targets_from_build bazel/images/BUILD >"$TMPDIR_VALIDATE/push_all_grep.t
 
 compare_targets "push-all" "$TMPDIR_VALIDATE/push_all_grep.txt" "$TMPDIR_VALIDATE/push_all_query.txt"
 
-# --- Validation 2: generate-home-cluster.sh ---
-
-echo "Validating generate-home-cluster.sh ..."
-
-# Run the script and verify it produces non-empty output
-bash bazel/images/generate-home-cluster.sh
-
-if [ ! -s projects/home-cluster/kustomization.yaml ]; then
-	echo "  generate-home-cluster: FAIL"
-	echo "    Script produced empty or missing projects/home-cluster/kustomization.yaml"
-	FAILED=1
-else
-	# Verify the output contains at least one resource path
-	if grep -q '^\s*- ../../projects/' projects/home-cluster/kustomization.yaml; then
-		echo "  generate-home-cluster: PASS"
-	else
-		echo "  generate-home-cluster: FAIL"
-		echo "    Generated kustomization.yaml contains no resource paths"
-		FAILED=1
-	fi
-
-	if grep -Eq '^\s*- ../../projects/(home-cluster|gke-cluster|platform-gke)(/|$)' projects/home-cluster/kustomization.yaml; then
-		echo "  generate-home-cluster exclusions: FAIL"
-		echo "    Generated kustomization.yaml contains a cluster root or cluster-specific platform path"
-		FAILED=1
-	else
-		echo "  generate-home-cluster exclusions: PASS"
-	fi
-fi
-
-# --- Validation 3: doc manifest inputs ---
+# --- Validation 2: doc manifest inputs ---
 
 # The two doc-index manifests (repo_docs_manifest.ndjson and the public docs-site
 # docs-manifest.json) are build outputs, not committed files (#6446). Their

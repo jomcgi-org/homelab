@@ -67,7 +67,6 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── firecracker/      #   fc-invoke microVM substrate (frozen; embervm forked its node daemon from it)
 ├── gke-apps/         #   Active GKE Applications for app workloads
 ├── gke-cluster/      #   Hand-maintained ArgoCD root and parent Application for the GKE hub
-├── home-cluster/     #   Residual home configuration; no deployments
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
 bazel/                # Build infrastructure (rules, tools, images)
 docs/                 # Cross-domain documentation and runbooks

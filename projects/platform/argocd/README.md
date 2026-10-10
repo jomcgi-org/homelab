@@ -27,11 +27,11 @@ flowchart LR
 
 ## Application Discovery Pattern
 
-ArgoCD discovers applications through the `projects/home-cluster/` auto-discovery pattern:
+The hub's root Application (`projects/gke-cluster/`) syncs two hand-maintained trees:
 
 ```
-projects/home-cluster/kustomization.yaml (auto-generated)
-  → projects/{service}/deploy/application.yaml
+projects/platform-gke/{component}/application.yaml → projects/platform/{component}/ (chart plus values-gke.yaml)
+projects/gke-apps/{service}/application.yaml       → OCI chart plus projects/{service}/deploy/values*.yaml
 ```
 
-Each `application.yaml` points to either a colocated Helm chart in `projects/{service}/chart/` or an upstream chart from an OCI/Helm registry.
+The generated `projects/home-cluster/` auto-discovery root was retired with the home configuration in #6914.
