@@ -421,6 +421,10 @@ defmodule Embervm.StatefulManager do
       # reserves an unattended auto-wake. The token identifies async results
       # and timers belonging to this exact wake, not merely this workload.
       waking: %{},
+      # Late successful boots retain ownership until exact-instance DESTROY is
+      # confirmed. In-memory only; completed ids suppress duplicate late results.
+      stale_wake_cleanups: %{},
+      stale_wake_cleaned: MapSet.new(),
       # Workloads for which auto-wake already reported a stale READY summary
       # with no matching ref in the live local base inventory. The marker is
       # cleared when readiness becomes live again or the stale summary clears.
@@ -520,19 +524,19 @@ defmodule Embervm.StatefulManager do
   # token of the wake that spawned it: a worker whose wake already ended (its
   # {:wake_timeout} fired, or adoption recovered the workload) must not complete
   # a LATER wake with its VM, nor publish an instance nobody waits for. A stale
-  # boot that did produce a VM is left to the orphan reconcile, which destroys a
-  # live stateful VM no row claims.
+  # boot that did produce a VM gets an exact-instance, retryable cleanup independent
+  # of the optional orphan-destroy gate, without changing any lifecycle row.
   @impl true
   def handle_info({:wake_done, workload, wake_token, outcome}, state) do
     if current_wake_token(state, workload) == wake_token do
-      {:noreply, finish_wake(state, workload, outcome)}
+      {:noreply, finish_wake(state, workload, wake_result(outcome))}
     else
       Logger.warning("embervm stateful: dropped a wake outcome from a wake that already ended",
         workload: workload,
         reason: stale_outcome_summary(outcome)
       )
 
-      {:noreply, state}
+      {:noreply, enqueue_stale_wake_cleanup(state, workload, outcome)}
     end
   end
 
@@ -942,16 +946,78 @@ defmodule Embervm.StatefulManager do
     send(self(), {:wake_done, workload, current_wake_token(state, workload), outcome})
   end
 
+  defp wake_result({:started_on, _dial_id, outcome}), do: outcome
+  defp wake_result(outcome), do: outcome
+
+  defp stale_outcome_summary({:started_on, dial_id, outcome}),
+    do: "#{stale_outcome_summary(outcome)}; cleanup target #{dial_id}"
+
   defp stale_outcome_summary({:created, _attrs, endpoint, mode, _boot_ref, _reason}),
-    do: "created vm #{inspect(Map.get(endpoint, :vm_id))} (#{mode}); left to the orphan reconcile"
+    do: "created vm #{inspect(Map.get(endpoint, :vm_id))} (#{mode}); fenced from publication"
 
   defp stale_outcome_summary({:relit, instance_id, node_id, _endpoint}),
-    do: "relit #{instance_id} on #{node_id}; left to the orphan reconcile"
+    do: "relit #{instance_id} on #{node_id}; fenced from publication"
 
   defp stale_outcome_summary({:relight_fell_back, instance_id, node_id, _endpoint, _reason}),
-    do: "relight fell back for #{instance_id} on #{node_id}; left to the orphan reconcile"
+    do: "relight fell back for #{instance_id} on #{node_id}; fenced from publication"
 
   defp stale_outcome_summary(other), do: inspect(other)
+
+  # Never infer the daemon from a logical node name: UNKNOWN on a sibling daemon
+  # also confirms DESTROY. Only workers carrying their actual StartStateful target
+  # can enqueue cleanup. Older/unsuccessful outcomes remain publication-fenced.
+  defp enqueue_stale_wake_cleanup(state, workload, {:started_on, dial_id, outcome}) do
+    endpoint =
+      case outcome do
+        {:created, _, endpoint, _, _, _} -> endpoint
+        {:relit, _, _, endpoint} -> endpoint
+        {:relight_fell_back, _, _, endpoint, _} -> endpoint
+        _ -> %{}
+      end
+
+    case Map.get(endpoint, :vm_id) do
+      vm_id when is_binary(vm_id) and vm_id != "" and is_binary(dial_id) and dial_id != "" ->
+        if MapSet.member?(state.stale_wake_cleaned, vm_id) do
+          state
+        else
+          cleanup = %{workload: workload, dial_id: dial_id, vm_id: vm_id}
+          state = %{state | stale_wake_cleanups: Map.put_new(state.stale_wake_cleanups, vm_id, cleanup)}
+          redrive_stale_wake_cleanups(state)
+        end
+
+      _ -> state
+    end
+  end
+
+  defp enqueue_stale_wake_cleanup(state, _workload, _outcome), do: state
+
+  defp redrive_stale_wake_cleanups(state) do
+    facts = NodeCapacity.all(state.capacity_table)
+
+    Enum.reduce(state.stale_wake_cleanups, state, fn {vm_id, cleanup}, acc ->
+      activator? =
+        Enum.any?(facts, fn fact ->
+          Enum.any?(Map.get(fact, :stateful_vms, []) || [], fn vm ->
+            Map.get(vm, :vm_id) == vm_id and activator_origin?(vm)
+          end)
+        end)
+
+      cond do
+        not stateful_vm_unclaimed?(acc, vm_id) or activator? ->
+          %{acc | stale_wake_cleanups: Map.delete(acc.stale_wake_cleanups, vm_id)}
+
+        Map.has_key?(acc.waking, cleanup.workload) ->
+          acc
+
+        stop_stateful_destroy_on(acc, cleanup.dial_id, vm_id) ->
+          %{acc |
+            stale_wake_cleanups: Map.delete(acc.stale_wake_cleanups, vm_id),
+            stale_wake_cleaned: MapSet.put(acc.stale_wake_cleaned, vm_id)}
+
+        true -> acc
+      end
+    end)
+  end
 
   # -- wake worker -------------------------------------------------------------
 
@@ -977,7 +1043,12 @@ defmodule Embervm.StatefulManager do
     # collapsed to one boundary here (plan_wake is a local planning step whose
     # occasional durable eviction is part of that same wake boundary).
     wake_start = :opentelemetry.timestamp()
-    plan = plan_wake(state, workload)
+    plan =
+      if Enum.any?(state.stale_wake_cleanups, fn {_, cleanup} -> cleanup.workload == workload end) do
+        {:error, :stale_wake_cleanup_pending}
+      else
+        plan_wake(state, workload)
+      end
     state = mark_restore_plan(state, workload, plan)
     cold =
       match?({:cold, _, _, _, _}, plan) or
@@ -2233,7 +2304,7 @@ defmodule Embervm.StatefulManager do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
         when is_binary(vm_id) and vm_id != "" ->
           shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
-          {:ok, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}
+          {:ok, {:started_on, dial_id, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}}
 
         # A RELIGHT call that fell back to a cold boot on the daemon side
         # (generation mismatch discovered only at the daemon, or an unreadable
@@ -2243,7 +2314,7 @@ defmodule Embervm.StatefulManager do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
         when is_binary(vm_id) and vm_id != "" ->
           shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
-          {:ok, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}
+          {:ok, {:started_on, dial_id, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
           {:reject, rejected}
@@ -2277,7 +2348,7 @@ defmodule Embervm.StatefulManager do
             volume_size_bytes: cold_volume_size_bytes(state, workload)
           }
 
-          {:ok, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}}
+          {:ok, {:started_on, dial_id, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
           {:reject, rejected}
@@ -2758,10 +2829,20 @@ defmodule Embervm.StatefulManager do
   end
 
   defp stop_stateful_destroy(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
+    case stateful_destroy_dial_id(state, node_id, vm_id) do
+      {:ok, dial_id} -> stop_stateful_destroy_on(state, dial_id, vm_id)
+      _ -> false
+    end
+  end
+
+  # An instance without a reachable VM holds nothing on a node, so its teardown is
+  # trivially confirmed.
+  defp stop_stateful_destroy(_state, _instance), do: true
+
+  defp stop_stateful_destroy_on(state, dial_id, vm_id) do
     req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
 
-    with {:ok, dial_id} <- stateful_destroy_dial_id(state, node_id, vm_id),
-         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
+    with {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       try do
         case state.stop_stateful_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} ->
@@ -2786,10 +2867,6 @@ defmodule Embervm.StatefulManager do
       _ -> false
     end
   end
-
-  # An instance without a reachable VM holds nothing on a node, so its teardown is
-  # trivially confirmed.
-  defp stop_stateful_destroy(_state, _instance), do: true
 
   # Resolve the current daemon instance that reports this exact VM. A bare node
   # name is only a valid NodeChannel key for a legacy node-scoped fact whose
@@ -3068,7 +3145,9 @@ defmodule Embervm.StatefulManager do
 
     EndpointPublisher.publish(state.publisher)
 
-    auto_wake_ready_workloads(state, facts)
+    state
+    |> redrive_stale_wake_cleanups()
+    |> auto_wake_ready_workloads(facts)
   end
 
   defp withdraw_unreported_resident_health(state) do
@@ -3276,6 +3355,10 @@ defmodule Embervm.StatefulManager do
           # window where a durable adoption write failed but the VM is live). Its
           # forward generation is trusted by the fenced-writer rule, not the grant.
           activator_origin?(vm) ->
+            acc
+
+          Map.has_key?(acc.stale_wake_cleanups, vm.vm_id) or
+              MapSet.member?(acc.stale_wake_cleaned, vm.vm_id) ->
             acc
 
           Enum.find(StatefulStore.all(acc.store), &(&1.vm_id == vm.vm_id)) == nil ->
