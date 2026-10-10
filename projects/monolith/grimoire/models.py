@@ -20,6 +20,7 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
+    Float,
     Index,
     Integer,
     String,
@@ -785,6 +786,44 @@ class Campaign(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True)),
+    )
+
+
+class CampaignVoice(SQLModel, table=True):
+    __tablename__ = "campaign_voice"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "speaker_key",
+            name="campaign_voice_campaign_id_speaker_key_key",
+        ),
+        CheckConstraint("rate BETWEEN 0.5 AND 2", name="campaign_voice_rate_chk"),
+        CheckConstraint("pitch BETWEEN 0 AND 2", name="campaign_voice_pitch_chk"),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign.id", ondelete="CASCADE"
+        ),
+    )
+    speaker_key: str = Field(sa_column=Column(String, nullable=False))
+    voice_hint: dict = Field(
+        default_factory=dict,
+        sa_column=Column(_JSONB, nullable=False, server_default=text("'{}'")),
+    )
+    rate: float = Field(
+        default=1, sa_column=Column(Float, nullable=False, server_default=text("1"))
+    )
+    pitch: float = Field(
+        default=1, sa_column=Column(Float, nullable=False, server_default=text("1"))
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
 
 
