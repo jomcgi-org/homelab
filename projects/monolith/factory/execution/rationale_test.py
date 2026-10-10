@@ -1,4 +1,4 @@
-from factory.orchestration.rationale import parse_rationale
+from factory.execution.rationale import parse_rationale
 
 
 def test_clean_trailer_parses_paths_and_deviation():

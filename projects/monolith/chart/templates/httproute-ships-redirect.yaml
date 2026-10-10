@@ -12,8 +12,8 @@ metadata:
   name: {{ include "monolith.fullname" . }}-ships-redirect
 spec:
   parentRefs:
-    - name: {{ .Values.cfIngress.public.gateway.name }}
-      namespace: {{ .Values.cfIngress.public.gateway.namespace }}
+    - name: {{ .Values.cfIngress.shipsRedirect.gateway.name }}
+      namespace: {{ .Values.cfIngress.shipsRedirect.gateway.namespace }}
   hostnames:
     - "ships.jomcgi.dev"
   rules:

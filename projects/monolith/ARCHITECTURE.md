@@ -2039,7 +2039,7 @@ mismatch without silently rewriting the decision record.
 | ADR | Title | Status | Disposition |
 | --- | --- | --- | --- |
 | `chat/001` | Ambient Feedback Loop and Directive Autopilot | Accepted, shipped (see: /projects/monolith/chat/ambient_analysis.py) | deleted |
-| `chat/002` | Structured, Scope-Locked Channel-History Query for the Chat Agent | Accepted, shipped (see: /projects/monolith/chat/channel_data.py) | deleted |
+| `chat/002` | Structured, Scope-Locked Channel-History Query for the Chat Agent | Accepted, shipped; the extraction module was removed as dead code (#6913) | deleted |
 | `chat/003` | Trust & Safety Safeguards (Ledger, Lockout, Shadow Forest) | Accepted, shipped (see: /projects/monolith/chat/safeguards.py) | deleted |
 
 ### Security

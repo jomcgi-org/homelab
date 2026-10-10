@@ -2259,17 +2259,6 @@ cfIngress:
       name: cloudflare-ingress
       namespace: envoy-gateway-system
     team: jomcgi
-  public:
-    enabled: false
-    tier: public
-    hostname: jomcgi.dev
-    servicePort: 3000
-    gateway:
-      name: cloudflare-ingress
-      namespace: envoy-gateway-system
-    rateLimit:
-      requests: 100
-      unit: Minute
   grimoire:
     enabled: false
     issuer: https://auth.jomcgi.dev/application/o/grimoire/

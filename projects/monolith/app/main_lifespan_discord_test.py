@@ -160,7 +160,6 @@ async def test_lifespan_starts_elector_and_shuts_down_tracer():
         patch("home.observability.rollup.prime_snapshots", new_callable=AsyncMock),
         patch("core.db.get_engine", return_value=MagicMock()),
         patch("sqlmodel.Session", return_value=mock_session),
-        patch("knowledge.service.on_startup"),
         patch("home.on_startup_jobs"),
         patch("ships.on_startup_jobs"),
         patch("hikes.on_startup_jobs"),

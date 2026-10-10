@@ -105,7 +105,7 @@ def _raw_input(session, raw_id):
 
 
 def _raw(db, content: str = "distress body") -> str:
-    from knowledge.ingest_queue import ingest_raw_with_status
+    from knowledge.api import ingest_raw_with_status
 
     with Session(db.engine) as session:
         raw, _ = ingest_raw_with_status(
