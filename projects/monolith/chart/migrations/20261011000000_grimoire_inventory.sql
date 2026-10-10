@@ -54,3 +54,34 @@ $$;
 CREATE TRIGGER inventory_change_append_only
     BEFORE UPDATE ON grimoire.inventory_change
     FOR EACH ROW EXECUTE FUNCTION grimoire.inventory_change_append_only();
+
+CREATE FUNCTION grimoire.inventory_change_no_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- FK cascades from campaign and inventory_item cleanup run as nested
+    -- triggers, so only those may delete audit rows. Direct deletes fail.
+    IF pg_trigger_depth() > 1 THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'inventory_change is append-only';
+END;
+$$;
+CREATE TRIGGER inventory_change_no_delete
+    BEFORE DELETE ON grimoire.inventory_change
+    FOR EACH ROW EXECUTE FUNCTION grimoire.inventory_change_no_delete();
+
+CREATE FUNCTION grimoire.inventory_item_no_hard_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Items are soft-deleted by the router, so only FK cascades from
+    -- campaign and player_character cleanup may hard-delete them.
+    -- Direct deletes fail.
+    IF pg_trigger_depth() > 1 THEN
+        RETURN OLD;
+    END IF;
+    RAISE EXCEPTION 'inventory_item is soft-deleted';
+END;
+$$;
+CREATE TRIGGER inventory_item_no_hard_delete
+    BEFORE DELETE ON grimoire.inventory_item
+    FOR EACH ROW EXECUTE FUNCTION grimoire.inventory_item_no_hard_delete();
