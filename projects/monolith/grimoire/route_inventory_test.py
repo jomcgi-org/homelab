@@ -74,7 +74,7 @@ CASES = {
     ("GET", PREFIX): Case(),
     ("GET", PREFIX + "/voices"): Case(read_only=True),
     ("PUT", PREFIX + "/voices/{speaker_key}"): Case(
-        params={"speaker_key": "narrator"},
+        params={"speaker_key": "$private.id"},
         body={"voice_hint": {"lang": "en-GB", "names": ["English"]}, "rate": 1.1},
     ),
     ("DELETE", PREFIX + "/voices/{speaker_key}"): Case(
@@ -309,7 +309,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 55  # Six inventory routes extend the exact registry.
+    assert len(enumerated) == 58  # 49 base + 6 inventory + 3 voice routes.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):

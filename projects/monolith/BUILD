@@ -9424,6 +9424,7 @@ py_test(
         ":pkg_core",
         ":pkg_grimoire",
         ":pkg_knowledge",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",

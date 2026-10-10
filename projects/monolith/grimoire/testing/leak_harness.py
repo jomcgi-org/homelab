@@ -600,19 +600,10 @@ def build_fixture(session: Session) -> LeakHarness:
                 voice_hint={"lang": "en-GB", "names": ["English"]},
             ),
         )
-    keep(
-        "event_voice",
-        SessionEvent(
-            campaign_id=rows["campaign"].id,
-            session_id=rows["campaign_session"].id,
-            seq=1 + sum(isinstance(obj, SessionEvent) for obj in objects),
-            kind="narration",
-            author_member_id=rows["member_dm"].id,
-            audience="table",
-            audience_pc_ids=[],
-            body={"text": "A voice from the shadows", "speaker_key": rows["private"].id},
-        ),
-    )
+    rows["event_table"].body = {
+        **rows["event_table"].body,
+        "speaker_key": rows["private"].id,
+    }
     keep("book", Book(id="corpus", display_name="Global corpus"))
     keep("ancestry", Entity(entity_type="race", name="Human", is_global=True))
     keep(

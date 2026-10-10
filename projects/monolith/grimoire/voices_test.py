@@ -110,6 +110,49 @@ def test_unknown_uuid_is_rejected(setup):
     assert client.put(path(h, str(uuid4())), headers=h.headers("dm"), json={}).status_code == 404
 
 
+@pytest.mark.parametrize("rate,pitch", [(0.5, 0), (2, 2)])
+def test_preset_boundaries_are_accepted(setup, rate, pitch):
+    client, h = setup
+    response = client.put(
+        path(h, "narrator"), headers=h.headers("dm"),
+        json={"rate": rate, "pitch": pitch, "voice_hint": {"lang": "x" * 35, "names": ["x" * 64] * 8}},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["rate"] == rate
+    assert response.json()["pitch"] == pitch
+
+
+def test_entity_voice_upsert_and_narration_share_canonical_key(setup):
+    client, h = setup
+    # Use a granted NPC without a preset to exercise entity-key creation.
+    key = h.rows["a_only"].id
+    for spelling, rate in ((key, 1.2), (key.lower(), 1.4)):
+        response = client.put(path(h, spelling), headers=h.headers("dm"), json={"rate": rate})
+        assert response.status_code == 200, response.text
+        assert response.json()["speaker_key"] == str(UUID(key))
+    rows = h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == str(UUID(key)))).all()
+    assert len(rows) == 1 and rows[0].rate == 1.4
+    created = client.post(events_path(h), headers=h.headers("dm"), json={"kind": "narration", "audience": "table", "body": {"speaker_key": key}})
+    assert created.status_code == 200, created.text
+    voices = client.get(path(h), headers=h.headers("player_a"))
+    events = client.get(events_path(h), headers=h.headers("player_a"))
+    event = next(row for row in events.json() if row["id"] == created.json()["id"])
+    assert event["body"]["speaker_key"] in {row["speaker_key"] for row in voices.json()}
+    assert event["body"]["speaker_key"] == speaker_ref(h.rows["campaign"].id, key)
+
+
+def test_retracted_narration_does_not_expose_speaker_key(setup):
+    client, h = setup
+    event_id = h.rows["event_table"].id
+    retracted = client.post(f"{events_path(h)}/{event_id}/retract", headers=h.headers("dm"))
+    assert retracted.status_code == 200, retracted.text
+    response = client.get(events_path(h), headers=h.headers("player_a"))
+    assert response.status_code == 200
+    h.assert_no_leak(response, "player_a")
+    event = next(row for row in response.json() if row["id"] == event_id)
+    assert event["body"] is None
+
+
 @pytest.mark.parametrize("viewer", ["dm", "player_a", "player_b", "no_character"])
 def test_members_can_get_voices_with_viewer_specific_keys(setup, viewer):
     client, h = setup
@@ -150,13 +193,13 @@ def test_narration_key_matches_voice_map_and_never_mutates_storage(setup, viewer
     events = client.get(events_path(h), headers=h.headers(viewer))
     assert voices.status_code == events.status_code == 200
     h.assert_no_leak(events, viewer)
-    event = next(row for row in events.json() if row["id"] == h.rows["event_voice"].id)
+    event = next(row for row in events.json() if row["id"] == h.rows["event_table"].id)
     key = event["body"]["speaker_key"]
     assert key in {row["speaker_key"] for row in voices.json()}
     raw_key = h.rows["private"].id
     assert key == (raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key))
     assert h.snapshot() == before
-    assert h.rows["event_voice"].body["speaker_key"] == raw_key
+    assert h.rows["event_table"].body["speaker_key"] == raw_key
 
 
 @pytest.mark.parametrize("key", ["narrator", "Unmapped voice", "Old Captain's-voice_1.", "private", None])
