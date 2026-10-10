@@ -666,3 +666,24 @@ func TestStoreBaseRoundTrip(t *testing.T) {
 		t.Fatal("WriteStoreBase must not create a missing lineage dir")
 	}
 }
+
+func TestScanSessionsTreatsMissingImageAsKnownAbsence(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.CreateSession("sbx", "good", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(m.SessionLineageDir("sbx", "empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inv, complete, err := m.ScanSessions()
+	if err != nil || !complete || len(inv) != 1 || inv[0].LineageID != "good" {
+		t.Fatalf("ScanSessions = %v, complete=%t, err=%v, want only good complete", inv, complete, err)
+	}
+	if err := os.MkdirAll(m.SessionVolumePath("sbx", "bad"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inv, complete, err = m.ScanSessions()
+	if err != nil || complete || len(inv) != 1 {
+		t.Fatalf("ScanSessions = %v, complete=%t, err=%v, want incomplete with good only", inv, complete, err)
+	}
+}

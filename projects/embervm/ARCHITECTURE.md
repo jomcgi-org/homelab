@@ -1182,6 +1182,41 @@ configuration, not proof of a rollout or live behavior. Post-rollout
 operational acceptance remains outstanding on #6059. The current brick mix is
 deployment state and lives in the fleet section.
 
+**Why.** Workspace archives acknowledge durable export through each node's
+`session_volumes[].exported` fact. `ArchiveVolume` returns after enqueueing the
+transfer, so its RPC acknowledgement cannot authorize scale-down. The optional
+`bricks.autoscale.archiveAckGate` rail fails closed on a missing or false flag
+and requests archives before choosing a victim. A fact whose workspace scan is
+incomplete (`session_volumes_complete` false) is likewise never a safe victim
+and requests no archive, since an empty list from a failed scan must never
+read as safe. The volume inventory is node-shared but the exported and attached
+flags are per brick process, so each request is addressed to the victim
+instance (never the node name or first-in-table owner) and its ledger is keyed
+`{instance_id, lineage_id}`; only the victim's own export flips the victim's
+fact. A lineage whose workload runs a live session VM on a co-located sibling
+is withheld from the request, because the victim cannot see that attachment
+and exporting a live-mounted image would overwrite the last consistent store
+copy. A candidate whose unexported lineages are all withheld ranks behind any
+archivable candidate, so it cannot starve the class. The hold reads only
+healthy, non-draining `NodeCapacity` rows and only `session_vms`, so it does
+not see a sibling that is draining, unknown or starting, or a primed VM that
+holds a lineage during `restore_then_prime` (counted in `live_vms`, absent from
+`session_vms`). Those windows, and the staleness of facts against the async
+export, are residual and are checked live rather than closed in code, since
+attach state is deliberately not shared on disk. The request ignores the workload persistence flag, like workspace
+retirement, so a disarmed flag cannot strand a victim behind a silent success.
+A blocked victim stays alive;
+`timeoutMs: 180000` bounds the quiet wait to the `drain_node` default deadline,
+then logs an error once (`Logger.error`) and keeps the `archive_pending`
+reason on the controller's decision span every tick. It never forces removal.
+The `[:embervm, :brick, :archive_ack_timeout]` and
+`[:embervm, :session, :archive_result]` telemetry events are emitted but no
+handler or metrics exporter consumes them, so they are not an exported signal:
+the one-time error log and the span reason are the observable ones. The timeout is a reversible alarm threshold. Restarted controllers
+re-derive eligibility from node facts, independently of their request ledger.
+The gate lands default-off for staging. Enabling it in deploy values and live
+acceptance remain on #6533.
+
 Catalog-derived class floors apply only to the scalable, unpinned class
 Deployment. Same-class `nodeFloors` are additive topology guarantees and are
 not credited against that derived count: the controller never scales their
@@ -1984,6 +2019,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
+| Brick scale-down requires durable workspace archive acknowledgement | section 7 | #6533 | repository gate default-off; enabling and live acceptance pending |
 | Guest digest-only publishes bake rootfs files in place without rolling bricks or draining live sessions | section 8 | #6662 | repository implementation staged; ReplicaSet and session live acceptance pending |
 | The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | built, hub dev 4gi bound-1 canary staged; live acceptance pending |

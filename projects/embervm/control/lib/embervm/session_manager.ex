@@ -99,6 +99,12 @@ defmodule Embervm.SessionManager do
   # control plane must not even ISSUE a second one and stack the I/O).
   @default_bank_concurrency 1
 
+  # An :ok result acknowledges enqueueing only. Durable export truth remains in
+  # NodeCapacity. Back off successful enqueue requests while that truth catches up.
+  @archive_request_backoff_ms 60_000
+  @archive_result_ttl_ms 600_000
+  @max_archive_results 1_024
+
   # Global concurrent-create cap: claim/prime workers perform expensive guest
   # operations, so a burst must not launch an unbounded number at once.
   @default_create_concurrency 16
@@ -413,6 +419,20 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, :sweep, :infinity)
   end
 
+  @doc """
+  Request workspace archives asynchronously from exactly one brick instance.
+
+  `instance_id` is the channel key of the brick (the scale-down victim), never a
+  node name: the volume inventory is node-shared but the attach/export state is
+  per process, so only the victim's own export flips the victim's fact. The
+  request ledger is keyed `{instance_id, lineage_id}`. The caller is
+  responsible for withholding lineages a co-located sibling may have attached.
+  """
+  @spec request_archive(GenServer.server(), String.t(), [map()]) :: :ok
+  def request_archive(server \\ __MODULE__, instance_id, volumes) do
+    GenServer.cast(server, {:request_archive, instance_id, volumes})
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -526,6 +546,10 @@ defmodule Embervm.SessionManager do
       cross_node_rejoin: Keyword.get(opts, :cross_node_rejoin, false),
       attach_epochs: %{},
       workspace_evidence: %{},
+      # {node_id, lineage_id} => requested_at, last_result, acked_at and in_flight.
+      # These enqueue acknowledgements never authorize brick removal.
+      archive_acks: %{},
+      archive_workers: %{},
       retire_volume_fun: Keyword.get(opts, :retire_volume_fun, &default_retire_volume/2),
       # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
       # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside every local
@@ -1116,6 +1140,11 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
+  def handle_cast({:request_archive, instance_id, volumes}, state) do
+    sessions = Enum.map(volumes, &Map.put(&1, :archive_instance_id, instance_id))
+    {:noreply, request_archives(state, sessions)}
+  end
+
   def handle_cast({:node_down, node_id, metadata}, state) do
     {_count, state} = sweep_brick_gone_node(state, node_id, metadata)
     {:noreply, state}
@@ -1129,12 +1158,16 @@ defmodule Embervm.SessionManager do
     {:reply, :ok, do_sweep(state)}
   end
 
+  @impl true
+  def handle_info({:archive_result, owner, lineage_id, result, at_ms}, state) do
+    {:noreply, record_archive_result(state, {owner, lineage_id}, result, at_ms)}
+  end
+
   # The async result of an in-flight relight worker (spawned by park_and_relight):
   # {:ok, node_id, vm_id, relight_ms} on a live restore, or {:error, reason}. On
   # success, crash-consistently append session_relit (AFTER the daemon returned a
   # live vm_id), start the session process, and drain the parked callers into it.
   # On failure, fail the session (snapshot_lost -> 410) and 410 the parked callers.
-  @impl true
   def handle_info({:relight_done, session_id, outcome}, state) do
     {:noreply, finish_relight(state, session_id, outcome)}
   end
@@ -1296,6 +1329,13 @@ defmodule Embervm.SessionManager do
       nil ->
         {:noreply, state}
     end
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, reason},
+        %{archive_workers: workers} = state) when is_map_key(workers, monitor) do
+    key = Map.fetch!(workers, monitor)
+    {:noreply, record_archive_result(state, key, {:error, {:worker_crashed, reason}},
+      state.monotonic_clock.())}
   end
 
   def handle_info({:DOWN, monitor, :process, _pid, _reason},
@@ -2549,12 +2589,15 @@ defmodule Embervm.SessionManager do
       |> Enum.filter(&(&1.state == :parked and &1.volume_node_id == node_id))
       |> Enum.filter(&(persistence_enabled_workload?(session_workload_entry(state, &1.workload))))
 
-    Enum.each(parked, fn session ->
-      fallback = if is_binary(pod_uid) and pod_uid != "", do: node_id <> "/" <> pod_uid, else: nil
-      capture_workspace_export(state, session, fallback)
-    end)
-
-    {count, state}
+    if state.cross_node_rejoin do
+      Enum.each(parked, fn session ->
+        fallback = if is_binary(pod_uid) and pod_uid != "", do: node_id <> "/" <> pod_uid, else: nil
+        capture_workspace_export(state, session, fallback)
+      end)
+      {count, state}
+    else
+      {count, request_archives(state, parked)}
+    end
   end
 
   defp drain_targets_session?(%{drain_instance_scoped: true} = state, session, node_id, pod_uid)
@@ -2981,9 +3024,17 @@ defmodule Embervm.SessionManager do
           {reply, state} = park_session(state, session_id)
           case reply do
             {:ok, parked} ->
-              if MapSet.member?(state.draining_sessions, session_id) do
-                capture_workspace_export(state, parked, pre_park_dial)
-              end
+              state =
+                if MapSet.member?(state.draining_sessions, session_id) do
+                  if state.cross_node_rejoin do
+                    capture_workspace_export(state, parked, pre_park_dial)
+                    state
+                  else
+                    request_archives(state, [parked])
+                  end
+                else
+                  state
+                end
 
               {:ok, clear_draining_session(state, session_id)}
 
@@ -5551,6 +5602,7 @@ defmodule Embervm.SessionManager do
   # -- sweep: expiry, banked-TTL GC, disk-pressure eviction (Task 7) ---------
 
   defp do_sweep(state) do
+    state = prune_archive_results(state)
     now = state.clock.()
 
     state
@@ -6573,6 +6625,119 @@ defmodule Embervm.SessionManager do
 
   defp delete_session_volume(_state, _session), do: :ok
 
+  defp request_archives(state, sessions) do
+    state = prune_archive_results(state)
+    now = state.monotonic_clock.()
+
+    Enum.reduce(sessions, state, fn session, acc ->
+      # An explicit archive_instance_id (the brick scale-down gate) owns the
+      # ledger key; the drain path keys by the volume's node and resolves the
+      # owning instance at dial time.
+      owner = Map.get(session, :archive_instance_id) || Map.get(session, :volume_node_id)
+      lineage_id = Map.get(session, :lineage_id)
+      key = {owner, lineage_id}
+      previous = Map.get(acc.archive_acks, key)
+
+      recent? = previous != nil and (previous.in_flight or
+        (previous.last_result == :ok and now - previous.acked_at < @archive_request_backoff_ms))
+
+      if is_binary(owner) and is_binary(lineage_id) and not recent? and
+           (map_size(acc.archive_acks) < @max_archive_results or previous != nil) do
+        manager = self()
+        {_pid, monitor} = spawn_monitor(fn ->
+          result =
+            try do
+              archive_session_volume(acc, session)
+            rescue
+              error -> {:error, error}
+            catch
+              kind, reason -> {:error, {kind, reason}}
+            end
+
+          send(manager, {:archive_result, owner, lineage_id, result, acc.monotonic_clock.()})
+        end)
+
+        entry = %{requested_at: now, last_result: nil, acked_at: nil, in_flight: true}
+        %{acc | archive_acks: Map.put(acc.archive_acks, key, entry),
+          archive_workers: Map.put(acc.archive_workers, monitor, key)}
+      else
+        acc
+      end
+    end)
+  end
+
+  defp record_archive_result(state, {owner, lineage_id} = key, result, at_ms) do
+    case Map.get(state.archive_acks, key) do
+      %{in_flight: true} = entry ->
+        workers = Enum.reduce(state.archive_workers, state.archive_workers, fn {monitor, worker_key}, acc ->
+          if worker_key == key do
+            Process.demonitor(monitor, [:flush])
+            Map.delete(acc, monitor)
+          else
+            acc
+          end
+        end)
+
+        entry = %{entry | last_result: result, acked_at: if(result == :ok, do: at_ms),
+          in_flight: false}
+
+        :telemetry.execute([:embervm, :session, :archive_result],
+          %{count: 1, elapsed_ms: max(0, at_ms - entry.requested_at)},
+          %{owner: owner, lineage_id: lineage_id, result: result})
+
+        prune_archive_results(%{state | archive_acks: Map.put(state.archive_acks, key, entry),
+          archive_workers: workers})
+
+      _ -> state
+    end
+  end
+
+  defp prune_archive_results(state) do
+    horizon = state.monotonic_clock.() - @archive_result_ttl_ms
+    kept = Map.reject(state.archive_acks, fn {_key, entry} ->
+      not entry.in_flight and entry.requested_at < horizon
+    end)
+    %{state | archive_acks: kept}
+  end
+
+  # The brick scale-down gate targets one INSTANCE: dial exactly that channel
+  # key, with no owner lookup (first-in-ETS on a shared node can resolve to a
+  # sibling whose export would never flip the victim's flag, or worse, to a
+  # non-owner that passes its attached guard on a live-mounted image). Ungated
+  # by the persistence flag like retire_session_volume/2: the victim cannot be
+  # released until its fact reports the workspace exported, so a disarmed flag
+  # must not turn the request into a silent success that strands the victim.
+  defp archive_session_volume(state, %{archive_instance_id: instance_id, workload: workload, lineage_id: lineage_id})
+       when is_binary(instance_id) and is_binary(workload) and is_binary(lineage_id) do
+    req = %ArchiveVolumeRequest{trace: %Trace{workload: workload}, workload: workload, lineage_id: lineage_id}
+
+    result =
+      with {:ok, channel} <- safe_channel(state.channel_fun, instance_id) do
+        try do
+          state.archive_volume_fun.(channel, req)
+        rescue
+          error -> {:error, error}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+      end
+
+    case result do
+      {:ok, %{skipped: true}} ->
+        Logger.warning("embervm archive skipped, lineage still attached",
+          workload: workload, lineage_id: lineage_id, instance_id: instance_id)
+        {:error, :archive_skipped}
+
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.warning("embervm session workspace archive failed; keeping volume",
+          workload: workload, lineage_id: lineage_id, instance_id: instance_id, reason: inspect(other))
+        {:error, other}
+    end
+  end
+
   defp archive_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})
        when is_binary(node_id) and is_binary(workload) and is_binary(lineage_id) do
     if persistence_enabled_workload?(session_workload_entry(state, workload)) do
@@ -6583,8 +6748,9 @@ defmodule Embervm.SessionManager do
       # parked workspaces never reached the store (#6499). The lookup fails
       # OPEN, returning the bare node_id when no instance reports the lineage
       # (restore_then_prime/9 detects the same miss the same way). Dialing that
-      # would only fail :unknown_node, and another instance on the node cannot
-      # stand in because the lineage directory is per-instance on disk. So a
+      # would only fail :unknown_node, and another instance on the node is not
+      # the one that reports the lineage (the inventory is node-shared, but the
+      # exported and attached flags are per brick process). So a
       # miss keeps the volume without dialing and logs its own warning, which
       # tells "no instance reports this lineage" apart from an RPC failure.
       case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, lineage_id) do

@@ -112,7 +112,8 @@ defmodule Embervm.NodeRoundtripTest do
            }
     assert ns.guest_memory_state_counts == %{"pending" => 1, "ok" => 2, "stale" => 3, "unsupported" => 4, "error" => 5}
     assert ns.guest_oom_count == 7
-    assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512}] = ns.session_volumes
+    assert [%{workload: "sandbox-session", lineage_id: "s-sess3", size_bytes: 1024, allocated_bytes: 512, exported: true}] = ns.session_volumes
+    assert ns.session_volumes_complete == true
   end
 
   test "session verbs round-trip across the wire (R2 additive contract)", %{channel: ch} do

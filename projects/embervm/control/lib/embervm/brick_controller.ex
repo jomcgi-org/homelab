@@ -109,6 +109,22 @@ defmodule Embervm.BrickController do
   existing bounded-preemption drain (noded SIGTERM -> registry drain edge ->
   `Embervm.DrainCoordinator` force-bank) is the backstop.
 
+  With `archive_ack_gate` enabled (chart default false), every parked workspace
+  must also report `exported: true`. A candidate blocked only on workspaces gets
+  an asynchronous pre-drain archive request and stays alive as `archive_pending`.
+  ArchiveVolume's enqueue acknowledgement cannot release it. After 180s the
+  controller alarms and keeps waiting, without annotating or shrinking. The
+  observable alarm signals are a one-time `Logger.error` and the
+  `archive_pending` reason on the decision span; the `[:embervm, :brick,
+  :archive_ack_timeout]` telemetry event has no handler or exporter yet. The
+  request goes to the victim instance (never the bare node), withholding any
+  lineage whose workload runs a live session VM on a co-located sibling. A fresh
+  controller re-derives the rail from node facts after restart. A fact whose
+  session workspace scan is incomplete (`session_volumes_complete` false: a scan
+  error, a partial scan, or a daemon that predates the field) is never a safe
+  victim either: it stays alive as `archive_pending` under the same timeout
+  alarm, but requests no archive, since there is no known inventory to archive.
+
   ## fleet-full
 
   A class is FLEET-FULL when its desired count exceeds the number of dial-home
@@ -174,6 +190,7 @@ defmodule Embervm.BrickController do
   @default_down_idle_ms 900_000
   @default_down_cooldown_ms 600_000
   @default_ceiling_idle_ms 3_600_000
+  @default_archive_ack_timeout_ms 180_000
   @max_empty_demand 64
 
   @typedoc """
@@ -218,6 +235,9 @@ defmodule Embervm.BrickController do
       `:down_idle_ms` / `:down_cooldown_ms` / `:ceiling_idle_ms` - hysteresis
       knobs (defaults 3 / 60s / 60s / 15m / 10m / 60m).
     * `:clock`                - `() -> integer()` ms clock (injected in tests).
+    * `:archive_ack_gate`     - require exported workspaces (default false).
+    * `:archive_ack_timeout_ms` - alarm after this wait (default 180s), never force removal.
+    * `:archive_fun`          - `(instance_id, volumes) -> :ok`, async archive request to that brick.
     * `:reconcile_on_start`   - reconcile once immediately (default true).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -313,6 +333,13 @@ defmodule Embervm.BrickController do
       scale_get_fun: Keyword.get(opts, :scale_get_fun, &K8s.get_deployment_scale/2),
       pods_fun: Keyword.get(opts, :pods_fun, &K8s.list_pods/2),
       annotate_fun: Keyword.get(opts, :annotate_fun, &K8s.annotate_pod/3),
+      archive_ack_gate: Keyword.get(opts, :archive_ack_gate, false),
+      archive_ack_timeout_ms: Keyword.get(opts, :archive_ack_timeout_ms, @default_archive_ack_timeout_ms),
+      archive_fun: Keyword.get(opts, :archive_fun, fn node_id, volumes ->
+        Embervm.SessionManager.request_archive(Embervm.SessionManager, node_id, volumes)
+      end),
+      # pod_uid => wait state. Rebuilt from node facts after a controller restart.
+      archive_pending: %{},
       registered_fun: Keyword.get(opts, :registered_fun, &registered_by_class/0),
       facts_fun: Keyword.get(opts, :facts_fun, fn -> NodeCapacity.all(NodeCapacity.table()) end),
       catalog_fun: Keyword.get(opts, :catalog_fun, &WorkloadCatalog.all/0),
@@ -502,6 +529,7 @@ defmodule Embervm.BrickController do
   defp reconcile(state) do
     registered = state.registered_fun.()
     facts = state.facts_fun.()
+    state = prune_archive_pending(state, facts)
     now = state.clock.()
     state = check_capacity_drift(state, facts)
     state =
@@ -542,6 +570,7 @@ defmodule Embervm.BrickController do
           name = class_name(class)
 
           if MapSet.member?(st.floor_overflow, name) do
+            st = clear_archive_pending(st, name)
             trace_decision(st, class, %{trace: %{reason: :floor_overflow}}, :suppressed, nil, fl)
             {os, fl, st}
           else
@@ -606,6 +635,7 @@ defmodule Embervm.BrickController do
     name = class_name(class)
 
     if state.mode == :off do
+      state = clear_archive_pending(state, name)
       target = class_static_target(class)
       {%{target: target, current: nil, decision: nil, trace: %{reason: :static, target: target}},
        state}
@@ -632,7 +662,7 @@ defmodule Embervm.BrickController do
           end
 
         :error ->
-          {%{skip: true, trace: %{reason: :read_failed}}, state}
+          {%{skip: true, trace: %{reason: :read_failed}}, clear_archive_pending(state, name)}
       end
     end
   end
@@ -650,6 +680,13 @@ defmodule Embervm.BrickController do
     name = class_name(class)
     signals = signals(state, class, now)
     {target, reason} = desired(current, signals)
+    state = if target >= current or state.mode != :full,
+      do: clear_archive_pending(state, name), else: state
+    # Observation is read-only: report the workspace rail without requesting RPCs.
+    reason =
+      if target < current and state.mode in [:observe, :up] and state.archive_ack_gate and
+           match?({:pending, _}, pick_archive_victim(state, state.facts_fun.(), name)),
+        do: :archive_pending, else: reason
     # What the decision span reports: the autoscale target and reason even when
     # the mode or the victim rail means nothing is written.
     trace = %{reason: reason, target: target, min: signals.min, max: signals.max}
@@ -672,8 +709,8 @@ defmodule Embervm.BrickController do
          }, state}
 
       target < current and state.mode == :full ->
-        case prepare_scale_down(state, name) do
-          :ok ->
+        case prepare_scale_down(state, name, now) do
+          {:ok, state} ->
             {%{
                target: target,
                current: current,
@@ -681,7 +718,7 @@ defmodule Embervm.BrickController do
                trace: trace
              }, state}
 
-          {:skip, why} ->
+          {{:skip, why}, state} ->
             Logger.info("brick autoscale: skipping scale-down of class #{name} (reason=#{why})")
 
             # The span keeps the skip reason bounded: a directing-write error
@@ -1292,27 +1329,148 @@ defmodule Embervm.BrickController do
   # placement can still race a VM onto the victim; the existing bounded
   # preemption drain (noded SIGTERM -> registry drain edge -> DrainCoordinator
   # force-bank) is the backstop for exactly that window.
-  defp prepare_scale_down(state, class) do
-    case pick_victim(state.facts_fun.(), class) do
-      nil -> {:skip, :no_safe_victim}
-      victim -> direct_victim(state, class, victim)
+  defp prepare_scale_down(state, class, now) do
+    facts = state.facts_fun.()
+
+    case pick_archive_victim(state, facts, class) do
+      {:safe, victim} ->
+        {direct_victim(state, class, victim), clear_archive_pending(state, class)}
+
+      {:pending, victim} ->
+        uid = Map.get(victim, :pod_uid)
+        wait = Map.get(state.archive_pending, uid, %{class: class, blocked_since: now, alarmed: false})
+        elapsed = now - wait.blocked_since
+
+        if elapsed >= state.archive_ack_timeout_ms do
+          metadata = %{size_class: class, pod_uid: uid, node_id: Map.get(victim, :node_id),
+            instance_id: victim_instance_id(victim)}
+          if not wait.alarmed do
+            Logger.error("brick autoscale: workspace archive acknowledgement timed out; keeping victim",
+              size_class: class, pod_uid: uid, node_id: metadata.node_id,
+              instance_id: metadata.instance_id,
+              elapsed_ms: elapsed, archive_ack_timeout_ms: state.archive_ack_timeout_ms)
+          end
+
+          :telemetry.execute([:embervm, :brick, :archive_ack_timeout],
+            %{count: 1, elapsed_ms: elapsed}, metadata)
+        end
+
+        # An incomplete scan holds the victim under the same timeout alarm but
+        # requests no archive: the inventory is unknown, so there is nothing
+        # known to archive, and an empty request must never read as success.
+        #
+        # The request is addressed to the victim INSTANCE, never the bare node:
+        # the inventory is node-shared but the exported/attached flags are
+        # per-process, so only the victim's own export flips the victim's fact.
+        # A lineage whose workload runs a live session VM on a co-located
+        # sibling is held back (the victim cannot see that attachment, and an
+        # export of a live-mounted image would overwrite the store's last
+        # consistent copy); the victim stays pending until the sibling parks.
+        if session_volumes_complete?(victim) do
+          case archivable_volumes(victim, facts) do
+            [] -> :ok
+            volumes -> state.archive_fun.(victim_instance_id(victim), volumes)
+          end
+        end
+        wait = %{wait | alarmed: elapsed >= state.archive_ack_timeout_ms}
+        {{:skip, :archive_pending},
+          %{state | archive_pending: Map.put(state.archive_pending, uid, wait)}}
+
+      nil ->
+        {{:skip, :no_safe_victim}, clear_archive_pending(state, class)}
     end
+  end
+
+  defp pick_archive_victim(state, facts, class) do
+    eligible = Enum.filter(facts, &legacy_victim?(&1, class))
+    safe =
+      Enum.filter(
+        eligible,
+        &(not state.archive_ack_gate or
+            (session_volumes_complete?(&1) and unexported_volumes(&1) == []))
+      )
+
+    case safe do
+      [_ | _] -> {:safe, Enum.min_by(safe, &length(warmth_inventory(&1)))}
+      [] ->
+        case eligible do
+          [] -> nil
+          pending ->
+            # Stalled facts rank last: an incomplete scan, or a complete one
+            # whose every unexported lineage is withheld by a live co-located
+            # sibling, requests no archive, so choosing one would stall the
+            # class while an archivable brick sits idle. Then keep the prior
+            # candidate across fact-order/count changes, else archive the
+            # fewest workspaces; pod uid makes equal counts stable.
+            victim = Enum.min_by(pending, fn fact ->
+              uid = Map.get(fact, :pod_uid)
+              {if(archive_stalled?(fact, facts), do: 1, else: 0),
+                if(Map.has_key?(state.archive_pending, uid), do: 0, else: 1),
+                length(unexported_volumes(fact)), uid}
+            end)
+            {:pending, victim}
+        end
+    end
+  end
+
+  # The channel key of the brick, by the repo's one dial-key rule.
+  defp victim_instance_id(fact), do: Brick.dial_id(fact)
+
+  # A pending candidate that can request nothing: unknown inventory, or known
+  # unexported lineages that are all withheld (see archivable_volumes/2).
+  defp archive_stalled?(fact, facts) do
+    not session_volumes_complete?(fact) or
+      (unexported_volumes(fact) != [] and archivable_volumes(fact, facts) == [])
+  end
+
+  # The victim's unexported volumes minus any whose workload has a live session
+  # VM on a co-located sibling instance (same node, different instance).
+  defp archivable_volumes(victim, facts) do
+    victim_id = victim_instance_id(victim)
+    node_id = Map.get(victim, :node_id)
+
+    live_workloads =
+      for sibling <- facts,
+          Map.get(sibling, :node_id) == node_id,
+          victim_instance_id(sibling) != victim_id,
+          vm <- Map.get(sibling, :session_vms) || [],
+          into: MapSet.new(),
+          do: Map.get(vm, :workload)
+
+    Enum.reject(unexported_volumes(victim), &MapSet.member?(live_workloads, Map.get(&1, :workload)))
+  end
+
+  defp unexported_volumes(fact) do
+    Enum.reject(Map.get(fact, :session_volumes) || [], &(Map.get(&1, :exported, false) == true))
+  end
+
+  # A fact without a confirmed clean scan reads as incomplete (an old daemon,
+  # a scan error, or a partial scan): unknown inventory is never safe.
+  defp session_volumes_complete?(fact) do
+    Map.get(fact, :session_volumes_complete, false) == true
+  end
+
+  defp clear_archive_pending(state, class) do
+    %{state | archive_pending: Map.reject(state.archive_pending, fn {_uid, wait} -> wait.class == class end)}
+  end
+
+  defp prune_archive_pending(state, facts) do
+    pending_uids = for fact <- facts,
+      legacy_victim?(fact, Map.get(fact, :size_class)) and
+        (not session_volumes_complete?(fact) or unexported_volumes(fact) != []),
+      into: MapSet.new(), do: Map.get(fact, :pod_uid)
+    %{state | archive_pending: Map.filter(state.archive_pending, fn {uid, _wait} ->
+      MapSet.member?(pending_uids, uid)
+    end)}
   end
 
   # The refuse-to-strand rail: a victim must be a registered, non-draining brick
   # of the class with ZERO live VMs and a fully-exported warmth inventory.
   # Among the safe candidates, remove the one with the least warmth to lose
   # (fewest banked bundles/snapshots; ties fall to the first sorted).
-  defp pick_victim(facts, class) do
-    facts
-    |> Enum.filter(fn f ->
-      Map.get(f, :size_class, "") == class and not Map.get(f, :draining, false) and
-        Map.get(f, :live_vms, 0) == 0 and warmth_all_exported?(f)
-    end)
-    |> case do
-      [] -> nil
-      safe -> Enum.min_by(safe, &length(warmth_inventory(&1)))
-    end
+  defp legacy_victim?(f, class) do
+    Map.get(f, :size_class, "") == class and not Map.get(f, :draining, false) and
+      Map.get(f, :live_vms, 0) == 0 and warmth_all_exported?(f)
   end
 
   defp warmth_inventory(fact), do: Enum.flat_map(@warmth_keys, &(Map.get(fact, &1) || []))
