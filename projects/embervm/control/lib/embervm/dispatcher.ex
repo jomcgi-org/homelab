@@ -931,8 +931,20 @@ defmodule Embervm.Dispatcher do
   # classifies the result into a terminal outcome. Returns a 2- or 3-tuple the
   # GenServer applies to the FSM.
   defp run_assign(ctx, channel_fun, invalidate_fun, assign_fun, prime_fun, get_request_fun) do
-    req_env = fetch_request(get_request_fun, ctx.task_id)
+    case fetch_request(get_request_fun, ctx.task_id) do
+      {:ok, req_env} ->
+        run_assign_with_request(req_env, ctx, channel_fun, invalidate_fun, assign_fun, prime_fun)
 
+      {:error, reason} ->
+        # The op-log could not serve the request body (store unavailable, call
+        # timeout). Running the guest with an empty body would turn a transient
+        # store blip into a guest 4xx, a permanent failure and a dead letter.
+        # Fail as :transport instead so the retry path refetches it.
+        {:failed, :transport, {:request_unavailable, reason}, nil}
+    end
+  end
+
+  defp run_assign_with_request(req_env, ctx, channel_fun, invalidate_fun, assign_fun, prime_fun) do
     # Restore the CALLER's trace context (the traceparent the submit carried, e.g.
     # the demos page whose httpx is OTel-instrumented) so the dispatch/guest_exec
     # spans join the caller's trace and appear in its waterfall. Falls back to the
@@ -1199,10 +1211,14 @@ defmodule Embervm.Dispatcher do
     end
   end
 
+  # {:ok, nil} (no envelope recorded for the task) stays an empty request, as it
+  # always was; only a failed read is an error.
   defp fetch_request(get_request_fun, task_id) do
     case safe_call(fn -> get_request_fun.(task_id) end) do
-      {:ok, {:ok, env}} when is_map(env) -> env
-      _ -> %{}
+      {:ok, {:ok, env}} when is_map(env) -> {:ok, env}
+      {:ok, {:ok, nil}} -> {:ok, %{}}
+      {:ok, {:error, reason}} -> {:error, reason}
+      other -> {:error, {:request_fetch_failed, other}}
     end
   end
 

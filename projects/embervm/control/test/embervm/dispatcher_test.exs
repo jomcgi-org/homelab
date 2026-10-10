@@ -69,6 +69,7 @@ defmodule Embervm.DispatcherTest do
           :assign_watchdog_margin_ms,
           :assign_watchdog_ms,
           :claimed_vm_ids_fun,
+          :get_request_fun,
           :tenant
         ])
 
@@ -1668,5 +1669,33 @@ defmodule Embervm.DispatcherTest do
 
     assert length(records) == 1,
            "adopt_inventory must emit once for one genuine adoption, got #{length(records)}"
+  end
+
+  # A request envelope the op-log cannot serve (store failover, call timeout)
+  # must fail the dispatch as :transport and never reach the guest: an empty
+  # body turns into a guest 4xx, a permanent failure and a dead letter for a
+  # task that had nothing wrong with it.
+  test "an unreadable request envelope fails the dispatch as transport instead of running an empty body" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        get_request_fun: fn _tid -> {:error, :unavailable} end,
+        assign_fun: fn _ch, _req ->
+          send(parent, :assigned)
+          {:ok, success_resp()}
+        end,
+        retry: %{max_attempts: 2, backoff_ms: 1, backoff_cap_ms: 1, retry_on: [:transport]}
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 1, primed_ids: ["vm-1"], live: 0, max: 8)
+
+    tid = submit(ctx, "wl-a", "p1")
+
+    # Attempt 1 fails :transport (retryable) and attempt 2 exhausts the budget;
+    # the guest assign is never invoked on either.
+    assert eventually(fn -> state_of(ctx, tid) in [:failed_permanent, :dead_lettered] end)
+    refute_received :assigned
   end
 end
