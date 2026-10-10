@@ -23,6 +23,7 @@ operator groups, membership, object scoping, and projections execute unchanged.
 
 from __future__ import annotations
 
+import io
 import json
 import uuid
 from contextlib import contextmanager
@@ -699,3 +700,109 @@ def build_fixture(session: Session) -> LeakHarness:
 def fake_knn(session, query_vector, kinds, limit, model=None, where=None):
     """Replace only pgvector distance: all seeded private candidates compete."""
     return [(row, 0.0) for row in session.exec(select(Embedding)).all()][:limit]
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"fixture-image-bytes"
+
+
+class FakeS3Client:
+    """In-memory stand-in for the boto3 S3 client the handout routes use."""
+
+    def __init__(self, objects: dict | None = None):
+        self.objects = objects if objects is not None else {}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None, **_):
+        self.objects[Bucket, Key] = (bytes(Body), ContentType)
+        return {}
+
+    def get_object(self, *, Bucket, Key, **_):
+        if (Bucket, Key) not in self.objects:
+            raise KeyError(Key)
+        data, content_type = self.objects[Bucket, Key]
+        return {"Body": _FakeBody(data), "ContentType": content_type}
+
+
+class _FakeBody:
+    def __init__(self, data: bytes):
+        self._stream = io.BytesIO(data)
+
+    def iter_chunks(self, chunk_size=1024):
+        while chunk := self._stream.read(chunk_size):
+            yield chunk
+
+    def close(self):
+        self._stream.close()
+
+
+def seed_handouts(h: LeakHarness) -> FakeS3Client:
+    """Add book, chunk and handout rows, and return a client holding their bytes.
+
+    Rows: an open-licensed book, a copyrighted one and an unclassified one, each
+    with one image chunk; a live handout to ``character_a`` only (referencing the
+    DM-only ``private`` entity, so projections must drop it) and a retracted twin.
+    Callers patch ``grimoire.ingest.build_s3_client`` to return the client.
+    """
+    rows = h.rows
+    objects = []
+
+    def keep(key, row):
+        rows[key] = row
+        objects.append(row)
+        return row
+
+    keep("book_open", Book(id="open-book", display_name="Open", copyrighted_content=False))
+    for key, book_id in (
+        ("open", "open-book"),
+        ("closed", "corpus"),
+        ("unclassified", "unclassified-book"),
+    ):
+        keep(
+            f"chunk_image_{key}",
+            KnowledgeChunk(
+                book_id=book_id,
+                chunk_ref=f"image-{key}",
+                content="",
+                seq=1000,
+                image_ref=f"s3://grimoire/books/{book_id}/image-{key}.png",
+            ),
+        )
+    seq = max(row.seq for row in h.session.exec(select(SessionEvent)).all())
+    for retracted in (False, True):
+        key = "event_handout_retracted" if retracted else "event_handout"
+        seq += 1
+        keep(
+            key,
+            SessionEvent(
+                id=h.token(f"{key}.id", ("dm", "player_a", "operator"), identifier=True),
+                campaign_id=rows["campaign"].id,
+                session_id=rows["campaign_session"].id,
+                seq=seq,
+                kind="handout",
+                author_member_id=rows["member_dm"].id,
+                audience="pcs",
+                audience_pc_ids=[rows["character_a"].id],
+                body={
+                    "title": h.token(
+                        f"{key}.title",
+                        ("dm", "operator") if retracted else ("dm", "player_a", "operator"),
+                    ),
+                    "markdown": h.token(
+                        f"{key}.markdown",
+                        ("dm", "operator") if retracted else ("dm", "player_a", "operator"),
+                    ),
+                    "entity_id": str(uuid.UUID(rows["private"].id)),
+                    "image": {
+                        "source": "chunk",
+                        "chunk_id": rows["chunk_image_open"].id,
+                    },
+                },
+                retracted_at=datetime.now(timezone.utc) if retracted else None,
+            ),
+        )
+    h.session.add_all(objects)
+    h.session.commit()
+    client = FakeS3Client()
+    for key in ("open", "closed", "unclassified"):
+        s3_key = rows[f"chunk_image_{key}"].image_ref.removeprefix("s3://grimoire/")
+        client.objects["grimoire", s3_key] = (PNG_BYTES, "image/png")
+    return client

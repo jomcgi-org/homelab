@@ -82,11 +82,12 @@ def is_book_copyrighted(session: Session, book_id: str) -> bool:
     served on the public Reader (/books/{id}/read, /chunks/{id}, .../image).
 
     The grimoire.book.copyrighted_content column is the authoritative gate.
-    A missing book row returns True (fail closed: an unknown book is treated
-    as copyrighted, so a not-yet-classified upload can never leak its text).
+    A missing book row or a NULL flag returns True (fail closed: an unknown
+    book is treated as copyrighted, so a not-yet-classified upload can never
+    leak its text).
     """
     book = session.get(Book, book_id)
-    return book is None or book.copyrighted_content
+    return book is None or book.copyrighted_content is not False
 
 
 def list_books(session: Session) -> list[dict[str, Any]]:

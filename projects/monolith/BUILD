@@ -6475,6 +6475,23 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_handouts_test",
+    srcs = ["grimoire/handouts_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//python_multipart",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_session_events_test",
     srcs = ["grimoire/session_events_test.py"],
     imports = ["."],
