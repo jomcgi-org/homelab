@@ -24,9 +24,9 @@ defmodule Embervm.ServingSweeperTest do
   # Serial execution removes the contention and keeps the wait deterministic.
   use ExUnit.Case, async: false
 
-  alias Embervm.{NodeCapacity, ServingStore, ServingSweeper, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, NodeRegistry, ServingStore, ServingSweeper, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Node.V1.StopServingResponse
+  alias Embervm.Node.V1.{NodeStatus, ServingSnapshot, StopServingResponse}
 
   # A publisher that RECORDS each publish/1 cast so a test can assert the fan-out was
   # re-derived (and, combined with a store read, that the activator swap happened
@@ -74,6 +74,9 @@ defmodule Embervm.ServingSweeperTest do
     {:ok, stop_calls} = Agent.start_link(fn -> [] end)
     {:ok, bank_fail} = Agent.start_link(fn -> false end)
     {:ok, destroy_confirmed} = Agent.start_link(fn -> Keyword.get(opts, :destroy_confirmed, true) end)
+    bank_reply_fun = Keyword.get(opts, :bank_reply_fun, fn req ->
+      {:ok, %StopServingResponse{snapshot_ref: "snap-#{req.vm_id}", size_bytes: 4_096}}
+    end)
 
     stop_serving_fun = fn _ch, req ->
       Agent.update(stop_calls, &[req | &1])
@@ -85,7 +88,7 @@ defmodule Embervm.ServingSweeperTest do
           {:error, if(Agent.get(bank_fail, & &1) == true, do: :bank_boom, else: Agent.get(bank_fail, & &1))}
 
         req.mode == :STOP_SERVING_MODE_BANK ->
-          {:ok, %StopServingResponse{snapshot_ref: "snap-#{req.vm_id}", size_bytes: 4_096}}
+          bank_reply_fun.(req)
 
         true ->
           {:ok, %StopServingResponse{teardown_confirmed: Agent.get(destroy_confirmed, & &1)}}
@@ -133,6 +136,7 @@ defmodule Embervm.ServingSweeperTest do
 
     %{
       sweeper: sweeper,
+      sweeper_opts: sweeper_opts,
       store: store,
       op_log: op_log,
       pub: pub,
@@ -383,7 +387,7 @@ defmodule Embervm.ServingSweeperTest do
     assert banked.snapshot_ref == "snap-vm-1"
 
     # The StopServing was a BANK.
-    assert [%{mode: :STOP_SERVING_MODE_BANK, vm_id: "vm-1"}] = stop_calls(ctx)
+    assert [%{mode: :STOP_SERVING_MODE_BANK, vm_id: "vm-1", trace: %{workload: "wl-a"}}] = stop_calls(ctx)
 
     # Op-log ordering: the serving_unpublished op strictly precedes serving_banked.
     seqs = op_seqs(ctx, ["serving_unpublished", "serving_banked"])
@@ -925,7 +929,7 @@ defmodule Embervm.ServingSweeperTest do
 
     ServingSweeper.sweep(ctx.sweeper)
     wait_until(ctx, fn -> match?({:ok, %{state: :banked, snapshot_ref: "snap-vm-1"}}, ServingStore.get(ctx.store, id)) end)
-    assert [%{mode: :STOP_SERVING_MODE_BANK, vm_id: "vm-1"}] = stop_calls(ctx)
+    assert [%{mode: :STOP_SERVING_MODE_BANK, vm_id: "vm-1", trace: %{workload: "wl-a"}}] = stop_calls(ctx)
   end
 
   test "an untracked banking row whose VM is gone adopts the node's unclaimed snapshot" do
@@ -945,6 +949,102 @@ defmodule Embervm.ServingSweeperTest do
     ServingSweeper.sweep(ctx.sweeper)
     assert {:ok, %{state: :banked, snapshot_ref: "snap-lost", snapshot_size_bytes: 777}} = ServingStore.get(ctx.store, id)
     assert stop_calls(ctx) == []
+  end
+
+  test "a restarted sweeper adopts the snapshot identified by its real bank request" do
+    test_pid = self()
+
+    ctx = start_stack(bank_reply_fun: fn _req ->
+      send(test_pid, {:bank_waiting, self()})
+      receive do
+        :release_bank -> {:ok, %StopServingResponse{snapshot_ref: "snap-restart", size_bytes: 777}}
+      end
+    end)
+
+    serving_workload(ctx, "wl-a", %{min_instances: 0, idle_bank_seconds: 60, drain_seconds: 5})
+    serving_node(ctx, "node-4", serving_vms: [live_vm("vm-1", "wl-a", "10.99.0.5")])
+    id = published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+
+    # Admit through the actual idle and drain path, holding the RPC's result.
+    set_scrape(ctx, {:ok, %{"serve|wl-a" => 10}})
+    ServingSweeper.sweep(ctx.sweeper)
+    advance(ctx.clock_agent, 120_000)
+    ServingSweeper.sweep(ctx.sweeper)
+    fire_drain(ctx, id)
+    assert_receive {:bank_waiting, worker}, 2_000
+    on_exit(fn -> Process.exit(worker, :kill) end)
+    assert {:ok, %{state: :banking}} = ServingStore.get(ctx.store, id)
+    assert [request] = stop_calls(ctx)
+    assert request.mode == :STOP_SERVING_MODE_BANK
+    assert request.vm_id == "vm-1"
+
+    # Keep the same durable store, capacity table and op-log across the restart.
+    GenServer.stop(ctx.sweeper)
+    {:ok, restarted} = ServingSweeper.start_link(ctx.sweeper_opts)
+
+    # Exercise the public NodeStatus projection, not a hand-populated capacity fact.
+    {:ok, registry} = NodeRegistry.start_link(
+      name: nil,
+      table: ctx.cap_table,
+      nodes: [%{id: "node-4", address: "node-4.test:9090"}],
+      watch_startup: false,
+      registry_resync_ms: 0,
+      session_sweep_fun: fn _node_id, _pod_uid -> :ok end
+    )
+
+    # Replace the earlier live-VM fact with the daemon's post-bank inventory.
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    :ok = NodeRegistry.inject_status(registry, "node-4", %NodeStatus{
+      node_id: "node-4",
+      serving_snapshots: [%ServingSnapshot{
+        snapshot_ref: "snap-restart",
+        workload: request.trace.workload,
+        size_bytes: 777,
+        created_at_unix_ms: Agent.get(ctx.clock_agent, & &1)
+      }]
+    })
+
+    ServingSweeper.sweep(restarted)
+    assert {:ok, %{state: :banked, snapshot_ref: "snap-restart", snapshot_size_bytes: 777}} = ServingStore.get(ctx.store, id)
+    # Even a delayed success addressed to the stopped sweeper cannot affect recovery.
+    send(worker, :release_bank)
+    for _ <- 1..3, do: ServingSweeper.sweep(restarted)
+    assert {:ok, %{state: :banked, snapshot_ref: "snap-restart"}} = ServingStore.get(ctx.store, id)
+    assert stop_calls(ctx) == [request]
+  end
+
+  test "an untracked banking row rejects a wrong-workload snapshot" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    id = published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+    {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
+    {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "snap-other", workload: "wl-other", size_bytes: 1, created_at_unix_ms: 10_500}]
+    )
+
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :banking, snapshot_ref: nil}} = ServingStore.get(ctx.store, id)
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :destroyed, snapshot_ref: nil}} = ServingStore.get(ctx.store, id)
+  end
+
+  test "an untracked banking row rejects a snapshot already claimed by another row" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+    banked_instance(ctx, "srv-owner", "wl-a", nil, "snap-claimed")
+    id = published_instance(ctx, "srv-1", "wl-a", "vm-1", "10.99.0.5")
+    {:ok, _} = ServingStore.unpublish(ctx.store, id, :bank)
+    {:ok, _} = ServingStore.mark(ctx.store, id, :bank)
+    serving_node(ctx, "node-4",
+      serving_snapshots: [%{snapshot_ref: "snap-claimed", workload: "wl-a", size_bytes: 1, created_at_unix_ms: 10_500}]
+    )
+
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :banking, snapshot_ref: nil}} = ServingStore.get(ctx.store, id)
+    ServingSweeper.sweep(ctx.sweeper)
+    assert {:ok, %{state: :destroyed, snapshot_ref: nil}} = ServingStore.get(ctx.store, id)
+    assert {:ok, %{state: :banked, snapshot_ref: "snap-claimed"}} = ServingStore.get(ctx.store, "srv-owner")
   end
 
   test "an untracked banking row does not adopt a snapshot older than its own bank" do
