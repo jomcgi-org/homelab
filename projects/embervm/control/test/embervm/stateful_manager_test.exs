@@ -4482,6 +4482,52 @@ defmodule Embervm.StatefulManagerTest do
     refute_received {:stop, _}
   end
 
+  test "stale cleanup escapes once its owning instance is gone and the next wake succeeds" do
+    # The owning pod is replaced while a DESTROY is still pending: the exact
+    # dial_id is unresolvable (channel_fun returns {:error, :unknown_node}) and
+    # missing from NodeCapacity. The entry must not fence the workload forever;
+    # past the escape interval it is dropped (with no confirmed release) and a
+    # later wake on the replacement pod succeeds.
+    {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+
+    ctx =
+      start_stack(
+        clock: fn -> Agent.get(manager_clock, & &1) end,
+        destroying_escape_ms: 100,
+        channel_fun: fn
+          "node-4/owner" -> {:error, :unknown_node}
+          key -> {:ok, key}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner")
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-stale")})
+    assert map_size(:sys.get_state(ctx.mgr).stale_wake_cleanups) == 1
+
+    assert {:error, {:wake_failed, :stale_wake_cleanup_pending}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # Before the escape interval the entry is retained and still fences wakes.
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert map_size(:sys.get_state(ctx.mgr).stale_wake_cleanups) == 1
+
+    assert {:error, {:wake_failed, :stale_wake_cleanup_pending}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    # The replacement pod serves the node under a new instance id, so the old
+    # exact dial_id is gone from NodeCapacity too. Past the escape interval the
+    # entry drops and the fence lifts.
+    stateful_node(ctx, "node-4", instance_id: "node-4/newpod")
+    Agent.update(manager_clock, &(&1 + 101))
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [%{vm_id: vm_id}] = StatefulStore.list(ctx.store, "wl-a")
+    assert vm_id != "vm-stale"
+  end
+
   test "StartStateful carries a deadline derived from the workload's wake bound" do
     # A three-arity start fun receives the RPC deadline: the manager's wake bound
     # (here the explicit test override) plus the RPC margin, never a flat number

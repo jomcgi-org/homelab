@@ -423,8 +423,14 @@ defmodule Embervm.StatefulManager do
       waking: %{},
       # Late successful boots retain ownership until exact-instance DESTROY is
       # confirmed. In-memory only; completed ids suppress duplicate late results.
+      # Each pending entry carries its enqueue time (manager clock) so an entry
+      # whose owning instance is gone can escape instead of fencing wakes forever.
       stale_wake_cleanups: %{},
       stale_wake_cleaned: MapSet.new(),
+      # vm_id -> last alarm timestamp for a still-pending stale cleanup. This
+      # suppresses every-tick floods while re-alarming a persistent wedge once
+      # per alarm interval.
+      stale_wake_alarmed: %{},
       # Workloads for which auto-wake already reported a stale READY summary
       # with no matching ref in the live local base inventory. The marker is
       # cleared when readiness becomes live again or the stale summary clears.
@@ -995,7 +1001,7 @@ defmodule Embervm.StatefulManager do
         if MapSet.member?(state.stale_wake_cleaned, vm_id) do
           state
         else
-          cleanup = %{workload: workload, dial_id: dial_id, vm_id: vm_id}
+          cleanup = %{workload: workload, dial_id: dial_id, vm_id: vm_id, enqueued_at: state.clock.()}
           state = %{state | stale_wake_cleanups: Map.put_new(state.stale_wake_cleanups, vm_id, cleanup)}
           redrive_stale_wake_cleanups(state)
         end
@@ -1008,6 +1014,11 @@ defmodule Embervm.StatefulManager do
 
   defp redrive_stale_wake_cleanups(state) do
     facts = NodeCapacity.all(state.capacity_table)
+    now = state.clock.()
+
+    # Prune alarm timestamps to still-pending entries.
+    still = MapSet.new(Map.keys(state.stale_wake_cleanups))
+    state = %{state | stale_wake_alarmed: Map.take(state.stale_wake_alarmed, MapSet.to_list(still))}
 
     Enum.reduce(state.stale_wake_cleanups, state, fn {vm_id, cleanup}, acc ->
       activator? =
@@ -1019,19 +1030,98 @@ defmodule Embervm.StatefulManager do
 
       cond do
         not stateful_vm_unclaimed?(acc, vm_id) or activator? ->
-          %{acc | stale_wake_cleanups: Map.delete(acc.stale_wake_cleanups, vm_id)}
+          Logger.info("embervm stateful stale wake cleanup dropped, vm claimed",
+            workload: cleanup.workload,
+            vm_id: vm_id,
+            dial_id: cleanup.dial_id
+          )
+
+          drop_stale_wake_cleanup(acc, vm_id)
 
         Map.has_key?(acc.waking, cleanup.workload) ->
           acc
 
+        stale_cleanup_owner_gone?(acc, facts, cleanup, now) ->
+          elapsed = now - Map.get(cleanup, :enqueued_at, now)
+
+          Logger.error("embervm stateful stale wake cleanup dropped after owner absence",
+            workload: cleanup.workload,
+            vm_id: vm_id,
+            dial_id: cleanup.dial_id,
+            elapsed_ms: elapsed,
+            escape_threshold_ms: acc.destroying_escape_ms
+          )
+
+          drop_stale_wake_cleanup(acc, vm_id)
+
         stop_stateful_destroy_on(acc, cleanup.dial_id, vm_id) ->
+          Logger.info("embervm stateful stale wake cleanup confirmed",
+            workload: cleanup.workload,
+            vm_id: vm_id,
+            dial_id: cleanup.dial_id
+          )
+
           %{acc |
             stale_wake_cleanups: Map.delete(acc.stale_wake_cleanups, vm_id),
-            stale_wake_cleaned: MapSet.put(acc.stale_wake_cleaned, vm_id)}
+            stale_wake_cleaned: MapSet.put(acc.stale_wake_cleaned, vm_id),
+            stale_wake_alarmed: Map.delete(acc.stale_wake_alarmed, vm_id)}
 
-        true -> acc
+        true ->
+          maybe_alarm_stale_cleanup(acc, cleanup, now)
       end
     end)
+  end
+
+  defp drop_stale_wake_cleanup(state, vm_id) do
+    %{state |
+      stale_wake_cleanups: Map.delete(state.stale_wake_cleanups, vm_id),
+      stale_wake_alarmed: Map.delete(state.stale_wake_alarmed, vm_id)}
+  end
+
+  # Bounded escape for a pending cleanup whose owning noded instance left the
+  # fleet: the VM and the daemon's in-memory attach lock went with the pod, so
+  # every DESTROY attempt fails at safe_channel with {:error, :unknown_node}
+  # and the workload would otherwise stay fenced until a control-plane restart.
+  # Once the exact dial_id has been unresolvable or missing from NodeCapacity
+  # for at least destroying_escape_ms, drop the entry so later wakes proceed.
+  # This mirrors fail_unconfirmed_destroy: no teardown was confirmed, so no
+  # release_confirmed and no cleaned id.
+  defp stale_cleanup_owner_gone?(state, facts, cleanup, now) do
+    elapsed = now - Map.get(cleanup, :enqueued_at, now)
+
+    elapsed >= state.destroying_escape_ms and
+      (stale_cleanup_dial_missing?(facts, cleanup.dial_id) or
+         stale_cleanup_channel_dead?(state, cleanup.dial_id))
+  end
+
+  defp stale_cleanup_dial_missing?(facts, dial_id) do
+    not Enum.any?(facts, &(Brick.dial_id(&1) == dial_id))
+  end
+
+  defp stale_cleanup_channel_dead?(state, dial_id) do
+    match?({:error, _}, safe_channel(state.channel_fun, dial_id))
+  end
+
+  # Re-alarm once per alarm interval. This keeps a persistent wedge visible
+  # without flooding every reconcile tick.
+  defp maybe_alarm_stale_cleanup(state, cleanup, now) do
+    elapsed = now - Map.get(cleanup, :enqueued_at, now)
+    last_alarm = Map.get(state.stale_wake_alarmed, cleanup.vm_id)
+
+    if elapsed >= state.destroying_alarm_ms and
+         (is_nil(last_alarm) or now - last_alarm >= state.destroying_alarm_ms) do
+      Logger.warning("embervm stateful stale wake cleanup pending",
+        workload: cleanup.workload,
+        vm_id: cleanup.vm_id,
+        dial_id: cleanup.dial_id,
+        elapsed_ms: elapsed,
+        alarm_threshold_ms: state.destroying_alarm_ms
+      )
+
+      %{state | stale_wake_alarmed: Map.put(state.stale_wake_alarmed, cleanup.vm_id, now)}
+    else
+      state
+    end
   end
 
   # -- wake worker -------------------------------------------------------------
