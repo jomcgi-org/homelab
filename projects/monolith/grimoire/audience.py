@@ -19,7 +19,10 @@ Viewer = str | None
 AudienceKind = Literal["table", "dm", "pcs"]
 
 AUDIENCE_TYPE = String()
-AUDIENCE_PC_IDS_TYPE = JSONB(none_as_null=True).with_variant(
+AUDIENCE_PC_IDS_TYPE = JSONB().with_variant(JSON(), "sqlite")
+# Corpus embeddings require SQL NULL, while play source columns must preserve
+# explicit JSON null so their array checks reject it instead of using defaults.
+NULLABLE_AUDIENCE_PC_IDS_TYPE = JSONB(none_as_null=True).with_variant(
     JSON(none_as_null=True), "sqlite"
 )
 AUTHOR_MEMBER_ID_TYPE = PG_UUID(as_uuid=False).with_variant(String(36), "sqlite")
