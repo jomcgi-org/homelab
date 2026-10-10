@@ -16,7 +16,14 @@ from fastapi.testclient import TestClient
 
 from grimoire import join_links, search
 from grimoire.models import CampaignJoinLink
-from grimoire.testing.leak_harness import ROLES, SHEET_BODY, fake_knn, sqlite_harness
+from grimoire.testing.leak_harness import (
+    PNG_BYTES,
+    ROLES,
+    SHEET_BODY,
+    fake_knn,
+    seed_handouts,
+    sqlite_harness,
+)
 
 PREFIX = "/api/grimoire/campaigns/{campaign_id}"
 CHARACTER = "/characters/{player_character_id}/sheets"
@@ -34,6 +41,13 @@ class Case:
     denials: dict[str, int] = field(default_factory=dict)
     denied_writers: tuple[str, ...] = ("dm", "player_a", "player_b", "no_character")
     read_only: bool = False
+    # Multipart upload parts, sent instead of a JSON body.
+    files: dict | None = None
+    # GET only: exact status per viewer where the audience is narrower than the
+    # campaign (a handout aimed at one PC), checked before the generic rules.
+    reads: dict[str, int] = field(default_factory=dict)
+    # The positive control returns bytes, not JSON.
+    binary: bool = False
 
 
 # $row.column values resolve against real persisted fixture rows. Bodies are
@@ -231,6 +245,17 @@ CASES = {
     ("POST", PREFIX + "/sessions/{session_id}/events/{event_id}/retract"): Case(
         params={"session_id": "$campaign_session.id", "event_id": "$event_table.id"},
     ),
+    ("POST", PREFIX + "/handouts/uploads"): Case(
+        files={"file": ("handout.png", PNG_BYTES, "application/octet-stream")},
+        success=201,
+        # Stores an object in S3, not a database row.
+        read_only=True,
+    ),
+    ("GET", PREFIX + "/sessions/{session_id}/events/{event_id}/image"): Case(
+        params={"session_id": "$campaign_session.id", "event_id": "$event_handout.id"},
+        reads={"player_b": 404, "no_character": 404},
+        binary=True,
+    ),
     ("POST", PREFIX + "/invitations"): Case(body={"email": "$email.outsider"}),
     ("GET", PREFIX + "/invitations"): Case(),
     ("DELETE", PREFIX + "/invitations/{invitation_id}"): Case(
@@ -262,6 +287,8 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     with sqlite_harness(tmp_path / "inventory.db") as h:
         monkeypatch.setattr(search, "knn_embeddings", fake_knn)
+        s3 = seed_handouts(h)
+        monkeypatch.setattr("grimoire.ingest.build_s3_client", lambda: s3)
         links = []
         for key, campaign, owner, recipient in (
             ("join_link", "campaign", "dm", "outsider"),
@@ -366,6 +393,7 @@ def call(client, h, method, path, case, viewer, *, params=None, query=None):
         headers=h.headers(viewer),
         params=resolve(h, case.query if query is None else query),
         json=resolve(h, case.body),
+        files=case.files,
     )
     h.assert_no_leak(response, viewer)
     return response
@@ -460,7 +488,9 @@ def test_campaign_route_matrix(harness, method, path):
                         params=params,
                         query=query,
                     )
-                    if viewer == "player_a" and visible_to_a is not None:
+                    if viewer in case.reads:
+                        assert response.status_code == case.reads[viewer], response.text
+                    elif viewer == "player_a" and visible_to_a is not None:
                         expected = 200 if visible_to_a else 404
                         assert response.status_code == expected, response.text
                     elif viewer in ("outsider", "other_campaign"):
@@ -496,7 +526,9 @@ def test_campaign_route_matrix(harness, method, path):
         # Same request and resource ids: every denial above has a real success.
         response = call(client, h, method, path, case, case.caller)
         assert response.status_code == case.success, response.text
-        if method == "GET":
+        if method == "GET" and case.binary:
+            assert response.content, f"vacuous positive control: {path}"
+        elif method == "GET":
             assert response.json(), f"vacuous positive control: {path}"
         elif case.read_only:
             assert h.snapshot() == before
