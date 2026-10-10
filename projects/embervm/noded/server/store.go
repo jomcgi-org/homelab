@@ -509,6 +509,9 @@ func (s *Server) RetireVolume(_ context.Context, req *nodev1.RetireVolumeRequest
 	if req.GetWorkload() == "" || req.GetLineageId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: workload and lineage_id required")
 	}
+	if err := requireIDs("workload", req.GetWorkload(), "lineage_id", req.GetLineageId()); err != nil {
+		return nil, err
+	}
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; retirement unavailable")
 	}
@@ -566,6 +569,9 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; export unavailable")
 	}
 	ref := req.GetArtifact()
+	if err := requireIDs("artifact.workload", ref.GetWorkload(), "artifact.ref", ref.GetRef()); err != nil {
+		return nil, err
+	}
 	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	if prefix == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")
@@ -674,6 +680,9 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // Every other (small) kind still restores inline.
 func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
 	ref := req.GetArtifact()
+	if err := requireIDs("artifact.workload", ref.GetWorkload(), "artifact.ref", ref.GetRef()); err != nil {
+		return nil, err
+	}
 	if req.GetExpectedFingerprint() != "" && ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE {
 		return nil, status.Error(codes.InvalidArgument, "noded: expected_fingerprint is valid only for SESSION_WORKSPACE")
 	}
@@ -1060,6 +1069,9 @@ func (s *Server) resolveRestorePrefix(ctx context.Context, ref *nodev1.ArtifactR
 // already-absent artifact.
 func (s *Server) EvictArtifact(ctx context.Context, req *nodev1.EvictArtifactRequest) (*nodev1.EvictArtifactResponse, error) {
 	ref := req.GetArtifact()
+	if err := requireIDs("artifact.workload", ref.GetWorkload(), "artifact.ref", ref.GetRef()); err != nil {
+		return nil, err
+	}
 	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	if prefix == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: artifact kind and workload required")

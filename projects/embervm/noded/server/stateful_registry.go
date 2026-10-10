@@ -316,6 +316,14 @@ func (r *statefulRegistry) remove(id string) *statefulEntry {
 // stateful workload is singleton (the volume attach lock enforces at most one
 // writable attach), this is at most one entry; used for lookups by workload
 // rather than by vm_id.
+// has reports whether a live stateful VM with this vm_id is registered.
+func (r *statefulRegistry) has(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.vms[id]
+	return ok
+}
+
 func (r *statefulRegistry) byWorkload(workload string) (*statefulEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

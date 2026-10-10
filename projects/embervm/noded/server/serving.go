@@ -25,6 +25,12 @@ import (
 // unrestorable ref; RESOURCE_EXHAUSTED at the node live-VM cap. The daemon is off the
 // request hit path after this: requests reach the guest directly over ip:port.
 func (s *Server) StartServing(ctx context.Context, req *nodev1.StartServingRequest) (*nodev1.StartServingResponse, error) {
+	if err := requireIDs("workload", req.GetTrace().GetWorkload()); err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotRef("relight.snapshot_ref", req.GetRelight().GetSnapshotRef()); err != nil {
+		return nil, err
+	}
 	return s.startServing(ctx, req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE)
 }
 
@@ -223,7 +229,7 @@ func (s *Server) finishServingStart(ctx context.Context, h substrate.Handle, wor
 func (s *Server) waitServingReady(ctx context.Context, ip net.IP, port uint32, healthPath string, budget time.Duration) error {
 	deadline := time.Now().Add(budget)
 	url := fmt.Sprintf("http://%s:%d%s", ip.String(), port, normalizePath(healthPath))
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: serving.RefuseRedirect}
 	var lastErr error
 	for time.Now().Before(deadline) {
 		select {

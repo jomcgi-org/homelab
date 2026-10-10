@@ -69,9 +69,7 @@ func waitForActivatorParked(t *testing.T, a *activator, expected int) {
 	t.Helper()
 	timeout := time.Now().Add(5 * time.Second)
 	for {
-		a.mu.Lock()
-		current := a.parked
-		a.mu.Unlock()
+		current := a.parkedTotal()
 		if current >= expected {
 			return
 		}

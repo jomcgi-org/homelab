@@ -92,7 +92,7 @@ func NewProber(interval time.Duration, threshold int) *Prober {
 		timeout = interval / 2
 	}
 	return &Prober{
-		client:    &http.Client{Timeout: timeout},
+		client:    &http.Client{Timeout: timeout, CheckRedirect: RefuseRedirect},
 		interval:  interval,
 		threshold: threshold,
 		timeout:   timeout,
@@ -141,6 +141,18 @@ func (p *Prober) probeOnce(ctx context.Context, url string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// RefuseRedirect is the http.Client CheckRedirect policy for every request the
+// daemon makes INTO a guest (health probes, readiness waits, the activator's
+// relayed first request): the 3xx is returned to the caller as the response and
+// never followed. A guest controls its own Location header, so following it would
+// let a tap guest point the daemon's client at the pod network, the metadata
+// endpoint or another tenant's VM (server-side request forgery), and would let a
+// redirecting guest count as healthy. A probe treats the 3xx as not ready; the
+// activator relays it to the Envoy caller unchanged.
+func RefuseRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // probeURL builds the health-probe URL for a VM's tap IP:port and health path. The
