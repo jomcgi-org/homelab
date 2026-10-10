@@ -59,6 +59,7 @@ from grimoire.models import (
     PlayerCharacter,
     Relationship,
     SessionEvent,
+    TranscriptConsent,
 )
 from grimoire.play_embeddings import audience_columns, event_embedding_kind
 
@@ -325,6 +326,14 @@ def build_fixture(session: Session) -> LeakHarness:
                 app_user_id=rows[f"user_{role}"].id,
                 role=member_role,
                 player_character_id=rows[character_key].id if character_key else None,
+            ),
+        )
+        keep(
+            f"consent_{role}",
+            TranscriptConsent(
+                campaign_id=rows[campaign_key].id,
+                member_id=rows[member_key].id,
+                processor=mark(f"consent_{role}.processor", allowed),
             ),
         )
 

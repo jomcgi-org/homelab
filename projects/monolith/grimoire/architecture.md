@@ -105,6 +105,42 @@ images fail closed unless the book is explicitly classified as open-licensed;
 copyrighted books expose only derived entities, graph structure, and bounded
 snippets.
 
+## Transcripts
+
+The transcript control routes require both `GRIMOIRE_PLAY_ENABLED` and
+`GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly `true`, read on every request.
+`grimoire.transcript.enabled` defaults to false until the capture surface is
+ready. No deploy override enables it.
+
+Members grant or revoke their own consent per campaign, including the DM and
+members without characters. Consent records the named processor and grant and
+revocation times. Repeating an active grant for the same processor keeps the
+row; changing processor revokes it and creates a replacement in one transaction.
+Players read only their own history, without member ids. DMs read all campaign
+consent rows. Grant and revoke serialize on the member row; revocation updates
+the consent row so it will wait for an ingest reader's shared lock.
+
+Sessions start with transcripts off. DMs can set off, on or paused. Players can
+pause from on, and a repeated pause is a no-op. Ended sessions refuse all state
+writes. Each actual transition locks the session and appends one table-audience
+system event with the caller as author, the previous state and the new state.
+All members read the current state. Consent and state requests forbid unknown
+fields, including audio. No raw audio is accepted or stored by this surface.
+
+The campaign retention column defaults to 30 days, constrained to 1 through
+365. Utterance ingest, retention settings and the daily redaction job remain
+outstanding in #6618. Their settled contract uses text only, server-created
+timestamps for retention, and the existing audience projection: table talk for
+members, DM whispers for the speaker and DM, and PC-scoped asides for the listed
+characters and DM. Redaction will keep timing stubs and remove transcript
+embeddings; derived summaries, journal entries and facts will remain. This
+control slice does not enforce ingest consent or redact existing utterances.
+
+**Why.** Consent and off-the-record state are server-owned controls shared by
+capture providers. Keeping capture disabled while ingest and retention remain
+unfinished avoids admitting transcript text before those privacy guarantees
+exist.
+
 ## Audience contract
 
 `Audience` in `audience.py` has three values: `table`, `dm`, and `pcs` with a

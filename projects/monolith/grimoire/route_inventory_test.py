@@ -71,6 +71,23 @@ CASES = {
     ("DELETE", PREFIX + "/inventory/{item_id}"): Case(
         params={"item_id": "$item_party.id"}, success=204
     ),
+    ("PUT", PREFIX + "/transcript/consent"): Case(
+        body={"processor": "New processor"},
+        caller="player_a",
+        denied_writers=(),
+    ),
+    ("DELETE", PREFIX + "/transcript/consent"): Case(
+        caller="player_a", success=204, denied_writers=(),
+    ),
+    ("GET", PREFIX + "/transcript/consent"): Case(),
+    ("GET", PREFIX + "/sessions/{session_id}/transcript"): Case(
+        params={"session_id": "$campaign_session.id"},
+    ),
+    ("PUT", PREFIX + "/sessions/{session_id}/transcript"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={"state": "on"},
+        state="play",
+    ),
     ("POST", PREFIX + "/grants/preview"): Case(
         state="play",
         read_only=True,
@@ -283,6 +300,7 @@ CAPABILITY_CASES = {
 @pytest.fixture
 def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+    monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_INVITATION_LINKS_ENABLED", "true")
     monkeypatch.delenv("GRIMOIRE_INVITATION_ENROLLMENT_ENABLED", raising=False)
     with sqlite_harness(tmp_path / "inventory.db") as h:
@@ -337,8 +355,8 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    # Main's 58 plus two handout routes (upload, members-only image).
-    assert len(enumerated) == 60
+    # Main: 60 (58 plus handout upload and image); 5 transcript routes -> 65.
+    assert len(enumerated) == 65
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):

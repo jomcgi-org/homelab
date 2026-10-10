@@ -25,7 +25,15 @@ from uuid import UUID
 
 from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
@@ -92,6 +100,8 @@ from grimoire.models import (
     Relationship,
     SessionEvent,
     SessionStatus,
+    TranscriptConsent,
+    TranscriptState,
 )
 from grimoire.play_embeddings import (
     event_note_markdown as _event_note_markdown,
@@ -109,6 +119,7 @@ from grimoire.session_events import (
     append_event,
     play_enabled,
     require_play_enabled,
+    require_transcript_enabled,
 )
 from grimoire.sheets import CharacterSheetV1, SheetValidationError, derive_sheet
 from grimoire.visibility import (
@@ -3080,6 +3091,184 @@ def _visible_handout_entities(
         str(UUID(entity["id"])): entity["id"]
         for entity in _note_entities(session, campaign_id, viewer, ids)
     }
+
+
+class TranscriptConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    processor: str = Field(min_length=1, max_length=120)
+
+
+class TranscriptStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: TranscriptState
+
+
+def _consent_view(row: TranscriptConsent, *, dm: bool = False) -> dict:
+    def iso(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else value.isoformat()
+
+    return {
+        **({"member_id": row.member_id} if dm else {}),
+        "processor": row.processor,
+        "granted_at": iso(row.granted_at),
+        "revoked_at": iso(row.revoked_at),
+    }
+
+
+def _lock_consent_member(session: Session, member: CampaignMember) -> None:
+    # Serialize initial grants too: an absent consent row cannot be locked.
+    session.exec(
+        select(CampaignMember)
+        .where(CampaignMember.id == member.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+
+
+def _active_consent(session: Session, member: CampaignMember) -> TranscriptConsent | None:
+    return session.exec(
+        select(TranscriptConsent)
+        .where(
+            TranscriptConsent.campaign_id == member.campaign_id,
+            TranscriptConsent.member_id == member.id,
+            TranscriptConsent.revoked_at.is_(None),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+
+
+@router.put(
+    "/campaigns/{campaign_id}/transcript/consent",
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def grant_transcript_consent(
+    campaign_id: str,
+    body: TranscriptConsentRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    _lock_consent_member(session, member)
+    row = _active_consent(session, member)
+    if row is not None and row.processor == body.processor:
+        result = _consent_view(row)
+        session.commit()
+        return result
+    now = datetime.now(timezone.utc)
+    if row is not None:
+        row.revoked_at = now
+        # Release the partial unique key before inserting the replacement.
+        session.flush()
+    row = TranscriptConsent(
+        campaign_id=campaign_id,
+        member_id=member.id,
+        processor=body.processor,
+        granted_at=now,
+    )
+    session.add(row)
+    session.flush()
+    result = _consent_view(row)
+    session.commit()
+    return result
+
+
+@router.delete(
+    "/campaigns/{campaign_id}/transcript/consent",
+    status_code=204,
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def revoke_transcript_consent(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> Response:
+    member = _get_member_or_404(session, campaign_id, email)
+    _lock_consent_member(session, member)
+    row = _active_consent(session, member)
+    if row is not None:
+        # UPDATE waits for ingest's FOR SHARE lock in the later ingest slice.
+        row.revoked_at = datetime.now(timezone.utc)
+    session.commit()
+    return Response(status_code=204)
+
+
+@router.get(
+    "/campaigns/{campaign_id}/transcript/consent",
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def get_transcript_consent(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    query = select(TranscriptConsent).where(TranscriptConsent.campaign_id == campaign_id)
+    if member.role != "dm":
+        query = query.where(TranscriptConsent.member_id == member.id)
+    rows = session.exec(query.order_by(TranscriptConsent.granted_at, TranscriptConsent.id)).all()
+    return {"consents": [_consent_view(row, dm=member.role == "dm") for row in rows]}
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/{session_id}/transcript",
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def get_transcript_state(
+    campaign_id: str,
+    session_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    _get_member_or_404(session, campaign_id, email)
+    return {"state": _session_in_campaign(session, campaign_id, session_id).transcript_state}
+
+
+@router.put(
+    "/campaigns/{campaign_id}/sessions/{session_id}/transcript",
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def set_transcript_state(
+    campaign_id: str,
+    session_id: str,
+    body: TranscriptStateRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    row = session.exec(
+        select(GameSession)
+        .where(GameSession.id == session_id, GameSession.campaign_id == campaign_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(404, detail="game session not found")
+    if row.status == "ended":
+        raise HTTPException(409, detail="session has ended")
+    previous = row.transcript_state
+    if member.role != "dm":
+        if body.state != "paused":
+            raise HTTPException(403, detail="players may only pause transcripts")
+        if previous == "off":
+            raise HTTPException(409, detail="transcript is off")
+    if previous != body.state:
+        row.transcript_state = body.state
+        session.flush()
+        append_event(
+            session,
+            game_session=row,
+            kind="system",
+            audience=Audience("table", author_member_id=member.id),
+            author_member_id=member.id,
+            body={"transcript_state": body.state, "previous": previous},
+        )
+    session.commit()
+    return {"state": body.state}
 
 
 def _event_view(
