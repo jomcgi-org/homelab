@@ -184,9 +184,11 @@ for another agent, assume it has no KG and put what it must know in the spec.
 - **Grep the tests before changing a number.** TTLs, timeouts, `max_tokens`
   and retry counts are asserted; update the assertions in the same change.
 - **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only (every
-  caller passes `arm64 = False`; the macro default is `True`), non-root uid
-  65532 with `runAsNonRoot: true`. Re-adding arm64 needs `arm64 = True` and
-  per-arch `tars`: `arm64 = False` with `multiarch_tars` fails only at push.
+  caller but `projects/embervm/noded/image` passes `arm64 = False`; the macro
+  default is `True`, and noded still ships an amd64 plus arm64 index),
+  non-root uid 65532 with `runAsNonRoot: true`. Re-adding arm64 needs
+  `arm64 = True` and per-arch `tars`: `arm64 = False` with `multiarch_tars`
+  fails only at push.
 - **Python deps are `@pip//package` via `aspect_rules_py`.** `requirement()`
   does not exist here. JS is pnpm plus `rules_js`. The
   `projects/monolith/frontend/` app is Svelte 5 runes only, with CSS imported
