@@ -14,7 +14,8 @@ Input dict:
                    request), so the DS pod is byte-identical to its pre-brick form.
   * resources    - the noded container's resources map. The DaemonSet passes
                    .Values.noded.resources unchanged; a brick passes its class's
-                   own request/limit block (memory req==limit, cpu request only).
+                   own request/limit block (memory request ~75% of limit, cpu
+                   request only; ADR embervm/039).
   * maxLiveVMs   - OPTIONAL per-class live-VM ceiling. Absent (or nil) falls
                    back to $ctx.Values.noded.maxLiveVMs; an explicit 0 is kept,
                    because noded reads 0 as "no node-side ceiling".
@@ -94,6 +95,14 @@ it without moving the pod's bind.
 # mirroring fc-invoke (grace = drain + 30s).
 terminationGracePeriodSeconds: {{ add $ctx.Values.noded.drain.timeoutSeconds 30 }}
 serviceAccountName: {{ include "embervm.noded.serviceAccountName" $ctx }}
+# The noded ServiceAccount token is the brick's dial-home identity: the control
+# plane binds a registration to the token's pod claims, so whoever holds it can
+# re-register this brick at another address and become its authoritative
+# NodeStatus source. Only the noded container needs it (register.go and the data
+# key client read the default path), so the kubelet's automount is off and the
+# token is projected into that one container below; the egress proxy (SPIFFE to
+# the broker), the rootfs builders and the in-pod baker never see it.
+automountServiceAccountToken: false
 {{- if $ctx.Values.imagePullSecret.enabled }}
 imagePullSecrets:
   - name: {{ $ctx.Values.imagePullSecret.name }}
@@ -750,6 +759,11 @@ containers:
     resources:
       {{- toYaml .resources | nindent 6 }}
     volumeMounts:
+      # The projected ServiceAccount token at the kubelet's default path, so the
+      # daemon's EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH default keeps working.
+      - name: noded-sa-token
+        mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+        readOnly: true
       {{- if $nodedMTLS }}
       - name: spiffe-workload-api
         mountPath: /spiffe-workload-api
@@ -889,6 +903,26 @@ containers:
       {{- toYaml $ctx.Values.egress.resources | nindent 6 }}
 {{- end }}
 volumes:
+  # The kubelet's kube-api-access layout (token, ca.crt, namespace), mounted into
+  # the noded container only. 3607 seconds matches the automount default; the
+  # kubelet rotates the projected token before it expires.
+  - name: noded-sa-token
+    projected:
+      defaultMode: 0444
+      sources:
+        - serviceAccountToken:
+            path: token
+            expirationSeconds: 3607
+        - configMap:
+            name: kube-root-ca.crt
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - downwardAPI:
+            items:
+              - path: namespace
+                fieldRef:
+                  fieldPath: metadata.namespace
 {{- if or $brokerMTLS $nodedMTLS }}
   - name: spiffe-workload-api
     csi:

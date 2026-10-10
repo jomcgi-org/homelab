@@ -1907,13 +1907,8 @@ def _broker_rules(names, broker_name):
     [
         ([], False, ["codex-cluster"]),
         (["PROD_VALUES"], True, ["codex-cluster"]),
-        (
-            ["PROD_VALUES", "GKE_VALUES"],
-            True,
-            ["codex-cluster", "codex-b", "agent-mcp"],
-        ),
     ],
-    ids=["defaults", "home", "gke"],
+    ids=["defaults", "home"],
 )
 def test_default_rbac_preserves_all_rule_and_binding_contracts(
     values_names, bricks_enabled, grant_names
@@ -1945,6 +1940,81 @@ def test_default_rbac_preserves_all_rule_and_binding_contracts(
         )
     )
     assert _rbac_objects(documents) == expected
+
+
+def _deep_merge(base, override):
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def test_gke_rbac_is_namespace_scoped():
+    """The hub control plane runs beside every production Secret, so the GKE
+    overlay confines it like embervm-dev: only node inventory and TokenReview
+    stay cluster-wide, the runtime verbs move to a namespaced Role naming the
+    scalable class Deployments, and no Secret is readable (no production
+    workload declares a control-plane secretRef)."""
+    release = "embervm"
+    name = "embervm-embervm"
+    values_names = ["PROD_VALUES", "GKE_VALUES"]
+    documents = list(
+        yaml.safe_load_all(
+            _render(release, [Path(os.environ[key]) for key in values_names])
+        )
+    )
+    merged = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    for key in values_names:
+        _deep_merge(merged, yaml.safe_load(Path(os.environ[key]).read_text()))
+    assert merged["rbac"] == {"scope": "namespace", "secretNames": []}
+    assert merged["bricks"]["autoscale"]["mode"] == "full"
+    deployments = [
+        f"{name}-noded-brick-{cls['name']}" for cls in merged["bricks"]["classes"]
+    ]
+    runtime_rules = list(_WORKLOAD_RULES) + [
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "resourceNames": deployments,
+            "verbs": ["get"],
+        },
+        {
+            "apiGroups": ["apps"],
+            "resources": ["deployments/scale"],
+            "resourceNames": deployments,
+            "verbs": ["get", "patch"],
+        },
+    ]
+    expected = _role_pair(
+        "ClusterRole", name, None, [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE], name, release
+    )
+    expected.update(
+        _role_pair("Role", f"{name}-runtime", release, runtime_rules, name, release)
+    )
+    expected.update(
+        _role_pair("Role", f"{name}-brick-pods", release, [_POD_RULE], name, release)
+    )
+    expected.update(
+        _role_pair(
+            "Role",
+            f"{name}-tokenbroker",
+            release,
+            _broker_rules(
+                ["codex-cluster", "codex-b", "agent-mcp"], f"{name}-tokenbroker"
+            ),
+            f"{name}-tokenbroker",
+            release,
+        )
+    )
+    objects = _rbac_objects(documents)
+    assert objects == expected
+    # Nothing grants the control plane a Secret read or a cluster-wide scale verb.
+    for (_kind, _ns, _name), obj in objects.items():
+        for rule in obj.get("rules", []):
+            if "secrets" in rule["resources"]:
+                assert _name == f"{name}-tokenbroker"
 
 
 def _scoped_documents(

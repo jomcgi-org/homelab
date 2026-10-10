@@ -65,6 +65,14 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # ignoreDifferences alone only hides a field from the DIFF. A sync still
+      # applies the whole rendered manifest, so every sync (any chart publish,
+      # any selfHeal of an unrelated drift) stamped the brick Deployments back
+      # to the git replica floor, deleting the bricks the controller had scaled
+      # up and every guest in them, and rewrote the broker-owned grant Secrets
+      # and quota ConfigMap to their empty chart declarations. This option makes
+      # the sync patch skip the ignored fields as well.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
