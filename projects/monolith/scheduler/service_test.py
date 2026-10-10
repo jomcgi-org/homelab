@@ -118,6 +118,7 @@ class FakeKubernetesClient:
 @pytest.fixture(autouse=True)
 def _workflow_namespace(monkeypatch):
     monkeypatch.setenv("SCHEDULER_WORKFLOW_NAMESPACE", "workflows-test")
+    monkeypatch.delenv("ARGO_JOBS", raising=False)
 
 
 class TestRunNow:
@@ -127,6 +128,95 @@ class TestRunNow:
         assert result.status_code == 404
         assert result.workflow_name is None
         assert result.message == "unknown job: nope"
+
+    @pytest.mark.asyncio
+    async def test_argo_handled_name_without_row_submits(self, session, monkeypatch):
+        """A manual-only CronWorkflow (replaces + suspend) has no scheduled_jobs
+        row because register_job skips argo-handled names; run-now must still
+        find it through ARGO_JOBS and submit it."""
+        name = "knowledge.review_backfill_dry_run"
+        monkeypatch.setenv("ARGO_JOBS", f"worldcup.refresh,{name},")
+        assert session.get(ScheduledJob, name) is None
+        cronworkflow = {
+            "metadata": {
+                "name": "knowledge-review-backfill-dry-run",
+                "namespace": "workflows-test",
+                "annotations": {"monolith.jomcgi.dev/replaces": name},
+                "labels": {"app.kubernetes.io/name": "monolith"},
+            },
+            "spec": {
+                "suspend": True,
+                "workflowSpec": {
+                    "entrypoint": "run",
+                    "templates": [{"name": "run"}],
+                },
+            },
+        }
+        fake = FakeKubernetesClient([cronworkflow])
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, name)
+
+        assert result == service.RunNowResult(
+            job=name,
+            workflow_name="nightly-manual-abc12",
+            namespace="workflows-test",
+            status_code=202,
+        )
+        assert fake.closed is True
+        namespace, manifest = fake.created[0]
+        assert namespace == "workflows-test"
+        assert (
+            manifest["metadata"]["generateName"]
+            == "knowledge-review-backfill-dry-run-manual-"
+        )
+        assert (
+            manifest["metadata"]["labels"]["workflows.argoproj.io/cron-workflow"]
+            == "knowledge-review-backfill-dry-run"
+        )
+        assert manifest["spec"] == cronworkflow["spec"]["workflowSpec"]
+        # Run-now never writes a legacy row for the argo-handled name.
+        assert session.get(ScheduledJob, name) is None
+
+    @pytest.mark.asyncio
+    async def test_argo_handled_name_without_cronworkflow_returns_409(
+        self, session, monkeypatch
+    ):
+        monkeypatch.setenv("ARGO_JOBS", "knowledge.review_backfill_pilot,")
+        fake = FakeKubernetesClient([])
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, "knowledge.review_backfill_pilot")
+
+        assert result.status_code == 409
+        assert fake.created == []
+
+    @pytest.mark.asyncio
+    async def test_name_with_neither_row_nor_argo_jobs_returns_404(
+        self, session, monkeypatch
+    ):
+        """The apply jobs have no replaces, so they are in neither set: 404
+        before any Kubernetes call."""
+        monkeypatch.setenv("ARGO_JOBS", "knowledge.review_backfill_dry_run,")
+        fake = FakeKubernetesClient(
+            [
+                {
+                    "metadata": {
+                        "name": "knowledge-review-backfill",
+                        "annotations": {},
+                    },
+                    "spec": {"workflowSpec": {"entrypoint": "run"}},
+                }
+            ]
+        )
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, "knowledge-review-backfill")
+
+        assert result.status_code == 404
+        assert result.message == "unknown job: knowledge-review-backfill"
+        assert fake.created == []
+        assert fake.closed is False
 
     @pytest.mark.asyncio
     async def test_missing_namespace_returns_503(self, session, monkeypatch):
