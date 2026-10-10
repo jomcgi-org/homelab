@@ -1833,8 +1833,9 @@ bricks:
   # Rollout is a values change (observe -> up -> full), never a code revert.
   autoscale:
     mode: observe
-    # Staged workspace durability rail (#6533). Enable in deploy values only
-    # after live acceptance; timeout alarms and keeps the victim, never forces it.
+    # Staged workspace durability rail (#6533), also enforcing one brick per
+    # node across classes and floors, excluding the interim noded DaemonSet.
+    # Enable only for staged live acceptance; timeout keeps the victim, never forces it.
     archiveAckGate:
       enabled: false
       timeoutMs: 180000

@@ -10,6 +10,96 @@ import pytest
 import yaml
 
 
+@pytest.mark.parametrize("gate", [False, True])
+def test_archive_gate_placement_spans_classes_floors_and_daemonset(
+    tmp_path: Path, gate: bool
+) -> None:
+    overlay = tmp_path / "archive-placement.yaml"
+    overlay.write_text(
+        """bricks:
+  enabled: true
+  classes:
+    - name: test-2gi
+      resources:
+        requests: {cpu: '1', memory: 2Gi}
+        limits: {memory: 2Gi}
+    - name: test-4gi
+      resources:
+        requests: {cpu: '1', memory: 4Gi}
+        limits: {memory: 4Gi}
+  nodeFloors:
+    - node: my-node
+      class: test-2gi
+    - name: anchor
+      selector: {homelab.io/anchor: 'true'}
+      class: test-4gi
+noded:
+  enabled: true
+"""
+    )
+    result = subprocess.run(
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "archive-placement",
+            str(_chart_dir()),
+            "--values",
+            str(overlay),
+            "--set",
+            f"bricks.autoscale.archiveAckGate.enabled={str(gate).lower()}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pods = [
+        doc
+        for doc in yaml.safe_load_all(result.stdout)
+        if doc
+        and doc.get("kind") in ("Deployment", "DaemonSet")
+        and doc["spec"]["template"]["metadata"]["labels"].get(
+            "app.kubernetes.io/component"
+        )
+        in ("noded", "noded-brick")
+    ]
+    assert len(pods) == 5  # Two classes, two floors and the interim DaemonSet.
+    for pod in pods:
+        spec = pod["spec"]["template"]["spec"]
+        labels = pod["spec"]["template"]["metadata"]["labels"]
+        if not gate:
+            assert "affinity" not in spec
+        else:
+            terms = spec["affinity"]["podAntiAffinity"][
+                "requiredDuringSchedulingIgnoredDuringExecution"
+            ]
+            assert len(terms) == 1
+            assert terms[0]["topologyKey"] == "kubernetes.io/hostname"
+            selector = terms[0]["labelSelector"]
+            assert selector["matchLabels"] == {
+                "app.kubernetes.io/name": labels["app.kubernetes.io/name"],
+                "app.kubernetes.io/instance": "archive-placement",
+            }
+            assert selector["matchExpressions"] == [
+                {
+                    "key": "app.kubernetes.io/component",
+                    "operator": "In",
+                    "values": ["noded", "noded-brick"],
+                }
+            ]
+            # The same selector matches every class, floor and legacy daemon.
+            for other in pods:
+                other_labels = other["spec"]["template"]["metadata"]["labels"]
+                assert all(other_labels[k] == v for k, v in selector["matchLabels"].items())
+                assert other_labels["app.kubernetes.io/component"] in ("noded", "noded-brick")
+        floor = labels.get("embervm.jomcgi.dev/brick-floor")
+        if floor == "my-node":
+            assert spec["nodeSelector"] == {"kubernetes.io/hostname": "my-node"}
+        elif floor == "anchor":
+            assert spec["nodeSelector"] == {"homelab.io/anchor": "true"}
+        else:
+            assert spec["nodeSelector"] == {"homelab.io/firecracker": "true"}
+
+
 def _chart_dir() -> Path:
     chart = Path(__file__).resolve().parent
     if (chart / "Chart.yaml").exists():

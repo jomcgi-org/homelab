@@ -110,6 +110,24 @@ imagePullSecrets:
 priorityClassName: {{ $ctx.Values.noded.priorityClassName }}
 nodeSelector:
   {{- toYaml $nodeSelector | nindent 2 }}
+{{- if and $ctx.Values.bricks.enabled $ctx.Values.bricks.autoscale.archiveAckGate.enabled }}
+# Both pod shapes share host scratch. Keep the interim DaemonSet in the
+# selector too; class and floor labels must not narrow this node-wide rule.
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - topologyKey: kubernetes.io/hostname
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ include "embervm.noded.name" $ctx }}
+            app.kubernetes.io/instance: {{ $ctx.Release.Name }}
+          matchExpressions:
+            - key: app.kubernetes.io/component
+              operator: In
+              values:
+                - noded
+                - noded-brick
+{{- end }}
 {{- with $ctx.Values.noded.tolerations }}
 tolerations:
   {{- toYaml . | nindent 2 }}

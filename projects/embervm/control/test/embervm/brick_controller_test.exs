@@ -493,6 +493,7 @@ defmodule Embervm.BrickControllerTest do
     opts = full_mode_opts([], record, annotate)
       |> Keyword.merge(clock: clock, archive_ack_gate: true,
         facts_fun: fn -> Agent.get(facts, & &1) end,
+        archive_instances_fun: fn -> Agent.get(facts, & &1) end,
         archive_fun: fn node, volumes -> send(parent, {:archive, node, volumes}); :ok end)
       |> Keyword.merge(opts)
     pid = start(opts)
@@ -614,7 +615,11 @@ defmodule Embervm.BrickControllerTest do
   end
 
   test "gate off retains the legacy victim choice with unexported workspaces" do
-    ctx = archive_gate_stack(archive_ack_gate: false)
+    ctx = archive_gate_stack(archive_ack_gate: false,
+      archive_instances_fun: fn -> flunk("gate off must not read registry") end)
+    Agent.update(ctx.facts, fn [victim] ->
+      [victim, %{victim | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1}]
+    end)
     archive_gate_tick(ctx)
     assert [{_, "brick-a", _}] = ctx.annotated.()
     refute_receive {:archive, _, _}
@@ -622,7 +627,7 @@ defmodule Embervm.BrickControllerTest do
 
   test "a fully safe sibling takes precedence over a less warm archive-pending brick" do
     ctx = archive_gate_stack()
-    sibling = %{ctx.fact | pod_uid: "uid-b", instance_id: "node-4/uid-b", session_volumes: []}
+    sibling = %{ctx.fact | pod_uid: "uid-b", node_id: "node-5", instance_id: "node-5/uid-b", session_volumes: []}
       |> Map.put(:session_volumes_complete, true)
       |> Map.put(:stateful_bundles, [%{exported: true}])
     Agent.update(ctx.facts, fn facts -> facts ++ [sibling] end)
@@ -633,7 +638,7 @@ defmodule Embervm.BrickControllerTest do
 
   test "pending archive candidate stays stable across fact reordering and volume count changes" do
     ctx = archive_gate_stack()
-    sibling = %{ctx.fact | pod_uid: "uid-b", instance_id: "node-4/uid-b",
+    sibling = %{ctx.fact | pod_uid: "uid-b", node_id: "node-5", instance_id: "node-5/uid-b",
       session_volumes: [hd(ctx.fact.session_volumes)]}
     Agent.update(ctx.facts, fn facts -> facts ++ [sibling] end)
     archive_gate_tick(ctx)
@@ -646,23 +651,33 @@ defmodule Embervm.BrickControllerTest do
     assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-b"]
   end
 
-  test "co-located bricks sharing a lineage: the archive targets the victim instance, not the node" do
+  test "a co-located victim stays pending even when fully exported, then resumes after deregistration" do
     ctx = archive_gate_stack()
-    # Sibling "uid-0" sorts first and lists the same node-shared inventory, but
-    # is busy (live VM), so "uid-a" is the only victim candidate.
+    # The busy sibling is not eligible, but its registration holds the victim.
     sibling = %{ctx.fact | pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1}
     Agent.update(ctx.facts, fn facts -> [sibling | facts] end)
     archive_gate_tick(ctx)
-    assert_receive {:archive, "node-4/uid-a", volumes}
-    assert Enum.map(volumes, & &1.lineage_id) == ["unknown", "pending"]
-    refute_receive {:archive, "node-4/uid-0", _}
-    refute_receive {:archive, "node-4", _}
-    # The victim's own fact flipping exported releases it, wedge free.
+    refute_receive {:archive, _, _}
+    assert ctx.annotated.() == []
+    assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-a"]
+    # Export acknowledgement alone cannot release a multi-instance node.
     Agent.update(ctx.facts, fn [sibling, victim] ->
       [sibling, %{victim | session_volumes: Enum.map(victim.session_volumes, &Map.put(&1, :exported, true))}]
     end)
+    ctx.advance.(180_000)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(ctx.pid) end)
+    assert log =~ "workspace archive acknowledgement timed out; keeping victim"
+    assert log =~ "reason=archive_pending"
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+    assert :sys.get_state(ctx.pid).archive_pending["uid-a"].alarmed
+    refute_receive {:archive, _, _}
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(ctx.pid) end)
+    refute log =~ "workspace archive acknowledgement timed out"
+    Agent.update(ctx.facts, fn [_sibling, victim] -> [victim] end)
     BrickController.reconcile_now(ctx.pid)
     assert [{_, "brick-a", _}] = ctx.annotated.()
+    assert List.last(ctx.calls.()) == {"embervm", "embervm-embervm-noded-brick-2gi", 1}
   end
 
   test "a lineage whose workload runs a live VM on a co-located sibling is held, not archived" do
@@ -677,7 +692,7 @@ defmodule Embervm.BrickControllerTest do
     assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-a"]
   end
 
-  test "only lineages of the sibling's live workloads are withheld from the archive request" do
+  test "the whole multi-instance node is held until the sibling leaves, then every lineage is archived" do
     ctx = archive_gate_stack()
     victim = %{ctx.fact | session_volumes: [%{workload: "shell", lineage_id: "attached"},
       %{workload: "other", lineage_id: "parked", exported: false}]}
@@ -685,11 +700,15 @@ defmodule Embervm.BrickControllerTest do
       %{session_vms: [%{vm_id: "vm-1", session_id: "s-1", workload: "shell"}]})
     Agent.update(ctx.facts, fn _ -> [sibling, victim] end)
     archive_gate_tick(ctx)
-    assert_receive {:archive, "node-4/uid-a", [%{lineage_id: "parked"}]}
+    refute_receive {:archive, _, _}
+    assert ctx.annotated.() == []
+    Agent.update(ctx.facts, fn [_sibling, victim] -> [victim] end)
+    BrickController.reconcile_now(ctx.pid)
+    assert_receive {:archive, "node-4/uid-a", [%{lineage_id: "attached"}, %{lineage_id: "parked"}]}
     assert ctx.annotated.() == []
   end
 
-  test "a candidate whose lineages are all withheld ranks behind an archivable one, on every tick" do
+  test "a multi-instance candidate ranks behind an archivable single-instance one on every tick" do
     ctx = archive_gate_stack()
     held = %{ctx.fact | session_volumes: [%{workload: "shell", lineage_id: "attached", exported: false}]}
     busy = Map.merge(%{ctx.fact | size_class: "4gi", pod_uid: "uid-0", instance_id: "node-4/uid-0", live_vms: 1},
@@ -702,6 +721,43 @@ defmodule Embervm.BrickControllerTest do
     BrickController.reconcile_now(ctx.pid)
     assert_receive {:archive, "node-5/uid-c", [_, _]}
     assert ctx.annotated.() == []
+  end
+
+  test "missing or empty node identity is held even with a complete exported inventory" do
+    for node_id <- [nil, ""] do
+      ctx = archive_gate_stack()
+      Agent.update(ctx.facts, fn [victim] -> [%{victim | node_id: node_id, session_volumes: []}] end)
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=archive_pending"
+      ctx.advance.(180_000)
+      log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(ctx.pid) end)
+      assert log =~ "workspace archive acknowledgement timed out; keeping victim"
+      assert ctx.annotated.() == []
+      refute_receive {:archive, _, _}
+    end
+  end
+
+  test "registry-only siblings hold regardless of health or missing capacity reports" do
+    for health <- [:draining, :starting, :unknown, :down] do
+      ctx = archive_gate_stack(archive_instances_fun: fn ->
+        [%{node_id: "node-4", instance_id: "node-4/uid-a"},
+         %{node_id: "node-4", instance_id: "node-4/uid-0", health: health, facts: nil}]
+      end)
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=archive_pending"
+      assert ctx.annotated.() == []
+      refute_receive {:archive, _, _}
+    end
+  end
+
+  test "unknown registry coverage or an absent victim registration holds without archive" do
+    for instances <- [:unknown, []] do
+      ctx = archive_gate_stack(archive_instances_fun: fn -> instances end)
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=archive_pending"
+      assert ctx.annotated.() == []
+      refute_receive {:archive, _, _}
+    end
   end
 
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do
