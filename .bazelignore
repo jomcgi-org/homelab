@@ -1,6 +1,3 @@
-prelude
-buck-out
-buck2
 
 # oom-inference builds with Cargo until it moves to Bazel (see projects/oom-inference/docs/dev/README.md).
 projects/oom-inference

@@ -14,7 +14,6 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
 - [**oom-inference**](projects/oom-inference/): Rust inference engine for mixture-of-experts models bigger than memory. Serves a 125B model from a 24 GB GPU by tiering experts across VRAM, pinned RAM and NVMe. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
 - [**Build system**](bazel/): custom Bazel rules for Helm and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
-- [**Buck2 rules**](buck2/): reusable Buck2 rules for container images (apko/OCI) and Helm charts, the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
 
 ## Applications
 
@@ -71,7 +70,6 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── home-cluster/     #   Residual home configuration; no deployments
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
 bazel/                # Build infrastructure (rules, tools, images)
-buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)
 docs/                 # Cross-domain documentation and runbooks
 ```
 
