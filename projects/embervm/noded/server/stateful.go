@@ -57,6 +57,12 @@ const (
 // back) and returns FAILED_PRECONDITION: there is no half-alive endpoint a
 // caller could observe or publish.
 func (s *Server) StartStateful(ctx context.Context, req *nodev1.StartStatefulRequest) (*nodev1.StartStatefulResponse, error) {
+	if err := requireIDs("workload", req.GetTrace().GetWorkload()); err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotRef("relight_snapshot_ref", req.GetRelightSnapshotRef()); err != nil {
+		return nil, err
+	}
 	return s.startStateful(ctx, req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE)
 }
 
@@ -874,6 +880,9 @@ func (s *Server) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest
 	if workload == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: workload required")
 	}
+	if err := requireIDs("workload", workload, "lineage_id", req.GetLineageId()); err != nil {
+		return nil, err
+	}
 	var err error
 	if req.GetLineageId() != "" {
 		// Deliberately prune stale attachment records before DeleteSession. Removing
@@ -896,6 +905,9 @@ func (s *Server) DeleteVolume(_ context.Context, req *nodev1.DeleteVolumeRequest
 func (s *Server) ArchiveVolume(ctx context.Context, req *nodev1.ArchiveVolumeRequest) (*nodev1.ArchiveVolumeResponse, error) {
 	if req.GetWorkload() == "" || req.GetLineageId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: workload and lineage_id required")
+	}
+	if err := requireIDs("workload", req.GetWorkload(), "lineage_id", req.GetLineageId()); err != nil {
+		return nil, err
 	}
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; archive unavailable")

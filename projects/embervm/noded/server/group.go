@@ -36,6 +36,9 @@ func (s *Server) CreateGroupNetwork(ctx context.Context, req *nodev1.CreateGroup
 	if groupInstanceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: group_instance_id required")
 	}
+	if err := requireIDs("group_instance_id", groupInstanceID); err != nil {
+		return nil, err
+	}
 	cidr := req.GetCidr()
 	if cidr == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: cidr required")
@@ -86,6 +89,9 @@ func (s *Server) DeleteGroupNetwork(ctx context.Context, req *nodev1.DeleteGroup
 	groupInstanceID := req.GetGroupInstanceId()
 	if groupInstanceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: group_instance_id required")
+	}
+	if err := requireIDs("group_instance_id", groupInstanceID); err != nil {
+		return nil, err
 	}
 
 	// Idempotent no-op on an unknown group (never held or already deleted).

@@ -12,6 +12,7 @@ package driver
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -541,7 +542,34 @@ func (d *Driver) warmthRoot() string {
 
 // threadDir is the bundle directory for a thread (per-instance warmth).
 func (d *Driver) threadDir(threadID string) string {
-	return filepath.Join(d.warmthRoot(), threadID)
+	return filepath.Join(d.warmthRoot(), pathSegment(threadID))
+}
+
+// removeUnpublishedBundle deletes a bank's bundle directory after a failed bank
+// when it never published a snapfile: the ref is minted fresh per bank, so the
+// directory holds only this attempt's sidecars (jail metadata, bundle.json, a
+// pinned IP) and would otherwise sit under the warmth root forever, skipped by
+// every rescan as half-written. A directory with a snapfile is a published
+// bundle and is never touched here.
+func removeUnpublishedBundle(dir, snapPath string) {
+	if _, err := os.Stat(snapPath); err == nil {
+		return
+	}
+	_ = os.RemoveAll(dir)
+}
+
+// pathSegment is the driver's second line behind the server's identifier
+// validation: an id that could leave its parent directory (empty, ".", "..", or
+// carrying a separator or NUL) is replaced by a name that stays inside it and
+// can never match a real bundle, so a RemoveAll, a rename or a restore keyed by
+// a bad id touches nothing. The server rejects such ids first; this only
+// bounds the blast radius of a path that bypassed it.
+func pathSegment(id string) string {
+	if id != "" && id != "." && id != ".." && !strings.ContainsAny(id, "/\\\x00") {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id))
+	return "invalid-id-" + hex.EncodeToString(sum[:8])
 }
 
 func (d *Driver) snapfilePath(threadID string) string {
@@ -799,7 +827,7 @@ func prefixLenToMask(prefixLen int) string {
 // (one per repo env-image version). Bases live under bases/ so they are never
 // confused with per-thread bundles and survive thread GC.
 func (d *Driver) baseDir(key string) string {
-	return filepath.Join(d.cfg.SnapshotRoot, "bases", key)
+	return filepath.Join(d.cfg.SnapshotRoot, "bases", pathSegment(key))
 }
 
 func (d *Driver) baseSnapfile(key string) string { return filepath.Join(d.baseDir(key), "snapfile") }
@@ -972,7 +1000,9 @@ func (d *Driver) SessionsDir() string { return filepath.Join(d.warmthRoot(), "se
 // sessionDir is the bundle directory for one banked session snapshot, keyed by an
 // opaque session snapshot_ref. It sits under sessions/ so it is never confused
 // with a base (bases/) or a per-thread (SnapshotRoot/<threadID>) bundle.
-func (d *Driver) sessionDir(ref string) string { return filepath.Join(d.SessionsDir(), ref) }
+func (d *Driver) sessionDir(ref string) string {
+	return filepath.Join(d.SessionsDir(), pathSegment(ref))
+}
 
 func (d *Driver) sessionSnapfile(ref string) string {
 	return filepath.Join(d.sessionDir(ref), "snapfile")
@@ -1033,7 +1063,9 @@ func (d *Driver) ServingDir() string { return filepath.Join(d.warmthRoot(), "ser
 // servingDir is the bundle directory for one banked serving snapshot, keyed by an
 // opaque serving snapshot_ref. It sits under serving/ so it is never confused with a
 // base, a session, or a per-thread bundle.
-func (d *Driver) servingDir(ref string) string { return filepath.Join(d.ServingDir(), ref) }
+func (d *Driver) servingDir(ref string) string {
+	return filepath.Join(d.ServingDir(), pathSegment(ref))
+}
 
 func (d *Driver) servingSnapfile(ref string) string {
 	return filepath.Join(d.servingDir(ref), "snapfile")
@@ -2048,6 +2080,16 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 		_ = os.Remove(memTmp)
 		_ = os.Remove(diffTmp)
 	}
+	// A bank that fails after Firecracker started writing (ENOSPC, a snapshot
+	// timeout, a rename error) must not leave a multi-GiB memfile.tmp behind: the
+	// rescan skips a bundle dir without a snapfile, so nothing else ever reclaims
+	// it and the next scratch-full bank fails the same way.
+	defer func() {
+		if !banked {
+			cleanupTemps()
+			removeUnpublishedBundle(d.sessionDir(snapshotRef), snapPath)
+		}
+	}()
 	publishFull := func(diffErr error) error {
 		if diffErr != nil {
 			slog.Warn("driver: session diff bank failed, falling back to full",
@@ -2207,6 +2249,16 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 	memPath := d.servingMemfile(snapshotRef)
 	snapTmp := snapPath + ".tmp"
 	memTmp := memPath + ".tmp"
+	// Same discipline as SnapshotSession: a failed bank removes its own temp
+	// files, since a bundle dir without a snapfile is skipped by every rescan and
+	// its memfile.tmp would otherwise pin scratch until the node is wiped.
+	defer func() {
+		if !banked {
+			_ = os.Remove(snapTmp)
+			_ = os.Remove(memTmp)
+			removeUnpublishedBundle(filepath.Dir(snapPath), snapPath)
+		}
+	}()
 
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause serving: %w", err)
@@ -2318,7 +2370,9 @@ func (d *Driver) StatefulDir() string { return filepath.Join(d.warmthRoot(), "st
 
 // statefulDir is the bundle directory for one banked stateful snapshot, keyed
 // by an opaque snapshot_ref.
-func (d *Driver) statefulDir(ref string) string { return filepath.Join(d.StatefulDir(), ref) }
+func (d *Driver) statefulDir(ref string) string {
+	return filepath.Join(d.StatefulDir(), pathSegment(ref))
+}
 
 func (d *Driver) statefulSnapfile(ref string) string {
 	return filepath.Join(d.statefulDir(ref), "snapfile")
@@ -2401,6 +2455,16 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 	memPath := d.statefulMemfile(snapshotRef)
 	snapTmp := snapPath + ".tmp"
 	memTmp := memPath + ".tmp"
+	// Same discipline as SnapshotSession: a failed bank removes its own temp
+	// files, since a bundle dir without a snapfile is skipped by every rescan and
+	// its memfile.tmp would otherwise pin scratch until the node is wiped.
+	defer func() {
+		if !banked {
+			_ = os.Remove(snapTmp)
+			_ = os.Remove(memTmp)
+			removeUnpublishedBundle(filepath.Dir(snapPath), snapPath)
+		}
+	}()
 
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause stateful: %w", err)
@@ -2760,7 +2824,7 @@ func (d *Driver) GroupNetworksDir() string {
 // groupNetworkRecordPath is the config.json path for one group-network record,
 // keyed by the opaque group_instance_id.
 func (d *Driver) groupNetworkRecordPath(groupInstanceID string) string {
-	return filepath.Join(d.GroupNetworksDir(), groupInstanceID, "config.json")
+	return filepath.Join(d.GroupNetworksDir(), pathSegment(groupInstanceID), "config.json")
 }
 
 // WriteGroupNetworkRecord persists a group-network record atomically (write a
@@ -2862,7 +2926,7 @@ func (d *Driver) GroupSetsDir() string { return filepath.Join(d.warmthRoot(), "g
 // groupMemberDir is the bundle directory for one banked member snapshot, keyed by
 // the opaque set_id and the member_name: group/<set_id>/<member_name>/.
 func (d *Driver) groupMemberDir(setID, memberName string) string {
-	return filepath.Join(d.GroupSetsDir(), setID, memberName)
+	return filepath.Join(d.GroupSetsDir(), pathSegment(setID), pathSegment(memberName))
 }
 
 func (d *Driver) groupMemberSnapfile(setID, memberName string) string {
@@ -2929,6 +2993,16 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 	memPath := d.groupMemberMemfile(setID, memberName)
 	snapTmp := snapPath + ".tmp"
 	memTmp := memPath + ".tmp"
+	// Same discipline as SnapshotSession: a failed bank removes its own temp
+	// files, since a bundle dir without a snapfile is skipped by every rescan and
+	// its memfile.tmp would otherwise pin scratch until the node is wiped.
+	defer func() {
+		if !banked {
+			_ = os.Remove(snapTmp)
+			_ = os.Remove(memTmp)
+			removeUnpublishedBundle(filepath.Dir(snapPath), snapPath)
+		}
+	}()
 
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause group member: %w", err)

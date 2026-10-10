@@ -786,7 +786,18 @@ func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte
 		return 0, 0, fmt.Errorf("store: mkdir restore dir %q: %w", localDir, err)
 	}
 	for name, fm := range meta.Files {
-		n, ferr := s.restoreFile(ctx, prefix+"/"+name, filepath.Join(localDir, name), fm, key)
+		// meta.json is store content: anyone holding the shared store credential
+		// authored it. A file name is a relative path of at most two safe segments
+		// (a bundle file, or <member>/<file> in a group set), never an absolute
+		// path or one that climbs out of the restore directory.
+		if err := validateRestoreName(name); err != nil {
+			return bytesMoved, 0, fmt.Errorf("store: artifact %q: %w", prefix, err)
+		}
+		dst := filepath.Join(localDir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return bytesMoved, 0, fmt.Errorf("store: mkdir restore subdir for %q: %w", name, err)
+		}
+		n, ferr := s.restoreFile(ctx, prefix+"/"+name, dst, fm, key)
 		if ferr != nil {
 			return bytesMoved, 0, ferr
 		}
@@ -796,6 +807,35 @@ func (s *Store) Restore(ctx context.Context, prefix, localDir string, key []byte
 		*opts.ContentFingerprint = fingerprint
 	}
 	return bytesMoved, meta.Generation, nil
+}
+
+// maxRestoreNameDepth bounds a restored file name to <member>/<file>: a plain
+// bundle file is one segment, a group-set member file two.
+const maxRestoreNameDepth = 2
+
+// validateRestoreName accepts the file names a restore may write under its
+// artifact directory: one or two non-empty path segments separated by "/", no
+// ".", "..", backslash, NUL or leading slash. Everything else is refused before
+// any object is fetched, so a tampered meta.json cannot place bytes outside the
+// artifact directory or overwrite the bundle's own metadata sidecars via a
+// traversal.
+func validateRestoreName(name string) error {
+	if name == "" || strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+		return fmt.Errorf("invalid restore file name %q", name)
+	}
+	if strings.ContainsAny(name, "\\\x00") {
+		return fmt.Errorf("invalid restore file name %q", name)
+	}
+	segments := strings.Split(name, "/")
+	if len(segments) > maxRestoreNameDepth {
+		return fmt.Errorf("restore file name %q nests deeper than %d segments", name, maxRestoreNameDepth)
+	}
+	for _, seg := range segments {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("invalid restore file name %q", name)
+		}
+	}
+	return nil
 }
 
 // restoreFile GETs one object into a temp file alongside dst, verifies its size

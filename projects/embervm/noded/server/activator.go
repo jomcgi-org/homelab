@@ -16,6 +16,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 )
 
 const (
@@ -73,15 +75,21 @@ type activator struct {
 	mu      sync.Mutex
 	flights map[string]*activatorFlight
 	boots   int
-	parked  int
-	wakes   []time.Time
+	// parked counts requests waiting on a wake, per workload: the cap is a
+	// per-workload bound, so one cold workload's burst cannot 503 every other
+	// workload's node-local wake (the stateful and group activators already key
+	// theirs by workload).
+	parked map[string]int
+	wakes  []time.Time
 }
 
 func newActivator(s *Server) *activator {
 	return &activator{
-		server:  s,
-		client:  &http.Client{},
+		server: s,
+		// A relayed request never follows a guest's redirect (serving.RefuseRedirect).
+		client:  &http.Client{CheckRedirect: serving.RefuseRedirect},
 		flights: make(map[string]*activatorFlight),
+		parked:  make(map[string]int),
 	}
 }
 
@@ -151,7 +159,7 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "activator busy", code)
 		return
 	}
-	defer a.unpark()
+	defer a.unpark(workload)
 
 	if leader {
 		// Cleanup belongs to the admitted leader, not the pre-admission miss
@@ -203,11 +211,11 @@ func (a *activator) withdraw(entry *servingEntry) {
 func (a *activator) join(workload string) (*activatorFlight, bool, int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.parked >= activatorMaxParked {
+	if a.parked[workload] >= activatorMaxParked {
 		return nil, false, http.StatusServiceUnavailable
 	}
 	if f, ok := a.flights[workload]; ok {
-		a.parked++
+		a.parked[workload]++
 		return f, false, 0
 	}
 	if a.boots >= activatorMaxBoots || !a.allowWakeLocked(time.Now()) {
@@ -216,7 +224,7 @@ func (a *activator) join(workload string) (*activatorFlight, bool, int) {
 	f := &activatorFlight{done: make(chan struct{})}
 	a.flights[workload] = f
 	a.boots++
-	a.parked++
+	a.parked[workload]++
 	return f, true, 0
 }
 
@@ -236,10 +244,25 @@ func (a *activator) allowWakeLocked(now time.Time) bool {
 	return true
 }
 
-func (a *activator) unpark() {
+func (a *activator) unpark(workload string) {
 	a.mu.Lock()
-	a.parked--
+	if a.parked[workload] <= 1 {
+		delete(a.parked, workload)
+	} else {
+		a.parked[workload]--
+	}
 	a.mu.Unlock()
+}
+
+// parkedTotal is the number of requests parked across every workload.
+func (a *activator) parkedTotal() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	total := 0
+	for _, n := range a.parked {
+		total += n
+	}
+	return total
 }
 
 func (a *activator) complete(workload string, flight *activatorFlight, entry *servingEntry, err error) {

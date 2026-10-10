@@ -92,11 +92,24 @@ func (t *Transport) RoundTrip(ctx context.Context, udsPath string, req *http.Req
 			return t.dialConn(dialCtx, d, udsPath)
 		},
 		DisableKeepAlives: true,
+		// The guest authors every byte of its response. Bound its headers (the
+		// Transport default is 10 MiB, which the daemon would buffer and relay to
+		// the control plane and the caller) and never follow a redirect it
+		// issues: a 3xx is returned as the response, so a guest cannot steer the
+		// daemon's next request or turn a readiness probe into a tautology.
+		MaxResponseHeaderBytes: maxGuestResponseHeaderBytes,
 	}
-	client := &http.Client{Transport: tr}
+	client := &http.Client{Transport: tr, CheckRedirect: refuseRedirect}
 
 	return client.Do(req.WithContext(ctx))
 }
+
+// maxGuestResponseHeaderBytes caps the response header block the daemon
+// accepts from a guest over vsock. 64 KiB is far above any shim reply and far
+// below the 10 MiB http.Transport default.
+const maxGuestResponseHeaderBytes = 64 << 10
+
+func refuseRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // WaitReady polls GET readyPath over the vsock transport until the guest shim
 // responds 200, or until ctx expires. readyPath defaults to "/shim/ready" when

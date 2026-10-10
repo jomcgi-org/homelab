@@ -37,6 +37,12 @@ func (realGroupClock) Resync(ctx context.Context, udsPath string) error {
 // clock is more than one second off, and only then TCP-health-gates. A member VM
 // counts against max_live_vms and is EXCLUDED from primed_vm_ids.
 func (s *Server) StartGroupMember(ctx context.Context, req *nodev1.StartGroupMemberRequest) (*nodev1.StartGroupMemberResponse, error) {
+	if err := requireIDs("group_instance_id", req.GetGroupInstanceId(), "member_name", req.GetMemberName()); err != nil {
+		return nil, err
+	}
+	if err := requireSnapshotRef("snapshot_ref", req.GetSnapshotRef()); err != nil {
+		return nil, err
+	}
 	return s.startGroupMember(ctx, req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_CONTROL_PLANE)
 }
 
@@ -279,6 +285,9 @@ func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle,
 func (s *Server) StopGroupMember(ctx context.Context, req *nodev1.StopGroupMemberRequest) (*nodev1.StopGroupMemberResponse, error) {
 	if s.groupNet == nil || s.groupDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: group member lifecycle not configured")
+	}
+	if err := requireIDs("set_id", req.GetSetId(), "member_name", req.GetMemberName()); err != nil {
+		return nil, err
 	}
 	vmID := req.GetVmId()
 	switch req.GetMode() {

@@ -318,3 +318,30 @@ func seedGroupMember(t *testing.T, s *Server, root, setID, member, groupInstance
 		sizeBytes:       5120,
 	})
 }
+
+// TestDestroyRefusesLiveStatefulAndGroupMemberVMs pins that the plain Destroy
+// RPC never confirms the teardown of a VM it did not reap: a live stateful
+// instance and a live composite member are owned by StopStateful and
+// StopGroupMember, so Destroy answers FailedPrecondition instead of the
+// teardown_confirmed: true an unknown id gets.
+func TestDestroyRefusesLiveStatefulAndGroupMemberVMs(t *testing.T) {
+	client, s, _ := newEvictTestServer(t)
+	ctx := context.Background()
+	s.statefulVMs.add(&statefulEntry{vmID: "live-stateful", workload: "scratch-postgres", generation: 1})
+	s.groupMembers.add(&groupMemberEntry{vmID: "live-member", groupInstanceID: "g-1", memberName: "entry", ip: net.ParseIP("10.101.0.10")})
+
+	for _, id := range []string{"live-stateful", "live-member"} {
+		resp, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: id})
+		if status.Code(err) != codes.FailedPrecondition || resp.GetTeardownConfirmed() {
+			t.Fatalf("Destroy(%q) = %v, %v; want FailedPrecondition and no confirmation", id, resp, err)
+		}
+	}
+	if !s.statefulVMs.has("live-stateful") || s.groupMembers.get("live-member") == nil {
+		t.Fatal("a refused Destroy must leave the live registries untouched")
+	}
+	// An id no registry knows keeps the legacy already-gone answer.
+	resp, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: "never-seen"})
+	if err != nil || !resp.GetTeardownConfirmed() {
+		t.Fatalf("unknown id: %v, %v; want teardown confirmed", resp, err)
+	}
+}

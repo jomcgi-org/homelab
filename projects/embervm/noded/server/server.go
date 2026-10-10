@@ -734,6 +734,9 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
+	if err := requireIDs("workload", req.GetTrace().GetWorkload()); err != nil {
+		return nil, err
+	}
 	// A stale registry (boot cache, no live sync yet) admits no new work: a base
 	// build is the coldest possible placement.
 	if err := s.refuseIfStale("BuildBase"); err != nil {
@@ -1365,6 +1368,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
 	}
+	if err := requireIDs("snapshot_ref", ref, "lineage_id", req.GetLineageId()); err != nil {
+		return nil, err
+	}
 	if _, err := s.refreshScratchGeneration(); err != nil {
 		return nil, status.Errorf(codes.Unavailable, "noded: scratch generation unavailable: %v", err)
 	}
@@ -1672,6 +1678,14 @@ func (s *Server) Destroy(ctx context.Context, req *nodev1.DestroyRequest) (*node
 		err = s.reapSessionEntry(session)
 	case serving != nil:
 		err = s.reapServingEntry(serving)
+	case s.statefulVMs.has(vmID):
+		// A live stateful VM is torn down through StopStateful, which owns the
+		// volume detach and generation bookkeeping. Confirming its teardown here
+		// would let the control plane record a destroy for a VM that is still
+		// running with its volume attached.
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: vm %q is a live stateful instance; use StopStateful", vmID)
+	case s.groupMembers.get(vmID) != nil:
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: vm %q is a live composite group member; use StopGroupMember", vmID)
 	}
 	if err != nil {
 		if errors.Is(err, errTeardownInProgress) {
@@ -1845,6 +1859,9 @@ func (s *Server) adoptPrimedSession(vmID, sessionID, workload, dispatchID string
 // guest timeout the VM is LEFT ALIVE and the response carries suspect=true so the
 // control plane decides whether to destroy it.
 func (s *Server) SessionAssign(ctx context.Context, req *nodev1.SessionAssignRequest) (*nodev1.SessionAssignResponse, error) {
+	if err := requireIDs("session_id", req.GetSessionId(), "lineage_id", req.GetLineageId()); err != nil {
+		return nil, err
+	}
 	vmID := req.GetVmId()
 	e, ok := s.sessionVMs.beginSessionAssign(vmID, req.GetSessionId(), req.GetDispatchId())
 	if !ok {
@@ -2018,6 +2035,9 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	if s.sessionDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: session banking not configured")
 	}
+	if err := requireIDs("session_id", req.GetSessionId(), "vm_id", req.GetVmId()); err != nil {
+		return nil, err
+	}
 	vmID := req.GetVmId()
 	// Take the in-flight guard: a Bank cannot proceed while a SessionAssign holds the
 	// VM, and while the guard is held no new SessionAssign can start.
@@ -2113,6 +2133,12 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
 	}
+	if err := requireSnapshotRef("snapshot_ref", ref); err != nil {
+		return nil, err
+	}
+	if err := requireIDs("session_id", req.GetSessionId()); err != nil {
+		return nil, err
+	}
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
@@ -2195,6 +2221,11 @@ func (s *Server) EvictSnapshot(_ context.Context, req *nodev1.EvictSnapshotReque
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
+	}
+	// Every arm below composes an on-disk path from ref and the group arm ends in
+	// os.RemoveAll, so an unsafe ref is refused before any inventory lookup.
+	if err := requireSnapshotRef("snapshot_ref", ref); err != nil {
+		return nil, err
 	}
 	// Dispatch on which inventory holds the ref BEFORE the session-driver guard so a
 	// serving/stateful/group ref evicts even in a build wired only for that class,
