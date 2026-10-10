@@ -528,6 +528,8 @@ defmodule Embervm.StatefulManager do
   # of the optional orphan-destroy gate, without changing any lifecycle row.
   @impl true
   def handle_info({:wake_done, workload, wake_token, outcome}, state) do
+    claim_wake_result(state, workload, outcome)
+
     if current_wake_token(state, workload) == wake_token do
       {:noreply, finish_wake(state, workload, wake_result(outcome))}
     else
@@ -949,6 +951,27 @@ defmodule Embervm.StatefulManager do
   defp wake_result({:started_on, _dial_id, outcome}), do: outcome
   defp wake_result(outcome), do: outcome
 
+  defp wake_endpoint({:created, _, endpoint, _, _, _}), do: endpoint
+  defp wake_endpoint({:relit, _, _, endpoint}), do: endpoint
+  defp wake_endpoint({:relight_fell_back, _, _, endpoint, _}), do: endpoint
+  defp wake_endpoint(_outcome), do: %{}
+
+  # Serialize shadow claims with orphan confirmation. A worker can report after
+  # orphan cleanup already reaped its VM; it must not recreate that reservation.
+  defp claim_wake_result(state, workload, {:started_on, dial_id, outcome}) do
+    case Map.get(wake_endpoint(outcome), :vm_id) do
+      vm_id when is_binary(vm_id) and vm_id != "" ->
+        unless MapSet.member?(state.stale_wake_cleaned, vm_id) or
+                 Map.has_key?(state.stale_wake_cleanups, vm_id) do
+          shadow_claim(dial_id, vm_id, workload, catalog_entry(state, workload))
+        end
+
+      _ -> :ok
+    end
+  end
+
+  defp claim_wake_result(_state, _workload, _outcome), do: :ok
+
   defp stale_outcome_summary({:started_on, dial_id, outcome}),
     do: "#{stale_outcome_summary(outcome)}; cleanup target #{dial_id}"
 
@@ -967,15 +990,7 @@ defmodule Embervm.StatefulManager do
   # also confirms DESTROY. Only workers carrying their actual StartStateful target
   # can enqueue cleanup. Older/unsuccessful outcomes remain publication-fenced.
   defp enqueue_stale_wake_cleanup(state, workload, {:started_on, dial_id, outcome}) do
-    endpoint =
-      case outcome do
-        {:created, _, endpoint, _, _, _} -> endpoint
-        {:relit, _, _, endpoint} -> endpoint
-        {:relight_fell_back, _, _, endpoint, _} -> endpoint
-        _ -> %{}
-      end
-
-    case Map.get(endpoint, :vm_id) do
+    case Map.get(wake_endpoint(outcome), :vm_id) do
       vm_id when is_binary(vm_id) and vm_id != "" and is_binary(dial_id) and dial_id != "" ->
         if MapSet.member?(state.stale_wake_cleaned, vm_id) do
           state
@@ -2303,7 +2318,6 @@ defmodule Embervm.StatefulManager do
       case safe_start_stateful(state, dial_id, workload, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
         when is_binary(vm_id) and vm_id != "" ->
-          shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
           {:ok, {:started_on, dial_id, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}}
 
         # A RELIGHT call that fell back to a cold boot on the daemon side
@@ -2313,7 +2327,6 @@ defmodule Embervm.StatefulManager do
         # a RELIGHT-mode response is exactly that fallback signal.
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
         when is_binary(vm_id) and vm_id != "" ->
-          shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
           {:ok, {:started_on, dial_id, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
@@ -2336,7 +2349,6 @@ defmodule Embervm.StatefulManager do
       case safe_start_stateful(state, dial_id, workload, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
         when is_binary(vm_id) and vm_id != "" ->
-          shadow_claim(dial_id, vm_id, workload, catalog_entry(state, workload))
           attrs = %{
             tenant: state.tenant,
             principal: wake_principal(workload),
@@ -3374,7 +3386,11 @@ defmodule Embervm.StatefulManager do
               teardown_confirmed: confirmed
             )
 
-            acc
+            if confirmed do
+              %{acc | stale_wake_cleaned: MapSet.put(acc.stale_wake_cleaned, vm.vm_id)}
+            else
+              acc
+            end
 
           true ->
             acc
