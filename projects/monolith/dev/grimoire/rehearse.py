@@ -793,9 +793,9 @@ def main():
             ).to_be_visible(timeout=5000)
             a_state = a.request.get(a.url + "/state").json()
             assert (
-                a_state["journal"]["mine"]["learned"][0]["entity"][
-                    "revealed_details"
-                ]["clue"]
+                a_state["journal"]["mine"]["learned"][0]["entity"]["revealed_details"][
+                    "clue"
+                ]
                 == "Mara remembers our promise."
             )
             assert "Mara opens the inn to the party." not in json.dumps(a_state)
