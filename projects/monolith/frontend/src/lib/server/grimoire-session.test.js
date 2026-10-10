@@ -53,9 +53,20 @@ describe("sessionState", () => {
       if (url.endsWith("/characters")) return response([{ id: "own-pc" }]);
       if (url.endsWith("/sheets")) return response({ versions: [] });
       if (url.endsWith("/sessions")) return response([{ id: "session" }]);
-      if (url.includes("/journal"))
+      if (url.endsWith("/journal?view=party"))
         return response({
-          learned: [{ entity_id: "entity", entity: { name: "Visible" } }],
+          rolls: [{ id: "party-roll", body: { total: 4 } }],
+          surprise: "PARTY_EXTRA_FIELD",
+        });
+      if (url.endsWith("/sessions/session/journal"))
+        return response({
+          learned: [
+            {
+              event_id: "reveal",
+              entity_id: "entity",
+              entity: { name: "Visible" },
+            },
+          ],
           people_and_places: [{ id: "entity", name: "Visible" }],
           rolls: [{ id: "roll", body: { total: 17 } }],
           truncated: true,
@@ -66,16 +77,41 @@ describe("sessionState", () => {
       throw new Error(`Unexpected request ${url}`);
     });
     const state = await sessionState(fetch, cookies, "campaign");
-    expect(state.journal.mine.learned[0].projection.name).toBe("Visible");
-    expect(state.journal.mine.people_places[0].entity_id).toBe("entity");
-    expect(state.journal.mine.rolls[0]).toEqual({
-      event_id: "roll",
-      total: 17,
+    // Canonical API shape: the reusable JournalPanel reads it unchanged.
+    expect(state.journal.mine).toEqual({
+      learned: [
+        {
+          event_id: "reveal",
+          entity_id: "entity",
+          entity: { name: "Visible" },
+        },
+      ],
+      received: [],
+      people_and_places: [{ id: "entity", name: "Visible" }],
+      rolls: [{ id: "roll", body: { total: 17 } }],
+      open_threads: [],
+      truncated: true,
     });
-    expect(state.journal.mine.truncated).toBe(true);
-    expect(
-      fetch.mock.calls.some(([url]) => url.endsWith("/journal?view=party")),
-    ).toBe(true);
+    expect(state.journal.party).toEqual({
+      learned: [],
+      received: [],
+      people_and_places: [],
+      rolls: [{ id: "party-roll", body: { total: 4 } }],
+      open_threads: [],
+      truncated: false,
+    });
+    expect(JSON.stringify(state.journal)).not.toContain("PARTY_EXTRA_FIELD");
+    const journalUrls = fetch.mock.calls
+      .map(([url]) => url)
+      .filter((url) => url.includes("/journal"));
+    expect(journalUrls.sort()).toEqual([
+      expect.stringMatching(
+        /\/campaigns\/campaign\/sessions\/session\/journal$/,
+      ),
+      expect.stringMatching(
+        /\/campaigns\/campaign\/sessions\/session\/journal\?view=party$/,
+      ),
+    ]);
     expect(state.events).toHaveLength(501);
     expect(state.events.at(-1).seq).toBe(1003);
     expect(state).not.toHaveProperty("members");
@@ -92,6 +128,7 @@ describe("sessionState", () => {
     });
     const state = await sessionState(fetch, cookies, "campaign");
     expect(state.session).toBeNull();
+    expect(state.journal).toBeNull();
     expect(state.events).toEqual([]);
     expect(fetch).toHaveBeenCalledTimes(4);
   });

@@ -715,9 +715,11 @@ def main():
             a.bring_to_front()
             a.get_by_role("button", name="Journal", exact=True).click()
             journal_region = a.get_by_role("region", name="Session journal")
+            # The reusable panel dumps the snapshot's revealed details, so the
+            # clue sits inside a JSON field rather than a text node of its own.
             expect(
                 journal_region.get_by_role("region", name="Learned").get_by_text(
-                    "Mara opens the inn to the party.", exact=True
+                    "Mara opens the inn to the party.", exact=False
                 )
             ).to_be_visible()
             expect(
@@ -739,7 +741,10 @@ def main():
                 )
             ).to_be_visible()
             a.get_by_role("button", name="Close knowledge", exact=True).click()
-            a.get_by_role("button", name="Party journal", exact=True).click()
+            journal_region.get_by_role("button", name="Party", exact=True).click()
+            expect(
+                journal_region.get_by_role("button", name="Party", exact=True)
+            ).to_have_attribute("aria-pressed", "true")
             expect(journal_region.get_by_text(roll_secret, exact=False)).to_have_count(
                 0
             )
@@ -788,7 +793,7 @@ def main():
             ).to_be_visible(timeout=5000)
             a_state = a.request.get(a.url + "/state").json()
             assert (
-                a_state["journal"]["mine"]["learned"][0]["projection"][
+                a_state["journal"]["mine"]["learned"][0]["entity"][
                     "revealed_details"
                 ]["clue"]
                 == "Mara remembers our promise."

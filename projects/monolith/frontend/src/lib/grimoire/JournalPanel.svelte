@@ -4,6 +4,8 @@
     view = "mine",
     onViewChange,
     showViewToggle = true,
+    showEvent,
+    openKnowledge,
   } = $props();
   const panelId = $props.id();
   const partial = $derived(journal.truncated === true);
@@ -29,6 +31,14 @@
     },
   ]);
 </script>
+
+{#snippet source(eventId)}
+  {#if showEvent && eventId}
+    <button type="button" class="source" onclick={() => showEvent(eventId)}
+      >Show in story</button
+    >
+  {/if}
+{/snippet}
 
 {#snippet fields(value)}
   <dl>
@@ -83,11 +93,24 @@
         {#if entry.retracted}
           <p class="retracted">Retracted</p>
         {:else}
+          {#if entry.grant_scope === "name_only" || entry.entity?.recognition_only}<p
+            >
+              You recognize this name.
+            </p>{/if}
           {#if entry.grant_scope}<p>Scope: {entry.grant_scope}</p>{/if}
           {#if entry.player_character_id}<p>
               Character: {entry.player_character_id}
             </p>{/if}
           {#if entry.entity}{@render fields(entry.entity)}{/if}
+        {/if}
+        {@render source(entry.event_id)}
+        {#if openKnowledge && entry.entity_id && !entry.retracted && entry.grant_scope !== "name_only" && !entry.entity?.recognition_only}
+          <button
+            type="button"
+            class="source"
+            onclick={() => openKnowledge(entry.entity_id)}
+            >Explore {entry.name || "knowledge"}</button
+          >
         {/if}
       </article>
     {/each}
@@ -97,7 +120,9 @@
     <h3 id={`${panelId}-received`}>{eventSections[0].title}</h3>
     {#if !eventSections[0].entries.length}<p>{eventSections[0].empty}</p>{/if}
     {#each eventSections[0].entries as entry (entry.id)}
-      <article>{@render fields(entry.body)}</article>
+      <article>
+        {@render fields(entry.body)}{@render source(entry.id)}
+      </article>
     {/each}
   </section>
 
@@ -125,7 +150,9 @@
       </h3>
       {#if !section.entries.length}<p>{section.empty}</p>{/if}
       {#each section.entries as entry (entry.id)}
-        <article>{@render fields(entry.body)}</article>
+        <article>
+          {@render fields(entry.body)}{@render source(entry.id)}
+        </article>
       {/each}
     </section>
   {/each}
@@ -151,6 +178,13 @@
   [aria-pressed="true"] {
     font-weight: 700;
     border-bottom: 3px solid var(--grim-accent, #33507a);
+  }
+  .source {
+    margin: 0.75rem 0.75rem 0 0;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--grim-line, #dbe0e7);
+    background: transparent;
+    color: var(--grim-accent, #33507a);
   }
   button:focus-visible {
     outline: 2px solid var(--grim-accent, #33507a);

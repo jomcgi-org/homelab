@@ -211,7 +211,17 @@ under the feed's DM-or-self rules.
 Reply ordering uses the session sequence, so an earlier reference cannot close
 a later action. Live enablement and audience checks remain owned by #6610.
 
-The UI ships a props-driven `JournalPanel` and standalone campaign journal page; mounting the session-screen Journal tab and refreshing it with each feed poll remains in #6808, blocked by #6612, per the #6616 notes precedent.
+The UI ships a props-driven `JournalPanel`, used by the standalone campaign
+journal page and by the session screen's Journal tab. The tab reads the
+canonical session journal (mine and party) that the BFF state endpoint already
+returns on every feed poll, so it refreshes with the feed and needs no loop of
+its own. The page holds the Mine/Party choice, so a poll replaces the data
+without resetting it. `showEvent` and `openKnowledge` are optional panel props;
+the standalone page omits them and renders no navigation buttons.
+
+**Why.** One renderer keeps retraction, name-only and partial-journal handling in
+a single place, and the BFF passes the audience-filtered API shape through
+instead of re-aliasing it per surface.
 
 ## Grant changes
 

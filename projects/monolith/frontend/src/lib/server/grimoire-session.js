@@ -72,20 +72,22 @@ export async function sessionState(
   };
 }
 
+// The backend journal is already the viewer's audience-filtered projection, so
+// entries pass through untouched. Only the known sections survive, each
+// defaulting to empty, so the panel never meets a missing list.
+const journalSections = [
+  "learned",
+  "received",
+  "people_and_places",
+  "rolls",
+  "open_threads",
+];
+
 function sessionJournal(view) {
-  const event = (entry) => ({ ...entry.body, event_id: entry.id });
   return {
-    ...view,
-    learned: (view.learned || []).map((entry) => ({
-      ...entry,
-      projection: entry.entity,
-    })),
-    people_places: (view.people_and_places || []).map((entry) => ({
-      ...entry,
-      entity_id: entry.id,
-    })),
-    received: (view.received || []).map(event),
-    rolls: (view.rolls || []).map(event),
-    open_threads: (view.open_threads || []).map(event),
+    ...Object.fromEntries(
+      journalSections.map((key) => [key, view?.[key] || []]),
+    ),
+    truncated: view?.truncated === true,
   };
 }
