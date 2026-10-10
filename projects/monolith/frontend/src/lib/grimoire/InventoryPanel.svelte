@@ -252,7 +252,7 @@
               type="button"
               class="chip"
               onclick={() => openKnowledge(item.entity.id)}
-              aria-label={`Explore ${item.entity.name}`}
+              aria-label={`Explore ${item.entity.name} for ${item.name}`}
               >{item.entity.name}</button
             >{/if}
           {#if item.hidden_from_party}<p class="badge">
