@@ -453,6 +453,31 @@ describe("session read-aloud controls and voice composer", () => {
     ).toBe(false);
   });
 
+  it("does not read another session's backlog after a same-route session swap", async () => {
+    // KnowledgeSearch result links navigate to ?session=<id> on this same
+    // route, so the page component stays mounted while `state` swaps to
+    // another session's events. The backlog of the newly shown session must
+    // stay silent just like the initial page load.
+    vi.useFakeTimers();
+    const synth = speechDevice();
+    const otherSessionId = "22222222-2222-4222-8222-222222222222";
+    const sessionTwo = pageData("dm", [event("s2-backlog", 1, "Session two story")]);
+    const sessionOne = {
+      ...pageData("dm", [event("s1-backlog", 1, "SESSION_ONE_CANARY")]),
+      session: { id: otherSessionId, status: "active" },
+    };
+    let current = sessionTwo;
+    stubFetch(() => current);
+    await render(sessionTwo);
+    await settle();
+    expect(synth.speak).not.toHaveBeenCalled();
+    current = sessionOne;
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(feedIds()).toEqual(["event-s1-backlog"]);
+    expect(synth.speak).not.toHaveBeenCalled();
+  });
+
   it("reads new received reveals only after player opt-in and honors individual retractions", async () => {
     vi.useFakeTimers();
     const synth = speechDevice();
