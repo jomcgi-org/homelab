@@ -9,10 +9,6 @@ common --noexperimental_merged_skyframe_analysis_execution
 
 # also see: https://blog.aspect.build/configuring-bazels-downloader
 common --downloader_config=bazel/tools/downloader.cfg
-# for speed, passes an argument `--skipLibCheck` to *every* spawn of tsc
-common --@aspect_rules_ts//ts:skipLibCheck=always
-# Transpiler is set per-target (transpiler = "tsc") instead of globally.
-# To switch to SWC, add rules_swc to MODULE.bazel and set transpiler = "swc".
 
 # =============================================================================
 # Repository Cache - Cache external dependencies

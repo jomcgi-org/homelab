@@ -82,16 +82,14 @@ pytest
 ### Tool Dependencies
 
 Defined in `tools.in`. Used for developer tasks and Bazel build tools, not tests or runtime.
-
-**Examples:**
-
-- `copier>=9.11.2` - Template management
+The layer is currently empty (copier and semgrep were removed in #6913); `tools.txt` is
+header-only until a tool is added.
 
 **Format:**
 
 ```bash
 # tools.in
-copier>=9.11.2
+some-tool>=1.5.0
 ```
 
 ## Workflow
@@ -148,7 +146,6 @@ copier>=9.11.2
 1. Add to `tools.in`:
 
    ```bash
-   copier>=9.11.2
    new-tool>=1.5.0
    ```
 

@@ -1012,7 +1012,6 @@ py_library(
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
-        "@pip//lxml_html_clean",
         "@pip//networkx",
         "@pip//numpy",
         "@pip//opentelemetry_api",
@@ -1676,7 +1675,6 @@ py_library(
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//kubernetes_asyncio",
-        "@pip//lxml_html_clean",  # explicit: overrides.txt strips lxml[html-clean] extra
         # shotter/mcp.py imports mcp.types.ImageContent directly (ADR
         # embervm/035 section 5); every other domain reaches the mcp package
         # only transitively through fastmcp.
@@ -2024,7 +2022,6 @@ py_library(
         "@pip//fastmcp",
         "@pip//httpx",
         "@pip//icalendar",
-        "@pip//lxml_html_clean",
         "@pip//networkx",
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
@@ -2127,7 +2124,6 @@ py_library(
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//kubernetes_asyncio",
-        "@pip//lxml_html_clean",  # explicit: overrides.txt strips lxml[html-clean] extra
         "@pip//networkx",
         "@pip//opentelemetry_api",
         "@pip//opentelemetry_exporter_otlp_proto_http",
