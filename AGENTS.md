@@ -218,8 +218,8 @@ when its row applies.
 | Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for open findings |
 | Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |
 | ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
-| Adding a service | "New service" above, `projects/platform/ARCHITECTURE.md` section 4, `docs/reference/services.md` |
-| Observability or alerting | `docs/observability.md`, `docs/reference/observability-alerting.md` |
+| Adding a service | "New service" above, `projects/platform/ARCHITECTURE.md` section 4, `projects/gke-apps/kustomization.yaml` (the live workload list) |
+| Observability or alerting | `docs/observability.md` |
 | Frontend or design: tokens, palette, motion, a11y | `.impeccable.md` |
 | Prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |

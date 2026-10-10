@@ -1,7 +1,7 @@
 ---
 name: apko
 invoke: explicit
-summary: apko.yaml, locks, and apko_image patterns for dual-arch images
+summary: apko.yaml, locks, and apko_image patterns (amd64 images)
 ---
 
 > **Runbook (explicit-only).** Open only when Joe asks for this procedure, or a
@@ -11,8 +11,19 @@ summary: apko.yaml, locks, and apko_image patterns for dual-arch images
 
 All container images in this repo are built with apko + rules_apko via the custom `apko_image` macro. Read `bazel/tools/oci/apko_image.bzl` first to understand the macro before wiring a new image.
 
-Builds and pushes happen in CI / via `ci test` remote execution (see [bazel.md](bazel.md)).
+Builds and pushes happen in CI / via `ci test` remote execution (see
+`docs/agents/ci-triage.md` and the Commands section of `AGENTS.md`).
 Locally you edit `apko.yaml` and BUILD files, regenerate locks when they change, and push.
+
+## Architecture
+
+Images are amd64. `apko_image` defaults `arm64 = True` and 24 of its 25 callers
+pass `arm64 = False`: the hub nodes and the RBE executor are amd64, no chart
+pins an arch, and the aarch64 half of an index had no consumer. The one
+exception is `projects/embervm/noded/image`, which still builds an amd64 plus
+arm64 index through `multiarch_tars`. Leave `aarch64` in `archs`: the lock
+checksums the whole config, and apko ignores a declared arch nobody builds, so
+`arm64 = False` needs no `archs` edit and no lock regeneration.
 
 ## apko.yaml Structure
 
@@ -27,8 +38,8 @@ contents:
     - tzdata # If timezone handling needed
 
 archs:
-  - x86_64 # Required: Intel/AMD
-  - aarch64 # Required: ARM (M-series Mac, ARM nodes)
+  - x86_64 # The nodes and the RBE executor
+  - aarch64 # Declared in every config; built only when arm64 = True
 
 entrypoint:
   command: /opt/app # Use for Go binaries
@@ -81,15 +92,15 @@ pkg_tar(
 
 apko_image(
     name = "image",
+    arm64 = False,
     config = "apko.yaml",
     contents = "@myservice_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/myservice",
     tars = [":static_tar"],
-    # multiarch_tars = [":binary_tar"],  # For arch-specific binaries
 )
 ```
 
-### Multi-arch Binary Pattern (Go)
+### Arch-specific Binary Pattern (Go)
 
 ```starlark
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
@@ -107,16 +118,20 @@ tar(
     mtree = ["./opt/app type=file content=$(execpath :binary_amd64)"],
 )
 
-# Repeat for arm64 with linux_arm64 target platform
-
 apko_image(
     name = "image",
+    arm64 = False,
     config = "apko.yaml",
     contents = "@myservice_lock//:contents",
-    multiarch_tars = [":binary_tar"],  # Macro uses _amd64/_arm64 suffixes
     repository = "ghcr.io/jomcgi/homelab/projects/myservice",
+    tars = [":binary_tar_amd64"],  # per-arch tar, named explicitly
 )
 ```
+
+Re-adding arm64 is `arm64 = True`, a `binary_tar_arm64` built with the
+`linux_arm64` target platform, and `multiarch_tars = [":binary_tar"]` in place
+of `tars` (the macro appends `_amd64` and `_arm64`). `arm64 = False` with
+`multiarch_tars` passes PR CI and fails to push a layer blob on main.
 
 ### MODULE.bazel Registration
 
@@ -148,7 +163,7 @@ use_repo(apko, "myservice_lock")
 ## Common Mistakes to Avoid
 
 1. **Not updating lock files**: regenerate locks after changing any apko.yaml
-2. **Missing architectures**: always include both `x86_64` and `aarch64`
+2. **`arm64 = False` with `multiarch_tars`**: fails only at push time on main; pair `arm64 = False` with per-arch `tars`
 3. **Missing CA certificates**: HTTPS calls fail without `ca-certificates-bundle`
 4. **Forgetting MODULE.bazel**: new locks must be registered with `apko.translate_lock`
 

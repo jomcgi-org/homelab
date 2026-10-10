@@ -1372,7 +1372,7 @@ flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
 `rootfs/platform/...`. A brick fully hydrates and verifies every chunk of an
 active manifest before reporting the rootfs READY, then presents a local-only
 read-only ublk device. The object store is a preparation dependency, never a
-live guest block-read dependency. Phase 0 (`rootfs/PHASE0-RESULTS.md`) measured a
+live guest block-read dependency. Phase 0 (the `rootfs/measure_chunks.py` harness, raw runs under `rootfs/phase0/`, results on #4182) measured a
 16.8 percent Account-scope saving with Gear CDC at 64 KiB / 256 KiB / 1 MiB and
 showed `-Enoinline_data` is required for rebuild stability; the build waits for
 EKS because converter placement and Account key custody are its prerequisites,
@@ -1975,7 +1975,7 @@ has the full text.
 | embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted |
 | embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted |
 | embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction for persistence modes and retention; size budget superseded by the evidence gate in [#5074](https://github.com/jomcgi-org/homelab/issues/5074) | deleted |
-| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, not planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted |
+| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, not planned (#4182); Phase 0 measured on #4182 | deleted |
 | embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
 | embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |
 | embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted |

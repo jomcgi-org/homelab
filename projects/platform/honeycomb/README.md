@@ -88,7 +88,7 @@ private `/api/health` (reported under `degraded`, never a 503), and the
 monolith leader posts one Discord message when a component flips unhealthy or
 recovers, plus a reminder every 6 hours while it stays unhealthy
 (`projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`).
-Full definitions: [`docs/reference/observability-alerting.md`](../../../docs/reference/observability-alerting.md).
+Full definitions: [`docs/observability.md`](../../../docs/observability.md#alerting).
 
 | Former trigger spec | Replaced by |
 | ------------------- | ----------- |

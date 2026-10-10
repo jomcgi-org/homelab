@@ -3,44 +3,31 @@
 Operational and agent procedures that are **explicit-only**.
 
 Unlike the job procedures in `docs/agents/` (each listed with its trigger in `AGENTS.md`), runbooks are **not** selected by
-description matching. Open only when:
+description matching. Open one only when:
 
-1. Joe asks for that procedure by name or intent, or
-2. A "Where to look next" row in `AGENTS.md` names the file, or
+1. Joe asks for that procedure by name or intent,
+2. a "Where to look next" row in `AGENTS.md` names the file, or
+3. a task spec or routine prompt names it.
 
 ## Index
+
+One row per entry in this directory.
 
 ### Ops / cluster
 
 | Runbook | When |
 |---------|------|
 | [argocd-outofsync.md](argocd-outofsync.md) | ArgoCD OutOfSync / "is my change live?" |
-| [gke-cutover-window.md](gke-cutover-window.md) | The home-to-GKE downtime window (#5458): copy, recover, verify, wipe |
-| [factory-response-loss-canary.md](factory-response-loss-canary.md) | Bounded manual response-loss receipt canary, explicit only (#5938) |
-| [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader` |
-| [embervm-node-scratch-setup.md](embervm-node-scratch-setup.md) | EmberVM node scratch |
-| [embervm-stateful-generation-quarantine.md](embervm-stateful-generation-quarantine.md) | Stateful generation quarantine |
-| [scheduler.md](scheduler.md) | Kick / inspect Postgres scheduled jobs |
+| [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader`, including the shared response cache contract |
+| [embervm-stateful-generation-quarantine.md](embervm-stateful-generation-quarantine.md) | A stateful EmberVM workload refuses to wake with `volume quarantined` |
 | [threat-model-maintenance.md](threat-model-maintenance.md) | Add/close a `security-finding`, refresh `docs/THREAT-MODEL.md`, per-domain security lenses in each `STPA.md`, model review |
-
-### Knowledge graph
-
-| Runbook | When |
-|---------|------|
-| [knowledge/search.md](knowledge/search.md) | Search/debug the graph (`homelab knowledge`) |
-| [knowledge/gardener.md](knowledge/gardener.md) | Decompose raws (hourly routine) |
-| [knowledge/classify.md](knowledge/classify.md) | Gap classify routine |
-| [knowledge/research.md](knowledge/research.md) | Gap research routine |
-| [knowledge/distill.md](knowledge/distill.md) | Distill completed tasks |
-| [knowledge/consolidate.md](knowledge/consolidate.md) | Daily/weekly rollups |
-| [Session collector](../../tools/session_collector/README.md) | Install and operate local Claude Code and Codex session collection |
 
 ### Improve loops (explicit)
 
 | Runbook | When |
 |---------|------|
-| [improve-ambient/runbook.md](improve-ambient/runbook.md) | `/improve-ambient` |
-| [improve-safeguards/runbook.md](improve-safeguards/runbook.md) | `/improve-safeguards` |
+| [improve-ambient/](improve-ambient/runbook.md) | `/improve-ambient`; a directory holding `runbook.md` and `scripts/improve_ambient_tool.py` |
+| [improve-safeguards/](improve-safeguards/runbook.md) | `/improve-safeguards`; a directory holding `runbook.md` and `scripts/improve_safeguards_tool.py` |
 
 ### Repo / agents
 
@@ -48,8 +35,12 @@ description matching. Open only when:
 |---------|------|
 | [daily-digest.md](daily-digest.md) | Outstanding work digest (routine + on demand) |
 | [refresh-structure-docs.md](refresh-structure-docs.md) | Root README structural refresh |
-| [bazel.md](bazel.md) | BUILD/gazelle patterns; CI is via `ci` / Workflows |
+| [fixture-previews.md](fixture-previews.md) | Preview the public 4090 blog page from a PR commit with fixture data |
 | [apko.md](apko.md) | apko.yaml + `apko_image` (locks via pre-commit / script) |
+
+Bazel and CI debugging live in `docs/agents/ci-triage.md` and the Commands
+section of `AGENTS.md`. Local Claude Code and Codex session collection is
+documented in [`tools/session_collector/README.md`](../../tools/session_collector/README.md).
 
 ## Format
 

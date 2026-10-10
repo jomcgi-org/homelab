@@ -522,7 +522,7 @@ spec:
             # Discord transition alerts for the factory/ops_health components
             # (embervm_capacity, agent_turns, codex_quota_fresh, factory_stuck),
             # posted by the leader only. Replaces the Honeycomb triggers the
-            # free plan cannot hold. See docs/reference/observability-alerting.md.
+            # free plan cannot hold. See docs/observability.md (Alerting).
             - name: HEALTH_ALERTS_ENABLED
               value: {{ .Values.healthAlerts.enabled | quote }}
             - name: HEALTH_ALERTS_INTERVAL_S

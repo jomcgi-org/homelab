@@ -92,3 +92,24 @@ share the remote cache.
   doc sits in a package with no `repo_docs` filegroup, and its message says
   what to add. If CI auto-commits a regen you did not run, that is the format
   bot, not a failure.
+
+## Build graph questions without a local Bazel
+
+There is no local Bazel server, so ad-hoc `bazel query` (deps, rdeps, target
+patterns) does not run on a Mac. For a one-off question, read a recent
+BuildBuddy invocation with `mcp__buildbuddy__get_invocation` to see which
+targets built. For a programmatic traversal, add a temporary CI step that runs
+`bazel query` and prints the result, push the branch, and read the output
+through the MCP.
+
+The targets CI builds and publishes (none of them run locally):
+
+| Target | Description |
+| ------ | ----------- |
+| `//projects/<service>/...:image` | A container image (`go_image`, `py3_image` or `apko_image`) |
+| `//projects/<service>/...:image.push` | Push that image to GHCR, main only |
+| `//bazel/images:push_all` | Every image and chart push; PR CI builds it and runs nothing |
+| `//bazel/tools/format:format` | Formatters, generators and gazelle |
+
+apko configs, locks and the `apko_image` macro are covered by
+`docs/runbooks/apko.md`.
