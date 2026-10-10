@@ -28,6 +28,13 @@ async function backendCalls([url, options]) {
       target: new URL(String(target)),
       method: init.method || "GET",
     });
+    if (String(target).endsWith("/lobby"))
+      return json({
+        campaigns: [{ id: campaignId, role: "player" }],
+        user: { id: "viewer" },
+      });
+    if (String(target).endsWith("/voices"))
+      return json([{ speaker_key: "ref:0123456789abcdef0123" }]);
     return json([]);
   });
   const event = {
@@ -233,9 +240,11 @@ describe("player view", () => {
       expect(dmRoutes.player_operations).toContain(operation);
     // And nothing a player sends reaches a DM route behind the BFF.
     let replayed = 0;
+    let readVoices = false;
     for (const request of fetch.mock.calls)
       for (const { target, method } of await backendCalls(request)) {
         replayed += 1;
+        if (target.pathname.endsWith("/voices")) readVoices = true;
         for (const route of DM_ROUTES)
           expect(
             route.method === method && route.pattern.test(target.pathname),
@@ -245,6 +254,19 @@ describe("player view", () => {
           expect(target.searchParams.has(param), param).toBe(false);
       }
     expect(replayed).toBeGreaterThan(0);
+    expect(readVoices).toBe(true);
+    expect(
+      document.querySelector('[aria-label="Narration speaker"]'),
+    ).toBeNull();
+    expect(document.querySelector(".voice-presets")).toBeNull();
+    expect(dmRoutes.routes).toContainEqual([
+      "PUT",
+      "/api/grimoire/campaigns/{campaign_id}/voices/{speaker_key}",
+    ]);
+    expect(dmRoutes.routes).toContainEqual([
+      "DELETE",
+      "/api/grimoire/campaigns/{campaign_id}/voices/{speaker_key}",
+    ]);
     expect(
       [...document.querySelectorAll("button")].map((button) =>
         button.textContent.trim(),
