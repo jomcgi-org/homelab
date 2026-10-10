@@ -31,26 +31,31 @@ defmodule Embervm.OpLog.SQLite do
   alias Embervm.OpLog.Op
   alias Exqlite.Sqlite3
 
+  # Retention and compaction key off the PROJECTION's state strings, which are
+  # not the FSM atoms one for one (the group projection writes "starting" for the
+  # FSM's creating and "degraded" for a flagged running instance), so each list
+  # names the strings the project/3 clauses in this module actually write. A live
+  # (non-terminal) row pins its ops against prefix compaction and is never pruned
+  # by the retention sweep; a terminal row prunes past retention and releases its
+  # ops. Every durable non-terminal string must appear below: parking, parked and
+  # destroying (sessions) and destroying (serving, stateful, group) were missing,
+  # so a dormant parked workspace or an in-flight teardown older than the journal
+  # horizon had its ops compacted while the row was still live.
   @terminal_states ["succeeded", "failed_permanent", "dead_lettered"]
-  # The complementary set: states a task can still leave, so its ops must never be
-  # prefix-compacted regardless of age. Used by the marker computation below.
   @live_states ["queued", "assigned", "running", "failed_retryable"]
 
-  # Session lifecycle states (R2), mirroring the task retention discipline. A
-  # non-terminal (live) session pins its ops against prefix compaction and is
-  # never pruned by the retention sweep, exactly as a live task does; a terminal
-  # session prunes past retention and releases its ops for compaction.
   @session_terminal_states ["expired", "evicted", "destroyed", "failed"]
-  @session_live_states ["creating", "running", "banking", "banked", "relighting"]
+  @session_live_states [
+    "creating",
+    "running",
+    "banking",
+    "banked",
+    "relighting",
+    "parking",
+    "parked",
+    "destroying"
+  ]
 
-  # Serving instance lifecycle states (R3), mirroring the session retention
-  # discipline exactly. A non-terminal (live) serving instance pins its ops
-  # against prefix compaction and is never pruned by the retention sweep,
-  # exactly as a live session does; a terminal instance prunes past retention
-  # and releases its ops for compaction. "published"/"draining" sit inside the
-  # live set (the instance is still a VM the control plane owns, whether or
-  # not its endpoint is currently in the fan-out); only banked-but-not-yet-
-  # relit is the exception, which mirrors "banked" being live for sessions too.
   @serving_terminal_states ["evicted", "destroyed", "failed"]
   @serving_live_states [
     "starting",
@@ -58,17 +63,10 @@ defmodule Embervm.OpLog.SQLite do
     "draining",
     "banking",
     "banked",
-    "relighting"
+    "relighting",
+    "destroying"
   ]
 
-  # Stateful instance lifecycle states (R4), mirroring the serving retention
-  # discipline exactly. A non-terminal (live) stateful instance pins its ops
-  # against prefix compaction and is never pruned by the retention sweep; a
-  # terminal instance prunes past retention. "cold_booting" is the fall-back boot
-  # path (a relight whose pair broke), live like "starting". The `volumes` table
-  # is NOT swept here at all: a volume row lives until volume_deleted, outliving
-  # every instance by design (data on the volume, warmth in the snapshot), so it
-  # has no terminal-state retention clause.
   @stateful_terminal_states ["evicted", "destroyed", "failed"]
   @stateful_live_states [
     "starting",
@@ -76,19 +74,10 @@ defmodule Embervm.OpLog.SQLite do
     "banking",
     "banked",
     "relighting",
-    "cold_booting"
+    "cold_booting",
+    "destroying"
   ]
 
-  # Composite-group instance lifecycle states (R5), mirroring the stateful
-  # retention discipline exactly. A non-terminal (live) group instance pins its
-  # ops against prefix compaction and is never pruned by the retention sweep; a
-  # terminal instance prunes past retention (ADR embervm/002). "degraded" is a
-  # LIVE state (a member fell unhealthy but the group is still up), like
-  # "serving". "fresh_booting" is the cold-boot path (a wake that discarded
-  # warmth), live like "starting". The `expired` terminal state is folded into
-  # "destroyed" (it rides group_destroyed{reason: expired}), so it is not a
-  # distinct state here. `group_members` rows are NOT swept independently: they
-  # live and die with their group instance (pruned when it is).
   @group_terminal_states ["evicted", "destroyed", "failed"]
   @group_live_states [
     "starting",
@@ -97,11 +86,10 @@ defmodule Embervm.OpLog.SQLite do
     "banking",
     "banked",
     "relighting",
-    "fresh_booting"
+    "fresh_booting",
+    "destroying"
   ]
-  # Seven days in milliseconds: default age (from last update) at which a
-  # terminal task is eligible for compaction. This is the TERMINAL-TASK retention
-  # window and is DISTINCT from the ops-journal horizon below.
+
   @default_retention_ms 7 * 24 * 60 * 60 * 1000
   # Thirty days in milliseconds: default age past which an op is eligible for
   # prefix compaction, PROVIDED its task is not still live. The ops journal is
@@ -604,98 +592,114 @@ defmodule Embervm.OpLog.SQLite do
   defp format_diagnostic(value), do: inspect(value)
 
   @impl Embervm.OpLog
+  # Call budgets, mirroring Embervm.OpLog.Postgres. A bare GenServer.call carries
+  # the implicit 5 s timeout and raises an exit in the CALLER on expiry; every
+  # store that appends sits above this process under :rest_for_one, so one slow
+  # append on a busy disk (a compaction batch holding the single writer, a WAL
+  # checkpoint) crashed the caller and restarted every manager with it. The
+  # wrappers now wait at least as long as the database work can take and turn an
+  # expiry into {:error, :unavailable}, the same fail-closed answer the Postgres
+  # adapter gives.
+  @append_timeout_ms 20_000
+  @single_query_call_timeout_ms 20_000
+  @double_query_call_timeout_ms 35_000
+  @compact_call_timeout_ms 185_000
+
+  @doc "The append call budget in milliseconds, for tests and callers that size their own deadlines."
+  def append_timeout_ms, do: @append_timeout_ms
+
   def append(server \\ __MODULE__, %Op{} = op) do
-    GenServer.call(server, {:append, op})
+    Embervm.OpLog.safe_server_call(server, {:append, op}, @append_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def read_from(server \\ __MODULE__, seq) do
-    GenServer.call(server, {:read_from, seq})
+    Embervm.OpLog.safe_server_call(server, {:read_from, seq}, @double_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
-    GenServer.call(server, :load_tasks)
+    Embervm.OpLog.safe_server_call(server, :load_tasks, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_sessions(server \\ __MODULE__) do
-    GenServer.call(server, :load_sessions)
+    Embervm.OpLog.safe_server_call(server, :load_sessions, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_serving_instances(server \\ __MODULE__) do
-    GenServer.call(server, :load_serving_instances)
+    Embervm.OpLog.safe_server_call(server, :load_serving_instances, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_stateful_instances(server \\ __MODULE__) do
-    GenServer.call(server, :load_stateful_instances)
+    Embervm.OpLog.safe_server_call(server, :load_stateful_instances, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_volumes(server \\ __MODULE__) do
-    GenServer.call(server, :load_volumes)
+    Embervm.OpLog.safe_server_call(server, :load_volumes, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
-    GenServer.call(server, :load_volume_blessing)
+    Embervm.OpLog.safe_server_call(server, :load_volume_blessing, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_key_epochs(server \\ __MODULE__) do
-    GenServer.call(server, :load_key_epochs)
+    Embervm.OpLog.safe_server_call(server, :load_key_epochs, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_blessing_leases(server \\ __MODULE__) do
-    GenServer.call(server, :load_blessing_leases)
+    Embervm.OpLog.safe_server_call(server, :load_blessing_leases, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_checkpoint_dispatches(server \\ __MODULE__) do
-    GenServer.call(server, :load_checkpoint_dispatches)
+    Embervm.OpLog.safe_server_call(server, :load_checkpoint_dispatches, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_group_instances(server \\ __MODULE__) do
-    GenServer.call(server, :load_group_instances)
+    Embervm.OpLog.safe_server_call(server, :load_group_instances, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_group_members(server \\ __MODULE__) do
-    GenServer.call(server, :load_group_members)
+    Embervm.OpLog.safe_server_call(server, :load_group_members, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_result(server \\ __MODULE__, task_id) do
-    GenServer.call(server, {:load_result, task_id})
+    Embervm.OpLog.safe_server_call(server, {:load_result, task_id}, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def load_request(server \\ __MODULE__, task_id) do
-    GenServer.call(server, {:load_request, task_id})
+    Embervm.OpLog.safe_server_call(server, {:load_request, task_id}, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def list_usage(server \\ __MODULE__, opts \\ []) do
-    GenServer.call(server, {:list_usage, opts})
+    Embervm.OpLog.safe_server_call(server, {:list_usage, opts}, @double_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def compact(server \\ __MODULE__, now_ms) do
-    GenServer.call(server, {:compact, now_ms})
+    Embervm.OpLog.safe_server_call(server, {:compact, now_ms}, @compact_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def compacted_through(server \\ __MODULE__) do
-    GenServer.call(server, :compacted_through)
+    Embervm.OpLog.safe_server_call(server, :compacted_through, @single_query_call_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def evict_task(server \\ __MODULE__, task_id) do
-    GenServer.call(server, {:evict_task, task_id})
+    Embervm.OpLog.safe_server_call(server, {:evict_task, task_id}, @single_query_call_timeout_ms)
   end
 
   # The op-log's database file size in bytes, for the sweeper's disk-usage log
@@ -704,7 +708,7 @@ defmodule Embervm.OpLog.SQLite do
   # (the main db is what the retention policy bounds).
   @spec db_size(GenServer.server()) :: {:ok, non_neg_integer()} | {:error, term()}
   def db_size(server \\ __MODULE__) do
-    GenServer.call(server, :db_size)
+    Embervm.OpLog.safe_server_call(server, :db_size, @single_query_call_timeout_ms)
   end
 
   # -- GenServer callbacks ------------------------------------------------
@@ -872,8 +876,12 @@ defmodule Embervm.OpLog.SQLite do
     else
       with :ok <- Sqlite3.execute(conn, "BEGIN IMMEDIATE"),
            {:ok, seq} <- insert_op(conn, op),
-           :ok <- project(conn, op, seq) do
-        :ok = Sqlite3.execute(conn, "COMMIT")
+           :ok <- project(conn, op, seq),
+           # COMMIT is where a full disk or an I/O error surfaces (SQLITE_FULL,
+           # SQLITE_IOERR). It fails this one append closed like any other step
+           # instead of crashing the op-log and, through rest_for_one, every
+           # store and manager above it.
+           :ok <- Sqlite3.execute(conn, "COMMIT") do
         {:ok, seq}
       else
         {:error, reason} ->

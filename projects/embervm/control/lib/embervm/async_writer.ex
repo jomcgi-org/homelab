@@ -39,7 +39,10 @@ defmodule Embervm.AsyncWriter do
   of the ADR: mutating ETS here is both impossible (private tables) and wrong
   (a terminal transition would race a not-yet-applied assign). The trade is that
   the durable log can lag the in-memory view by one append; a CP crash in that
-  window loses the op, which the adoption reconcile repairs (below).
+  window, or an append the op-log refuses (an unavailable database returns
+  `{:error, :unavailable}` for every append until its connection recovers),
+  loses the op, which the adoption reconcile repairs (below). The writer never
+  retries: a retry would reorder the per-instance FIFO this module promises.
 
   Appends are applied strictly FIFO from this GenServer's mailbox, so ops for one
   instance land in submission order (the mailbox gives global order, which is
@@ -69,9 +72,10 @@ defmodule Embervm.AsyncWriter do
   destroyed.
 
   On a GRACEFUL shutdown (a normal CP roll), `terminate/2` drains every queued
-  append before the process exits, so a planned rollout loses nothing; only an
-  abnormal exit (SIGKILL, a crash) can drop the in-flight queue, and only that
-  narrow window relies on the reconcile repair.
+  append before the process exits, so a planned rollout loses nothing; an
+  abnormal exit (SIGKILL, a crash) drops the in-flight queue, and an append the
+  op-log refuses is dropped after a warning (`apply_append/1`). Both windows rely
+  on the reconcile repair, and the second lasts as long as the database outage.
   """
   use GenServer
 
