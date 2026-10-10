@@ -55,6 +55,7 @@ filegroup(
     srcs = [
         "tasks/authz-race-01/task.yaml",
         "tasks/campsites-region-rollup-01/task.yaml",
+        "tasks/campsites-region-rollup-perf-01/task.yaml",
         "tasks/chart-version-conflict-01/task.yaml",
         "tasks/chat-public-retention-review-01/task.yaml",
         "tasks/chat-public-retention-review-02/task.yaml",
@@ -84,6 +85,7 @@ filegroup(
         "tasks/security-review-01/task.yaml",
         "tasks/slo-budget-breach-01/task.yaml",
         "tasks/stars-climatology-months-01/task.yaml",
+        "tasks/stars-climatology-perf-01/task.yaml",
         "tasks/stars-grid-speedup-01/task.yaml",
         "tasks/tokenbroker-spiffe-wiring-01/task.yaml",
         "tasks/trace-correlation-multisite-01/task.yaml",
