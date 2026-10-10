@@ -37,7 +37,14 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -3394,7 +3401,9 @@ def ingest_utterance(
     if game_session.status == "ended":
         raise HTTPException(409, detail="session has ended")
     if game_session.transcript_state != "on":
-        raise HTTPException(409, detail=f"transcript is {game_session.transcript_state}")
+        raise HTTPException(
+            409, detail=f"transcript is {game_session.transcript_state}"
+        )
 
     speaker = body.speaker_member_id
     if body.source == "browser":
@@ -3412,7 +3421,9 @@ def ingest_utterance(
             try:
                 UUID(speaker)
             except ValueError as exc:
-                raise HTTPException(403, detail="speaker must belong to this campaign") from exc
+                raise HTTPException(
+                    403, detail="speaker must belong to this campaign"
+                ) from exc
             speaker = session.exec(
                 select(CampaignMember.id).where(
                     CampaignMember.id == speaker,
@@ -3427,9 +3438,13 @@ def ingest_utterance(
     speakers = (
         {speaker}
         if speaker is not None
-        else set(session.exec(
-            select(CampaignMember.id).where(CampaignMember.campaign_id == campaign_id)
-        ).all())
+        else set(
+            session.exec(
+                select(CampaignMember.id).where(
+                    CampaignMember.campaign_id == campaign_id
+                )
+            ).all()
+        )
     )
     # FOR SHARE conflicts with revocation's UPDATE. These locks stay held until
     # the event commits, so consent cannot be revoked between this check and
@@ -3454,7 +3469,8 @@ def ingest_utterance(
             game_session=game_session,
             kind="utterance",
             audience=Audience(
-                body.audience.kind, frozenset(body.audience.pc_ids),
+                body.audience.kind,
+                frozenset(body.audience.pc_ids),
                 author_member_id=speaker,
             ),
             author_member_id=speaker,
@@ -3464,7 +3480,11 @@ def ingest_utterance(
                 "ended_at": body.ended_at.isoformat(),
                 "source": body.source,
                 "confidence": body.confidence,
-                **({"speaker_label": body.speaker_label} if body.speaker_label is not None else {}),
+                **(
+                    {"speaker_label": body.speaker_label}
+                    if body.speaker_label is not None
+                    else {}
+                ),
             },
             request_id=body.request_id,
         )

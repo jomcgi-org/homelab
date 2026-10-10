@@ -24,7 +24,11 @@ from grimoire.models import (
     SessionEvent,
     TranscriptConsent,
 )
-from grimoire.router import UtteranceRequest, ingest_utterance, revoke_transcript_consent
+from grimoire.router import (
+    UtteranceRequest,
+    ingest_utterance,
+    revoke_transcript_consent,
+)
 from grimoire.session_events import append_event
 
 
@@ -92,7 +96,9 @@ def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
         game_session = session.get(GameSession, lane.session_id)
         game_session.transcript_state = "on"
         consent = TranscriptConsent(
-            campaign_id=lane.campaign_id, member_id=lane.member_id, processor="Local STT"
+            campaign_id=lane.campaign_id,
+            member_id=lane.member_id,
+            processor="Local STT",
         )
         session.add(consent)
         session.commit()
@@ -112,12 +118,17 @@ def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
             now = datetime.now(timezone.utc)
             with pytest.raises(HTTPException) as error:
                 ingest_utterance(
-                    lane.campaign_id, lane.session_id,
+                    lane.campaign_id,
+                    lane.session_id,
                     UtteranceRequest(
-                        text="Must not be stored", source="browser", confidence=1,
-                        started_at=now, ended_at=now,
+                        text="Must not be stored",
+                        source="browser",
+                        confidence=1,
+                        started_at=now,
+                        ended_at=now,
                     ),
-                    email=lane.email, session=session,
+                    email=lane.email,
+                    session=session,
                 )
             assert error.value.status_code == 403
             assert error.value.detail == "active transcript consent required"
@@ -126,7 +137,12 @@ def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
     def revoke():
         assert cached.wait(timeout=10)
         with Session(lane.engine) as session:
-            assert revoke_transcript_consent(lane.campaign_id, email=lane.email, session=session).status_code == 204
+            assert (
+                revoke_transcript_consent(
+                    lane.campaign_id, email=lane.email, session=session
+                ).status_code
+                == 204
+            )
         revoked.set()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -136,11 +152,18 @@ def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
         ingest_result.result(timeout=20)
     with Session(lane.engine) as session:
         assert session.get(TranscriptConsent, consent_id).revoked_at is not None
-        assert session.exec(select(SessionEvent).where(SessionEvent.session_id == lane.session_id)).all() == []
+        assert (
+            session.exec(
+                select(SessionEvent).where(SessionEvent.session_id == lane.session_id)
+            ).all()
+            == []
+        )
 
 
 @pytest.mark.parametrize("source", ("table", "discord"))
-def test_adapter_ingest_rejects_malformed_speaker_before_postgres_uuid_cast(lane, source):
+def test_adapter_ingest_rejects_malformed_speaker_before_postgres_uuid_cast(
+    lane, source
+):
     with Session(lane.engine) as session:
         game_session = session.get(GameSession, lane.session_id)
         game_session.transcript_state = "on"
@@ -148,15 +171,26 @@ def test_adapter_ingest_rejects_malformed_speaker_before_postgres_uuid_cast(lane
         now = datetime.now(timezone.utc)
         with pytest.raises(HTTPException) as error:
             ingest_utterance(
-                lane.campaign_id, lane.session_id,
+                lane.campaign_id,
+                lane.session_id,
                 UtteranceRequest(
-                    speaker_member_id="not-a-uuid", source=source,
-                    text="Invalid speaker", confidence=1, started_at=now, ended_at=now,
+                    speaker_member_id="not-a-uuid",
+                    source=source,
+                    text="Invalid speaker",
+                    confidence=1,
+                    started_at=now,
+                    ended_at=now,
                 ),
-                email=lane.email, session=session,
+                email=lane.email,
+                session=session,
             )
         assert error.value.status_code == 403
-        assert session.exec(select(SessionEvent).where(SessionEvent.session_id == lane.session_id)).all() == []
+        assert (
+            session.exec(
+                select(SessionEvent).where(SessionEvent.session_id == lane.session_id)
+            ).all()
+            == []
+        )
 
 
 def test_uuid_audience_uses_persisted_canonical_ids(lane):
