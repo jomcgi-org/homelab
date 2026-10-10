@@ -1265,9 +1265,10 @@ release-scoped placement rule and registered-instance hold. An acknowledged
 export may become stale before deletion; there is no node-wide lock or epoch.
 The existing preemption drain remains the backstop for placement races. A
 controller restart resets the quiet timeout and reconstructs eligibility from
-current reports. Live acceptance still needs placement across classes/floors,
+current reports. A sibling's readiness can also flip between the victim-directing pod list and the ReplicaSet's own ranking at /scale. Live acceptance still needs placement across classes/floors,
 zero-surge roll completion, co-location and archive-failure hold/alarm drills,
-restart mid-drain, acknowledged export then shrink and cross-node export/rejoin.
+restart mid-drain, acknowledged export then shrink, cross-node export/rejoin
+and scale-down proceeding after a Spot preemption leaves a Failed brick pod.
 
 Catalog-derived class floors apply only to the scalable, unpinned class
 Deployment. Same-class `nodeFloors` are additive topology guarantees and are

@@ -1431,7 +1431,7 @@ defmodule Embervm.BrickController do
       {:ok, pods} ->
         owned = Enum.filter(pods, &class_deployment_pod?(state, class, &1))
         uids = MapSet.new(owned, & &1.uid)
-        mixed? = mixed_replica_sets?(owned)
+        mixed? = mixed_replica_sets?(Enum.filter(owned, &pod_active?/1))
         facts
         |> Enum.filter(&MapSet.member?(uids, Map.get(&1, :pod_uid)))
         |> Enum.map(&Map.put(&1, :archive_rollout_held, mixed?))
@@ -1558,22 +1558,23 @@ defmodule Embervm.BrickController do
   # ReplicaSet: upstream ranks unassigned pods, non-Running phases and NotReady
   # pods ahead of cost. Annotating the acknowledged victim while a sibling is
   # Pending, NotReady or unassigned would delete the sibling instead, so every
-  # other owned, assigned, non-terminating pod must be Running and Ready.
-  # A stale -1000 cost on another owned pod (a prior annotate whose /scale
-  # write failed) would likewise leave two victims and an undirected
-  # tie-break, so it also holds the shrink.
+  # other owned active pod must be assigned, Running and Ready. Only active
+  # pods count, as in the ReplicaSet: Succeeded/Failed pods (a Spot preemption
+  # or eviction leaves them until PodGC) and terminating pods are ignored.
+  # A stale -1000 cost on another owned active pod (a prior annotate whose
+  # /scale write failed) would leave two victims and an undirected tie-break,
+  # so it is cleared and the shrink held for this tick.
   defp direct_victim(state, class, victim) do
     selector = brick_pod_selector(class)
+    victim_uid = Map.get(victim, :pod_uid)
 
     with {:ok, pods} <- state.pods_fun.(state.namespace, selector),
-         true <- not state.archive_ack_gate or
-           not mixed_replica_sets?(Enum.filter(pods, &class_deployment_pod?(state, class, &1))),
-         :ok <- victim_sibling_ready(state, class, pods, Map.get(victim, :pod_uid)),
-         :ok <- victim_stale_cost(state, class, pods, Map.get(victim, :pod_uid)),
-         %{name: pod_name} = victim_pod <-
-           Enum.find(pods, :no_pod, fn pod ->
-             pod.uid == Map.get(victim, :pod_uid) and class_deployment_pod?(state, class, pod)
-           end),
+         owned = Enum.filter(pods, &class_deployment_pod?(state, class, &1)),
+         active = Enum.filter(owned, &pod_active?/1),
+         true <- not state.archive_ack_gate or not mixed_replica_sets?(active),
+         :ok <- victim_sibling_ready(state, active, victim_uid),
+         :ok <- victim_stale_cost(state, active, victim_uid),
+         %{name: pod_name} = victim_pod <- Enum.find(owned, :no_pod, &(&1.uid == victim_uid)),
          :ok <- victim_pod_writable(victim_pod, state.archive_ack_gate),
          :ok <-
            state.annotate_fun.(state.namespace, pod_name, %{
@@ -1588,18 +1589,14 @@ defmodule Embervm.BrickController do
     end
   end
 
-  # Hold unless every other owned, non-terminating pod is assigned and Running
-  # plus Ready. Terminating pods are leaving and cannot steal the deletion;
-  # anything unassigned, Pending/Unknown or NotReady (including unknown fields
-  # from a partial projection, which read as not ready) ranks ahead of cost.
-  defp victim_sibling_ready(%{archive_ack_gate: false}, _class, _pods, _victim_uid), do: :ok
+  # Hold unless every other owned active pod is assigned and Running plus
+  # Ready. Anything unassigned, Pending/Unknown or NotReady (including unknown
+  # fields from a partial projection, which read as not ready) ranks ahead of
+  # cost.
+  defp victim_sibling_ready(%{archive_ack_gate: false}, _active, _victim_uid), do: :ok
 
-  defp victim_sibling_ready(state, class, pods, victim_uid) do
-    siblings =
-      Enum.filter(pods, fn pod ->
-        class_deployment_pod?(state, class, pod) and Map.get(pod, :uid) != victim_uid and
-          not pod_terminating?(pod)
-      end)
+  defp victim_sibling_ready(_state, active, victim_uid) do
+    siblings = Enum.reject(active, &(Map.get(&1, :uid) == victim_uid))
 
     if Enum.all?(siblings, &(pod_assigned?(&1) and pod_running_ready?(&1))) do
       :ok
@@ -1608,20 +1605,24 @@ defmodule Embervm.BrickController do
     end
   end
 
-  # Hold when another owned pod still carries the victim cost. That annotation
-  # is only ever written here, so a second -1000 means a prior annotate whose
-  # /scale write failed; annotating again would leave the ReplicaSet tie-break
-  # (rank, then ready time) free to delete the unacknowledged pod.
-  defp victim_stale_cost(%{archive_ack_gate: false}, _class, _pods, _victim_uid), do: :ok
+  # Nothing else removes the victim cost, so a leftover -1000 on another owned
+  # active pod must be cleared here (merge-patch null deletes the key) or the
+  # class would hold until that pod is replaced. The hold lasts this tick; the
+  # next one directs the current pick against clean siblings.
+  defp victim_stale_cost(%{archive_ack_gate: false}, _active, _victim_uid), do: :ok
 
-  defp victim_stale_cost(state, class, pods, victim_uid) do
-    stale? =
-      Enum.any?(pods, fn pod ->
-        class_deployment_pod?(state, class, pod) and Map.get(pod, :uid) != victim_uid and
-          Map.get(pod, :deletion_cost) == @victim_deletion_cost
+  defp victim_stale_cost(state, active, victim_uid) do
+    stale =
+      Enum.filter(active, fn pod ->
+        Map.get(pod, :uid) != victim_uid and Map.get(pod, :deletion_cost) == @victim_deletion_cost
       end)
 
-    if stale?, do: {:skip, :stale_deletion_cost}, else: :ok
+    Enum.reduce_while(stale, :ok, fn pod, _acc ->
+      case state.annotate_fun.(state.namespace, pod.name, %{@deletion_cost_annotation => :null}) do
+        :ok -> {:cont, {:skip, :stale_deletion_cost}}
+        {:error, reason} -> {:halt, {:skip, inspect(reason)}}
+      end
+    end)
   end
 
   # The victim pod itself must be assigned and non-terminating: annotating a
@@ -1631,7 +1632,7 @@ defmodule Embervm.BrickController do
   defp victim_pod_writable(_pod, false), do: :ok
 
   defp victim_pod_writable(pod, true) do
-    if pod_assigned?(pod) and not pod_terminating?(pod) do
+    if pod_assigned?(pod) and pod_active?(pod) do
       :ok
     else
       {:skip, :victim_pod_not_found}
@@ -1643,6 +1644,11 @@ defmodule Embervm.BrickController do
   end
 
   defp pod_terminating?(pod), do: Map.get(pod, :terminating, false) == true
+
+  # The ReplicaSet's IsPodActive: not Succeeded/Failed and not terminating.
+  defp pod_active?(pod) do
+    Map.get(pod, :phase) not in ["Succeeded", "Failed"] and not pod_terminating?(pod)
+  end
 
   defp pod_running_ready?(pod) do
     Map.get(pod, :phase) == "Running" and Map.get(pod, :ready) == true
