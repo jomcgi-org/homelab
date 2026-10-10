@@ -215,6 +215,7 @@ async def run_agent_cell(
     saw_tool_call = False  # did the model ever drive the loop with a tool call?
     saw_bad_args = False  # did any tool call carry unparseable arguments?
     score: float | None = None
+    performance = None
     norms: dict | None = None
     diff: str | None = None
     final_text = ""  # text of the last assistant message, graded as the response
@@ -267,6 +268,7 @@ async def run_agent_cell(
         # task spec is never mutated); a file the model wrote is not the response.
         r = verify(workdir, {**verifier_args, "response": final_text})
         passed, feedback, score = r.passed, r.feedback, r.score
+        performance = r.performance
         if passed:
             norms, diff = authored_norms, authored_diff
     except Exception as exc:  # noqa: BLE001 - a harness/tool-call error becomes a fail cell
@@ -289,6 +291,7 @@ async def run_agent_cell(
         passed=passed,
         feedback=feedback if not passed else "",
         score=score,
+        performance=performance,
         latency_ms=latency_ms,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,

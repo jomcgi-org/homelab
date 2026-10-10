@@ -2,7 +2,9 @@
 
 The CLI runs task fixtures through file-editing agents and deterministic
 verifiers. Cached result cells feed Markdown and JSON reports. Single-shot
-candidates are text outputs and do not receive file-edit norms.
+candidates are text outputs and do not receive file-edit norms. Result cells
+also cache model costs, correctness gates and optional graded scores; CLI
+reports aggregate those cells, excluding harness errors.
 
 ## Norms above the pass floor
 
@@ -53,6 +55,30 @@ scoring 0.4 for the untouched half of the change rewarded the outcome the task
 exists to catch; zero makes the judgement axis measure the judgement. The cache
 key hashes the verifier source, prompt and args, so the re-graded cells re-run
 without a harness version bump.
+
+## Performance grading
+
+The `speedup` verifier's opt-in `paired-v1` contract copies allowlisted candidate
+files into an isolated temporary grading directory. A stdlib-only trusted helper
+checks baseline oracles, loads candidate code after AST screening, and measures
+fresh identical inputs in alternating pairs. The parent verifier validates raw
+samples and computes scores. Helper source and task verifier arguments are part
+of the cache identity. Legacy tasks retain their existing grading contract.
+Pure-function task harnesses opt into input-mutation checks outside timing.
+The climatology task pins a naive fixture with exact integer sums and the
+endpoint's first-valid-row stable tie order. Its references remain model-hidden.
+The campsites rollup task pins exact integer counts and scores, the inclusive
+today-minus-one through today-plus-13 window, and independent last-row-wins
+availability/weather maps. Empty campgrounds produce an explicit 503 record.
+Both packs seed visible tests while keeping the protected oracles and calibrated
+references outside candidate fixtures.
+
+**Why.** Correctness-gated buckets distinguish an algorithmic improvement from a
+fast wrong answer. A discarded warm-up and seven alternating pairs reduce order
+and scheduling noise; the median paired ratio limits outliers. Wide buckets give
+partial credit without implying precision beyond the frozen dataset and runner.
+Issue #6696 records this choice. Seeded naive baselines disclose their provenance
+and fixture version; they make no claim about current production algorithms.
 
 ## Direction
 

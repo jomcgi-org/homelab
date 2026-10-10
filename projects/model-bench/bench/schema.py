@@ -6,6 +6,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from bench.verifiers import PerformanceRecord as PerformanceRecord
+from bench.verifiers import PerformanceSample as PerformanceSample
+
 
 class TaskClass(str, Enum):
     MECHANICAL = "mechanical"
@@ -122,6 +125,7 @@ class Attempt(BaseModel):
     # 0..1 partial credit from a graded verifier; None for binary verifiers and for
     # cells cached before scores existed.
     score: float | None = None
+    performance: PerformanceRecord | None = None
     latency_ms: int
     prompt_tokens: int
     completion_tokens: int

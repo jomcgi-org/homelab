@@ -212,6 +212,7 @@ def run_anchor_agent_cell(
     turns = 0
     wall_ms = 0
     score: float | None = None
+    performance = None
     norms: dict | None = None
     diff: str | None = None
     rental_cost = 0.0
@@ -234,6 +235,7 @@ def run_anchor_agent_cell(
             authored_diff = safe_diff(fixture_dir, workdir)
             r = verify(workdir, {**verifier_args, "response": res.text})
             passed, feedback, score = r.passed, r.feedback, r.score
+            performance = r.performance
             if passed:
                 norms, diff = authored_norms, authored_diff
     except Exception as exc:  # noqa: BLE001 - a subprocess/verify error becomes a fail cell
@@ -245,6 +247,7 @@ def run_anchor_agent_cell(
         passed=passed,
         feedback=feedback if not passed else "",
         score=score,
+        performance=performance,
         latency_ms=wall_ms,
         prompt_tokens=0,
         completion_tokens=0,

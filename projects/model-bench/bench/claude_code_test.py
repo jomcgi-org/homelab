@@ -13,6 +13,35 @@ from dataclasses import dataclass
 import pytest
 
 from bench import claude_code
+from bench.schema import PerformanceRecord
+
+
+def test_anchor_preserves_performance(monkeypatch, tmp_path):
+    record = PerformanceRecord(
+        correctness=False,
+        score=0,
+        pass_threshold=1 / 3,
+        pair_count=7,
+        fixture_version="v1",
+    )
+    monkeypatch.setattr(
+        claude_code,
+        "_invoke",
+        lambda *a, **kw: claude_code.ClaudeResult(
+            text="", num_turns=1, is_error=False, wall_ms=1
+        ),
+    )
+    cell = claude_code.run_anchor_agent_cell(
+        task_id="t",
+        task_version="v1",
+        model_id="m",
+        content_hash="h",
+        fixture_dir=_make_fixture(tmp_path),
+        task_prompt="p",
+        verify=lambda w, a: _VerifyResult(False, "wrong", 0, record),
+        verifier_args={},
+    )
+    assert cell.attempts[0].performance == record
 
 
 @pytest.mark.parametrize("passed", [True, False])
@@ -204,6 +233,7 @@ class _VerifyResult:
     passed: bool
     feedback: str
     score: float | None = None
+    performance: object | None = None
 
 
 def _make_fixture(tmp_path):

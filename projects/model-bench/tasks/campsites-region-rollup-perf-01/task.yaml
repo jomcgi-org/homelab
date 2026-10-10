@@ -1,0 +1,367 @@
+# Seeded benchmark fixture derived from endpoint semantics, not current production code.
+# Provenance: main a1d4b0f99b4f5e6fb5e9948dd0f2ba33df1d3cce,
+# projects/monolith/campsites/{router.py,models.py,router_test.py} and the
+# existing campsites-region-rollup-01 task. Fixture/dataset: campsites-rollup-seeded-v1.
+# Calibration (2026-10-03): Firecracker Linux 6.18.35 x86_64, 2 vCPU,
+# Intel Xeon Processor @ 2.80GHz, Python 3.12.15. Full size 180 campgrounds,
+# 1 warm-up + 7 measured alternating pairs, three grading runs each:
+# baseline median ratios 0.955090 / 0.984328 / 1.007391, bucket none, score 0;
+# micro median ratios 1.009040 / 1.002168 / 1.026773, bucket none, score 0;
+# algorithmic median ratios 227.635866 / 239.890150 / 237.513447, >=50x, score 1.
+# All runs correct. Baseline calls 1.234..1.565s; whole runs 12.466..24.996s.
+# Frozen-fixture measurements only, no production-speedup claim.
+id: campsites-region-rollup-perf-01
+version: v1
+class: code-fix
+tier: hard
+mode: agentic
+source_commit: a1d4b0f99b4f5e6fb5e9948dd0f2ba33df1d3cce
+target_files: [rollup.py]
+agent:
+  exec: true
+  max_turns: 40
+snapshot:
+  files:
+    rollup.py: &baseline |
+      """Seeded benchmark fixture derived from campsites /snapshot endpoint semantics.
+
+      This deliberately naive algorithm is not current production code.
+      Provenance: main a1d4b0f99b4f5e6fb5e9948dd0f2ba33df1d3cce,
+      projects/monolith/campsites/router.py, models.py and router_test.py;
+      region aggregation follows tasks/campsites-region-rollup-01/task.yaml.
+      Fixture/dataset version: campsites-rollup-seeded-v1.
+
+      Inputs are lists of plain dictionaries and explicit ISO-date string today.
+      Campgrounds have unique integer resource_location_id and string region.
+      Availability rows have integer resource_location_id, ISO date and boolean
+      has_availability. Weather rows have integer resource_location_id, ISO date,
+      nonnegative integer sunny_score and boolean is_good. Extra fields are ignored.
+      ISO dates are valid YYYY-MM-DD dates; today's full window must be representable.
+      Rows for unknown campgrounds and dates outside today-1..today+13 are ignored.
+      Last row wins independently in each table for duplicate (campground, date),
+      matching the endpoint's per-day map assignments in input encounter order.
+      Missing availability is false; missing weather is score 0 and is_good false.
+      Counts and scores are exact integers, with no floating-point aggregation or tolerance.
+      Regions sort by descending best_score then Python string order ascending.
+      Neither input may be mutated. No clock, database or network is consulted.
+      No campgrounds returns {"status": 503, "detail": "campsites data unavailable"},
+      representing the endpoint's HTTP 503 without requiring a web framework.
+      """
+      from datetime import date, timedelta
+
+
+      def summarize(campgrounds, availability, weather, today):
+          if not campgrounds:
+              return {"status": 503, "detail": "campsites data unavailable"}
+          start = date.fromisoformat(today) - timedelta(days=1)
+          days = [(start + timedelta(days=i)).isoformat() for i in range(15)]
+          output = []
+          for region in sorted({park["region"] for park in campgrounds}):
+              parks = good_days = open_parks = best_score = 0
+              for park in campgrounds:
+                  if park["region"] != region:
+                      continue
+                  parks += 1
+                  park_id = park["resource_location_id"]
+                  park_good = 0
+                  for day in days:
+                      av = wx = None
+                      for row in availability:
+                          if row["resource_location_id"] == park_id and row["date"] == day:
+                              av = row
+                      for row in weather:
+                          if row["resource_location_id"] == park_id and row["date"] == day:
+                              wx = row
+                      if av is not None and av["has_availability"]:
+                          score = wx["sunny_score"] if wx is not None else 0
+                          best_score = max(best_score, score)
+                          if wx is not None and wx["is_good"]:
+                              park_good += 1
+                  good_days += park_good
+                  open_parks += int(park_good > 0)
+              output.append({"region": region, "parks": parks, "best_score": best_score,
+                             "good_days": good_days, "open_parks": open_parks})
+          output.sort(key=lambda result: (-result["best_score"], result["region"]))
+          return {"count": len(output), "regions": output}
+    test_rollup.py: |
+      """Visible semantic tests. Run: python -m unittest -v test_rollup."""
+      import copy
+      import unittest
+      from datetime import date, timedelta
+
+      from rollup import summarize
+
+
+      TODAY = "2026-01-01"
+
+
+      def park(rid, region="Coast"):
+          return {"resource_location_id": rid, "region": region, "name": "Park " + str(rid)}
+
+
+      def av(rid, offset=0, available=True):
+          return {"resource_location_id": rid,
+                  "date": (date.fromisoformat(TODAY) + timedelta(days=offset)).isoformat(),
+                  "has_availability": available}
+
+
+      def wx(rid, offset=0, score=70, good=True):
+          return {"resource_location_id": rid,
+                  "date": (date.fromisoformat(TODAY) + timedelta(days=offset)).isoformat(),
+                  "sunny_score": score, "is_good": good}
+
+
+      def result(region="Coast", parks=1, score=0, good=0, opened=0):
+          return {"region": region, "parks": parks, "best_score": score,
+                  "good_days": good, "open_parks": opened}
+
+
+      def expected(*regions):
+          return {"count": len(regions), "regions": list(regions)}
+
+
+      def visible_cases():
+          empty = {"status": 503, "detail": "campsites data unavailable"}
+          return [
+              (([], [], [], TODAY), empty),
+              (([], [av(999)], [wx(999)], TODAY), empty),
+              (([park(1), park(2)], [], [], TODAY), expected(result(parks=2))),
+              (([park(1)], [av(1, d) for d in (-2, -1, 13, 14)],
+                [wx(1, d, s) for d, s in ((-2, 999), (-1, 40), (13, 90), (14, 998))], TODAY),
+               expected(result(score=90, good=2, opened=1))),
+              (([park(1)], [av(999)], [wx(999, score=999)], TODAY), expected(result())),
+              (([park(1)], [av(1, available=False)], [wx(1)], TODAY), expected(result())),
+              (([park(1)], [av(1)], [], TODAY), expected(result())),
+              (([park(1)], [], [wx(1)], TODAY), expected(result())),
+              (([park(1, "z"), park(2, "A"), park(3, "")],
+                [av(1), av(2)], [wx(1), wx(2)], TODAY),
+               expected(result("A", score=70, good=1, opened=1),
+                        result("z", score=70, good=1, opened=1), result(""))),
+              (([park(i, r) for i, r in enumerate(("z", "é", "A", "", "a"))], [], [], TODAY),
+               expected(*(result(r) for r in ("", "A", "a", "z", "é")))),
+              (([park(1)], [av(1), av(1, available=False)], [wx(1)], TODAY),
+               expected(result())),
+              (([park(1)], [av(1, available=False), av(1)], [wx(1)], TODAY),
+               expected(result(score=70, good=1, opened=1))),
+              (([park(1)], [av(1)], [wx(1, score=90), wx(1, score=20, good=False)], TODAY),
+               expected(result(score=20))),
+              (([park(1), park(2)], [av(1), av(1, 1), av(2)],
+                [wx(1), wx(1, 1, 95, False), wx(2, score=60)], TODAY),
+               expected(result(parks=2, score=95, good=2, opened=2))),
+              (([park(1)], [av(1), av(1, 1)], [wx(1), wx(1, 1)], TODAY),
+               expected(result(score=70, good=2, opened=1))),
+              (([park(2 ** 80)], [av(2 ** 80)], [wx(2 ** 80, score=2 ** 90 + 3)], TODAY),
+               expected(result(score=2 ** 90 + 3, good=1, opened=1))),
+          ]
+
+
+      class RollupTests(unittest.TestCase):
+          def test_semantics(self):
+              for index, (args, want) in enumerate(visible_cases()):
+                  with self.subTest(case=index):
+                      before = copy.deepcopy(args)
+                      self.assertEqual(summarize(*args), want)
+                      self.assertEqual(args, before)
+
+
+      if __name__ == "__main__":
+          unittest.main()
+prompt: |
+  Improve the performance of summarize(campgrounds, availability, weather, today)
+  in rollup.py. This seeded benchmark fixture derives from endpoint semantics;
+  it does not describe current production code. Run the existing visible tests
+  with python -m unittest -v test_rollup and time your code using the shell tool.
+
+  The input lists contain plain dictionaries. Campgrounds have unique integer
+  resource_location_id and string region; Availability has resource_location_id,
+  ISO date and boolean has_availability; Weather has resource_location_id, ISO
+  date, nonnegative integer sunny_score and boolean is_good. today is an explicit
+  ISO date, never the system clock. Ignore extra fields and unknown campgrounds.
+  Dates are valid YYYY-MM-DD values and today's full window is representable.
+  Include today - 1 through today + 13 inclusive. Last row wins independently
+  for each table's duplicate (campground, date) key, in input encounter order.
+  Missing availability means false; missing weather means score 0 and good false.
+
+  Return {count, regions}. Each region record contains region, parks (all its
+  campgrounds), best_score (maximum score over available park-days, or 0),
+  good_days (available and is_good park-days), and open_parks (campgrounds with
+  at least one available and is_good day). Sort by best_score descending then
+  region ascending using Python string ordering. No campgrounds returns
+  {"status": 503, "detail": "campsites data unavailable"}.
+  Scores and counts are exact integers with no float tolerance. Preserve identical
+  output for every valid input and never mutate inputs. Existing tests must still
+  pass; hidden deterministic oracles and every timed pair also check correctness.
+
+  Edit only rollup.py. Allowed stdlib imports: __future__, collections, itertools,
+  functools, operator, math, bisect, heapq, datetime. Local imports, reflection,
+  private attributes, process/network access and interpreter introspection are
+  forbidden. Do not edit tests or create other modules.
+  Grading uses the median paired wall-clock speedup against the seeded current
+  version on identical large fixed-seed inputs: one warm-up, seven measured
+  alternating pairs. Scores are 0 below 2x, 1/3 at 2x, 2/3 at 10x and 1 at 50x;
+  passing requires 2x. Any wrong output earns zero credit regardless of speed.
+verifier:
+  kind: speedup
+  args:
+    protocol: paired-v1
+    editable: [rollup.py]
+    allowed_imports: [__future__, collections, itertools, functools, operator, math, bisect, heapq, datetime]
+    fixture_version: campsites-rollup-seeded-v1
+    pairs: 7
+    seed: 6696
+    timeout_s: 120
+    harness_args: [180]
+    buckets: [[2, 0.3333333333333333], [10, 0.6666666666666666], [50, 1.0]]
+    pass_threshold: 0.3333333333333333
+    baseline:
+      path: _baseline_rollup.py
+      source: *baseline
+    harness: |
+      from datetime import date, timedelta
+      import random
+      import sys
+
+
+      TODAY = "2026-01-01"
+
+
+      def park(rid, region="Coast"):
+          return {"resource_location_id": rid, "region": region, "name": "Park " + str(rid)}
+
+
+      def av(rid, offset=0, available=True):
+          return {"resource_location_id": rid,
+                  "date": (date.fromisoformat(TODAY) + timedelta(days=offset)).isoformat(),
+                  "has_availability": available}
+
+
+      def wx(rid, offset=0, score=70, good=True):
+          return {"resource_location_id": rid,
+                  "date": (date.fromisoformat(TODAY) + timedelta(days=offset)).isoformat(),
+                  "sunny_score": score, "is_good": good}
+
+
+      def result(region="Coast", parks=1, score=0, good=0, opened=0):
+          return {"region": region, "parks": parks, "best_score": score,
+                  "good_days": good, "open_parks": opened}
+
+
+      def expected(*regions):
+          return {"count": len(regions), "regions": list(regions)}
+
+
+      def visible_cases():
+          empty = {"status": 503, "detail": "campsites data unavailable"}
+          return [
+              (([], [], [], TODAY), empty),
+              (([], [av(999)], [wx(999)], TODAY), empty),
+              (([park(1), park(2)], [], [], TODAY), expected(result(parks=2))),
+              (([park(1)], [av(1, d) for d in (-2, -1, 13, 14)],
+                [wx(1, d, s) for d, s in ((-2, 999), (-1, 40), (13, 90), (14, 998))], TODAY),
+               expected(result(score=90, good=2, opened=1))),
+              (([park(1)], [av(999)], [wx(999, score=999)], TODAY), expected(result())),
+              (([park(1)], [av(1, available=False)], [wx(1)], TODAY), expected(result())),
+              (([park(1)], [av(1)], [], TODAY), expected(result())),
+              (([park(1)], [], [wx(1)], TODAY), expected(result())),
+              (([park(1, "z"), park(2, "A"), park(3, "")],
+                [av(1), av(2)], [wx(1), wx(2)], TODAY),
+               expected(result("A", score=70, good=1, opened=1),
+                        result("z", score=70, good=1, opened=1), result(""))),
+              (([park(i, r) for i, r in enumerate(("z", "é", "A", "", "a"))], [], [], TODAY),
+               expected(*(result(r) for r in ("", "A", "a", "z", "é")))),
+              (([park(1)], [av(1), av(1, available=False)], [wx(1)], TODAY),
+               expected(result())),
+              (([park(1)], [av(1, available=False), av(1)], [wx(1)], TODAY),
+               expected(result(score=70, good=1, opened=1))),
+              (([park(1)], [av(1)], [wx(1, score=90), wx(1, score=20, good=False)], TODAY),
+               expected(result(score=20))),
+              (([park(1), park(2)], [av(1), av(1, 1), av(2)],
+                [wx(1), wx(1, 1, 95, False), wx(2, score=60)], TODAY),
+               expected(result(parks=2, score=95, good=2, opened=2))),
+              (([park(1)], [av(1), av(1, 1)], [wx(1), wx(1, 1)], TODAY),
+               expected(result(score=70, good=2, opened=1))),
+              (([park(2 ** 80)], [av(2 ** 80)], [wx(2 ** 80, score=2 ** 90 + 3)], TODAY),
+               expected(result(score=2 ** 90 + 3, good=1, opened=1))),
+          ]
+
+
+      def make_input(seed, size=None):
+          size = size if size is not None else int(sys.argv[1])
+          rng = random.Random(seed)
+          today = (date(2024, 2, 27) + timedelta(days=seed % 1100)).isoformat()
+          campgrounds = [park(i, ("", "Coast", "Interior", "a", "é")[i % 5])
+                         for i in range(size)]
+          availability, weather = [], []
+          start = date.fromisoformat(today)
+          for index, meta in enumerate(campgrounds):
+              if index % 17 == 0:
+                  continue
+              for offset in range(-2, 15):
+                  day = (start + timedelta(days=offset)).isoformat()
+                  for _ in range(3):
+                      if rng.randrange(7):
+                          availability.append({"resource_location_id": index, "date": day,
+                                               "has_availability": bool(rng.randrange(3))})
+                      if rng.randrange(6):
+                          weather.append({"resource_location_id": index, "date": day,
+                                          "sunny_score": rng.randrange(101),
+                                          "is_good": bool(rng.randrange(2))})
+          for index in range(size):
+              day = (start + timedelta(days=rng.randrange(-2, 15))).isoformat()
+              availability.append({"resource_location_id": size + index, "date": day,
+                                   "has_availability": True})
+              weather.append({"resource_location_id": size + index, "date": day,
+                              "sunny_score": 999, "is_good": True})
+          rng.shuffle(campgrounds)
+          rng.shuffle(availability)
+          rng.shuffle(weather)
+          return campgrounds, availability, weather, today
+
+
+      def oracle(campgrounds, availability, weather, today):
+          # Independent day-wise specification, outside the timed function calls.
+          if not campgrounds:
+              return {"status": 503, "detail": "campsites data unavailable"}
+          low = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+          high = (date.fromisoformat(today) + timedelta(days=13)).isoformat()
+          regions = []
+          for region in sorted({p["region"] for p in campgrounds}):
+              members = [p for p in campgrounds if p["region"] == region]
+              scores, good_days, opened = [], 0, 0
+              for member in members:
+                  rid = member["resource_location_id"]
+                  dates = {r["date"] for r in availability + weather
+                           if r["resource_location_id"] == rid and low <= r["date"] <= high}
+                  park_good = 0
+                  for day in dates:
+                      avs = [r for r in availability if r["resource_location_id"] == rid
+                             and r["date"] == day]
+                      wxs = [r for r in weather if r["resource_location_id"] == rid
+                             and r["date"] == day]
+                      if not avs or not avs[-1]["has_availability"]:
+                          continue
+                      scores.append(wxs[-1]["sunny_score"] if wxs else 0)
+                      park_good += int(bool(wxs) and wxs[-1]["is_good"])
+                  good_days += park_good
+                  opened += int(park_good > 0)
+              regions.append(result(region, len(members), max(scores, default=0),
+                                    good_days, opened))
+          regions.sort(key=lambda item: (-item["best_score"], item["region"]))
+          return expected(*regions)
+
+
+      cases = visible_cases()
+      for seed in range(50):
+          args = make_input(10000 + seed, size=seed % 19)
+          cases.append((args, oracle(*args)))
+      # Move full windows across leap-day boundaries without changing timing data.
+      for index, new_today in enumerate(("2024-02-28", "2024-03-01")):
+          parks, avs, wxs, old_today = make_input(12000 + index, size=7)
+          shift = date.fromisoformat(new_today) - date.fromisoformat(old_today)
+          for row in avs + wxs:
+              row["date"] = (date.fromisoformat(row["date"]) + shift).isoformat()
+          args = (parks, avs, wxs, new_today)
+          cases.append((args, oracle(*args)))
+      benchmark(candidate_path="rollup.py", baseline_path="_baseline_rollup.py",
+                function="summarize", make_input=make_input, oracle_cases=cases,
+                require_pure_inputs=True)

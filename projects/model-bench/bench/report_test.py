@@ -1,6 +1,66 @@
 import pytest
 
-from bench.report import render_leaderboard
+from bench.report import performance_rows, render_leaderboard
+
+
+def test_performance_markdown_is_conditional_and_dataset_scoped():
+    kwargs = {"per_class": {}, "anchors": {}, "frontier": {}, "retired": []}
+    old = render_leaderboard(**kwargs)
+    assert render_leaderboard(**kwargs, performance_tasks=[]) == old
+    assert "Performance on frozen datasets" not in old
+    result = render_leaderboard(
+        **kwargs,
+        performance_tasks=[
+            {
+                "model": "toy-model",
+                "task": "toy-task",
+                "fixture_version": "seed-v1",
+                "correctness": True,
+                "median_ratio": 10,
+                "highest_bucket": 10,
+                "score": 2 / 3,
+            }
+        ],
+    )
+    assert "| toy-model | toy-task | seed-v1 | true | 10.00x | >=10x | 0.67 |" in result
+    assert "hardware-specific" in result and "no production-speedup claim" in result
+
+
+def test_performance_harness_errors_are_excluded_from_rows_and_aggregation():
+    from bench.pareto import aggregate_by_class
+    from bench.schema import Attempt, PerformanceRecord, ResultCell
+
+    record = PerformanceRecord(
+        correctness=None,
+        score=0,
+        pass_threshold=1 / 3,
+        pair_count=7,
+        fixture_version="v1",
+    )
+    cell = ResultCell(
+        task_id="t",
+        task_version="v1",
+        model_id="m",
+        content_hash="h",
+        outcome="fail",
+        attempts=[
+            Attempt(
+                passed=False,
+                feedback="[harness error] invalid samples",
+                performance=record,
+                latency_ms=1,
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
+        ],
+        cost_usd=0,
+        harness_version="x",
+        prompt_template_hash="p",
+        turns=1,
+    )
+    assert cell.is_harness_error
+    assert performance_rows([cell]) == []
+    assert aggregate_by_class([cell], {"t": "code-fix"}) == {}
 
 
 def test_report_has_per_class_qualification_and_tombstone():
