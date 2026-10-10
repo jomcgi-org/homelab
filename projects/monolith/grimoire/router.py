@@ -3121,12 +3121,14 @@ def _consent_view(row: TranscriptConsent, *, dm: bool = False) -> dict:
 
 def _lock_consent_member(session: Session, member: CampaignMember) -> None:
     # Serialize initial grants too: an absent consent row cannot be locked.
-    session.exec(
+    locked = session.exec(
         select(CampaignMember)
         .where(CampaignMember.id == member.id)
         .with_for_update()
         .execution_options(populate_existing=True)
-    ).one()
+    ).one_or_none()
+    if locked is None:
+        raise HTTPException(404, detail="campaign not found")
 
 
 def _active_consent(session: Session, member: CampaignMember) -> TranscriptConsent | None:

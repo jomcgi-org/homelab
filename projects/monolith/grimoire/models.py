@@ -984,9 +984,6 @@ class CampaignMember(SQLModel, table=True):
     )
 
 
-# nosemgrep: sqlmodel-datetime-without-factory (ended_at is intentionally NULL until the session ends)
-
-
 # nosemgrep: sqlmodel-datetime-without-factory (revoked_at is NULL until consent is revoked)
 class TranscriptConsent(SQLModel, table=True):
     __tablename__ = "transcript_consent"

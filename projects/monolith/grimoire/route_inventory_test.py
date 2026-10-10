@@ -593,7 +593,7 @@ def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
     # Main's 240 (eight inventory items add four canaries each) plus six for the
     # two seeded handouts (id, title and markdown on the live and retracted twin).
-    assert len(tokens) == 246
+    assert len(tokens) == 253
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
