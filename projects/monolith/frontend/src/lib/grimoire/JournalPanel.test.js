@@ -80,6 +80,31 @@ describe("JournalPanel", () => {
     expect(root.querySelectorAll("a")).toHaveLength(0);
   });
 
+  it("renders a received handout as its title and sanitised markdown", async () => {
+    const root = await panel({
+      journal: {
+        ...emptyJournal(),
+        received: [
+          {
+            id: "handout",
+            kind: "handout",
+            body: {
+              title: "Letter from the baron",
+              markdown: "Meet me at **dusk**.<script>x()</script>",
+            },
+          },
+        ],
+      },
+    });
+    const article = root.querySelector("article");
+    expect(article.querySelector("h4").textContent).toBe(
+      "Letter from the baron",
+    );
+    expect(article.querySelector("strong").textContent).toBe("dusk");
+    expect(article.querySelector("script")).toBeNull();
+    expect(article.querySelector("dl")).toBeNull();
+  });
+
   it("marks a retracted Learned entry and never renders its details or scope", async () => {
     const root = await panel({
       journal: {

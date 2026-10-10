@@ -2,6 +2,8 @@
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
+  import HandoutCard from "$lib/grimoire/HandoutCard.svelte";
+  import HandoutComposer from "$lib/grimoire/HandoutComposer.svelte";
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
   import RevealProjection from "$lib/grimoire/RevealProjection.svelte";
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
@@ -399,6 +401,16 @@
                 {/if}
               </div>
             {/each}
+          {:else if event.kind === "handout"}
+            <HandoutCard
+              handout={event}
+              campaignId={state.campaign.id}
+              sessionId={state.session.id}
+              {dm}
+              {busy}
+              {pin}
+              openKnowledge={(id) => (selectedEntity = id)}
+            />
           {:else}<p>
               {event.retracted_at
                 ? "This message was retracted."
@@ -424,7 +436,7 @@
               {/if}
             </div>
           {/if}
-          {#if !event.retracted_at && !event.body?.retracted}{#if !dm}<button
+          {#if !event.retracted_at && !event.body?.retracted && event.kind !== "handout"}{#if !dm}<button
                 class="secondary"
                 disabled={busy}
                 onclick={() => pin(event)}
@@ -510,6 +522,15 @@
             {act}
             {busy}
           />{/if}
+        {#if dm}<details class="dice-tray">
+            <summary>Send a handout</summary>
+            <HandoutComposer
+              campaignId={state.campaign.id}
+              characters={state.characters}
+              {busy}
+              send={act}
+            />
+          </details>{/if}
         <details class="dice-tray">
           <summary>Roll dice</summary>
           <div class="quick-dice">
