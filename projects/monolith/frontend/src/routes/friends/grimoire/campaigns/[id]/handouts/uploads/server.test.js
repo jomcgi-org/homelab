@@ -52,7 +52,9 @@ describe("handout upload proxy", () => {
       `http://backend.test/api/grimoire/campaigns/${campaignId}/handouts/uploads`,
     );
     expect(options.method).toBe("POST");
-    expect(options.headers).toEqual({ "x-grimoire-token": "signed-grimoire-token" });
+    expect(options.headers).toEqual({
+      "x-grimoire-token": "signed-grimoire-token",
+    });
     const sent = options.body.get("file");
     expect(sent.size).toBe(png.length);
     // The client's filename never reaches the backend.

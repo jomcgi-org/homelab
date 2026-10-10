@@ -40,15 +40,20 @@ describe("handout image proxy", () => {
     expect(url).toBe(
       `http://backend.test/api/grimoire/campaigns/${campaignId}/sessions/${sessionId}/events/${eventId}/image`,
     );
-    expect(options.headers).toEqual({ "x-grimoire-token": "signed-grimoire-token" });
+    expect(options.headers).toEqual({
+      "x-grimoire-token": "signed-grimoire-token",
+    });
   });
 
   it("passes a backend 404 through unchanged, still uncached", async () => {
     const { response } = get({
-      upstream: new Response(JSON.stringify({ detail: "handout image not found" }), {
-        status: 404,
-        headers: { "content-type": "application/json" },
-      }),
+      upstream: new Response(
+        JSON.stringify({ detail: "handout image not found" }),
+        {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     });
     const result = await response;
     expect(result.status).toBe(404);
