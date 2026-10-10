@@ -2799,7 +2799,9 @@ defmodule Embervm.RouterTest do
 
     test "dead-letter paging applies the caller's scope before the page, not after" do
       Application.put_env(:embervm, :usage_admins, [])
-      wl = unique("wl")
+      # The application TaskStore rebuilds from an on-disk op-log that outlives a
+      # test run, so the workload name must not repeat across runs either.
+      wl = "wl-dlpage-#{System.os_time(:nanosecond)}"
 
       dead_letter = fn principal ->
         {:ok, :created, task_id} = TaskStore.submit(%{tenant: "homelab", principal: principal, workload: wl})
@@ -2812,8 +2814,12 @@ defmodule Embervm.RouterTest do
       # The caller's task is the OLDEST; two newer ones belong to someone else, so
       # a newest-first page of two holds only foreign rows unless the store
       # filters first.
+      # submitted_at is a millisecond clock; keep the three strictly ordered so
+      # the newest-first page of two deterministically excludes the caller's.
       mine = dead_letter.(@allowed)
+      Process.sleep(2)
       _ = dead_letter.("system:serviceaccount:other:other")
+      Process.sleep(2)
       _ = dead_letter.("system:serviceaccount:other:other")
 
       page = json(req(:get, "/v1/workloads/#{wl}/dead-letters?limit=2", auth("good")).body)
