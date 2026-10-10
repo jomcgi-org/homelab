@@ -1616,6 +1616,11 @@ message SessionVolume {
   string lineage_id = 2;
   uint64 size_bytes = 3;
   uint64 allocated_bytes = 4;
+  // True only when the object store holds a copy current with this DETACHED
+  // local workspace. False while the lineage is attached or its durability is
+  // unknown (including after a daemon restart until a later export or checksum
+  // skip confirms it), and on a daemon that predates #6533.
+  bool exported = 5;
 }
 
 // ServingVm is one LIVE serving VM the node currently holds, reported so a
@@ -2092,6 +2097,14 @@ message NodeStatus {
   // snapshot dir on disk. The source of truth for what banked sessions survive.
   repeated SessionSnapshot session_snapshots = 10;
   repeated SessionVolume session_volumes = 38;
+  // session_volumes_complete is true only when session_volumes reflects a
+  // clean scan with no skipped entries. False on a scan error, on a partial
+  // scan that skipped a workload whose ReadDir failed or a lineage whose Stat
+  // or allocated-bytes read failed, and on a daemon that predates #6533. The
+  // control plane must treat false as pending (never a safe victim) when the
+  // brick archive-ack gate is enabled: unknown inventory is not empty
+  // inventory, and an empty list from a failed scan must never read as safe.
+  bool session_volumes_complete = 43;
   // snapshot_disk_free_bytes / snapshot_disk_used_bytes report the sessions
   // snapshot dir's filesystem usage so the control plane's LRU eviction can fire
   // on a low-watermark crossing and the watermark alert can trip.

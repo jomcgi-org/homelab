@@ -27,6 +27,8 @@ defmodule Embervm.LogFormatter do
     :principal,
     :ref,
     :node_id,
+    :pod_uid,
+    :archive_ack_timeout_ms,
     :anchor,
     :missing_since_ms,
     :restore_target,

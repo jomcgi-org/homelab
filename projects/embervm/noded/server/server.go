@@ -214,7 +214,7 @@ type Server struct {
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
 
-	vmLifecycleMu sync.Mutex // task-to-session identity transfer
+	vmLifecycleMu sync.Mutex // attachment publication and task-to-session identity transfer
 	vms           *vmRegistry
 	bases         *baseRegistry
 	// scratchGeneration is the marker value whose on-disk base inventory was
@@ -1446,6 +1446,10 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured; session persistence unavailable on this node")
 		}
 		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
+		// The guest can write before AttachLineage runs after boot. Hold the
+		// workspace export fence throughout provisioning and readiness.
+		finishWorkspaceUse := s.beginWorkspaceUse(base.workload, req.GetLineageId())
+		defer finishWorkspaceUse()
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
@@ -1538,13 +1542,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	rtCancel()
 
-	if req.GetLineageId() != "" {
-		if err := s.volumes.AttachLineage(base.workload, req.GetLineageId(), h.ID); err != nil {
-			s.reap(h, func() {})
-			return nil, status.Errorf(codes.FailedPrecondition, "noded: attach session volume: %v", err)
-		}
-	}
-	s.vms.add(&vmEntry{
+	entry := &vmEntry{
 		id:           h.ID,
 		workload:     base.workload,
 		snapshotRef:  ref,
@@ -1552,7 +1550,20 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		handle:       h,
 		egressCancel: s.startEgress(uds, h.ID, base.workload),
 		state:        vmPrimed,
-	})
+	}
+	// Attachment publication and registry insertion must be atomic to readers
+	// that prune attachment records for VMs absent from the live registries.
+	s.vmLifecycleMu.Lock()
+	if req.GetLineageId() != "" {
+		s.invalidateWorkspace(base.workload, req.GetLineageId())
+		if err := s.volumes.AttachLineage(base.workload, req.GetLineageId(), h.ID); err != nil {
+			s.vmLifecycleMu.Unlock()
+			s.reap(h, entry.egressCancel)
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: attach session volume: %v", err)
+		}
+	}
+	s.vms.add(entry)
+	s.vmLifecycleMu.Unlock()
 	s.signalChange()
 	return &nodev1.PrimeResponse{VmId: h.ID}, nil
 }
@@ -2507,49 +2518,51 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 	groupMemberVMs := s.groupMemberVmsStatus()
 	live := taskLive + len(sessionVMs) + len(servingVMs) + len(statefulVMs) + len(groupMemberVMs)
 	snaps := s.sessionSnapshotsStatus()
+	sessionVolumes, sessionVolumesComplete := s.sessionVolumesStatus()
 	freeBytes, usedBytes := s.snapshotDiskUsage()
 	vmOverheadMib := uint64(0)
 	if s.cfg.VMOverheadMib > 0 {
 		vmOverheadMib = uint64(s.cfg.VMOverheadMib)
 	}
 	ns := &nodev1.NodeStatus{
-		NodeId:                s.cfg.Node,
-		PodUid:                s.cfg.PodUID,
-		SizeClass:             s.cfg.SizeClass,
-		CpuVendor:             s.cfg.CpuVendor,
-		Workloads:             caps,
-		MemHeadroomMib:        s.memHeadroom(),
-		MemRejectFloorMib:     s.memRejectFloorMib(),
-		CpuHeadroomMillicores: uint32(s.cpuHeadroom()),
-		LiveVms:               uint32(live),
-		MaxLiveVms:            uint32(maxLive),
-		Draining:              s.isDraining(),
-		DrainDeadlineUnixMs:   s.drainDeadline(),
-		BuildError:            s.bases.firstBuildError(),
-		SessionVms:            sessionVMs,
-		SessionSnapshots:      snaps,
-		SessionVolumes:        s.sessionVolumesStatus(),
-		SnapshotDiskFreeBytes: freeBytes,
-		SnapshotDiskUsedBytes: usedBytes,
-		ServingVms:            servingVMs,
-		ServingSnapshots:      s.servingSnapshotsStatus(),
-		ServingSubnetCidr:     s.servingSubnetCIDR(),
-		StatefulVms:           statefulVMs,
-		StatefulBundles:       s.statefulBundlesStatus(),
-		Volumes:               s.volumesStatus(),
-		GroupNetworks:         s.groupNetworksStatus(),
-		GroupMemberVms:        groupMemberVMs,
-		GroupBundleSets:       s.groupBundleSetsStatus(),
-		StoreReachable:        s.storeReachableNow(),
-		MemBudgetMib:          s.memBudget(),
-		MemReservedMib:        s.claimedMib(),
-		AdmitsOnReservation:   s.cfg.AdmissionModel == "reserved",
-		VmOverheadMib:         vmOverheadMib,
-		CpuBudgetMillicores:   s.cpuBudget(),
-		CpuSku:                s.cpuSku(),
-		LocalBases:            s.localBasesStatus(),
-		ScratchGeneration:     scratchGeneration,
-		VmmExitCounts:         s.vmmExitCounts(),
+		NodeId:                 s.cfg.Node,
+		PodUid:                 s.cfg.PodUID,
+		SizeClass:              s.cfg.SizeClass,
+		CpuVendor:              s.cfg.CpuVendor,
+		Workloads:              caps,
+		MemHeadroomMib:         s.memHeadroom(),
+		MemRejectFloorMib:      s.memRejectFloorMib(),
+		CpuHeadroomMillicores:  uint32(s.cpuHeadroom()),
+		LiveVms:                uint32(live),
+		MaxLiveVms:             uint32(maxLive),
+		Draining:               s.isDraining(),
+		DrainDeadlineUnixMs:    s.drainDeadline(),
+		BuildError:             s.bases.firstBuildError(),
+		SessionVms:             sessionVMs,
+		SessionSnapshots:       snaps,
+		SessionVolumes:         sessionVolumes,
+		SessionVolumesComplete: sessionVolumesComplete,
+		SnapshotDiskFreeBytes:  freeBytes,
+		SnapshotDiskUsedBytes:  usedBytes,
+		ServingVms:             servingVMs,
+		ServingSnapshots:       s.servingSnapshotsStatus(),
+		ServingSubnetCidr:      s.servingSubnetCIDR(),
+		StatefulVms:            statefulVMs,
+		StatefulBundles:        s.statefulBundlesStatus(),
+		Volumes:                s.volumesStatus(),
+		GroupNetworks:          s.groupNetworksStatus(),
+		GroupMemberVms:         groupMemberVMs,
+		GroupBundleSets:        s.groupBundleSetsStatus(),
+		StoreReachable:         s.storeReachableNow(),
+		MemBudgetMib:           s.memBudget(),
+		MemReservedMib:         s.claimedMib(),
+		AdmitsOnReservation:    s.cfg.AdmissionModel == "reserved",
+		VmOverheadMib:          vmOverheadMib,
+		CpuBudgetMillicores:    s.cpuBudget(),
+		CpuSku:                 s.cpuSku(),
+		LocalBases:             s.localBasesStatus(),
+		ScratchGeneration:      scratchGeneration,
+		VmmExitCounts:          s.vmmExitCounts(),
 	}
 	if s.cfg.GuestMemoryFeedbackEnabled {
 		memory := s.guestMemory.Snapshot()
@@ -2988,23 +3001,42 @@ func bundleMetadataStatus(dir string) (uint32, string) {
 	return uint32(meta.SchemaVersion), meta.RootfsIdentity
 }
 
-func (s *Server) sessionVolumesStatus() []*nodev1.SessionVolume {
+// sessionVolumesStatus projects the session workspace inventory into
+// NodeStatus. The returned complete flag mirrors the scan: true only after a
+// clean scan with no skipped entries. An incomplete or failed scan reports
+// complete=false (with whatever partial inventory was read) so the control
+// plane holds the brick instead of reading an empty list as safe.
+func (s *Server) sessionVolumesStatus() ([]*nodev1.SessionVolume, bool) {
 	if s.volumes == nil {
-		return nil
+		return nil, false
 	}
-	inventory, err := s.volumes.ScanSessions()
+	inventory, complete, err := s.volumes.ScanSessions()
 	if err != nil {
 		s.logger.Warn("noded: scan session volumes", "err", err)
-		return nil
+		return nil, false
+	}
+	if !complete {
+		s.logger.Warn("noded: session volume scan incomplete")
 	}
 	out := make([]*nodev1.SessionVolume, 0, len(inventory))
 	for _, v := range inventory {
-		out = append(out, &nodev1.SessionVolume{Workload: v.Workload, LineageId: v.LineageID, SizeBytes: v.SizeBytes, AllocatedBytes: v.AllocatedBytes})
+		out = append(out, &nodev1.SessionVolume{
+			Workload: v.Workload, LineageId: v.LineageID, SizeBytes: v.SizeBytes, AllocatedBytes: v.AllocatedBytes,
+			Exported: !s.lineageAttached(v.Workload, v.LineageID) && s.artifactExported(nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, v.Workload, v.LineageID),
+		})
 	}
-	return out
+	return out, complete
 }
 
 func (s *Server) lineageAttached(workload, lineageID string) bool {
+	s.vmLifecycleMu.Lock()
+	defer s.vmLifecycleMu.Unlock()
+	key := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}, s.cfg.CpuVendor)
+	if _, idle := s.exported.workspaceEpoch(key); !idle {
+		// A guest can own the disk before its registry/attachment is published.
+		// Never prune an attachment while that ownership handoff is pending.
+		return true
+	}
 	ids := s.vms.lineageVMIDs()
 	for _, e := range s.sessionVMs.snapshot() {
 		ids[e.vmID] = struct{}{}
@@ -3279,13 +3311,36 @@ func (s *Server) drainSessionExports(exports *drainExports) int {
 			exports.pending["workspace inventory unavailable"] = true
 			return pending + 1
 		}
-		inventory, err := s.volumes.ScanSessions()
+		inventory, complete, err := s.volumes.ScanSessions()
 		if err != nil {
 			exports.scanErrors++
 			if exports.scanErrors >= drainExportScanErrorLimit {
 				s.logger.Warn("drain workspace scan retries exhausted", "error", err)
 				return pending
 			}
+			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
+			exports.pending["workspace inventory unavailable"] = true
+			return pending + 1
+		}
+		if !complete {
+			// A partial scan still queues the workspaces it did read, but the
+			// drain stays blocked: unknown inventory is never treated as done.
+			// Unlike a hard error this never exhausts: a persistent skip (for
+			// example unreadable session dirs) must hold the drain, not age
+			// out of it.
+			for _, volume := range inventory {
+				if s.lineageAttached(volume.Workload, volume.LineageID) {
+					continue
+				}
+				ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: volume.Workload, Ref: volume.LineageID}
+				key := artifactPrefix(ref, s.cfg.CpuVendor)
+				if !exports.workspaces[key] {
+					s.exported.clear(key)
+					exports.workspaces[key] = true
+				}
+				queue(ref)
+			}
+			s.logger.Warn("drain workspace scan incomplete")
 			exports.nextScanRetry = time.Now().Add(500 * time.Millisecond)
 			exports.pending["workspace inventory unavailable"] = true
 			return pending + 1

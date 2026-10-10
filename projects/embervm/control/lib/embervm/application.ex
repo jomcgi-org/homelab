@@ -1797,9 +1797,12 @@ defmodule Embervm.Application do
     end
   end
 
-  # BrickController reads all of its inputs from Application env at init, so no
-  # start options are threaded here (the test suite injects its own).
-  defp brick_controller_opts, do: []
+  # The workspace rail is staged independently of autoscale mode. An absent or
+  # malformed timeout retains the drain_node default deadline.
+  defp brick_controller_opts do
+    [archive_ack_gate: trimmed_env("EMBERVM_BRICK_ARCHIVE_ACK_GATE") == "true",
+      archive_ack_timeout_ms: positive_int_env("EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS") || 180_000]
+  end
 
   defp capacity_observer_opts, do: [register_gauges: true]
 

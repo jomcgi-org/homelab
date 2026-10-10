@@ -33,7 +33,7 @@ def _chart_dir() -> Path:
     raise RuntimeError("Could not find chart Chart.yaml")
 
 
-def _render_gate_values(sets: list[str]) -> dict[str, str]:
+def _render_env(sets: list[str]) -> dict[str, str]:
     helm_bin = os.environ.get("HELM_BIN", "helm")
     result = subprocess.run(
         [
@@ -51,7 +51,11 @@ def _render_gate_values(sets: list[str]) -> dict[str, str]:
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
 
-    env = dict(_ENV.findall(result.stdout))
+    return dict(_ENV.findall(result.stdout))
+
+
+def _render_gate_values(sets: list[str]) -> dict[str, str]:
+    env = _render_env(sets)
     missing = [name for name in _GATES if name not in env]
     assert not missing, f"gates not always rendered: {missing}"
     return {name: env[name] for name in _GATES}
@@ -65,6 +69,38 @@ def test_gates_default_off() -> None:
         "EMBERVM_CROSS_NODE_REJOIN": "false",
         "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES": "false",
     }
+
+
+def test_workspace_archive_ack_gate_is_staged_default_off() -> None:
+    env = _render_env(["bricks.enabled=true"])
+    assert "EMBERVM_BRICK_ARCHIVE_ACK_GATE" not in env
+    assert "EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS" not in env
+
+
+def test_workspace_archive_ack_gate_uses_default_timeout_when_enabled() -> None:
+    env = _render_env(
+        ["bricks.enabled=true", "bricks.autoscale.archiveAckGate.enabled=true"]
+    )
+    assert env["EMBERVM_BRICK_ARCHIVE_ACK_GATE"] == "true"
+    assert env["EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS"] == "180000"
+
+
+def test_workspace_archive_ack_gate_renders_enabled_and_custom_timeout() -> None:
+    env = _render_env(
+        [
+            "bricks.enabled=true",
+            "bricks.autoscale.archiveAckGate.enabled=true",
+            "bricks.autoscale.archiveAckGate.timeoutMs=240000",
+        ]
+    )
+    assert env["EMBERVM_BRICK_ARCHIVE_ACK_GATE"] == "true"
+    assert env["EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS"] == "240000"
+
+
+def test_workspace_archive_ack_gate_is_inert_without_bricks() -> None:
+    env = _render_env(["bricks.enabled=false"])
+    assert "EMBERVM_BRICK_ARCHIVE_ACK_GATE" not in env
+    assert "EMBERVM_BRICK_ARCHIVE_ACK_TIMEOUT_MS" not in env
 
 
 @pytest.mark.parametrize(

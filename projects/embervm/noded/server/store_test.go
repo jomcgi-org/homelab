@@ -3482,6 +3482,346 @@ func TestRunExportJobExportsDetachedSessionWorkspace(t *testing.T) {
 	if !fs.has(key) {
 		t.Fatal("a detached lineage's workspace export must proceed")
 	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !volumes[0].GetExported() || !complete {
+		t.Fatalf("detached workspace status = %v, complete=%t, want exported=true complete=true", volumes, complete)
+	}
+}
+
+func TestSessionWorkspaceStatusFailsClosedAfterRestartAndWhileAttached(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload, lineage = "sbx", "lineage-status"
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	s.exported.mark(key, 0)
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !volumes[0].GetExported() || !complete {
+		t.Fatalf("detached status = %v, complete=%t, want exported=true complete=true", volumes, complete)
+	}
+	// Re-open the same disk with a fresh daemon and an empty acknowledgement cache.
+	restarted := New(Options{Config: s.cfg, Driver: &fakeDriver{}, Transport: &fakeTransport{}, Store: newFakeStore(), Logger: s.logger})
+	if volumes, complete := restarted.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() || !complete {
+		t.Fatalf("restart status = %v, complete=%t, want exported=false complete=true", volumes, complete)
+	}
+	seedBase(s, "sbx__deadbeef03", workload)
+	if _, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "sbx__deadbeef03", LineageId: lineage, VolumeMount: "/session", VolumeSizeBytes: 1 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	if s.exported.present(key) {
+		t.Fatal("provisioning and attachment must clear an earlier export acknowledgement")
+	}
+	// Even an erroneously retained cache entry cannot report an attached copy.
+	s.exported.mark(key, 0)
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() || !complete {
+		t.Fatalf("attached status = %v, complete=%t, want exported=false complete=true", volumes, complete)
+	}
+}
+
+func TestSessionVolumesStatusReportsIncompleteScan(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload = "sbx"
+	if err := s.volumes.CreateSession(workload, "lineage-good", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
+		t.Fatalf("clean scan status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
+	}
+	// An image-less lineage dir (a failed restore or create leaves one) is a
+	// known absence and must not poison completeness.
+	if err := os.MkdirAll(s.volumes.SessionLineageDir(workload, "lineage-empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
+		t.Fatalf("image-less lineage status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
+	}
+	// A workspace image that is a directory cannot be inventoried, so the scan
+	// must skip it and report incomplete: the partial inventory is unknown,
+	// never empty, and the control plane must hold the brick.
+	if err := os.MkdirAll(s.volumes.SessionVolumePath(workload, "lineage-hidden"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	volumes, complete := s.sessionVolumesStatus()
+	if complete {
+		t.Fatalf("partial scan status = %v, want complete=false", volumes)
+	}
+	if len(volumes) != 1 || volumes[0].GetLineageId() != "lineage-good" {
+		t.Fatalf("partial scan status = %v, want only lineage-good", volumes)
+	}
+	if got := s.nodeStatus().GetSessionVolumesComplete(); got {
+		t.Fatalf("NodeStatus session_volumes_complete = true, want false on a partial scan")
+	}
+	if err := os.RemoveAll(s.volumes.SessionLineageDir(workload, "lineage-hidden")); err != nil {
+		t.Fatal(err)
+	}
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || !complete {
+		t.Fatalf("healed scan status = %v, complete=%t, want 1 volume complete=true", volumes, complete)
+	}
+	if got := s.nodeStatus().GetSessionVolumesComplete(); !got {
+		t.Fatal("NodeStatus session_volumes_complete = false, want true on a clean scan")
+	}
+}
+
+func TestSessionWorkspaceExportsPublishStatusIncludingChecksumSkip(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		t.Run(fmt.Sprintf("async=%t", async), func(t *testing.T) {
+			s := newStoreTestServer(t, newFakeStore())
+			ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-export"}
+			key := artifactPrefix(ref, s.cfg.CpuVendor)
+			if err := s.volumes.CreateSession(ref.Workload, ref.Ref, 1<<20); err != nil {
+				t.Fatal(err)
+			}
+			changes := s.subscribe()
+			defer s.unsubscribe(changes)
+			for _, checksumSkip := range []bool{false, true} {
+				s.exported.clear(key)
+				if async {
+					s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+				} else {
+					resp, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{Artifact: ref})
+					if err != nil || resp.GetSkipped() != checksumSkip {
+						t.Fatalf("ExportArtifact = %v, %v, want skipped=%t", resp, err, checksumSkip)
+					}
+				}
+				if !s.exported.present(key) {
+					t.Fatalf("checksumSkip=%t: workspace was not acknowledged", checksumSkip)
+				}
+				select {
+				case <-changes:
+				default:
+					t.Fatalf("checksumSkip=%t: export did not publish NodeStatus change", checksumSkip)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionWorkspaceExportRaceDoesNotAcknowledge(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		for _, checksumSkip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("async=%t/checksumSkip=%t", async, checksumSkip), func(t *testing.T) {
+				fs := newFakeStore()
+				s := newStoreTestServer(t, fs)
+				ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-race"}
+				key := artifactPrefix(ref, s.cfg.CpuVendor)
+				if err := s.volumes.CreateSession(ref.Workload, ref.Ref, 1<<20); err != nil {
+					t.Fatal(err)
+				}
+				if checksumSkip {
+					s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+					s.exported.clear(key)
+				}
+				fs.exportStarted = make(chan string, 1)
+				fs.exportRelease = make(chan struct{})
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() {
+					if async {
+						s.runExportJob(ctx, exportJob{ref: ref, key: key})
+						done <- nil
+					} else {
+						_, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref})
+						done <- err
+					}
+				}()
+				select {
+				case <-fs.exportStarted:
+				case <-time.After(time.Second):
+					t.Fatal("workspace export did not start")
+				}
+				seedBase(s, "sbx__deadbeef03", ref.Workload)
+				primed, err := s.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "sbx__deadbeef03", LineageId: ref.Ref, VolumeMount: "/session", VolumeSizeBytes: 1 << 20})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Destroy(ctx, &nodev1.DestroyRequest{VmId: primed.GetVmId()}); err != nil {
+					t.Fatal(err)
+				}
+				if s.lineageAttached(ref.Workload, ref.Ref) {
+					t.Fatal("workspace must be detached again before the export completes")
+				}
+				close(fs.exportRelease)
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("workspace export did not finish")
+				}
+				if s.exported.present(key) {
+					t.Fatal("an export spanning provision, attach and detach must not acknowledge the workspace")
+				}
+			})
+		}
+	}
+}
+
+func TestSessionWorkspaceExportFencedBeforeAttach(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	s.cfg.BootReadyTimeout = 5 * time.Second
+	const workload, lineage = "sbx", "lineage-boot"
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	s.exported.mark(key, 0)
+	seedBase(s, "sbx__deadbeef03", workload)
+	ready := make(chan string, 1)
+	release := make(chan struct{})
+	s.transport = &fakeTransport{waitReadyStarted: ready, waitReadyContinue: release}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "sbx__deadbeef03", LineageId: lineage, VolumeMount: "/session", VolumeSizeBytes: 1 << 20})
+		done <- err
+	}()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("Prime finished before readiness: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Prime did not reach the pre-attach readiness window")
+	}
+	if s.exported.present(key) {
+		t.Fatal("the earlier mark must be cleared before the guest boots")
+	}
+	if s.volumes.IsLineageAttached(workload, lineage, map[string]struct{}{}) {
+		t.Fatal("test must exercise the window before attachment")
+	}
+	s.runExportJob(ctx, exportJob{ref: ref, key: key})
+	if fs.has(key) {
+		t.Fatal("export must not start during provisioning")
+	}
+	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("inline export during provisioning = %v, want FailedPrecondition", err)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Prime did not finish")
+	}
+}
+
+func TestSessionWorkspaceRestoreInvalidatesAcknowledgement(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-restore"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	if err := s.volumes.CreateSession(ref.Workload, ref.Ref, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	s.exported.mark(key, 0)
+	epoch, _ := s.exported.workspaceEpoch(key)
+	fs.seedArtifact(key, map[string]string{"workspace.img": "restored bytes"}, 0, "", "")
+	if s.alreadyDurable(context.Background(), ref, key) {
+		t.Fatal("store presence cannot acknowledge a mutable workspace")
+	}
+	// Force a real download while retaining the old in-memory acknowledgement.
+	// A present-local restore is an existing no-op path, not a disk write.
+	if err := os.Remove(s.volumes.SessionVolumePath(ref.Workload, ref.Ref)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{Artifact: ref})
+	if err != nil || resp.GetSkipped() {
+		t.Fatalf("RestoreArtifact = %v, %v, want a download", resp, err)
+	}
+	if s.exported.present(key) || s.exported.markWorkspace(key, 0, epoch) {
+		t.Fatal("restore must clear the mark and fence any older export")
+	}
+}
+
+func TestSessionWorkspaceStatusPreservesPendingAttachment(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload, lineage, vmID = "sbx", "lineage-handoff", "vm-handoff"
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	finish := s.beginWorkspaceUse(workload, lineage)
+	if err := s.volumes.AttachLineage(workload, lineage, vmID); err != nil {
+		t.Fatal(err)
+	}
+	// Pause the handoff after attachment, before publishing the VM registry.
+	if volumes, complete := s.sessionVolumesStatus(); len(volumes) != 1 || volumes[0].GetExported() || !complete {
+		t.Fatalf("pending attachment status = %v, complete=%t, want exported=false complete=true", volumes, complete)
+	}
+	if !s.volumes.IsLineageAttached(workload, lineage, map[string]struct{}{vmID: {}}) {
+		t.Fatal("NodeStatus pruned the attachment during a pending ownership handoff")
+	}
+	s.vms.add(&vmEntry{id: vmID, workload: workload, lineageID: lineage})
+	finish()
+	if !s.lineageAttached(workload, lineage) {
+		t.Fatal("attachment was lost after the registry handoff")
+	}
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
+	if _, err := s.ExportArtifact(context.Background(), &nodev1.ExportArtifactRequest{Artifact: ref}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("export after attachment handoff = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestSessionWorkspaceInlineAndQueuedExportsSerialize(t *testing.T) {
+	fs := newFakeStore()
+	fs.exportStarted = make(chan string, 2)
+	fs.exportRelease = make(chan struct{})
+	s := newStoreTestServer(t, fs)
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: "sbx", Ref: "lineage-serial"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	if err := s.volumes.CreateSession(ref.Workload, ref.Ref, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inlineDone := make(chan error, 1)
+	go func() {
+		_, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{Artifact: ref})
+		inlineDone <- err
+	}()
+	select {
+	case <-fs.exportStarted:
+	case <-time.After(time.Second):
+		t.Fatal("inline export did not start")
+	}
+	// Reuse the workspace while the old transfer is still writing the store.
+	finish := s.beginWorkspaceUse(ref.Workload, ref.Ref)
+	if err := os.WriteFile(s.volumes.SessionVolumePath(ref.Workload, ref.Ref), []byte("new workspace"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finish()
+	queuedDone := make(chan struct{})
+	go func() {
+		s.runExportJob(ctx, exportJob{ref: ref, key: key})
+		close(queuedDone)
+	}()
+	select {
+	case <-fs.exportStarted:
+		t.Fatal("new export must not write the shared store key before the old transfer finishes")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(fs.exportRelease)
+	select {
+	case err := <-inlineDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inline export did not finish")
+	}
+	select {
+	case <-queuedDone:
+	case <-time.After(time.Second):
+		t.Fatal("queued export did not finish")
+	}
+	if fs.calls(key) != 2 || !s.exported.present(key) {
+		t.Fatalf("current copy must be acknowledged after serialized transfers: calls=%d exported=%t", fs.calls(key), s.exported.present(key))
+	}
 }
 
 func TestDrainWaitsForBankedSessionExport(t *testing.T) {
@@ -3614,6 +3954,38 @@ func TestDrainBoundsWorkspaceScanErrors(t *testing.T) {
 	}
 	if pending := s.drainSessionExports(exports); pending != 0 {
 		t.Fatalf("scan restarted after exhaustion: %d", pending)
+	}
+}
+
+func TestDrainHoldsOnPartialWorkspaceScanButQueuesReadWorkspaces(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload = "sbx"
+	if err := s.volumes.CreateSession(workload, "lineage-good", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	// An image-less lineage dir is a known absence: the scan stays complete.
+	if err := os.MkdirAll(s.volumes.SessionLineageDir(workload, "lineage-empty"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exports := newDrainExports()
+	s.drainSessionExports(exports)
+	if exports.pending["workspace inventory unavailable"] {
+		t.Fatal("image-less lineage must not mark the inventory unavailable")
+	}
+	// An unreadable image makes the scan partial: the drain stays held and,
+	// unlike a hard scan error, never exhausts.
+	if err := os.MkdirAll(s.volumes.SessionVolumePath(workload, "lineage-bad"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exports = newDrainExports()
+	for i := 0; i < drainExportScanErrorLimit+2; i++ {
+		exports.nextScanRetry = time.Time{}
+		if pending := s.drainSessionExports(exports); pending < 1 {
+			t.Fatalf("tick %d: partial scan released the drain: pending = %d", i, pending)
+		}
+	}
+	if !exports.pending["workspace inventory unavailable"] {
+		t.Fatal("partial scan must mark inventory unavailable")
 	}
 }
 

@@ -5177,6 +5177,7 @@ defmodule Embervm.SessionManagerTest do
 
     created = create_persistence_session(ctx, workload: "wl-archive-failed")
     parked = park_session(ctx, created)
+    watch_archive_results(ctx)
 
     # The draining instance reports the lineage, so the drain archive has an
     # owner to dial (a miss keeps the volume without dialing at all).
@@ -5196,6 +5197,7 @@ defmodule Embervm.SessionManagerTest do
 
     assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
     assert_receive {:archive_failed, lineage_id}, 1_000
+    assert_receive {:archive_result, _, %{result: {:error, {:error, :store_unavailable}}}}, 1_000
     assert lineage_id == parked.lineage_id
     NodeCapacity.drop(ctx.cap_table, {"node-4", "pod-dead"})
 
@@ -5221,6 +5223,149 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :evicted, terminal_reason: "node_gone"}} =
              SessionStore.get(ctx.store, parked.session_id)
     assert_receive {:retire_attempted, ^lineage_id}, 1_000
+  end
+
+  defp watch_archive_results(ctx) do
+    handler = {__MODULE__, make_ref()}
+    :ok = :telemetry.attach(handler, [:embervm, :session, :archive_result],
+      fn _, measurements, metadata, {test, manager} ->
+        if self() == manager, do: send(test, {:archive_result, measurements, metadata})
+      end, {self(), ctx.mgr})
+    on_exit(fn -> :telemetry.detach(handler) end)
+  end
+
+  defp report_archive_owner(ctx, session) do
+    {:ok, session} = SessionStore.get(ctx.store, session.session_id)
+    NodeCapacity.put(ctx.cap_table, {"node-4", "archive-owner"}, %{
+      node_id: "node-4", configured_id: "node-4", instance_id: "node-4/archive-owner",
+      pod_uid: "archive-owner", workloads: %{}, session_vms: [], session_snapshots: [],
+      session_volumes: [%{workload: session.workload, lineage_id: session.lineage_id}],
+      live_vms: 0, max_live_vms: 8, updated_at: 5_000_001
+    })
+  end
+
+  test "draining persistence park records its off-manager archive result" do
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-drain-park"))
+    created = create_persistence_session(ctx)
+    report_archive_owner(ctx, created)
+    watch_archive_results(ctx)
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
+    assert_receive {:archive_result, %{count: 1}, %{result: :ok, lineage_id: lineage}}, 1_000
+    assert lineage == created.lineage_id
+    entry = :sys.get_state(ctx.mgr).archive_acks[{"node-4", lineage}]
+    assert entry.requested_at == -800_000
+    assert entry.acked_at == -800_000
+    assert entry.last_result == :ok
+    refute entry.in_flight
+    assert wait_for_state(ctx, created.session_id, :parked).state == :parked
+  end
+
+  test "request_archive deduplicates in-flight and recent successful requests without blocking routing" do
+    parent = self()
+    {:ok, clock} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(clock) end)
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-dedup"),
+      monotonic_clock: fn -> Agent.get(clock, & &1) end,
+      archive_volume_fun: fn _channel, _request ->
+        send(parent, {:archive_worker, self()})
+        receive do :finish_archive -> {:ok, %{skipped: false}} end
+      end)
+    parked = park_session(ctx, create_persistence_session(ctx))
+    report_archive_owner(ctx, parked)
+    watch_archive_results(ctx)
+    volumes = [%{workload: parked.workload, lineage_id: parked.lineage_id}]
+    SessionManager.request_archive(ctx.mgr, "node-4/archive-owner", volumes ++ volumes)
+    assert_receive {:archive_worker, worker}, 1_000
+    SessionManager.request_archive(ctx.mgr, "node-4/archive-owner", volumes)
+    # A synchronous manager read completes while the archive RPC is held open.
+    assert :sys.get_state(ctx.mgr).archive_acks[{"node-4/archive-owner", parked.lineage_id}].in_flight
+    refute_receive {:archive_worker, _}
+    send(worker, :finish_archive)
+    assert_receive {:archive_result, _, %{result: :ok}}, 1_000
+    SessionManager.request_archive(ctx.mgr, "node-4/archive-owner", volumes)
+    refute_receive {:archive_worker, _}
+    Agent.update(clock, &(&1 + 60_000))
+    SessionManager.request_archive(ctx.mgr, "node-4/archive-owner", volumes)
+    assert_receive {:archive_worker, next_worker}, 1_000
+    send(next_worker, :finish_archive)
+    assert_receive {:archive_result, _, %{result: :ok}}, 1_000
+    Agent.update(clock, &(&1 + 600_001))
+    :ok = SessionManager.sweep(ctx.mgr)
+    assert :sys.get_state(ctx.mgr).archive_acks == %{}
+    send(ctx.mgr, {:unknown_archive_message, :ignored})
+    assert Process.alive?(ctx.mgr)
+  end
+
+  test "archive attached-skip records an error and retains the parked workspace" do
+    parent = self()
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-attached"),
+      channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      archive_volume_fun: fn channel, _request ->
+      send(parent, {:archive_dial, channel})
+      {:ok, %{skipped: true}}
+    end)
+    parked = park_session(ctx, create_persistence_session(ctx))
+    report_archive_owner(ctx, parked)
+    watch_archive_results(ctx)
+    log = capture_log(fn ->
+      SessionManager.request_archive(ctx.mgr, "node-4/archive-owner", [parked])
+      assert_receive {:archive_result, _, %{result: {:error, :archive_skipped}}}, 1_000
+    end)
+    assert log =~ "lineage still attached"
+    assert_receive {:archive_dial, {:channel, "node-4/archive-owner"}}
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
+    entry = :sys.get_state(ctx.mgr).archive_acks[{"node-4/archive-owner", parked.lineage_id}]
+    assert entry.acked_at == nil
+    assert entry.last_result == {:error, :archive_skipped}
+  end
+
+  test "pre-drain archive ignores a disabled persistence flag so a stranded victim can release" do
+    parent = self()
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-disabled"),
+      channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      archive_volume_fun: fn channel, _request ->
+      send(parent, {:archive_dial, channel})
+      {:ok, %{}}
+    end)
+    parked = park_session(ctx, create_persistence_session(ctx))
+    report_archive_owner(ctx, parked)
+    put_session_workload(ctx, parked.workload)
+    watch_archive_results(ctx)
+    SessionManager.request_archive(ctx.mgr, "node-4/archive-owner", [parked])
+    assert_receive {:archive_dial, {:channel, "node-4/archive-owner"}}, 1_000
+    assert_receive {:archive_result, _, %{result: :ok}}, 1_000
+    assert {:ok, %{state: :parked}} = SessionStore.get(ctx.store, parked.session_id)
+  end
+
+  test "archive dials exactly the requested instance when co-located instances share the lineage" do
+    parent = self()
+    ctx = start_stack(prime_fun: fake_prime_fun("vm-archive-colocated"),
+      channel_fun: fn dial -> {:ok, {:channel, dial}} end,
+      archive_volume_fun: fn channel, request ->
+      send(parent, {:archive_dial, channel, request.lineage_id})
+      {:ok, %{}}
+    end)
+    parked = park_session(ctx, create_persistence_session(ctx))
+    # Both bricks list the node-shared lineage; "aaa" sorts first in the table.
+    for pod <- ["aaa", "zzz"] do
+      NodeCapacity.put(ctx.cap_table, {"node-4", pod}, %{
+        node_id: "node-4", configured_id: "node-4", instance_id: "node-4/" <> pod,
+        pod_uid: pod, workloads: %{}, session_vms: [], session_snapshots: [],
+        session_volumes: [%{workload: parked.workload, lineage_id: parked.lineage_id}],
+        live_vms: 0, max_live_vms: 8, updated_at: 5_000_001
+      })
+    end
+    watch_archive_results(ctx)
+    SessionManager.request_archive(ctx.mgr, "node-4/zzz", [parked])
+    lineage = parked.lineage_id
+    assert_receive {:archive_dial, {:channel, "node-4/zzz"}, ^lineage}, 1_000
+    assert_receive {:archive_result, _, %{result: :ok, owner: "node-4/zzz"}}, 1_000
+    refute_receive {:archive_dial, {:channel, "node-4/aaa"}, _}
+    acks = :sys.get_state(ctx.mgr).archive_acks
+    assert Map.keys(acks) == [{"node-4/zzz", lineage}]
+    # The sibling's own request is a distinct ledger entry, not deduplicated.
+    SessionManager.request_archive(ctx.mgr, "node-4/aaa", [parked])
+    assert_receive {:archive_dial, {:channel, "node-4/aaa"}, ^lineage}, 1_000
   end
 
   # #6499: archive_session_volume dialed the session's bare volume_node_id.
@@ -5282,9 +5427,12 @@ defmodule Embervm.SessionManagerTest do
     assert strict_channel_fun.(parked.volume_node_id) == {:error, :unknown_node}
     Agent.update(dialed, fn st -> %{st | dials: []} end)
 
+    watch_archive_results(ctx)
     assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
     lineage_id = parked.lineage_id
     assert_receive {:archived, {:channel, "node-4/pod-owner"}, ^lineage_id}, 1_000
+    assert_receive {:archive_result, _, %{result: :ok, lineage_id: ^lineage_id}}, 1_000
+    assert :sys.get_state(ctx.mgr).archive_acks[{"node-4", lineage_id}].last_result == :ok
 
     dials = Agent.get(dialed, & &1.dials)
     assert "node-4/pod-owner" in dials
@@ -5343,9 +5491,12 @@ defmodule Embervm.SessionManagerTest do
 
     Agent.update(dialed, fn _ -> %{strict: true, dials: []} end)
 
+    watch_archive_results(ctx)
+
     log =
       capture_log(fn ->
         assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
+        assert_receive {:archive_result, _, %{result: {:error, :no_owning_instance}}}, 1_000
         refute_receive {:archived, _, _}, 500
       end)
 

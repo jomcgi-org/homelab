@@ -20,11 +20,11 @@ defmodule Embervm.Durability do
   session parking inside such a window rehydrates blank: user-visible data loss
   happening now, even while create/send keeps serving.
 
-  Known gap, documented deliberately: SessionVolume carries no exported flag on
-  the wire yet, so a WORKSPACE-only export failure (the #4317 victim named in
-  the issue) is not directly visible to the CP; the incident itself would have
-  fired this detector within minutes because BASE/VOLUME/STATEFUL/session
-  exports were failing fleet-wide at the same time.
+  SessionVolume reports workspace export acknowledgement for the scale-down
+  gate (#6533). Parked workspaces are normally unexported until archival is
+  requested, so they remain excluded from tier 1. A WORKSPACE-only export
+  failure is outside this detector; #4317 would have fired it within minutes
+  because BASE/VOLUME/STATEFUL/session exports failed fleet-wide together.
 
   ## Tier 2: GC sweep stall older than 24h + sweep interval
 
