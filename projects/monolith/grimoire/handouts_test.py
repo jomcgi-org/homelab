@@ -212,3 +212,168 @@ def test_players_still_cannot_post_handouts(env):
 )
 def test_sniff_image_uses_magic_bytes(data, expected):
     assert handouts.sniff_image(data) == expected
+
+
+# --- upload route -----------------------------------------------------------
+
+
+def upload(env, data, viewer="dm", declared="image/png", campaign=None):
+    h, client, _ = env
+    return client.post(
+        f"/api/grimoire/campaigns/{campaign or h.rows['campaign'].id}"
+        "/handouts/uploads",
+        headers=h.headers(viewer),
+        files={"file": ("any.bin", data, declared)},
+    )
+
+
+def test_upload_stores_sniffed_type_whatever_the_client_declares(env):
+    h, _, s3 = env
+    response = upload(env, PNG_BYTES, declared="application/octet-stream")
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["content_type"] == "image/png"
+    assert result["size"] == len(PNG_BYTES)
+    assert handouts.valid_upload_key(h.rows["campaign"].id, result["key"])
+    assert s3.objects[handouts.handout_bucket(), result["key"]] == (
+        PNG_BYTES,
+        "image/png",
+    )
+    # The returned key is exactly what a handout body may reference.
+    assert (
+        post_event(
+            env,
+            {
+                "title": "t",
+                "markdown": "",
+                "image": {"source": "upload", "key": result["key"]},
+            },
+        ).status_code
+        == 200
+    )
+
+
+def test_upload_rejects_non_image_bytes_declared_as_png(env):
+    h, _, s3 = env
+    stored = dict(s3.objects)
+    response = upload(env, b"<svg onload=alert(1)/>", declared="image/png")
+    assert response.status_code == 415
+    assert s3.objects == stored
+
+
+def test_upload_size_limit_is_inclusive_of_the_cap(env):
+    _, _, s3 = env
+    pad = handouts.MAX_UPLOAD_BYTES - len(PNG_BYTES)
+    exact = upload(env, PNG_BYTES + b"\0" * pad)
+    assert exact.status_code == 201, exact.text
+    assert exact.json()["size"] == handouts.MAX_UPLOAD_BYTES
+    stored = dict(s3.objects)
+    over = upload(env, PNG_BYTES + b"\0" * (pad + 1))
+    assert over.status_code == 413
+    assert s3.objects == stored
+
+
+def test_upload_is_dm_only_and_hidden_from_outsiders(env):
+    h, _, s3 = env
+    stored = dict(s3.objects)
+    for viewer in ("player_a", "player_b", "no_character"):
+        assert upload(env, PNG_BYTES, viewer=viewer).status_code == 403
+    for viewer in ("outsider", "other_campaign"):
+        assert upload(env, PNG_BYTES, viewer=viewer).status_code == 404
+    assert s3.objects == stored
+
+
+def test_upload_is_hidden_when_play_is_disabled(env, monkeypatch):
+    monkeypatch.delenv("GRIMOIRE_PLAY_ENABLED")
+    assert upload(env, PNG_BYTES).status_code == 404
+
+
+# --- image route ------------------------------------------------------------
+
+
+def image_url(h, event):
+    return (
+        base(h)
+        + f"/sessions/{h.rows['campaign_session'].id}/events/{event.id}/image"
+    )
+
+
+def get_image(env, viewer, event, **kwargs):
+    h, client, _ = env
+    return client.get(image_url(h, event), headers=h.headers(viewer), **kwargs)
+
+
+def test_handout_image_streams_to_recipient_and_dm_without_caching(env):
+    h = env[0]
+    for viewer in ("dm", "player_a"):
+        response = get_image(env, viewer, h.rows["event_handout"])
+        assert response.status_code == 200, (viewer, response.text)
+        assert response.content == PNG_BYTES
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["cache-control"] == "private, no-store"
+        assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.parametrize(
+    "viewer", ("player_b", "no_character", "outsider", "other_campaign")
+)
+def test_handout_image_is_404_for_non_recipients(env, viewer):
+    h = env[0]
+    missing = get_image(env, viewer, type("E", (), {"id": str(uuid4())}))
+    response = get_image(env, viewer, h.rows["event_handout"])
+    assert response.status_code == 404
+    assert response.json() == missing.json()
+
+
+def test_retracted_handout_image_is_404_for_players_but_not_the_dm(env):
+    h = env[0]
+    event = h.rows["event_handout_retracted"]
+    assert get_image(env, "player_a", event).status_code == 404
+    assert get_image(env, "dm", event).status_code == 200
+
+
+def test_table_handout_reaches_every_member_with_an_upload_image(env):
+    h, _, _ = env
+    key = upload(env, PNG_BYTES).json()["key"]
+    posted = post_event(
+        env,
+        {"title": "t", "markdown": "", "image": {"source": "upload", "key": key}},
+    ).json()
+    event = type("E", (), {"id": posted["id"]})
+    for viewer in ("dm", "player_a", "player_b", "no_character"):
+        assert get_image(env, viewer, event).status_code == 200, viewer
+    for viewer in ("outsider", "other_campaign"):
+        assert get_image(env, viewer, event).status_code == 404, viewer
+
+
+def test_non_handout_and_imageless_events_have_no_image(env):
+    h = env[0]
+    imageless = post_event(env, {"title": "t", "markdown": ""}).json()
+    assert (
+        get_image(env, "dm", type("E", (), {"id": imageless["id"]})).status_code == 404
+    )
+    narration = h.session.exec(
+        select(SessionEvent).where(SessionEvent.kind == "narration")
+    ).first()
+    assert get_image(env, "dm", narration).status_code == 404
+
+
+def test_chunk_image_copyright_is_rechecked_at_serve_time(env):
+    h = env[0]
+    event = h.rows["event_handout"]
+    assert get_image(env, "player_a", event).status_code == 200
+    book = h.session.get(Book, h.rows["book_open"].id)
+    book.copyrighted_content = True
+    h.session.commit()
+    assert get_image(env, "player_a", event).status_code == 404
+    assert get_image(env, "dm", event).status_code == 404
+
+
+def test_foreign_upload_key_in_a_stored_body_is_not_served(env):
+    h, _, s3 = env
+    foreign = upload_key(h, campaign="other")
+    s3.objects[handouts.handout_bucket(), foreign] = (PNG_BYTES, "image/png")
+    event = h.rows["event_handout"]
+    event.body = {**event.body, "image": {"source": "upload", "key": foreign}}
+    h.session.commit()
+    assert get_image(env, "dm", event).status_code == 404
