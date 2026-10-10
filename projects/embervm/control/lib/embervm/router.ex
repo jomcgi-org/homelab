@@ -317,6 +317,10 @@ defmodule Embervm.Router do
 
   defp node_route?(%Plug.Conn{method: "POST", path_info: ["v1", "nodes", "register"]}), do: true
   defp node_route?(%Plug.Conn{method: "POST", path_info: ["v1", "artifacts", "wrap"]}), do: true
+  # Rewrap authenticates in-handler exactly like wrap (authorize_node). Left off this
+  # list, the management plug ran first and refused every noded caller before the
+  # handler, so the lazy envelope rewrap after a root or epoch change never ran.
+  defp node_route?(%Plug.Conn{method: "POST", path_info: ["v1", "artifacts", "rewrap"]}), do: true
   defp node_route?(_conn), do: false
 
   # The routes whose bearer token is a SESSION token (verified in-handler against
@@ -522,12 +526,29 @@ defmodule Embervm.Router do
 
   defp handle_get_task(conn, task_id) do
     case TaskStore.get(store(), task_id) do
-      {:ok, task} -> send_json(conn, 200, task_view(task))
-      :error -> send_json(conn, 404, %{error: "task not found", task_id: task_id, retryable: false})
+      {:ok, task} ->
+        if owner_or_admin?(conn, task.principal),
+          do: send_json(conn, 200, task_view(task)),
+          else: task_not_found(conn, task_id)
+
+      :error ->
+        task_not_found(conn, task_id)
     end
   end
 
   defp handle_get_result(conn, task_id) do
+    case TaskStore.get(store(), task_id) do
+      {:ok, task} ->
+        if owner_or_admin?(conn, task.principal),
+          do: send_task_result(conn, task_id),
+          else: task_not_found(conn, task_id)
+
+      :error ->
+        task_not_found(conn, task_id)
+    end
+  end
+
+  defp send_task_result(conn, task_id) do
     case TaskStore.get_result(store(), task_id) do
       {:ok, %{status_code: code, body: body, truncated: truncated} = result} ->
         conn
@@ -552,13 +573,53 @@ defmodule Embervm.Router do
 
     {:ok, page} = TaskStore.list_dead_letters(store(), workload, limit: limit, offset: offset)
 
+    # A non-admin sees only the dead letters it submitted; the page total then
+    # counts the visible items so the response stays internally consistent.
+    items = if admin?(conn), do: page.items, else: Enum.filter(page.items, &owner_or_admin?(conn, &1.principal))
+    total = if admin?(conn), do: page.total, else: length(items)
+
     send_json(conn, 200, %{
       workload: workload,
-      items: Enum.map(page.items, &task_view/1),
-      total: page.total,
+      items: Enum.map(items, &task_view/1),
+      total: total,
       limit: page.limit,
       offset: page.offset
     })
+  end
+
+  # -- object-level authorization ---------------------------------------------
+  #
+  # The principal is THE isolation boundary (ARCHITECTURE section 9), and every
+  # allow-listed ServiceAccount shares this one management surface: the public
+  # tier's SA, the monolith's and the platform's own. Passing the allow-list says
+  # a caller may USE EmberVM; it must not let one principal read another's task
+  # results, list or destroy its sessions, or roll a workload's instances. So:
+  #
+  #   * a task or session is addressable only by the principal that created it,
+  #     or by an admin; a mismatch reads as 404, exactly like an unknown id, so
+  #     the surface never confirms that another principal's object exists;
+  #   * the destructive workload-level verbs (serving force roll, stateful
+  #     instance destroy, volume delete, handover, group force roll) are admin
+  #     only and answer 403 otherwise, since they have no single owner.
+  #
+  # Admins are the values-configured `usageAdmins` list, the one admin notion the
+  # chart carries (the platform's own SA in the reference deployment).
+  defp admin?(conn) do
+    conn.assigns.principal in Application.get_env(:embervm, :usage_admins, [])
+  end
+
+  defp owner_or_admin?(conn, owner), do: admin?(conn) or conn.assigns.principal == owner
+
+  defp require_admin(conn, fun) do
+    if admin?(conn) do
+      fun.()
+    else
+      send_json(conn, 403, %{error: "admin required", retryable: false})
+    end
+  end
+
+  defp task_not_found(conn, task_id) do
+    send_json(conn, 404, %{error: "task not found", task_id: task_id, retryable: false})
   end
 
   # GET /v1/usage: paged per-(principal, day) billed usage from the metering
@@ -1242,6 +1303,18 @@ defmodule Embervm.Router do
   end
 
   defp handle_redrive(conn, task_id) do
+    case TaskStore.get(store(), task_id) do
+      {:ok, task} ->
+        if owner_or_admin?(conn, task.principal),
+          do: redrive_task(conn, task_id),
+          else: task_not_found(conn, task_id)
+
+      :error ->
+        task_not_found(conn, task_id)
+    end
+  end
+
+  defp redrive_task(conn, task_id) do
     case TaskStore.redrive(store(), task_id) do
       {:ok, task} ->
         send_json(conn, 200, task_view(task))
@@ -1531,12 +1604,16 @@ defmodule Embervm.Router do
     case Map.get(conn.query_params, "idempotency_key") do
       nil ->
         {:ok, page} = session_store().list(session_store_server(), workload, limit: limit, offset: offset)
-        node_statuses = session_node_statuses(page.items)
+        # A non-admin lists only the sessions it created (see admin?/1); the total
+        # then counts the visible items.
+        items = if admin?(conn), do: page.items, else: Enum.filter(page.items, &owner_or_admin?(conn, &1.principal))
+        total = if admin?(conn), do: page.total, else: length(items)
+        node_statuses = session_node_statuses(items)
 
         send_json(conn, 200, %{
           workload: workload,
-          items: Enum.map(page.items, &session_view(&1, node_statuses)),
-          total: page.total,
+          items: Enum.map(items, &session_view(&1, node_statuses)),
+          total: total,
           limit: page.limit,
           offset: page.offset
         })
@@ -1893,12 +1970,21 @@ defmodule Embervm.Router do
   # digest, timestamps, expires_at.
   defp handle_get_session(conn, session_id) do
     case authorize_session_read(conn, session_id) do
-      :ok ->
+      {:ok, authority, conn} ->
         case session_store().get(session_store_server(), session_id) do
           {:ok, session} ->
-            view = session_view(session, session_node_statuses([session]))
-            send_json(conn, 200, Map.put(view, :stop_precondition, session_stop_identity(session_id)))
-          :error -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+            # The session's own token proves ownership. A management token proves
+            # only allow-list membership, so it must also name the session's
+            # principal (or an admin); otherwise the session reads as not found.
+            if authority == :session_token or owner_or_admin?(conn, session.principal) do
+              view = session_view(session, session_node_statuses([session]))
+              send_json(conn, 200, Map.put(view, :stop_precondition, session_stop_identity(session_id)))
+            else
+              send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+            end
+
+          :error ->
+            send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
         end
 
       {:error, status, body} ->
@@ -1906,8 +1992,23 @@ defmodule Embervm.Router do
     end
   end
 
-  # DELETE /v1/sessions/:id (management auth): destroy.
+  # DELETE /v1/sessions/:id (management auth): destroy. The caller must be the
+  # session's principal or an admin; another principal's session reads as 404.
+  # A session the store does not know falls through to the manager, whose own
+  # not_found answer is the 404.
   defp handle_destroy_session(conn, session_id) do
+    case session_store().get(session_store_server(), session_id) do
+      {:ok, %{principal: owner}} when is_binary(owner) ->
+        if owner_or_admin?(conn, owner),
+          do: destroy_session(conn, session_id),
+          else: send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+
+      _ ->
+        destroy_session(conn, session_id)
+    end
+  end
+
+  defp destroy_session(conn, session_id) do
     with {:ok, body, conn} <- read_capped_body(conn),
          {:ok, request} <- decode_stop_request(body) do
       result =
@@ -1957,18 +2058,22 @@ defmodule Embervm.Router do
   # Session read is allowed for a valid management token OR the session's own token.
   # Try the session token first (cheap, in-process hash compare), then fall back to
   # a management TokenReview so an operator can read any session.
+  # Returns {:ok, :session_token} when the bearer is the session's own capability
+  # token, {:ok, :management} when it is an allow-listed management token (the
+  # caller's principal is then assigned on the conn for the owner check), or an
+  # error tuple.
   defp authorize_session_read(conn, session_id) do
     case bearer_token(conn) do
       {:ok, token} ->
         case verify_session_token(session_id, token) do
           {:ok, _} ->
-            :ok
+            {:ok, :session_token, conn}
 
           {:error, :terminal} ->
             # The token is this session's, but the session is terminal: reads of a
             # terminal session are still allowed (state/reason are exactly what the
             # caller needs), so authorize.
-            :ok
+            {:ok, :session_token, conn}
 
           {:error, _} ->
             authorize_management_read(conn, token)
@@ -1979,11 +2084,11 @@ defmodule Embervm.Router do
     end
   end
 
-  defp authorize_management_read(_conn, token) do
+  defp authorize_management_read(conn, token) do
     authenticator = Application.get_env(:embervm, :authenticator, Embervm.Auth)
 
     case authenticator.authenticate(token) do
-      {:ok, _principal} -> :ok
+      {:ok, principal} -> {:ok, :management, assign(conn, :principal, principal)}
       _ -> {:error, 403, %{error: "not authorized to read session", retryable: false}}
     end
   end
@@ -2066,10 +2171,12 @@ defmodule Embervm.Router do
   # snapshots) so the next miss cold-starts on the current base. Returns the counts;
   # a workload with no instances rolls zero (200), never a 404.
   defp handle_force_roll(conn, workload) do
-    %{destroyed: destroyed, evicted: evicted} =
-      serving_sweeper().force_roll(serving_sweeper_server(), workload)
+    require_admin(conn, fn ->
+      %{destroyed: destroyed, evicted: evicted} =
+        serving_sweeper().force_roll(serving_sweeper_server(), workload)
 
-    send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+      send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+    end)
   end
 
   defp serving_store, do: Application.get_env(:embervm, :serving_store_mod, Embervm.ServingStore)
@@ -2244,10 +2351,12 @@ defmodule Embervm.Router do
   # workload with no instances destroys/evicts zero (200), never a 404 (mirrors
   # the serving forced-roll's "rolling nothing is still success" shape).
   defp handle_destroy_stateful_instance(conn, workload) do
-    %{destroyed: destroyed, evicted: evicted} =
-      stateful_manager().destroy_instance(stateful_manager_server(), workload)
+    require_admin(conn, fn ->
+      %{destroyed: destroyed, evicted: evicted} =
+        stateful_manager().destroy_instance(stateful_manager_server(), workload)
 
-    send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+      send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+    end)
   end
 
   # DELETE /v1/stateful/:name/volume handler (management auth): the ONLY
@@ -2256,6 +2365,10 @@ defmodule Embervm.Router do
   # `unreachable` list naming nodes beyond the quiet window that did not answer
   # a best-effort DeleteVolume.
   defp handle_delete_stateful_volume(conn, workload) do
+    require_admin(conn, fn -> delete_stateful_volume(conn, workload) end)
+  end
+
+  defp delete_stateful_volume(conn, workload) do
     case stateful_manager().delete_volume(stateful_manager_server(), workload) do
       {:ok, %{deleted: true} = result} ->
         send_json(conn, 200, %{
@@ -2290,6 +2403,10 @@ defmodule Embervm.Router do
   # instance, so it is retryable, while a refused export means the source's
   # bytes are not the authoritative ones and no amount of retrying fixes that.
   defp handle_stateful_handover(conn, workload, target) do
+    require_admin(conn, fn -> stateful_handover_move(conn, workload, target) end)
+  end
+
+  defp stateful_handover_move(conn, workload, target) do
     case stateful_handover().move(workload, target) do
       {:ok, moved} ->
         send_json(conn, 200, %{
@@ -2437,10 +2554,12 @@ defmodule Embervm.Router do
   # Returns the counts; a workload with no instances rolls zero (200), never a 404
   # (mirrors the serving/stateful forced-roll "rolling nothing is still success").
   defp handle_force_roll_group(conn, workload) do
-    %{destroyed: destroyed, evicted: evicted} =
-      group_sweeper().force_roll(group_sweeper_server(), workload)
+    require_admin(conn, fn ->
+      %{destroyed: destroyed, evicted: evicted} =
+        group_sweeper().force_roll(group_sweeper_server(), workload)
 
-    send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+      send_json(conn, 200, %{workload: workload, destroyed: destroyed, evicted: evicted})
+    end)
   end
 
   defp group_store, do: Application.get_env(:embervm, :group_store_mod, Embervm.GroupStore)
