@@ -35,6 +35,7 @@ from grimoire.audience import (
     AUDIENCE_PC_IDS_TYPE,
     AUDIENCE_TYPE,
     AUTHOR_MEMBER_ID_TYPE,
+    NULLABLE_AUDIENCE_PC_IDS_TYPE,
     AudienceKind,
 )
 
@@ -562,7 +563,7 @@ class Embedding(SQLModel, table=True):
     )
     audience: str | None = Field(default=None, sa_column=Column(String))
     audience_pc_ids: list[str] | None = Field(
-        default=None, sa_column=Column(AUDIENCE_PC_IDS_TYPE, nullable=True)
+        default=None, sa_column=Column(NULLABLE_AUDIENCE_PC_IDS_TYPE, nullable=True)
     )
     author_member_id: str | None = Field(
         default=None, sa_column=Column(AUTHOR_MEMBER_ID_TYPE, nullable=True)
