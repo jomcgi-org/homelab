@@ -10,7 +10,9 @@ export async function chooseOption(select, value) {
   const option = [...select.options].find((item) => item.value === value);
   select.value = value;
   select.querySelector = (query) =>
-    query === ":checked" ? option : Element.prototype.querySelector.call(select, query);
+    query === ":checked"
+      ? option
+      : Element.prototype.querySelector.call(select, query);
   select.dispatchEvent(new Event("change", { bubbles: true }));
   await settle();
 }

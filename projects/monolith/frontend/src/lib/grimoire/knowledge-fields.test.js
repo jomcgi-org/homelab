@@ -36,7 +36,9 @@ describe("shared projection rules", () => {
   it("hides exactly the server spine fields", () => {
     expect(SPINE_FIELDS).toEqual(fixture.spine_fields);
     const spine = Object.fromEntries(SPINE_FIELDS.map((key) => [key, "x"]));
-    expect(knowledgeFields({ ...spine, race: "Elf" })).toEqual([["race", "Elf"]]);
+    expect(knowledgeFields({ ...spine, race: "Elf" })).toEqual([
+      ["race", "Elf"],
+    ]);
   });
   it("normalises an event entry and infers its scope", () => {
     for (const item of fixture.cases) {

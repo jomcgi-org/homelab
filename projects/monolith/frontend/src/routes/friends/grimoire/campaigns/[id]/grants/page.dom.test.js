@@ -19,9 +19,24 @@ const data = {
   sessions: [],
   entities,
   grants: [
-    { id: "g1", entity_id: "e1", player_character_id: "pc-a", grant_scope: "full" },
-    { id: "g2", entity_id: "e1", player_character_id: "pc-b", grant_scope: "partial" },
-    { id: "g3", entity_id: "e3", player_character_id: "pc-a", grant_scope: "name_only" },
+    {
+      id: "g1",
+      entity_id: "e1",
+      player_character_id: "pc-a",
+      grant_scope: "full",
+    },
+    {
+      id: "g2",
+      entity_id: "e1",
+      player_character_id: "pc-b",
+      grant_scope: "partial",
+    },
+    {
+      id: "g3",
+      entity_id: "e3",
+      player_character_id: "pc-a",
+      grant_scope: "name_only",
+    },
   ],
 };
 
@@ -49,7 +64,9 @@ describe("grants matrix", () => {
   });
 
   it("offers the reveal panel for the DM against the session endpoint", async () => {
-    const fetch = vi.fn(async () => new Response(JSON.stringify({ items: [] })));
+    const fetch = vi.fn(
+      async () => new Response(JSON.stringify({ items: [] })),
+    );
     vi.stubGlobal("fetch", fetch);
     instance = mount(Page, { target: document.body, props: { data } });
     await settle();

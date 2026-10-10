@@ -42,8 +42,7 @@ function stubFetch(projectionFor) {
         ]);
       return json([]);
     }
-    if (String(url).includes("entity="))
-      return json(structuredClone(dmEntity));
+    if (String(url).includes("entity=")) return json(structuredClone(dmEntity));
     return json({
       items: [
         {
@@ -74,7 +73,10 @@ async function openEntity() {
     .querySelector("form")
     .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   await settle();
-  buttonByText(document.body, `${privateEntity.name} ${privateEntity.entity_type}`).click();
+  buttonByText(
+    document.body,
+    `${privateEntity.name} ${privateEntity.entity_type}`,
+  ).click();
   await settle();
   await setChecked(document.querySelector(`input[value="${pc.id}"]`));
 }
@@ -113,7 +115,9 @@ describe("reveal preview matches the server projection", () => {
       }
       buttonByText(document.body, "Preview knowledge").click();
       await settle();
-      const preview = document.querySelector('[aria-label="Recipient previews"]');
+      const preview = document.querySelector(
+        '[aria-label="Recipient previews"]',
+      );
       expect(preview).not.toBeNull();
       expect(renderedFields(preview).sort()).toEqual(
         [...item.visible_fields].sort(),
