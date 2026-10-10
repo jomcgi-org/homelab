@@ -2,7 +2,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
 import Page from "./+page.svelte";
-import { buttonByText, settle } from "$lib/grimoire/test-helpers.js";
+import { invalidateAll } from "$app/navigation";
+import {
+  buttonByText,
+  chooseOption,
+  setChecked,
+  settle,
+} from "$lib/grimoire/test-helpers.js";
+
+vi.mock("$app/navigation", () => ({ invalidateAll: vi.fn() }));
 
 const pcs = [
   { id: "pc-a", character_name: "Aria" },
@@ -46,6 +54,7 @@ afterEach(async () => {
   instance = undefined;
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
+  vi.mocked(invalidateAll).mockClear();
 });
 
 describe("grants matrix", () => {
@@ -85,5 +94,49 @@ describe("grants matrix", () => {
     expect(fetch.mock.calls[0][0]).toBe(
       "/grimoire/campaigns/camp/session/state?q=",
     );
+  });
+
+  it("reloads the matrix after a reveal is confirmed", async () => {
+    const json = (value) => new Response(JSON.stringify(value));
+    const fetch = vi.fn(async (url, options = {}) => {
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body);
+        return json(
+          body.operation === "previewReveal"
+            ? [{ player_character_id: "pc-a", projection: { name: "Mara" } }]
+            : [],
+        );
+      }
+      if (String(url).includes("entity=")) return json({ ...entities[0] });
+      return json({ items: [entities[0]] });
+    });
+    vi.stubGlobal("fetch", fetch);
+    instance = mount(Page, { target: document.body, props: { data } });
+    await settle();
+    buttonByText(document.body, "Reveal knowledge").click();
+    await settle();
+    document
+      .querySelector('[role="dialog"] form')
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    buttonByText(document.body, "Mara npc").click();
+    await settle();
+    await setChecked(document.querySelector('input[value="pc-a"]'));
+    const scope = [...document.querySelectorAll("label")]
+      .find((label) => label.textContent.startsWith("Knowledge scope"))
+      .querySelector("select");
+    await chooseOption(scope, "full");
+    buttonByText(document.body, "Preview knowledge").click();
+    await settle();
+    expect(invalidateAll).not.toHaveBeenCalled();
+    buttonByText(document.body, "Share knowledge").click();
+    await settle();
+
+    const reveal = fetch.mock.calls
+      .filter(([, options]) => options?.method === "POST")
+      .map(([, options]) => JSON.parse(options.body))
+      .find((body) => body.operation === "reveal");
+    expect(reveal).toMatchObject({ entityId: "e1", pcIds: ["pc-a"] });
+    expect(invalidateAll).toHaveBeenCalledTimes(1);
   });
 });

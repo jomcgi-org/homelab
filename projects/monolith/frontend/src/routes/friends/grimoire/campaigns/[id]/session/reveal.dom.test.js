@@ -1,25 +1,53 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import Page from "./+page.svelte";
 import fixture from "$lib/grimoire/fixtures/reveal-projections.json";
+import dmRoutes from "$lib/grimoire/fixtures/dm-only-routes.json";
+import { GET, POST } from "./state/+server.js";
 import { plain, renderedFields } from "$lib/grimoire/test-helpers.js";
 
 const campaignId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "33333333-3333-4333-8333-333333333333";
 const endpoint = `/grimoire/campaigns/${campaignId}/session/state`;
 
-// Routes only a DM may reach, from the backend's _require_dm guards in
-// grimoire/router.py (see ROUTES in grimoire/route_inventory_test.py):
-// GET and POST /grants, POST /grants/bulk, POST /grants/preview,
-// PATCH and DELETE /grants/{id}, and the DM-only not_granted_to entity
-// filter. The BFF reaches them through the search query (`q`, `notGrantedTo`)
-// and the operations below.
-const DM_ONLY_URL = [
-  /\/grants(\/|\?|$)/,
-  /[?&](q|notGrantedTo|not_granted_to)=/,
-];
-const DM_ONLY_OPERATIONS = ["reveal", "previewReveal", "updateGrant", "revoke"];
+// Backend routes a DM alone may reach, pinned to router.py's _require_dm
+// guards by grimoire/visibility_test.py. Every player request is replayed
+// through the real BFF below, so the check follows what the backend would see.
+const pathPattern = (template) =>
+  new RegExp(`^${template.replace(/\{[^}]+\}/g, "[^/]+")}$`);
+const DM_ROUTES = dmRoutes.routes.map(([method, path]) => ({
+  method,
+  pattern: pathPattern(path),
+}));
+
+async function backendCalls([url, options]) {
+  const calls = [];
+  const backend = vi.fn(async (target, init = {}) => {
+    calls.push({ target: new URL(String(target)), method: init.method || "GET" });
+    return json([]);
+  });
+  const event = {
+    fetch: backend,
+    cookies: { get: () => "signed-grimoire-token" },
+    params: { id: campaignId },
+  };
+  if (options?.method === "POST")
+    await POST({
+      ...event,
+      request: new Request("https://friends.jomcgi.dev/state", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: options.body,
+      }),
+    });
+  else
+    await GET({
+      ...event,
+      url: new URL(String(url), "https://friends.jomcgi.dev"),
+    });
+  return calls;
+}
 
 function revealEvent(item, seq) {
   const body = {
@@ -115,6 +143,11 @@ describe("player reveal cards", () => {
 });
 
 describe("player view", () => {
+  beforeEach(() => {
+    process.env.API_BASE = "http://backend.test";
+    process.env.GRIMOIRE_PLAY_ENABLED = "true";
+  });
+
   it("never requests a DM-only route", async () => {
     vi.useFakeTimers();
     const events = [
@@ -145,14 +178,26 @@ describe("player view", () => {
     // The run is not vacuous: it polled state and opened the knowledge drawer.
     expect(urls).toContain(endpoint);
     expect(urls.some((url) => url.includes("?entity="))).toBe(true);
-    for (const url of urls)
-      for (const pattern of DM_ONLY_URL) expect(url).not.toMatch(pattern);
-    for (const [, options] of fetch.mock.calls) {
-      if (!options?.body) continue;
-      expect(DM_ONLY_OPERATIONS).not.toContain(
-        JSON.parse(options.body).operation,
-      );
-    }
+    // Fail closed: a player sends only the player operations.
+    const operations = fetch.mock.calls
+      .filter(([, options]) => options?.body)
+      .map(([, options]) => JSON.parse(options.body).operation);
+    for (const operation of operations)
+      expect(dmRoutes.player_operations).toContain(operation);
+    // And nothing a player sends reaches a DM route behind the BFF.
+    let replayed = 0;
+    for (const request of fetch.mock.calls)
+      for (const { target, method } of await backendCalls(request)) {
+        replayed += 1;
+        for (const route of DM_ROUTES)
+          expect(
+            route.method === method && route.pattern.test(target.pathname),
+            `${method} ${target.pathname}`,
+          ).toBe(false);
+        for (const param of dmRoutes.dm_only_query_params)
+          expect(target.searchParams.has(param), param).toBe(false);
+      }
+    expect(replayed).toBeGreaterThan(0);
     expect(
       [...document.querySelectorAll("button")].map((button) =>
         button.textContent.trim(),
