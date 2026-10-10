@@ -15,7 +15,10 @@ const endpoint = `/grimoire/campaigns/${campaignId}/session/state`;
 // PATCH and DELETE /grants/{id}, and the DM-only not_granted_to entity
 // filter. The BFF reaches them through the search query (`q`, `notGrantedTo`)
 // and the operations below.
-const DM_ONLY_URL = [/\/grants(\/|\?|$)/, /[?&](q|notGrantedTo|not_granted_to)=/];
+const DM_ONLY_URL = [
+  /\/grants(\/|\?|$)/,
+  /[?&](q|notGrantedTo|not_granted_to)=/,
+];
 const DM_ONLY_OPERATIONS = ["reveal", "previewReveal", "updateGrant", "revoke"];
 
 function revealEvent(item, seq) {
@@ -42,7 +45,9 @@ function revealEvent(item, seq) {
 function pageData(role, events) {
   return {
     campaign: { id: campaignId, name: "Adventure", role },
-    characters: [{ id: fixture.viewer, character_name: "Aria", approved: null }],
+    characters: [
+      { id: fixture.viewer, character_name: "Aria", approved: null },
+    ],
     session: { id: sessionId, status: "active" },
     events,
     journal: null,
@@ -71,7 +76,9 @@ async function settle(times = 8) {
 
 describe("player reveal cards", () => {
   it("show exactly the fixture's visible fields for each scope", async () => {
-    const events = fixture.cases.map((item, index) => revealEvent(item, index + 1));
+    const events = fixture.cases.map((item, index) =>
+      revealEvent(item, index + 1),
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => json(pageData("player", events))),
@@ -83,14 +90,18 @@ describe("player reveal cards", () => {
     await settle();
 
     for (const item of fixture.cases) {
-      const card = document.querySelector(`#event-reveal-${item.name} .knowledge-entry`);
+      const card = document.querySelector(
+        `#event-reveal-${item.name} .knowledge-entry`,
+      );
       expect(card, item.name).not.toBeNull();
-      expect(renderedFields(card).sort()).toEqual([...item.visible_fields].sort());
+      expect(renderedFields(card).sort()).toEqual(
+        [...item.visible_fields].sort(),
+      );
       const shown = item.expected.revealed_details || item.expected;
       for (const key of item.visible_fields)
-        expect(card.querySelector(`[data-field="${key}"]`).textContent).toContain(
-          plain(shown[key]),
-        );
+        expect(
+          card.querySelector(`[data-field="${key}"]`).textContent,
+        ).toContain(plain(shown[key]));
       expect(card.textContent).toContain(item.expected.name);
       for (const hidden of item.hidden_values || [])
         expect(card.textContent).not.toContain(hidden);
@@ -106,7 +117,10 @@ describe("player reveal cards", () => {
 describe("player view", () => {
   it("never requests a DM-only route", async () => {
     vi.useFakeTimers();
-    const events = [revealEvent(fixture.cases[0], 1), revealEvent(fixture.cases[1], 2)];
+    const events = [
+      revealEvent(fixture.cases[0], 1),
+      revealEvent(fixture.cases[1], 2),
+    ];
     const fetch = vi.fn(async (url) => {
       if (String(url).includes("entity="))
         return json({ ...fixture.cases[0].expected });
@@ -135,7 +149,9 @@ describe("player view", () => {
       for (const pattern of DM_ONLY_URL) expect(url).not.toMatch(pattern);
     for (const [, options] of fetch.mock.calls) {
       if (!options?.body) continue;
-      expect(DM_ONLY_OPERATIONS).not.toContain(JSON.parse(options.body).operation);
+      expect(DM_ONLY_OPERATIONS).not.toContain(
+        JSON.parse(options.body).operation,
+      );
     }
     expect(
       [...document.querySelectorAll("button")].map((button) =>

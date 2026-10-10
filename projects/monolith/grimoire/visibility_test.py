@@ -274,7 +274,9 @@ def test_dm_projection_includes_everything_and_grant_annotation(session: Session
 
 # Golden projections shared with the frontend renderer test. A server change
 # fails here; a renderer change fails the vitest that reads the same file.
-_FIXTURE_REL = "projects/monolith/frontend/src/lib/grimoire/fixtures/reveal-projections.json"
+_FIXTURE_REL = (
+    "projects/monolith/frontend/src/lib/grimoire/fixtures/reveal-projections.json"
+)
 
 
 def _load_projection_fixture() -> dict:
