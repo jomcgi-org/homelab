@@ -379,7 +379,7 @@ def main():
             a.bring_to_front()
             a.get_by_text("Roll dice", exact=True).click()
             a.get_by_label("Sheet roll type").select_option("saves")
-            a.get_by_label("Sheet roll mode").select_option("adv")
+            a.get_by_role("radio", name="Advantage", exact=True).check()
             a.get_by_role("button", name="Strength save", exact=True).click()
             expect(a.get_by_text("Strength save", exact=False).last).to_be_visible()
             sheet_state = a.request.get(a.url + "/state").json()
