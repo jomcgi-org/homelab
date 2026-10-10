@@ -825,6 +825,54 @@ defmodule Embervm.BrickControllerTest do
     refute_receive {:archive, _, _}
   end
 
+  test "two active ReplicaSets hold even an exported victim and preserve its timeout" do
+    {:ok, pods} = Agent.start_link(fn ->
+      [%{name: "brick-a", uid: "uid-a", template_hash: "old",
+         replica_set: "embervm-embervm-noded-brick-2gi-old"},
+       %{name: "brick-b", uid: "uid-b", template_hash: "new",
+         replica_set: "embervm-embervm-noded-brick-2gi-new"}]
+    end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pods) end)
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector -> {:ok, Agent.get(pods, & &1)} end)
+    exported = %{ctx.fact | pod_uid: "uid-b", node_id: "node-5",
+      instance_id: "node-5/uid-b", session_volumes: []}
+    Agent.update(ctx.facts, fn facts -> facts ++ [exported] end)
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=archive_pending"
+    assert Map.keys(:sys.get_state(ctx.pid).archive_pending) == ["uid-b"]
+    ctx.advance.(180_000)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(ctx.pid) end)
+    assert log =~ "workspace archive acknowledgement timed out; keeping victim"
+    assert :sys.get_state(ctx.pid).archive_pending["uid-b"].alarmed
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+    refute_receive {:archive, _, _}
+    Agent.update(pods, fn [_old, new] -> [new] end)
+    Agent.update(ctx.facts, fn [_old, new] -> [new] end)
+    BrickController.reconcile_now(ctx.pid)
+    assert [{_, "brick-b", _}] = ctx.annotated.()
+    assert List.last(ctx.calls.()) == {"embervm", "embervm-embervm-noded-brick-2gi", 1}
+  end
+
+  test "a second ReplicaSet appearing before annotation withholds scale-down" do
+    {:ok, reads} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(reads) end)
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+      n = Agent.get_and_update(reads, fn n -> {n, n + 1} end)
+      victim = %{name: "brick-a", uid: "uid-a", template_hash: "old",
+        replica_set: "embervm-embervm-noded-brick-2gi-old"}
+      new = %{name: "brick-b", uid: "uid-b", template_hash: "new",
+        replica_set: "embervm-embervm-noded-brick-2gi-new"}
+      {:ok, if(n == 0, do: [victim], else: [victim, new])}
+    end)
+    Agent.update(ctx.facts, fn [victim] -> [%{victim | session_volumes: []}] end)
+    archive_gate_tick(ctx)
+    assert Agent.get(reads, & &1) == 2
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+    refute_receive {:archive, _, _}
+  end
+
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do
     for replacement <- [[], [%{size_class: "2gi", pod_uid: "uid-a", live_vms: 1}]] do
       ctx = archive_gate_stack()

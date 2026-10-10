@@ -1236,6 +1236,13 @@ plus its `pod-template-hash`; a same-class floor or another release's pod cannot
 authorize deleting an elastic replica. Missing ownership or a failed pod list
 withholds scale-down. The directing lookup checks ownership again before
 annotating. Floor facts still participate in the registered-instance node hold.
+When that Deployment has pods from multiple ReplicaSets, the gate holds all
+candidates without archive requests, under the same keep-and-alarm timeout.
+The directing lookup checks this again. A Deployment scale-down during a partial
+roll may reduce a different ReplicaSet from the approved pod's; deletion cost
+only chooses the victim within one ReplicaSet. Once the old ReplicaSet's pods
+leave, normal acknowledgement resumes. This hold does not stop Kubernetes from
+performing its independently configured rollout.
 
 Joe accepted losing brick bin-packing and the extra node spend. If the sum of
 class `maxReplicas` plus floor replicas exceeds eligible FC nodes, pods can stay
