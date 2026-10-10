@@ -24,7 +24,10 @@ const DM_ROUTES = dmRoutes.routes.map(([method, path]) => ({
 async function backendCalls([url, options]) {
   const calls = [];
   const backend = vi.fn(async (target, init = {}) => {
-    calls.push({ target: new URL(String(target)), method: init.method || "GET" });
+    calls.push({
+      target: new URL(String(target)),
+      method: init.method || "GET",
+    });
     return json([]);
   });
   const event = {
