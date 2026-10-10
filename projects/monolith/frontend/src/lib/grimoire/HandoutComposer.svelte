@@ -38,12 +38,16 @@
     try {
       const form = new FormData();
       form.set("file", file);
-      const response = await fetch(`/grimoire/campaigns/${campaignId}/handouts/uploads`, {
-        method: "POST",
-        body: form,
-      });
+      const response = await fetch(
+        `/grimoire/campaigns/${campaignId}/handouts/uploads`,
+        {
+          method: "POST",
+          body: form,
+        },
+      );
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "Could not upload that image.");
+      if (!response.ok)
+        throw new Error(result.error || "Could not upload that image.");
       image = { ...result, name: file.name };
     } catch (error) {
       problem = error.message || "Could not upload that image.";
@@ -102,7 +106,11 @@
     {#if !toTable}
       {#each characters as character (character.id)}
         <label
-          ><input type="checkbox" value={character.id} bind:group={picked} />{character.character_name}</label
+          ><input
+            type="checkbox"
+            value={character.id}
+            bind:group={picked}
+          />{character.character_name}</label
         >
       {/each}
     {/if}
