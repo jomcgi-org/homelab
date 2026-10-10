@@ -39,11 +39,18 @@ def test_dm_upsert_creates_then_updates_same_row(setup):
     assert created.status_code == 200, created.text
     assert created.json()["voice_hint"] == {"lang": None, "names": []}
     assert created.json()["rate"] == created.json()["pitch"] == 1
-    row = h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == key)).one()
+    row = h.session.exec(
+        select(CampaignVoice).where(CampaignVoice.speaker_key == key)
+    ).one()
     row_id = row.id
     updated = client.put(
-        path(h, key), headers=h.headers("dm"),
-        json={"voice_hint": {"lang": "en-GB", "names": ["English"]}, "rate": 1.5, "pitch": 0.5},
+        path(h, key),
+        headers=h.headers("dm"),
+        json={
+            "voice_hint": {"lang": "en-GB", "names": ["English"]},
+            "rate": 1.5,
+            "pitch": 0.5,
+        },
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()["rate"] == 1.5
@@ -51,7 +58,9 @@ def test_dm_upsert_creates_then_updates_same_row(setup):
     assert updated.json()["voice_hint"] == {"lang": "en-GB", "names": ["English"]}
     assert updated.json()["updated_at"] >= created.json()["updated_at"]
     h.session.expire_all()
-    rows = h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == key)).all()
+    rows = h.session.exec(
+        select(CampaignVoice).where(CampaignVoice.speaker_key == key)
+    ).all()
     assert len(rows) == 1
     assert rows[0].id == row_id
     assert rows[0].rate == 1.5
@@ -64,20 +73,33 @@ def test_dm_delete_returns_204_and_removes_row(setup):
     response = client.delete(path(h, "narrator"), headers=h.headers("dm"))
     assert response.status_code == 204, response.text
     assert response.content == b""
-    assert h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == "narrator")).first() is None
-    assert client.delete(path(h, "narrator"), headers=h.headers("dm")).status_code == 404
+    assert (
+        h.session.exec(
+            select(CampaignVoice).where(CampaignVoice.speaker_key == "narrator")
+        ).first()
+        is None
+    )
+    assert (
+        client.delete(path(h, "narrator"), headers=h.headers("dm")).status_code == 404
+    )
 
 
-@pytest.mark.parametrize("body", [
-    {"rate": 0.49}, {"rate": 2.01}, {"pitch": -0.01}, {"pitch": 2.01},
-    {"voice_hint": {"names": ["voice"] * 9}},
-    {"voice_hint": {"names": ["x" * 65]}},
-    {"voice_hint": {"names": [""]}},
-    {"voice_hint": {"names": [123]}},
-    {"voice_hint": {"lang": "x" * 36}},
-    {"voice_hint": {"secret": "unexpected"}},
-    {"unexpected": True},
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"rate": 0.49},
+        {"rate": 2.01},
+        {"pitch": -0.01},
+        {"pitch": 2.01},
+        {"voice_hint": {"names": ["voice"] * 9}},
+        {"voice_hint": {"names": ["x" * 65]}},
+        {"voice_hint": {"names": [""]}},
+        {"voice_hint": {"names": [123]}},
+        {"voice_hint": {"lang": "x" * 36}},
+        {"voice_hint": {"secret": "unexpected"}},
+        {"unexpected": True},
+    ],
+)
 def test_invalid_presets_are_rejected_without_mutation(setup, body):
     client, h = setup
     before = h.snapshot()
@@ -107,15 +129,23 @@ def test_foreign_campaign_and_non_npc_entity_keys_are_rejected(setup, key_name):
 
 def test_unknown_uuid_is_rejected(setup):
     client, h = setup
-    assert client.put(path(h, str(uuid4())), headers=h.headers("dm"), json={}).status_code == 404
+    assert (
+        client.put(path(h, str(uuid4())), headers=h.headers("dm"), json={}).status_code
+        == 404
+    )
 
 
 @pytest.mark.parametrize("rate,pitch", [(0.5, 0), (2, 2)])
 def test_preset_boundaries_are_accepted(setup, rate, pitch):
     client, h = setup
     response = client.put(
-        path(h, "narrator"), headers=h.headers("dm"),
-        json={"rate": rate, "pitch": pitch, "voice_hint": {"lang": "x" * 35, "names": ["x" * 64] * 8}},
+        path(h, "narrator"),
+        headers=h.headers("dm"),
+        json={
+            "rate": rate,
+            "pitch": pitch,
+            "voice_hint": {"lang": "x" * 35, "names": ["x" * 64] * 8},
+        },
     )
     assert response.status_code == 200, response.text
     assert response.json()["rate"] == rate
@@ -127,12 +157,20 @@ def test_entity_voice_upsert_and_narration_share_canonical_key(setup):
     # Use a granted NPC without a preset to exercise entity-key creation.
     key = h.rows["a_only"].id
     for spelling, rate in ((key, 1.2), (key.lower(), 1.4)):
-        response = client.put(path(h, spelling), headers=h.headers("dm"), json={"rate": rate})
+        response = client.put(
+            path(h, spelling), headers=h.headers("dm"), json={"rate": rate}
+        )
         assert response.status_code == 200, response.text
         assert response.json()["speaker_key"] == str(UUID(key))
-    rows = h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == str(UUID(key)))).all()
+    rows = h.session.exec(
+        select(CampaignVoice).where(CampaignVoice.speaker_key == str(UUID(key)))
+    ).all()
     assert len(rows) == 1 and rows[0].rate == 1.4
-    created = client.post(events_path(h), headers=h.headers("dm"), json={"kind": "narration", "audience": "table", "body": {"speaker_key": key}})
+    created = client.post(
+        events_path(h),
+        headers=h.headers("dm"),
+        json={"kind": "narration", "audience": "table", "body": {"speaker_key": key}},
+    )
     assert created.status_code == 200, created.text
     voices = client.get(path(h), headers=h.headers("player_a"))
     events = client.get(events_path(h), headers=h.headers("player_a"))
@@ -144,7 +182,9 @@ def test_entity_voice_upsert_and_narration_share_canonical_key(setup):
 def test_retracted_narration_does_not_expose_speaker_key(setup):
     client, h = setup
     event_id = h.rows["event_table"].id
-    retracted = client.post(f"{events_path(h)}/{event_id}/retract", headers=h.headers("dm"))
+    retracted = client.post(
+        f"{events_path(h)}/{event_id}/retract", headers=h.headers("dm")
+    )
     assert retracted.status_code == 200, retracted.text
     response = client.get(events_path(h), headers=h.headers("player_a"))
     assert response.status_code == 200
@@ -162,7 +202,9 @@ def test_members_can_get_voices_with_viewer_specific_keys(setup, viewer):
     keys = {row["speaker_key"] for row in response.json()}
     raw_key = h.rows["private"].id
     assert "narrator" in keys
-    assert (raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key)) in keys
+    assert (
+        raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key)
+    ) in keys
     if viewer != "dm":
         assert raw_key.casefold() not in response.text.casefold()
 
@@ -172,7 +214,12 @@ def test_members_can_get_voices_with_viewer_specific_keys(setup, viewer):
 def test_players_cannot_write_voice_map(setup, viewer, method):
     client, h = setup
     before = h.snapshot()
-    response = client.request(method, path(h, "narrator"), headers=h.headers(viewer), json={} if method == "PUT" else None)
+    response = client.request(
+        method,
+        path(h, "narrator"),
+        headers=h.headers(viewer),
+        json={} if method == "PUT" else None,
+    )
     assert response.status_code == 403, response.text
     assert h.snapshot() == before
 
@@ -197,12 +244,16 @@ def test_narration_key_matches_voice_map_and_never_mutates_storage(setup, viewer
     key = event["body"]["speaker_key"]
     assert key in {row["speaker_key"] for row in voices.json()}
     raw_key = h.rows["private"].id
-    assert key == (raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key))
+    assert key == (
+        raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key)
+    )
     assert h.snapshot() == before
     assert h.rows["event_table"].body["speaker_key"] == raw_key
 
 
-@pytest.mark.parametrize("key", ["narrator", "Unmapped voice", "Old Captain's-voice_1.", "private", None])
+@pytest.mark.parametrize(
+    "key", ["narrator", "Unmapped voice", "Old Captain's-voice_1.", "private", None]
+)
 def test_valid_narration_keys_and_absent_key_are_accepted(setup, key):
     client, h = setup
     if key == "private":
@@ -210,7 +261,11 @@ def test_valid_narration_keys_and_absent_key_are_accepted(setup, key):
     body = {"text": "The captain speaks"}
     if key is not None:
         body["speaker_key"] = key
-    response = client.post(events_path(h), headers=h.headers("dm"), json={"kind": "narration", "audience": "table", "body": body})
+    response = client.post(
+        events_path(h),
+        headers=h.headers("dm"),
+        json={"kind": "narration", "audience": "table", "body": body},
+    )
     assert response.status_code == 200, response.text
     if key is not None:
         expected = str(UUID(key)) if key == h.rows["private"].id else key
@@ -221,14 +276,22 @@ def test_valid_narration_keys_and_absent_key_are_accepted(setup, key):
     assert stored.body == response.json()["body"]
 
 
-@pytest.mark.parametrize("key", ["ref:opaque", "bad!label", "x" * 65, "foreign", None, 3, []])
+@pytest.mark.parametrize(
+    "key", ["ref:opaque", "bad!label", "x" * 65, "foreign", None, 3, []]
+)
 def test_invalid_narration_speaker_keys_are_rejected(setup, key):
     client, h = setup
     if key == "foreign":
         key = h.rows["foreign"].id
     before = h.snapshot()
-    response = client.post(events_path(h), headers=h.headers("dm"), json={"kind": "narration", "audience": "table", "body": {"speaker_key": key}})
-    assert response.status_code == (404 if key == h.rows["foreign"].id else 422), response.text
+    response = client.post(
+        events_path(h),
+        headers=h.headers("dm"),
+        json={"kind": "narration", "audience": "table", "body": {"speaker_key": key}},
+    )
+    assert response.status_code == (404 if key == h.rows["foreign"].id else 422), (
+        response.text
+    )
     assert h.snapshot() == before
 
 
@@ -244,7 +307,9 @@ def test_speaker_refs_are_canonical_and_campaign_scoped():
 
 @pytest.mark.parametrize("session_route", [False, True])
 @pytest.mark.parametrize("viewer", ["dm", "player_a"])
-def test_journal_event_bodies_use_the_same_speaker_projection(setup, session_route, viewer):
+def test_journal_event_bodies_use_the_same_speaker_projection(
+    setup, session_route, viewer
+):
     client, h = setup
     row = h.rows["event_table"]
     row.kind = "handout"
@@ -255,8 +320,12 @@ def test_journal_event_bodies_use_the_same_speaker_projection(setup, session_rou
     response = client.get(f"{prefix}/journal", headers=h.headers(viewer))
     assert response.status_code == 200, response.text
     h.assert_no_leak(response, viewer)
-    data = response.json() if session_route else response.json()["sessions"][0]["journal"]
+    data = (
+        response.json() if session_route else response.json()["sessions"][0]["journal"]
+    )
     received = next(item for item in data["received"] if item["id"] == row.id)
     key = h.rows["private"].id
-    assert received["body"]["speaker_key"] == (key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, key))
+    assert received["body"]["speaker_key"] == (
+        key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, key)
+    )
     assert row.body["speaker_key"] == key

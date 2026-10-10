@@ -75,7 +75,9 @@ def speaker_ref(campaign_id: str, key: str) -> str:
 
 def voice_view(row: CampaignVoice, *, dm: bool) -> VoiceView:
     return VoiceView(
-        speaker_key=row.speaker_key if dm else speaker_ref(row.campaign_id, row.speaker_key),
+        speaker_key=row.speaker_key
+        if dm
+        else speaker_ref(row.campaign_id, row.speaker_key),
         voice_hint=row.voice_hint,
         rate=row.rate,
         pitch=row.pitch,

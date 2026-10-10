@@ -69,7 +69,10 @@ def visible_rows(viewer, member, events, view):
 def _event(row: SessionEvent, viewer: Viewer, member: Member) -> dict[str, Any]:
     body = row.body
     if viewer != "dm" and isinstance(body.get("speaker_key"), str):
-        body = {**body, "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"])}
+        body = {
+            **body,
+            "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"]),
+        }
     return {
         "id": row.id,
         "seq": row.seq,
