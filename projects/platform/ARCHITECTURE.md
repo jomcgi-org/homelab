@@ -53,14 +53,14 @@ graph LR
     D -->|backendRef| E
 ```
 
-Both clusters' `cloudflared` Deployments share one tunnel credential. The hub runs two connectors and home is drained to zero, so moving ingress between clusters is a `tunnel.replicaCount` change in each overlay and nothing else. On the hub the Envoy Gateway chart owns every Gateway API CRD; GKE's own Gateway API addon is disabled because its standard-channel bundle lacks the `ListenerSet` CRD Envoy Gateway requires.
+The hub's `cloudflared` Deployment runs two connectors using the `cluster-cloudflare-tunnel` credential (`projects/platform/cloudflare-gateway/values-gke.yaml`). On the hub the Envoy Gateway chart owns every Gateway API CRD; GKE's own Gateway API addon is disabled because its standard-channel bundle lacks the `ListenerSet` CRD Envoy Gateway requires.
 
 Two ingress tiers route by audience (ADR networking/002), carried as the `ingress-tier` label on each `HTTPRoute`:
 
 - **public**: unauthenticated routes on the public hostnames
 - **trusted**: a `SecurityPolicy` validates a Cloudflare Access JWT and maps the `email` claim to `X-Auth-Email` (`cf-ingress-library/templates/_security-policy.tpl`). A few routes use an authentik OIDC policy instead of Cloudflare Access
 
-All converge on the same Envoy instance. The ingress library (`cf-ingress-library/`) provides shared `HTTPRoute` templates that services import rather than hand-rolling. Services define their routes in `deploy/values.yaml` and ArgoCD renders them. The hub serves fourteen routes on one Gateway across `jomcgi.dev`, `private.jomcgi.dev`, `friends.jomcgi.dev`, `auth.jomcgi.dev`, `mcp.jomcgi.dev` and `ships.jomcgi.dev`. The ArgoCD UI has no route on either cluster (`cfIngress.enabled: false` in `projects/platform/argocd/values.yaml`); Kargo's UI is at `private.jomcgi.dev/app/kargo` behind Cloudflare Access.
+All converge on the same Envoy instance. The ingress library (`cf-ingress-library/`) provides shared `HTTPRoute` templates that services import rather than hand-rolling. Services define their routes in `deploy/values.yaml` and ArgoCD renders them. The hub serves fourteen routes on one Gateway across `jomcgi.dev`, `private.jomcgi.dev`, `friends.jomcgi.dev`, `auth.jomcgi.dev`, `mcp.jomcgi.dev` and `ships.jomcgi.dev`. The ArgoCD UI has no route on the hub (`cfIngress.enabled: false` in `projects/platform/argocd/values.yaml`); Kargo's UI is at `private.jomcgi.dev/app/kargo` behind Cloudflare Access.
 
 **Edge caching.** Anonymous public pages and data endpoints are cache-eligible at Cloudflare: the origin emits `Cache-Control: public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000` and a hostname-scoped Cloudflare cache rule honours it, so `cf-cache-status` on `jomcgi.dev/` reads HIT or EXPIRED rather than DYNAMIC (ADR platform/003, originally scoped to `public.jomcgi.dev`, a hostname that no longer resolves now that the apex is the monolith). The rule lives only in the Cloudflare dashboard, not in this repo; the remaining one-time dashboard settings are tracked at #3879 (the miss-rate alert closed as not planned, #3880, and the tracker #3876 closed with the docs landed). `jomcgi.dev/docs/*` is served by the monolith frontend from repo markdown (`projects/monolith/frontend/src/routes/public/docs/`); there is no separate docs site or Cloudflare Pages project (ADR docs/002).
 
@@ -194,18 +194,18 @@ node, which the disposable value cannot.
 
 ## 7. Observability
 
-**otel-collector** runs one OpenTelemetry Collector Deployment on each cluster and exports to Honeycomb (ADR platform/015): OTLP gRPC from home, OTLP over HTTP from the hub, where the gRPC dials were cancelled before completing.
+**otel-collector** runs one OpenTelemetry Collector Deployment on the hub and exports to Honeycomb (ADR platform/015) over OTLP HTTP, because the gRPC dials were cancelled before completing.
 
-Trace admission is deny-by-default by construction. With an empty `allowedServices` the chart renders no `otlp` receiver, no traces pipeline and no OTLP ports, so an unlisted service gets connection refused. Both production overlays list the same four services (`embervm-control`, `monolith-backend`, `monolith-jobs`, `monolith-public`), so the receiver is rendered on both clusters; a `filter` processor then drops any span whose `service.name` is absent or unlisted, and one `composite` tail-sampling policy spends a spans-per-second budget across its sub-policies. Adding a service is a one-line values edit. A `memory_limiter` runs first in every pipeline.
+Trace admission is deny-by-default by construction. With an empty `allowedServices` the chart renders no `otlp` receiver, no traces pipeline and no OTLP ports, so an unlisted service gets connection refused. The hub overlay (`values-gke.yaml`) lists five services (`embervm-control`, `embervm-noded`, `monolith-backend`, `monolith-jobs`, `monolith-public`) and renders the receiver; a `filter` processor then drops any span whose `service.name` is absent or unlisted, and one `composite` tail-sampling policy spends a spans-per-second budget across its sub-policies. Adding a service is a one-line values edit. A `memory_limiter` runs first in every pipeline.
 
-The metrics pipeline accepts the `http_check` receiver only: both overlays probe
+The metrics pipeline accepts the `http_check` receiver only: the hub overlay probes
 `https://jomcgi.dev/health` and `https://jomcgi.dev/`. The hub's Argo CD in-cluster
 target is live with Argo CD's self-signed serving leaf pinned in
 `values-gke.yaml` per #6542. The certificate expires 2027-08-30 and must be
 re-pinned from the `argocd` namespace's `argocd-secret` key `tls.crt` before
 then. Arbitrary OTLP metrics are never accepted.
 
-UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator is installed at home only and renders no `Instrumentation` resources. There is no in-repository trace query surface; the retired private waterfall is not being restored.
+UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator chart was retired with the home configuration in #6914 and is deployed nowhere. There is no in-repository trace query surface; the retired private waterfall is not being restored.
 
 **Internal observability guidance** lives in `docs/observability.md` (not published externally).
 
@@ -237,8 +237,8 @@ crossing that boundary is the cost, accepted because the alternative (dropping
 `pods/log`) diverges from the shipped chart's RBAC and would have to be
 re-diverged on every upgrade.
 
-**Why.** The hub runs the public jomcgi.dev probe because the home cluster is
-residual and its collector is not the signal to keep. Pinning Argo CD's
+**Why.** The hub runs the public jomcgi.dev probe; the home configuration is
+retired. Pinning Argo CD's
 self-signed serving leaf preserves TLS verification without
 `insecure_skip_verify` and leaves `server.insecure` false. With both
 `httpcheck.enabled` and `httpcheck.caMount.enabled` on, rendering fails if
@@ -260,11 +260,11 @@ EmberVM session-create denial incident.
 - `require-resource-requests` checks first-party namespaces for CPU and memory requests plus a memory limit. `validationFailureAction: Audit`, so violations surface as PolicyReports and nothing is rejected
 - `clone-monolith-workflows-secrets` copies the Secrets Argo CronWorkflow jobs need, the R2 credential among them, into `monolith-workflows`
 
-The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3); nothing on either cluster enforces a `securityContext` at admission, since Kyverno's rules are Audit.
+The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3); nothing on the hub enforces a `securityContext` at admission, since Kyverno's rules are Audit.
 
 **Sandbox runtime.** No workload runs under gVisor. The hub carries GKE's own `gvisor` RuntimeClass and no pod selects it; home never had one. ADR security/003 (runsc for agent sandbox pods) was accepted for a pod-shaped agent runtime that was then replaced: untrusted code runs in EmberVM Firecracker guests (`projects/embervm/ARCHITECTURE.md`, section 10), so the second kernel boundary is the microVM. #3894 remains open as the record; nothing depends on it.
 
-**cert-manager** runs on the hub. It issues from self-signed `Issuer`s only: Kargo's two webhook certificates and EmberVM's egress CA. No `ClusterIssuer` exists and nothing on the hub gets a publicly trusted certificate from it; TLS to the internet terminates at Cloudflare. At home it also rotates the Cilium Hubble mTLS certificates and the model-cache operator's webhook certificate.
+**cert-manager** runs on the hub. It issues from self-signed `Issuer`s only: Kargo's two webhook certificates and EmberVM's egress CA. No `ClusterIssuer` exists and nothing on the hub gets a publicly trusted certificate from it; TLS to the internet terminates at Cloudflare.
 
 **Authentik** is the in-cluster identity provider, on the hub since the cutover with its database recovered from the home archive. It issues OIDC to the Envoy Gateway `SecurityPolicy` lanes (the MCP preview, the moving lane on `friends.jomcgi.dev` per ADR security/006) and to Kargo's UI, where Kargo's own admin authorization requires the `homelab-admin` group, and enforces MFA on the accounts that reach them (`projects/platform/authentik/blueprints/`). Declarative config is blueprints applied by the worker; authentik ships no CRDs. Cloudflare Access is a separate gate on the trusted tier, and it also fronts authentik's admin console. Authentik's own credentials live in the `authentik-secrets` and `authentik-pg-app` Secrets, and each application's OIDC client secret arrives as an `OnePasswordItem`.
 
@@ -298,7 +298,7 @@ and an agent on every brick node (ADR embervm/041).
 
 **Argo Workflows** runs in `monolith-workflows` on the hub as the CronWorkflow executor for the monolith's job schedule (32 CronWorkflows). Renovate and apko lock maintenance ran on it at home; their hub enrolment is staged and suspended (#6247), and the home Renovate Application is the one home overlay #6914 kept, pending that cutover.
 
-**Renovate** (home today, hub enrolment staged and suspended under #6247) runs daily at 04:00 as an Argo `CronWorkflow` (`projects/platform/renovate/values.yaml` l.7). Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD `application.yaml` files. `renovate.json` holds ordinary PR creation to a Monday window, so the daily run exists to absorb a transient failure rather than to open PRs seven days a week. Credentials come from 1Password. **apko lock maintenance** is a second CronWorkflow, weekly on Monday at 01:00, regenerating every committed `apko.lock.json` through the pinned `rules_apko` toolchain into one `renovate/apko-lock-maintenance` PR under rebase auto-merge (l.31, `README.md`). The last such PR opened on 2026-08-24, before the cutover; whether either CronWorkflow still fires on the residual home cluster is unverified.
+**Renovate** configures a daily 04:00 Argo `CronWorkflow` (`projects/platform/renovate/values.yaml` l.7). Hub enrolment is staged and suspended under #6247; the only non-hub enrolment is the kept home overlay that no root deploys. Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD `application.yaml` files. `renovate.json` holds ordinary PR creation to a Monday window, so the daily schedule exists to absorb a transient failure rather than to open PRs seven days a week. Credentials come from 1Password. **apko lock maintenance** configures a second CronWorkflow, weekly on Monday at 01:00, regenerating every committed `apko.lock.json` through the pinned `rules_apko` toolchain into one `renovate/apko-lock-maintenance` PR under rebase auto-merge (l.31, `README.md`). Both hub schedules are suspended in `values-gke.yaml` pending the #6247 operator cutover.
 
 **Repo layout** (ADR repo/001): every deployable lives under `projects/<name>/` with its chart and `deploy/` colocated; Bazel rules and tooling live under `bazel/` (`bazel/helm`, `bazel/images`, `bazel/tools`). `projects/gke-cluster/`, `projects/platform-gke/` and `projects/gke-apps/` are the hub's hand-maintained roots over the charts under `projects/platform/` and each service's `deploy/` values (section 1); the generated home root was retired in #6914. `projects/operators/` holds the one custom operator (`oci-model-cache`, a `ModelCache` CRD that syncs HuggingFace models into an OCI registry) and the conventions in `best-practices.md` that a new operator follows. None of these is a domain of its own.
 

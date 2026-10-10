@@ -9,7 +9,7 @@ metadata:
     # Kargo will not update an Application that has not named the Stage allowed
     # to touch it. Without this the promotion errors with "is not authorized"
     # and the pin never moves, which is exactly how this cluster's first three
-    # promotions failed. Mirrors projects/embervm/deploy/application.yaml.
+    # promotions failed. The former home Application was retired in #6914.
     kargo.akuity.io/authorized-stage: kargo-embervm:prod
     argocd.argoproj.io/sync-wave: "2"
 spec:
@@ -40,16 +40,16 @@ spec:
     # value is only the count at FIRST create. Without this entry selfHeal
     # reverted every demand-driven scale-up back to the git floor (216 auto-heal
     # syncs on 2026-08-31), killing the scaled-up bricks and every guest in them
-    # each cycle. Mirrors the home app (projects/embervm/deploy/application.yaml),
-    # which carries the full history of this rule.
+    # each cycle. Git history before #6914 records the former home Application
+    # and the full history of this rule.
     - group: apps
       kind: Deployment
       jsonPointers:
         - /spec/replicas
     # The token broker owns the OAuth grant Secret's DATA (rotating refresh
     # token bundle); without this entry selfHeal reverts it to the empty chart
-    # declaration, silently revoking the grant. One entry PER GRANT; mirrors
-    # the home app and the loud contract in chart/values.yaml.
+    # declaration, silently revoking the grant. One entry PER GRANT, matching
+    # the contract in projects/embervm/chart/values.yaml.
     - kind: Secret
       name: embervm-oauth-grant-codex-cluster
       jsonPointers:
@@ -58,8 +58,8 @@ spec:
       name: embervm-oauth-grant-codex-b
       jsonPointers:
         - /data
-    # agent-mcp renders only on the hub (grants are overridden in
-    # deploy/values-gke.yaml), so the home application.yaml carries no twin.
+    # agent-mcp renders on the hub; grants are overridden in
+    # projects/embervm/deploy/values-gke.yaml.
     - kind: Secret
       name: embervm-oauth-grant-agent-mcp
       jsonPointers:

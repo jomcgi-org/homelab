@@ -104,9 +104,8 @@ Kyverno's cluster-wide OTel environment-variable injection is disabled in
 `projects/platform/kyverno/values.yaml`. It was not redirected to the
 collector.
 
-The OpenTelemetry Operator is not deployed on the hub: `projects/platform-gke/`
-carries no Application for it, and its chart under
-`projects/platform/opentelemetry-operator/` is residual home configuration.
+The OpenTelemetry Operator chart was retired in #6914.
+`projects/platform-gke/` carries no Application for it.
 Each workload configures its own exporter endpoint. The private monolith's
 OTLP/HTTP trace endpoint is set in `projects/monolith/deploy/values.yaml`, and
 the service is admitted through the allowlist above.
