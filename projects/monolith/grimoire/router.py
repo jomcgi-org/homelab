@@ -3055,7 +3055,7 @@ def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
         body = (
             {"reveals": items} if "reveals" in body else (items[0] if items else body)
         )
-    if not dm and body and row.kind == "narration" and "speaker_key" in body:
+    if not dm and body and isinstance(body.get("speaker_key"), str):
         body = {**body, "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"])}
     return SessionEventView(
         id=row.id,

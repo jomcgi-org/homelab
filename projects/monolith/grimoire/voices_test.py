@@ -240,3 +240,23 @@ def test_speaker_refs_are_canonical_and_campaign_scoped():
     assert speaker_ref(other, npc) != ref
     assert speaker_ref(campaign, "narrator") == "narrator"
     assert speaker_ref(campaign, "Free label") == "Free label"
+
+
+@pytest.mark.parametrize("session_route", [False, True])
+@pytest.mark.parametrize("viewer", ["dm", "player_a"])
+def test_journal_event_bodies_use_the_same_speaker_projection(setup, session_route, viewer):
+    client, h = setup
+    row = h.rows["event_table"]
+    row.kind = "handout"
+    h.session.commit()
+    prefix = f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+    if session_route:
+        prefix += f"/sessions/{h.rows['campaign_session'].id}"
+    response = client.get(f"{prefix}/journal", headers=h.headers(viewer))
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, viewer)
+    data = response.json() if session_route else response.json()["sessions"][0]["journal"]
+    received = next(item for item in data["received"] if item["id"] == row.id)
+    key = h.rows["private"].id
+    assert received["body"]["speaker_key"] == (key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, key))
+    assert row.body["speaker_key"] == key

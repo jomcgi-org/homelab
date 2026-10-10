@@ -8,6 +8,7 @@ from uuid import UUID
 from grimoire.audience import Member, Viewer, can_see
 from grimoire.models import SessionEvent
 from grimoire.reveals import reveal_items
+from grimoire.voices import speaker_ref
 
 
 def _identity(value: str) -> str:
@@ -66,6 +67,9 @@ def visible_rows(viewer, member, events, view):
 
 
 def _event(row: SessionEvent, viewer: Viewer, member: Member) -> dict[str, Any]:
+    body = row.body
+    if viewer != "dm" and isinstance(body.get("speaker_key"), str):
+        body = {**body, "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"])}
     return {
         "id": row.id,
         "seq": row.seq,
@@ -79,7 +83,7 @@ def _event(row: SessionEvent, viewer: Viewer, member: Member) -> dict[str, Any]:
             if viewer == "dm" or row.author_member_id == member.id
             else None
         ),
-        "body": row.body,
+        "body": body,
     }
 
 
