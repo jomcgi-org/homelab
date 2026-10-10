@@ -226,6 +226,16 @@ withdraws handouts already posted. The upload key is matched in full against
 this campaign's prefix and a uuid4 name, which rules out traversal and other
 campaigns' objects without trusting the client's filename or declared type.
 
+The frontend reaches all of this through the SvelteKit BFF: the session state
+endpoint's `handout` operation (limits mirrored from `handouts.py`), a multipart
+upload proxy that forwards only the file, and an image proxy that takes the
+campaign, session and event ids as single encoded segments and answers
+`Cache-Control: private, no-store`. Pages only ever hold the proxy URL, never the
+key. The DM composer offers uploaded images only; chunk images are accepted by
+the API but have no picker yet. The frontend container sets `BODY_SIZE_LIMIT`
+to 6M because adapter-node's 512K default would refuse the upload before the
+proxy ran.
+
 ## Journal
 
 Both journal routes are play-gated and computed on read. The session route
