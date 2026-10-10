@@ -53,6 +53,22 @@ prototype's Firestore and polymorphic JSON model:
 Queryable values use typed columns. Irregular display-only structures may use
 JSON. Embeddings share one pgvector-backed retrieval surface.
 
+## Read-aloud voice map
+
+`grimoire.campaign_voice` stores a DM-editable voice preset per speaker key.
+Campaign members can read the map. Keys are `narrator`, an NPC entity UUID in
+the campaign's corpus, or a free label of up to 64 characters. Presets contain
+an optional language hint, up to eight preferred voice-name substrings, a rate
+from 0.5 to 2, and a pitch from 0 to 2. Narration events accept an optional
+speaker key independently of whether a preset exists.
+
+**Why.** Browser `speechSynthesis` supports read-aloud with zero new
+infrastructure. Players receive opaque references for NPC entity keys in both
+the voice map and narration bodies, so hidden NPC ids stay private. Free labels
+and voice hints are visible to every admitted member: the DM uses an NPC entity
+key for a hidden identity and avoids identifying text in hints. DMs retain raw
+keys. Server-generated audio is tracked separately in #6629.
+
 ## Visibility and public access
 
 Private DM routes can read the complete corpus. Player-scoped reads centralize

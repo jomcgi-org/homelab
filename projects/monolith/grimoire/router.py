@@ -61,6 +61,7 @@ from grimoire.models import (
     CampaignInvitation,
     CampaignJoinLink,
     CampaignMember,
+    CampaignVoice,
     CharacterSheetStatus,
     CharacterSheetVersion,
     Entity,
@@ -102,6 +103,15 @@ from grimoire.visibility import (
     entity_belongs_to_campaign,
     project_entity,
     visible_entities_query,
+)
+from grimoire.voices import (
+    VoiceRequest,
+    VoiceView,
+    delete_voice,
+    speaker_ref,
+    upsert_voice,
+    validate_speaker_key,
+    voice_view,
 )
 
 logger = logging.getLogger("monolith.grimoire.router")
@@ -369,6 +379,44 @@ def get_campaign(
 ) -> Campaign:
     _get_member_or_404(session, campaign_id, email)
     return _get_campaign_or_404(session, campaign_id)
+
+
+@router.get("/campaigns/{campaign_id}/voices", response_model=list[VoiceView])
+def list_campaign_voices(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[VoiceView]:
+    member = _get_member_or_404(session, campaign_id, email)
+    rows = session.exec(
+        select(CampaignVoice)
+        .where(CampaignVoice.campaign_id == campaign_id)
+        .order_by(CampaignVoice.speaker_key)
+    ).all()
+    return [voice_view(row, dm=member.role == "dm") for row in rows]
+
+
+@router.put("/campaigns/{campaign_id}/voices/{speaker_key}", response_model=VoiceView)
+def put_campaign_voice(
+    campaign_id: str,
+    speaker_key: str,
+    body: VoiceRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> VoiceView:
+    _require_dm(session, campaign_id, email)
+    return voice_view(upsert_voice(session, campaign_id, speaker_key, body), dm=True)
+
+
+@router.delete("/campaigns/{campaign_id}/voices/{speaker_key}", status_code=204)
+def delete_campaign_voice(
+    campaign_id: str,
+    speaker_key: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> None:
+    _require_dm(session, campaign_id, email)
+    delete_voice(session, campaign_id, speaker_key)
 
 
 # --- Player and party notes --------------------------------------------
@@ -3007,6 +3055,8 @@ def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
         body = (
             {"reveals": items} if "reveals" in body else (items[0] if items else body)
         )
+    if not dm and body and row.kind == "narration" and "speaker_key" in body:
+        body = {**body, "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"])}
     return SessionEventView(
         id=row.id,
         campaign_id=row.campaign_id,
@@ -3414,6 +3464,11 @@ def create_session_event(
         body.kind != "action" or body.audience not in ("dm", "table")
     ):
         raise HTTPException(status_code=403, detail="player action required")
+    if body.kind == "narration" and "speaker_key" in body.body:
+        body.body = {
+            **body.body,
+            "speaker_key": validate_speaker_key(session, campaign_id, body.body["speaker_key"]),
+        }
     try:
         audience = Audience(
             body.audience,
