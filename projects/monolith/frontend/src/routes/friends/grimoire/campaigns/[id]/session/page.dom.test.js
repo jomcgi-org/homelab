@@ -97,6 +97,45 @@ afterEach(async () => {
 });
 
 describe("private session events from server projections", () => {
+  it("renders a labelled knowledge search in the player view without exposing it as a DM control", async () => {
+    stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    const input = document.querySelector('input[type="search"]');
+    expect(input).not.toBeNull();
+    expect(document.querySelector(`label[for="${input.id}"]`).textContent).toBe(
+      "Search what your character knows",
+    );
+    await unmount(instance);
+    instance = null;
+    document.body.innerHTML = "";
+    await render(pageData("dm", []));
+    expect(
+      document.querySelector(
+        'section[aria-label="Character knowledge search"]',
+      ),
+    ).toBeNull();
+  });
+
+  it("renders a sequence anchor and keeps a historical search target during polling", async () => {
+    const state = {
+      ...pageData("player", [event("old-event", 42, "An earlier scene.")]),
+      selectedSessionId: sessionId,
+    };
+    const fetch = stubFetch(() => state);
+    vi.useFakeTimers();
+    await render(state);
+    expect(
+      document.getElementById(`session-${sessionId}-event-42`),
+    ).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(
+      fetch.mock.calls.some(
+        ([url]) => url === `${endpoint}?session=${sessionId}`,
+      ),
+    ).toBe(true);
+  });
+
   const publicEvent = event("public-control", 1, "Everyone hears the bell.");
   const action = event("private-action-a", 2, "I conceal the silver compass.", {
     kind: "action",

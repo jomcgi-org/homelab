@@ -118,7 +118,7 @@
             : "personal notes"}{query ? " match your search" : " yet"}.
       </p>{/if}
     {#each visibleNotes as note (note.id)}
-      <article aria-label={note.title}>
+      <article id={`note-${note.id}`} aria-label={note.title}>
         <h2>{note.title}</h2>
         {#if note.kind === "character" && note.is_mine}<p class="sharing">
             {note.dm_readable ? "Shared with DM" : "Private"}

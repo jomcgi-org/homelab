@@ -19,13 +19,23 @@ function id(data, name) {
 export async function load({ params, url, fetch, cookies, setHeaders }) {
   setHeaders({ "cache-control": "private, no-store" });
   const campaign = campaignId(params);
-  const kind = url.searchParams.get("kind") === "party" ? "party" : "character";
+  let kind = url.searchParams.get("kind") === "party" ? "party" : "character";
   const q = url.searchParams.get("q") || "";
   const lobby = await grimoireJson(fetch, cookies, "/lobby");
   const membership = lobby.campaigns.find(
     (row) => row.id.toLowerCase() === campaign.toLowerCase(),
   );
   if (!membership) error(404, "Campaign not found.");
+  const selectedNote = url.searchParams.get("note");
+  if (selectedNote !== null) {
+    if (!UUID.test(selectedNote)) error(404, "Note not found.");
+    const note = await grimoireJson(
+      fetch,
+      cookies,
+      `/campaigns/${campaign}/notes/${selectedNote}`,
+    );
+    kind = note.kind;
+  }
   // A failed read rejects the page load. Never substitute an empty notes list.
   const notes = await grimoireJson(
     fetch,

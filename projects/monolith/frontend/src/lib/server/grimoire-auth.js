@@ -15,11 +15,13 @@ export async function grimoireJson(fetch, cookies, path, options = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(
+    const error = new Error(
       typeof body?.detail === "string"
         ? body.detail
         : "Grimoire could not complete that request.",
     );
+    error.status = response.status;
+    throw error;
   }
   return response.status === 204 ? null : response.json();
 }

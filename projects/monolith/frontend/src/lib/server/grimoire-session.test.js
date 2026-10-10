@@ -9,6 +9,28 @@ const response = (value) => ({
 });
 
 describe("sessionState", () => {
+  it("loads the selected historical session and fails closed for an unknown session", async () => {
+    const fetch = vi.fn(async (url) => {
+      if (url.endsWith("/lobby"))
+        return response({ campaigns: [{ id: "campaign", role: "player" }] });
+      if (url.endsWith("/characters")) return response([]);
+      if (url.endsWith("/sessions"))
+        return response([{ id: "latest" }, { id: "old" }]);
+      if (url.includes("/sessions/old/events")) return response([]);
+      if (url.includes("/sessions/old/journal")) return response({});
+      throw new Error(`Unexpected request ${url}`);
+    });
+    const state = await sessionState(fetch, cookies, "campaign", "old");
+    expect(state.session.id).toBe("old");
+    expect(state.selectedSessionId).toBe("old");
+    expect(
+      fetch.mock.calls.some(([url]) => url.includes("/sessions/latest/")),
+    ).toBe(false);
+    await expect(
+      sessionState(fetch, cookies, "campaign", "../other"),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
   it("refuses a non-member before requesting campaign resources", async () => {
     const fetch = vi.fn().mockResolvedValue(response({ campaigns: [] }));
     await expect(

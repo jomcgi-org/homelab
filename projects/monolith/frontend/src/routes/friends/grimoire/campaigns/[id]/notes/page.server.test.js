@@ -44,6 +44,51 @@ beforeEach(() => {
 });
 
 describe("notes load", () => {
+  it("resolves a visible search target to the party tab and renders its note anchor", async () => {
+    const note = {
+      id: noteId,
+      kind: "party",
+      title: "Map",
+      markdown: "A clue",
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ campaigns: [membership] }))
+      .mockResolvedValueOnce(response(note))
+      .mockResolvedValueOnce(response([note]));
+    const request = event(fetch);
+    request.url.searchParams.set("note", noteId);
+    const data = await load(request);
+    expect(data.kind).toBe("party");
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "http://backend.test/api/grimoire/lobby",
+      `http://backend.test/api/grimoire/campaigns/${campaignId}/notes/${noteId}`,
+      `http://backend.test/api/grimoire/campaigns/${campaignId}/notes?kind=party&q=`,
+    ]);
+    expect(render(Page, { props: { data } }).body).toContain(
+      `id="note-${noteId}"`,
+    );
+  });
+
+  it("fails closed for invalid and inaccessible note search targets", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(response({ campaigns: [membership] }));
+    const invalid = event(fetch);
+    invalid.url.searchParams.set("note", "../other");
+    await expect(load(invalid)).rejects.toMatchObject({ status: 404 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const hidden = event(
+      vi
+        .fn()
+        .mockResolvedValueOnce(response({ campaigns: [membership] }))
+        .mockResolvedValueOnce(response({ detail: "Note not found" }, 404)),
+    );
+    hidden.url.searchParams.set("note", noteId);
+    await expect(load(hidden)).rejects.toThrow("Note not found");
+    expect(hidden.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("forwards kind and q, scopes membership, and disables caching", async () => {
     const notes = [{ id: noteId, kind: "party" }];
     const fetch = vi
