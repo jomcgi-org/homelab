@@ -1,7 +1,0 @@
-# Environment-specific values for CoreDNS
-# Override chart defaults here if needed
-
-# Example: To use different DNS forwarders:
-# forwarders:
-#   - 1.1.1.1
-#   - 8.8.8.8

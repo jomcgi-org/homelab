@@ -48,13 +48,6 @@ filegroup(
     ],
 )
 
-# The production Application, exposed to the chart tests.
-filegroup(
-    name = "application",
-    srcs = ["application.yaml"],
-    visibility = ["//projects/embervm/chart:__pkg__"],
-)
-
 # The hub overlay, separate from deploy_values because that one is consumed
 # through single-file $(location) expansions. Read by the cleartext lane guard
 # to tie egress pool members to the broker's registered grants.
@@ -66,7 +59,6 @@ filegroup(
 
 exports_files(
     [
-        "kustomization.yaml",
         "store-validation/README.md",
         "store-validation/cloud-storage-budget.json",
         "store-validation/h0melab-ember-bases-dev-lifecycle.json",

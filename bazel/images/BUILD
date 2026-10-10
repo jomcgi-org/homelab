@@ -13,12 +13,6 @@ sh_binary(
 )
 
 sh_binary(
-    name = "generate-home-cluster",
-    srcs = ["generate-home-cluster.sh"],
-    visibility = ["//:__subpackages__"],
-)
-
-sh_binary(
     name = "validate-generate-scripts",
     srcs = ["validate-generate-scripts.sh"],
     visibility = ["//:__subpackages__"],

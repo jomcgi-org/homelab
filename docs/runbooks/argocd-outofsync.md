@@ -116,20 +116,20 @@ The Application CRD has no status subresource, so a plain merge patch on `status
 
 ## Fleet-wide freeze via the root app
 
-`canada` is the root app-of-apps: it syncs `projects/home-cluster` at HEAD. If `canada` itself is wedged, nothing downstream deploys, including merged chart bumps that look fine in git.
+`hub` is the root app-of-apps: it syncs `projects/gke-cluster` at HEAD and is itself synced by the hand-applied parent `hub-root`. If `hub` is wedged, nothing downstream deploys, including merged chart bumps that look fine in git. (The home cluster's root, `canada`, went with the home configuration in #6914.)
 
 Two known wedge modes:
 
 - **Stuck PreSync hook Job**: a hook Job blocks the operation indefinitely.
-- **Dangling kustomize reference**: a file was deleted but is still listed in a `kustomization.yaml`. This puts `canada` into `ComparisonError` with `sync=Unknown`.
+- **Dangling kustomize reference**: a file was deleted but is still listed in a `kustomization.yaml`. This puts `hub` into `ComparisonError` with `sync=Unknown`.
 
 **Diagnose:**
 
 ```bash
-kubectl -n argocd get application canada -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}'
+kubectl -n argocd get application hub -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}'
 ```
 
-**Fix:** correct the git issue (remove the stuck hook or the dangling reference), then force `canada` to re-read via `monolith-k8s-sync-argocd-app`.
+**Fix:** correct the git issue (remove the stuck hook or the dangling reference), then force `hub` to re-read via `monolith-k8s-sync-argocd-app`.
 
 ## App is Degraded but no resource in the tree looks degraded
 

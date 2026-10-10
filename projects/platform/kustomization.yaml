@@ -1,24 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# The home platform root was retired with the home-cluster configuration
+# (#6914) and nothing syncs this file any more. It survives only as the
+# enrollment input of the Renovate single-writer staging (#6247,
+# projects/platform/renovate/migration_staging_test.py): the home Renovate
+# Application stays enrolled until the operator cutover removes it in its own
+# reviewed change.
 resources:
-  - ./argocd
-  - ./argo-workflows # Namespace-scoped (monolith-workflows ns) batch-job executor for the monolith
-  - ./atlas-operator/deploy
-  - ./cert-manager
-  - ./cilium # CNI; manual-sync-disabled until the Cilium cutover window (ADR platform/012)
-  - ./cloudnative-pg/deploy
-  - ./cloudflare-gateway # Envoy Gateway + Gateway API + Cloudflare Tunnel
-  - ./coredns
-  - ./keda
-  - ./kyverno
-  - ./longhorn
-  - ./nvidia-gpu-operator
-  - ./opentelemetry-operator
-  - ./otel-collector
-  - ./priority-classes # Cluster-scoped PriorityClasses (ADR platform/010)
   - ./renovate # Self-hosted dependency updates on Argo Workflows
-  # temporal, warehouse-bucket and temporal-databases removed: lakehouse/Temporal
-  # stack decommissioned (superseded by ../loom). The CNPG temporal/
-  # temporal_visibility/lakehouse databases were dropped via ensure:absent before
-  # this removal.

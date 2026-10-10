@@ -129,7 +129,6 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
-        "//projects/embervm/deploy:application",
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:gke_values",
         "//projects/embervm/dev/deploy:application",
@@ -157,7 +156,8 @@ py_test(
         "STORE_VALIDATION_VALUES": "$(rootpath //projects/embervm/dev/deploy:store_validation_values)",
         "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         # The Applications, so releaseName is read from where it is DECLARED.
-        "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
+        # Production is the hub Application; the home one was retired in #6914.
+        "PROD_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
         # embervm-dev on the GKE hub: its overlay and its Application.
         "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
@@ -177,9 +177,7 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
-        "//projects/embervm/deploy:application",
         "//projects/embervm/deploy:gke_values",
-        "//projects/embervm/deploy:kustomization.yaml",
         "//projects/embervm/deploy:store-validation/README.md",
         "//projects/embervm/deploy:store-validation/cloud-storage-budget.json",
         "//projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json",
@@ -205,9 +203,7 @@ py_test(
         "DEV_GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm-dev:application.yaml)",
         "DEV_GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm-dev:kustomization.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
         "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
-        "PROD_KUSTOMIZATION": "$(rootpath //projects/embervm/deploy:kustomization.yaml)",
         "STORE_BUDGET": "$(rootpath //projects/embervm/deploy:store-validation/cloud-storage-budget.json)",
         "STORE_LIFECYCLE": "$(rootpath //projects/embervm/deploy:store-validation/h0melab-ember-bases-dev-lifecycle.json)",
         "STORE_RUNBOOK": "$(rootpath //projects/embervm/deploy:store-validation/README.md)",
@@ -335,7 +331,6 @@ py_test(
     data = [
         "Chart.yaml",
         "values.yaml",
-        "//projects/embervm/deploy:application",
         "//projects/embervm/dev/deploy:application",
         "//projects/gke-apps/embervm:application.yaml",
         "@multitool//tools/helm",
@@ -347,7 +342,6 @@ py_test(
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
         "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
     },
     deps = ["@pip//pyyaml"],
 )

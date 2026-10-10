@@ -51,7 +51,9 @@ MANIFEST_SETS = [
     "//projects/monolith/deploy:manifests_gke/all.yaml",
     "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
-    # Platform applications rendered by argocd_app.
+    # Platform charts rendered by argocd_app. The plain `manifests` target is
+    # the chart's default-values render (the home overlay until #6914 retired
+    # it); `manifests_gke` is the hub overlay.
     "//projects/platform-gke/tailscale:manifests/all.yaml",
     "//projects/platform/argo-workflows:manifests/all.yaml",
     "//projects/platform/argo-workflows:manifests_gke/all.yaml",
@@ -61,17 +63,11 @@ MANIFEST_SETS = [
     "//projects/platform/authentik:manifests_gke/all.yaml",
     "//projects/platform/cert-manager:manifests/all.yaml",
     "//projects/platform/cert-manager:manifests_gke/all.yaml",
-    "//projects/platform/cilium:manifests/all.yaml",
     "//projects/platform/cloudflare-gateway:manifests/all.yaml",
     "//projects/platform/cloudflare-gateway:manifests_gke/all.yaml",
-    "//projects/platform/coredns:manifests/all.yaml",
     "//projects/platform/kargo:manifests/all.yaml",
-    "//projects/platform/keda:manifests/all.yaml",
     "//projects/platform/kyverno:manifests/all.yaml",
-    "//projects/platform/longhorn:manifests/all.yaml",
-    "//projects/platform/nvidia-gpu-operator:manifests/all.yaml",
     "//projects/platform/onepassword:manifests/all.yaml",
-    "//projects/platform/opentelemetry-operator:manifests/all.yaml",
     "//projects/platform/otel-collector:manifests/all.yaml",
     "//projects/platform/otel-collector:manifests_gke/all.yaml",
     "//projects/platform/polylane:manifests/all.yaml",

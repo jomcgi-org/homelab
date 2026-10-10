@@ -247,10 +247,9 @@ roles takes its password from an out-of-band basic-auth Secret because the
 (see: /projects/monolith/chat_public_grants_test.py)
 (see: /projects/monolith/deploy/agents-writer-secret.md)
 
-The home overlay's nightly logical refresh into a development database (dumped
-from the primary, because a standby cancels any query that blocks WAL replay)
-is off on the hub, which has no development database.
-(see: /projects/monolith/chart/templates/cnpg-dev-refresh-cronworkflow.yaml)
+The home overlay's nightly logical refresh into a development database was
+retired with the home-cluster configuration (#6914); the hub has no
+development database to refresh.
 
 **Why.** Keeping Obsidian and Postgres as writable peers created synchronization,
 conflict, and recovery questions, while a filesystem mount inside every replica

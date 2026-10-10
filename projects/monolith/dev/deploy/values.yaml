@@ -100,13 +100,6 @@ postgres:
   # One instance. Dev has no availability requirement, and the cluster is not
   # roomy: node-1 sits at 91% of requestable memory.
   instances: 1
-  # Production owns the refresh. Inherited as true from prod's values, and it
-  # MUST be overridden here: the CronWorkflow renders into jobs.workflowNamespace
-  # rather than the release namespace, so leaving it on would put a second,
-  # identically-named CronWorkflow into monolith-workflows and the two
-  # Applications would fight over it on every sync.
-  devRefresh:
-    enabled: false
   # Dev takes no backups. Inherited as true from production's values otherwise,
   # and nothing would error.
   #

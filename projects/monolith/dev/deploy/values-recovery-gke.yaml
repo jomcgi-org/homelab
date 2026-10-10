@@ -41,8 +41,6 @@ postgres:
     credentialsSecret: ""
     onepassword:
       itemPath: ""
-  devRefresh:
-    enabled: false
   spire:
     enabled: false
   clientRoles:

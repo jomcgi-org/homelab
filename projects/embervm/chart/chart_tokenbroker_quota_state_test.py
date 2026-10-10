@@ -104,7 +104,6 @@ def test_quota_state_is_dedicated_durable_and_narrowly_scoped() -> None:
 
 def test_every_argocd_application_preserves_runtime_quota_data() -> None:
     applications = [
-        Path(os.environ["PROD_APPLICATION"]),
         Path(os.environ["GKE_APPLICATION"]),
         Path(os.environ["DEV_APPLICATION"]),
     ]

@@ -187,7 +187,6 @@ main() {
 			APPS+=("$result")
 		fi
 	done < <(find projects -name "application.yaml" \
-		-not -path "*/home-cluster/*" \
 		-not -path "*/charts/*" | sort)
 
 	echo "  Found ${#APPS[@]} application(s)"
