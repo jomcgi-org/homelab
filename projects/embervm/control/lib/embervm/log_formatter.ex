@@ -85,6 +85,8 @@ defmodule Embervm.LogFormatter do
     # Base retention manifest and accounting metadata.
     :path,
     :size_bytes,
+    :snapshot_ref,
+    :drain_ms,
     :vendor,
     :age_seconds,
     :reason_unreferenced,

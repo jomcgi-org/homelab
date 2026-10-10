@@ -206,6 +206,11 @@ defmodule Embervm.ServingSweeper do
       # only a workload whose counts changed (debounce: at most one API call per
       # serving workload per sweep, never per transition).
       serving_status_written: %{},
+      # Untracked :banking rows whose node reported neither VM nor snapshot on
+      # the previous sweep: a second consecutive sighting is what destroys them
+      # (recover_untracked/2), since noded publishes the VM removal before the
+      # snapshot registration and one status can land between the two.
+      vanished_seen: MapSet.new(),
       sweep_interval_ms: Keyword.get(opts, :sweep_interval_ms, 0)
     }
 
@@ -762,16 +767,6 @@ defmodule Embervm.ServingSweeper do
   defp finish_bank_active(state, instance, _node_id, {:error, %GRPC.RPCError{status: 9} = error}),
     do: bank_refused(state, instance, error)
 
-  defp bank_refused(state, instance, error) do
-    Logger.info("embervm serving: bank refused by the node, re-evaluating next sweep",
-      instance_id: instance.instance_id,
-      workload: instance.workload,
-      reason: inspect(error)
-    )
-
-    state
-  end
-
   defp finish_bank_active(state, instance, _node_id, {:error, reason}) do
     Logger.warning("embervm serving: bank failed, returning to fan-out",
       instance_id: instance.instance_id,
@@ -787,6 +782,16 @@ defmodule Embervm.ServingSweeper do
       _ = ServingStore.publish(state.store, instance.instance_id, instance.ip, instance.port, :healthy)
       Embervm.EndpointPublisher.publish(state.publisher)
     end
+
+    state
+  end
+
+  defp bank_refused(state, instance, error) do
+    Logger.info("embervm serving: bank refused by the node, re-evaluating next sweep",
+      instance_id: instance.instance_id,
+      workload: instance.workload,
+      reason: inspect(error)
+    )
 
     state
   end
@@ -853,10 +858,18 @@ defmodule Embervm.ServingSweeper do
   # deliberately leave both to the sweeper, so without this pass such a row sat
   # unpublished, with its VM still live, until the lifetime sweep destroyed it.
   defp recover_untracked_banks(state) do
-    ServingStore.all(state.store)
-    |> Enum.filter(&untracked_bank?(state, &1))
-    |> Enum.reduce(state, fn instance, acc -> recover_untracked(acc, instance) end)
+    untracked = ServingStore.all(state.store) |> Enum.filter(&untracked_bank?(state, &1))
+    still_candidates = MapSet.new(untracked, & &1.instance_id)
+    state = %{state | vanished_seen: MapSet.intersection(state.vanished_seen, still_candidates)}
+    Enum.reduce(untracked, state, fn instance, acc -> recover_untracked(acc, instance) end)
   end
+
+  # A snapshot adopted for an untracked bank must postdate the bank's admission
+  # (the row's updated_at is stamped by mark(:bank)); the skew allows for the
+  # node clock stamping created_at_unix_ms and the control plane stamping
+  # updated_at. Without the bound a lingering orphan snapshot of the workload,
+  # possibly from an older base, would be bound to a row whose own bank failed.
+  @adopt_skew_ms 60_000
 
   defp untracked_bank?(state, instance) do
     not Map.has_key?(state.draining, instance.instance_id) and
@@ -920,12 +933,20 @@ defmodule Embervm.ServingSweeper do
         finish_bank_active(state, instance, instance.node_id, {:ok, snapshot.snapshot_ref, size, generation})
 
       :vanished ->
-        Logger.warning("embervm serving: untracked bank left neither VM nor snapshot, destroying the row",
-          instance_id: instance.instance_id,
-          workload: instance.workload
-        )
+        if MapSet.member?(state.vanished_seen, instance.instance_id) do
+          Logger.warning("embervm serving: untracked bank left neither VM nor snapshot, destroying the row",
+            instance_id: instance.instance_id,
+            workload: instance.workload
+          )
 
-        destroy_instance(state, instance, :bank_lost)
+          state = %{state | vanished_seen: MapSet.delete(state.vanished_seen, instance.instance_id)}
+          destroy_instance(state, instance, :bank_lost)
+        else
+          # First sighting: the daemon may still be registering the snapshot
+          # behind the VM removal it already published. Destroy only if the next
+          # sweep sees the same.
+          %{state | vanished_seen: MapSet.put(state.vanished_seen, instance.instance_id)}
+        end
 
       :unknown ->
         state
@@ -958,11 +979,14 @@ defmodule Embervm.ServingSweeper do
           |> Enum.reject(&is_nil/1)
           |> MapSet.new()
 
+        admitted_at = instance.updated_at || 0
+
         facts
         |> Enum.flat_map(&(Map.get(&1, :serving_snapshots) || []))
         |> Enum.filter(fn snapshot ->
           Map.get(snapshot, :workload) == instance.workload and
-            not MapSet.member?(claimed, Map.get(snapshot, :snapshot_ref))
+            not MapSet.member?(claimed, Map.get(snapshot, :snapshot_ref)) and
+            (Map.get(snapshot, :created_at_unix_ms) || 0) >= admitted_at - @adopt_skew_ms
         end)
         |> Enum.max_by(&(Map.get(&1, :created_at_unix_ms) || 0), fn -> nil end)
         |> case do
