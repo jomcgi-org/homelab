@@ -302,7 +302,9 @@ func TestColdBootPrecreatesSinkAndIssuesPutSerialBeforeStart(t *testing.T) {
 	// n v1.16.1's serial dialect takes the token bucket FLAT under
 	// rate_limiter; the drive/net {bandwidth: ...} wrapper is rejected with
 	// SerdeJson "missing field `size`" (observed live on the dev fleet).
-	wantSize := float64(serialBurstBytes + serialBandwidthBytesPerSec)
+	// Sustained rate = size / refill_time: the one-time burst must not be folded
+	// into size, or the guest gets the burst again every second.
+	wantSize := float64(serialBandwidthBytesPerSec)
 	if rl["size"] != wantSize ||
 		rl["one_time_burst"] != float64(serialBurstBytes) ||
 		rl["refill_time"] != float64(serialBandwidthRefillMs) {

@@ -64,6 +64,14 @@ type ExecLauncher struct {
 	// retired canonical-vsock bind used. It preserves that containment without
 	// requiring a bind mount or self-reexec trampoline.
 	MountNamespace bool
+	// Env is the environment handed to the firecracker or jailer process. nil
+	// selects firecrackerEnv(): PATH only. The daemon's own environment carries
+	// the fleet bearer token, the store credentials and the restore capability
+	// key; the VMM needs none of them, and a guest that escapes lands in exactly
+	// this process, so inheriting os.Environ would hand it every secret the
+	// brick holds. Tests that drive Launch through a wrapper script pass
+	// os.Environ explicitly.
+	Env []string
 	// cgroups is an injected cgroup hierarchy for tests. Production uses the
 	// process-wide manager so all launches share one delegated parent.
 	cgroups *cgroupManager
@@ -71,6 +79,22 @@ type ExecLauncher struct {
 	createCgroup func(vmID string, limitBytes int64) (*vmCgroup, error)
 	// allocateJailUID is the narrow uid-allocation seam used by lifecycle tests.
 	allocateJailUID func() (int, func(), error)
+}
+
+// firecrackerEnv is the environment a launched VMM receives when the launcher
+// sets none: a fixed PATH and nothing else. os/exec would otherwise hand the
+// child the daemon's full environment, which is where every brick secret lives.
+func firecrackerEnv() []string {
+	return []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+}
+
+// processEnv returns the environment for a launch: the configured Env, or the
+// minimal default. A copy is returned so a caller can never mutate the default.
+func (l *ExecLauncher) processEnv() []string {
+	if l.Env == nil {
+		return firecrackerEnv()
+	}
+	return append([]string(nil), l.Env...)
 }
 
 var productionLaunchState = struct {
@@ -293,6 +317,7 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 			setUnshareMountNS(cmd)
 		}
 	}
+	cmd.Env = l.processEnv()
 	// Firecracker's own inherited stdout/stderr are line-delimited into the
 	// daemon's structured log. Guest UART bytes never use these streams: the
 	// driver follows the separately rate-limited serial sink (issue #4404).

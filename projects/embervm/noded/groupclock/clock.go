@@ -96,12 +96,12 @@ func Resync(ctx context.Context, dialer Dialer, udsPath string, now func() time.
 		return fmt.Errorf("groupclock: read sync_clock response: %w", err)
 	}
 
-	delta := time.Duration(resp.ClockRealtimeNs-hostEpochNs) * time.Nanosecond
-	if delta < 0 {
-		delta = -delta
-	}
-	if delta > maxClockSkew {
-		return fmt.Errorf("groupclock: guest clock read-back %v off host (limit %v)", delta, maxClockSkew)
+	// Compare against bounds around the host instant rather than subtracting:
+	// the read-back is guest-supplied, and an int64 difference wraps for a value
+	// near MinInt64 or MaxInt64, which would read as a tiny skew and pass.
+	skew := int64(maxClockSkew / time.Nanosecond)
+	if resp.ClockRealtimeNs < hostEpochNs-skew || resp.ClockRealtimeNs > hostEpochNs+skew {
+		return fmt.Errorf("groupclock: guest clock read-back %d ns off host %d ns (limit %v)", resp.ClockRealtimeNs, hostEpochNs, maxClockSkew)
 	}
 	return nil
 }
