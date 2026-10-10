@@ -945,7 +945,7 @@ defmodule Embervm.BrickControllerTest do
 
     # The cleared annotation is gone on the next read; B is then directed.
     Agent.update(pods, fn [a, b] -> [Map.delete(a, :deletion_cost), b] end)
-    archive_gate_tick(ctx)
+    BrickController.reconcile_now(ctx.pid)
     assert Enum.any?(ctx.annotated.(), fn {_, pod, annotations} ->
              pod == "brick-b" and
                annotations == %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"}
