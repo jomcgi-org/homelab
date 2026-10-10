@@ -10,7 +10,7 @@ from kubernetes_asyncio.client.exceptions import ApiException
 from sqlmodel import Session, select
 
 from cluster.api import KubernetesClient
-from scheduler.api import ScheduledJob, is_registered
+from scheduler.api import ScheduledJob, argo_handled, is_registered
 from scheduler.views import SchedulerJobView
 
 _REPLACES_ANNOTATION = "monolith.jomcgi.dev/replaces"
@@ -51,9 +51,18 @@ def get_job(session: Session, name: str) -> SchedulerJobView | None:
 
 
 async def run_now(session: Session, name: str) -> RunNowResult:
-    """Submit the CronWorkflow replacing ``name`` as a one-off Workflow."""
+    """Submit the CronWorkflow replacing ``name`` as a one-off Workflow.
+
+    ``name`` is accepted when a legacy ``scheduler.scheduled_jobs`` row exists
+    or when ``ARGO_JOBS`` lists it (``scheduler.api.argo_handled``). The second
+    case is what makes a manual-only CronWorkflow (``replaces`` plus
+    ``suspend: true``) submittable by hand: ``register_job`` never writes a row
+    for an argo-handled name, so without it such a job would 404 here. Names
+    that are neither return 404; a name with no replacing CronWorkflow returns
+    409.
+    """
     job = session.get(ScheduledJob, name)
-    if job is None:
+    if job is None and not argo_handled(name):
         return RunNowResult(
             job=name,
             workflow_name=None,

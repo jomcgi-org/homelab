@@ -247,6 +247,17 @@ argo submit --from cronworkflow/knowledge-review-backfill-dry-run -n monolith-wo
 argo submit --from cronworkflow/knowledge-review-admission-dry-run -n monolith-workflows
 ```
 
+The same three CronWorkflows carry `replaces` names
+(`knowledge.review_backfill_dry_run`, `knowledge.review_backfill_pilot`,
+`knowledge.review_admission_dry_run`), which lists them in the deployment's
+`ARGO_JOBS` without giving them a legacy scheduler row. Scheduler run-now
+accepts any `ARGO_JOBS` name, so an operator session can submit one as a
+one-off Workflow with the `monolith-agent-trigger-job` MCP tool and the
+`knowledge.review_*` name; the CronWorkflow stays suspended. The apply jobs
+`knowledge-review-backfill` and `knowledge-review-admission` deliberately have
+no `replaces`, so run-now answers 404 for them and GitOps `suspend: false`
+remains the only way to run them.
+
 Record each workflow's JSON result on #6812, including policy/freshness counts,
 `next_after`, candidate and blocked counts. Inspect the bounded backfill dry
 run before submitting `knowledge-review-backfill-pilot` with the same command

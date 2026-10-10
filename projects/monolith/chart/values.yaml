@@ -442,6 +442,8 @@ jobs:
           memory: 512Mi
     # Manual #6812 pilot: review dry-run counts before submitting application.
     - name: knowledge-review-backfill-dry-run
+      # Manual-only: stays suspended, submittable one-off through scheduler run-now.
+      replaces: knowledge.review_backfill_dry_run
       knowledgeReview: true
       suspend: true
       args:
@@ -463,6 +465,8 @@ jobs:
         limits:
           memory: 512Mi
     - name: knowledge-review-backfill-pilot
+      # Manual-only: stays suspended, submittable one-off through scheduler run-now.
+      replaces: knowledge.review_backfill_pilot
       knowledgeReview: true
       suspend: true
       args:
@@ -485,6 +489,8 @@ jobs:
         limits:
           memory: 512Mi
     - name: knowledge-review-admission-dry-run
+      # Manual-only: stays suspended, submittable one-off through scheduler run-now.
+      replaces: knowledge.review_admission_dry_run
       knowledgeReview: true
       suspend: true
       args:
