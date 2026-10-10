@@ -260,6 +260,32 @@ py_test(
 # Phase 2b of #5706 (#5758): the control plane's default-off SPIFFE dial to
 # noded. Renders both checked-in overlays off, the sidecar-only shape, and the
 # dial shape, and pins the SPIFFE ID and port seam against the noded listener.
+# Least privilege on the brick pod and in production RBAC: the ServiceAccount
+# token is projected into the noded container only (no automount for Envoy, the
+# s6 sidecars or the rootfs builder), and the GKE overlay selects the chart's
+# namespace-scoped RBAC mode.
+py_test(
+    name = "chart_least_privilege_test",
+    srcs = ["chart_least_privilege_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "files/**/*",
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+    },
+    deps = ["@pip//pyyaml"],
+)
+
 py_test(
     name = "chart_control_plane_spiffe_test",
     srcs = ["chart_control_plane_spiffe_test.py"],
