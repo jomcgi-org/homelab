@@ -1027,7 +1027,9 @@ class TranscriptConsent(SQLModel, table=True):
     processor: str = Field(sa_column=Column(String, nullable=False))
     granted_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
     )
     revoked_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
