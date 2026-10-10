@@ -140,27 +140,19 @@ def test_real_inventory_migration_constraints_append_only_and_fk_lifecycle(pg):
                             ids,
                         )
                 with (
-                    pytest.raises(
-                        DBAPIError, match="inventory_change is append-only"
-                    ),
+                    pytest.raises(DBAPIError, match="inventory_change is append-only"),
                     connection.begin_nested(),
                 ):
                     connection.execute(
-                        text(
-                            "DELETE FROM grimoire.inventory_change WHERE id = :audit"
-                        ),
+                        text("DELETE FROM grimoire.inventory_change WHERE id = :audit"),
                         ids,
                     )
                 with (
-                    pytest.raises(
-                        DBAPIError, match="inventory_item is soft-deleted"
-                    ),
+                    pytest.raises(DBAPIError, match="inventory_item is soft-deleted"),
                     connection.begin_nested(),
                 ):
                     connection.execute(
-                        text(
-                            "DELETE FROM grimoire.inventory_item WHERE id = :item"
-                        ),
+                        text("DELETE FROM grimoire.inventory_item WHERE id = :item"),
                         ids,
                     )
                 assert (
