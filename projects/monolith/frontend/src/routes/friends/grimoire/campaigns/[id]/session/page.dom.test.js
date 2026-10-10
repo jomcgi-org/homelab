@@ -1373,3 +1373,72 @@ describe("session journal tab", () => {
     expect(scrolled).toHaveBeenCalledWith({ block: "center" });
   });
 });
+
+describe("handouts in the session feed", () => {
+  const handoutEvent = event("handout-1", 1, "", {
+    kind: "handout",
+    body: {
+      title: "Letter from the baron",
+      markdown: "Meet me at **dusk**.",
+      image: { source: "upload", key: "campaigns/x/handouts/y.png" },
+    },
+  });
+  const composerForm = () =>
+    document.querySelector('form[aria-label="Send a handout"]');
+
+  it("gives a player the card with a proxied image and a pin that posts the event", async () => {
+    const fetch = stubFetch(() => pageData("player", [handoutEvent]));
+    await render(pageData("player", [handoutEvent]));
+    const card = document.querySelector("#event-handout-1 .handout-card");
+    expect(card.querySelector("h3").textContent).toBe("Letter from the baron");
+    expect(card.querySelector("img").getAttribute("src")).toBe(
+      `/grimoire/campaigns/${campaignId}/session/${sessionId}/events/handout-1/image`,
+    );
+    expect(composerForm()).toBeNull();
+    const buttons = [
+      ...document.querySelectorAll("#event-handout-1 button"),
+    ].filter((button) => /Pin/.test(button.textContent));
+    expect(buttons).toHaveLength(1);
+    buttons[0].click();
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({
+        operation: "note",
+        fromEventId: "handout-1",
+      }),
+    ]);
+  });
+
+  it("gives the DM the composer and a card without a pin", async () => {
+    stubFetch(() => pageData("dm", [handoutEvent]));
+    await render(pageData("dm", [handoutEvent]));
+    expect(composerForm()).not.toBeNull();
+    expect(
+      [...document.querySelectorAll("#event-handout-1 button")].filter(
+        (button) => /Pin/.test(button.textContent),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("posts the composed handout from the DM composer", async () => {
+    const fetch = stubFetch(() => pageData("dm", []));
+    await render(pageData("dm", []));
+    const title = composerForm().querySelector("input[required]");
+    title.value = "Map";
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    composerForm().dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(posted(fetch)).toEqual([
+      expect.objectContaining({
+        operation: "handout",
+        sessionId,
+        title: "Map",
+        audience: "table",
+        pcIds: [],
+      }),
+    ]);
+  });
+});
