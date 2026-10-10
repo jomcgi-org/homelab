@@ -23,6 +23,15 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+# Golden reveal projections: read by the frontend vitest (via :src) and by
+# grimoire_visibility_test, so a server projection change and a renderer change
+# each fail the side that owns it.
+filegroup(
+    name = "reveal_projection_fixture",
+    srcs = ["src/lib/grimoire/fixtures/reveal-projections.json"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # The public /docs manifest is a build output, not a committed file (#6446).
 # The generator selects its exact allowlisted project docs from the same
 # aggregate the repo-docs manifest reads; an edit to any other doc reruns this

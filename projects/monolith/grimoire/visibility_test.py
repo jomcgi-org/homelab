@@ -1,7 +1,13 @@
 """Unit tests for grimoire.visibility: the grant-overlay predicate query and
 the scope-projection function every read path shares."""
 
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+
 import pytest
+from fastapi.encoders import jsonable_encoder
 from sqlmodel import Session, SQLModel, create_engine
 
 from grimoire.models import (
@@ -13,7 +19,12 @@ from grimoire.models import (
     KnowledgeGrant,
     PlayerCharacter,
 )
-from grimoire.visibility import project_entity, visible_entities_query
+from grimoire.visibility import (
+    _SPINE_FIELDS,
+    _SPINE_IDENTITY_FIELDS,
+    project_entity,
+    visible_entities_query,
+)
 
 
 @pytest.fixture(name="session")
@@ -259,3 +270,62 @@ def test_dm_projection_includes_everything_and_grant_annotation(session: Session
     ungranted = project_entity(seed.faction, None, grant=None, viewer="dm")
     assert ungranted["name"] == "The Myriad"
     assert ungranted["grant"] is None
+
+
+# Golden projections shared with the frontend renderer test. A server change
+# fails here; a renderer change fails the vitest that reads the same file.
+_FIXTURE_REL = "projects/monolith/frontend/src/lib/grimoire/fixtures/reveal-projections.json"
+
+
+def _load_projection_fixture() -> dict:
+    roots = [
+        Path(__file__).resolve().parents[3],
+        Path(os.environ.get("TEST_SRCDIR", "")) / "_main",
+    ]
+    for root in roots:
+        candidate = root / _FIXTURE_REL
+        if candidate.exists():
+            return json.loads(candidate.read_text())
+    raise FileNotFoundError(
+        f"{_FIXTURE_REL} not found under {roots} "
+        f"(TEST_SRCDIR={os.environ.get('TEST_SRCDIR', '')!r})"
+    )
+
+
+_PROJECTION_FIXTURE = _load_projection_fixture()
+
+
+def test_projection_fixture_spine_matches_server_constants():
+    assert tuple(_PROJECTION_FIXTURE["spine_fields"]) == _SPINE_FIELDS
+    assert tuple(_PROJECTION_FIXTURE["identity_fields"]) == _SPINE_IDENTITY_FIELDS
+
+
+@pytest.mark.parametrize(
+    "case", _PROJECTION_FIXTURE["cases"], ids=lambda case: case["name"]
+)
+def test_project_entity_matches_golden_fixture(case):
+    fixture = _PROJECTION_FIXTURE
+    row = {
+        **fixture["entities"][case["entity"]],
+        "created_at": datetime.fromisoformat(
+            fixture["entities"][case["entity"]]["created_at"]
+        ),
+    }
+    entity = Entity(**row)
+    detail = EntityNpc(entity_id=entity.id, **fixture["details"][case["entity"]])
+    grant = (
+        None
+        if case["grant"] is None
+        else KnowledgeGrant(
+            campaign_id="55555555-5555-4555-8555-555555555555",
+            entity_id=entity.id,
+            player_character_id=fixture["viewer"],
+            **case["grant"],
+        )
+    )
+
+    result = project_entity(
+        entity, detail, grant, viewer=fixture["viewer"], context=case["context"]
+    )
+
+    assert jsonable_encoder(result) == case["expected"]
