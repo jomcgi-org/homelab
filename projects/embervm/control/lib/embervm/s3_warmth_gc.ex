@@ -186,6 +186,9 @@ defmodule Embervm.S3WarmthGc do
 
   @impl true
   def init(opts) do
+    # #6736: a fresh GC holds no prefix, so any fence claim left by a crashed
+    # predecessor is stale and would deny restores of that lineage forever.
+    Embervm.LineageFence.clear(:gc)
     endpoint = Keyword.get(opts, :endpoint, "")
     bucket = Keyword.get(opts, :bucket, "embervm")
     access_key_id = Keyword.get(opts, :access_key_id, "") || ""
@@ -1065,17 +1068,14 @@ defmodule Embervm.S3WarmthGc do
     state = Map.put(state, :approved_instances, fleet.approved_instances)
 
     Enum.reduce_while(plan, [], fn entry, deleted ->
-      case recheck_live(state, entry) do
+      case fenced_recheck_and_delete(state, entry) do
         :ok ->
-          case delete_prefix(state, entry) do
-            :ok ->
-              Logger.info("embervm s3 warmth gc: DELETED prefix=#{entry.prefix} bytes=#{entry.bytes}")
-              {:cont, [entry.prefix | deleted]}
+          Logger.info("embervm s3 warmth gc: DELETED prefix=#{entry.prefix} bytes=#{entry.bytes}")
+          {:cont, [entry.prefix | deleted]}
 
-            {:error, reason} ->
-              abort(:delete_failed, "#{entry.prefix}: #{inspect(reason)}; aborting remaining deletes")
-              {:halt, deleted}
-          end
+        {:error, reason} ->
+          abort(:delete_failed, "#{entry.prefix}: #{inspect(reason)}; aborting remaining deletes")
+          {:halt, deleted}
 
         {:blocked, reason} ->
           Logger.warning("embervm s3 warmth gc: recheck blocked #{entry.prefix} (#{reason}); skipping")
@@ -1089,13 +1089,52 @@ defmodule Embervm.S3WarmthGc do
     |> Enum.reverse()
   end
 
+  # #6736 (warmth_gc.tla A1): the recheck and the delete of a workspace prefix
+  # run while this sweep holds the lineage in Embervm.LineageFence, so a
+  # restoring create that admits the terminal lineage in this window is denied
+  # (retryably) instead of reading a copy whose meta.json is being removed, and
+  # a restore already in flight blocks this prefix for the sweep. An absent
+  # fence table blocks too: the delete is the enforcement side and fails
+  # closed. Kinds without a lineage (banked refs, stateful and group bundles)
+  # are referenced through non-terminal rows and node reports, which the
+  # recheck already re-reads, so they take no claim.
+  defp fenced_recheck_and_delete(state, %{kind: :session_workspace, lineage: lineage} = entry) do
+    case Embervm.LineageFence.claim_gc(lineage) do
+      :ok ->
+        try do
+          recheck_and_delete(state, entry)
+        after
+          Embervm.LineageFence.release_gc(lineage)
+        end
+
+      {:error, :restore_in_flight} ->
+        {:blocked, "lineage_restore_in_flight"}
+
+      {:error, :gc_in_progress} ->
+        {:blocked, "lineage_gc_in_progress"}
+
+      {:error, :fence_unavailable} ->
+        {:blocked, "fence_unavailable"}
+    end
+  end
+
+  defp fenced_recheck_and_delete(state, entry), do: recheck_and_delete(state, entry)
+
+  defp recheck_and_delete(state, entry) do
+    case recheck_live(state, entry) do
+      :ok -> delete_prefix(state, entry)
+      other -> other
+    end
+  end
+
   # The per-prefix recheck: re-read the live ETS truth sources for exactly the
   # conditions that can CHANGE between plan and delete (a relight re-desiring a
   # ref, a node re-reporting a bundle, a workload waking or parking). First
   # revalidate the sweep-start identities and fleet evidence for every kind.
   # Parked expiry uses a fresh wall-clock read and the plan's shared predicate.
-  # Artifact age and parse cannot regress, so they are not re-evaluated. A1
-  # remains unresolved: this check is sequential with the following delete.
+  # Artifact age and parse cannot regress, so they are not re-evaluated. For a
+  # workspace prefix the caller holds the lineage fence across this check and
+  # the delete (#6736), so a restore cannot start between them.
   defp recheck_live(state, entry) do
     case fleet_snapshot(state, state.approved_instances) do
       {:ok, fleet} -> recheck_references(state, entry, fleet)
