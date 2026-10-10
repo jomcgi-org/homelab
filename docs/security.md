@@ -592,7 +592,6 @@ this table when the work ships or the issue closes without it.
 | --- | --- | --- | --- |
 | Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | #5276 | not started |
 | Per-workload EmberVM egress allowlists replace the single allowlist shared across every workload | Network | #5320 | not started |
-| Optional delegated authority, a GitHub broker, or session delivery is selected only after its caller and permission or delivery gate fires | Identity | #4940, #4943, #4944, #4945, #4946 | gated; no proposal selected or shipped |
 
 ## Decision history
 

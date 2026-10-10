@@ -323,10 +323,7 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #3897, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
-| Renovate and apko lock maintenance move to the hub with a staged single-writer cutover | section 9 | #6247 | staged: hub enrolled and suspended, home still active, operator cutover pending |
 | Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); the monolith must expose `chart_version` before the flip; functional assertions remain out of scope |
-| Per-PR preview environments exist for the monolith, with copy-on-write CNPG clones | section 4 | #3882 | not started |
-| Values-only PRs flip on mTLS for SPIFFE-issued workloads and retire the static bearer token | section 8 | #5759 | not started |
 
 ## Decision history
 

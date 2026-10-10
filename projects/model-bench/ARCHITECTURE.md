@@ -36,6 +36,5 @@ cached records remain readable and are not backfilled.
 
 ## Direction
 
-| Issue | Direction |
-| --- | --- |
-| #6699 | Complete deterministic version 2 norms and coverage in repository CLI/report code, without changing ranking, paid caches or public pages. |
+Nothing is decided and unbuilt here at present; outstanding work is
+tracked in GitHub Issues.
