@@ -10,7 +10,9 @@
     ["POST", "/api/grimoire/campaigns/{campaign_id}/sessions"],
     ["PATCH", "/api/grimoire/campaigns/{campaign_id}/sessions/{session_id}"],
     ["POST", "/api/grimoire/campaigns/{campaign_id}/inventory"],
-    ["DELETE", "/api/grimoire/campaigns/{campaign_id}/inventory/{item_id}"]
+    ["DELETE", "/api/grimoire/campaigns/{campaign_id}/inventory/{item_id}"],
+    ["PUT", "/api/grimoire/campaigns/{campaign_id}/voices/{speaker_key}"],
+    ["DELETE", "/api/grimoire/campaigns/{campaign_id}/voices/{speaker_key}"]
   ],
   "dm_only_query_params": ["not_granted_to"],
   "player_operations": [
