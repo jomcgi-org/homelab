@@ -592,7 +592,7 @@ defmodule Embervm.K8s do
   so the ReplicaSet deletes THAT replica when `/scale` shrinks, instead of its
   own (age-based) pick landing on a busy sibling brick.
   """
-  @spec annotate_pod(String.t(), String.t(), %{String.t() => String.t()}) ::
+  @spec annotate_pod(String.t(), String.t(), %{String.t() => String.t() | :null}) ::
           :ok | {:error, term()}
   def annotate_pod(namespace, name, annotations) do
     path = "/api/v1/namespaces/#{URI.encode(namespace)}/pods/#{URI.encode(name)}"
