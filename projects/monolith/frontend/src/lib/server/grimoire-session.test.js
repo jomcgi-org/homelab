@@ -14,6 +14,7 @@ describe("sessionState", () => {
       if (url.endsWith("/lobby"))
         return response({ campaigns: [{ id: "campaign", role: "player" }] });
       if (url.endsWith("/characters")) return response([]);
+      if (url.endsWith("/voices")) return response([]);
       if (url.endsWith("/sessions"))
         return response([{ id: "latest" }, { id: "old" }]);
       if (url.includes("/sessions/old/events")) return response([]);
