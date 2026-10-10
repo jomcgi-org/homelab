@@ -4427,6 +4427,44 @@ defmodule Embervm.StatefulManagerTest do
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
   end
 
+  test "gate-on orphan confirmation before a late worker result neither reclaims nor releases twice" do
+    parent = self()
+    ctx = start_stack(node_confirmed_destroy: true, wake_bound_ms: 5_000,
+      channel_fun: fn key -> {:ok, key} end,
+      start_stateful_fun: fn _ch, _req ->
+        send(parent, {:worker, self()})
+        receive do
+          {:finish, response} -> {:ok, response}
+        end
+      end,
+      stop_stateful_fun: fn ch, req ->
+        send(parent, {:stop, ch, req.vm_id, req.mode})
+        {:ok, %{teardown_confirmed: true}}
+      end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner")
+    :erlang.trace(ctx.mgr, true, [:send])
+    caller = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:worker, worker}
+    token = expire_wake(ctx, caller)
+    # WatchNode can observe the live VM before StartStateful returns to its worker.
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner",
+      stateful_vms: [%{vm_id: "vm-stale", workload: "wl-a"}])
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert_receive {:stop, "node-4/owner", "vm-stale", :STOP_STATEFUL_MODE_DESTROY}
+    mgr = ctx.mgr
+    assert_receive {:trace, ^mgr, _, {:"$gen_cast", {:release, "node-4/owner", "vm-stale", :node_confirmed_teardown}}, _}
+    finish_worker(ctx, worker, %StartStatefulResponse{vm_id: "vm-stale", generation: 1})
+    send(ctx.mgr, {:wake_done, "wl-a", token, late_created("vm-stale")})
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+    refute_received {:stop, _, _, _}
+    refute_received {:trace, ^mgr, _, {:"$gen_cast", {:release, _, "vm-stale", :node_confirmed_teardown}}, _}
+    refute_received {:trace, ^mgr, _, {:"$gen_cast", {:claim, _, "vm-stale", _}}, _}
+    assert StatefulStore.list(ctx.store, "wl-a") == []
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
+  end
+
   test "stale cleanup preserves activator-origin adoption" do
     parent = self()
     ctx = start_stack(node_confirmed_destroy: true, stop_stateful_fun: fn _ch, req ->
