@@ -69,6 +69,33 @@ and voice hints are visible to every admitted member: the DM uses an NPC entity
 key for a hidden identity and avoids identifying text in hints. DMs retain raw
 keys. Server-generated audio is tracked separately in #6629.
 
+The browser queues only events already received in the session feed, in sequence
+order with one utterance in flight. Initial history is marked handled without
+playback. A new narration delivery cancels earlier queued and current speech;
+events in that delivery remain ordered. End and error callbacks advance the
+queue. Stop clears it. Retracted events, silent reveal items and individually
+retracted entities are skipped. Name-only reveals speak only the granted name.
+Presets are resolved by the speaker key exactly as received, including `ref:`
+keys. Missing presets fall back to `narrator`, then rate 1 and pitch 1. Preferred
+name substrings, exact language and language subtag are tried in that order;
+otherwise the device default voice is used. The browser's asynchronous
+`voiceschanged` event refreshes the available voice list.
+
+Read DM narration defaults on for the DM device and off for players. The DM
+device is the room speaker: it reads table narration only, never private DM or
+PC narration and never reveals, even when the DM received them. Players can
+opt into table narration and independently into their received reveals and
+narration addressed to their own character. Both toggles are stored in local
+storage per campaign on each device. To designate a table member's device, the
+DM turns narration off on their device and that member turns narration on.
+Other player devices remain silent unless those players opt in. Browsers without
+speech synthesis hide the playback controls.
+
+`createSpeaker` accepts a `micPauser` with `pause()` and `resume()`. It pauses
+before the first utterance of a run and resumes after drain, stop or cancellation.
+The queue tests exercise this seam; #6621 remains open and wires its microphone
+capture into it. This delivery does not capture audio.
+
 ## Visibility and public access
 
 Private DM routes can read the complete corpus. Player-scoped reads centralize

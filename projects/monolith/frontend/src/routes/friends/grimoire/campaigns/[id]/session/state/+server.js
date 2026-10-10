@@ -163,6 +163,19 @@ export async function POST({ request, fetch, cookies, params }) {
         body = { owner: input.owner, reason: input.reason || "" };
         if (Object.hasOwn(input, "quantity")) body.quantity = input.quantity;
       } else method = "DELETE";
+    } else if (["saveVoice", "deleteVoice"].includes(input.operation)) {
+      if (
+        typeof input.speakerKey !== "string" ||
+        !/^[A-Za-z0-9 _'.-]{1,64}$/.test(input.speakerKey)
+      )
+        throw new Error("Choose a narrator, NPC or speaker label.");
+      path = `/campaigns/${params.id}/voices/${encodeURIComponent(input.speakerKey)}`;
+      method = input.operation === "saveVoice" ? "PUT" : "DELETE";
+      body = {
+        voice_hint: input.voice_hint,
+        rate: input.rate,
+        pitch: input.pitch,
+      };
     } else if (["note", "deleteNote"].includes(input.operation)) {
       path = `/campaigns/${params.id}/notes`;
       if (input.noteId) {
@@ -241,6 +254,8 @@ export async function POST({ request, fetch, cookies, params }) {
           body.body.reply_to = input.replyTo;
           body.body.resolved = input.resolved === true;
         }
+        if (input.kind === "narration" && input.speakerKey !== undefined)
+          body.body.speaker_key = input.speakerKey;
       } else throw new Error("Unknown action.");
     }
     const result = await grimoireJson(fetch, cookies, path, {

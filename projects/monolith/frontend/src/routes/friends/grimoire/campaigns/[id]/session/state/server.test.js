@@ -324,6 +324,99 @@ describe("narration audience payload", () => {
     expect(result.status).toBe(400);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("forwards speaker keys for narration including replies, never player actions", async () => {
+    for (const kind of ["narration", "action"]) {
+      const { body } = await sent(
+        post({
+          operation: "post",
+          kind,
+          text: "Hello",
+          audience: "table",
+          speakerKey: pcB,
+          replyTo: "event",
+          resolved: true,
+        }),
+      );
+      if (kind === "narration")
+        expect(body.body).toEqual({
+          text: "Hello",
+          speaker_key: pcB,
+          reply_to: "event",
+          resolved: true,
+        });
+      else expect(body.body).toEqual({ text: "Hello" });
+    }
+  });
+});
+
+describe("voice preset operations", () => {
+  it("URL-encodes speaker keys and forwards only preset fields without needing a session", async () => {
+    const { fetch, response } = post({
+      operation: "saveVoice",
+      sessionId: undefined,
+      speakerKey: "Captain North",
+      voice_hint: { lang: "en-GB", names: ["English"] },
+      rate: 0.9,
+      pitch: 0.7,
+      ignored: "DROP",
+    });
+    expect((await response).status).toBe(200);
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toBe(
+      `http://backend.test/api/grimoire/campaigns/${campaignId}/voices/Captain%20North`,
+    );
+    expect(options.method).toBe("PUT");
+    expect(options.headers["x-grimoire-token"]).toBe("signed-grimoire-token");
+    expect(JSON.parse(options.body)).toEqual({
+      voice_hint: { lang: "en-GB", names: ["English"] },
+      rate: 0.9,
+      pitch: 0.7,
+    });
+  });
+  it("deletes an encoded preset and handles the backend's empty 204 response", async () => {
+    const { fetch, response } = post({
+      operation: "deleteVoice",
+      speakerKey: "Captain North",
+      sessionId: undefined,
+    });
+    fetch.mockImplementation(async () => new Response(null, { status: 204 }));
+    const result = await response;
+    expect(result.status).toBe(200);
+    expect(await result.json()).toBeNull();
+    expect(fetch.mock.calls[0][0]).toContain("/voices/Captain%20North");
+    expect(fetch.mock.calls[0][1].method).toBe("DELETE");
+  });
+  it.each(["saveVoice", "deleteVoice"])(
+    "preserves backend DM-only denial for %s",
+    async (operation) => {
+      const { fetch, response } = post({ operation, speakerKey: "narrator" });
+      fetch.mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ detail: "DM only" }), { status: 403 }),
+      );
+      const result = await response;
+      expect(result.status).toBe(400);
+      expect(await result.json()).toEqual({ error: "DM only" });
+    },
+  );
+  it.each(["", "ref:opaque", "../other", "a".repeat(65)])(
+    "rejects an invalid speaker key %s before any backend call",
+    async (speakerKey) => {
+      const { fetch, response } = post({ operation: "saveVoice", speakerKey });
+      expect((await response).status).toBe(400);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+  it("keeps voice operations behind the existing play-enable gate", async () => {
+    delete process.env.GRIMOIRE_PLAY_ENABLED;
+    const { fetch, response } = post({
+      operation: "saveVoice",
+      speakerKey: "narrator",
+    });
+    await expect(response).rejects.toMatchObject({ status: 404 });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("reveal payload", () => {

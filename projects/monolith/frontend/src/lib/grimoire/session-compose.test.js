@@ -57,12 +57,14 @@ describe("composeMessage", () => {
       audience: `pc:${pcA}`,
       replyTo: { id: "action-event", name: "Aria" },
       resolved: false,
+      speakerKey: "Captain",
     });
     expect(message).toMatchObject({
       audience: "pcs",
       pcIds: [pcA],
       replyTo: "action-event",
       resolved: false,
+      speakerKey: "Captain",
     });
   });
 
@@ -85,5 +87,15 @@ describe("composeMessage", () => {
         resolved: true,
       }),
     ).toMatchObject({ kind: "action", audience: "table", pcIds: [] });
+  });
+  it("never adds a speaker key to player actions", () => {
+    expect(
+      composeMessage({
+        text: "Hi",
+        dm: false,
+        audience: "table",
+        speakerKey: "Captain",
+      }),
+    ).not.toHaveProperty("speakerKey");
   });
 });

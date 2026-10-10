@@ -9,12 +9,16 @@
   import JournalPanel from "$lib/grimoire/JournalPanel.svelte";
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
+  import ReadAloud from "$lib/grimoire/ReadAloud.svelte";
+  import VoicePresets from "$lib/grimoire/VoicePresets.svelte";
   import "$lib/grimoire/theme.css";
 
   let { data } = $props();
   let state = $state(untrack(() => data));
   let draft = $state("");
   let audience = $state("table");
+  let speakerKey = $state("narrator");
+  let speakerLabel = $state("");
   let formula = $state("d20");
   let rollLabel = $state("");
   let rollVisibility = $state("table");
@@ -34,6 +38,8 @@
     state = data;
     draft = "";
     audience = "table";
+    speakerKey = "narrator";
+    speakerLabel = "";
     rollVisibility = data.campaign.role === "dm" ? "dm" : "table";
     replyTo = null;
   });
@@ -135,6 +141,7 @@
       audience,
       replyTo,
       resolved,
+      speakerKey: speakerKey === "custom" ? speakerLabel.trim() : speakerKey,
     });
     const signature = JSON.stringify({
       sessionId: state.session?.id,
@@ -239,6 +246,16 @@
       >
     </div>
   </header>
+
+  {#key state.campaign.id}
+    <ReadAloud
+      campaignId={state.campaign.id}
+      role={state.campaign.role}
+      pcId={state.campaign.player_character_id}
+      events={state.events}
+      voices={state.voices || []}
+    />
+  {/key}
 
   {#if !dm}<KnowledgeSearch campaignId={state.campaign.id} />{/if}
   <nav class="table-tabs" aria-label="Session sections">
@@ -419,6 +436,29 @@
       {#if failure}<p role="alert" class="failure">{failure}</p>{/if}
       {#if playing}
         <form onsubmit={post} class="composer">
+          {#if dm}
+            <label
+              >Speaker <select
+                aria-label="Narration speaker"
+                bind:value={speakerKey}
+              >
+                <option value="narrator">Narrator</option>
+                {#each state.npcs || [] as npc}<option value={npc.id}
+                    >{npc.name}</option
+                  >{/each}
+                <option value="custom">Free label</option>
+              </select></label
+            >
+            {#if speakerKey === "custom"}<label
+                >Speaker label <input
+                  aria-label="Speaker label"
+                  bind:value={speakerLabel}
+                  maxlength="64"
+                  pattern="[A-Za-z0-9 _'.\-]+"
+                  required
+                /></label
+              >{/if}
+          {/if}
           {#if replyTo}<div class="reply-context">
               <span>Replying privately to {replyTo.name}</span><button
                 type="button"
@@ -464,6 +504,12 @@
               resolved</label
             >{/if}
         </form>
+        {#if dm}<VoicePresets
+            presets={state.voices || []}
+            npcs={state.npcs || []}
+            {act}
+            {busy}
+          />{/if}
         <details class="dice-tray">
           <summary>Roll dice</summary>
           <div class="quick-dice">
