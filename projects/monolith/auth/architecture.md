@@ -151,9 +151,13 @@ flow render or a policy unit test is not an authenticated browser rehearsal.
 
 The disabled implementation shipped in #6867 as monolith `0.649.9`, with
 migration `20261005060000` applied and all seven platform tables empty.
-The first activation stage enables private operator management and protected
-identity claims. Enrollment and enforcement remain off until the operator has
-explicitly imported its signed identity and received the two Grimoire grants.
-A fresh Authentik login is required to obtain the new claims. Registered-player
-campaign links remain enabled throughout. Subsequent signup activation and
-real browser acceptance remain tracked on #6858.
+Operator management and protected identity claims shipped separately in #6868.
+Enrollment activation enables the possession-based native flow and Grimoire
+permission enforcement together, after verifying the operator's signed import
+and explicit `grimoire.access` and `grimoire.create_game` grants. A fresh login
+is required for the protected claims. Existing registered players without a
+platform record must enroll using an administrator-issued platform invitation
+while signed in, then receive an explicit access grant. Campaign IDs and
+memberships are preserved through the stable issuer/subject mapping.
+Real authenticated browser acceptance remains tracked on #6858; a healthy
+rollout alone does not establish signup or campaign-join acceptance.
