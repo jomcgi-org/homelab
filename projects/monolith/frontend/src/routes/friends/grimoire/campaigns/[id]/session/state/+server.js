@@ -6,6 +6,23 @@ export async function GET({ fetch, cookies, params, url }) {
   if (process.env.GRIMOIRE_PLAY_ENABLED !== "true")
     error(404, "Session play is not enabled.");
   try {
+    if (url.searchParams.has("inventory")) {
+      const view = url.searchParams.get("inventory");
+      if (!["items", "changes"].includes(view))
+        throw new Error("Invalid inventory view.");
+      let path = `/campaigns/${params.id}/inventory`;
+      if (view === "changes") {
+        path += "/changes";
+        const item = url.searchParams.get("item");
+        if (item !== null) {
+          if (!/^[0-9a-f-]{36}$/i.test(item)) throw new Error("Invalid item.");
+          path += `?item_id=${encodeURIComponent(item)}`;
+        }
+      }
+      return json(await grimoireJson(fetch, cookies, path), {
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
     if (url.searchParams.has("entity")) {
       const id = url.searchParams.get("entity");
       if (!/^[0-9a-f-]{36}$/i.test(id))
@@ -89,7 +106,64 @@ export async function POST({ request, fetch, cookies, params }) {
     let path = base;
     let method = "POST";
     let body = {};
-    if (["note", "deleteNote"].includes(input.operation)) {
+    if (
+      ["giveItem", "updateItem", "moveItem", "deleteItem"].includes(
+        input.operation,
+      )
+    ) {
+      path = `/campaigns/${params.id}/inventory`;
+      if (input.operation !== "giveItem") {
+        if (
+          typeof input.itemId !== "string" ||
+          !/^[0-9a-f-]{36}$/i.test(input.itemId)
+        )
+          throw new Error("Invalid item.");
+        path += `/${input.itemId}`;
+      }
+      if (["giveItem", "moveItem"].includes(input.operation)) {
+        if (
+          typeof input.owner !== "string" ||
+          (input.owner !== "party" && !/^[0-9a-f-]{36}$/i.test(input.owner))
+        )
+          throw new Error("Invalid owner.");
+      }
+      if (Object.hasOwn(input, "quantity") || input.operation === "giveItem") {
+        const minimum = input.operation === "updateItem" ? 0 : 1;
+        if (
+          !Number.isInteger(input.quantity) ||
+          input.quantity < minimum ||
+          input.quantity > 1000000
+        )
+          throw new Error("Invalid quantity.");
+      }
+      if (input.operation === "giveItem") {
+        body = {
+          owner: input.owner,
+          name: input.name,
+          quantity: input.quantity,
+          notes: input.notes || "",
+          entity_id: input.entity_id || null,
+          hidden_from_party: input.hidden_from_party === true,
+          reason: input.reason || "",
+          source_event_id: input.source_event_id || null,
+        };
+      } else if (input.operation === "updateItem") {
+        method = "PATCH";
+        for (const field of [
+          "name",
+          "quantity",
+          "notes",
+          "entity_id",
+          "hidden_from_party",
+          "reason",
+        ])
+          if (Object.hasOwn(input, field)) body[field] = input[field];
+      } else if (input.operation === "moveItem") {
+        path += "/move";
+        body = { owner: input.owner, reason: input.reason || "" };
+        if (Object.hasOwn(input, "quantity")) body.quantity = input.quantity;
+      } else method = "DELETE";
+    } else if (["note", "deleteNote"].includes(input.operation)) {
       path = `/campaigns/${params.id}/notes`;
       if (input.noteId) {
         if (!/^[0-9a-f-]{36}$/i.test(input.noteId))

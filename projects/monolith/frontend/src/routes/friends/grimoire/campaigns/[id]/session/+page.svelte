@@ -5,6 +5,7 @@
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
   import RevealProjection from "$lib/grimoire/RevealProjection.svelte";
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
+  import InventoryPanel from "$lib/grimoire/InventoryPanel.svelte";
   import JournalPanel from "$lib/grimoire/JournalPanel.svelte";
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
@@ -24,6 +25,7 @@
   let activeTab = $state("story");
   let selectedEntity = $state(null);
   let journalView = $state("mine");
+  let inventoryPrefill = $state(null);
   let busy = $state(false);
   let failure = $state("");
   let pendingMessage = null;
@@ -56,6 +58,23 @@
       kind: "character",
     });
     if (saved) activeTab = "notes";
+  }
+
+  function giveItem(event, knowledge = null) {
+    inventoryPrefill = {
+      name: knowledge
+        ? knowledge.name
+        : (event.body?.text || "").split("\n")[0].slice(0, 200),
+      entity_id: knowledge?.entity_id || null,
+      owner:
+        knowledge &&
+        event.audience === "pcs" &&
+        event.audience_pc_ids?.length === 1
+          ? event.audience_pc_ids[0]
+          : "party",
+      source_event_id: event.id,
+    };
+    activeTab = "inventory";
   }
 
   async function refresh() {
@@ -234,10 +253,24 @@
     >
     <button
       class="secondary"
+      aria-pressed={activeTab === "inventory"}
+      onclick={() => (activeTab = "inventory")}>Inventory</button
+    >
+    <button
+      class="secondary"
       aria-pressed={activeTab === "journal"}
       onclick={() => (activeTab = "journal")}>Journal</button
     >
   </nav>
+  {#if activeTab === "inventory"}
+    <InventoryPanel
+      endpoint={endpoint()}
+      {dm}
+      characters={state.characters}
+      prefill={inventoryPrefill}
+      openKnowledge={(id) => (selectedEntity = id)}
+    />
+  {/if}
   <div hidden={activeTab !== "notes"}>
     <SessionNotesPanel
       endpoint={endpoint()}
@@ -297,7 +330,11 @@
                   ? "Dice roll"
                   : event.kind === "reveal"
                     ? "New knowledge"
-                    : "Player action"}</strong
+                    : event.kind === "handout"
+                      ? "Handout"
+                      : event.kind === "system"
+                        ? "Table update"
+                        : "Player action"}</strong
             >
             <span
               >{event.audience === "table"
@@ -336,6 +373,13 @@
                     >Open knowledge page</a
                   >
                 {/if}
+                {#if dm && !knowledge.retracted}
+                  <button
+                    class="secondary"
+                    onclick={() => giveItem(event, knowledge)}
+                    aria-label={`Give item ${knowledge.name}`}>Give item</button
+                  >
+                {/if}
               </div>
             {/each}
           {:else}<p>
@@ -343,6 +387,14 @@
                 ? "This message was retracted."
                 : event.body?.text || event.body?.summary || "Session update"}
             </p>
+          {/if}
+          {#if dm && event.kind === "handout" && !event.retracted_at && !event.body?.retracted}
+            <button
+              class="secondary"
+              onclick={() => giveItem(event)}
+              aria-label={`Give item from ${event.body?.text?.split("\n")[0] || "handout"}`}
+              >Give item</button
+            >
           {/if}
           {#if event.kind === "action" && event.audience === "dm" && !event.retracted_at}
             <div class="private-action">

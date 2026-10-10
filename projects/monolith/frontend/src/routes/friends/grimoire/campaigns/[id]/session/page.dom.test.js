@@ -60,7 +60,8 @@ const json = (value) =>
 // id, and each state poll gets whatever `nextState` returns at that moment.
 function stubFetch(nextState) {
   const fetch = vi.fn(async (url, options = {}) => {
-    if (String(url).includes("?notes=")) return json([]);
+    if (String(url).includes("?notes=") || String(url).includes("?inventory="))
+      return json([]);
     if (String(url).includes("?entity="))
       return json({ id: "entity-mara", name: "Mara", entity_type: "npc" });
     if (options.method === "POST") return json({ id: "posted", seq: 99 });
@@ -97,6 +98,189 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.useRealTimers();
+});
+
+describe("session inventory", () => {
+  const entityId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const knowledge = {
+    entity_id: entityId,
+    name: "Silver key",
+    grant_scope: "name_only",
+  };
+  const reveal = event("44444444-4444-4444-8444-444444444444", 1, "", {
+    kind: "reveal",
+    audience: "pcs",
+    audience_pc_ids: [pcA],
+    body: { reveals: [knowledge] },
+  });
+  const handout = event(
+    "55555555-5555-4555-8555-555555555555",
+    2,
+    "Ancient map\nWith a marked road",
+    { kind: "handout" },
+  );
+  const system = event(
+    "66666666-6666-4666-8666-666666666666",
+    3,
+    "Inventory changed in the party pool.",
+    { kind: "system" },
+  );
+  const click = async (text) => {
+    const button = [...document.querySelectorAll("button")].find(
+      (node) => node.textContent.trim() === text,
+    );
+    expect(button, text).toBeTruthy();
+    button.click();
+    await settle();
+  };
+  const field = (text) =>
+    [...document.querySelectorAll(".inventory label")]
+      .find(
+        (node) =>
+          [...node.childNodes]
+            .filter((child) => child.nodeType === 3)
+            .map((child) => child.textContent)
+            .join("")
+            .trim() === text,
+      )
+      ?.querySelector("input, select");
+
+  it("toggles the Inventory tab after Notes and back to Story", async () => {
+    const data = pageData("player", []);
+    stubFetch(() => data);
+    await render(data);
+    expect(
+      [...document.querySelectorAll(".table-tabs button")].map((node) =>
+        node.textContent.trim(),
+      ),
+    ).toEqual(["Story", "Notes", "Inventory", "Journal"]);
+    await click("Inventory");
+    expect(
+      document.querySelector('[aria-label="Campaign inventory"]'),
+    ).toBeTruthy();
+    expect(
+      document.querySelector('.table-tabs button[aria-pressed="true"]')
+        .textContent,
+    ).toBe("Inventory");
+    await click("Story");
+    expect(
+      document.querySelector('[aria-label="Campaign inventory"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('.table-tabs button[aria-pressed="true"]')
+        .textContent,
+    ).toBe("Story");
+  });
+
+  it("prefills and posts a reveal to its one addressed PC with entity and source event", async () => {
+    const data = pageData("dm", [reveal, handout, system]);
+    const fetch = stubFetch(() => data);
+    await render(data);
+    document
+      .querySelector(
+        `#event-${reveal.id} button[aria-label="Give item Silver key"]`,
+      )
+      .click();
+    await settle();
+    expect(field("Item name").value).toBe("Silver key");
+    expect(field("Give to").value).toBe(pcA);
+    await click("Give Silver key");
+    expect(posted(fetch)).toEqual([
+      {
+        operation: "giveItem",
+        owner: pcA,
+        name: "Silver key",
+        quantity: 1,
+        notes: "",
+        hidden_from_party: false,
+        reason: "",
+        entity_id: entityId,
+        source_event_id: reveal.id,
+      },
+    ]);
+  });
+
+  it.each([
+    ["table", []],
+    ["pcs", [pcA, pcB]],
+    ["dm", []],
+  ])(
+    "prefills a %s reveal to the pool when there is no single PC",
+    async (audience, audience_pc_ids) => {
+      const row = { ...reveal, audience, audience_pc_ids };
+      const data = pageData("dm", [row]);
+      stubFetch(() => data);
+      await render(data);
+      await click("Give item");
+      expect(field("Give to").value).toBe("party");
+    },
+  );
+
+  it("prefills a handout's truncated first line for the pool without an entity", async () => {
+    const row = {
+      ...handout,
+      body: { text: `${"a".repeat(240)}\nSecond line` },
+    };
+    const data = pageData("dm", [row]);
+    const fetch = stubFetch(() => data);
+    await render(data);
+    await click("Give item");
+    expect(field("Item name").value).toBe("a".repeat(200));
+    expect(field("Give to").value).toBe("party");
+    await click(`Give ${"a".repeat(200)}`);
+    expect(posted(fetch)[0]).toMatchObject({
+      operation: "giveItem",
+      name: "a".repeat(200),
+      owner: "party",
+      entity_id: null,
+      source_event_id: handout.id,
+    });
+  });
+
+  it("labels system and handout events and never offers players Give item", async () => {
+    const data = pageData("player", [reveal, handout, system]);
+    stubFetch(() => data);
+    await render(data);
+    expect(
+      document.querySelector(`#event-${handout.id} .event-meta strong`)
+        .textContent,
+    ).toBe("Handout");
+    expect(
+      document.querySelector(`#event-${system.id} .event-meta strong`)
+        .textContent,
+    ).toBe("Table update");
+    expect(
+      [...document.querySelectorAll("button")].some(
+        (node) => node.textContent === "Give item",
+      ),
+    ).toBe(false);
+  });
+
+  it("offers no give for retracted events, entries or removed reveal entities", async () => {
+    const data = pageData("dm", [
+      retracted(reveal),
+      retracted(handout),
+      {
+        ...reveal,
+        id: "retracted-entry",
+        seq: 3,
+        body: { ...knowledge, retracted: true },
+      },
+      {
+        ...reveal,
+        id: "removed-entry",
+        seq: 4,
+        body: { reveals: [knowledge], retracted_entity_ids: [entityId] },
+      },
+    ]);
+    stubFetch(() => data);
+    await render(data);
+    expect(
+      [...document.querySelectorAll("button")].some(
+        (node) => node.textContent === "Give item",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("private session events from server projections", () => {

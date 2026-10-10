@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { POST } from "./+server.js";
+import { GET, POST } from "./+server.js";
 
 const campaignId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "33333333-3333-4333-8333-333333333333";
@@ -40,6 +40,187 @@ async function sent({ fetch, response }) {
 beforeEach(() => {
   process.env.API_BASE = "http://backend.test";
   process.env.GRIMOIRE_PLAY_ENABLED = "true";
+});
+
+describe("inventory proxy", () => {
+  const base = `http://backend.test/api/grimoire/campaigns/${campaignId}/inventory`;
+  const itemId = pcB;
+
+  async function get(query) {
+    const fetch = vi.fn(async () => new Response("[]"));
+    const response = await GET({
+      fetch,
+      cookies: { get: () => "token" },
+      params: { id: campaignId },
+      url: new URL(`https://friends.jomcgi.dev/state?${query}`),
+    });
+    return { fetch, response };
+  }
+
+  it.each([
+    ["inventory=items", base],
+    ["inventory=changes", `${base}/changes`],
+    [`inventory=changes&item=${itemId}`, `${base}/changes?item_id=${itemId}`],
+  ])("reads %s privately", async (query, path) => {
+    const { fetch, response } = await get(query);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toBe(path);
+    expect(fetch.mock.calls[0][1].method || "GET").toBe("GET");
+  });
+
+  it.each([
+    "inventory=bad",
+    "inventory=changes&item=bad",
+    "inventory=changes&item=",
+  ])("rejects invalid read %s", async (query) => {
+    const { fetch, response } = await get(query);
+    expect(response.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  const give = {
+    operation: "giveItem",
+    owner: pcA,
+    name: "Key",
+    quantity: 2,
+    notes: "Silver",
+    entity_id: pcB,
+    hidden_from_party: true,
+    reason: "Reward",
+    source_event_id: sessionId,
+  };
+  it.each([
+    [
+      give,
+      "POST",
+      base,
+      {
+        owner: pcA,
+        name: "Key",
+        quantity: 2,
+        notes: "Silver",
+        entity_id: pcB,
+        hidden_from_party: true,
+        reason: "Reward",
+        source_event_id: sessionId,
+      },
+    ],
+    [
+      { operation: "updateItem", itemId, quantity: 0, reason: "Consumed" },
+      "PATCH",
+      `${base}/${itemId}`,
+      { quantity: 0, reason: "Consumed" },
+    ],
+    [
+      {
+        operation: "updateItem",
+        itemId,
+        name: "Rope",
+        notes: "Frayed",
+        quantity: 10,
+        hidden_from_party: false,
+        entity_id: pcA,
+        reason: "Correction",
+      },
+      "PATCH",
+      `${base}/${itemId}`,
+      {
+        name: "Rope",
+        notes: "Frayed",
+        quantity: 10,
+        hidden_from_party: false,
+        entity_id: pcA,
+        reason: "Correction",
+      },
+    ],
+    [
+      {
+        operation: "moveItem",
+        itemId,
+        owner: "party",
+        quantity: 1,
+        reason: "Share",
+      },
+      "POST",
+      `${base}/${itemId}/move`,
+      { owner: "party", quantity: 1, reason: "Share" },
+    ],
+    [
+      { operation: "moveItem", itemId, owner: pcA },
+      "POST",
+      `${base}/${itemId}/move`,
+      { owner: pcA, reason: "" },
+    ],
+    [{ operation: "deleteItem", itemId }, "DELETE", `${base}/${itemId}`, {}],
+  ])(
+    "forwards $operation with exactly supplied fields",
+    async (input, method, path, body) => {
+      const request = post(input);
+      expect((await request.response).status).toBe(200);
+      expect(request.fetch).toHaveBeenCalledTimes(1);
+      const [target, options] = request.fetch.mock.calls[0];
+      expect(target).toBe(path);
+      expect(options.method).toBe(method);
+      expect(JSON.parse(options.body)).toEqual(body);
+    },
+  );
+
+  it("handles a real no-content delete response", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const response = await POST({
+      fetch,
+      cookies: { get: () => "token" },
+      params: { id: campaignId },
+      request: new Request("https://friends.jomcgi.dev/state", {
+        method: "POST",
+        body: JSON.stringify({ operation: "deleteItem", itemId }),
+      }),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it.each([
+    { operation: "updateItem", itemId: "bad", quantity: 2 },
+    { operation: "moveItem", itemId: "bad", owner: "party" },
+    { operation: "deleteItem", itemId: "../inventory" },
+    { operation: "deleteItem" },
+    { operation: "deleteItem", itemId: [itemId] },
+    { ...give, owner: "bad" },
+    { ...give, owner: null },
+    { ...give, owner: undefined },
+    { ...give, owner: [pcA] },
+    { operation: "moveItem", itemId, owner: "bad" },
+    ...[null, "1", 0, -1, 1.5, 1000001].map((quantity) => ({
+      ...give,
+      quantity,
+    })),
+    ...[null, "1", -1, 1.5, 1000001].map((quantity) => ({
+      operation: "updateItem",
+      itemId,
+      quantity,
+    })),
+    ...[null, 0, -1, 1.5, 1000001].map((quantity) => ({
+      operation: "moveItem",
+      itemId,
+      owner: "party",
+      quantity,
+    })),
+  ])(
+    "rejects invalid mutation %# without contacting backend",
+    async (input) => {
+      const { fetch, response } = post(input);
+      expect((await response).status).toBe(400);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps both inventory reads and writes behind the play gate", async () => {
+    process.env.GRIMOIRE_PLAY_ENABLED = "false";
+    await expect(get("inventory=items")).rejects.toMatchObject({ status: 404 });
+    await expect(post(give).response).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 describe("narration audience payload", () => {

@@ -158,6 +158,29 @@ describe("player view", () => {
       revealEvent(fixture.cases[1], 2),
     ];
     const fetch = vi.fn(async (url) => {
+      if (String(url).includes("inventory=items"))
+        return json([
+          {
+            id: campaignId,
+            owner: "party",
+            is_mine: false,
+            name: "Potion",
+            quantity: 3,
+            notes: "",
+            entity: null,
+            hidden_from_party: false,
+          },
+          {
+            id: sessionId,
+            owner: fixture.viewer,
+            is_mine: true,
+            name: "Rope",
+            quantity: 2,
+            notes: "",
+            entity: null,
+            hidden_from_party: false,
+          },
+        ]);
       if (String(url).includes("entity="))
         return json({ ...fixture.cases[0].expected });
       return json(pageData("player", events));
@@ -177,6 +200,26 @@ describe("player view", () => {
       .click();
     await settle();
 
+    [...document.querySelectorAll(".table-tabs button")]
+      .find((node) => node.textContent === "Inventory")
+      .click();
+    await settle();
+    for (const name of [
+      "Move Rope to party pool",
+      "Take Potion",
+      "Save Rope",
+    ]) {
+      const button = [...document.querySelectorAll(".inventory button")].find(
+        (node) => node.textContent === name,
+      );
+      expect(button, name).toBeTruthy();
+      button
+        .closest("form")
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+      await settle();
+    }
     const urls = fetch.mock.calls.map(([url]) => String(url));
     // The run is not vacuous: it polled state and opened the knowledge drawer.
     expect(urls).toContain(endpoint);
@@ -185,6 +228,7 @@ describe("player view", () => {
     const operations = fetch.mock.calls
       .filter(([, options]) => options?.body)
       .map(([, options]) => JSON.parse(options.body).operation);
+    expect(operations).toEqual(["moveItem", "moveItem", "updateItem"]);
     for (const operation of operations)
       expect(dmRoutes.player_operations).toContain(operation);
     // And nothing a player sends reaches a DM route behind the BFF.
