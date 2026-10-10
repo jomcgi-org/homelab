@@ -142,6 +142,9 @@ class LeakHarness:
             self.rows["sheet"].sheet = dict(SHEET_BODY)
         elif state == "play":
             self.rows["campaign_session"].status = "active"
+        elif state == "transcript":
+            self.rows["campaign_session"].status = "active"
+            self.rows["campaign_session"].transcript_state = "on"
         self.session.commit()
 
     def app(self) -> FastAPI:

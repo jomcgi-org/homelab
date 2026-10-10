@@ -37,7 +37,7 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -3105,6 +3105,33 @@ class TranscriptStateRequest(BaseModel):
     state: TranscriptState
 
 
+class UtteranceAudience(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: AudienceKind = "table"
+    pc_ids: list[str] = Field(default_factory=list)
+
+
+class UtteranceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    speaker_member_id: str | None = None
+    speaker_label: str | None = Field(default=None, max_length=80)
+    started_at: AwareDatetime
+    ended_at: AwareDatetime
+    text: str = Field(min_length=1, max_length=4000)
+    confidence: float = Field(ge=0, le=1)
+    source: Literal["browser", "table", "discord"]
+    audience: UtteranceAudience = Field(default_factory=UtteranceAudience)
+    request_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def ordered_timestamps(self) -> UtteranceRequest:
+        if self.ended_at < self.started_at:
+            raise ValueError("ended_at must be at or after started_at")
+        return self
+
+
 def _consent_view(row: TranscriptConsent, *, dm: bool = False) -> dict:
     def iso(value: datetime | None) -> str | None:
         if value is None:
@@ -3339,6 +3366,107 @@ def _event_view(
         created_at=row.created_at,
         retracted_at=row.retracted_at,
     )
+
+
+@router.post(
+    "/campaigns/{campaign_id}/sessions/{session_id}/utterances",
+    response_model=SessionEventView,
+    dependencies=[Depends(require_transcript_enabled)],
+)
+def ingest_utterance(
+    campaign_id: str,
+    session_id: str,
+    body: UtteranceRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> SessionEventView:
+    member = _get_member_or_404(session, campaign_id, email)
+    # State transitions and all event writers take this lock first. Refresh it
+    # before checking state so an identity-map cache cannot bypass a pause.
+    game_session = session.exec(
+        select(GameSession)
+        .where(GameSession.id == session_id, GameSession.campaign_id == campaign_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if game_session is None:
+        raise HTTPException(404, detail="game session not found")
+    if game_session.status == "ended":
+        raise HTTPException(409, detail="session has ended")
+    if game_session.transcript_state != "on":
+        raise HTTPException(409, detail=f"transcript is {game_session.transcript_state}")
+
+    speaker = body.speaker_member_id
+    if body.source == "browser":
+        if speaker is not None and speaker != member.id:
+            raise HTTPException(403, detail="browser speaker must be the caller")
+        speaker = member.id
+    else:
+        _require_dm(member)
+        if speaker is None:
+            if body.source != "table" or not body.speaker_label:
+                raise HTTPException(422, detail="table speaker requires a label")
+        elif session.exec(
+            select(CampaignMember.id).where(
+                CampaignMember.id == speaker,
+                CampaignMember.campaign_id == campaign_id,
+            )
+        ).one_or_none() is None:
+            raise HTTPException(403, detail="speaker must belong to this campaign")
+    if body.audience.kind == "pcs":
+        _require_dm(member)
+
+    speakers = (
+        {speaker}
+        if speaker is not None
+        else set(session.exec(
+            select(CampaignMember.id).where(CampaignMember.campaign_id == campaign_id)
+        ).all())
+    )
+    # FOR SHARE conflicts with revocation's UPDATE. These locks stay held until
+    # the event commits, so consent cannot be revoked between this check and
+    # append_event. Never lock consent before the authoritative session row.
+    consents = session.exec(
+        select(TranscriptConsent)
+        .where(
+            TranscriptConsent.campaign_id == campaign_id,
+            TranscriptConsent.member_id.in_(speakers),
+            TranscriptConsent.revoked_at.is_(None),
+        )
+        .order_by(TranscriptConsent.id)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    ).all()
+    if {row.member_id for row in consents} != speakers:
+        raise HTTPException(403, detail="active transcript consent required")
+
+    try:
+        row = append_event(
+            session,
+            game_session=game_session,
+            kind="utterance",
+            audience=Audience(
+                body.audience.kind, frozenset(body.audience.pc_ids),
+                author_member_id=speaker,
+            ),
+            author_member_id=speaker,
+            body={
+                "text": body.text,
+                "started_at": body.started_at.isoformat(),
+                "ended_at": body.ended_at.isoformat(),
+                "source": body.source,
+                "confidence": body.confidence,
+                **({"speaker_label": body.speaker_label} if body.speaker_label is not None else {}),
+            },
+            request_id=body.request_id,
+        )
+    except (SessionEndedError, EventRequestConflictError) as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except (InvalidEventAudienceError, ValueError) as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+    session.commit()
+    session.refresh(row)
+    return _event_view(row, member)
 
 
 class RollRequest(BaseModel):

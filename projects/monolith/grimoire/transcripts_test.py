@@ -18,7 +18,9 @@ from grimoire.testing.leak_harness import sqlite_harness
 PREFIX = "/api/grimoire/campaigns/{campaign_id}"
 CONSENT = PREFIX + "/transcript/consent"
 STATE = PREFIX + "/sessions/{session_id}/transcript"
+UTTERANCES = PREFIX + "/sessions/{session_id}/utterances"
 EXPECTED_ROUTES = {
+    ("POST", UTTERANCES),
     ("PUT", CONSENT),
     ("DELETE", CONSENT),
     ("GET", CONSENT),
@@ -314,7 +316,13 @@ def test_every_derived_transcript_route_is_hidden_when_either_flag_is_off(
     before = h.snapshot()
     for method, path in derived:
         body = {"state": "on"} if path == STATE else {"processor": "Local"}
-        kwargs = {"json": body} if method == "PUT" else {}
+        if method == "POST":
+            body = {
+                "text": "Hidden utterance", "source": "browser", "confidence": 1,
+                "started_at": "2026-10-10T12:00:00Z",
+                "ended_at": "2026-10-10T12:00:01Z",
+            }
+        kwargs = {"json": body} if method in ("PUT", "POST") else {}
         response = client.request(
             method,
             path.format(

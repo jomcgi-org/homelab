@@ -71,6 +71,18 @@ CASES = {
     ("DELETE", PREFIX + "/inventory/{item_id}"): Case(
         params={"item_id": "$item_party.id"}, success=204
     ),
+    ("POST", PREFIX + "/sessions/{session_id}/utterances"): Case(
+        params={"session_id": "$campaign_session.id"},
+        body={
+            "speaker_member_id": "$member_player_a.id",
+            "text": "Attributed utterance",
+            "started_at": "2026-10-10T12:00:00Z",
+            "ended_at": "2026-10-10T12:00:01Z",
+            "confidence": 0.9,
+            "source": "table",
+        },
+        state="transcript",
+    ),
     ("PUT", PREFIX + "/transcript/consent"): Case(
         body={"processor": "New processor"},
         caller="player_a",
