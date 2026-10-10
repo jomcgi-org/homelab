@@ -112,7 +112,6 @@ Top-level projects/ directories:
 - firecracker
 - gke-apps
 - gke-cluster
-- home-cluster
 - inference
 - loom
 - mcp
