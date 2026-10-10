@@ -4169,8 +4169,11 @@ defmodule Embervm.StatefulManagerTest do
 
     # The stale worker now finishes its boot. Its outcome carries the ended
     # wake's token and is dropped: no instance appears, nothing is published.
+    stale_ref = Process.monitor(stale_worker)
     send(stale_worker, {:release, "vm-stale"})
-    Process.sleep(50)
+    # The worker exits right after reporting, so its DOWN means the outcome is
+    # queued at the manager; the get_state flush then processes it.
+    assert_receive {:DOWN, ^stale_ref, :process, ^stale_worker, :normal}, 2_000
     :sys.get_state(ctx.mgr)
     assert StatefulStore.list(ctx.store, "wl-a") == []
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
