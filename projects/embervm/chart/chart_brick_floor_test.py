@@ -89,8 +89,13 @@ noded:
             # The same selector matches every class, floor and legacy daemon.
             for other in pods:
                 other_labels = other["spec"]["template"]["metadata"]["labels"]
-                assert all(other_labels[k] == v for k, v in selector["matchLabels"].items())
-                assert other_labels["app.kubernetes.io/component"] in ("noded", "noded-brick")
+                assert all(
+                    other_labels[k] == v for k, v in selector["matchLabels"].items()
+                )
+                assert other_labels["app.kubernetes.io/component"] in (
+                    "noded",
+                    "noded-brick",
+                )
         floor = labels.get("embervm.jomcgi.dev/brick-floor")
         if floor == "my-node":
             assert spec["nodeSelector"] == {"kubernetes.io/hostname": "my-node"}
