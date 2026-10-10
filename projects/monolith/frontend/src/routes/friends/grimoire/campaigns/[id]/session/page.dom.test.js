@@ -458,8 +458,7 @@ describe("audience picker", () => {
 });
 
 describe("dice tray roll mode", () => {
-  const modeSelect = () =>
-    document.querySelector('[aria-label="Roll mode"]');
+  const modeSelect = () => document.querySelector('[aria-label="Roll mode"]');
   async function chooseMode(value) {
     const input = document.querySelector(
       `input[name="roll-mode"][value="${value}"]`,
@@ -469,9 +468,9 @@ describe("dice tray roll mode", () => {
     await tick();
   }
   const quickButton = (label) =>
-    [
-      ...document.querySelectorAll('div[aria-label="Quick rolls"] button'),
-    ].find((button) => button.textContent.trim() === label);
+    [...document.querySelectorAll('div[aria-label="Quick rolls"] button')].find(
+      (button) => button.textContent.trim() === label,
+    );
   async function submitFormula(text) {
     const input = document.querySelector(
       'details.dice-tray input[placeholder="d20, 2d6+3, 1d20adv"]',
