@@ -16,11 +16,19 @@ defmodule Embervm.K8sTest do
   test "pod identity preserves the controlling ReplicaSet and template hash" do
     metadata = %{"name" => "brick-a", "uid" => "uid-a",
       "labels" => %{"pod-template-hash" => "hash"},
+      "annotations" => %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"},
       "ownerReferences" => [%{"kind" => "ReplicaSet", "name" => "ignored", "controller" => false},
         %{"kind" => "ReplicaSet", "name" => "class-hash", "controller" => true}]}
-    assert K8s.pod_identity(%{"metadata" => metadata}) ==
-      %{name: "brick-a", uid: "uid-a", replica_set: "class-hash", template_hash: "hash"}
+    item = %{"metadata" => metadata, "spec" => %{"nodeName" => "node-4"},
+      "status" => %{"phase" => "Running",
+        "conditions" => [%{"type" => "Ready", "status" => "True"}]}}
+    assert K8s.pod_identity(item) ==
+      %{name: "brick-a", uid: "uid-a", replica_set: "class-hash", template_hash: "hash",
+        node_name: "node-4", phase: "Running", ready: true, deletion_cost: "-1000",
+        terminating: false}
     assert K8s.pod_identity(%{"metadata" => Map.delete(metadata, "ownerReferences")}).replica_set == nil
+    assert K8s.pod_identity(%{"metadata" => metadata}).ready == false
+    assert K8s.pod_identity(%{"metadata" => metadata}).terminating == false
   end
 
   test "TokenReview request requires the component audience" do

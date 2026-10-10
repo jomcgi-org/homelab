@@ -523,8 +523,10 @@ defmodule Embervm.K8s do
   @doc """
   Lists pods in `namespace` matching `label_selector`, projected to just the
   identity fields the BrickController's victim-directing needs (`name` to PATCH
-  the annotation, `uid` to match the capacity fact's `pod_uid`, and the controlling
-  ReplicaSet plus template hash to verify the exact Deployment being shrunk). Namespaced
+  the annotation, `uid` to match the capacity fact's `pod_uid`, the controlling
+  ReplicaSet plus template hash to verify the exact Deployment being shrunk, and
+  `node_name`/`phase`/`ready`/`deletion_cost`/`terminating` to verify the
+  ReplicaSet will delete the acknowledged victim). Namespaced
   `pods list` RBAC, granted by the brick-pods Role only when bricks are enabled.
   """
   @spec list_pods(String.t(), String.t()) ::
@@ -558,11 +560,28 @@ defmodule Embervm.K8s do
         owner["kind"] == "ReplicaSet" and owner["controller"] == true
       end)
 
+    conditions = get_in(item, ["status", "conditions"]) || []
+
+    ready =
+      Enum.any?(conditions, fn condition ->
+        is_map(condition) and condition["type"] == "Ready" and condition["status"] == "True"
+      end)
+
     %{
       name: get_in(item, ["metadata", "name"]),
       uid: get_in(item, ["metadata", "uid"]),
       replica_set: if(owner, do: owner["name"], else: nil),
-      template_hash: get_in(item, ["metadata", "labels", "pod-template-hash"])
+      template_hash: get_in(item, ["metadata", "labels", "pod-template-hash"]),
+      node_name: get_in(item, ["spec", "nodeName"]),
+      phase: get_in(item, ["status", "phase"]),
+      ready: ready,
+      deletion_cost:
+        get_in(item, [
+          "metadata",
+          "annotations",
+          "controller.kubernetes.io/pod-deletion-cost"
+        ]),
+      terminating: not is_nil(get_in(item, ["metadata", "deletionTimestamp"]))
     }
   end
 
