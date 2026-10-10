@@ -183,8 +183,7 @@ packages resolve without any host Python installation.
 `bazel/tools/oci/` provides the macros the rest of the repo uses to build
 application service images:
 
-- `apko_image` / `apko_nginx_frontend` for apko-based images (Wolfi packages,
-  non-root uid 65532)
+- `apko_image` for apko-based images (Wolfi packages, non-root uid 65532)
 - `go_image` for Go service images
 - `py3_image` for Python service images
 - `OciImageInfo` provider consumed by `helm_images_values` in

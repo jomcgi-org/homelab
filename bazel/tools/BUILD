@@ -27,11 +27,6 @@ sh_binary(
     srcs = ["hf_lock.sh"],
 )
 
-sh_binary(
-    name = "help",
-    srcs = ["help.sh"],
-)
-
 # Markdown read by the monolith doc-manifest genrules (#6446). See
 # //projects/monolith:repo_docs_srcs.
 filegroup(

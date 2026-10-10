@@ -1,4 +1,0 @@
-language: python
-app: python main.py
-imports:
-  - k8s

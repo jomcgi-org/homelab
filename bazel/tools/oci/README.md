@@ -18,7 +18,6 @@ image type.
 load("//bazel/tools/oci:go_image.bzl",           "go_image")
 load("//bazel/tools/oci:apko_image.bzl",          "apko_image")
 load("//bazel/tools/oci:py3_image.bzl",           "py3_image")
-load("//bazel/tools/oci:apko_nginx_frontend.bzl", "apko_nginx_frontend")
 load("//bazel/tools/oci:providers.bzl",           "OciImageInfo", "oci_image_info")
 ```
 
@@ -27,7 +26,6 @@ load("//bazel/tools/oci:providers.bzl",           "OciImageInfo", "oci_image_inf
 | `go_image`            | macro    | `go_image.bzl`            | amd64 OCI image from a Go binary (distroless base)                |
 | `apko_image`          | macro    | `apko_image.bzl`          | apko-based OCI image, optionally with extra tar layers            |
 | `py3_image`           | macro    | `py3_image.bzl`           | amd64 Python 3 image using `py_image_layer`                       |
-| `apko_nginx_frontend` | macro    | `apko_nginx_frontend.bzl` | Vite/React build packaged into a nginx apko image                 |
 | `OciImageInfo`        | provider | `providers.bzl`           | Provider carrying `repository` + `image_tags` files               |
 | `oci_image_info`      | rule     | `providers.bzl`           | Low-level rule that writes an `OciImageInfo` from raw strings     |
 
@@ -223,37 +221,6 @@ Created targets:
 | `{name}.push`        | Push index to the OCI registry (CI)               |
 | `{name}_config_test` | `sh_test` verifying Python runtime env is correct |
 | `{name}.info`        | `OciImageInfo` provider for `helm_chart`          |
-
-## `apko_nginx_frontend`
-
-Convenience wrapper around `apko_image` for Vite or React frontends. Stages a
-`js_run_binary` tree artifact into the nginx document root, working around
-`pkg_tar strip_prefix` limitations with Bazel tree artifacts.
-
-```python
-# projects/example/frontend/BUILD
-load("//bazel/tools/oci:apko_nginx_frontend.bzl", "apko_nginx_frontend")
-
-apko_nginx_frontend(
-    name = "image",
-    dist = ":build",     # js_run_binary with out_dirs = ["dist"]
-    config = "apko.yaml",
-    contents = "@example_frontend_lock//:contents",
-    repository = "ghcr.io/jomcgi/homelab/projects/example/frontend",
-)
-```
-
-| Arg             | Default                      | Description                                              |
-| --------------- | ---------------------------- | -------------------------------------------------------- |
-| `name`          | required                     | Target name prefix                                       |
-| `dist`          | required                     | `js_run_binary` tree artifact label (the `dist/` output) |
-| `config`        | required                     | apko YAML config (must include nginx package)            |
-| `contents`      | required                     | apko lock file label                                     |
-| `repository`    | standard GHCR path           | OCI registry repository URL                              |
-| `document_root` | `/usr/share/nginx/html`      | Nginx document root inside the container                 |
-| `visibility`    | `["//bazel/images:__pkg__"]` | Visibility of the `.push` target                         |
-
-Creates the same targets as `apko_image` (delegates to it internally).
 
 ## Connecting images to a Helm chart
 

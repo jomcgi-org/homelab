@@ -66,7 +66,7 @@ common --action_env=SOURCE_DATE_EPOCH=0
 # Release config for backwards compatibility
 common:release --stamp --workspace_status_command=./bazel/tools/workspace_status.sh
 
-common:lint --aspects=//bazel/tools/lint:linters.bzl%shellcheck//tools/lint:linters.bzl%eslint//tools/lint:linters.bzl%ruff
+common:lint --aspects=//bazel/tools/lint:linters.bzl%shellcheck,//bazel/tools/lint:linters.bzl%eslint,//bazel/tools/lint:linters.bzl%ruff
 
 # =============================================================================
 # Test Configuration
