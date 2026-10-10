@@ -32,14 +32,6 @@ type Handler func(ctx context.Context, r *Request) (*Response, error)
 // Option configures a Server.
 type Option func(*Server)
 
-// WithChain installs a hook Chain that wraps every /invoke dispatch. The
-// default is an empty chain, which runs the Handler directly.
-func WithChain(c Chain) Option {
-	return func(s *Server) {
-		s.chain = c
-	}
-}
-
 // WithReady sets the function polled by GET /shim/ready. The endpoint returns
 // 200 when fn returns true and 503 when fn returns false. The default function
 // always returns true. fc-invoke's warm-base readiness probe uses this: the
@@ -70,7 +62,6 @@ func WithClock(fn func(epochMs int64) error) Option {
 // Firecracker.
 type Server struct {
 	h     Handler
-	chain Chain
 	ready func() bool
 	clock func(epochMs int64) error
 	srv   *http.Server
@@ -98,7 +89,7 @@ func NewServer(h Handler, opts ...Option) *Server {
 // Routes:
 //   - GET /shim/healthz   : liveness probe, always 200.
 //   - GET /shim/ready     : readiness probe, 200 or 503 per WithReady.
-//   - /invoke, /invoke/   : workload handler, wrapped by the hook chain.
+//   - /invoke, /invoke/   : workload handler.
 //   - everything else     : 404 (ServeMux default).
 func (s *Server) mux() *http.ServeMux {
 	mux := http.NewServeMux()
@@ -124,11 +115,11 @@ func (s *Server) mux() *http.ServeMux {
 }
 
 // invokeHandler builds a Request from the incoming HTTP request, runs it
-// through the hook chain and Handler, and writes the Response. On any error
-// it responds 502 Bad Gateway.
+// through the Handler, and writes the Response. On any error it responds 502
+// Bad Gateway.
 func (s *Server) invokeHandler(w http.ResponseWriter, r *http.Request) {
 	req := &Request{Path: r.URL.Path, Body: r.Body}
-	resp, err := s.chain.Run(r.Context(), req, s.h)
+	resp, err := s.h(r.Context(), req)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("bad gateway: %s", err), http.StatusBadGateway)
 		return

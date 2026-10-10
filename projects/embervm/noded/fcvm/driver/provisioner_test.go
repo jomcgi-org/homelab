@@ -150,51 +150,6 @@ func TestDriverClaimProvisionFailureAborts(t *testing.T) {
 	}
 }
 
-func TestDevmapperAllocReusesFreedThinIDs(t *testing.T) {
-	p := &DevmapperProvisioner{StateDir: shortTempDir(t)}
-	if err := p.loadState(); err != nil {
-		t.Fatalf("loadState: %v", err)
-	}
-	a := p.allocThreadID()
-	b := p.allocThreadID()
-	if a != threadDevIDStart || b != threadDevIDStart+1 {
-		t.Fatalf("alloc = %d,%d; want %d,%d", a, b, threadDevIDStart, threadDevIDStart+1)
-	}
-	// Free a, then the next alloc must reuse it rather than grow the high-water.
-	p.state.FreeThread = append(p.state.FreeThread, a)
-	if reused := p.allocThreadID(); reused != a {
-		t.Fatalf("alloc after free = %d, want reused %d", reused, a)
-	}
-}
-
-func TestDevmapperStateRoundTrips(t *testing.T) {
-	dir := shortTempDir(t)
-	p := &DevmapperProvisioner{StateDir: dir}
-	if err := p.loadState(); err != nil {
-		t.Fatalf("loadState: %v", err)
-	}
-	p.state.Active["t-1"] = p.allocThreadID()
-	p.state.BaseLoaded = true
-	p.state.BaseSig = "sig-1"
-	if err := p.saveState(); err != nil {
-		t.Fatalf("saveState: %v", err)
-	}
-	// A fresh provisioner over the same dir recovers the allocation table.
-	q := &DevmapperProvisioner{StateDir: dir}
-	if err := q.loadState(); err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if q.state.Active["t-1"] != threadDevIDStart || !q.state.BaseLoaded || q.state.BaseSig != "sig-1" {
-		t.Fatalf("recovered state = %+v", q.state)
-	}
-}
-
-func TestDMNameSanitizes(t *testing.T) {
-	if got := dmName("fcthr-", "t-ab/cd:12"); got != "fcthr-t-ab_cd_12" {
-		t.Fatalf("dmName = %q", got)
-	}
-}
-
 func TestBootArgsAppendsInit(t *testing.T) {
 	d := New(Config{
 		KernelBootArgs: "console=ttyS0",

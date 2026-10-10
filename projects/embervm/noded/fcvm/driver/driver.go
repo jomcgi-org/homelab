@@ -84,13 +84,6 @@ type Config struct {
 	// shared read-only rootfs file can back every microVM restored from a single
 	// warm base without per-thread provisioning or corruption.
 	RootfsReadOnly bool
-	// Provisioner selects the per-thread rootfs strategy (ADR 026): "copy" (the
-	// default CopyProvisioner full file copy) or "devmapper" (DevmapperProvisioner
-	// copy-on-write thin-snapshot). An empty value means "copy".
-	Provisioner string
-	// ThinPool is the devmapper thin-pool name the DevmapperProvisioner snapshots
-	// into (e.g. "devpool"); ignored by the copy provisioner.
-	ThinPool string
 	// HarnessInit, when set, is appended to the kernel command line as
 	// init=<path> so the guest boots straight into fc-agent-init (raw FC boot
 	// ignores the OCI entrypoint).
@@ -458,15 +451,7 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) API) *
 		return mergeMemoryDiff(ctx, cfg.SnapshotEditorPath, basePath, diffPath, outputPath)
 	}
 	if cfg.BaseRootfsPath != "" {
-		if cfg.Provisioner == "devmapper" {
-			d.provisioner = &DevmapperProvisioner{
-				Pool:     cfg.ThinPool,
-				Base:     cfg.BaseRootfsPath,
-				StateDir: cfg.SnapshotRoot,
-			}
-		} else {
-			d.provisioner = &CopyProvisioner{Base: cfg.BaseRootfsPath}
-		}
+		d.provisioner = &CopyProvisioner{Base: cfg.BaseRootfsPath}
 	}
 	return d
 }
@@ -3255,10 +3240,10 @@ func (d *Driver) RemoveBundle(threadID string) error {
 	if threadID == "" {
 		return fmt.Errorf("driver: RemoveBundle requires a threadID")
 	}
-	// Release the provisioner's out-of-dir resources first (a CoW thin device +
-	// its pool allocation); the COW data lives in the pool, not the bundle dir, so
-	// RemoveAll alone would leak the dm device and its thin id. The VM process is
-	// already killed (Release ran before reclaim), so the device is free.
+	// Release the provisioner's out-of-dir resources first: a CoW provisioner
+	// would keep its data outside the bundle dir, so RemoveAll alone could leak
+	// it. The VM process is already killed (Release ran before reclaim), so the
+	// rootfs is free.
 	if d.provisioner != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
 		defer cancel()

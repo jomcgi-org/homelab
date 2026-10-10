@@ -188,7 +188,7 @@ func (c *Client) PutBootSource(ctx context.Context, b BootSource) error {
 	return c.do(ctx, http.MethodPut, "/boot-source", b)
 }
 
-// PutDrive attaches a block device (the devmapper rootfs).
+// PutDrive attaches a block device (the per-thread rootfs).
 func (c *Client) PutDrive(ctx context.Context, d Drive) error {
 	return c.do(ctx, http.MethodPut, "/drives/"+d.DriveID, d)
 }
