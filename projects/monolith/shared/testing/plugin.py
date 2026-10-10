@@ -11,13 +11,14 @@ import logging
 import os
 import pwd
 import random
-import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -188,6 +189,29 @@ def _find_migrations_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _logged_postgres(command, env):
+    """Capture server logs without a pipe that expected SQL errors can fill."""
+    with tempfile.TemporaryFile() as output:
+        proc = subprocess.Popen(
+            command,
+            env=env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            preexec_fn=_pg_preexec,
+        )
+        try:
+            yield proc, output
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+
+
 @pytest.fixture(scope="session")
 def pg(tmp_path_factory):
     """Start a real PostgreSQL 16 + pgvector instance for the test session."""
@@ -268,7 +292,7 @@ def pg(tmp_path_factory):
         )
 
     # --- start postgres ---
-    proc = subprocess.Popen(
+    with _logged_postgres(
         [
             str(pg_bin / "postgres"),
             "-D",
@@ -280,70 +304,59 @@ def pg(tmp_path_factory):
             "-c",
             f"dynamic_library_path={lib_path_str}",
         ],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        preexec_fn=_pg_preexec,
-    )
+        env,
+    ) as (proc, output):
+        # --- wait for ready ---
+        pg_isready = pg_bin / "pg_isready"
+        deadline = time.monotonic() + 6.0
+        ready = False
+        while time.monotonic() < deadline:
+            result = subprocess.run(  # nosemgrep: subprocess-run-no-timeout
+                [str(pg_isready), "-h", "127.0.0.1", "-p", str(port), "-U", "test"],
+                env=env,
+                capture_output=True,
+                preexec_fn=_pg_preexec,
+            )
+            if result.returncode == 0:
+                ready = True
+                break
+            time.sleep(0.2)
 
-    # --- wait for ready ---
-    pg_isready = pg_bin / "pg_isready"
-    deadline = time.monotonic() + 6.0
-    ready = False
-    while time.monotonic() < deadline:
-        result = subprocess.run(  # nosemgrep: subprocess-run-no-timeout
-            [str(pg_isready), "-h", "127.0.0.1", "-p", str(port), "-U", "test"],
-            env=env,
-            capture_output=True,
-            preexec_fn=_pg_preexec,
-        )
-        if result.returncode == 0:
-            ready = True
-            break
-        time.sleep(0.2)
+        if not ready:
+            proc.terminate()
+            proc.wait(timeout=5)
+            output.seek(0)
+            stderr = output.read().decode(errors="replace")
+            raise RuntimeError(
+                f"PostgreSQL failed to become ready within 6s on port {port}.\n"
+                f"stderr: {stderr}"
+            )
 
-    if not ready:
-        proc.terminate()
-        proc.wait(timeout=5)
-        stderr = proc.stderr.read().decode() if proc.stderr else ""
-        raise RuntimeError(
-            f"PostgreSQL failed to become ready within 6s on port {port}.\n"
-            f"stderr: {stderr}"
-        )
+        # --- create database and install pgvector ---
+        base_url = f"postgresql+psycopg://test@127.0.0.1:{port}"
+        engine = create_engine(f"{base_url}/postgres")
+        with engine.connect() as conn:
+            conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+            conn.execute(text("CREATE DATABASE monolith"))
+        engine.dispose()
 
-    # --- create database and install pgvector ---
-    base_url = f"postgresql+psycopg://test@127.0.0.1:{port}"
-    engine = create_engine(f"{base_url}/postgres")
-    with engine.connect() as conn:
-        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
-        conn.execute(text("CREATE DATABASE monolith"))
-    engine.dispose()
+        monolith_url = f"{base_url}/monolith"
+        engine = create_engine(monolith_url)
+        with engine.connect() as conn:
+            conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        engine.dispose()
 
-    monolith_url = f"{base_url}/monolith"
-    engine = create_engine(monolith_url)
-    with engine.connect() as conn:
-        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    engine.dispose()
+        # --- apply migrations ---
+        migrations_dir = _find_migrations_dir()
+        sql_files = sorted(migrations_dir.glob("*.sql"))
+        engine = create_engine(monolith_url)
+        with engine.begin() as conn:
+            for sql_file in sql_files:
+                conn.execute(text(sql_file.read_text()))
+        engine.dispose()
 
-    # --- apply migrations ---
-    migrations_dir = _find_migrations_dir()
-    sql_files = sorted(migrations_dir.glob("*.sql"))
-    engine = create_engine(monolith_url)
-    with engine.begin() as conn:
-        for sql_file in sql_files:
-            conn.execute(text(sql_file.read_text()))
-    engine.dispose()
-
-    yield PgInfo(url=monolith_url, port=port)
-
-    # --- teardown ---
-    proc.send_signal(signal.SIGTERM)
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+        yield PgInfo(url=monolith_url, port=port)
 
 
 # ---------------------------------------------------------------------------
