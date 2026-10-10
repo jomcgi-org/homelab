@@ -33,6 +33,12 @@ function backend(role) {
     if (url.includes("/events")) return response([]);
     if (url.includes("/journal")) return response({});
     if (url.endsWith("/members")) return response(members);
+    if (url.endsWith("/voices")) return response([{ speaker_key: "narrator" }]);
+    if (url.includes("/entities?"))
+      return response({
+        items: [{ id: "npc", entity_type: "npc", name: "NPC_CANARY" }],
+        next_cursor: null,
+      });
     throw new Error(`Unexpected request ${url}`);
   });
 }
@@ -53,6 +59,7 @@ async function loadAs(role) {
 // key the page data carries for a player.
 const dmOnlyKeys = [
   "members",
+  "npcs",
   "audience",
   "audiences",
   "controls",
@@ -123,6 +130,11 @@ describe("session page load", () => {
     const serialized = JSON.stringify(data);
     expect(serialized).not.toContain("member-dm");
     expect(serialized).not.toContain("member-a");
+    expect(serialized).not.toContain("NPC_CANARY");
+    expect(fetch.mock.calls.some(([url]) => url.includes("/entities"))).toBe(
+      false,
+    );
+    expect(data.voices).toEqual([{ speaker_key: "narrator" }]);
     // Lifecycle verbs are not state the page receives: the DM view derives
     // them from its role, so nothing in player data names one.
     expect(serialized).not.toMatch(/"(start|pause|resume|end)"/);
@@ -135,6 +147,7 @@ describe("session page load", () => {
     const { data, fetch } = await loadAs("dm");
     expect(data.campaign.role).toBe("dm");
     expect(data.members).toEqual(members);
+    expect(data.npcs[0].name).toBe("NPC_CANARY");
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/members"))).toBe(
       true,
     );

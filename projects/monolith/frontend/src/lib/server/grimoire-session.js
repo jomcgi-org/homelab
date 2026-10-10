@@ -11,9 +11,10 @@ export async function sessionState(
   const campaign = lobby.campaigns.find((row) => row.id === campaignId);
   if (!campaign) error(403, "You are not a member of this campaign.");
   const base = `/campaigns/${campaignId}`;
-  const [characters, sessions] = await Promise.all([
+  const [characters, sessions, voices] = await Promise.all([
     grimoireJson(fetch, cookies, `${base}/characters`),
     grimoireJson(fetch, cookies, `${base}/sessions`),
+    grimoireJson(fetch, cookies, `${base}/voices`),
   ]);
   const session = selectedSessionId
     ? sessions.find((row) => row.id === selectedSessionId)
@@ -58,7 +59,10 @@ export async function sessionState(
   }
   const dmData =
     campaign.role === "dm"
-      ? { members: await grimoireJson(fetch, cookies, `${base}/members`) }
+      ? {
+          members: await grimoireJson(fetch, cookies, `${base}/members`),
+          npcs: await campaignNpcs(fetch, cookies, base),
+        }
       : {};
   return {
     campaign,
@@ -66,6 +70,7 @@ export async function sessionState(
     session,
     events,
     journal,
+    voices,
     user: lobby.user,
     ...(selectedSessionId ? { selectedSessionId } : {}),
     ...dmData,
@@ -82,6 +87,25 @@ const journalSections = [
   "rolls",
   "open_threads",
 ];
+
+async function campaignNpcs(fetch, cookies, base) {
+  const npcs = [];
+  let cursor = null;
+  do {
+    const query = new URLSearchParams({ type: "npc", limit: "500" });
+    if (cursor) query.set("cursor", cursor);
+    const page = await grimoireJson(
+      fetch,
+      cookies,
+      `${base}/entities?${query}`,
+    );
+    npcs.push(
+      ...(page.items || []).filter((entity) => entity.entity_type === "npc"),
+    );
+    cursor = page.next_cursor;
+  } while (cursor);
+  return npcs;
+}
 
 function sessionJournal(view) {
   return {

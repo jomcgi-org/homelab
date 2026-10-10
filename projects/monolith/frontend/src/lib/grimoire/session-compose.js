@@ -1,7 +1,14 @@
 // The composer's "Send to" choice is a single select value: `table`, `dm`
 // or `pc:<character id>`. Turn it into the message the session page posts
 // to its state endpoint, which forwards the audience fields to the backend.
-export function composeMessage({ text, dm, audience, replyTo, resolved }) {
+export function composeMessage({
+  text,
+  dm,
+  audience,
+  replyTo,
+  resolved,
+  speakerKey,
+}) {
   const toPc = audience.startsWith("pc:");
   return {
     operation: "post",
@@ -11,5 +18,6 @@ export function composeMessage({ text, dm, audience, replyTo, resolved }) {
     pcIds: toPc ? [audience.slice(3)] : [],
     replyTo: replyTo?.id,
     resolved,
+    ...(dm && speakerKey !== undefined ? { speakerKey } : {}),
   };
 }

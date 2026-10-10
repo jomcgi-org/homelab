@@ -34,7 +34,12 @@ function retracted(row) {
 
 function pageData(role, events, { journal = null, session } = {}) {
   return {
-    campaign: { id: campaignId, name: "Adventure", role },
+    campaign: {
+      id: campaignId,
+      name: "Adventure",
+      role,
+      player_character_id: role === "dm" ? null : pcA,
+    },
     characters: [
       { id: pcA, character_name: "Aria", approved: null },
       { id: pcB, character_name: "Bram", approved: null },
@@ -43,9 +48,19 @@ function pageData(role, events, { journal = null, session } = {}) {
       session === undefined ? { id: sessionId, status: "active" } : session,
     events,
     journal,
+    voices: [],
     user: { id: "viewer" },
     ...(role === "dm"
-      ? { members: [{ id: "member-a", player_character_id: pcA }] }
+      ? {
+          members: [{ id: "member-a", player_character_id: pcA }],
+          npcs: [
+            {
+              id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              name: "NPC_CANARY",
+              entity_type: "npc",
+            },
+          ],
+        }
       : {}),
   };
 }
@@ -95,6 +110,7 @@ afterEach(async () => {
   if (instance) await unmount(instance);
   instance = undefined;
   document.body.innerHTML = "";
+  localStorage.clear();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.useRealTimers();
@@ -283,6 +299,242 @@ describe("session inventory", () => {
   });
 });
 
+describe("session read-aloud controls and voice composer", () => {
+  function speechDevice() {
+    const synth = {
+      speak: vi.fn(),
+      cancel: vi.fn(),
+      getVoices: () => [],
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal("speechSynthesis", synth);
+    vi.stubGlobal(
+      "SpeechSynthesisUtterance",
+      class {
+        constructor(text) {
+          this.text = text;
+        }
+      },
+    );
+    return synth;
+  }
+  const checkbox = (label) =>
+    [...document.querySelectorAll("label")]
+      .find((node) => node.textContent.trim() === label)
+      ?.querySelector("input");
+  async function choose(select, value) {
+    // happy-dom's :checked selector omits options. Supply the selected option
+    // for Svelte's binding while retaining the real change listener and form.
+    const query = select.querySelector.bind(select);
+    vi.spyOn(select, "querySelector").mockImplementation((selector) =>
+      selector === ":checked"
+        ? [...select.options].find((option) => option.value === select.value)
+        : query(selector),
+    );
+    select.value = value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+  }
+
+  it("renders the DM speaker picker and editor, sends NPC and free-label narration including replies", async () => {
+    const data = pageData("dm", [
+      event("action", 1, "Hello", {
+        kind: "action",
+        audience: "dm",
+        author_member_id: "member-a",
+      }),
+    ]);
+    const fetch = stubFetch(() => data);
+    await render(data);
+    const select = document.querySelector('[aria-label="Narration speaker"]');
+    expect([...select.options].map((option) => option.text)).toEqual([
+      "Narrator",
+      "NPC_CANARY",
+      "Free label",
+    ]);
+    expect(document.querySelector(".voice-presets")).not.toBeNull();
+    await choose(select, data.npcs[0].id);
+    document.querySelector("#message").value = "The captain speaks.";
+    document
+      .querySelector("#message")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector(".composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      kind: "narration",
+      speakerKey: data.npcs[0].id,
+    });
+    const replyButton = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent.includes("Reply privately to Aria"),
+    );
+    replyButton.click();
+    await settle();
+    await choose(select, "custom");
+    const label = document.querySelector('[aria-label="Speaker label"]');
+    label.value = "Captain North";
+    label.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#message").value = "You hear a whisper.";
+    document
+      .querySelector("#message")
+      .dispatchEvent(new Event("input", { bubbles: true }));
+    document
+      .querySelector(".composer")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[1]).toMatchObject({
+      speakerKey: "Captain North",
+      replyTo: "action",
+      audience: "pcs",
+      pcIds: [pcA],
+    });
+  });
+
+  it("players never render the picker, editor or names from voice keys", async () => {
+    speechDevice();
+    const data = {
+      ...pageData("player", []),
+      voices: [
+        {
+          speaker_key: "ref:0123456789abcdef0123",
+          voice_hint: { names: ["NPC_CANARY"] },
+        },
+      ],
+    };
+    stubFetch(() => data);
+    await render(data);
+    expect(
+      document.querySelector('[aria-label="Narration speaker"]'),
+    ).toBeNull();
+    expect(document.querySelector(".voice-presets")).toBeNull();
+    expect(document.body.textContent).not.toContain("NPC_CANARY");
+    expect(document.body.textContent).not.toContain("ref:");
+    expect(checkbox("Read DM narration").checked).toBe(false);
+    expect(checkbox("Read my reveals").checked).toBe(false);
+  });
+
+  it("skips backlog, speaks new table narration by default on DM refresh, and stops", async () => {
+    vi.useFakeTimers();
+    const synth = speechDevice();
+    let data = pageData("dm", [event("backlog", 1, "Old story")]);
+    stubFetch(() => data);
+    await render(data);
+    await settle();
+    expect(synth.speak).not.toHaveBeenCalled();
+    expect(checkbox("Read DM narration").checked).toBe(true);
+    expect(checkbox("Read my reveals")).toBeUndefined();
+    data = pageData("dm", [
+      ...data.events,
+      event("new", 2, "New story"),
+      event("private", 3, "PRIVATE_CANARY", {
+        audience: "pcs",
+        audience_pc_ids: [pcA],
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(synth.speak).toHaveBeenCalledTimes(1);
+    expect(synth.speak.mock.calls[0][0].text).toBe("New story");
+    const stop = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Stop read-aloud",
+    );
+    expect(stop.disabled).toBe(false);
+    stop.click();
+    await tick();
+    expect(stop.disabled).toBe(true);
+    expect(synth.cancel).toHaveBeenCalledTimes(2);
+    checkbox("Read DM narration").click();
+    await tick();
+    expect(
+      JSON.parse(localStorage.getItem(`grimoire:read-aloud:${campaignId}`))
+        .narration,
+    ).toBe(false);
+  });
+
+  it("reads new received reveals only after player opt-in and honors individual retractions", async () => {
+    vi.useFakeTimers();
+    const synth = speechDevice();
+    let data = pageData("player", []);
+    stubFetch(() => data);
+    await render(data);
+    checkbox("Read my reveals").click();
+    await tick();
+    data = pageData("player", [
+      event("reveal", 1, "", {
+        kind: "reveal",
+        audience: "pcs",
+        audience_pc_ids: [pcA],
+        body: {
+          retracted_entity_ids: ["gone"],
+          reveals: [
+            { entity_id: "known", name: "Mara", grant_scope: "name_only" },
+            { entity_id: "gone", name: "RETRACTED_CANARY" },
+            { entity_id: "silent", name: "SILENT_CANARY", silent: true },
+          ],
+        },
+      }),
+    ]);
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(synth.speak).toHaveBeenCalledTimes(1);
+    expect(synth.speak.mock.calls[0][0].text).toBe("Mara");
+  });
+
+  it("hides read-aloud controls when speech synthesis is unavailable", async () => {
+    vi.stubGlobal("speechSynthesis", undefined);
+    stubFetch(() => pageData("player", []));
+    await render(pageData("player", []));
+    expect(document.querySelector('[aria-label="Read aloud"]')).toBeNull();
+  });
+
+  it("saves and deletes DM voice presets through the state operations", async () => {
+    const data = {
+      ...pageData("dm", []),
+      voices: [
+        {
+          speaker_key: "narrator",
+          voice_hint: { lang: "en-US", names: ["English"] },
+          rate: 1,
+          pitch: 1,
+        },
+      ],
+    };
+    const fetch = stubFetch(() => data);
+    await render(data);
+    const set = async (label, value, type = "input") => {
+      const input = document.querySelector(`[aria-label="${label}"]`);
+      input.value = value;
+      input.dispatchEvent(new Event(type, { bubbles: true }));
+      await tick();
+    };
+    await set("Language hint", "en-GB");
+    await set("Preferred voice names", "North, English");
+    await set("Voice rate", "0.8");
+    await set("Voice pitch", "0.6");
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      operation: "saveVoice",
+      speakerKey: "narrator",
+      voice_hint: { lang: "en-GB", names: ["North", "English"] },
+      rate: 0.8,
+      pitch: 0.6,
+    });
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent === "Delete voice")
+      .click();
+    await settle();
+    expect(posted(fetch)[1]).toMatchObject({
+      operation: "deleteVoice",
+      speakerKey: "narrator",
+    });
+  });
+});
+
 describe("private session events from server projections", () => {
   it("renders a labelled knowledge search in the player view without exposing it as a DM control", async () => {
     stubFetch(() => pageData("player", []));
@@ -386,6 +638,9 @@ describe("private session events from server projections", () => {
           ],
         });
       if (path.endsWith("/characters")) return json(viewer.pcs);
+      if (path.endsWith("/voices")) return json([]);
+      if (path.endsWith("/entities"))
+        return json({ items: [], next_cursor: null });
       if (path.endsWith("/sheets")) return json({ versions: [] });
       if (path.endsWith("/sessions"))
         return json([{ id: sessionId, status: "active" }]);

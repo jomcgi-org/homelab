@@ -51,6 +51,8 @@ describe("sessionState", () => {
           campaigns: [{ id: "campaign", role: "player" }],
         });
       if (url.endsWith("/characters")) return response([{ id: "own-pc" }]);
+      if (url.endsWith("/voices"))
+        return response([{ speaker_key: "ref:opaque" }]);
       if (url.endsWith("/sheets")) return response({ versions: [] });
       if (url.endsWith("/sessions")) return response([{ id: "session" }]);
       if (url.endsWith("/journal?view=party"))
@@ -115,6 +117,11 @@ describe("sessionState", () => {
     expect(state.events).toHaveLength(501);
     expect(state.events.at(-1).seq).toBe(1003);
     expect(state).not.toHaveProperty("members");
+    expect(state).not.toHaveProperty("npcs");
+    expect(state.voices).toEqual([{ speaker_key: "ref:opaque" }]);
+    expect(fetch.mock.calls.some(([url]) => url.includes("/entities"))).toBe(
+      false,
+    );
     for (const [, options] of fetch.mock.calls) {
       expect(options.headers["x-grimoire-token"]).toBe("signed-grimoire-token");
     }
@@ -130,6 +137,38 @@ describe("sessionState", () => {
     expect(state.session).toBeNull();
     expect(state.journal).toBeNull();
     expect(state.events).toEqual([]);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it("paginates DM NPCs and filters non-NPC entities for the speaker picker", async () => {
+    const fetch = vi.fn(async (url) => {
+      if (url.endsWith("/lobby"))
+        return response({ campaigns: [{ id: "campaign", role: "dm" }] });
+      if (url.includes("/entities?")) {
+        const query = new URL(url, "http://backend.test").searchParams;
+        expect(query.get("type")).toBe("npc");
+        expect(query.get("limit")).toBe("500");
+        return response(
+          query.has("cursor")
+            ? {
+                items: [{ id: "second", entity_type: "npc", name: "Mara" }],
+                next_cursor: null,
+              }
+            : {
+                items: [
+                  { id: "first", entity_type: "npc", name: "Captain" },
+                  { id: "place", entity_type: "location" },
+                ],
+                next_cursor: "500",
+              },
+        );
+      }
+      return response([]);
+    });
+    const state = await sessionState(fetch, cookies, "campaign");
+    expect(state.npcs.map((npc) => npc.name)).toEqual(["Captain", "Mara"]);
+    expect(fetch.mock.calls.some(([url]) => url.includes("cursor=500"))).toBe(
+      true,
+    );
   });
 });
