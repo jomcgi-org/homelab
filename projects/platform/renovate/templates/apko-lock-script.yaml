@@ -40,9 +40,9 @@ data:
         continue
       fi
       echo "Refreshing ${config}"
-      # The repository registers an ARM64 execution platform for OCaml. Force
-      # the local AMD64 platform first so rules_apko selects an executable that
-      # matches this workflow pod.
+      # Force the local AMD64 execution platform first so rules_apko selects an
+      # executable that matches this workflow pod, whatever execution platforms
+      # the repository registers (an ARM64 one once picked an arm64 apko).
       bazel run \
         --extra_execution_platforms=//bazel/tools/platforms:linux_x86_64 \
         @rules_apko//apko -- lock "$config"

@@ -298,34 +298,8 @@ actions:
             fi
           fi
 
-          # ---- 2. native arm64 OCaml shard -------------------------------
-          # Select the aarch64 target platform on every workflow run. Its
-          # Arch property routes OCaml and C/C++ actions to the arm64 pool,
-          # where both toolchains compile natively. Do not filter C-dependent
-          # tests: PCRE, tree-sitter, and the C++ scanner examples are part of
-          # this shard.
-          bazel test //bazel/ocaml/... --config=ci \
-            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
-            --build_tests_only \
-            --test_tag_filters=-external
-
-          # Force the two issue acceptance tests plus a C++ scanner test to
-          # execute at this head, even when their build outputs or an earlier
-          # shard result are cached. Full output provides direct CI evidence
-          # from the PCRE and tree-sitter binaries.
-          bazel test \
-            //bazel/ocaml/examples/pcre2:pcre2_test \
-            //bazel/ocaml/examples/toycaml:toycaml_capabilities_test \
-            //bazel/ocaml/examples/toycaml:toycaml_static_link_test \
-            //bazel/ocaml/examples/treesitter:ts_test \
-            //bazel/ocaml/examples/treesitter_bash:ts_bash_test \
-            --config=ci \
-            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
-            --cache_test_results=no \
-            --test_output=all
-
           # ---- 3. deploy on main, prove images everywhere else ------------
-          # Tests and the arm64 shard above gate every publish. Publishing is
+          # The tests above gate every publish. Publishing is
           # deliberately before the final format check: formatter tool failures
           # have no bearing on whether tested images are correct, so they must
           # not stop a good build from shipping. The format result remains fatal

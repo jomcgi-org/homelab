@@ -5,8 +5,8 @@
 #   - Reads JSON from stdin with .tool_input.file_path
 #   - Always exits 0 (advisory only)
 #   - Emits a REMINDER on stderr when the path is under a covered chart or
-#     deploy tree, or a covered build/CI tree (bazel/tools/ci/, buildbuddy.yaml,
-#     bazel/ocaml/), naming the architecture doc
+#     deploy tree, or a covered build/CI tree (bazel/tools/ci/, buildbuddy.yaml),
+#     naming the architecture doc
 #   - Stays silent for every other path
 #
 # jq is mocked via a minimal Python3 stub placed earlier on PATH so the
@@ -96,13 +96,12 @@ expect_reminder "/repo/projects/embervm/deploy/values.yaml"
 expect_reminder "/repo/projects/mcp/context-forge-gateway/deploy/values.yaml" "projects/mcp/ARCHITECTURE.md"
 expect_reminder "/repo/projects/mcp/context-forge-gateway/chart/templates/httproute-scoped.yaml" "projects/mcp/ARCHITECTURE.md"
 
-# Covered build and CI trees: the tooling rollup put the ci wrapper, the
-# BuildBuddy workflow, and the ocaml ruleset behind
-# bazel/ARCHITECTURE.md. buildbuddy.yaml is a file, matched by substring.
+# Covered build and CI trees: the tooling rollup put the ci wrapper and the
+# BuildBuddy workflow behind bazel/ARCHITECTURE.md. buildbuddy.yaml is a file,
+# matched by substring.
 expect_reminder "/repo/bazel/tools/ci/ci" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/bazel/tools/ci/affected-targets.sh" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/buildbuddy.yaml" "bazel/ARCHITECTURE.md"
-expect_reminder "/repo/bazel/ocaml/toolchain/arches.bzl" "bazel/ARCHITECTURE.md"
 # what the two clusters run: the shared charts plus the hub overlays.
 expect_reminder "/repo/projects/platform/kargo/values.yaml" "projects/platform/ARCHITECTURE.md"
 expect_reminder "/repo/projects/platform-gke/kustomization.yaml" "projects/platform/ARCHITECTURE.md"
@@ -119,7 +118,7 @@ expect_silent "/repo/projects/platform/ARCHITECTURE.md"
 expect_silent "/repo/projects/embervm/README.md"
 expect_silent "/repo/projects/mcp/README.md"
 expect_silent "/repo/main.go"
-# bazel/ trees outside the four covered ones stay silent.
+# bazel/ trees outside the covered ones stay silent.
 expect_silent "/repo/bazel/helm/chart.bzl"
 expect_silent "/repo/bazel/tools/format/run-generators.sh"
 
