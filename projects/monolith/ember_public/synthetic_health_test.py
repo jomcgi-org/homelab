@@ -82,9 +82,7 @@ async def test_hour_old_success_is_ok_until_next_scheduled_probe(monkeypatch):
 
     monkeypatch.setattr(health, "read_probe", read)
     assert (
-        await health.synthetic_probe_health(
-            "codex", health.EMBER_CODEX_STALENESS_S
-        )()
+        await health.synthetic_probe_health("codex", health.EMBER_CODEX_STALENESS_S)()
     )["ok"] is True
 
 
