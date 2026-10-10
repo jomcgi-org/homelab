@@ -163,4 +163,3 @@ def test_default_off_has_no_application(documents):
     for parsed in documents.values():
         for document in parsed:
             assert document["kind"] != "Application"
-
