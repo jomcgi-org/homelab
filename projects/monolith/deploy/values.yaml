@@ -123,20 +123,8 @@ imgproxySigning:
     itemPath: "vaults/k8s-homelab/items/trips-imgproxy-signing"
 
 cfIngress:
-  public:
-    # Phase 5e cutover (ADR 004): jomcgi.dev is now served by the isolated
-    # monolith-public service. Disabled here so the old monolith pod stops
-    # claiming the public hostname. Re-enable to roll back the cutover.
-    enabled: false
-    tier: public
-    hostname: jomcgi.dev
-    servicePort: 3000
-    gateway:
-      name: cloudflare-ingress
-      namespace: envoy-gateway-system
-    rateLimit:
-      requests: 100
-      unit: Minute
+  # jomcgi.dev is served by the isolated monolith-public service (ADR 004,
+  # phase 5e cutover); this chart no longer carries a public HTTPRoute.
   private:
     enabled: true
     tier: trusted

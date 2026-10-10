@@ -60,16 +60,13 @@ FORBIDDEN_MODULES = [
     "knowledge.router",
     "knowledge.tasks_router",
     "knowledge.gaps",
-    "knowledge.ingest_queue",
     "knowledge.mcp",
     "knowledge.publish",
     # Heavy knowledge write/maintenance internals this refactor removed from
     # the public closure.
-    "knowledge.service",
     "knowledge.layout",
     # Observability writer path and private home paths.
     "observability.merged_prs_writer",
-    "home.observability.slo",
     "home.observability.rollup",
     "home.observability.stats",
     "home.schedule",

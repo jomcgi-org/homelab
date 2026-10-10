@@ -412,34 +412,11 @@ py_venv_binary(
     deps = [":monolith_backend"],  # keep
 )
 
-# Phase-1 vault-mutation script: walk a vault and inject `visibility:` lines
-# into note frontmatter that lacks the key. Run via `bazel run`:
-#   bazel run //projects/monolith:add_visibility_field -- \
-#       --vault-root /path/to/vault --dirs _processed
-py_venv_binary(
-    name = "add_visibility_field",
-    main = "knowledge/tools/add_visibility_field.py",
-    visibility = ["//:__subpackages__"],
-)
-
-# Phase-2 vault-mutation script: classify every unlabelled note via the
-# `claude` CLI subprocess and write the decision back into frontmatter.
-# Run via `bazel run`:
-#   bazel run //projects/monolith:classify_visibility_backfill -- \
-#       --vault-root /path/to/vault --report /tmp/visibility-report.json
-# The report path MUST be outside the repo working tree — rationales
-# quote note content and must never be committed.
-py_venv_binary(
-    name = "classify_visibility_backfill",
-    main = "knowledge/tools/classify_visibility_backfill.py",
-    visibility = ["//:__subpackages__"],
-)
-
 # Stdlib-only generator for the repo-docs manifest. The build runs it through
 # :repo_docs_manifest; `bazel run //projects/monolith:gen_repo_docs_manifest`
 # (or plain python3) writes the gitignored local copy at
 # knowledge/repo_docs_manifest.ndjson for a locally run backend. No `imports`
-# attr: it is a standalone stdlib script (like add_visibility_field), and
+# attr: it is a standalone stdlib script, and
 # imports = ["."] would repoint the venv main and break `bazel run`.
 py_venv_binary(
     name = "gen_repo_docs_manifest",
@@ -1055,10 +1032,8 @@ py_library(
         "@pip//pyyaml",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
-        "@pip//trafilatura",
         "@pip//tzdata",
         "@pip//uvicorn",
-        "@pip//youtube_transcript_api",
     ],
 )
 
@@ -1514,14 +1489,6 @@ py_library(
     ],
 )
 
-py_library(
-    name = "swarm_rationale",
-    srcs = ["factory/orchestration/rationale.py"],
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-    deps = [":agent_sessions_rationale"],
-)
-
 # Shared admission fence must also ship in the pruned session executor binary.
 # Keep it below the full swarm package to avoid a dependency cycle.
 py_library(
@@ -1562,7 +1529,6 @@ py_library(
             "factory/orchestration/factory_funding_limits.py",
             "factory/orchestration/factory_models.py",
             "factory/orchestration/models.py",
-            "factory/orchestration/rationale.py",
         ],
     ),
     imports = ["."],
@@ -1742,11 +1708,9 @@ py_library(
         "@pip//sqlmodel",
         "@pip//starlette",
         "@pip//timelength",
-        "@pip//trafilatura",
         "@pip//tzdata",
         "@pip//uvicorn",
         "@pip//websockets",
-        "@pip//youtube_transcript_api",
     ],
 )
 
@@ -1937,9 +1901,7 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "knowledge/router.py",
     "knowledge/tasks_router.py",
     "knowledge/gaps.py",
-    "knowledge/ingest_queue.py",
     "knowledge/mcp.py",
-    "knowledge/service.py",
     "knowledge/layout.py",
     # The public observability router needs the model and parser, never the
     # snapshot writer or its PostgreSQL mutation path.
@@ -1947,7 +1909,6 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # Private home scheduling + observability writer paths.
     "home/schedule.py",
     "home/schedule_router.py",
-    "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
     # Grimoire: only the public read path ships. The daily ingest/extract jobs
@@ -2033,15 +1994,12 @@ _AGENTS_PRUNE_EXCLUDE = [
     "knowledge/router.py",
     "knowledge/tasks_router.py",
     "knowledge/gaps.py",
-    "knowledge/ingest_queue.py",
-    "knowledge/service.py",
     "knowledge/layout.py",
     # Private home scheduling and observability writer paths. home/** is not in
     # the allowlist today, but keeping the individual paths documents the
     # boundary if a narrow home dependency is added later.
     "home/schedule.py",
     "home/schedule_router.py",
-    "home/observability/slo.py",
     "home/observability/rollup.py",
     "home/observability/stats.py",
 ]
@@ -2098,11 +2056,9 @@ py_library(
         "@pip//sqlmodel",
         "@pip//starlette",
         "@pip//timelength",
-        "@pip//trafilatura",
         "@pip//tzdata",
         "@pip//uvicorn",
         "@pip//websockets",
-        "@pip//youtube_transcript_api",
     ],
 )
 
@@ -2205,11 +2161,9 @@ py_library(
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//timelength",
-        "@pip//trafilatura",
         "@pip//tzdata",
         "@pip//uvicorn",
         "@pip//websockets",
-        "@pip//youtube_transcript_api",
     ],
 )
 
@@ -2493,11 +2447,10 @@ py_test(
 
 py_test(
     name = "rationale_test",
-    srcs = ["factory/orchestration/rationale_test.py"],
+    srcs = ["factory/execution/rationale_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
-        ":swarm_rationale",
+        ":agent_sessions_rationale",
         "@pip//pytest",
     ],
 )
@@ -3243,18 +3196,6 @@ py_test(
 py_test(
     name = "chat_digest_test",
     srcs = ["chat/digest_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "chat_channel_data_test",
-    srcs = ["chat/channel_data_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
@@ -6418,26 +6359,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_tools_add_visibility_field_test",
-    srcs = ["knowledge/tools/add_visibility_field_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_tools_classify_visibility_backfill_test",
-    srcs = ["knowledge/tools/classify_visibility_backfill_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "knowledge_gen_repo_docs_manifest_test",
     srcs = ["knowledge/gen_repo_docs_manifest_test.py"],
     imports = ["."],
@@ -8037,21 +7958,6 @@ py_test(
     ],
 )
 
-py_test(
-    name = "knowledge_service_test",
-    srcs = ["knowledge/service_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        ":pkg_scheduler",
-        "@pip//networkx",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
 sh_binary(
     name = "generate-routes",
     srcs = ["generate-routes.sh"],
@@ -8159,18 +8065,6 @@ py_test(
     deps = [
         ":pkg_knowledge",
         "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_migrate_raw_bucketing_test",
-    srcs = ["knowledge/migrate_raw_bucketing_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
     ],
 )
 
@@ -8425,27 +8319,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_ingest_queue_claim_test",
-    srcs = ["knowledge/ingest_queue_claim_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "knowledge_ingest_queue_webpage_title_test",
-    srcs = ["knowledge/ingest_queue_webpage_title_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
     name = "chat_web_search_type_error_test",
     srcs = ["chat/web_search_type_error_test.py"],
     imports = ["."],
@@ -8508,21 +8381,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_ingest_queue_router_test",
-    srcs = ["knowledge/ingest_queue_router_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_core",
-        ":pkg_framework",
-        ":pkg_knowledge",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_dead_letter_test",
     srcs = ["knowledge/dead_letter_test.py"],
     imports = ["."],
@@ -8560,16 +8418,6 @@ py_test(
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "home_observability_slo_test",
-    srcs = ["home/observability/slo_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_cyclegroup",
-        "@pip//pytest",
     ],
 )
 

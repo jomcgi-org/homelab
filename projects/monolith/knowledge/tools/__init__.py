@@ -1,1 +1,1 @@
-"""Vault-mutation tools for knowledge management (Phase-1, Phase-2 scripts)."""
+"""Build-time generators and content guards for the knowledge domain."""

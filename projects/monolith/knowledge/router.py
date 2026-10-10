@@ -30,7 +30,7 @@ from shared.embedding import EmbeddingClient
 from shared.pricing import price_usage
 from sqlmodel import Session, select
 
-from knowledge.api import enqueue_extraction, ingest_raw_with_status
+from knowledge.api import enqueue_extraction, ingest_raw, ingest_raw_with_status
 from knowledge.extraction import EXTRACTABLE_SOURCES
 from knowledge.gaps import (
     GapError,
@@ -46,7 +46,6 @@ from knowledge.gaps import (
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _GRAPH_CACHE_CONTROL, _as_utc, _graph_etag
 from knowledge.indexing import reindex_note_with_edits
-from knowledge.ingest_queue import IngestQueueItem, ingest_raw
 from knowledge.interventions import decision_reference, lock_intervention
 from knowledge.models import AtomRawProvenance, Dispute, Intervention, RawInput
 from knowledge.notes import (
@@ -561,11 +560,6 @@ async def edit_note(
     return result
 
 
-class IngestRequest(BaseModel):
-    url: str
-    source_type: Literal["youtube", "webpage"]
-
-
 _RAW_SOURCE_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 _MAX_RAW_BYTES = 2 * 1024 * 1024
 _MAX_RAW_EXTRA_BYTES = 64 * 1024
@@ -719,19 +713,6 @@ def backfill_raw_usage(
         session.add(raw)
         session.commit()
     return {"raw_id": raw.raw_id, "updated": changed}
-
-
-@router.post("/ingest", status_code=201)
-def queue_ingest(
-    data: IngestRequest,
-    session: Session = Depends(get_session),
-) -> dict:
-    if not data.url.strip():
-        raise HTTPException(status_code=400, detail="url is required")
-    item = IngestQueueItem(url=data.url.strip(), source_type=data.source_type)
-    session.add(item)
-    session.commit()
-    return {"queued": True}
 
 
 class EditNoteRequest(BaseModel):

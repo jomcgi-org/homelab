@@ -8,11 +8,10 @@ Raw markdown is ingested, decomposed into structured facts by a remote claude.ai
 
 | Module              | Description                                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **ingest_queue**    | Ingests raw markdown, routes to gardener or direct storage                                                               |
+| **raw_write**       | Persists raw markdown (content-addressed) to Postgres and the S3 raw store                                               |
 | **gardener**        | Shared decomposition constants/helpers; the decomposition runs as a remote claude.ai routine over MCP (ADR 006 Phase 4c) |
 | **gaps**            | Unresolved wikilink lifecycle: discover → classify → review → answer (classifier injected as a callable, fileless)       |
 | **store**           | pgvector-backed storage with semantic search                                                                             |
-| **service**         | FastAPI service layer                                                                                                    |
 | **router**          | HTTP API routes                                                                                                          |
 | **mcp**             | MCP tool exposure for AI agent access to the knowledge graph                                                             |
 | **links/wikilinks** | Obsidian wikilink parsing and backlink resolution                                                                        |

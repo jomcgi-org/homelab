@@ -105,20 +105,21 @@ def ingest_raw(
     original_url: str | None = None,
     extra: dict | None = None,
 ):
-    """Persist raw content into the knowledge pipeline (knowledge.ingest_queue).
+    """Persist raw content into the knowledge pipeline (knowledge.raw_write).
 
-    The ingest stack is imported lazily so cross-domain callers of this facade
-    do not pull trafilatura, youtube, and the S3 raw store at load time.
+    Content-addressed and idempotent: the ``raw_id`` is the sha256 of the
+    content, so re-ingesting identical content returns the existing row. The
+    raw store is imported lazily so cross-domain callers of this facade do not
+    pull the S3 client at load time.
     """
-    from knowledge.ingest_queue import ingest_raw as _ingest_raw
-
-    return _ingest_raw(
+    raw, _ = ingest_raw_with_status(
         session,
         content=content,
         source=source,
         original_url=original_url,
         extra=extra,
     )
+    return raw
 
 
 def ingest_raw_with_status(
@@ -132,13 +133,12 @@ def ingest_raw_with_status(
 ):
     """Persist raw content and return its row plus a created flag.
 
-    The ingest pipeline retains private-tier storage and queueing while the
-    database insert stays in the agents-safe ``knowledge.raw_write`` module.
+    The database insert lives in the agents-safe ``knowledge.raw_write``
+    module, which also uploads the body to the S3 raw store.
     """
-    from knowledge.ingest_queue import ingest_raw_with_status as _ingest_with_status
-    from knowledge.raw_write import write_raw
+    from knowledge.raw_write import persist_raw_with_status, write_raw
 
-    return _ingest_with_status(
+    return persist_raw_with_status(
         session,
         content=content,
         source=source,

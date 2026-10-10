@@ -67,7 +67,6 @@ FORBIDDEN_MODULES = [
     "chat.backfill",
     "chat.bot",
     "chat.changelog",
-    "chat.channel_data",
     "chat.cluster_agent",
     "chat.digest",
     "chat.directive_admin",
@@ -111,17 +110,14 @@ FORBIDDEN_MODULES = [
     "core.mcp_app",
     # Private knowledge routers, maintenance code, and write-path internals.
     "knowledge.gaps",
-    "knowledge.ingest_queue",
     # knowledge.raw_write is allowed: it only inserts raw metadata via SQLModel.
     "knowledge.layout",
     "knowledge.publish",
     "knowledge.router",
-    "knowledge.service",
     "knowledge.tasks_router",
     # Private home scheduling and observability writer paths.
     "home.schedule",
     "home.schedule_router",
-    "home.observability.slo",
     "home.observability.rollup",
     "home.observability.stats",
     # Other domains outside the agents tier allowlist.
@@ -338,12 +334,11 @@ def test_cluster_snapshot_accepts_authenticated_factory_and_human_principals(kin
 
 
 def test_reporting_tools_run_from_agents_import_closure(agents_db) -> None:
-    """All reporting tools run without reaching the private ingest module."""
+    """All reporting tools run from the agents import closure."""
     import app.agents_main as agents_main
 
     loaded = _loaded_modules()
     assert "knowledge.raw_write" in loaded
-    assert "knowledge.ingest_queue" not in loaded
     agents_main.build_agent_mcp_app(resolver=object())
 
     with Session(agents_db.engine) as session:
@@ -383,7 +378,6 @@ def test_reporting_tools_run_from_agents_import_closure(agents_db) -> None:
     assert report_result["status"] == "queued"
     assert dispute_result["status"] == "disputed"
     assert distress_result["status"] == "notified"
-    assert "knowledge.ingest_queue" not in sys.modules
     with Session(agents_db.engine) as session:
         raw = session.exec(
             select(RawInput).where(RawInput.raw_id == report_result["raw_id"])

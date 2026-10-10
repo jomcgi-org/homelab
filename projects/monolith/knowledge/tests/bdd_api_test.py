@@ -170,17 +170,6 @@ class TestKnowledgeNotes:
         assert r.status_code in (200, 204, 404)
 
 
-class TestKnowledgeIngest:
-    @covers_route("/api/knowledge/ingest", method="POST")
-    def test_ingest_accepts_payload(self, live_server_with_fake_embedding):
-        r = httpx.post(
-            f"{live_server_with_fake_embedding}/api/knowledge/ingest",
-            json={"content": "Ingest test", "source": "test"},
-        )
-        # Route exists and processes the request
-        assert r.status_code < 500
-
-
 class TestDeadLetter:
     @covers_route("/api/knowledge/dead-letter")
     def test_list_dead_letters(self, live_server_with_fake_embedding):

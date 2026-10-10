@@ -2,9 +2,11 @@
 
 The only internet-facing origin for public chat is the SvelteKit SSR app; the
 internal ``/internal/chat/*`` API is reachable solely in-cluster (Cilium
-datapath) and must never appear on the public HTTPRoute. This test reads the chart
-template and fails CI if a future edit adds a route path that references chat or
-the internal API prefix, so the front-door invariant cannot regress silently.
+datapath) and must never appear on the public HTTPRoute. This test reads the
+monolith-public chart template (the only public HTTPRoute; the monolith chart
+no longer carries one) and fails CI if a future edit adds a route path that
+references chat or the internal API prefix, so the front-door invariant cannot
+regress silently.
 
 The template is Go-templated (not valid YAML on its own), so the assertions are
 over the raw ``path: value:`` entries rather than a parsed manifest.
@@ -16,25 +18,20 @@ import os
 import re
 from pathlib import Path
 
+_TEMPLATE_REL = Path("projects/monolith-public/chart/templates/httproute-public.yaml")
+
 
 def _template_path() -> Path:
-    here = Path(__file__).resolve().parent / "templates" / "httproute-public.yaml"
-    if here.exists():
-        return here
     srcdir = os.environ.get("TEST_SRCDIR", "")
-    candidate = (
-        Path(srcdir)
-        / "_main"
-        / "projects"
-        / "monolith-public"
-        / "chart"
-        / "templates"
-        / "httproute-public.yaml"
-    )
-    if candidate.exists():
-        return candidate
+    runfiles = Path(srcdir) / "_main" / _TEMPLATE_REL
+    if runfiles.exists():
+        return runfiles
+    # Plain pytest from a checkout: this file lives at projects/monolith/.
+    checkout = Path(__file__).resolve().parents[2] / _TEMPLATE_REL
+    if checkout.exists():
+        return checkout
     raise FileNotFoundError(
-        f"httproute-public.yaml not found at {here} or {candidate} "
+        f"httproute-public.yaml not found at {runfiles} or {checkout} "
         f"(TEST_SRCDIR={srcdir!r})"
     )
 

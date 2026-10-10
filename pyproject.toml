@@ -111,9 +111,6 @@ dependencies = [
     "kubernetes-asyncio>=31.0",
     # Knowledge vault git sync (pure Python, no system git binary)
     "dulwich",
-    # URL ingest queue — YouTube transcripts and webpage extraction
-    "youtube-transcript-api",
-    "trafilatura",
     "lxml-html-clean",  # explicit: overrides.txt strips lxml[html-clean] to break Bazel cycle
 ]
 
