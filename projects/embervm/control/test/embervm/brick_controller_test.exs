@@ -916,27 +916,102 @@ defmodule Embervm.BrickControllerTest do
     end
   end
 
-  test "a stale victim cost on another owned pod withholds the shrink" do
-    ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
-      {:ok,
-       [%{name: "brick-a", uid: "uid-a",
-          replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
-          node_name: "node-4", phase: "Running", ready: true, deletion_cost: "-1000"},
-        %{name: "brick-b", uid: "uid-b",
-          replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
-          node_name: "node-5", phase: "Running", ready: true}]}
+  test "a stale victim cost on another owned pod is cleared and holds that tick" do
+    {:ok, pods} = Agent.start_link(fn ->
+      [%{name: "brick-a", uid: "uid-a",
+         replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+         node_name: "node-4", phase: "Running", ready: true, deletion_cost: "-1000"},
+       %{name: "brick-b", uid: "uid-b",
+         replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+         node_name: "node-5", phase: "Running", ready: true}]
     end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pods) end)
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector -> {:ok, Agent.get(pods, & &1)} end)
 
     Agent.update(ctx.facts, fn [victim] ->
-      [victim,
+      [%{victim | live_vms: 1},
        %{victim | pod_uid: "uid-b", node_id: "node-5", instance_id: "node-5/uid-b",
          session_volumes: []}]
     end)
 
     log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
     assert log =~ "reason=stale_deletion_cost"
-    assert ctx.annotated.() == []
+    cleared = ctx.annotated.()
+    assert cleared != []
+    assert Enum.all?(cleared, fn {_, pod, annotations} ->
+             pod == "brick-a" and annotations == %{"controller.kubernetes.io/pod-deletion-cost" => :null}
+           end)
     assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+
+    # The cleared annotation is gone on the next read; B is then directed.
+    Agent.update(pods, fn [a, b] -> [Map.delete(a, :deletion_cost), b] end)
+    archive_gate_tick(ctx)
+    assert Enum.any?(ctx.annotated.(), fn {_, pod, annotations} ->
+             pod == "brick-b" and
+               annotations == %{"controller.kubernetes.io/pod-deletion-cost" => "-1000"}
+           end)
+    assert List.last(ctx.calls.()) == {"embervm", "embervm-embervm-noded-brick-2gi", 1}
+  end
+
+  test "Failed, Succeeded and terminating pods are ignored by the sibling, stale and mixed checks" do
+    ignored = [
+      %{phase: "Failed", ready: false},
+      %{phase: "Succeeded", ready: false},
+      %{phase: "Running", ready: true, terminating: true, deletion_cost: "-1000"},
+      %{phase: "Failed", ready: false, template_hash: "old",
+        replica_set: "embervm-embervm-noded-brick-2gi-old", deletion_cost: "-1000"}
+    ]
+
+    for extra <- ignored do
+      sibling =
+        Map.merge(
+          %{name: "brick-b", uid: "uid-b",
+            replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+            node_name: "node-5"},
+          extra
+        )
+
+      ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+        {:ok,
+         [%{name: "brick-a", uid: "uid-a",
+            replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+            node_name: "node-4", phase: "Running", ready: true}, sibling]}
+      end)
+
+      Agent.update(ctx.facts, fn [victim] -> [Map.put(victim, :session_volumes, [])] end)
+      archive_gate_tick(ctx)
+      assert ctx.annotated.() != []
+      assert Enum.all?(ctx.annotated.(), fn {_, pod, _} -> pod == "brick-a" end)
+      assert List.last(ctx.calls.()) == {"embervm", "embervm-embervm-noded-brick-2gi", 1}
+    end
+  end
+
+  test "an unassigned or Unknown-phase sibling withholds the acknowledged victim shrink" do
+    siblings = [
+      %{phase: "Pending", ready: false},
+      %{phase: "Unknown", ready: true, node_name: "node-5"}
+    ]
+
+    for extra <- siblings do
+      sibling =
+        Map.merge(
+          %{name: "brick-b", uid: "uid-b",
+            replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash"},
+          extra
+        )
+
+      ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+        {:ok,
+         [%{name: "brick-a", uid: "uid-a",
+            replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+            node_name: "node-4", phase: "Running", ready: true}, sibling]}
+      end)
+
+      Agent.update(ctx.facts, fn [victim] -> [Map.put(victim, :session_volumes, [])] end)
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=sibling_not_ready"
+      assert ctx.annotated.() == []
+    end
   end
 
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do

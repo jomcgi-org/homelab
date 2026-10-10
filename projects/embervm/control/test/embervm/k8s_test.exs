@@ -29,6 +29,9 @@ defmodule Embervm.K8sTest do
     assert K8s.pod_identity(%{"metadata" => Map.delete(metadata, "ownerReferences")}).replica_set == nil
     assert K8s.pod_identity(%{"metadata" => metadata}).ready == false
     assert K8s.pod_identity(%{"metadata" => metadata}).terminating == false
+
+    terminating = Map.put(metadata, "deletionTimestamp", "2026-10-10T00:00:00Z")
+    assert K8s.pod_identity(%{"metadata" => terminating}).terminating == true
   end
 
   test "TokenReview request requires the component audience" do
