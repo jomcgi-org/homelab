@@ -3,11 +3,15 @@
   import RevealEditor from "./RevealEditor.svelte";
   let { endpoint, characters, changed } = $props();
   let open = $state(false);
+  // Once opened the editor stays mounted (hidden when closed), so a search and
+  // a chosen entity survive closing the drawer between reveals.
+  let started = $state(false);
   let opener = $state(null);
   let panel = $state(null);
 
   async function show() {
     open = true;
+    started = true;
     await tick();
     panel?.focus();
   }
@@ -33,13 +37,14 @@
   aria-expanded={open}
   onclick={show}>Reveal knowledge</button
 >
-{#if open}
+{#if started}
   <div
     bind:this={panel}
     class="grimoire drawer"
     role="dialog"
     aria-labelledby="reveal-panel-title"
     tabindex="-1"
+    hidden={!open}
     onkeydown={keydown}
   >
     <div class="head">
@@ -58,6 +63,9 @@
     background: var(--grim-surface);
     border: 1px solid var(--grim-line);
     cursor: pointer;
+  }
+  .drawer[hidden] {
+    display: none;
   }
   .drawer {
     position: fixed;

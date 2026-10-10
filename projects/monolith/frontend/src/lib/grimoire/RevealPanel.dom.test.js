@@ -25,13 +25,14 @@ async function render() {
   await settle();
 }
 const opener = () => buttonByText(document.body, "Reveal knowledge");
-const dialog = () => document.querySelector('[role="dialog"]');
+// A closed drawer stays mounted but hidden, so it is not a dialog to a reader.
+const dialog = () => document.querySelector('[role="dialog"]:not([hidden])');
 
 describe("reveal drawer", () => {
   it("opens a labelled dialog with focus inside and no editor until opened", async () => {
     await render();
-    expect(dialog()).toBeNull();
-    expect(document.body.textContent).not.toContain("Knowledge scope");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Find knowledge");
     opener().click();
     await settle();
     expect(dialog().getAttribute("aria-labelledby")).toBe("reveal-panel-title");
@@ -52,6 +53,20 @@ describe("reveal drawer", () => {
     await settle();
     expect(dialog()).toBeNull();
     expect(document.activeElement).toBe(opener());
+  });
+
+  it("keeps the editor state across a close and reopen", async () => {
+    await render();
+    opener().click();
+    await settle();
+    const input = dialog().querySelector("input");
+    input.value = "Mara";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    buttonByText(dialog(), "Close reveal panel").click();
+    await settle();
+    opener().click();
+    await settle();
+    expect(dialog().querySelector("input").value).toBe("Mara");
   });
 
   it("closes from the close button and returns focus to the opener", async () => {
