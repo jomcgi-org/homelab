@@ -1455,6 +1455,14 @@ defmodule Embervm.NodeRegistry do
         state.reassign_fun.(node_id)
       rescue
         e -> Logger.error("embervm node registry: reassign for #{node_id} raised: #{inspect(e)}")
+      catch
+        # The reassign is a GenServer.call into the TaskStore; a timeout or a
+        # store restart arrives as an exit, which rescue does not catch. Letting it
+        # propagate would crash this registry, drop the capacity ETS table it owns
+        # and restart every lifecycle manager above it under rest_for_one, turning
+        # one brick's down edge into a control-plane-wide restart.
+        :exit, reason ->
+          Logger.error("embervm node registry: reassign for #{node_id} exited: #{inspect(reason)}")
       end
     end
 
@@ -2557,16 +2565,18 @@ defmodule Embervm.NodeRegistry do
     end
   end
 
-  # The production reassignment path: a node going down means every task it held
+  # The production reassignment path: a node going down means every task IT held
   # in-flight must be retried (at-least-once; we cannot know whether the guest
-  # completed). In v1 there is exactly one node, so every in-flight task IS on
-  # this node; Embervm.TaskStore.reassign_in_flight/0 fails each through the
-  # existing Retry policy (transport class -> failed_retryable, then the
-  # dispatcher's retry moves it back to queued). Inert until Task 11 actually
-  # dispatches (nothing is ever in-flight before then), but wired and correct.
+  # completed). node_id here is the registry's instance id, the same identity the
+  # dispatcher records on each task at :assign/:start, so
+  # Embervm.TaskStore.reassign_in_flight/2 fails exactly that brick's tasks (and
+  # any whose placement is unknown) through the existing Retry policy (transport
+  # class -> failed_retryable, then the dispatcher's retry moves it back to
+  # queued). Tasks still running on healthy bricks are left alone: re-queuing
+  # them would run them twice and drop the result their VM later returns.
   defp default_reassign(node_id) do
     Logger.warning("embervm node registry: reassigning in-flight tasks from downed node #{node_id}")
-    Embervm.TaskStore.reassign_in_flight()
+    Embervm.TaskStore.reassign_in_flight(Embervm.TaskStore, node_id)
     :ok
   end
 
