@@ -6,7 +6,7 @@
 
 {#if entity?.recognition_only}<p>You recognize this name.</p>{/if}
 {#each knowledgeFields(entity) as [key, value]}
-  <section>
+  <section data-field={key}>
     <h3>{key.replaceAll("_", " ")}</h3>
     {#if typeof value === "string"}<Markdown text={value} />
     {:else if Array.isArray(value)}<ul>

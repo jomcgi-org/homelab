@@ -1,6 +1,6 @@
 <script>
   import { knowledgeFields, selectedDetails } from "./knowledge-fields.js";
-  import KnowledgeDetails from "./KnowledgeDetails.svelte";
+  import RevealProjection from "./RevealProjection.svelte";
   let { endpoint, characters, changed } = $props();
   let query = $state("");
   let recipient = $state("");
@@ -98,8 +98,7 @@
   }
 </script>
 
-<details class="reveal-editor">
-  <summary>Reveal knowledge</summary>
+<div class="reveal-editor">
   <form onsubmit={search}>
     <label
       >Find knowledge<input
@@ -179,8 +178,12 @@
             {characters.find((pc) => pc.id === preview.player_character_id)
               ?.character_name}
           </h4>
-          <p>{preview.projection.name} · {preview.projection.entity_type}</p>
-          <KnowledgeDetails entity={preview.projection} />{/each}
+          <RevealProjection
+            knowledge={{
+              projection: preview.projection,
+              grant_scope: scope,
+            }}
+          />{/each}
       </div>
       <button disabled={busy} onclick={() => save("reveal")}
         >Share knowledge</button
@@ -201,17 +204,11 @@
   {/if}
   {#if failure}<p role="alert">{failure}</p>{/if}
   {#if notice}<p role="status">{notice}</p>{/if}
-</details>
+</div>
 
 <style>
   .reveal-editor {
-    margin-top: 24px;
-    border-top: 1px solid var(--grim-line);
-    padding-top: 16px;
-  }
-  summary {
-    cursor: pointer;
-    padding-bottom: 12px;
+    padding-top: 8px;
   }
   form,
   label {

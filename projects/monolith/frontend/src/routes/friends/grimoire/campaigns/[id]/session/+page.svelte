@@ -2,7 +2,8 @@
   import { onMount, untrack, tick } from "svelte";
   import { sheetRolls } from "$lib/grimoire/sheet-rolls.js";
   import { composeMessage } from "$lib/grimoire/session-compose.js";
-  import RevealEditor from "$lib/grimoire/RevealEditor.svelte";
+  import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
+  import RevealProjection from "$lib/grimoire/RevealProjection.svelte";
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
   import JournalPanel from "$lib/grimoire/SessionJournalPanel.svelte";
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
@@ -299,21 +300,7 @@
                 {#if knowledge.retracted}<p>
                     Knowledge retracted: {knowledge.name}.
                   </p>{:else}
-                  <p>
-                    <strong>{knowledge.name}</strong> · {knowledge.entity_type}
-                  </p>
-                  {#if knowledge.grant_scope === "name_only"}
-                    <p>You recognize this name.</p>
-                  {:else}
-                    {#each Object.entries((knowledge.projection || knowledge.entity)?.revealed_details || knowledge.projection || knowledge.entity || {}).filter(([key, value]) => !["id", "name", "entity_type", "source_type", "source_book", "site", "is_global", "created_at", "created_in_session"].includes(key) && value !== null) as [key, value]}
-                      <p>
-                        <strong>{key.replaceAll("_", " ")}:</strong>
-                        {typeof value === "object"
-                          ? JSON.stringify(value)
-                          : value}
-                      </p>
-                    {/each}
-                  {/if}
+                  <RevealProjection {knowledge} />
                 {/if}
                 {#if !knowledge.retracted && knowledge.grant_scope !== "name_only"}
                   <button
@@ -506,7 +493,7 @@
     </section>
 
     <aside>
-      {#if dm && playing}<RevealEditor
+      {#if dm && playing}<RevealPanel
           endpoint={endpoint()}
           characters={state.characters}
           changed={refresh}
