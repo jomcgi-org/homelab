@@ -118,6 +118,36 @@ def can_see_note(viewer: Viewer, member: Member | None, row) -> bool:
     return False
 
 
+def inventory_predicate(table, viewer: Viewer):
+    """Campaign scoping is separate. Unknown owner kinds fail closed, even for DM."""
+    columns = table.c if hasattr(table, "c") else table
+    party = and_(columns.owner_kind == "party", columns.player_character_id.is_(None))
+    character = and_(
+        columns.owner_kind == "character", columns.player_character_id.is_not(None)
+    )
+    if viewer == "dm":
+        visible = or_(party, character)
+    elif viewer is None:
+        visible = false()
+    else:
+        visible = or_(
+            and_(party, columns.hidden_from_party.is_(False)),
+            and_(character, columns.player_character_id == viewer),
+        )
+    return and_(columns.deleted_at.is_(None), visible)
+
+
+def can_see_item(viewer: Viewer, row) -> bool:
+    """Python twin of inventory_predicate, including malformed owners."""
+    if row.deleted_at is not None or viewer is None:
+        return False
+    if row.owner_kind == "party" and row.player_character_id is None:
+        return viewer == "dm" or not row.hidden_from_party
+    if row.owner_kind == "character" and row.player_character_id is not None:
+        return viewer == "dm" or viewer == row.player_character_id
+    return False
+
+
 class _HasPC(FunctionElement):
     """Exact JSON array membership, never serialized-text substring matching."""
 

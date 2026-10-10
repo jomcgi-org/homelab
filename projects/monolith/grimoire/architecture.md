@@ -263,6 +263,35 @@ transaction keeps knowledge and feed changes together; an identity-free
 silent retraction leaves no entity data for a read path to expose. Sharing
 the visibility predicate keeps reveal search aligned with player knowledge.
 
+## Inventory
+
+`inventory_item` holds the party pool and each character's inventory without
+computing encumbrance. The DM can give, edit, move and soft-delete any item.
+Players can change their own quantities and move non-hidden items between their
+own inventory and the visible party pool. Characterless members see no items
+and cannot mutate any. Deleted items disappear from lists; the DM retains their
+audit history. SQL and Python predicates share SQLite and PostgreSQL agreement
+tests against an independent oracle. Entity chips and audit entity edits are
+projected through each viewer's grants, never exposed as raw hidden entity ids.
+
+**Why.** Players see only their own character's identity, so every character
+item, hidden or not, is visible only to its owner and the DM. Non-hidden party
+items are visible to every member with a character; hidden party items only to
+the DM. Every mutation writes an append-only `inventory_change` with actor,
+quantity delta, reason and field/owner provenance. Owner ids in player audit
+views become `party`, `you` or `character`. PostgreSQL rejects direct audit
+updates; only nested FK deletion actions may null the three provenance FKs,
+and DELETE remains available for campaign cascades. This preserves the required
+FK lifecycle without allowing edits to the audit contents. A partial move
+writes source and destination changes in the same transaction. Inventory is
+campaign state and works with play disabled. When play is enabled and a session
+is active or paused, every change records its session; non-hidden changes also
+append one table `system` event, atomically. Hiding emits no event; unhiding does.
+Event text uses only the party pool or a character's inventory, never character,
+member or entity identity. With no current session both provenance FKs are NULL.
+There is no `public_reader` grant. The sheet engine, not inventory, owns derived
+encumbrance. The session-screen UI follows the backend in #6633.
+
 ## Notes
 
 `grimoire.note` stores character and party notes, with an opt-in `dm_readable`
