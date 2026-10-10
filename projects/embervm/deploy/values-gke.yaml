@@ -1,5 +1,16 @@
 # GKE hub overrides. This file is applied after deploy/values.yaml.
 
+# The production control plane runs on the hub that holds every production
+# Secret, with the same chart embervm-dev already confines to its namespace.
+# Namespace mode keeps TokenReview cluster-scoped (it has to be) and moves the
+# Workload watcher, the stateful secretRef reads and the brick Deployment scale
+# verbs to a Role in this namespace. No production workload declares a stateful
+# or group secretRef (the egress catalog's secretRefs are read by the sidecar,
+# not the control plane), so no Secret names are granted.
+rbac:
+  scope: namespace
+  secretNames: []
+
 claudeRuntimeWorkload:
   # cap must sit at or above the monolith's agentSessions.admission.total (24):
   # every family but pi lands here, and a permit the guest cap refuses fails
