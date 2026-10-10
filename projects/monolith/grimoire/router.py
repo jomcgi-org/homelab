@@ -50,6 +50,7 @@ from grimoire.audience import (
     note_predicate,
 )
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
+from grimoire.handouts import validate_handout_body
 from grimoire.invitation_provider import enrollment_enabled
 from grimoire.join_links import links_enabled
 from grimoire.join_links import router as join_links_router
@@ -3474,7 +3475,10 @@ def create_session_event(
                 session, campaign_id, body.body["speaker_key"]
             ),
         }
+    event_body = body.body
     try:
+        if body.kind == "handout":
+            event_body = validate_handout_body(session, campaign_id, body.body)
         audience = Audience(
             body.audience,
             frozenset(body.audience_pc_ids),
@@ -3486,7 +3490,7 @@ def create_session_event(
             kind=body.kind,
             audience=audience,
             author_member_id=member.id,
-            body=body.body,
+            body=event_body,
             request_id=body.request_id,
         )
     except (SessionEndedError, EventRequestConflictError) as exc:
