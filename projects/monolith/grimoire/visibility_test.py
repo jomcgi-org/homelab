@@ -1,6 +1,7 @@
 """Unit tests for grimoire.visibility: the grant-overlay predicate query and
 the scope-projection function every read path shares."""
 
+import ast
 import json
 import os
 from datetime import datetime
@@ -274,27 +275,27 @@ def test_dm_projection_includes_everything_and_grant_annotation(session: Session
 
 # Golden projections shared with the frontend renderer test. A server change
 # fails here; a renderer change fails the vitest that reads the same file.
-_FIXTURE_REL = (
-    "projects/monolith/frontend/src/lib/grimoire/fixtures/reveal-projections.json"
-)
+_FIXTURE_DIR = "projects/monolith/frontend/src/lib/grimoire/fixtures"
 
 
-def _load_projection_fixture() -> dict:
+def _load_fixture(name: str) -> dict:
+    rel = f"{_FIXTURE_DIR}/{name}"
     roots = [
         Path(__file__).resolve().parents[3],
         Path(os.environ.get("TEST_SRCDIR", "")) / "_main",
     ]
     for root in roots:
-        candidate = root / _FIXTURE_REL
+        candidate = root / rel
         if candidate.exists():
             return json.loads(candidate.read_text())
     raise FileNotFoundError(
-        f"{_FIXTURE_REL} not found under {roots} "
+        f"{rel} not found under {roots} "
         f"(TEST_SRCDIR={os.environ.get('TEST_SRCDIR', '')!r})"
     )
 
 
-_PROJECTION_FIXTURE = _load_projection_fixture()
+_PROJECTION_FIXTURE = _load_fixture("reveal-projections.json")
+_DM_ROUTE_FIXTURE = _load_fixture("dm-only-routes.json")
 
 
 def test_projection_fixture_spine_matches_server_constants():
@@ -331,3 +332,51 @@ def test_project_entity_matches_golden_fixture(case):
     )
 
     assert jsonable_encoder(result) == case["expected"]
+
+
+def _dm_guarded_routes() -> set[tuple[str, str]]:
+    """(method, path) of every router.py route whose handler calls _require_dm."""
+    tree = ast.parse((Path(__file__).parent / "router.py").read_text())
+    routes = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        guarded = any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "_require_dm"
+            for call in ast.walk(node)
+        )
+        if not guarded:
+            continue
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and isinstance(decorator.func.value, ast.Name)
+                and decorator.func.value.id == "router"
+                and decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+            ):
+                routes.add(
+                    (
+                        decorator.func.attr.upper(),
+                        "/api/grimoire" + decorator.args[0].value,
+                    )
+                )
+    return routes
+
+
+def test_dm_route_fixture_matches_require_dm_guards():
+    """The frontend isolation test's DM-only list is the backend's guard list."""
+    guarded = _dm_guarded_routes()
+    listed = {tuple(route) for route in _DM_ROUTE_FIXTURE["routes"]}
+    assert listed <= guarded, f"not _require_dm routes: {sorted(listed - guarded)}"
+    # The BFF reaches grants and sessions only, so every guarded route there
+    # must be listed or a new DM route could slip past the player test.
+    reachable = {
+        route
+        for route in guarded
+        if "/grants" in route[1] or route[1].endswith(("/sessions", "/{session_id}"))
+    }
+    assert reachable <= listed, f"unlisted DM routes: {sorted(reachable - listed)}"

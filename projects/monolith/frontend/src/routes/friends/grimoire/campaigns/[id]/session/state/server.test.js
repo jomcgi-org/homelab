@@ -144,3 +144,41 @@ describe("narration audience payload", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("reveal payload", () => {
+  const bulkPath = `http://backend.test/api/grimoire/campaigns/${campaignId}/grants/bulk`;
+  const reveal = (extra) => ({
+    operation: "reveal",
+    entityId: pcB,
+    pcIds: [pcA],
+    ...extra,
+  });
+
+  it("forwards exactly the picked keys as revealed_details", async () => {
+    const { url, body } = await sent(
+      post(
+        reveal({
+          scope: "partial",
+          revealedDetails: { occupation: "Smuggler" },
+          clue: "ignored when keys are picked",
+        }),
+      ),
+    );
+    expect(url).toBe(bulkPath);
+    expect(body.grants).toEqual([
+      {
+        entity_id: pcB,
+        player_character_id: pcA,
+        grant_scope: "partial",
+        revealed_details: { occupation: "Smuggler" },
+      },
+    ]);
+  });
+
+  it("sends no details for a full grant", async () => {
+    const { body } = await sent(
+      post(reveal({ scope: "full", revealedDetails: { occupation: "x" } })),
+    );
+    expect(body.grants[0].revealed_details).toBeNull();
+  });
+});

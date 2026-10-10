@@ -23,12 +23,15 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
-# Golden reveal projections: read by the frontend vitest (via :src) and by
-# grimoire_visibility_test, so a server projection change and a renderer change
-# each fail the side that owns it.
+# Golden reveal projections and the DM-only route list: read by the frontend
+# vitest (via :src) and by grimoire_visibility_test, so a server change and a
+# renderer or BFF change each fail the side that owns it.
 filegroup(
     name = "reveal_projection_fixture",
-    srcs = ["src/lib/grimoire/fixtures/reveal-projections.json"],
+    srcs = [
+        "src/lib/grimoire/fixtures/dm-only-routes.json",
+        "src/lib/grimoire/fixtures/reveal-projections.json",
+    ],
     visibility = ["//projects/monolith:__pkg__"],
 )
 
