@@ -523,14 +523,25 @@ cold wakes: stable DNAT inside noded's own netns, `NodeStatus` advertises
 the noded pod IP and activator port as the activator endpoint,
 `EndpointPublisher` renders it as the fallback, and
 instance ids minted node-side carry `origin: ACTIVATOR` for the CP to adopt
-and backfill on reconcile. **Planned**: partially landed, soak ongoing.
+and backfill on reconcile. The brick activator only wakes workloads whose
+`nodeLocalWake` is set (the CRD default is false) and answers 503 for the
+rest, so `EndpointPublisher` renders a brick's advertised activator as the
+fallback only for those workloads and keeps the CP activator for every other
+serving workload; routing a CP-only workload to the brick would 503 its first
+request forever and the CP would never see a miss. **Planned**: partially
+landed, soak ongoing.
 
 Each published stateful endpoint shares its EDS assignment with a per-workload
 L4 activator fallback at the next Envoy priority. Serving workload clusters
 instead reuse one shared L7 activator endpoint, with the injected
 `x-ember-workload` header disambiguating the workload. Active TCP health checks
 eject unreachable live endpoints, so traffic falls through to the activator and
-returns to the live priority when it recovers. On the stateful L4 path, a
+returns to the live priority when it recovers. A control-plane `StartServing`
+or `StartStateful` call carries a deadline past noded's readiness budget
+(`EMBERVM_NODED_BOOT_READY_TIMEOUT`, 180 s in production, plus a 30 s RPC
+margin), as `StartGroupMember` already did: the grpc-elixir default of 10 s
+cancelled any slower boot mid-gate and the daemon reaped the healthy VM.
+On the stateful L4 path, a
 connection that reaches the activator withdraws the stale resident health fact
 before starting the ordinary rate-limited wake, unless it is within the
 five-second publish cooldown or the registry's retained node inventory reports
