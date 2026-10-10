@@ -200,6 +200,32 @@ Part of #6610, which owns coordinated enablement of `grimoire.play.enabled`
 and live audience checks after the #6612 play surface is ready. Deployment
 values remain off. No operational flag flip belongs to this change.
 
+### Handouts
+
+A DM posts a `handout` event with body `{title, markdown, entity_id?, image?}`
+to the table or to chosen PCs through the ordinary events route. The body is
+validated and stored normalised (`handouts.py`), so an identical `request_id`
+retry stays idempotent. `image` is `{"source": "chunk", "chunk_id"}` for an
+image chunk of an open-licensed book, or `{"source": "upload", "key"}` for an
+image the DM uploaded through `POST /campaigns/{id}/handouts/uploads` (5 MiB,
+PNG, JPEG, GIF or WebP, sniffed from magic bytes) under
+`campaigns/<campaign_id>/handouts/` in the grimoire bucket. Images are served
+only by `GET .../sessions/{sid}/events/{event_id}/image`, which applies the
+audience predicate, hides retracted handouts from players and answers one 404
+for missing and non-recipient alike. For non-DM viewers `entity_id` survives
+projection (events list and journal Received) only when that viewer can already
+see the entity. A player pins a handout through `POST /notes` with
+`from_event_id`; the entity link follows the same visibility rule and never
+fails the pin.
+
+**Why.** Clients never receive an S3 key to fetch, so the audience predicate is
+the only path to the bytes and a retraction withdraws the image with the
+event. Chunk images re-check `book.copyrighted_content` at serve time and fail
+closed (copyrighted, unclassified or a missing book), so reclassifying a book
+withdraws handouts already posted. The upload key is matched in full against
+this campaign's prefix and a uuid4 name, which rules out traversal and other
+campaigns' objects without trusting the client's filename or declared type.
+
 ## Journal
 
 Both journal routes are play-gated and computed on read. The session route
