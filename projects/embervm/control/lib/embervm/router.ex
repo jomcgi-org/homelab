@@ -571,17 +571,15 @@ defmodule Embervm.Router do
     limit = conn |> int_param("limit", 50) |> clamp(1, 500)
     offset = conn |> int_param("offset", 0) |> max(0)
 
-    {:ok, page} = TaskStore.list_dead_letters(store(), workload, limit: limit, offset: offset)
-
-    # A non-admin sees only the dead letters it submitted; the page total then
-    # counts the visible items so the response stays internally consistent.
-    items = if admin?(conn), do: page.items, else: Enum.filter(page.items, &owner_or_admin?(conn, &1.principal))
-    total = if admin?(conn), do: page.total, else: length(items)
+    # A non-admin sees only the dead letters it submitted. The store filters by
+    # principal BEFORE paging, so a page never comes back empty because other
+    # principals' entries filled it and `total` counts the caller's whole set.
+    {:ok, page} = TaskStore.list_dead_letters(store(), workload, [limit: limit, offset: offset] ++ principal_scope(conn))
 
     send_json(conn, 200, %{
       workload: workload,
-      items: Enum.map(items, &task_view/1),
-      total: total,
+      items: Enum.map(page.items, &task_view/1),
+      total: page.total,
       limit: page.limit,
       offset: page.offset
     })
@@ -609,6 +607,10 @@ defmodule Embervm.Router do
   end
 
   defp owner_or_admin?(conn, owner), do: admin?(conn) or conn.assigns.principal == owner
+
+  # The store-side listing scope for the caller: admins list everything, anyone
+  # else only its own objects, applied before pagination.
+  defp principal_scope(conn), do: if(admin?(conn), do: [], else: [principal: conn.assigns.principal])
 
   defp require_admin(conn, fun) do
     if admin?(conn) do
@@ -1603,17 +1605,19 @@ defmodule Embervm.Router do
 
     case Map.get(conn.query_params, "idempotency_key") do
       nil ->
-        {:ok, page} = session_store().list(session_store_server(), workload, limit: limit, offset: offset)
-        # A non-admin lists only the sessions it created (see admin?/1); the total
-        # then counts the visible items.
-        items = if admin?(conn), do: page.items, else: Enum.filter(page.items, &owner_or_admin?(conn, &1.principal))
-        total = if admin?(conn), do: page.total, else: length(items)
-        node_statuses = session_node_statuses(items)
+        # A non-admin lists only the sessions it created (see admin?/1). The store
+        # filters by principal BEFORE paging, so a page never comes back empty
+        # because other principals' sessions filled it and `total` counts the
+        # caller's whole set.
+        {:ok, page} =
+          session_store().list(session_store_server(), workload, [limit: limit, offset: offset] ++ principal_scope(conn))
+
+        node_statuses = session_node_statuses(page.items)
 
         send_json(conn, 200, %{
           workload: workload,
-          items: Enum.map(items, &session_view(&1, node_statuses)),
-          total: total,
+          items: Enum.map(page.items, &session_view(&1, node_statuses)),
+          total: page.total,
           limit: page.limit,
           offset: page.offset
         })

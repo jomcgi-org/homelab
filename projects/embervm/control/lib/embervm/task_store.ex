@@ -231,9 +231,11 @@ defmodule Embervm.TaskStore do
 
   @doc """
   Lists dead-lettered tasks for `workload`, newest first, paged by `:limit`
-  (default 50) and `:offset` (default 0). Serves `GET
-  /v1/workloads/{name}/dead-letters` from the ETS hot set (bounded and rare, so
-  a full scan is acceptable), never the op-log.
+  (default 50) and `:offset` (default 0). `:principal` restricts the listing to
+  that principal's tasks BEFORE paging, so a non-admin caller's page and
+  `total` describe its own dead letters rather than a slice of everyone's.
+  Serves `GET /v1/workloads/{name}/dead-letters` from the ETS hot set (bounded
+  and rare, so a full scan is acceptable), never the op-log.
   """
   @spec list_dead_letters(GenServer.server(), String.t(), keyword()) :: {:ok, map()}
   def list_dead_letters(store \\ __MODULE__, workload, opts \\ []) do
@@ -616,11 +618,13 @@ defmodule Embervm.TaskStore do
   def handle_call({:list_dead_letters, workload, opts}, _from, state) do
     limit = Keyword.get(opts, :limit, 50)
     offset = Keyword.get(opts, :offset, 0)
+    principal = Keyword.get(opts, :principal)
 
     all =
       :ets.foldl(
         fn {_id, task}, acc ->
-          if task.workload == workload and task.state == :dead_lettered do
+          if task.workload == workload and task.state == :dead_lettered and
+               (is_nil(principal) or task.principal == principal) do
             [task | acc]
           else
             acc
