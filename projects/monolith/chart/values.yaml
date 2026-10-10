@@ -441,9 +441,11 @@ jobs:
         limits:
           memory: 512Mi
     # Manual #6812 pilot: review dry-run counts before submitting application.
+    # Unsuspended 2026-10-10 for the pilot: bounded, no writes. Re-suspend by
+    # PR once its counts are recorded on #6812.
     - name: knowledge-review-backfill-dry-run
       knowledgeReview: true
-      suspend: true
+      suspend: false
       args:
         [
           "knowledge-review-backfill",
@@ -484,9 +486,11 @@ jobs:
           memory: 256Mi
         limits:
           memory: 512Mi
+    # Unsuspended 2026-10-10 for the #6812 pilot: counts only, no GitHub
+    # requests or writes. Re-suspend by PR once recorded on #6812.
     - name: knowledge-review-admission-dry-run
       knowledgeReview: true
-      suspend: true
+      suspend: false
       args:
         [
           "knowledge-review-admission",
