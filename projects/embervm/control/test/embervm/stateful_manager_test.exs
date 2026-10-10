@@ -4160,21 +4160,32 @@ defmodule Embervm.StatefulManagerTest do
       end
     end
 
-    ctx = start_stack(start_stateful_fun: gated_fun, wake_bound_ms: 40)
+    stop_fun = fn ch, req ->
+      send(parent, {:destroyed, ch, req.vm_id, req.mode})
+      {:ok, %{teardown_confirmed: true}}
+    end
+
+    ctx = start_stack(start_stateful_fun: gated_fun, stop_stateful_fun: stop_fun,
+      channel_fun: fn key -> {:ok, key} end, node_confirmed_destroy: false, wake_bound_ms: 40)
     stateful_workload(ctx, "wl-a")
-    stateful_node(ctx, "node-4")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner")
 
     assert {:error, {:wake_failed, {:wake_timeout, "wl-a"}}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     assert_receive {:worker, stale_worker}, 2_000
 
     # The stale worker now finishes its boot. Its outcome carries the ended
-    # wake's token and is dropped: no instance appears, nothing is published.
+    # wake's token and is cleaned up: no instance appears, nothing is published.
+    # Replace the capacity fact before completion. No inventory reports the VM,
+    # and UNKNOWN on this sibling would falsely confirm teardown.
+    stateful_node(ctx, "node-4", instance_id: "node-4/sibling")
     stale_ref = Process.monitor(stale_worker)
     send(stale_worker, {:release, "vm-stale"})
     # The worker exits right after reporting, so its DOWN means the outcome is
     # queued at the manager; the get_state flush then processes it.
     assert_receive {:DOWN, ^stale_ref, :process, ^stale_worker, :normal}, 2_000
     :sys.get_state(ctx.mgr)
+    assert_receive {:destroyed, "node-4/owner", "vm-stale", :STOP_STATEFUL_MODE_DESTROY}
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
     assert StatefulStore.list(ctx.store, "wl-a") == []
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
 
@@ -4185,6 +4196,252 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} = Task.await(caller, 5_000)
 
     assert [%{vm_id: "vm-fresh"}] = StatefulStore.list(ctx.store, "wl-a")
+  end
+
+  defp late_created(vm_id) do
+    {:started_on, "node-4/owner",
+     {:created, %{node_id: "node-4", generation: 1},
+      %{vm_id: vm_id, ip: "10.88.0.5", port: 5432}, :fresh, "snap-a", nil}}
+  end
+
+  defp finish_worker(ctx, worker, response) do
+    ref = Process.monitor(worker)
+    send(worker, {:finish, response})
+    assert_receive {:DOWN, ^ref, :process, ^worker, :normal}, 2_000
+    :sys.get_state(ctx.mgr)
+  end
+
+  defp expire_wake(ctx, caller) do
+    token = :sys.get_state(ctx.mgr).waking["wl-a"].token
+    send(ctx.mgr, {:wake_timeout, "wl-a", token})
+    assert {:error, {:wake_failed, {:wake_timeout, "wl-a"}}} = Task.await(caller)
+    token
+  end
+
+  test "stale cleanup retains attach ownership through failures, deduplicates, and retries until confirmed" do
+    parent = self()
+    {:ok, attach} = Agent.start_link(fn -> nil end)
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+
+    start_fun = fn ch, _req, deadline ->
+      case Agent.get(attach, & &1) do
+        nil ->
+          send(parent, {:worker, self(), ch, deadline})
+          receive do
+            {:finish, response} ->
+              Agent.update(attach, fn _ -> response.vm_id end)
+              {:ok, response}
+          end
+        _ -> {:error, %GRPC.RPCError{status: 9, message: "volume attached"}}
+      end
+    end
+
+    stop_fun = fn ch, req ->
+      attempt = Agent.get_and_update(attempts, fn n -> {n + 1, n + 1} end)
+      send(parent, {:stop, ch, req.vm_id, req.mode, attempt})
+      case attempt do
+        1 -> {:ok, %{teardown_confirmed: false}}
+        2 -> {:error, :reap_failed}
+        3 -> raise "reap failed"
+        4 -> exit(:reap_failed)
+        _ ->
+          Agent.update(attach, fn _ -> nil end)
+          {:ok, %{teardown_confirmed: true}}
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: start_fun, stop_stateful_fun: stop_fun,
+      channel_fun: fn key -> {:ok, key} end, wake_bound_ms: 5_000)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner")
+    :erlang.trace(ctx.mgr, true, [:send])
+    caller = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:worker, worker, "node-4/owner", 35_000}
+    token = expire_wake(ctx, caller)
+    finish_worker(ctx, worker, %StartStatefulResponse{vm_id: "vm-stale", ip: "10.88.0.5", port: 5432, generation: 1})
+    assert_receive {:stop, "node-4/owner", "vm-stale", :STOP_STATEFUL_MODE_DESTROY, 1}
+    assert Agent.get(attach, & &1) == "vm-stale"
+
+    # A second node attach would refuse the still-live writer. The CP additionally
+    # fences placement, including a different brick that cannot see this lock.
+    assert {:error, %GRPC.RPCError{status: 9}} = start_fun.("node-4/owner", nil, 35_000)
+    assert {:error, {:wake_failed, :stale_wake_cleanup_pending}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert StatefulStore.list(ctx.store, "wl-a") == []
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
+
+    send(ctx.mgr, {:wake_done, "wl-a", token, late_created("vm-stale")})
+    assert map_size(:sys.get_state(ctx.mgr).stale_wake_cleanups) == 1
+    assert_receive {:stop, "node-4/owner", "vm-stale", :STOP_STATEFUL_MODE_DESTROY, 2}
+    for attempt <- [3, 4] do
+      send(ctx.mgr, :reconcile)
+      assert map_size(:sys.get_state(ctx.mgr).stale_wake_cleanups) == 1
+      assert_receive {:stop, "node-4/owner", "vm-stale", :STOP_STATEFUL_MODE_DESTROY, ^attempt}
+    end
+    mgr = ctx.mgr
+    refute_received {:trace, ^mgr, _, {:"$gen_cast", {:release, _, "vm-stale", :node_confirmed_teardown}}, _}
+    send(ctx.mgr, :reconcile)
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+    assert_receive {:stop, "node-4/owner", "vm-stale", :STOP_STATEFUL_MODE_DESTROY, 5}
+    assert_receive {:trace, ^mgr, _, {:"$gen_cast", {:release, "node-4/owner", "vm-stale", :node_confirmed_teardown}}, _}
+    send(ctx.mgr, {:wake_done, "wl-a", token, late_created("vm-stale")})
+    send(ctx.mgr, :reconcile)
+    :sys.get_state(ctx.mgr)
+    refute_received {:stop, _, _, _, _}
+    refute_received {:trace, ^mgr, _, {:"$gen_cast", {:release, _, "vm-stale", :node_confirmed_teardown}}, _}
+
+    fresh = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:worker, fresh_worker, "node-4/owner", 35_000}
+    finish_worker(ctx, fresh_worker, %StartStatefulResponse{vm_id: "vm-fresh", ip: "10.88.0.6", port: 5432, generation: 3})
+    assert {:ok, %{ip: "10.88.0.6"}} = Task.await(fresh)
+    assert [%{vm_id: "vm-fresh"}] = StatefulStore.list(ctx.store, "wl-a")
+  end
+
+  test "stale success cannot complete or destroy an overlapping newer wake" do
+    parent = self()
+    start_fun = fn _ch, _req ->
+      send(parent, {:worker, self()})
+      receive do
+        {:finish, response} -> {:ok, response}
+      end
+    end
+    stop_fun = fn ch, req ->
+      send(parent, {:stop, ch, req.vm_id})
+      {:ok, %{teardown_confirmed: true}}
+    end
+    ctx = start_stack(start_stateful_fun: start_fun, stop_stateful_fun: stop_fun,
+      channel_fun: fn key -> {:ok, key} end, wake_bound_ms: 5_000)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner")
+    first = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:worker, old_worker}
+    expire_wake(ctx, first)
+    second = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:worker, new_worker}
+    new_token = :sys.get_state(ctx.mgr).waking["wl-a"].token
+    finish_worker(ctx, old_worker, %StartStatefulResponse{vm_id: "vm-old", generation: 1})
+    assert :sys.get_state(ctx.mgr).waking["wl-a"].token == new_token
+    assert Task.yield(second, 0) == nil
+    assert StatefulStore.list(ctx.store, "wl-a") == []
+    send(ctx.mgr, :reconcile)
+    :sys.get_state(ctx.mgr)
+    refute_received {:stop, _, _}
+    finish_worker(ctx, new_worker, %StartStatefulResponse{vm_id: "vm-new", ip: "10.88.0.6", port: 5432, generation: 2})
+    assert {:ok, %{ip: "10.88.0.6"}} = Task.await(second)
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner",
+      stateful_vms: [%{vm_id: "vm-new", workload: "wl-a", ip: "10.88.0.6", port: 5432, generation: 2}])
+    send(ctx.mgr, :reconcile)
+    :sys.get_state(ctx.mgr)
+    assert_receive {:stop, "node-4/owner", "vm-old"}
+    refute_received {:stop, _, "vm-new"}
+    assert [%{vm_id: "vm-new"}] = StatefulStore.list(ctx.store, "wl-a")
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.6", port: 5432}
+  end
+
+  for was_relight <- [true, false] do
+    test "stale relight success (was_relight=#{was_relight}) cleans the unclaimed VM and leaves the banked row" do
+      parent = self()
+      start_fun = fn _ch, _req ->
+        send(parent, {:worker, self()})
+        receive do
+          {:finish, response} -> {:ok, response}
+        end
+      end
+      ctx = start_stack(start_stateful_fun: start_fun, wake_bound_ms: 5_000,
+        channel_fun: fn key -> {:ok, key} end,
+        stop_stateful_fun: fn ch, req ->
+          send(parent, {:stop, ch, req.vm_id})
+          {:ok, %{teardown_confirmed: true}}
+        end)
+      stateful_workload(ctx, "wl-a")
+      seed_banked_with_pair(ctx, "stf-banked", "node-4", 1, 1)
+      stateful_node(ctx, "node-4", instance_id: "node-4/owner",
+        stateful_bundles: [%{snapshot_ref: "stateful/stf-banked", workload: "wl-a", generation: 1}])
+      caller = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+      assert_receive {:worker, worker}
+      expire_wake(ctx, caller)
+      finish_worker(ctx, worker, %StartStatefulResponse{vm_id: "vm-late-relight", generation: 2,
+        was_relight: unquote(was_relight), cold_boot_reason: "pair_broken"})
+      assert_receive {:stop, "node-4/owner", "vm-late-relight"}
+      assert {:ok, %{state: :relighting}} = StatefulStore.get(ctx.store, "stf-banked")
+      assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: :banked}} = StatefulStore.get(ctx.store, "stf-banked")
+      next = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+      assert_receive {:worker, next_worker}
+      finish_worker(ctx, next_worker, %StartStatefulResponse{vm_id: "vm-next", ip: "10.88.0.6", port: 5432,
+        generation: 3, was_relight: false})
+      assert {:ok, %{ip: "10.88.0.6"}} = Task.await(next)
+    end
+  end
+
+  test "stale cleanup rechecks row claims at retry time and protects claimed relight variants" do
+    parent = self()
+    ctx = start_stack(stop_stateful_fun: fn _ch, req ->
+      send(parent, {:stop, req.vm_id})
+      {:ok, %{teardown_confirmed: false}}
+    end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-claimed")})
+    assert map_size(:sys.get_state(ctx.mgr).stale_wake_cleanups) == 1
+    assert_receive {:stop, "vm-claimed"}
+    seed_banked_with_pair(ctx, "stf-claimed", "node-4", 1, 1)
+    # A row acquires this identity after enqueue, before the cleanup retry. Its
+    # stranded relight is then legitimately recovered by live-VM adoption.
+    StatefulStore.adopt_endpoint(ctx.store, "stf-claimed", "node-4", "vm-claimed",
+      %{ip: "10.88.0.9", port: 5432, healthy: false})
+    assert {:ok, _} = StatefulStore.mark(ctx.store, "stf-claimed", :relight)
+    stateful_node(ctx, "node-4", stateful_vms: [%{vm_id: "vm-claimed", workload: "wl-a",
+      ip: "10.88.0.9", port: 5432, generation: 2, healthy: true}])
+    send(ctx.mgr, :reconcile)
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+    assert {:ok, %{state: :serving, vm_id: "vm-claimed"}} = StatefulStore.get(ctx.store, "stf-claimed")
+    refute_received {:stop, _}
+    endpoint = %{vm_id: "vm-claimed", generation: 2}
+    for outcome <- [{:relit, "stf-claimed", "node-4", endpoint},
+                     {:relight_fell_back, "stf-claimed", "node-4", endpoint, "pair_broken"}] do
+      send(ctx.mgr, {:wake_done, "wl-a", -1, {:started_on, "node-4/owner", outcome}})
+      :sys.get_state(ctx.mgr)
+      refute_received {:stop, _}
+    end
+  end
+
+  test "gate-on stale cleanup and orphan reconcile share one confirmed teardown" do
+    parent = self()
+    ctx = start_stack(node_confirmed_destroy: true, channel_fun: fn key -> {:ok, key} end,
+      stop_stateful_fun: fn ch, req ->
+        send(parent, {:stop, ch, req.vm_id})
+        {:ok, %{teardown_confirmed: true}}
+      end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner",
+      stateful_vms: [%{vm_id: "vm-stale", workload: "wl-a"}])
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-stale")})
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+    assert_receive {:stop, "node-4/owner", "vm-stale"}
+    send(ctx.mgr, :reconcile)
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-stale")})
+    :sys.get_state(ctx.mgr)
+    refute_received {:stop, _, _}
+    assert StatefulStore.list(ctx.store, "wl-a") == []
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
+  end
+
+  test "stale cleanup preserves activator-origin adoption" do
+    parent = self()
+    ctx = start_stack(node_confirmed_destroy: true, stop_stateful_fun: fn _ch, req ->
+      send(parent, {:stop, req.vm_id})
+      {:ok, %{teardown_confirmed: true}}
+    end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", stateful_vms: [%{vm_id: "vm-activator", workload: "wl-a",
+      origin: :INSTANCE_ORIGIN_ACTIVATOR, ip: "10.88.0.9", port: 5432, healthy: true, generation: 1}])
+    send(ctx.mgr, {:wake_done, "wl-a", -1, late_created("vm-activator")})
+    assert :sys.get_state(ctx.mgr).stale_wake_cleanups == %{}
+    refute_received {:stop, _}
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert [%{vm_id: "vm-activator", state: :serving}] = StatefulStore.list(ctx.store, "wl-a")
+    refute_received {:stop, _}
   end
 
   test "StartStateful carries a deadline derived from the workload's wake bound" do
