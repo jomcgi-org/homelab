@@ -497,7 +497,8 @@ defmodule Embervm.BrickControllerTest do
         pods_fun: fn _ns, _selector ->
           {:ok, Enum.map(["a", "b", "c", "0"], fn suffix ->
             %{name: "brick-#{suffix}", uid: "uid-#{suffix}",
-              replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash"}
+              replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+              node_name: "node-#{suffix}", phase: "Running", ready: true}
           end)}
         end,
         archive_fun: fn node, volumes -> send(parent, {:archive, node, volumes}); :ok end)
@@ -780,9 +781,11 @@ defmodule Embervm.BrickControllerTest do
   test "an exported same-class floor cannot authorize deleting an unarchived elastic brick" do
     ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
       {:ok, [%{name: "brick-a", uid: "uid-a",
-               replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash"},
+               replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+               node_name: "node-4", phase: "Running", ready: true},
              %{name: "floor", uid: "uid-floor",
-               replica_set: "embervm-embervm-noded-brick-2gi-node-5-hash", template_hash: "hash"}]}
+               replica_set: "embervm-embervm-noded-brick-2gi-node-5-hash", template_hash: "hash",
+               node_name: "node-5", phase: "Running", ready: true}]}
     end)
     floor = %{ctx.fact | pod_uid: "uid-floor", node_id: "node-5",
       instance_id: "node-5/uid-floor", session_volumes: []}
@@ -815,7 +818,8 @@ defmodule Embervm.BrickControllerTest do
     ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
       n = Agent.get_and_update(reads, fn n -> {n, n + 1} end)
       owner = if n == 0, do: "embervm-embervm-noded-brick-2gi-hash", else: "other-hash"
-      {:ok, [%{name: "brick-a", uid: "uid-a", replica_set: owner, template_hash: "hash"}]}
+      {:ok, [%{name: "brick-a", uid: "uid-a", replica_set: owner, template_hash: "hash",
+        node_name: "node-4", phase: "Running", ready: true}]}
     end)
     Agent.update(ctx.facts, fn [victim] -> [%{victim | session_volumes: []}] end)
     archive_gate_tick(ctx)
@@ -828,9 +832,11 @@ defmodule Embervm.BrickControllerTest do
   test "two active ReplicaSets hold even an exported victim and preserve its timeout" do
     {:ok, pods} = Agent.start_link(fn ->
       [%{name: "brick-a", uid: "uid-a", template_hash: "old",
-         replica_set: "embervm-embervm-noded-brick-2gi-old"},
+         replica_set: "embervm-embervm-noded-brick-2gi-old",
+         node_name: "node-4", phase: "Running", ready: true},
        %{name: "brick-b", uid: "uid-b", template_hash: "new",
-         replica_set: "embervm-embervm-noded-brick-2gi-new"}]
+         replica_set: "embervm-embervm-noded-brick-2gi-new",
+         node_name: "node-5", phase: "Running", ready: true}]
     end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(pods) end)
     ctx = archive_gate_stack(pods_fun: fn _ns, _selector -> {:ok, Agent.get(pods, & &1)} end)
@@ -860,9 +866,11 @@ defmodule Embervm.BrickControllerTest do
     ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
       n = Agent.get_and_update(reads, fn n -> {n, n + 1} end)
       victim = %{name: "brick-a", uid: "uid-a", template_hash: "old",
-        replica_set: "embervm-embervm-noded-brick-2gi-old"}
+        replica_set: "embervm-embervm-noded-brick-2gi-old",
+        node_name: "node-4", phase: "Running", ready: true}
       new = %{name: "brick-b", uid: "uid-b", template_hash: "new",
-        replica_set: "embervm-embervm-noded-brick-2gi-new"}
+        replica_set: "embervm-embervm-noded-brick-2gi-new",
+        node_name: "node-5", phase: "Running", ready: true}
       {:ok, if(n == 0, do: [victim], else: [victim, new])}
     end)
     Agent.update(ctx.facts, fn [victim] -> [%{victim | session_volumes: []}] end)
@@ -871,6 +879,64 @@ defmodule Embervm.BrickControllerTest do
     assert ctx.annotated.() == []
     assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
     refute_receive {:archive, _, _}
+  end
+
+  test "a NotReady or Pending assigned sibling withholds the acknowledged victim shrink" do
+    siblings = [
+      %{name: "brick-b", uid: "uid-b", phase: "Running", ready: false},
+      %{name: "brick-b", uid: "uid-b", phase: "Pending", ready: false}
+    ]
+
+    for sibling <- siblings do
+      sibling_pod =
+        Map.merge(
+          %{replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+            node_name: "node-5"},
+          sibling
+        )
+
+      ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+        {:ok,
+         [%{name: "brick-a", uid: "uid-a",
+            replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+            node_name: "node-4", phase: "Running", ready: true}, sibling_pod]}
+      end)
+
+      Agent.update(ctx.facts, fn [victim] ->
+        [Map.put(victim, :session_volumes, []),
+         %{victim | pod_uid: "uid-b", node_id: "node-5", instance_id: "node-5/uid-b",
+           session_volumes: [%{workload: "shell", lineage_id: "parked", exported: false}]}]
+      end)
+
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=sibling_not_ready"
+      assert ctx.annotated.() == []
+      assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+      refute_receive {:archive, _, _}
+    end
+  end
+
+  test "a stale victim cost on another owned pod withholds the shrink" do
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector ->
+      {:ok,
+       [%{name: "brick-a", uid: "uid-a",
+          replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+          node_name: "node-4", phase: "Running", ready: true, deletion_cost: "-1000"},
+        %{name: "brick-b", uid: "uid-b",
+          replica_set: "embervm-embervm-noded-brick-2gi-hash", template_hash: "hash",
+          node_name: "node-5", phase: "Running", ready: true}]}
+    end)
+
+    Agent.update(ctx.facts, fn [victim] ->
+      [victim,
+       %{victim | pod_uid: "uid-b", node_id: "node-5", instance_id: "node-5/uid-b",
+         session_volumes: []}]
+    end)
+
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=stale_deletion_cost"
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
   end
 
   test "pending tracking clears when a candidate leaves the facts or stops being idle" do

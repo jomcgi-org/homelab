@@ -220,8 +220,10 @@ defmodule Embervm.BrickController do
     * `:scale_get_fun`        - `(ns, name) -> {:ok, replicas} | {:error, term}`,
       the live replica read the autoscale loop bases decisions on; default
       `&Embervm.K8s.get_deployment_scale/2` (injected in tests).
-    * `:pods_fun`             - `(ns, label_selector) -> {:ok, [%{name, uid}]}`,
-      resolves the scale-down victim's pod name; default
+    * `:pods_fun`             - `(ns, label_selector) -> {:ok, [pod]}`,
+      resolves the scale-down victim's pod name (`name`, `uid`,
+      `replica_set`, `template_hash`, `node_name`, `phase`, `ready`,
+      `deletion_cost`, `terminating`); default
       `&Embervm.K8s.list_pods/2` (injected in tests).
     * `:annotate_fun`         - `(ns, pod, annotations) -> :ok | {:error, term}`,
       sets the victim's pod-deletion-cost; default
@@ -1551,16 +1553,28 @@ defmodule Embervm.BrickController do
   # the way (pods list failure, the victim's pod already gone, the PATCH
   # refused) skips the scale-down rather than shrinking with an undirected
   # victim choice.
+  #
+  # With the gate on, pod-deletion-cost only directs deletion within one
+  # ReplicaSet: upstream ranks unassigned pods, non-Running phases and NotReady
+  # pods ahead of cost. Annotating the acknowledged victim while a sibling is
+  # Pending, NotReady or unassigned would delete the sibling instead, so every
+  # other owned, assigned, non-terminating pod must be Running and Ready.
+  # A stale -1000 cost on another owned pod (a prior annotate whose /scale
+  # write failed) would likewise leave two victims and an undirected
+  # tie-break, so it also holds the shrink.
   defp direct_victim(state, class, victim) do
     selector = brick_pod_selector(class)
 
     with {:ok, pods} <- state.pods_fun.(state.namespace, selector),
          true <- not state.archive_ack_gate or
            not mixed_replica_sets?(Enum.filter(pods, &class_deployment_pod?(state, class, &1))),
-         %{name: pod_name} <-
+         :ok <- victim_sibling_ready(state, class, pods, Map.get(victim, :pod_uid)),
+         :ok <- victim_stale_cost(state, class, pods, Map.get(victim, :pod_uid)),
+         %{name: pod_name} = victim_pod <-
            Enum.find(pods, :no_pod, fn pod ->
              pod.uid == Map.get(victim, :pod_uid) and class_deployment_pod?(state, class, pod)
            end),
+         :ok <- victim_pod_writable(victim_pod, state.archive_ack_gate),
          :ok <-
            state.annotate_fun.(state.namespace, pod_name, %{
              @deletion_cost_annotation => @victim_deletion_cost
@@ -1568,9 +1582,70 @@ defmodule Embervm.BrickController do
       :ok
     else
       false -> {:skip, :rollout_in_progress}
+      {:skip, _} = skip -> skip
       :no_pod -> {:skip, :victim_pod_not_found}
       {:error, reason} -> {:skip, inspect(reason)}
     end
+  end
+
+  # Hold unless every other owned, non-terminating pod is assigned and Running
+  # plus Ready. Terminating pods are leaving and cannot steal the deletion;
+  # anything unassigned, Pending/Unknown or NotReady (including unknown fields
+  # from a partial projection, which read as not ready) ranks ahead of cost.
+  defp victim_sibling_ready(%{archive_ack_gate: false}, _class, _pods, _victim_uid), do: :ok
+
+  defp victim_sibling_ready(state, class, pods, victim_uid) do
+    siblings =
+      Enum.filter(pods, fn pod ->
+        class_deployment_pod?(state, class, pod) and Map.get(pod, :uid) != victim_uid and
+          not pod_terminating?(pod)
+      end)
+
+    if Enum.all?(siblings, &(pod_assigned?(&1) and pod_running_ready?(&1))) do
+      :ok
+    else
+      {:skip, :sibling_not_ready}
+    end
+  end
+
+  # Hold when another owned pod still carries the victim cost. That annotation
+  # is only ever written here, so a second -1000 means a prior annotate whose
+  # /scale write failed; annotating again would leave the ReplicaSet tie-break
+  # (rank, then ready time) free to delete the unacknowledged pod.
+  defp victim_stale_cost(%{archive_ack_gate: false}, _class, _pods, _victim_uid), do: :ok
+
+  defp victim_stale_cost(state, class, pods, victim_uid) do
+    stale? =
+      Enum.any?(pods, fn pod ->
+        class_deployment_pod?(state, class, pod) and Map.get(pod, :uid) != victim_uid and
+          Map.get(pod, :deletion_cost) == @victim_deletion_cost
+      end)
+
+    if stale?, do: {:skip, :stale_deletion_cost}, else: :ok
+  end
+
+  # The victim pod itself must be assigned and non-terminating: annotating a
+  # pod the ReplicaSet no longer considers active cannot direct the deletion.
+  # Readiness is deliberately not required here: a NotReady victim still ranks
+  # ahead of Ready siblings, so directing it remains exact.
+  defp victim_pod_writable(_pod, false), do: :ok
+
+  defp victim_pod_writable(pod, true) do
+    if pod_assigned?(pod) and not pod_terminating?(pod) do
+      :ok
+    else
+      {:skip, :victim_pod_not_found}
+    end
+  end
+
+  defp pod_assigned?(pod) do
+    is_binary(Map.get(pod, :node_name)) and Map.get(pod, :node_name) != ""
+  end
+
+  defp pod_terminating?(pod), do: Map.get(pod, :terminating, false) == true
+
+  defp pod_running_ready?(pod) do
+    Map.get(pod, :phase) == "Running" and Map.get(pod, :ready) == true
   end
 
   # -- denial attribution ------------------------------------------------------

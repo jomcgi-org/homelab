@@ -1241,8 +1241,12 @@ candidates without archive requests, under the same keep-and-alarm timeout.
 The directing lookup checks this again. A Deployment scale-down during a partial
 roll may reduce a different ReplicaSet from the approved pod's; deletion cost
 only chooses the victim within one ReplicaSet. Once the old ReplicaSet's pods
-leave, normal acknowledgement resumes. This hold does not stop Kubernetes from
-performing its independently configured rollout.
+leave, normal acknowledgement resumes. Upstream also ranks unassigned pods,
+non-Running phases and NotReady pods ahead of cost, so the directing lookup
+additionally holds unless every other owned, assigned, non-terminating pod is
+Running and Ready, and holds when another owned pod still carries the victim
+cost from a prior annotate whose scale write failed. This hold does not stop
+Kubernetes from performing its independently configured rollout.
 
 Joe accepted losing brick bin-packing and the extra node spend. If the sum of
 class `maxReplicas` plus floor replicas exceeds eligible FC nodes, pods can stay
