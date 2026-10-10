@@ -1,6 +1,6 @@
 # rules_oci (homelab wrappers)
 
-Bazel macros for building dual-arch OCI images and the `OciImageInfo` provider
+Bazel macros for building OCI images (amd64 unless asked) and the `OciImageInfo` provider
 that carries repository and tag metadata downstream to Helm chart packaging.
 
 All image rules produce a `{name}.info` target exposing `OciImageInfo`. That
@@ -24,9 +24,9 @@ load("//bazel/tools/oci:providers.bzl",           "OciImageInfo", "oci_image_inf
 
 | Symbol                | Kind     | File                      | Use                                                               |
 | --------------------- | -------- | ------------------------- | ----------------------------------------------------------------- |
-| `go_image`            | macro    | `go_image.bzl`            | Multi-arch OCI image from a Go binary (distroless base)           |
-| `apko_image`          | macro    | `apko_image.bzl`          | Multi-arch apko-based OCI image, optionally with extra tar layers |
-| `py3_image`           | macro    | `py3_image.bzl`           | Multi-arch Python 3 image using `py_image_layer`                  |
+| `go_image`            | macro    | `go_image.bzl`            | amd64 OCI image from a Go binary (distroless base)                |
+| `apko_image`          | macro    | `apko_image.bzl`          | apko-based OCI image, optionally with extra tar layers            |
+| `py3_image`           | macro    | `py3_image.bzl`           | amd64 Python 3 image using `py_image_layer`                       |
 | `apko_nginx_frontend` | macro    | `apko_nginx_frontend.bzl` | Vite/React build packaged into a nginx apko image                 |
 | `OciImageInfo`        | provider | `providers.bzl`           | Provider carrying `repository` + `image_tags` files               |
 | `oci_image_info`      | rule     | `providers.bzl`           | Low-level rule that writes an `OciImageInfo` from raw strings     |
@@ -77,8 +77,9 @@ the tag is a registry-facing alias rather than the deployed reference.
 
 ## `go_image`
 
-Wraps a `go_binary` in a distroless OCI image. Builds both `amd64` and `arm64`
-slices and combines them into an `oci_image_index`.
+Wraps a `go_binary` in a distroless OCI image. Builds the `amd64` image;
+`multi_platform = True` adds an `arm64` slice and combines both into an
+`oci_image_index`. No caller sets it.
 
 ```python
 # projects/example/api/BUILD
@@ -99,26 +100,29 @@ go_image(
 | `repository`     | `ghcr.io/jomcgi/homelab/{package_name}` | OCI registry repository URL                                           |
 | `extra_tars`     | `[]`                                    | Platform-independent tar layers added after the platform transition   |
 | `visibility`     | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                      |
-| `multi_platform` | `True`                                  | Build both amd64 and arm64; set `False` for legacy single-arch builds |
+| `multi_platform` | `False`                                 | Build amd64 and arm64 slices and an index; the default is one amd64 image |
 
 Created targets:
 
-| Target         | Description                                  |
-| -------------- | -------------------------------------------- |
-| `{name}`       | `oci_image_index` (multi-arch manifest list) |
-| `{name}_amd64` | AMD64 image slice                            |
-| `{name}_arm64` | ARM64 image slice                            |
-| `{name}.load`  | Load host-arch image into local Docker       |
-| `{name}.push`  | Push index to the OCI registry (CI)          |
-| `{name}.info`  | `OciImageInfo` provider for `helm_chart`     |
+| Target         | Description                                                      |
+| -------------- | ---------------------------------------------------------------- |
+| `{name}`       | amd64 `oci_image` (an `oci_image_index` with `multi_platform`)   |
+| `{name}_amd64` | AMD64 image slice, only with `multi_platform`                    |
+| `{name}_arm64` | ARM64 image slice, only with `multi_platform`                    |
+| `{name}.load`  | Load the image into local Docker                                 |
+| `{name}.push`  | Push to the OCI registry (CI)                                    |
+| `{name}.info`  | `OciImageInfo` provider for `helm_chart`                         |
 
 The binary runs as uid `65532` (distroless nonroot convention).
 
 ## `apko_image`
 
-Builds a multi-platform image from an apko config and lock file, optionally
-layering in additional tars. The apko config must list both `x86_64` and
-`aarch64` in its `archs` field.
+Builds an image from an apko config and lock file, optionally layering in
+additional tars. The macro defaults `arm64 = True`; 24 of its 25 callers pass
+`arm64 = False` and get a single amd64 image, and `projects/embervm/noded/image`
+keeps an amd64 plus arm64 index. Every apko config lists both `x86_64` and
+`aarch64` in `archs`: the lock checksums the config, and apko ignores a
+declared arch nobody builds, so `arm64 = False` needs no `archs` edit.
 
 ```python
 # projects/monolith/obsidian-image/BUILD
@@ -126,6 +130,7 @@ load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 apko_image(
     name = "image",
+    arm64 = False,
     config = "apko.yaml",
     contents = "@monolith_obsidian_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/obsidian",
@@ -137,12 +142,16 @@ With extra layers:
 ```python
 apko_image(
     name = "image",
+    arm64 = False,
     config = "apko.yaml",
     contents = "@my_lock//:contents",
-    tars = [":config_tar"],          # same tar used on both arches
-    multiarch_tars = [":binary_tar"], # uses :binary_tar_amd64 / :binary_tar_arm64
+    tars = [":config_tar", ":binary_tar_amd64"],  # per-arch tars named explicitly
 )
 ```
+
+With `arm64 = True`, arch-specific layers go in `multiarch_tars = [":binary_tar"]`
+instead, and the macro appends `_amd64` / `_arm64`. `arm64 = False` with
+`multiarch_tars` passes PR CI and fails to push a layer blob on main.
 
 | Arg                  | Default                                 | Description                                                      |
 | -------------------- | --------------------------------------- | ---------------------------------------------------------------- |
@@ -150,8 +159,9 @@ apko_image(
 | `config`             | required                                | apko YAML config file                                            |
 | `contents`           | required                                | apko lock file label (`@<lock>//:contents`)                      |
 | `repository`         | `ghcr.io/jomcgi/homelab/{package_name}` | OCI registry repository URL                                      |
-| `tars`               | `None`                                  | Tar layers added to both platforms                               |
-| `multiarch_tars`     | `None`                                  | Tar base names; macro appends `_amd64` / `_arm64` for each entry |
+| `arm64`              | `True`                                  | Also build the aarch64 variant and an index; callers pass `False` |
+| `tars`               | `None`                                  | Tar layers added to every built platform                         |
+| `multiarch_tars`     | `None`                                  | Tar base names; macro appends `_amd64` / `_arm64`; needs `arm64 = True` |
 | `multiplatform_tars` | `None`                                  | Deprecated. Use `tars` and `multiarch_tars` instead              |
 | `visibility`         | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                 |
 
@@ -159,7 +169,7 @@ Created targets:
 
 | Target             | Description                                                       |
 | ------------------ | ----------------------------------------------------------------- |
-| `{name}`           | `oci_image_index` (or native apko image when no tars provided)    |
+| `{name}`           | amd64 image (an `oci_image_index` with `arm64 = True`)            |
 | `{name}.push`      | Push to OCI registry (CI)                                         |
 | `{name}.run`       | Load and run locally via podman or docker                         |
 | `{name}_lock_test` | `sh_test` that verifies the lock file matches the config checksum |
@@ -167,7 +177,7 @@ Created targets:
 
 ## `py3_image`
 
-Builds a multi-platform Python 3 image using `py_image_layer` from
+Builds an amd64 Python 3 image using `py_image_layer` from
 `@aspect_rules_py`. Handles runfiles layout, `PYTHONPATH`, and a `/bin/bash`
 symlink layer automatically.
 
@@ -202,14 +212,14 @@ py3_image(
 | `bash_symlink`   | `True`                                  | Add `/bin/bash -> /usr/bin/bash` symlink layer; set `False` for Wolfi    |
 | `repository`     | `ghcr.io/jomcgi/homelab/{package_name}` | OCI registry repository URL                                              |
 | `visibility`     | `["//bazel/images:__pkg__"]`            | Visibility of the `.push` target                                         |
-| `multi_platform` | `True`                                  | Build both amd64 and arm64                                               |
+| `multi_platform` | `False`                                 | Build amd64 and arm64 slices and an index; no caller sets it             |
 
 Created targets:
 
 | Target               | Description                                       |
 | -------------------- | ------------------------------------------------- |
-| `{name}`             | `oci_image_index` (multi-arch manifest list)      |
-| `{name}.load`        | Load host-arch image into local Docker            |
+| `{name}`             | amd64 image (an index with `multi_platform`)      |
+| `{name}.load`        | Load the image into local Docker                  |
 | `{name}.push`        | Push index to the OCI registry (CI)               |
 | `{name}_config_test` | `sh_test` verifying Python runtime env is correct |
 | `{name}.info`        | `OciImageInfo` provider for `helm_chart`          |
@@ -273,8 +283,10 @@ the deploy-time `values.yaml` never needs manual image entries.
 
 ## Conventions
 
-- All image macros default to dual-arch builds (x86_64 + aarch64). Set
-  `multi_platform = False` only for genuinely legacy targets.
+- Images are amd64. `go_image` and `py3_image` default `multi_platform = False`;
+  `apko_image` defaults `arm64 = True` and callers pass `False` (noded is the
+  one index). Re-adding an arch is `arm64 = True` or `multi_platform = True`
+  plus per-arch tars.
 - All containers run as uid `65532` (nonroot). The distroless base enforces
   this; apko images should declare a non-root user in their config.
 - The `{name}.push` target is visible to `//bazel/images:__pkg__` by default,

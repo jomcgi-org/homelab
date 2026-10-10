@@ -250,7 +250,7 @@ noded:
   # decoupled from this flag (rendered for noded OR bricks), so bricks keep their
   # identity with the DS off. Rollback: set back to true (the DS re-renders and
   # backstops beside the bricks). node scratch is provisioned out of band now
-  # (docs/runbooks/embervm-node-scratch-setup.md).
+  # (one ext4 mount per node, provisioned once on the host).
   enabled: false
   maxLiveVMs: 16
   # ARM warm restore with volume FLEET-WIDE (all brick classes). The #4371
@@ -292,7 +292,7 @@ noded:
 # homelab (the masters' minimal host image lacks losetup/mkfs.ext4/mount on the
 # nsenter PATH, and the container-vs-host path split kept surfacing a new failure
 # per layer). Node scratch is instead provisioned ONCE per node out of band: a
-# manual host setup over SSH today (see docs/runbooks/embervm-node-scratch-setup.md),
+# manual host setup over SSH on the home nodes (that runbook went with the home cluster),
 # and cloud-init / a machine template when the fleet moves to the cloud. noded only
 # needs /var/lib/embervm/scratch to be a correctly-sized ext4 mount; how it gets
 # there does not need to be a runtime pod. node-4 keeps its dedicated NVMe mount.

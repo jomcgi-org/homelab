@@ -73,7 +73,7 @@ bazel/                # Build infrastructure (rules, tools, images)
 docs/                 # Cross-domain documentation and runbooks
 ```
 
-See [docs/contributing.md](docs/contributing.md) for the full structure. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
+See [AGENTS.md](AGENTS.md) for the rules every change follows and the map of where to look next. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
 
 ## What's next
 
