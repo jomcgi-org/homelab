@@ -1,7 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { knowledgeFields, selectedDetails } from "./knowledge-fields.js";
-  import KnowledgeDetails from "./KnowledgeDetails.svelte";
+  import RevealProjection from "./RevealProjection.svelte";
   let { endpoint, entityId, character, grant, saved, cancel } = $props();
   let entity = $state(null);
   let scope = $state("name_only");
@@ -94,8 +94,9 @@
     {#if preview && previewSignature === signature}<h3>
         What {character.character_name} will see
       </h3>
-      <p>{preview.name} · {preview.entity_type}</p>
-      <KnowledgeDetails entity={preview} /><button
+      <RevealProjection
+        knowledge={{ projection: preview, grant_scope: scope }}
+      /><button
         disabled={busy}
         onclick={() => act(grant ? "updateGrant" : "reveal")}
         >Confirm knowledge</button
