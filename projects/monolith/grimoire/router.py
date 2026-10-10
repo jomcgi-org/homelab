@@ -72,6 +72,11 @@ from grimoire.models import (
     SessionStatus,
 )
 from grimoire.reveals import reveal_items
+from grimoire.play_embeddings import (
+    event_note_markdown as _event_note_markdown,
+    sync_event_embeddings,
+    sync_note_embeddings,
+)
 from grimoire.search import search_campaign
 from grimoire.session_events import (
     EventRequestConflictError,
@@ -354,44 +359,6 @@ def get_campaign(
 ) -> Campaign:
     _get_member_or_404(session, campaign_id, email)
     return _get_campaign_or_404(session, campaign_id)
-
-
-def _event_note_markdown(body: dict) -> str:
-    """Human-readable snapshot of an already audience-filtered event body."""
-    if "reveals" in body:
-        return "\n\n".join(_event_note_markdown(item) for item in reveal_items(body))
-    if body.get("text"):
-        return body["text"]
-    title = body.get("name") or body.get("label") or "Session update"
-    projection = body.get("projection") or body.get("entity") or body
-    details = projection.get("revealed_details") or projection
-    hidden = {
-        "id",
-        "entity_id",
-        "name",
-        "entity_type",
-        "grant_scope",
-        "source_type",
-        "source_book",
-        "site",
-        "created_in_session",
-        "created_at",
-        "is_global",
-        "recognition_only",
-    }
-    lines = [f"## {title}"]
-    if body.get("grant_scope") == "name_only":
-        lines.append("You recognize this name.")
-    for key, value in details.items():
-        if key in hidden or value is None:
-            continue
-        text = (
-            json.dumps(value, ensure_ascii=False)
-            if isinstance(value, (dict, list))
-            else str(value)
-        )
-        lines.append(f"**{key.replace('_', ' ').capitalize()}:** {text}")
-    return "\n\n".join(lines)
 
 
 # --- Player and party notes --------------------------------------------
@@ -724,6 +691,7 @@ def patch_note(
     for field, value in changes.items():
         setattr(row, field, value)
     row.updated_at = datetime.now(timezone.utc)
+    sync_note_embeddings(session, row)
     session.commit()
     session.refresh(row)
     return _note_view(session, row, viewer, member)
@@ -741,6 +709,7 @@ def delete_note(
     row = _get_note_or_404(session, campaign_id, note_id, viewer, member, lock=True)
     _require_note_editor(row, member)
     row.deleted_at = row.updated_at = datetime.now(timezone.utc)
+    sync_note_embeddings(session, row)
     session.commit()
 
 
@@ -1826,6 +1795,7 @@ def _retract_grant_history(session: Session, grant: KnowledgeGrant) -> None:
                 }
                 if not reveal_items(event.body):
                     event.retracted_at = datetime.now(timezone.utc)
+                sync_event_embeddings(session, event)
                 changed.append(event)
             continue
         if (
@@ -1833,6 +1803,7 @@ def _retract_grant_history(session: Session, grant: KnowledgeGrant) -> None:
             and grant.player_character_id in event.audience_pc_ids
         ):
             event.retracted_at = datetime.now(timezone.utc)
+            sync_event_embeddings(session, event)
             changed.append(event)
     session.add_all(changed)
 
@@ -3050,6 +3021,7 @@ def retract_session_event(
     # Retraction is idempotent and permitted after a session ends.
     if row.retracted_at is None:
         row.retracted_at = datetime.now(timezone.utc)
+        sync_event_embeddings(session, row)
         session.commit()
         session.refresh(row)
     return _event_view(row, member)

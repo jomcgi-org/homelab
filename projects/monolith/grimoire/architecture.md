@@ -6,6 +6,11 @@ have been retired. Their implementation remains available in git history.
 
 ## Runtime shape
 
+**Why.** Audience is copied onto play embedding rows so the kNN filter uses one
+predicate. Reads re-check the live source row. Embedding notes and player-safe
+event projections is offloaded to the five-minute `grimoire-embed-play`
+CronWorkflow (#6626).
+
 - `grimoire/module.py` composes the domain into the private and public Monolith
   profiles.
 - Private routes live under `/api/grimoire` in `router.py`.

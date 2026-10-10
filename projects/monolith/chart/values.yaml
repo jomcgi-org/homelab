@@ -1113,6 +1113,19 @@ jobs:
     # unchanged corpus is cheap. `grimoire: true` injects the SeaweedFS S3 env,
     # GRIMOIRE_S3_BUCKET, and EMBEDDING_URL the loader reads. The cronworkflows
     # template skips both grimoire entries unless grimoire.enabled (private tier).
+    - name: grimoire-embed-play
+      args: ["grimoire-embed-play"]
+      schedule: "*/5 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 240
+      suspend: false
+      grimoire: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     - name: grimoire-load-chunks
       args: ["grimoire-load-chunks"]
       schedule: "0 2 * * *" # daily 02:00 UTC

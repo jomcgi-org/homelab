@@ -78,7 +78,7 @@ Temporality = Literal["historical", "present", "future"]
 SourceType = Literal["extracted", "homebrew"]
 MemberRole = Literal["dm", "player"]
 CharacterSheetStatus = Literal["draft", "submitted", "approved", "returned"]
-EmbeddableKind = Literal["entity", "chunk", "transcript"]
+EmbeddableKind = Literal["entity", "chunk", "transcript", "note", "event"]
 AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
 EventKind = Literal[
@@ -513,8 +513,27 @@ class Embedding(SQLModel, table=True):
     __tablename__ = "embedding"
     __table_args__ = (
         CheckConstraint(
-            "embeddable_kind IN ('entity', 'chunk', 'transcript')",
+            "embeddable_kind IN ('entity', 'chunk', 'transcript', 'note', 'event')",
             name="embedding_embeddable_kind_chk",
+        ),
+        CheckConstraint(
+            "(embeddable_kind IN ('entity', 'chunk') AND campaign_id IS NULL "
+            "AND audience IS NULL AND audience_pc_ids IS NULL AND dm_readable IS NULL) OR "
+            "(embeddable_kind IN ('note', 'event', 'transcript') "
+            "AND campaign_id IS NOT NULL AND audience IS NOT NULL "
+            "AND audience_pc_ids IS NOT NULL AND "
+            "((embeddable_kind = 'note' AND audience IN ('character', 'party') "
+            "AND dm_readable IS NOT NULL) OR "
+            "(embeddable_kind IN ('event', 'transcript') "
+            "AND audience IN ('table', 'dm', 'pcs'))))",
+            name="embedding_play_audience_chk",
+        ),
+        Index(
+            "embedding_campaign_kind_idx",
+            "campaign_id",
+            "embeddable_kind",
+            postgresql_where=text("campaign_id IS NOT NULL"),
+            sqlite_where=text("campaign_id IS NOT NULL"),
         ),
         UniqueConstraint(
             "embeddable_kind",
@@ -537,6 +556,19 @@ class Embedding(SQLModel, table=True):
     model: str
     dim: int
     vector: list[float] = Field(sa_column=Column(Vector(1024), nullable=False))
+    campaign_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.campaign.id", ondelete="CASCADE"),
+    )
+    audience: str | None = Field(default=None, sa_column=Column(String))
+    audience_pc_ids: list[str] | None = Field(
+        default=None, sa_column=Column(AUDIENCE_PC_IDS_TYPE, nullable=True)
+    )
+    author_member_id: str | None = Field(
+        default=None, sa_column=Column(AUTHOR_MEMBER_ID_TYPE, nullable=True)
+    )
+    dm_readable: bool | None = Field(default=None, sa_column=Column(Boolean))
+    content_hash: str | None = Field(default=None, sa_column=Column(String))
 
 
 class AliasCandidate(SQLModel, table=True):

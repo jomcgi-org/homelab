@@ -6497,6 +6497,29 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_play_embeddings_test",
+    srcs = ["grimoire/play_embeddings_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_play_embeddings_postgres_test",
+    srcs = ["grimoire/play_embeddings_postgres_test.py"],
+    deps = [
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+py_test(
     name = "grimoire_notes_test",
     srcs = ["grimoire/notes_test.py"],
     imports = ["."],

@@ -111,6 +111,66 @@ def _positive_int_env(name: str, default: int, log_name: str) -> int:
     return value
 
 
+def _collect_play_inputs(model: str, limit: int):
+    from core.db import get_engine
+    from grimoire.play_embeddings import collect_play_inputs
+
+    with Session(get_engine()) as session:
+        inputs = collect_play_inputs(session, model, limit)
+        session.commit()
+        return inputs
+
+
+def _persist_play_vectors(model: str, inputs, vectors) -> int:
+    from core.db import get_engine
+    from grimoire.play_embeddings import persist_play_vectors
+
+    with Session(get_engine()) as session:
+        written = persist_play_vectors(session, model, inputs, vectors)
+        session.commit()
+        return written
+
+
+async def grimoire_embed_play(session: Session) -> None:
+    """Offload live notes and player-safe event projections to the embedder."""
+    from grimoire.ingest import (
+        EMBED_CHAR_BUDGET,
+        EMBED_MAX_BATCH,
+        EMBED_INPUT_MAX_CHARS,
+    )
+
+    client = _embedding_client()
+    limit = _positive_int_env("GRIMOIRE_EMBED_PLAY_LIMIT", 500, "grimoire_embed_play")
+    inputs = await asyncio.to_thread(_collect_play_inputs, client.model, limit)
+    written = 0
+    # Reuse the loader's character budget and per-input server bound.
+    batch = []
+    chars = 0
+    for item in inputs:
+        size = min(len(item.text), EMBED_INPUT_MAX_CHARS)
+        if batch and (
+            chars + size > EMBED_CHAR_BUDGET or len(batch) == EMBED_MAX_BATCH
+        ):
+            vectors = await client.embed_batch(
+                [row.text[:EMBED_INPUT_MAX_CHARS] for row in batch]
+            )
+            written += await asyncio.to_thread(
+                _persist_play_vectors, client.model, batch, vectors
+            )
+            batch = []
+            chars = 0
+        batch.append(item)
+        chars += size
+    if batch:
+        vectors = await client.embed_batch(
+            [row.text[:EMBED_INPUT_MAX_CHARS] for row in batch]
+        )
+        written += await asyncio.to_thread(
+            _persist_play_vectors, client.model, batch, vectors
+        )
+    logger.info("grimoire_embed_play: selected=%d written=%d", len(inputs), written)
+
+
 async def grimoire_load_chunks(session: Session) -> None:
     """Load S3 chunk manifests into knowledge_chunk + embedding (spec #4.2.1).
 
