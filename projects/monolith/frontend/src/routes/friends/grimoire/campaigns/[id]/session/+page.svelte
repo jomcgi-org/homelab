@@ -648,6 +648,7 @@
   }
   .table-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 12px;
     margin: 20px 0;
   }

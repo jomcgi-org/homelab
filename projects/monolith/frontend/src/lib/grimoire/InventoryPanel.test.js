@@ -280,6 +280,9 @@ describe("inventory controls", () => {
   it("loads history on disclosure and leaves projected owner values intact", async () => {
     const openKnowledge = vi.fn();
     const fetch = await render({ openKnowledge });
+    expect(button("Moon rope").getAttribute("aria-label")).toBe(
+      "Explore Moon rope for Rope",
+    );
     button("Moon rope").click();
     expect(openKnowledge).toHaveBeenCalledWith(other);
     const details = [...document.querySelectorAll("details")].find(
