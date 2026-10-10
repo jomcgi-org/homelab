@@ -72,6 +72,14 @@ CASES = {
         },
     ),
     ("GET", PREFIX): Case(),
+    ("GET", PREFIX + "/voices"): Case(read_only=True),
+    ("PUT", PREFIX + "/voices/{speaker_key}"): Case(
+        params={"speaker_key": "narrator"},
+        body={"voice_hint": {"lang": "en-GB", "names": ["English"]}, "rate": 1.1},
+    ),
+    ("DELETE", PREFIX + "/voices/{speaker_key}"): Case(
+        params={"speaker_key": "narrator"}, success=204,
+    ),
     ("PATCH", PREFIX + "/settings"): Case(body={"notes_dm_readable_default": True}),
     ("GET", PREFIX + "/notes"): Case(),
     ("POST", PREFIX + "/notes"): Case(

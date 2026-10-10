@@ -9416,6 +9416,22 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_voices_test",
+    srcs = ["grimoire/voices_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_join_links_test",
     srcs = ["grimoire/join_links_test.py"],
     imports = ["."],

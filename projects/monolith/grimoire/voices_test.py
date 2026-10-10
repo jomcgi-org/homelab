@@ -1,0 +1,199 @@
+"""Voice-map ACLs, validation, persistence, and narration projection."""
+
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import select
+
+from grimoire.models import CampaignVoice, SessionEvent
+from grimoire.testing.leak_harness import sqlite_harness
+from grimoire.voices import speaker_ref
+
+
+@pytest.fixture
+def setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
+    with sqlite_harness(tmp_path / "voices.db") as h:
+        h.prepare("play")
+        with TestClient(h.app()) as client:
+            yield client, h
+
+
+def path(h, key=None):
+    base = f"/api/grimoire/campaigns/{h.rows['campaign'].id}/voices"
+    return base if key is None else f"{base}/{key}"
+
+
+def events_path(h):
+    return (
+        f"/api/grimoire/campaigns/{h.rows['campaign'].id}"
+        f"/sessions/{h.rows['campaign_session'].id}/events"
+    )
+
+
+def test_dm_upsert_creates_then_updates_same_row(setup):
+    client, h = setup
+    key = "The Captain"
+    created = client.put(path(h, key), headers=h.headers("dm"), json={})
+    assert created.status_code == 200, created.text
+    assert created.json()["voice_hint"] == {"lang": None, "names": []}
+    assert created.json()["rate"] == created.json()["pitch"] == 1
+    row = h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == key)).one()
+    row_id = row.id
+    updated = client.put(
+        path(h, key), headers=h.headers("dm"),
+        json={"voice_hint": {"lang": "en-GB", "names": ["English"]}, "rate": 1.5, "pitch": 0.5},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["rate"] == 1.5
+    assert updated.json()["pitch"] == 0.5
+    assert updated.json()["voice_hint"] == {"lang": "en-GB", "names": ["English"]}
+    assert updated.json()["updated_at"] >= created.json()["updated_at"]
+    h.session.expire_all()
+    rows = h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == key)).all()
+    assert len(rows) == 1
+    assert rows[0].id == row_id
+    assert rows[0].rate == 1.5
+    assert rows[0].pitch == 0.5
+    assert rows[0].voice_hint == updated.json()["voice_hint"]
+
+
+def test_dm_delete_returns_204_and_removes_row(setup):
+    client, h = setup
+    response = client.delete(path(h, "narrator"), headers=h.headers("dm"))
+    assert response.status_code == 204, response.text
+    assert response.content == b""
+    assert h.session.exec(select(CampaignVoice).where(CampaignVoice.speaker_key == "narrator")).first() is None
+    assert client.delete(path(h, "narrator"), headers=h.headers("dm")).status_code == 404
+
+
+@pytest.mark.parametrize("body", [
+    {"rate": 0.49}, {"rate": 2.01}, {"pitch": -0.01}, {"pitch": 2.01},
+    {"voice_hint": {"names": ["voice"] * 9}},
+    {"voice_hint": {"names": ["x" * 65]}},
+    {"voice_hint": {"names": [""]}},
+    {"voice_hint": {"names": [123]}},
+    {"voice_hint": {"lang": "x" * 36}},
+    {"voice_hint": {"secret": "unexpected"}},
+    {"unexpected": True},
+])
+def test_invalid_presets_are_rejected_without_mutation(setup, body):
+    client, h = setup
+    before = h.snapshot()
+    response = client.put(path(h, "narrator"), headers=h.headers("dm"), json=body)
+    assert response.status_code == 422, response.text
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("key", ["ref:opaque", "x" * 65, "bad!label"])
+def test_invalid_speaker_keys_are_rejected(setup, key):
+    client, h = setup
+    before = h.snapshot()
+    assert client.put(path(h, key), headers=h.headers("dm"), json={}).status_code == 422
+    assert client.delete(path(h, key), headers=h.headers("dm")).status_code == 422
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("key_name", ["foreign", "class"])
+def test_foreign_campaign_and_non_npc_entity_keys_are_rejected(setup, key_name):
+    client, h = setup
+    key = h.rows[key_name].id
+    before = h.snapshot()
+    response = client.put(path(h, key), headers=h.headers("dm"), json={})
+    assert response.status_code == 404, response.text
+    assert h.snapshot() == before
+
+
+def test_unknown_uuid_is_rejected(setup):
+    client, h = setup
+    assert client.put(path(h, str(uuid4())), headers=h.headers("dm"), json={}).status_code == 404
+
+
+@pytest.mark.parametrize("viewer", ["dm", "player_a", "player_b", "no_character"])
+def test_members_can_get_voices_with_viewer_specific_keys(setup, viewer):
+    client, h = setup
+    response = client.get(path(h), headers=h.headers(viewer))
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, viewer)
+    keys = {row["speaker_key"] for row in response.json()}
+    raw_key = h.rows["private"].id
+    assert "narrator" in keys
+    assert (raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key)) in keys
+    if viewer != "dm":
+        assert raw_key.casefold() not in response.text.casefold()
+
+
+@pytest.mark.parametrize("viewer", ["player_a", "player_b", "no_character"])
+@pytest.mark.parametrize("method", ["PUT", "DELETE"])
+def test_players_cannot_write_voice_map(setup, viewer, method):
+    client, h = setup
+    before = h.snapshot()
+    response = client.request(method, path(h, "narrator"), headers=h.headers(viewer), json={} if method == "PUT" else None)
+    assert response.status_code == 403, response.text
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("viewer", ["outsider", "other_campaign"])
+def test_nonmembers_cannot_read_voices(setup, viewer):
+    client, h = setup
+    response = client.get(path(h), headers=h.headers(viewer))
+    assert response.status_code == 404
+    h.assert_no_leak(response, viewer)
+
+
+@pytest.mark.parametrize("viewer", ["player_a", "player_b", "no_character", "dm"])
+def test_narration_key_matches_voice_map_and_never_mutates_storage(setup, viewer):
+    client, h = setup
+    before = h.snapshot()
+    voices = client.get(path(h), headers=h.headers(viewer))
+    events = client.get(events_path(h), headers=h.headers(viewer))
+    assert voices.status_code == events.status_code == 200
+    h.assert_no_leak(events, viewer)
+    event = next(row for row in events.json() if row["id"] == h.rows["event_voice"].id)
+    key = event["body"]["speaker_key"]
+    assert key in {row["speaker_key"] for row in voices.json()}
+    raw_key = h.rows["private"].id
+    assert key == (raw_key if viewer == "dm" else speaker_ref(h.rows["campaign"].id, raw_key))
+    assert h.snapshot() == before
+    assert h.rows["event_voice"].body["speaker_key"] == raw_key
+
+
+@pytest.mark.parametrize("key", ["narrator", "Unmapped voice", "Old Captain's-voice_1.", "private", None])
+def test_valid_narration_keys_and_absent_key_are_accepted(setup, key):
+    client, h = setup
+    if key == "private":
+        key = h.rows["private"].id
+    body = {"text": "The captain speaks"}
+    if key is not None:
+        body["speaker_key"] = key
+    response = client.post(events_path(h), headers=h.headers("dm"), json={"kind": "narration", "audience": "table", "body": body})
+    assert response.status_code == 200, response.text
+    if key is not None:
+        expected = str(UUID(key)) if key == h.rows["private"].id else key
+        assert response.json()["body"]["speaker_key"] == expected
+    else:
+        assert "speaker_key" not in response.json()["body"]
+    stored = h.session.get(SessionEvent, response.json()["id"])
+    assert stored.body == response.json()["body"]
+
+
+@pytest.mark.parametrize("key", ["ref:opaque", "bad!label", "x" * 65, "foreign", None, 3, []])
+def test_invalid_narration_speaker_keys_are_rejected(setup, key):
+    client, h = setup
+    if key == "foreign":
+        key = h.rows["foreign"].id
+    before = h.snapshot()
+    response = client.post(events_path(h), headers=h.headers("dm"), json={"kind": "narration", "audience": "table", "body": {"speaker_key": key}})
+    assert response.status_code == (404 if key == h.rows["foreign"].id else 422), response.text
+    assert h.snapshot() == before
+
+
+def test_speaker_refs_are_canonical_and_campaign_scoped():
+    campaign, other, npc = str(uuid4()), str(uuid4()), str(uuid4())
+    ref = speaker_ref(campaign, npc)
+    assert ref.startswith("ref:") and len(ref) == 24
+    assert speaker_ref(campaign.upper(), npc.upper()) == ref
+    assert speaker_ref(other, npc) != ref
+    assert speaker_ref(campaign, "narrator") == "narrator"
+    assert speaker_ref(campaign, "Free label") == "Free label"
