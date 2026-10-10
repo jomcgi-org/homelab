@@ -78,7 +78,8 @@ CASES = {
         body={"voice_hint": {"lang": "en-GB", "names": ["English"]}, "rate": 1.1},
     ),
     ("DELETE", PREFIX + "/voices/{speaker_key}"): Case(
-        params={"speaker_key": "narrator"}, success=204,
+        params={"speaker_key": "narrator"},
+        success=204,
     ),
     ("PATCH", PREFIX + "/settings"): Case(body={"notes_dm_readable_default": True}),
     ("GET", PREFIX + "/notes"): Case(),

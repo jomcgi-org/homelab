@@ -793,7 +793,8 @@ class CampaignVoice(SQLModel, table=True):
     __tablename__ = "campaign_voice"
     __table_args__ = (
         UniqueConstraint(
-            "campaign_id", "speaker_key",
+            "campaign_id",
+            "speaker_key",
             name="campaign_voice_campaign_id_speaker_key_key",
         ),
         CheckConstraint("rate BETWEEN 0.5 AND 2", name="campaign_voice_rate_chk"),
@@ -823,7 +824,9 @@ class CampaignVoice(SQLModel, table=True):
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
     )
 
 
