@@ -1,7 +1,12 @@
 import { error } from "@sveltejs/kit";
 import { grimoireJson } from "./grimoire-auth.js";
 
-export async function sessionState(fetch, cookies, campaignId) {
+export async function sessionState(
+  fetch,
+  cookies,
+  campaignId,
+  selectedSessionId = null,
+) {
   const lobby = await grimoireJson(fetch, cookies, "/lobby");
   const campaign = lobby.campaigns.find((row) => row.id === campaignId);
   if (!campaign) error(403, "You are not a member of this campaign.");
@@ -10,7 +15,10 @@ export async function sessionState(fetch, cookies, campaignId) {
     grimoireJson(fetch, cookies, `${base}/characters`),
     grimoireJson(fetch, cookies, `${base}/sessions`),
   ]);
-  const session = sessions[0] || null;
+  const session = selectedSessionId
+    ? sessions.find((row) => row.id === selectedSessionId)
+    : sessions[0] || null;
+  if (selectedSessionId && !session) error(404, "Session not found.");
   const sheets = await Promise.all(
     characters.map(async (character) => {
       const history = await grimoireJson(
@@ -59,6 +67,7 @@ export async function sessionState(fetch, cookies, campaignId) {
     events,
     journal,
     user: lobby.user,
+    ...(selectedSessionId ? { selectedSessionId } : {}),
     ...dmData,
   };
 }

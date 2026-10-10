@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { load } from "./+page.server.js";
+import { GET } from "./state/+server.js";
 
 const cookies = { get: () => "signed-grimoire-token" };
 const response = (value) => ({
@@ -64,6 +65,40 @@ describe("session page load", () => {
   beforeEach(() => {
     process.env.API_BASE = "http://backend.test";
     process.env.GRIMOIRE_PLAY_ENABLED = "true";
+  });
+
+  it("keeps a search-linked session in both the initial load and the state BFF", async () => {
+    const original = backend("player");
+    const historical = {
+      id: "44444444-4444-4444-8444-444444444444",
+      status: "ended",
+    };
+    const fetch = vi.fn(async (url, options) =>
+      url.endsWith("/sessions")
+        ? response([session, historical])
+        : original(url, options),
+    );
+    const request = {
+      fetch,
+      cookies,
+      params: { id: "campaign" },
+      setHeaders: vi.fn(),
+      url: new URL(
+        `https://friends.test/grimoire/campaigns/campaign/session?session=${historical.id}`,
+      ),
+    };
+    const data = await load(request);
+    expect(data.session).toEqual(historical);
+    expect(data.selectedSessionId).toBe(historical.id);
+    const refreshed = await GET(request);
+    expect(refreshed.status).toBe(200);
+    expect((await refreshed.json()).session).toEqual(historical);
+    expect(refreshed.headers.get("cache-control")).toBe("private, no-store");
+    expect(
+      fetch.mock.calls
+        .filter(([url]) => url.includes("/events"))
+        .every(([url]) => url.includes(historical.id)),
+    ).toBe(true);
   });
 
   it("is unavailable while play is disabled", async () => {

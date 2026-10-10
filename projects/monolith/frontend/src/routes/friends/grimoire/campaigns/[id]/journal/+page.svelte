@@ -1,6 +1,7 @@
 <script>
   import "$lib/grimoire/theme.css";
   import JournalPanel from "$lib/grimoire/JournalPanel.svelte";
+  import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
 
   let { data } = $props();
   const nextPage = $derived(
@@ -16,6 +17,7 @@
 <main class="grimoire">
   <a href="/grimoire">Back to campaigns</a>
   <h1>{data.campaign.name} journal</h1>
+  <KnowledgeSearch campaignId={data.campaign.id} />
   <form method="GET" aria-label="Journal audience">
     <button name="view" value="mine" aria-pressed={data.view === "mine"}
       >Mine</button

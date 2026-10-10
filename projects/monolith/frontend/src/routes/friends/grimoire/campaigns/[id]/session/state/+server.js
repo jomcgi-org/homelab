@@ -61,9 +61,17 @@ export async function GET({ fetch, cookies, params, url }) {
         { headers: { "cache-control": "private, no-store" } },
       );
     }
-    return json(await sessionState(fetch, cookies, params.id), {
-      headers: { "cache-control": "private, no-store" },
-    });
+    return json(
+      await sessionState(
+        fetch,
+        cookies,
+        params.id,
+        url.searchParams.get("session"),
+      ),
+      {
+        headers: { "cache-control": "private, no-store" },
+      },
+    );
   } catch (error) {
     return json(
       { error: error.message || "Could not refresh the session." },

@@ -7,6 +7,7 @@
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
   import JournalPanel from "$lib/grimoire/SessionJournalPanel.svelte";
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
+  import KnowledgeSearch from "$lib/grimoire/KnowledgeSearch.svelte";
   import "$lib/grimoire/theme.css";
 
   let { data } = $props();
@@ -55,7 +56,12 @@
 
   async function refresh() {
     try {
-      const response = await fetch(endpoint());
+      const response = await fetch(
+        endpoint() +
+          (data.selectedSessionId
+            ? `?${new URLSearchParams({ session: data.selectedSessionId })}`
+            : ""),
+      );
       const next = await response.json();
       if (!response.ok) throw new Error(next.error);
       state = next;
@@ -210,6 +216,7 @@
     </div>
   </header>
 
+  {#if !dm}<KnowledgeSearch campaignId={state.campaign.id} />{/if}
   <nav class="table-tabs" aria-label="Session sections">
     <button
       class="secondary"
@@ -266,6 +273,7 @@
           id={`event-${event.id}`}
           class:private-event={event.audience !== "table"}
         >
+          <span id={`session-${state.session.id}-event-${event.seq}`}></span>
           <div class="event-meta">
             <strong
               >{event.kind === "narration"
