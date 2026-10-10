@@ -44,6 +44,17 @@ def fetch_loopback_route(route):
     return route.fetch()
 
 
+def open_reveal(page):
+    """Open the DM reveal drawer; it covers the session controls until closed."""
+    page.get_by_role("button", name="Reveal knowledge", exact=True).click()
+    expect(page.get_by_role("dialog", name="Reveal to your players")).to_be_visible()
+
+
+def close_reveal(page):
+    page.get_by_role("button", name="Close reveal panel", exact=True).click()
+    expect(page.get_by_role("dialog", name="Reveal to your players")).to_have_count(0)
+
+
 def open_campaign_players(page, article):
     # The lobby's controlled details can be reset during hydration. Wait until
     # navigation has settled, then open it only if it is currently closed.
@@ -212,7 +223,7 @@ def main():
             # Exercise the DM editor through the BFF and normal backend authority.
             dm.bring_to_front()
             reveal_start = time.monotonic()
-            dm.get_by_text("Reveal knowledge", exact=True).click()
+            open_reveal(dm)
             dm.get_by_label("Find knowledge").fill("Mara")
             dm.get_by_role("button", name="Search knowledge", exact=True).click()
             dm.get_by_role("button", name="Mara, the innkeeper npc", exact=True).click()
@@ -293,10 +304,19 @@ def main():
             ).to_be_visible(timeout=5000)
             b.screenshot(path=str(args.output / "full-knowledge.png"), full_page=True)
             b.get_by_role("button", name="Close knowledge", exact=True).click()
+            # B holds the full scope now; A's card and payload must stay partial.
+            a.bring_to_front()
+            expect(
+                a.get_by_text("DM_ONLY_INNKEEPER_SECRET", exact=False)
+            ).to_have_count(0)
+            assert (
+                "DM_ONLY_INNKEEPER_SECRET" not in a.request.get(a.url + "/state").text()
+            )
             dm.bring_to_front()
             dm.get_by_role("button", name="Mara, the innkeeper npc", exact=True).click()
             dm.get_by_role("button", name="Retract from Bram", exact=True).click()
             expect(dm.get_by_text("Knowledge retracted.", exact=True)).to_be_visible()
+            close_reveal(dm)
             report["checks"].append(
                 "Field preview and knowledge drawer enforce partial A/full B scopes and preserve the session draft"
             )
@@ -535,6 +555,7 @@ def main():
                 "DM desktop and player phone views have no horizontal overflow"
             )
             dm.bring_to_front()
+            open_reveal(dm)
             dm.get_by_role("button", name="Mara, the innkeeper npc", exact=True).click()
             dm.get_by_role("button", name="Retract from Elowen", exact=True).click()
             expect(dm.get_by_text("Knowledge retracted.", exact=True)).to_be_visible()
@@ -555,6 +576,7 @@ def main():
             dm.get_by_role("button", name="Preview knowledge", exact=True).click()
             dm.get_by_role("button", name="Share knowledge", exact=True).click()
             expect(dm.get_by_text("Knowledge shared.", exact=True)).to_be_visible()
+            close_reveal(dm)
             for player in (a, b):
                 player.bring_to_front()
                 expect(
@@ -877,10 +899,12 @@ def main():
             ).to_be_visible()
             a.get_by_role("button", name="Story", exact=True).click()
             dm.bring_to_front()
+            open_reveal(dm)
             dm.get_by_label("Find knowledge").fill("Tessa")
             dm.get_by_role("button", name="Search knowledge", exact=True).click()
             dm.get_by_role("button", name="Mapmaker Tessa npc", exact=True).click()
             dm.get_by_role("button", name="Retract from Elowen", exact=True).click()
+            close_reveal(dm)
             a.bring_to_front()
             expect(
                 a.get_by_role("region", name="Session feed").get_by_text(
