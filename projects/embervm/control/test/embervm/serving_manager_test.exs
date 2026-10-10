@@ -591,6 +591,18 @@ defmodule Embervm.ServingManagerTest do
     {:ok, draining} = ServingStore.get(ctx.store, "srv-draining")
     assert draining.state == :draining
     assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
+
+    # The node finished the bank: its NodeStatus now reports neither the VM nor a
+    # snapshot the row knows about (snapshot_ref is only recorded by the sweeper's
+    # bank_ready step, which may still be queued behind its stats scrape). The
+    # row is the sweeper's to finish; reconcile must not fail it as vanished.
+    serving_node(ctx, "node-4", serving_vms: [], serving_snapshots: [])
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    {:ok, banking} = ServingStore.get(ctx.store, "srv-banking")
+    assert banking.state == :banking
+    {:ok, draining} = ServingStore.get(ctx.store, "srv-draining")
+    assert draining.state == :draining
     assert {:ok, _} = ServingStore.mark(ctx.store, "srv-banking", :bank_ready)
   end
 
