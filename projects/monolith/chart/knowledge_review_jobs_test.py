@@ -58,6 +58,34 @@ def test_review_mutation_jobs_are_suspended_by_default(values):
     ]
 
 
+def test_play_embedding_cronworkflow_is_bounded_and_grimoire_gated(tmp_path):
+    entries = yaml.safe_load((CHART / "values.yaml").read_text())["jobs"][
+        "cronWorkflows"
+    ]
+    entry = next(job for job in entries if job["name"] == "grimoire-embed-play")
+    assert entry["grimoire"] is True
+    for enabled in (False, True):
+        override = tmp_path / "play.yaml"
+        override.write_text(yaml.safe_dump({"grimoire": {"enabled": enabled}}))
+        jobs = _render(override)
+        if not enabled:
+            assert "grimoire-embed-play" not in jobs
+            continue
+        job = jobs["grimoire-embed-play"]
+        assert job["suspend"] is False
+        assert job["schedules"] == ["*/5 * * * *"]
+        assert job["concurrencyPolicy"] == "Forbid"
+        workflow = job["workflowSpec"]
+        assert workflow["activeDeadlineSeconds"] == 240
+        container = workflow["templates"][0]["container"]
+        assert container["args"] == ["grimoire-embed-play"]
+        assert container["resources"] == {
+            "requests": {"cpu": "100m", "memory": "256Mi"},
+            "limits": {"memory": "256Mi"},
+        }
+        assert "EMBEDDING_URL" in {item["name"] for item in container["env"]}
+
+
 def test_backfill_requires_explicit_opt_in_without_enabling_admission(tmp_path):
     values = yaml.safe_load((CHART / "values.yaml").read_text())
     entries = values["jobs"]["cronWorkflows"]

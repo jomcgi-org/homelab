@@ -65,6 +65,15 @@ def test_ember_spark_trigger_posts_internal_endpoint(monkeypatch):
     response.raise_for_status.assert_called_once_with()
 
 
+def test_grimoire_embed_play_dispatches_to_offloaded_handler():
+    with mock.patch.object(jobs_main, "_run_job") as run_job:
+        result = runner.invoke(jobs_main.app, ["grimoire-embed-play"])
+    assert result.exit_code == 0, result.output
+    run_job.assert_called_once_with(
+        "grimoire-embed-play", "grimoire.jobs", "grimoire_embed_play"
+    )
+
+
 def test_worldcup_sim_dispatches_to_refresh_handler():
     handler = mock.AsyncMock(return_value=None)
     with (

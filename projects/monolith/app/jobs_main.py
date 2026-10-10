@@ -969,6 +969,12 @@ def grimoire_load_chunks() -> None:
     _run_job("grimoire-load-chunks", "grimoire.jobs", "grimoire_load_chunks")
 
 
+@app.command("grimoire-embed-play")
+def grimoire_embed_play() -> None:
+    """Embed current notes and eligible session events in a bounded batch job."""
+    _run_job("grimoire-embed-play", "grimoire.jobs", "grimoire_embed_play")
+
+
 @app.command("grimoire-extract-entities")
 def grimoire_extract_entities() -> None:
     """Extract entities/mentions/relationships from pending chunks (spec #4.2.2).
