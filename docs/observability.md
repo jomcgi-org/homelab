@@ -114,7 +114,8 @@ the service is admitted through the allowlist above.
 The public stats ticker (`/app/notes/stats`) reads a snapshot the
 `observability.stats_rollup` job fills from the Kubernetes API, Postgres and
 GitHub. Its GPU source scrapes a DCGM exporter (`dcgmExporterUrl`); the hub has
-no GPU pool, so that source has nothing to read there.
+no GPU pool, so that source has nothing to read there. That exporter came with the home GPU
+operator, retired in #6914.
 
 ## Pod logs
 
