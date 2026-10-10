@@ -5,7 +5,7 @@
   import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
   import RevealProjection from "$lib/grimoire/RevealProjection.svelte";
   import SessionNotesPanel from "$lib/grimoire/SessionNotesPanel.svelte";
-  import JournalPanel from "$lib/grimoire/SessionJournalPanel.svelte";
+  import JournalPanel from "$lib/grimoire/JournalPanel.svelte";
   import KnowledgeDrawer from "$lib/grimoire/KnowledgeDrawer.svelte";
   import "$lib/grimoire/theme.css";
 
@@ -22,6 +22,7 @@
   let resolved = $state(true);
   let activeTab = $state("story");
   let selectedEntity = $state(null);
+  let journalView = $state("mine");
   let busy = $state(false);
   let failure = $state("");
   let pendingMessage = null;
@@ -34,6 +35,9 @@
     replyTo = null;
   });
   let dm = $derived(state.campaign.role === "dm");
+  // The feed poll replaces `state`, so the selected audience stays here and
+  // the panel always shows the latest projection for it.
+  let journal = $derived(state.journal?.[journalView] ?? null);
   let playing = $derived(state.session && state.session.status !== "ended");
   const endpoint = () =>
     `/grimoire/campaigns/${state.campaign.id}/session/state`;
@@ -235,11 +239,21 @@
     />
   </div>
   {#if activeTab === "journal"}<div>
-      <JournalPanel
-        views={state.journal}
-        {showEvent}
-        openKnowledge={(id) => (selectedEntity = id)}
-      />
+      {#if journal}
+        <JournalPanel
+          {journal}
+          view={journalView}
+          onViewChange={(next) => (journalView = next)}
+          {showEvent}
+          openKnowledge={(id) => (selectedEntity = id)}
+        />
+      {:else}
+        <p class="journal-empty">
+          {state.session
+            ? "The journal is unavailable right now. It will return on the next refresh."
+            : "Your journal starts when the session does."}
+        </p>
+      {/if}
     </div>{/if}
   <div class="layout" hidden={activeTab !== "story"}>
     <section aria-label="Session feed" class="feed">
@@ -567,6 +581,9 @@
   }
   [hidden] {
     display: none !important;
+  }
+  .journal-empty {
+    color: var(--grim-ink-soft);
   }
   .table-tabs {
     display: flex;

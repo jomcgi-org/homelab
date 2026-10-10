@@ -32,16 +32,17 @@ function retracted(row) {
   return { ...row, body: null, retracted_at: "2026-10-10T12:05:00Z" };
 }
 
-function pageData(role, events) {
+function pageData(role, events, { journal = null, session } = {}) {
   return {
     campaign: { id: campaignId, name: "Adventure", role },
     characters: [
       { id: pcA, character_name: "Aria", approved: null },
       { id: pcB, character_name: "Bram", approved: null },
     ],
-    session: { id: sessionId, status: "active" },
+    session:
+      session === undefined ? { id: sessionId, status: "active" } : session,
     events,
-    journal: null,
+    journal,
     user: { id: "viewer" },
     ...(role === "dm"
       ? { members: [{ id: "member-a", player_character_id: pcA }] }
@@ -60,6 +61,8 @@ const json = (value) =>
 function stubFetch(nextState) {
   const fetch = vi.fn(async (url, options = {}) => {
     if (String(url).includes("?notes=")) return json([]);
+    if (String(url).includes("?entity="))
+      return json({ id: "entity-mara", name: "Mara", entity_type: "npc" });
     if (options.method === "POST") return json({ id: "posted", seq: 99 });
     return json(nextState());
   });
@@ -548,5 +551,270 @@ describe("dice tray roll mode", () => {
       operation: "roll",
       formula: "1d20dis",
     });
+  });
+});
+
+// Canonical GET /campaigns/{id}/sessions/{sid}/journal bodies, as the BFF
+// passes them through to the page.
+const emptyJournal = () => ({
+  learned: [],
+  received: [],
+  people_and_places: [],
+  rolls: [],
+  open_threads: [],
+  truncated: false,
+});
+const rollEntry = (id, label, total) => ({
+  id,
+  seq: 1,
+  kind: "roll",
+  audience: "table",
+  audience_pc_ids: [],
+  author_member_id: null,
+  body: { label, total, formula: "1d20" },
+});
+const learnedEntry = (overrides = {}) => ({
+  event_id: "event-reveal",
+  seq: 2,
+  entity_id: "entity-mara",
+  name: "Mara",
+  entity_type: "npc",
+  grant_scope: "partial",
+  retracted: false,
+  entity: { revealed_details: { clue: "Mara knows the cellar door." } },
+  ...overrides,
+});
+
+const journalRegion = () =>
+  document.querySelector('section[aria-label="Session journal"]');
+const journalText = () => journalRegion()?.textContent ?? "";
+const pressed = (label) =>
+  [...document.querySelectorAll("button")]
+    .find((button) => button.textContent.trim() === label)
+    ?.getAttribute("aria-pressed");
+async function click(label, scope = document) {
+  const button = [...scope.querySelectorAll("button")].find(
+    (node) => node.textContent.trim() === label,
+  );
+  expect(button, `button ${label}`).toBeTruthy();
+  button.click();
+  await settle();
+}
+const buttonLabels = (scope = document) =>
+  [...scope.querySelectorAll("button")].map((node) => node.textContent.trim());
+
+describe("session journal tab", () => {
+  it("replaces the journal on every feed poll and keeps the chosen audience", async () => {
+    vi.useFakeTimers();
+    const filled = {
+      ...emptyJournal(),
+      learned: [learnedEntry()],
+      rolls: [rollEntry("roll-1", "MINE_ONLY_CANARY search", 17)],
+    };
+    const changed = {
+      ...filled,
+      learned: [
+        learnedEntry({
+          entity: {
+            revealed_details: { clue: "Mara hid a key under the cellar." },
+          },
+        }),
+      ],
+      open_threads: [
+        {
+          id: "act-1",
+          seq: 5,
+          kind: "action",
+          audience: "dm",
+          audience_pc_ids: [],
+          author_member_id: "member-a",
+          body: { text: "Is the cellar locked?" },
+        },
+      ],
+    };
+    const opening = rollEntry("party-1", "PARTY_ONLY_CANARY opening", 11);
+    const ambush = rollEntry("party-2", "PARTY_ONLY_CANARY ambush", 6);
+    const retreat = rollEntry("party-3", "PARTY_ONLY_CANARY retreat", 3);
+    const partyAt = (rolls, truncated = false) => ({
+      ...emptyJournal(),
+      rolls,
+      truncated,
+    });
+    // Index n is what the journal holds after n polls.
+    const mine = [emptyJournal(), filled, changed, changed, changed];
+    const party = [
+      partyAt([opening]),
+      partyAt([opening]),
+      partyAt([opening]),
+      partyAt([opening, ambush], true),
+      partyAt([opening, ambush, retreat], true),
+    ];
+    const at = (step) => ({ mine: mine[step], party: party[step] });
+    let step = 0;
+    const fetch = stubFetch(() => {
+      step += 1;
+      return pageData("player", [], { journal: at(Math.min(step, 4)) });
+    });
+    // Mine is initially empty; the first poll fills it.
+    await render(pageData("player", [], { journal: at(0) }));
+    await click("Journal");
+    expect(pressed("Mine")).toBe("true");
+    expect(journalText()).toContain("No discoveries yet.");
+    expect(journalText()).not.toContain("MINE_ONLY_CANARY");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toHaveLength(1);
+    expect(journalText()).toContain("Mara knows the cellar door.");
+    expect(journalText()).toContain("MINE_ONLY_CANARY search");
+    expect(journalText()).not.toContain("PARTY_ONLY_CANARY");
+    expect(journalText()).not.toContain("No discoveries yet.");
+
+    // A second consecutive poll changes the same entry in place.
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toHaveLength(2);
+    expect(journalText()).toContain("Mara hid a key under the cellar.");
+    expect(journalText()).not.toContain("Mara knows the cellar door.");
+    expect(journalText()).toContain("Is the cellar locked?");
+
+    // Choosing Party shows the party projection, never the member's own.
+    await click("Party");
+    expect(pressed("Party")).toBe("true");
+    expect(pressed("Mine")).toBe("false");
+    expect(journalText()).toContain("PARTY_ONLY_CANARY opening");
+    expect(journalText()).not.toContain("MINE_ONLY_CANARY");
+    expect(journalText()).not.toContain("Mara hid a key");
+
+    // The next polls update Party in place without resetting the choice.
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toHaveLength(3);
+    expect(pressed("Party")).toBe("true");
+    expect(journalText()).toContain("PARTY_ONLY_CANARY ambush");
+    expect(journalText()).not.toContain("PARTY_ONLY_CANARY retreat");
+    expect(journalText()).toContain("This journal is incomplete");
+    expect(journalText()).not.toContain("MINE_ONLY_CANARY");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(statePolls(fetch)).toHaveLength(4);
+    expect(pressed("Party")).toBe("true");
+    expect(journalText()).toContain("PARTY_ONLY_CANARY retreat");
+    expect(journalText()).not.toContain("MINE_ONLY_CANARY");
+
+    // Switching back shows the latest Mine data from the same polls.
+    await click("Mine");
+    expect(journalText()).toContain("Mara hid a key under the cellar.");
+    expect(journalText()).not.toContain("PARTY_ONLY_CANARY");
+  });
+
+  it("shows a safe message with no session or no journal", async () => {
+    vi.useFakeTimers();
+    stubFetch(() => pageData("player", [], { session: null }));
+    await render(pageData("player", [], { session: null }));
+    await click("Journal");
+    expect(journalRegion()).toBeNull();
+    expect(document.body.textContent).toContain(
+      "Your journal starts when the session does.",
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(journalRegion()).toBeNull();
+    expect(document.querySelector('[role="status"]').textContent).toBe("Live");
+  });
+
+  it("recovers when the journal is unavailable and a later poll supplies it", async () => {
+    vi.useFakeTimers();
+    stubFetch(() =>
+      pageData("player", [], {
+        journal: {
+          mine: { ...emptyJournal(), learned: [learnedEntry()] },
+          party: emptyJournal(),
+        },
+      }),
+    );
+    await render(pageData("player", [], { journal: null }));
+    await click("Journal");
+    expect(journalRegion()).toBeNull();
+    expect(document.body.textContent).toContain("The journal is unavailable");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(journalText()).toContain("Mara knows the cellar door.");
+  });
+
+  it("links entries to the story and the knowledge drawer, never for retracted or name-only", async () => {
+    vi.useFakeTimers();
+    const journal = {
+      mine: {
+        ...emptyJournal(),
+        learned: [
+          learnedEntry(),
+          learnedEntry({
+            event_id: "event-gone",
+            entity_id: "entity-gone",
+            name: "Retracted Rook",
+            retracted: true,
+            entity: undefined,
+          }),
+          learnedEntry({
+            event_id: "event-name",
+            entity_id: "entity-name",
+            name: "Recognised Reeve",
+            grant_scope: "name_only",
+            entity: { recognition_only: true, name: "Recognised Reeve" },
+          }),
+        ],
+        received: [
+          {
+            id: "event-handout",
+            seq: 3,
+            kind: "handout",
+            audience: "table",
+            body: { text: "A torn map" },
+          },
+        ],
+      },
+      party: emptyJournal(),
+    };
+    const feed = [event("event-reveal", 2, "Mara is revealed.")];
+    const fetch = stubFetch(() => pageData("player", feed, { journal }));
+    await render(pageData("player", feed, { journal }));
+    await click("Journal");
+
+    const learned = journalRegion().querySelector(
+      'section[aria-labelledby$="-learned"]',
+    );
+    expect(buttonLabels(learned)).toEqual([
+      "Show in story",
+      "Explore Mara",
+      "Show in story",
+      "Show in story",
+    ]);
+    expect(journalText()).toContain("You recognize this name.");
+    expect(buttonLabels(journalRegion())).not.toContain(
+      "Explore Retracted Rook",
+    );
+    expect(buttonLabels(journalRegion())).not.toContain(
+      "Explore Recognised Reeve",
+    );
+
+    await click("Explore Mara");
+    expect(
+      document.querySelector('section[aria-label="Knowledge detail"]'),
+    ).toBeTruthy();
+    expect(fetch.mock.calls.map(([url]) => url)).toContain(
+      `${endpoint}?entity=entity-mara`,
+    );
+    await click("Close knowledge");
+    expect(
+      document.querySelector('section[aria-label="Knowledge detail"]'),
+    ).toBe(null);
+
+    const scrolled = vi.fn();
+    document.getElementById("event-event-reveal").scrollIntoView = scrolled;
+    await click("Show in story", learned);
+    expect(document.querySelector(".layout").hidden).toBe(false);
+    expect(scrolled).toHaveBeenCalledWith({ block: "center" });
   });
 });

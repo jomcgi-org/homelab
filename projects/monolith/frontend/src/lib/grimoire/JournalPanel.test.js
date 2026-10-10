@@ -198,4 +198,81 @@ describe("JournalPanel", () => {
     expect(root.textContent).toContain(canary);
     expect(root.querySelector("img")).toBeNull();
   });
+
+  describe("source navigation callbacks", () => {
+    const journal = () => ({
+      ...emptyJournal(),
+      learned: [
+        {
+          event_id: "reveal-1",
+          entity_id: "npc",
+          name: "Mira",
+          grant_scope: "full",
+          retracted: false,
+          entity: { details: "Guide" },
+        },
+        {
+          event_id: "reveal-2",
+          entity_id: "rook",
+          name: "Rook",
+          retracted: true,
+        },
+        {
+          event_id: "reveal-3",
+          entity_id: "reeve",
+          name: "Reeve",
+          grant_scope: "name_only",
+          retracted: false,
+          entity: { recognition_only: true },
+        },
+      ],
+      received: [{ id: "handout", body: { text: "A map" } }],
+      rolls: [{ id: "roll", body: { total: 4 } }],
+      open_threads: [{ id: "action", body: { text: "Where?" } }],
+    });
+
+    it("renders no navigation controls when no callback is given", async () => {
+      const root = await panel({ journal: journal(), showViewToggle: false });
+      expect(root.querySelectorAll("button")).toHaveLength(0);
+    });
+
+    it("forwards each source event and only explorable knowledge", async () => {
+      const showEvent = vi.fn();
+      const openKnowledge = vi.fn();
+      const root = await panel({
+        journal: journal(),
+        showEvent,
+        openKnowledge,
+      });
+      const buttons = [...root.querySelectorAll("button.source")];
+      expect(buttons.map((button) => button.textContent.trim())).toEqual([
+        "Show in story",
+        "Explore Mira",
+        "Show in story",
+        "Show in story",
+        "Show in story",
+        "Show in story",
+        "Show in story",
+      ]);
+      for (const button of buttons) button.click();
+      expect(showEvent.mock.calls.map(([id]) => id)).toEqual([
+        "reveal-1",
+        "reveal-2",
+        "reveal-3",
+        "handout",
+        "roll",
+        "action",
+      ]);
+      expect(openKnowledge.mock.calls).toEqual([["npc"]]);
+    });
+
+    it("offers story links without knowledge links when only showEvent is given", async () => {
+      const root = await panel({ journal: journal(), showEvent: vi.fn() });
+      const labels = [...root.querySelectorAll("button.source")].map((button) =>
+        button.textContent.trim(),
+      );
+      expect(labels).toHaveLength(6);
+      expect(labels.every((label) => label === "Show in story")).toBe(true);
+    });
+  });
 });
