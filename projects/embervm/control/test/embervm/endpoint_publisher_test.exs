@@ -120,10 +120,17 @@ defmodule Embervm.EndpointPublisherTest do
     {:ok, _} = StatefulStore.publish(ctx.stateful_store, instance_id, ip, port, :started)
   end
 
-  defp serving_workload(ctx, name, host) do
+  # node_local_wake: true by default so the advertiser-preference tests below
+  # exercise an ELIGIBLE workload; the CP-fallback test opts out explicitly.
+  defp serving_workload(ctx, name, host, opts \\ []) do
     WorkloadCatalog.upsert(ctx.cat_table, name, %{
       class: "serving",
-      serving: %{host: host, port: 8080, health_path: "/healthz"}
+      serving: %{
+        host: host,
+        port: 8080,
+        health_path: "/healthz",
+        node_local_wake: Keyword.get(opts, :node_local_wake, true)
+      }
     })
   end
 
@@ -244,6 +251,32 @@ defmodule Embervm.EndpointPublisherTest do
       assert [cluster] = desired.clusters
       assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}]
       assert cluster.health_check == @health_check
+    end
+  end
+
+  test "a serving workload without node_local_wake falls back to the CP activator even when nodes advertise one" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a", "wl-a.example", node_local_wake: false)
+
+    # node-5 advertises an activator and holds everything a wake needs, but noded
+    # refuses node-local wakes for a workload that keeps the CRD default (503
+    # "node-local wake unavailable"), so routing the fallback there would leave
+    # the workload unwakeable: the CP activator must be rendered instead.
+    NodeCapacity.put(ctx.cap_table, "node-5", %{
+      configured_id: "node-5",
+      node_id: "node-5",
+      serving_subnet_cidr: "10.99.0.0/24",
+      serving_vms: [],
+      serving_snapshots: [],
+      activator_endpoint: %{ip: "10.99.0.5", port: 8081},
+      workloads: %{"wl-a" => %{base_state: :BASE_BUILD_STATE_READY, serving_image_ref: "img-a"}}
+    })
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    for {_node, desired} <- last_puts(ctx) do
+      assert [cluster] = desired.clusters
+      assert cluster.endpoints == [%{ip: "10.1.1.1", port: 7000, disable_active_health_check: true}]
     end
   end
 

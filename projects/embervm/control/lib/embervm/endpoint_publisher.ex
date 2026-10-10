@@ -684,13 +684,26 @@ defmodule Embervm.EndpointPublisher do
   # so a scaled-to-zero workload's first request survives a CP roll; the CP
   # address is the fallback for nodes that do not advertise one (pre-018 daemons),
   # which keeps a half-rolled fleet correct with no flag day.
+  #
+  # The node activator only wakes workloads whose catalog entry sets
+  # node_local_wake (noded answers 503 "node-local wake unavailable" for any
+  # other), so a workload that keeps the CRD default of CP-only wake must fall
+  # back to the CP activator even when every brick advertises one; otherwise its
+  # first request 503s forever and the control plane never sees a miss.
   defp activator_endpoints(ctx, workload) do
-    case node_advertised_activator(ctx, workload) do
-      %{ip: ip, port: port} when is_binary(ip) and is_integer(port) ->
-        [%{ip: ip, port: port}]
+    with true <- node_local_wake?(ctx.catalog_table, workload),
+         %{ip: ip, port: port} when is_binary(ip) and is_integer(port) <-
+           node_advertised_activator(ctx, workload) do
+      [%{ip: ip, port: port}]
+    else
+      _ -> cp_activator_endpoint(ctx)
+    end
+  end
 
-      _ ->
-        cp_activator_endpoint(ctx)
+  defp node_local_wake?(catalog_table, workload) do
+    case WorkloadCatalog.fetch(catalog_table, workload) do
+      {:ok, %{class: "serving", serving: %{node_local_wake: true}}} -> true
+      _ -> false
     end
   end
 
