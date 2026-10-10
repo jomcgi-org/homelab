@@ -468,7 +468,9 @@ def main():
             )
             a.wait_for_timeout(3500)
             assert len(delayed_polls) == 1
-            expect(a.get_by_role("status")).to_have_text("Live")
+            expect(a.get_by_role("status", name="Session connection")).to_have_text(
+                "Live"
+            )
             expect(a.get_by_label("What do you do?", exact=True)).to_have_value(
                 "A draft I have not sent yet"
             )
@@ -477,7 +479,9 @@ def main():
                 "A delayed successful poll preserves the unsent draft and returns to a live feed"
             )
             a.route("**/session/state", lambda route: route.abort())
-            expect(a.get_by_role("status")).to_have_text("Reconnecting", timeout=6000)
+            expect(a.get_by_role("status", name="Session connection")).to_have_text(
+                "Reconnecting", timeout=6000
+            )
             expect(a.get_by_label("What do you do?", exact=True)).to_have_value(
                 "A draft I have not sent yet"
             )
@@ -485,7 +489,9 @@ def main():
                 path=str(args.output / "player-reconnecting.png"), full_page=True
             )
             a.unroute("**/session/state")
-            expect(a.get_by_role("status")).to_have_text("Live", timeout=6000)
+            expect(a.get_by_role("status", name="Session connection")).to_have_text(
+                "Live", timeout=6000
+            )
             report["checks"].append("Polling recovers and preserves the unsent draft")
             retry_text = f"RETRY_{stamp}: I inspect the door."
             a.get_by_label("Send to").select_option("table")
