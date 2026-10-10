@@ -280,8 +280,10 @@ items are visible to every member with a character; hidden party items only to
 the DM. Every mutation writes an append-only `inventory_change` with actor,
 quantity delta, reason and field/owner provenance. Owner ids in player audit
 views become `party`, `you` or `character`. PostgreSQL rejects direct audit
-updates; only nested FK deletion actions may null the three provenance FKs,
-and DELETE remains available for campaign cascades. This preserves the required
+updates and deletes, and direct hard-deletes of items; only nested FK
+deletion actions may null the three provenance FKs, and only nested FK
+cascades may delete audit rows or items. Campaign and character cascades keep
+working while direct deletes fail. This preserves the required
 FK lifecycle without allowing edits to the audit contents. A partial move
 writes source and destination changes in the same transaction. Inventory is
 campaign state and works with play disabled. When play is enabled and a session
