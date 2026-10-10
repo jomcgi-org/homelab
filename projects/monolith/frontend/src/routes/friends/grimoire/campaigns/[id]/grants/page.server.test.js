@@ -19,6 +19,7 @@ describe("DM grants table", () => {
       load({ fetch, cookies, params: { id: "campaign" }, setHeaders() {} }),
     ).rejects.toMatchObject({ status: 403 });
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toMatch(/\/lobby$/);
   });
   it("loads every entity page with signed authority", async () => {
     process.env.GRIMOIRE_PLAY_ENABLED = "true";
@@ -38,6 +39,9 @@ describe("DM grants table", () => {
       setHeaders() {},
     });
     expect(result.entities.map((row) => row.id)).toEqual(["first", "last"]);
+    // The reveal panel needs the campaign and the recipient characters.
+    expect(result.campaign.id).toBe("campaign");
+    expect(result.characters).toEqual([]);
     for (const [, options] of fetch.mock.calls)
       expect(options.headers["x-grimoire-token"]).toBe("signed-token");
   });
