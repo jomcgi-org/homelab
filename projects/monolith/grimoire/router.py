@@ -24,7 +24,7 @@ from uuid import UUID
 
 from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from knowledge.api import get_embedding_client
@@ -50,7 +50,16 @@ from grimoire.audience import (
     note_predicate,
 )
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
-from grimoire.handouts import validate_handout_body
+from grimoire.handouts import (
+    IMAGE_CONTENT_TYPES,
+    MAX_UPLOAD_BYTES,
+    handout_bucket,
+    new_upload_key,
+    open_licensed_image_chunk,
+    sniff_image,
+    valid_upload_key,
+    validate_handout_body,
+)
 from grimoire.invitation_provider import enrollment_enabled
 from grimoire.join_links import links_enabled
 from grimoire.join_links import router as join_links_router
@@ -2757,13 +2766,43 @@ def _parse_s3_uri(uri: str) -> tuple[str, str] | None:
     return bucket, key
 
 
-_IMAGE_CONTENT_TYPES = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "gif": "image/gif",
-}
+def _stream_s3_image(
+    bucket: str,
+    key: str,
+    *,
+    detail: str,
+    headers: dict[str, str] | None = None,
+) -> StreamingResponse:
+    """Stream one S3 image object, 404 with ``detail`` on any S3 miss or error.
+
+    Shared by the chunk reader and the handout image route. The content type
+    comes from the key's extension; unknown suffixes fall back to octet-stream.
+    This is called from sync ``def`` handlers, so FastAPI runs the blocking
+    boto3 read in its threadpool, off the event loop.
+    """
+    from grimoire.ingest import build_s3_client
+
+    suffix = key.rsplit(".", 1)[-1].lower() if "." in key else ""
+    content_type = IMAGE_CONTENT_TYPES.get(suffix, "application/octet-stream")
+
+    client = build_s3_client()
+    try:
+        obj = client.get_object(Bucket=bucket, Key=key)
+    except Exception as exc:  # noqa: BLE001 - any S3 miss/error becomes a 404
+        # Routine for text chunks probed directly; keep the log quiet but keyed.
+        logger.info("image fetch failed for %s: %s", key, exc)
+        raise HTTPException(status_code=404, detail=detail) from exc
+
+    body = obj["Body"]
+
+    def _stream():
+        try:
+            for part in body.iter_chunks(chunk_size=64 * 1024):
+                yield part
+        finally:
+            body.close()
+
+    return StreamingResponse(_stream(), media_type=content_type, headers=headers)
 
 
 @router.get("/chunks/{chunk_id}/image")
@@ -2776,12 +2815,9 @@ def get_chunk_image(
     from the shared SeaweedFS S3 endpoint the loader already uses (the API pod
     carries the same SEAWEEDFS_S3_ENDPOINT/S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY
     env under the always-set ``stars`` block, so no chart change is needed).
-    This is a sync ``def`` handler, so FastAPI runs the blocking boto3 read in
-    its threadpool, off the event loop. imgproxy resizing is a later
-    optimization (recorded as a follow-up, not built here).
+    imgproxy resizing is a later optimization (recorded as a follow-up, not
+    built here).
     """
-    from grimoire.ingest import build_s3_client
-
     chunk = session.get(KnowledgeChunk, chunk_id)
     if chunk is None or not chunk.image_ref:
         raise HTTPException(status_code=404, detail="chunk image not found")
@@ -2789,28 +2825,7 @@ def get_chunk_image(
     if parsed is None:
         raise HTTPException(status_code=404, detail="chunk image not found")
     bucket, key = parsed
-
-    suffix = key.rsplit(".", 1)[-1].lower() if "." in key else ""
-    content_type = _IMAGE_CONTENT_TYPES.get(suffix, "application/octet-stream")
-
-    client = build_s3_client()
-    try:
-        obj = client.get_object(Bucket=bucket, Key=key)
-    except Exception as exc:  # noqa: BLE001 - any S3 miss/error becomes a 404
-        # Routine for text chunks probed directly; keep the log quiet but keyed.
-        logger.info("chunk image fetch failed for %s: %s", key, exc)
-        raise HTTPException(status_code=404, detail="chunk image not found") from exc
-
-    body = obj["Body"]
-
-    def _stream():
-        try:
-            for part in body.iter_chunks(chunk_size=64 * 1024):
-                yield part
-        finally:
-            body.close()
-
-    return StreamingResponse(_stream(), media_type=content_type)
+    return _stream_s3_image(bucket, key, detail="chunk image not found")
 
 
 # --- Vector search ---------------------------------------------------
@@ -3569,6 +3584,120 @@ def retract_session_event(
         session.commit()
         session.refresh(row)
     return _event_view(row, member)
+
+
+def _require_handout_dm(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> CampaignMember:
+    """404 non-members and 403 players before the multipart body is inspected."""
+    return _require_dm(session, campaign_id, email)
+
+
+class HandoutUploadView(BaseModel):
+    key: str
+    content_type: str
+    size: int
+
+
+@router.post(
+    "/campaigns/{campaign_id}/handouts/uploads",
+    response_model=HandoutUploadView,
+    status_code=201,
+    dependencies=[Depends(require_play_enabled), Depends(_require_handout_dm)],
+)
+def upload_handout_image(
+    campaign_id: str, file: UploadFile = File(...)
+) -> HandoutUploadView:
+    """Store a DM-uploaded handout image under the campaign's handout prefix.
+
+    The content type is sniffed from magic bytes; the client's declared type and
+    filename are ignored. Reads at most MAX_UPLOAD_BYTES + 1 bytes so an oversize
+    upload is detected without buffering the rest. The returned ``key`` is what a
+    handout body's ``image`` references; it is never fetched by key directly.
+    """
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="handout image too large")
+    sniffed = sniff_image(data)
+    if sniffed is None:
+        raise HTTPException(status_code=415, detail="unsupported image type")
+    content_type, ext = sniffed
+    key = new_upload_key(campaign_id, ext)
+
+    from grimoire.ingest import build_s3_client
+
+    try:
+        build_s3_client().put_object(
+            Bucket=handout_bucket(), Key=key, Body=data, ContentType=content_type
+        )
+    except Exception as exc:  # noqa: BLE001 - storage failure is not a client error
+        logger.warning("handout upload failed for %s: %s", key, exc)
+        raise HTTPException(status_code=502, detail="handout storage failed") from exc
+    return HandoutUploadView(key=key, content_type=content_type, size=len(data))
+
+
+@router.get(
+    "/campaigns/{campaign_id}/sessions/{session_id}/events/{event_id}/image",
+    dependencies=[Depends(require_play_enabled)],
+)
+def get_handout_image(
+    campaign_id: str,
+    session_id: str,
+    event_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> StreamingResponse:
+    """Stream a handout's image to the members its audience reaches.
+
+    Missing, wrong-kind, non-recipient and (for players) retracted handouts all
+    answer the same 404, so the route never confirms an event or image exists.
+    Chunk images re-check the book's copyright at serve time and fail closed.
+    """
+    member = _get_member_or_404(session, campaign_id, email)
+    not_found = HTTPException(status_code=404, detail="handout image not found")
+    try:
+        UUID(event_id)
+    except ValueError:
+        raise not_found from None
+    _session_in_campaign(session, campaign_id, session_id)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    row = session.exec(
+        select(SessionEvent).where(
+            SessionEvent.id == event_id,
+            SessionEvent.session_id == session_id,
+            SessionEvent.campaign_id == campaign_id,
+            SessionEvent.kind == "handout",
+            audience_predicate(SessionEvent, viewer, member),
+        )
+    ).first()
+    if row is None or (member.role != "dm" and row.retracted_at is not None):
+        raise not_found
+    image = (row.body or {}).get("image")
+    if not isinstance(image, dict):
+        raise not_found
+    if image.get("source") == "chunk":
+        chunk = open_licensed_image_chunk(session, str(image.get("chunk_id")))
+        parsed = _parse_s3_uri(chunk.image_ref) if chunk else None
+        if parsed is None:
+            raise not_found
+        bucket, key = parsed
+    elif image.get("source") == "upload" and valid_upload_key(
+        campaign_id, image.get("key")
+    ):
+        bucket, key = handout_bucket(), image["key"]
+    else:
+        raise not_found
+    return _stream_s3_image(
+        bucket,
+        key,
+        detail="handout image not found",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # --- Registered-user lobby and accepted invitations --------------------

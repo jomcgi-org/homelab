@@ -69,7 +69,7 @@ class HandoutBody(BaseModel):
     )
 
 
-def bucket() -> str:
+def handout_bucket() -> str:
     from grimoire.jobs import DEFAULT_BUCKET
 
     return os.environ.get("GRIMOIRE_S3_BUCKET", DEFAULT_BUCKET)
