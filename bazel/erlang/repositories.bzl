@@ -1,8 +1,8 @@
 """Prebuilt Erlang/OTP for the EmberVM control-plane build.
 
-Unlike bazel/ocaml (which builds its compiler from source because a prebuilt
-linked a too-new glibc), the RBE executor here was probed to be Ubuntu 22.04.5
-(glibc 2.35). hex.pm publishes OTP builds compiled *for* ubuntu-22.04, so the
+A prebuilt toolchain only works when it links the glibc the executor has, and
+the RBE executor was probed to be Ubuntu 22.04.5 (glibc 2.35). hex.pm publishes
+OTP builds compiled *for* ubuntu-22.04, so the
 matching prebuilt runs natively on the executor and its crypto app links the
 executor's already-present runtime libssl.so.3 (pulled in by git/curl) with no
 dev headers needed. This sidesteps the from-source OTP build + OpenSSL/ncurses

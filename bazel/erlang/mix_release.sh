@@ -8,8 +8,7 @@
 # arch-specific object. The RBE executor is amd64 and every cluster node is amd64,
 # so this amd64 release is correct for the deployment; the embervm apko image is
 # pinned amd64-only for the same reason (see projects/embervm/image/apko.yaml). If
-# an arm64 node ever joins, this must become a per-arch build (the bazel/ocaml
-# pattern).
+# an arm64 node ever joins, this must become a per-arch build.
 #
 # Args: $1 OTP Install script, $2 elixir bin/elixir anchor, $3 control mix.exs
 #       anchor, $4 output tar, $5 hex.ez archive, $6 generated node.pb.ex,

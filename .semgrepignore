@@ -3,7 +3,3 @@
 # as JSON strings, so semgrep would flag those embedded examples as if they were
 # real config. The source docs are linted in place.
 projects/monolith/frontend/src/lib/public/docs/docs-manifest.json
-
-# Vendored OCaml sources (semgrep_src overlay): upstream third-party code, not
-# ours to lint; the OCaml portability rules flag its CRLF/line-reading style.
-bazel/ocaml/semgrep_src/

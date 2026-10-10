@@ -6,13 +6,14 @@ set -euo pipefail
 
 cd "${BUILD_WORKSPACE_DIRECTORY:-$(git rev-parse --show-toplevel)}"
 
-# rules_apko picks its apko binary off the EXECUTION platform, and this
-# repository registers an ARM64 execution platform for OCaml. Left to resolve on
-# its own that one wins and apko comes out as linux_arm64: the wrong CPU on an
-# amd64 Linux box, and on a Mac a binary that cannot run at all, failing with
-# "cannot execute binary file: Exec format error". The
-# renovate-apko-lock-maintenance CronWorkflow already forces linux_x86_64 for
-# exactly this reason; do the same here, matched to the host.
+# rules_apko picks its apko binary off the EXECUTION platform. While the
+# repository registered an ARM64 execution platform (for the OCaml ruleset,
+# removed in #6913) that one won when left to resolve on its own and apko came
+# out as linux_arm64: the wrong CPU on an amd64 Linux box, and on a Mac a binary
+# that cannot run at all, failing with "cannot execute binary file: Exec format
+# error". Keep pinning the host platform so a future registration cannot do it
+# again; the renovate-apko-lock-maintenance CronWorkflow forces linux_x86_64
+# for the same reason.
 case "$(uname -s)" in
 Darwin) exec_platform="//bazel/tools/platforms:darwin_aarch64" ;;
 *) exec_platform="//bazel/tools/platforms:linux_x86_64" ;;

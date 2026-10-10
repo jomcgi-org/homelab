@@ -31,7 +31,7 @@ MANIFEST_REL = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
 
 # We index *.md under these top-level prefixes, plus any CLAUDE.md anywhere.
 # bazel/ carries the build and CI architecture document plus the per-ruleset
-# READMEs (helm, semgrep, ocaml, oci, image), which are the only place that
+# READMEs (helm, oci, image), which are the only place that
 # knowledge lives; without it the KG could not answer a CI question.
 _INCLUDE_DIRS = ("bazel/", "docs/", "projects/")
 _INCLUDE_NAMES = ("AGENTS.md", "CLAUDE.md")  # indexed anywhere (root + nested)
