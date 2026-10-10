@@ -4140,4 +4140,66 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(dialed, & &1) == []
     assert Agent.get(ctx.starts, & &1) == 0
   end
+
+
+  # -- wake outcome fencing + StartStateful deadline ---------------------------
+
+  test "a wake outcome that outlives its timeout is dropped, not applied to the next wake" do
+    # The StartStateful deadline now outlives the manager's wake bound, so a
+    # healthy-but-slow boot can report AFTER {:wake_timeout} failed its callers.
+    # That late outcome must neither publish an instance nobody waits for nor
+    # complete the NEXT wake with the stale VM.
+    parent = self()
+
+    gated_fun = fn _ch, _req ->
+      send(parent, {:worker, self()})
+
+      receive do
+        {:release, vm_id} ->
+          {:ok, %StartStatefulResponse{vm_id: vm_id, ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+      end
+    end
+
+    ctx = start_stack(start_stateful_fun: gated_fun, wake_bound_ms: 40)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:error, {:wake_failed, {:wake_timeout, "wl-a"}}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert_receive {:worker, stale_worker}, 2_000
+
+    # The stale worker now finishes its boot. Its outcome carries the ended
+    # wake's token and is dropped: no instance appears, nothing is published.
+    send(stale_worker, {:release, "vm-stale"})
+    Process.sleep(50)
+    :sys.get_state(ctx.mgr)
+    assert StatefulStore.list(ctx.store, "wl-a") == []
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
+
+    # The next wake boots its own VM and is the one that gets published.
+    caller = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:worker, fresh_worker}, 2_000
+    send(fresh_worker, {:release, "vm-fresh"})
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = Task.await(caller, 5_000)
+
+    assert [%{vm_id: "vm-fresh"}] = StatefulStore.list(ctx.store, "wl-a")
+  end
+
+  test "StartStateful carries a deadline derived from the workload's wake bound" do
+    # A three-arity start fun receives the RPC deadline: the manager's wake bound
+    # (here the explicit test override) plus the RPC margin, never a flat number
+    # that could outlive the bound by minutes or fall short of it.
+    parent = self()
+
+    timed_fun = fn _ch, _req, timeout_ms ->
+      send(parent, {:start_timeout_ms, timeout_ms})
+      {:ok, %StartStatefulResponse{vm_id: "vm-1", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: timed_fun, wake_bound_ms: 5_000)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert_receive {:start_timeout_ms, 35_000}
+  end
 end

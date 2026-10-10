@@ -217,6 +217,9 @@ defmodule Embervm.StatefulManager do
   # the wake it waits behind. Default stateful wakeTimeoutSeconds is 60, so the bound
   # defaults to ~75s.
   @default_wake_timeout_margin_ms 15_000
+  # Added to the wake bound for the StartStateful RPC deadline (see
+  # call_start_stateful/4).
+  @start_rpc_margin_ms 30_000
   # Fallback wakeTimeoutSeconds when the catalog entry carries none (matches
   # WorkloadWatcher's @stateful_defaults.wake_timeout_seconds).
   @default_wake_timeout_seconds 60
@@ -381,7 +384,7 @@ defmodule Embervm.StatefulManager do
       # real NodeService stub over the shared NodeChannel).
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
-      start_stateful_fun: Keyword.get(opts, :start_stateful_fun, &default_start_stateful/2),
+      start_stateful_fun: Keyword.get(opts, :start_stateful_fun, &default_start_stateful/3),
       stop_stateful_fun: Keyword.get(opts, :stop_stateful_fun, &default_stop_stateful/2),
       delete_volume_fun: Keyword.get(opts, :delete_volume_fun, &default_delete_volume/2),
       # Restore-on-miss seam (R6, Task 8): (channel, %RestoreArtifactRequest{}) ->
@@ -513,10 +516,24 @@ defmodule Embervm.StatefulManager do
   end
 
   # The async wake worker finished: complete the durable transition + publish,
-  # then resolve every parked caller for the workload.
+  # then resolve every parked caller for the workload. The outcome carries the
+  # token of the wake that spawned it: a worker whose wake already ended (its
+  # {:wake_timeout} fired, or adoption recovered the workload) must not complete
+  # a LATER wake with its VM, nor publish an instance nobody waits for. A stale
+  # boot that did produce a VM is left to the orphan reconcile, which destroys a
+  # live stateful VM no row claims.
   @impl true
-  def handle_info({:wake_done, workload, outcome}, state) do
-    {:noreply, finish_wake(state, workload, outcome)}
+  def handle_info({:wake_done, workload, wake_token, outcome}, state) do
+    if current_wake_token(state, workload) == wake_token do
+      {:noreply, finish_wake(state, workload, outcome)}
+    else
+      Logger.warning("embervm stateful: dropped a wake outcome from a wake that already ended",
+        workload: workload,
+        reason: stale_outcome_summary(outcome)
+      )
+
+      {:noreply, state}
+    end
   end
 
   def handle_info({:volume_store_consulted, workload, wake_token, anchor_node_id, result}, state) do
@@ -563,7 +580,7 @@ defmodule Embervm.StatefulManager do
           )
 
           state = maybe_memoize_negative_store_truth(state, workload, :generation_not_blessed)
-          send(self(), {:wake_done, workload, {:error, {:refused, :generation_not_blessed}}})
+          notify_wake_done(state, workload, {:error, {:refused, :generation_not_blessed}})
           {:noreply, state}
 
         {:error, reason} ->
@@ -573,7 +590,7 @@ defmodule Embervm.StatefulManager do
           )
 
           state = maybe_memoize_negative_store_truth(state, workload, reason)
-          send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
+          notify_wake_done(state, workload, {:error, :volume_node_gone})
           {:noreply, state}
       end
     else
@@ -919,6 +936,23 @@ defmodule Embervm.StatefulManager do
     end
   end
 
+  # A wake outcome reported on this process, stamped with the CURRENT wake's token
+  # so handle_info({:wake_done, ...}) can tell it from a stale worker's.
+  defp notify_wake_done(state, workload, outcome) do
+    send(self(), {:wake_done, workload, current_wake_token(state, workload), outcome})
+  end
+
+  defp stale_outcome_summary({:created, _attrs, endpoint, mode, _boot_ref, _reason}),
+    do: "created vm #{inspect(Map.get(endpoint, :vm_id))} (#{mode}); left to the orphan reconcile"
+
+  defp stale_outcome_summary({:relit, instance_id, node_id, _endpoint}),
+    do: "relit #{instance_id} on #{node_id}; left to the orphan reconcile"
+
+  defp stale_outcome_summary({:relight_fell_back, instance_id, node_id, _endpoint, _reason}),
+    do: "relight fell back for #{instance_id} on #{node_id}; left to the orphan reconcile"
+
+  defp stale_outcome_summary(other), do: inspect(other)
+
   # -- wake worker -------------------------------------------------------------
 
   # Kick ONE async wake for a workload. The relight-vs-cold DECISION and, for a
@@ -991,7 +1025,7 @@ defmodule Embervm.StatefulManager do
     # A successful consult must durably change the projection before replanning.
     # Re-deriving another consult here means that invariant was lost. Fail closed
     # before blessing a generation or dispatching a writable attach.
-    send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
+    notify_wake_done(state, workload, {:error, :volume_node_gone})
     state
   end
 
@@ -1014,7 +1048,7 @@ defmodule Embervm.StatefulManager do
         start_wake_dispatch(state, workload, entry, plan, 0, arm_timeout?)
 
       {:error, reason} ->
-        send(self(), {:wake_done, workload, {:error, {:bless_generation, reason}}})
+        notify_wake_done(state, workload, {:error, {:bless_generation, reason}})
         state
     end
   end
@@ -1114,16 +1148,16 @@ defmodule Embervm.StatefulManager do
                 # so the fallback ref belongs to the SAME instance.
                 fallback_ref = boot_image_ref(state, dial_id, workload)
                 req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
-                spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, dial_id, req) end)
+                spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_relight(state, instance, node_id, dial_id, req) end)
 
               {:error, reason} ->
                 # The instance moved off banked concurrently: report a wake failure
                 # so the parked callers error and the next connection retries.
-                send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+                notify_wake_done(state, workload, {:error, {:relight_mark, reason}})
             end
 
           {:error, reason} ->
-            send(self(), {:wake_done, workload, {:error, reason}})
+            notify_wake_done(state, workload, {:error, reason})
         end
 
       # Restore-on-miss (R6): the local bundle is gone but its store copy is
@@ -1145,7 +1179,7 @@ defmodule Embervm.StatefulManager do
                 fallback_ref = boot_image_ref(state, dial_id, workload)
                 req = relight_request(entry, snapshot_ref, fallback_ref, blessed_generation)
 
-                spawn_wake(owner, workload, fn ->
+                spawn_wake(owner, workload, current_wake_token(state, workload), fn ->
                   # Restore onto the SAME instance the boot dials (dial_id), not the
                   # node-name alias: PR-2.5 made banked bundles per-instance ON DISK,
                   # so restoring onto an arbitrary co-located instance while the boot
@@ -1155,16 +1189,16 @@ defmodule Embervm.StatefulManager do
                 end)
 
               {:error, reason} ->
-                send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
+                notify_wake_done(state, workload, {:error, {:relight_mark, reason}})
             end
 
           {:error, reason} ->
-            send(self(), {:wake_done, workload, {:error, reason}})
+            notify_wake_done(state, workload, {:error, reason})
         end
 
       {:cold, node_id, dial_id, boot_ref, :fresh, reason} ->
         req = cold_request(state, entry, workload, boot_ref, :fresh, blessed_generation)
-        spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, boot_ref, :fresh, reason, req) end)
+        spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_cold(state, workload, node_id, dial_id, boot_ref, :fresh, reason, req) end)
 
       {:cold, node_id, _plan_boot_ref, mode, reason} ->
         # A cold boot has no owning bundle: select a mem-eligible instance on the
@@ -1181,10 +1215,10 @@ defmodule Embervm.StatefulManager do
             # RPC target are the same instance.
             boot_ref = boot_image_ref(state, dial_id, workload)
             req = cold_request(state, entry, workload, boot_ref, mode, blessed_generation)
-            spawn_wake(owner, workload, fn -> run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) end)
+            spawn_wake(owner, workload, current_wake_token(state, workload), fn -> run_cold(state, workload, node_id, dial_id, boot_ref, mode, reason, req) end)
 
           {:error, select_reason} ->
-            send(self(), {:wake_done, workload, {:error, select_reason}})
+            notify_wake_done(state, workload, {:error, select_reason})
         end
 
       # Restore-on-miss (R6): the volume itself is gone but a (vol.img, gen) pair is
@@ -1220,7 +1254,7 @@ defmodule Embervm.StatefulManager do
         )
 
       {:error, reason} ->
-        send(self(), {:wake_done, workload, {:error, reason}})
+        notify_wake_done(state, workload, {:error, reason})
     end
 
     state
@@ -1246,7 +1280,7 @@ defmodule Embervm.StatefulManager do
         row_generation = restore_row_generation(volume, consult)
         source_anchor_gone? = confirmed_anchor_gone?({state, volume})
 
-        spawn_wake(owner, workload, fn ->
+        spawn_wake(owner, workload, current_wake_token(state, workload), fn ->
           case restore_volume(state, dial_id, node_id, wl, restore_generation) do
             :ok ->
               _ = StatefulStore.upsert_volume(state.store, wl, %{node_id: node_id})
@@ -1275,7 +1309,7 @@ defmodule Embervm.StatefulManager do
         end)
 
       {:error, select_reason} ->
-        send(self(), {:wake_done, workload, {:error, select_reason}})
+        notify_wake_done(state, workload, {:error, select_reason})
     end
   end
 
@@ -1288,7 +1322,7 @@ defmodule Embervm.StatefulManager do
   # Spawn a wake worker that ALWAYS reports a {:wake_done} outcome, even if the
   # RPC body crashes: a worker that died without reporting would leave the
   # parked `:infinity` callers blocked forever.
-  defp spawn_wake(owner, workload, fun) do
+  defp spawn_wake(owner, workload, wake_token, fun) do
     spawn(fn ->
       outcome =
         try do
@@ -1299,7 +1333,7 @@ defmodule Embervm.StatefulManager do
           kind, reason -> {:error, {:wake_crashed, {kind, reason}}}
         end
 
-      send(owner, {:wake_done, workload, outcome})
+      send(owner, {:wake_done, workload, wake_token, outcome})
     end)
   end
 
@@ -2185,6 +2219,7 @@ defmodule Embervm.StatefulManager do
   # -- wake RPC workers ---------------------------------------------------------
 
   defp run_relight(state, instance, node_id, dial_id, req) do
+    workload = instance.workload
     # Node-anchored: a stateful RELIGHT can ONLY land on the instance that holds the
     # volume + banked bundle on disk (ADR embervm/014: "placement never picks a
     # different node for a relight"), so the reject/retry frontier is a SINGLE
@@ -2194,7 +2229,7 @@ defmodule Embervm.StatefulManager do
     # attempt, gate on or off. Do NOT expand this list: a cross-node retry would
     # dial a brick that does not hold this volume.
     attempt_fun = fn _only ->
-      case safe_start_stateful(state, dial_id, req) do
+      case safe_start_stateful(state, dial_id, workload, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
         when is_binary(vm_id) and vm_id != "" ->
           shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
@@ -2227,7 +2262,7 @@ defmodule Embervm.StatefulManager do
     # one-policy routing as run_relight; one attempt by construction. Do NOT expand:
     # the volume lives on exactly this node.
     attempt_fun = fn _only ->
-      case safe_start_stateful(state, dial_id, req) do
+      case safe_start_stateful(state, dial_id, workload, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation}}
         when is_binary(vm_id) and vm_id != "" ->
           shadow_claim(dial_id, vm_id, workload, catalog_entry(state, workload))
@@ -3855,10 +3890,12 @@ defmodule Embervm.StatefulManager do
 
   # -- daemon seams ------------------------------------------------------------
 
-  defp safe_start_stateful(state, node_id, req) do
+  defp safe_start_stateful(state, node_id, workload, req) do
+    timeout_ms = wake_bound_ms(state, workload) + @start_rpc_margin_ms
+
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
       try do
-        case state.start_stateful_fun.(channel, req) do
+        case call_start_stateful(state.start_stateful_fun, channel, req, timeout_ms) do
           {:error, reason} = err ->
             # A wake that failed because the channel's transport is dead must
             # tear the cached channel down so the NEXT wake re-dials; see
@@ -4193,15 +4230,17 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  # StartStateful blocks server-side for the readiness gate (noded's
-  # EMBERVM_NODED_BOOT_READY_TIMEOUT, 180 s in production); grpc-elixir's default
-  # unary deadline of 10 s cancelled any slower boot mid-gate and the daemon reaped
-  # the VM. Cover the daemon budget plus an RPC margin, as the group path does.
-  # The manager's own wake_timeout still bounds what parked callers wait for.
-  @start_rpc_timeout_ms 180_000 + 30_000
+  # StartStateful blocks server-side for the readiness gate, so the RPC deadline
+  # must outlive the manager's own wake bound (wakeTimeoutSeconds + margin) by an
+  # RPC margin, and no more: grpc-elixir's default 10 s deadline cancelled any
+  # slower boot mid-gate (the daemon reaped the healthy VM), while a deadline far
+  # past the wake bound would leave the daemon booting a VM whose callers were
+  # already failed. The 2-arity seam is kept for the injected test fakes.
+  defp call_start_stateful(fun, channel, req, timeout_ms) when is_function(fun, 3), do: fun.(channel, req, timeout_ms)
+  defp call_start_stateful(fun, channel, req, _timeout_ms), do: fun.(channel, req)
 
-  defp default_start_stateful(channel, req) do
-    Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req, timeout: @start_rpc_timeout_ms)
+  defp default_start_stateful(channel, req, timeout_ms) do
+    Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req, timeout: timeout_ms)
   end
 
   defp default_stop_stateful(channel, req) do
