@@ -23,8 +23,6 @@ bazel_dep(name = "bazelrc-preset.bzl", version = "1.5.0")
 # https://github.com/bazel-contrib/rules_nodejs/commit/1fc6b6b763c4f79994edc9edab10399f7446d8be
 bazel_dep(name = "rules_nodejs", version = "6.7.3")
 bazel_dep(name = "aspect_rules_js", version = "3.0.0-rc4")
-bazel_dep(name = "aspect_rules_ts", version = "3.8.3")
-bazel_dep(name = "aspect_rules_esbuild", version = "0.25.0")
 
 # We have to take a dependency on rules_python in order to set bootstrap=script
 # for transitive dependencies, even if there are no Python rules used in this repo.
@@ -266,7 +264,7 @@ go_deps.gazelle_override(
 # genrules (//projects/embervm/proto/embervm/node/v1), not by any Go import go_deps
 # can see, so both are `// indirect` in go.mod and `bazel mod tidy` would drop them
 # from this list. Re-add them after any tidy or node_go_src stops resolving.
-use_repo(go_deps, "com_github_cloudflare_cloudflare_go", "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_jackc_pgx_v5", "com_github_klauspost_compress", "com_github_nats_io_nats_go", "com_github_nats_io_nats_server_v2", "com_github_oklog_ulid_v2", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_redis_go_redis_v9", "com_github_sony_gobreaker", "com_github_spf13_cobra", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "com_google_cloud_go_firestore", "fi_mau_go_whatsmeow", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_gateway_api", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_api", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sync", "org_golang_x_sys", "org_golang_x_time")
+use_repo(go_deps, "com_github_envoyproxy_go_control_plane", "com_github_envoyproxy_go_control_plane_envoy", "com_github_go_logr_logr", "com_github_google_go_containerregistry", "com_github_jackc_pgx_v5", "com_github_klauspost_compress", "com_github_onsi_ginkgo_v2", "com_github_onsi_gomega", "com_github_prometheus_client_golang", "com_github_spf13_cobra", "com_github_spiffe_go_spiffe_v2", "com_github_stretchr_testify", "fi_mau_go_whatsmeow", "in_gopkg_yaml_v3", "io_k8s_api", "io_k8s_apimachinery", "io_k8s_client_go", "io_k8s_sigs_controller_runtime", "io_k8s_sigs_yaml", "io_k8s_utils", "io_nhooyr_websocket", "io_opentelemetry_go_otel", "io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc", "io_opentelemetry_go_otel_sdk", "io_opentelemetry_go_otel_trace", "org_golang_google_grpc", "org_golang_google_grpc_cmd_protoc_gen_go_grpc", "org_golang_google_protobuf", "org_golang_x_sync", "org_golang_x_sys")
 
 #########################
 # JavaScript and pnpm package manager
@@ -291,14 +289,6 @@ npm.npm_translate_lock(
     pnpm_lock = "//:pnpm-lock.yaml",
 )
 use_repo(npm, "npm")
-
-rules_ts_ext = use_extension(
-    "@aspect_rules_ts//ts:extensions.bzl",
-    "ext",
-    dev_dependency = True,
-)
-rules_ts_ext.deps()
-use_repo(rules_ts_ext, "npm_typescript")
 
 # Node.js toolchain - required for production builds (monolith frontend vite build)
 # Toolchains are registered for all platforms to support cross-platform container builds
@@ -401,35 +391,6 @@ oci.pull(
 )
 use_repo(oci, "python_base", "python_base_linux_amd64", "python_base_linux_arm64_v8")
 use_repo(oci, "custom_crane_regctl_toolchains")
-
-# GDAL base for geospatial Python services (stargazer)
-# Using ubuntu-small variant with GDAL 3.6.3, includes gdal_translate, gdalwarp, etc.
-# Note: Using Docker Hub (docker.io) as ghcr.io/osgeo/gdal is no longer accessible
-oci.pull(
-    name = "gdal_base",
-    digest = "sha256:398d5aca0ca88295c13ada87e0f382ed409dac13a952461187be72ce3c376513",
-    image = "docker.io/osgeo/gdal",
-    platforms = [
-        "linux/amd64",
-        "linux/arm64",
-    ],
-    tag = "ubuntu-small-3.6.3",
-)
-use_repo(oci, "gdal_base", "gdal_base_linux_amd64", "gdal_base_linux_arm64")
-
-# GDAL Python base - includes GDAL with Python 3.10 and pip installed
-# Using ubuntu-full variant which has Python bindings properly configured
-oci.pull(
-    name = "gdal_python_base",
-    digest = "sha256:88a83d8c787d67fe16102fdca3f3bcbc2f5010611af7957c77c67f7f0cfad876",
-    image = "docker.io/osgeo/gdal",
-    platforms = [
-        "linux/amd64",
-        "linux/arm64",
-    ],
-    tag = "ubuntu-full-3.6.3",
-)
-use_repo(oci, "gdal_python_base", "gdal_python_base_linux_amd64", "gdal_python_base_linux_arm64")
 
 # PostgreSQL 16 + pgvector for e2e integration tests
 oci.pull(
@@ -785,102 +746,6 @@ multiarch_http_file(
     amd64_url = "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.1-R4503.1&file=muse-x86-linux",
     binary_name = "muse",
     package_dir = "/usr/local/bin",
-)
-
-multiarch_http_file(
-    name = "ttyd",
-    amd64_sha256 = "8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55",
-    amd64_url = "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64",
-    arm64_sha256 = "b38acadd89d1d396a0f5649aa52c539edbad07f4bc7348b27b4f4b7219dd4165",
-    arm64_url = "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.aarch64",
-    binary_name = "ttyd",
-    package_dir = "/usr/local/bin",
-)
-
-# kubectl + k9s for the private k8s-terminal demo (demos/k8s_terminal_api.py):
-# the monolith backend spawns k9s in a PTY against the scratch-k8s composite
-# group's entry. Dual-arch, pinned by sha. k9s ships as a release tar.gz, so it
-# uses extract_path; kubectl is a raw binary.
-multiarch_http_file(
-    name = "kubectl",
-    amd64_sha256 = "1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82",
-    amd64_url = "https://dl.k8s.io/release/v1.36.2/bin/linux/amd64/kubectl",
-    arm64_sha256 = "c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e",
-    arm64_url = "https://dl.k8s.io/release/v1.36.2/bin/linux/arm64/kubectl",
-    binary_name = "kubectl",
-    package_dir = "/usr/local/bin",
-)
-
-multiarch_http_file(
-    name = "k9s",
-    amd64_sha256 = "c3752ad51a5a4015a113819c4eeb6e55a4d0e4b8e652494797532f6fc8161dd7",
-    amd64_url = "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_Linux_amd64.tar.gz",
-    arm64_sha256 = "3ee05c82e5f9198928a4e86133608ba6a2c10a2244d6a7789e820f78319d640c",
-    arm64_url = "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_Linux_arm64.tar.gz",
-    binary_name = "k9s",
-    extract_path = "k9s",
-    package_dir = "/usr/local/bin",
-)
-
-# DuckDB extensions bundled into the lakehouse worker + quack images so they
-# never download at runtime. The minimal hardened image has no system CA bundle
-# DuckDB's extension installer can find (it uses its own HTTPS stack, not
-# OpenSSL/$SSL_CERT_FILE), so the runtime INSTALL from extensions.duckdb.org
-# fails SSL verification. Bundling the signed .duckdb_extension.gz binaries (and
-# LOAD-ing them from a local path) sidesteps the network entirely — DuckDB still
-# verifies the embedded signature on LOAD. Pinned to DuckDB 1.5.3, matching the
-# @pip//duckdb wheel. The genrule in multiarch_http_file gzip-wraps the tar
-# layer; the .gz payload lands verbatim at /opt/duckdb_ext/ and is gunzipped to
-# /tmp by duckdb_query.load_extensions at startup.
-# URL pattern: https://extensions.duckdb.org/v1.5.3/{linux_amd64,linux_arm64}/<ext>.duckdb_extension.gz
-multiarch_http_file(
-    name = "duckdb_ext_httpfs",
-    amd64_sha256 = "e33a4085f04b84bcbb25c27dec3a821731e4d2476b93cfc84aa46c963098b882",
-    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/httpfs.duckdb_extension.gz",
-    arm64_sha256 = "bde75aadc4ebf9edb4b9fecf4aac6025f35fdae56116b2673b0b4990242c3a02",
-    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/httpfs.duckdb_extension.gz",
-    binary_name = "httpfs.duckdb_extension.gz",
-    package_dir = "/opt/duckdb_ext",
-)
-
-multiarch_http_file(
-    name = "duckdb_ext_iceberg",
-    amd64_sha256 = "f011e851a635b9f0deabbd3c39800d80f28fb64075495bbee7b2b2dbb003fb5f",
-    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/iceberg.duckdb_extension.gz",
-    arm64_sha256 = "4d869567d4e23b86a78388faf5e1fc2c1b9197be66cf51231ab9193ee8e3b22c",
-    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/iceberg.duckdb_extension.gz",
-    binary_name = "iceberg.duckdb_extension.gz",
-    package_dir = "/opt/duckdb_ext",
-)
-
-multiarch_http_file(
-    name = "duckdb_ext_vss",
-    amd64_sha256 = "ef2c977241623a5240b95543bb6905e7106574662ac5729ee9785f08c2ebb9c4",
-    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/vss.duckdb_extension.gz",
-    arm64_sha256 = "10adb395d8f279e0204b1208a7f1861e61c4d566b0816ea5d4c48ccf4b96cdc6",
-    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/vss.duckdb_extension.gz",
-    binary_name = "vss.duckdb_extension.gz",
-    package_dir = "/opt/duckdb_ext",
-)
-
-multiarch_http_file(
-    name = "duckdb_ext_avro",
-    amd64_sha256 = "5eb32503dec69526fca96c3fa381b3c0e2ce7881c6a88dfa04e5fba0ca26ab80",
-    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/avro.duckdb_extension.gz",
-    arm64_sha256 = "dcd28c0f227b714e524d6d7eae79db7d14a10029303faed6fce71cdcbb81e08d",
-    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/avro.duckdb_extension.gz",
-    binary_name = "avro.duckdb_extension.gz",
-    package_dir = "/opt/duckdb_ext",
-)
-
-multiarch_http_file(
-    name = "duckdb_ext_parquet",
-    amd64_sha256 = "993380466638a09cd14e25b68c7fec3f4bd697c16a35af2452aee9f8c8c65f87",
-    amd64_url = "https://extensions.duckdb.org/v1.5.3/linux_amd64/parquet.duckdb_extension.gz",
-    arm64_sha256 = "31debdb5e8aac3e66e1d1d0c9103865c1b18b1c460f17c1048ba2e3b73ea028f",
-    arm64_url = "https://extensions.duckdb.org/v1.5.3/linux_arm64/parquet.duckdb_extension.gz",
-    binary_name = "parquet.duckdb_extension.gz",
-    package_dir = "/opt/duckdb_ext",
 )
 
 bazel_dep(name = "rules_pkg", version = "1.1.0")

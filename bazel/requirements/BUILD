@@ -20,12 +20,6 @@ pip_compile(
         "*.in",
         "*.txt",
     ]),
-    extra_args = [
-        # semgrep's sdist requires semgrep-core at build time, which is only
-        # available inside the wheel. Restrict to pre-built wheels only.
-        "--only-binary",
-        "semgrep",
-    ],
     requirements_in = "all.in",
     requirements_overrides = "overrides.txt",
     requirements_txt = "all.txt",

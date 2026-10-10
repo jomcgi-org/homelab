@@ -186,9 +186,8 @@ load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 py3_image(
     name = "image",
     binary = "//projects/my_app/backend:main",
-    base = "@gdal_python_base",
+    base = "@python_base",
     env = {
-        "GDAL_DATA": "/usr/share/gdal",
         "DATA_DIR": "/data",
     },
     repository = "ghcr.io/jomcgi/homelab/projects/my_app",

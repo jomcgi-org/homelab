@@ -17,8 +17,7 @@
 # security floors do not apply here at all. Dropping `-c` in particular lets the
 # unbounded `mcp>=1.28.1` override float to a new major, because tools.in has no
 # fastmcp to cap it the way all.txt does.
-# Floor raised to 9.14.1 for CVE-2026-34726 / CVE-2026-34730 (template root
-# escape and _external_data path traversal).
-copier>=9.14.1
-# Semgrep CLI tooling remains pinned independently of the retired PR relay.
-semgrep==1.168.0
+#
+# No tools are pinned at present: copier (a never-executed scaffolding
+# template) and semgrep (nothing in this repo runs it; PR scanning is Semgrep
+# Managed Scans) were removed in #6913. Add a tool below the comment.
