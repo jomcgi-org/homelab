@@ -1,0 +1,2235 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "knowledge-retrieval-baseline-6128",
+  "declaration_commit": "dc68d156b53776dbecab315f11ef61b9eaf1f6e8",
+  "baseline_observations": "observations.json",
+  "rerun_for_issue": "https://github.com/jomcgi-org/homelab/issues/6713",
+  "scope_argument_shipped_by": "https://github.com/jomcgi-org/homelab/pull/6737",
+  "observation_boundary": "The commit that first adds this observations-scoped-6713.json file.",
+  "observation_run": {
+    "started_at": "2026-10-10T14:38:46.151Z",
+    "finished_at": "2026-10-10T14:43:44.718Z",
+    "date": "2026-10-10",
+    "context": "Scoped rerun of the ten #6128 baseline queries after PR #6737 added a caller-supplied scope argument to search_knowledge. Measures scope only; usefulness and evidence coverage were not re-judged.",
+    "tool": "search_knowledge",
+    "exact_arguments": {
+      "limit": 20,
+      "type": null,
+      "scope": "repo:jomcgi-org/homelab"
+    },
+    "requested_scope": "repo:jomcgi-org/homelab",
+    "scope_filter_transmitted": true,
+    "scope_filter_mechanism": "The scope argument on the MCP search_knowledge tool.",
+    "calls_per_query": 1,
+    "get_note_called": false,
+    "queries_rephrased": false,
+    "queries_rerun": false,
+    "deployed_configuration_or_revision": null,
+    "deployed_configuration_or_revision_reason": "The tool response did not expose deployment configuration or revision.",
+    "latency_measurement": "Timestamps from date -u in a Bash tool call immediately before and after each MCP call from a cloud session. They include model turn overhead and tool orchestration, so they are approximate client wall time and not server processing latency."
+  },
+  "redaction": {
+    "policy": "Preserve full candidate evidence only for the requested public repository scope. Withhold title and note_id for any off-scope or personal candidate while preserving rank, score, and scope class.",
+    "withheld_candidates": 0,
+    "requested_repo_candidates_reviewed_for_secrets": true,
+    "secrets_found": 0
+  },
+  "metrics": {
+    "query_count": 10,
+    "returned_candidate_count": 170,
+    "per_query_result_count": {
+      "q01": 1,
+      "q02": 20,
+      "q03": 20,
+      "q04": 19,
+      "q05": 18,
+      "q06": 20,
+      "q07": 20,
+      "q08": 15,
+      "q09": 20,
+      "q10": 17
+    },
+    "queries_returning_fewer_than_20": {
+      "count": 5,
+      "ids": [
+        "q01",
+        "q04",
+        "q05",
+        "q08",
+        "q10"
+      ],
+      "note": "Under the scope filter the result budget is not always filled, so the denominator is the number of returned candidates, not 20 times the query count."
+    },
+    "scope_mismatch_candidates": {
+      "count": 0,
+      "total": 170,
+      "rate": 0.0
+    },
+    "baseline_scope_mismatch_candidates": {
+      "count": 42,
+      "total": 200,
+      "rate": 0.21,
+      "source": "observations.json, unscoped run of 2026-09-20"
+    },
+    "client_observed_latency_ms_all_calls": {
+      "count": 10,
+      "min": 5707,
+      "median": 7912,
+      "p95_nearest_rank": 49794,
+      "max": 49794
+    },
+    "client_observed_latency_ms_excluding_inflated": {
+      "count": 9,
+      "min": 5707,
+      "median": 7748,
+      "p95_nearest_rank": 15320,
+      "max": 15320
+    },
+    "tool_call_errors": 0
+  },
+  "not_measured": [
+    "Top-result usefulness.",
+    "Evidence coverage.",
+    "Stale or conflicting handling.",
+    "Safe no-answer candidate handling.",
+    "Unrelated or inappropriate candidate counts."
+  ],
+  "unavailable_measurements": [
+    "Deployed knowledge service configuration and revision.",
+    "Server-side processing latency.",
+    "Generated-answer appropriateness and model abstention.",
+    "Authorization enforcement and access-control leakage."
+  ],
+  "observations": [
+    {
+      "id": "q01",
+      "query": "How do I recover an ArgoCD Application whose operation is stuck at phase Running with finishedAt set when I am off-LAN without kubectl?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:38:46.151Z",
+      "finished_at": "2026-10-10T14:38:54.227Z",
+      "client_observed_latency_ms": 8076,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 1,
+      "returned_fewer_than_limit": true,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "the-6782-observation-window-lacked-enough-admissions-to-establish-acceptance",
+          "title": "The #6782 observation window lacked enough admissions to establish acceptance",
+          "score": 0.4024228097452416,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:24:31.090906+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q02",
+      "query": "Is the node-4 CAKE traffic shaper a working control, and what is the safe workaround or removal path?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:38:54.228Z",
+      "finished_at": "2026-10-10T14:39:44.022Z",
+      "client_observed_latency_ms": 49794,
+      "latency_caveat": "The after timestamp was delayed by a refused client-side shell command, so this value overstates the call; excluded from the clean latency summary.",
+      "result_count": 20,
+      "returned_fewer_than_limit": false,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "qwen3-5-unsharded-checkpoints-convert-without-losing-expert-bytes",
+          "title": "Qwen3.5 unsharded checkpoints convert without losing expert bytes",
+          "score": 0.48890793257403065,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:49:16.608000+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "public-knowledge-cache-leases-are-measured-from-serve-time",
+          "title": "Public knowledge cache leases are measured from serve time",
+          "score": 0.4715332669933605,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:24:41.654911+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "the-fixed-6782-post-change-cohort-remained-under-covered-and-acceptance-was-unknown",
+          "title": "The fixed #6782 post-change cohort remained under-covered and acceptance was UNKNOWN",
+          "score": 0.4676440040853034,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "cuda-decode-disk-lookahead-used-few-reads-and-disabling-it-improved-throughput",
+          "title": "CUDA decode disk lookahead used few reads and disabling it improved throughput",
+          "score": 0.466949820518497,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:26:35.021000+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "the-pr-6882-retry-commit-has-the-same-source-tree-as-the-original-validation-commit",
+          "title": "The PR #6882 retry commit has the same source tree as the original validation commit",
+          "score": 0.46157094607180116,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "public-responses-no-longer-carry-duplicate-date-headers",
+          "title": "Public responses no longer carry duplicate Date headers",
+          "score": 0.45992719888253286,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "the-6782-observation-window-lacked-enough-admissions-to-establish-acceptance",
+          "title": "The #6782 observation window lacked enough admissions to establish acceptance",
+          "score": 0.4584165786753054,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:24:31.090906+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "public-response-cache-leases-are-measured-from-response-send-time",
+          "title": "Public response cache leases are measured from response send time",
+          "score": 0.4560787651585805,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "the-bot-merge-gate-checks-queued-head-base-against-server-fetched-security-evidence-but-activation-still-depends-on-unvalidated-enforcement-and-canaries",
+          "title": "The bot merge gate checks queued head/base against server-fetched security evidence, but activation still depends on unvalidated enforcement and canaries",
+          "score": 0.4552628967322654,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "factory-refine-admission-still-defers-on-stale-version-refusal",
+          "title": "Factory refine admission still defers on stale-version refusal",
+          "score": 0.45321047027173544,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "factory-task-implemented-gallery-fixture-work-at-commit-c4314d1",
+          "title": "Factory task implemented gallery fixture work at commit c4314d1",
+          "score": 0.4517972277221587,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "single-page-blog-posts-keep-summaries-out-of-the-title-lead",
+          "title": "Single-page blog posts keep summaries out of the title lead",
+          "score": 0.4511964321136507,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T09:24:54.687000+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "agent-report-claims-batched-metal-expert-kernels-improved-a-short-context-benchmark",
+          "title": "Agent report claims batched Metal expert kernels improved a short-context benchmark",
+          "score": 0.4495856865870078,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.43735551834106756,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "factory-refine-tests-cover-stale-admission-races-and-preserving-an-operator-hold",
+          "title": "Factory refine tests cover stale-admission races and preserving an operator hold",
+          "score": 0.4351709446412896,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "gallery-fallback-typography-makes-screenshot-rendering-dependent-on-installed-system-fonts",
+          "title": "Gallery fallback typography makes screenshot rendering dependent on installed system fonts",
+          "score": 0.43506368607662316,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T15:31:17.235775+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "the-reported-correction-guards-against-tiny-negative-measurements-rendering-as-negative-zero",
+          "title": "The reported correction guards against tiny negative measurements rendering as negative zero",
+          "score": 0.43311205107641604,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T11:36:07.520224+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "public-cache-lifetime-is-measured-from-response-serve-time",
+          "title": "Public cache lifetime is measured from response serve time",
+          "score": 0.43289536237716986,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:33:15.241084+00:00"
+        },
+        {
+          "rank": 19,
+          "note_id": "agent-report-claims-vite-6-ssr-helpers-need-server-ws-disabled-to-avoid-listener-port-conflicts",
+          "title": "Agent report claims Vite 6 SSR helpers need server.ws disabled to avoid listener port conflicts",
+          "score": 0.4322848577669185,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 20,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.43185061690965565,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q03",
+      "query": "Is issue #3923 still open for an agent, or has ARM64 OCaml C-stub support already landed?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:40:09.794Z",
+      "finished_at": "2026-10-10T14:40:25.114Z",
+      "client_observed_latency_ms": 15320,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 20,
+      "returned_fewer_than_limit": false,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "the-2026-10-09-optimizer-report-says-6782-remained-the-sole-selected-experiment-with-unknown-acceptance",
+          "title": "The 2026-10-09 optimizer report says #6782 remained the sole selected experiment with UNKNOWN acceptance",
+          "score": 0.5284173488616943,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "pr-6877s-ci-browser-preview-and-local-test-outcomes-are-agent-reported",
+          "title": "PR #6877’s CI, browser-preview, and local-test outcomes are agent-reported",
+          "score": 0.5235301412203952,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "factory-task-implemented-gallery-fixture-work-at-commit-c4314d1",
+          "title": "Factory task implemented gallery fixture work at commit c4314d1",
+          "score": 0.5186147844378588,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.5051976592897673,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "the-fixed-6782-post-change-cohort-remained-under-covered-and-acceptance-was-unknown",
+          "title": "The fixed #6782 post-change cohort remained under-covered and acceptance was UNKNOWN",
+          "score": 0.4986382722854614,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.4855042687359026,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "factory-status-at-06-19z-reported-distinct-sweep-evaluation-and-idle-timestamps",
+          "title": "Factory status at 06:19Z reported distinct sweep, evaluation, and idle timestamps",
+          "score": 0.471858171931397,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T06:19:41.332496+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "the-supplied-2026-10-05-server-digest-reports-monolith-version-0-647-2-and-an-original-projected-boundary-at-0-632-7",
+          "title": "The supplied 2026-10-05 server digest reports monolith version 0.647.2 and an original projected boundary at 0.632.7",
+          "score": 0.47156521677970886,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:39:58.586308+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "the-pr-6882-retry-commit-has-the-same-source-tree-as-the-original-validation-commit",
+          "title": "The PR #6882 retry commit has the same source tree as the original validation commit",
+          "score": 0.46523475646972656,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.46500600561553473,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.4577135741710663,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "public-responses-no-longer-carry-duplicate-date-headers",
+          "title": "Public responses no longer carry duplicate Date headers",
+          "score": 0.45031219720840454,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "single-page-blog-posts-keep-summaries-out-of-the-title-lead",
+          "title": "Single-page blog posts keep summaries out of the title lead",
+          "score": 0.44811639498970623,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T09:24:54.687000+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "the-6782-observation-window-lacked-enough-admissions-to-establish-acceptance",
+          "title": "The #6782 observation window lacked enough admissions to establish acceptance",
+          "score": 0.44600796699523926,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:24:31.090906+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "oom-inference-selected-direct-metal-for-apple-silicon-with-mlx-as-a-reference",
+          "title": "oom-inference selected direct Metal for Apple Silicon, with MLX as a reference",
+          "score": 0.4386736750602722,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:59:39+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "the-bot-merge-gate-checks-queued-head-base-against-server-fetched-security-evidence-but-activation-still-depends-on-unvalidated-enforcement-and-canaries",
+          "title": "The bot merge gate checks queued head/base against server-fetched security evidence, but activation still depends on unvalidated enforcement and canaries",
+          "score": 0.4377800226211548,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "the-reported-correction-guards-against-tiny-negative-measurements-rendering-as-negative-zero",
+          "title": "The reported correction guards against tiny negative measurements rendering as negative zero",
+          "score": 0.4295709473150411,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T11:36:07.520224+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "the-agent-reports-a-negative-zero-guard-correction-for-pr-6879",
+          "title": "The agent reports a negative-zero guard correction for PR #6879",
+          "score": 0.42812068546178017,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 19,
+          "note_id": "qwen3-5-unsharded-checkpoints-convert-without-losing-expert-bytes",
+          "title": "Qwen3.5 unsharded checkpoints convert without losing expert bytes",
+          "score": 0.42713457345962524,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:49:16.608000+00:00"
+        },
+        {
+          "rank": 20,
+          "note_id": "gallery-heading-and-fallback-table-can-break-words-at-320px-with-200-text",
+          "title": "Gallery heading and fallback table can break words at 320px with 200% text",
+          "score": 0.4271059886876345,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T15:31:17.235775+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q04",
+      "query": "Which path contains the current Factory operator guide: projects/monolith/swarm/FACTORY.md or projects/monolith/factory/orchestration/FACTORY.md?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:40:45.966Z",
+      "finished_at": "2026-10-10T14:40:53.114Z",
+      "client_observed_latency_ms": 7148,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 19,
+      "returned_fewer_than_limit": true,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "factory-intake-sweep-and-idle-audit-evidence-use-separate-clocks",
+          "title": "Factory intake sweep and idle-audit evidence use separate clocks",
+          "score": 0.7209134101867676,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "factory-status-at-06-19z-reported-distinct-sweep-evaluation-and-idle-timestamps",
+          "title": "Factory status at 06:19Z reported distinct sweep, evaluation, and idle timestamps",
+          "score": 0.6514933705329895,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T06:19:41.332496+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "factory-refine-admission-still-defers-on-stale-version-refusal",
+          "title": "Factory refine admission still defers on stale-version refusal",
+          "score": 0.6492811054419824,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "factory-refine-tests-cover-stale-admission-races-and-preserving-an-operator-hold",
+          "title": "Factory refine tests cover stale-admission races and preserving an operator hold",
+          "score": 0.6343109229617772,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "factory-task-implemented-gallery-fixture-work-at-commit-c4314d1",
+          "title": "Factory task implemented gallery fixture work at commit c4314d1",
+          "score": 0.4990957676825394,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "svelte-input-hydration-requires-an-uninitialized-input-identity-fixture",
+          "title": "Svelte input hydration requires an uninitialized-input identity fixture",
+          "score": 0.4909178912639618,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "pr-6882-s-design-system-gallery-change-leaves-the-cited-grimoire-rehearsal-path-unchanged",
+          "title": "PR #6882's design-system gallery change leaves the cited Grimoire rehearsal path unchanged",
+          "score": 0.48191002119123894,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.47799506914645107,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "data-display-ssr-fixture-configures-svelte-resolution-conditions-in-its-isolated-vite-graph",
+          "title": "Data-display SSR fixture configures Svelte resolution conditions in its isolated Vite graph",
+          "score": 0.46643882989883423,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.45783884697672295,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "oom-inference-selected-direct-metal-for-apple-silicon-with-mlx-as-a-reference",
+          "title": "oom-inference selected direct Metal for Apple Silicon, with MLX as a reference",
+          "score": 0.44542017579078674,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:59:39+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "the-reported-pr-head-raises-technical-drawing-theme-selector-specificity-for-root-boundaries",
+          "title": "The reported PR head raises technical-drawing theme selector specificity for root boundaries",
+          "score": 0.4363073966686374,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T08:34:08+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "single-page-blog-posts-omit-the-visible-summary-beneath-the-title",
+          "title": "Single-page blog posts omit the visible summary beneath the title",
+          "score": 0.42265692353248596,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "pr-6877s-ci-browser-preview-and-local-test-outcomes-are-agent-reported",
+          "title": "PR #6877’s CI, browser-preview, and local-test outcomes are agent-reported",
+          "score": 0.42166805267333984,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "gallery-checker-measures-native-input-and-selected-option-text-using-rendered-font-metrics",
+          "title": "Gallery checker measures native input and selected-option text using rendered font metrics",
+          "score": 0.41680266957299006,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "button-primitive-normalizes-unspecified-or-invalid-types-to-button",
+          "title": "Button primitive normalizes unspecified or invalid types to button",
+          "score": 0.4135359525680542,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "tabs-focusable-panel-sizing-fix-was-added-in-commit-68917caa",
+          "title": "Tabs focusable panel sizing fix was added in commit 68917caa",
+          "score": 0.4109720710209631,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "the-2026-10-09-optimizer-report-says-6782-remained-the-sole-selected-experiment-with-unknown-acceptance",
+          "title": "The 2026-10-09 optimizer report says #6782 remained the sole selected experiment with UNKNOWN acceptance",
+          "score": 0.4014649987220764,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 19,
+          "note_id": "the-reported-commit-adds-an-opt-in-technical-drawing-css-theme-export",
+          "title": "The reported commit adds an opt-in technical-drawing CSS theme export",
+          "score": 0.4014636278152466,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q05",
+      "query": "What is the current disposition of issue #5250, and does it still need a human decision after the runbook fix landed?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:41:14.414Z",
+      "finished_at": "2026-10-10T14:41:21.515Z",
+      "client_observed_latency_ms": 7101,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 18,
+      "returned_fewer_than_limit": true,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "the-2026-10-09-optimizer-report-says-6782-remained-the-sole-selected-experiment-with-unknown-acceptance",
+          "title": "The 2026-10-09 optimizer report says #6782 remained the sole selected experiment with UNKNOWN acceptance",
+          "score": 0.50772625207901,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "the-fixed-6782-post-change-cohort-remained-under-covered-and-acceptance-was-unknown",
+          "title": "The fixed #6782 post-change cohort remained under-covered and acceptance was UNKNOWN",
+          "score": 0.46917006373405457,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.4393951725779528,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.43760165944089613,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "the-supplied-2026-10-05-server-digest-reports-monolith-version-0-647-2-and-an-original-projected-boundary-at-0-632-7",
+          "title": "The supplied 2026-10-05 server digest reports monolith version 0.647.2 and an original projected boundary at 0.632.7",
+          "score": 0.4346961975097656,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:39:58.586308+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "factory-refine-admission-still-defers-on-stale-version-refusal",
+          "title": "Factory refine admission still defers on stale-version refusal",
+          "score": 0.43364763259887695,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "the-6782-observation-window-lacked-enough-admissions-to-establish-acceptance",
+          "title": "The #6782 observation window lacked enough admissions to establish acceptance",
+          "score": 0.4330320358276367,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:24:31.090906+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "public-responses-no-longer-carry-duplicate-date-headers",
+          "title": "Public responses no longer carry duplicate Date headers",
+          "score": 0.4322435553219061,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "factory-refine-tests-cover-stale-admission-races-and-preserving-an-operator-hold",
+          "title": "Factory refine tests cover stale-admission races and preserving an operator hold",
+          "score": 0.42965346574783325,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.4270074025992998,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "automated-dependency-merges-remain-unsafe-while-same-repository-pr-ci-can-access-buildbuddy-credentials",
+          "title": "Automated dependency merges remain unsafe while same-repository PR CI can access BuildBuddy credentials",
+          "score": 0.4231110215187073,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "gallery-heading-and-fallback-table-can-break-words-at-320px-with-200-text",
+          "title": "Gallery heading and fallback table can break words at 320px with 200% text",
+          "score": 0.41372659288207325,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T15:31:17.235775+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "reported-local-test-results-for-the-data-display-implementation-are-agent-reported",
+          "title": "Reported local test results for the data-display implementation are agent-reported",
+          "score": 0.41325801610946655,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "gallery-acceptance-expects-24-configurations-across-12-shared-physical-page-setups",
+          "title": "Gallery acceptance expects 24 configurations across 12 shared physical page setups",
+          "score": 0.40977010814280446,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "gallery-fallback-typography-makes-screenshot-rendering-dependent-on-installed-system-fonts",
+          "title": "Gallery fallback typography makes screenshot rendering dependent on installed system fonts",
+          "score": 0.40861374139785767,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T15:31:17.235775+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "svelte-input-hydration-requires-an-uninitialized-input-identity-fixture",
+          "title": "Svelte input hydration requires an uninitialized-input identity fixture",
+          "score": 0.4081692452329855,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "factory-status-at-06-19z-reported-distinct-sweep-evaluation-and-idle-timestamps",
+          "title": "Factory status at 06:19Z reported distinct sweep, evaluation, and idle timestamps",
+          "score": 0.40441262152270285,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T06:19:41.332496+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "agent-report-claims-theme-preview-artifacts-matched-the-final-tested-source",
+          "title": "Agent report claims theme preview artifacts matched the final tested source",
+          "score": 0.401863694190979,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q06",
+      "query": "What is the current disposition of issue #6043 and should an agent continue PR #6048?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:41:42.095Z",
+      "finished_at": "2026-10-10T14:41:47.802Z",
+      "client_observed_latency_ms": 5707,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 20,
+      "returned_fewer_than_limit": false,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "the-2026-10-09-optimizer-report-says-6782-remained-the-sole-selected-experiment-with-unknown-acceptance",
+          "title": "The 2026-10-09 optimizer report says #6782 remained the sole selected experiment with UNKNOWN acceptance",
+          "score": 0.552613410509433,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "the-bot-merge-gate-checks-queued-head-base-against-server-fetched-security-evidence-but-activation-still-depends-on-unvalidated-enforcement-and-canaries",
+          "title": "The bot merge gate checks queued head/base against server-fetched security evidence, but activation still depends on unvalidated enforcement and canaries",
+          "score": 0.5199289631801235,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "the-fixed-6782-post-change-cohort-remained-under-covered-and-acceptance-was-unknown",
+          "title": "The fixed #6782 post-change cohort remained under-covered and acceptance was UNKNOWN",
+          "score": 0.5148558327469736,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "automated-dependency-merges-remain-unsafe-while-same-repository-pr-ci-can-access-buildbuddy-credentials",
+          "title": "Automated dependency merges remain unsafe while same-repository PR CI can access BuildBuddy credentials",
+          "score": 0.48883604936814695,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.48571036628279407,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "single-page-blog-posts-keep-summaries-out-of-the-title-lead",
+          "title": "Single-page blog posts keep summaries out of the title lead",
+          "score": 0.47237330675125455,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T09:24:54.687000+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.47083663592775293,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "the-supplied-2026-10-05-server-digest-reports-monolith-version-0-647-2-and-an-original-projected-boundary-at-0-632-7",
+          "title": "The supplied 2026-10-05 server digest reports monolith version 0.647.2 and an original projected boundary at 0.632.7",
+          "score": 0.4703783971296793,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:39:58.586308+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "factory-task-implemented-gallery-fixture-work-at-commit-c4314d1",
+          "title": "Factory task implemented gallery fixture work at commit c4314d1",
+          "score": 0.469158661588311,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.457020608009137,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "factory-status-at-06-19z-reported-distinct-sweep-evaluation-and-idle-timestamps",
+          "title": "Factory status at 06:19Z reported distinct sweep, evaluation, and idle timestamps",
+          "score": 0.4386167453070575,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T06:19:41.332496+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "oom-inference-selected-direct-metal-for-apple-silicon-with-mlx-as-a-reference",
+          "title": "oom-inference selected direct Metal for Apple Silicon, with MLX as a reference",
+          "score": 0.4367096386378796,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:59:39+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "the-agent-reports-a-negative-zero-guard-correction-for-pr-6879",
+          "title": "The agent reports a negative-zero guard correction for PR #6879",
+          "score": 0.4348355920465822,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "public-responses-no-longer-carry-duplicate-date-headers",
+          "title": "Public responses no longer carry duplicate Date headers",
+          "score": 0.43080445711639337,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "the-pr-6882-retry-commit-has-the-same-source-tree-as-the-original-validation-commit",
+          "title": "The PR #6882 retry commit has the same source tree as the original validation commit",
+          "score": 0.4281252367421913,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "tabs-focusable-panel-sizing-fix-was-added-in-commit-68917caa",
+          "title": "Tabs focusable panel sizing fix was added in commit 68917caa",
+          "score": 0.4244670353353355,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "the-6782-observation-window-lacked-enough-admissions-to-establish-acceptance",
+          "title": "The #6782 observation window lacked enough admissions to establish acceptance",
+          "score": 0.42417794014084054,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:24:31.090906+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.423188481209946,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 19,
+          "note_id": "factory-refine-admission-still-defers-on-stale-version-refusal",
+          "title": "Factory refine admission still defers on stale-version refusal",
+          "score": 0.4191848885527194,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 20,
+          "note_id": "pr-6882-s-design-system-gallery-change-leaves-the-cited-grimoire-rehearsal-path-unchanged",
+          "title": "PR #6882's design-system gallery change leaves the cited Grimoire rehearsal path unchanged",
+          "score": 0.40930929239447744,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q07",
+      "query": "Which repository modules expose search_knowledge to agents and perform ranked vector retrieval with graph context?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:42:10.542Z",
+      "finished_at": "2026-10-10T14:42:18.290Z",
+      "client_observed_latency_ms": 7748,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 20,
+      "returned_fewer_than_limit": false,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "public-knowledge-cache-leases-are-measured-from-serve-time",
+          "title": "Public knowledge cache leases are measured from serve time",
+          "score": 0.5070160031318665,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:24:41.654911+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "agent-report-claims-theme-preview-artifacts-matched-the-final-tested-source",
+          "title": "Agent report claims theme preview artifacts matched the final tested source",
+          "score": 0.4939770996570587,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "the-supplied-2026-10-05-server-digest-reports-monolith-version-0-647-2-and-an-original-projected-boundary-at-0-632-7",
+          "title": "The supplied 2026-10-05 server digest reports monolith version 0.647.2 and an original projected boundary at 0.632.7",
+          "score": 0.48890310525894165,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:39:58.586308+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "an-agent-report-claims-uvicorn-0-41-0-duplicates-a-handler-set-date-header-but-the-checkout-does-not-confirm-the-reported-monolith-path",
+          "title": "An agent report claims Uvicorn 0.41.0 duplicates a handler-set Date header, but the checkout does not confirm the reported monolith path",
+          "score": 0.4813406765460968,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "on-demand-embedding-reads-let-the-mac-inference-run-fit-after-the-initial-ram-budget-failure",
+          "title": "On-demand embedding reads let the Mac inference run fit after the initial RAM-budget failure",
+          "score": 0.47120183877934063,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T04:13:22.809000+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "cuda-expert-copy-prefetch-raised-cache-hits-but-reduced-decode-throughput",
+          "title": "CUDA expert-copy prefetch raised cache hits but reduced decode throughput",
+          "score": 0.47018606871921054,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:26:35.021000+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.46634197435724967,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.4651534099922603,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "pr-6882-s-design-system-gallery-change-leaves-the-cited-grimoire-rehearsal-path-unchanged",
+          "title": "PR #6882's design-system gallery change leaves the cited Grimoire rehearsal path unchanged",
+          "score": 0.46510782837867737,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "agent-report-claims-batched-metal-expert-kernels-improved-a-short-context-benchmark",
+          "title": "Agent report claims batched Metal expert kernels improved a short-context benchmark",
+          "score": 0.46477380604900165,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.4640853128382385,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "qwen3-5-metal-prefill-processes-prompt-tokens-one-at-a-time",
+          "title": "Qwen3.5 Metal prefill processes prompt tokens one at a time",
+          "score": 0.4627842329273093,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T04:37:05.731000+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.4608311629790769,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "qwen3-5-metal-routing-synchronizes-with-the-cpu-at-every-layer",
+          "title": "Qwen3.5 Metal routing synchronizes with the CPU at every layer",
+          "score": 0.45771628870271,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T04:37:05.731000+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "the-reported-correction-guards-against-tiny-negative-measurements-rendering-as-negative-zero",
+          "title": "The reported correction guards against tiny negative measurements rendering as negative zero",
+          "score": 0.4561793804168701,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T11:36:07.520224+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "public-response-cache-leases-are-measured-from-response-send-time",
+          "title": "Public response cache leases are measured from response send time",
+          "score": 0.455254465341568,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "gallery-acceptance-expects-24-configurations-across-12-shared-physical-page-setups",
+          "title": "Gallery acceptance expects 24 configurations across 12 shared physical page setups",
+          "score": 0.45225695838841606,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "single-page-blog-posts-omit-the-visible-summary-beneath-the-title",
+          "title": "Single-page blog posts omit the visible summary beneath the title",
+          "score": 0.4507192075252533,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 19,
+          "note_id": "automated-dependency-merges-remain-unsafe-while-same-repository-pr-ci-can-access-buildbuddy-credentials",
+          "title": "Automated dependency merges remain unsafe while same-repository PR CI can access BuildBuddy credentials",
+          "score": 0.4475350081920624,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 20,
+          "note_id": "the-fixed-6782-post-change-cohort-remained-under-covered-and-acceptance-was-unknown",
+          "title": "The fixed #6782 post-change cohort remained under-covered and acceptance was UNKNOWN",
+          "score": 0.4467262327671051,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q08",
+      "query": "Where is the current documentation for OCaml ARM64 C-stub and C++ toolchain support after docs/decisions/tooling/004 was deleted?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:42:41.430Z",
+      "finished_at": "2026-10-10T14:42:50.486Z",
+      "client_observed_latency_ms": 9056,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 15,
+      "returned_fewer_than_limit": true,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "oom-inference-selected-direct-metal-for-apple-silicon-with-mlx-as-a-reference",
+          "title": "oom-inference selected direct Metal for Apple Silicon, with MLX as a reference",
+          "score": 0.5141073618563226,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:59:39+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.448327074795402,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.44272416488672284,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "macos-device-number-type-mismatch-requires-conversion-before-libc-major-minor-calls",
+          "title": "macOS device-number type mismatch requires conversion before libc major/minor calls",
+          "score": 0.43424507073357543,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T03:27:35.835000+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "the-fixed-6782-post-change-cohort-remained-under-covered-and-acceptance-was-unknown",
+          "title": "The fixed #6782 post-change cohort remained under-covered and acceptance was UNKNOWN",
+          "score": 0.42986701219877654,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.4184319501647936,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "the-supplied-2026-10-05-server-digest-reports-monolith-version-0-647-2-and-an-original-projected-boundary-at-0-632-7",
+          "title": "The supplied 2026-10-05 server digest reports monolith version 0.647.2 and an original projected boundary at 0.632.7",
+          "score": 0.41787381225448306,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:39:58.586308+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "the-2026-10-09-optimizer-report-says-6782-remained-the-sole-selected-experiment-with-unknown-acceptance",
+          "title": "The 2026-10-09 optimizer report says #6782 remained the sole selected experiment with UNKNOWN acceptance",
+          "score": 0.4156459693803184,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "the-bot-merge-gate-checks-queued-head-base-against-server-fetched-security-evidence-but-activation-still-depends-on-unvalidated-enforcement-and-canaries",
+          "title": "The bot merge gate checks queued head/base against server-fetched security evidence, but activation still depends on unvalidated enforcement and canaries",
+          "score": 0.41408194345480054,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "qwen3-5-metal-routing-synchronizes-with-the-cpu-at-every-layer",
+          "title": "Qwen3.5 Metal routing synchronizes with the CPU at every layer",
+          "score": 0.41163282359740827,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T04:37:05.731000+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "the-pr-6882-retry-commit-has-the-same-source-tree-as-the-original-validation-commit",
+          "title": "The PR #6882 retry commit has the same source tree as the original validation commit",
+          "score": 0.4111445774604803,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "factory-refine-admission-still-defers-on-stale-version-refusal",
+          "title": "Factory refine admission still defers on stale-version refusal",
+          "score": 0.40375698816052064,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "svelte-input-hydration-requires-an-uninitialized-input-identity-fixture",
+          "title": "Svelte input hydration requires an uninitialized-input identity fixture",
+          "score": 0.40334860692467134,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "factory-task-implemented-gallery-fixture-work-at-commit-c4314d1",
+          "title": "Factory task implemented gallery fixture work at commit c4314d1",
+          "score": 0.4012299121159263,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "tabs-focusable-panel-sizing-fix-was-added-in-commit-68917caa",
+          "title": "Tabs focusable panel sizing fix was added in commit 68917caa",
+          "score": 0.40098305946487545,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q09",
+      "query": "Which exact git revision is the live knowledge retrieval service currently running?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:43:08.398Z",
+      "finished_at": "2026-10-10T14:43:16.878Z",
+      "client_observed_latency_ms": 8480,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 20,
+      "returned_fewer_than_limit": false,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.5649744272232056,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "agent-report-claims-theme-preview-artifacts-matched-the-final-tested-source",
+          "title": "Agent report claims theme preview artifacts matched the final tested source",
+          "score": 0.5545859932899475,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "automated-dependency-merges-remain-unsafe-while-same-repository-pr-ci-can-access-buildbuddy-credentials",
+          "title": "Automated dependency merges remain unsafe while same-repository PR CI can access BuildBuddy credentials",
+          "score": 0.5423946976661682,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "public-response-cache-leases-are-measured-from-response-send-time",
+          "title": "Public response cache leases are measured from response send time",
+          "score": 0.5326247215270996,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "the-pr-6882-retry-commit-has-the-same-source-tree-as-the-original-validation-commit",
+          "title": "The PR #6882 retry commit has the same source tree as the original validation commit",
+          "score": 0.5306681954064174,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "public-knowledge-cache-leases-are-measured-from-serve-time",
+          "title": "Public knowledge cache leases are measured from serve time",
+          "score": 0.5256479978561401,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:24:41.654911+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "pr-6882-s-design-system-gallery-change-leaves-the-cited-grimoire-rehearsal-path-unchanged",
+          "title": "PR #6882's design-system gallery change leaves the cited Grimoire rehearsal path unchanged",
+          "score": 0.5208646059036255,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "the-2026-10-09-optimizer-report-says-6782-remained-the-sole-selected-experiment-with-unknown-acceptance",
+          "title": "The 2026-10-09 optimizer report says #6782 remained the sole selected experiment with UNKNOWN acceptance",
+          "score": 0.5172089338302612,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "public-responses-no-longer-carry-duplicate-date-headers",
+          "title": "Public responses no longer carry duplicate Date headers",
+          "score": 0.5116216314805536,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "the-bot-merge-gate-checks-queued-head-base-against-server-fetched-security-evidence-but-activation-still-depends-on-unvalidated-enforcement-and-canaries",
+          "title": "The bot merge gate checks queued head/base against server-fetched security evidence, but activation still depends on unvalidated enforcement and canaries",
+          "score": 0.5077890157699585,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T05:56:52.473265+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "factory-refine-admission-still-defers-on-stale-version-refusal",
+          "title": "Factory refine admission still defers on stale-version refusal",
+          "score": 0.5069657564163208,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.5032730402513179,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "factory-refine-tests-cover-stale-admission-races-and-preserving-an-operator-hold",
+          "title": "Factory refine tests cover stale-admission races and preserving an operator hold",
+          "score": 0.5022515058517456,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.4995798170817016,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "data-display-ssr-fixture-configures-svelte-resolution-conditions-in-its-isolated-vite-graph",
+          "title": "Data-display SSR fixture configures Svelte resolution conditions in its isolated Vite graph",
+          "score": 0.4983476400375366,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.4953103809151169,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "single-page-blog-posts-keep-summaries-out-of-the-title-lead",
+          "title": "Single-page blog posts keep summaries out of the title lead",
+          "score": 0.492389411187804,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T09:24:54.687000+00:00"
+        },
+        {
+          "rank": 18,
+          "note_id": "tabs-focusable-panel-sizing-fix-was-added-in-commit-68917caa",
+          "title": "Tabs focusable panel sizing fix was added in commit 68917caa",
+          "score": 0.4916048494459646,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 19,
+          "note_id": "gallery-checker-measures-native-input-and-selected-option-text-using-rendered-font-metrics",
+          "title": "Gallery checker measures native input and selected-option text using rendered font metrics",
+          "score": 0.4876320056695951,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 20,
+          "note_id": "gallery-fallback-typography-makes-screenshot-rendering-dependent-on-installed-system-fonts",
+          "title": "Gallery fallback typography makes screenshot rendering dependent on installed system fonts",
+          "score": 0.4871966540813446,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T15:31:17.235775+00:00"
+        }
+      ]
+    },
+    {
+      "id": "q10",
+      "query": "Has the hand-installed node-4 traffic shaper systemd unit been removed from the live host?",
+      "arguments": {
+        "limit": 20,
+        "type": null,
+        "scope": "repo:jomcgi-org/homelab"
+      },
+      "started_at": "2026-10-10T14:43:38.872Z",
+      "finished_at": "2026-10-10T14:43:44.718Z",
+      "client_observed_latency_ms": 5846,
+      "latency_caveat": "Approximate client wall time around an MCP call from a cloud session, including model turn overhead; not server latency.",
+      "result_count": 17,
+      "returned_fewer_than_limit": true,
+      "off_scope_candidate_count": 0,
+      "tool_error": false,
+      "judgment": {
+        "scope_only": true,
+        "top_result_useful": "not_rejudged",
+        "evidence_coverage": "not_rejudged",
+        "stale_or_conflicting_handling": "not_rejudged",
+        "safe_no_answer_candidate_handling": "not_rejudged"
+      },
+      "candidates": [
+        {
+          "rank": 1,
+          "note_id": "agent-report-claims-vite-6-ssr-helpers-need-server-ws-disabled-to-avoid-listener-port-conflicts",
+          "title": "Agent report claims Vite 6 SSR helpers need server.ws disabled to avoid listener port conflicts",
+          "score": 0.4463204278445374,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 2,
+          "note_id": "qwen3-5-unsharded-checkpoints-convert-without-losing-expert-bytes",
+          "title": "Qwen3.5 unsharded checkpoints convert without losing expert bytes",
+          "score": 0.434011263668873,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:49:16.608000+00:00"
+        },
+        {
+          "rank": 3,
+          "note_id": "october-6-factory-status-and-deployment-observations-are-agent-reported",
+          "title": "October 6 factory status and deployment observations are agent-reported",
+          "score": 0.42174702416342646,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T05:47:40+00:00"
+        },
+        {
+          "rank": 4,
+          "note_id": "the-data-display-component-export-now-resolves-for-the-repository-s-sveltekit-ssr-configuration",
+          "title": "The data-display component export now resolves for the repository's SvelteKit SSR configuration",
+          "score": 0.42088861527707044,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T11:17:54.204568+00:00"
+        },
+        {
+          "rank": 5,
+          "note_id": "agent-report-claims-final-m1-pro-inference-parity-and-benchmark-results-for-pr-6897",
+          "title": "Agent report claims final M1 Pro inference, parity, and benchmark results for PR #6897",
+          "score": 0.4176664850314249,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T00:00:00+00:00"
+        },
+        {
+          "rank": 6,
+          "note_id": "factory-refine-tests-cover-stale-admission-races-and-preserving-an-operator-hold",
+          "title": "Factory refine tests cover stale-admission races and preserving an operator hold",
+          "score": 0.4116622034210625,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-05T00:00:00+00:00"
+        },
+        {
+          "rank": 7,
+          "note_id": "data-display-ssr-fixture-configures-svelte-resolution-conditions-in-its-isolated-vite-graph",
+          "title": "Data-display SSR fixture configures Svelte resolution conditions in its isolated Vite graph",
+          "score": 0.41150870220285796,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T00:00:00+00:00"
+        },
+        {
+          "rank": 8,
+          "note_id": "the-reported-correction-guards-against-tiny-negative-measurements-rendering-as-negative-zero",
+          "title": "The reported correction guards against tiny negative measurements rendering as negative zero",
+          "score": 0.41078437598897166,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T11:36:07.520224+00:00"
+        },
+        {
+          "rank": 9,
+          "note_id": "public-knowledge-cache-leases-are-measured-from-serve-time",
+          "title": "Public knowledge cache leases are measured from serve time",
+          "score": 0.410709870180782,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:24:41.654911+00:00"
+        },
+        {
+          "rank": 10,
+          "note_id": "pr-6837-test-results-and-operational-acceptance-remain-agent-reported",
+          "title": "PR #6837 test results and operational acceptance remain agent-reported",
+          "score": 0.410158653278191,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 11,
+          "note_id": "single-page-blog-posts-keep-summaries-out-of-the-title-lead",
+          "title": "Single-page blog posts keep summaries out of the title lead",
+          "score": 0.410105991062345,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T09:24:54.687000+00:00"
+        },
+        {
+          "rank": 12,
+          "note_id": "gallery-fallback-typography-makes-screenshot-rendering-dependent-on-installed-system-fonts",
+          "title": "Gallery fallback typography makes screenshot rendering dependent on installed system fonts",
+          "score": 0.40941460160656595,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T15:31:17.235775+00:00"
+        },
+        {
+          "rank": 13,
+          "note_id": "the-2026-10-09-digest-reportedly-verified-monolith-0-661-3",
+          "title": "The 2026-10-09 digest reportedly verified monolith 0.661.3",
+          "score": 0.40638090391102166,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-09T07:14:17.362542+00:00"
+        },
+        {
+          "rank": 14,
+          "note_id": "public-responses-no-longer-carry-duplicate-date-headers",
+          "title": "Public responses no longer carry duplicate Date headers",
+          "score": 0.403384757142805,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T20:36:37.321678+00:00"
+        },
+        {
+          "rank": 15,
+          "note_id": "an-agent-report-claims-uvicorn-0-41-0-duplicates-a-handler-set-date-header-but-the-checkout-does-not-confirm-the-reported-monolith-path",
+          "title": "An agent report claims Uvicorn 0.41.0 duplicates a handler-set Date header, but the checkout does not confirm the reported monolith path",
+          "score": 0.4029292882361798,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-04T00:00:00+00:00"
+        },
+        {
+          "rank": 16,
+          "note_id": "factory-status-at-06-19z-reported-distinct-sweep-evaluation-and-idle-timestamps",
+          "title": "Factory status at 06:19Z reported distinct sweep, evaluation, and idle timestamps",
+          "score": 0.4025460005565288,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "unverified",
+          "freshness": "current",
+          "observed_at": "2026-10-06T06:19:41.332496+00:00"
+        },
+        {
+          "rank": 17,
+          "note_id": "macos-device-number-type-mismatch-requires-conversion-before-libc-major-minor-calls",
+          "title": "macOS device-number type mismatch requires conversion before libc major/minor calls",
+          "score": 0.40244915463485376,
+          "scope": "repo:jomcgi-org/homelab",
+          "scope_match": true,
+          "verification_state": "verified",
+          "freshness": "current",
+          "observed_at": "2026-10-07T03:27:35.835000+00:00"
+        }
+      ]
+    }
+  ]
+}
