@@ -3402,7 +3402,7 @@ def ingest_utterance(
             raise HTTPException(403, detail="browser speaker must be the caller")
         speaker = member.id
     else:
-        _require_dm(member)
+        _require_dm(session, campaign_id, email)
         if speaker is None:
             if body.source != "table" or not body.speaker_label:
                 raise HTTPException(422, detail="table speaker requires a label")
@@ -3414,7 +3414,7 @@ def ingest_utterance(
         ).one_or_none() is None:
             raise HTTPException(403, detail="speaker must belong to this campaign")
     if body.audience.kind == "pcs":
-        _require_dm(member)
+        _require_dm(session, campaign_id, email)
 
     speakers = (
         {speaker}

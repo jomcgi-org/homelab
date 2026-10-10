@@ -57,6 +57,270 @@ def state(h, client, value, viewer="dm"):
     )
 
 
+def utterance_body(**changes):
+    return {
+        "text": "A fresh spoken clue",
+        "source": "browser",
+        "started_at": "2026-10-10T12:00:00Z",
+        "ended_at": "2026-10-10T12:00:01Z",
+        "confidence": 0.9,
+        **changes,
+    }
+
+
+def ingest(h, client, viewer="player_a", *, session_id=None, **changes):
+    response = client.post(
+        UTTERANCES.format(
+            campaign_id=h.rows["campaign"].id,
+            session_id=session_id or h.rows["campaign_session"].id,
+        ),
+        headers=h.headers(viewer),
+        json=utterance_body(**changes),
+    )
+    h.assert_no_leak(response, viewer)
+    return response
+
+
+@pytest.mark.parametrize("revoked", (False, True))
+def test_ingest_requires_active_speaker_consent_including_after_revoke(http_harness, revoked):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    if not revoked:
+        h.session.delete(h.rows["consent_player_a"])
+        h.session.commit()
+    else:
+        assert client.delete(url(h), headers=h.headers("player_a")).status_code == 204
+    before = h.snapshot()
+    assert ingest(h, client).status_code == 403
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("missing", ("dm", "operator", "player_a", "player_b", "no_character"))
+def test_null_table_speaker_requires_consent_from_every_current_member(http_harness, missing):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    consent = h.rows[f"consent_{missing}"]
+    h.session.delete(consent)
+    h.session.commit()
+    before = h.snapshot()
+    assert ingest(h, client, "dm", source="table", speaker_label="Table mic").status_code == 403
+    assert h.snapshot() == before
+    # Self-service grant restores the member's consent, not an adapter override.
+    assert grant(h, client, missing).status_code == 200
+    response = ingest(h, client, "dm", source="table", speaker_label="Table mic")
+    assert response.status_code == 200, response.text
+    assert response.json()["author_member_id"] is None
+    assert response.json()["body"]["speaker_label"] == "Table mic"
+
+
+@pytest.mark.parametrize("changes", (
+    {"source": "table", "speaker_label": "Table"},
+    {"source": "discord"},
+    {"audience": {"kind": "pcs", "pc_ids": []}},
+))
+def test_player_cannot_ingest_adapter_sources_or_pc_audience(http_harness, changes):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    before = h.snapshot()
+    assert ingest(h, client, **changes).status_code == 403
+    assert h.snapshot() == before
+
+
+def test_browser_cannot_claim_another_member_as_speaker(http_harness):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    before = h.snapshot()
+    assert ingest(h, client, speaker_member_id=h.rows["member"].id).status_code == 403
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("explicit_speaker", (False, True))
+def test_browser_attribution_defaults_to_caller_and_accepts_own_id(http_harness, explicit_speaker):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    changes = {"speaker_member_id": h.rows["member_player_a"].id} if explicit_speaker else {}
+    response = ingest(h, client, **changes)
+    assert response.status_code == 200, response.text
+    assert response.json()["author_member_id"] == h.rows["member_player_a"].id
+    row = h.session.get(SessionEvent, response.json()["id"])
+    assert row.author_member_id == h.rows["member_player_a"].id
+    assert row.audience == "table"
+    assert row.body == {
+        "text": "A fresh spoken clue", "source": "browser", "confidence": 0.9,
+        "started_at": "2026-10-10T12:00:00+00:00", "ended_at": "2026-10-10T12:00:01+00:00",
+    }
+
+
+@pytest.mark.parametrize("source", ("table", "discord"))
+def test_dm_adapter_attribution_is_campaign_scoped_and_response_is_projected(http_harness, source):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    for speaker in (h.rows["member_other_campaign"].id, str(uuid4())):
+        before = h.snapshot()
+        assert ingest(h, client, "dm", source=source, speaker_member_id=speaker).status_code == 403
+        assert h.snapshot() == before
+    response = ingest(h, client, "dm", source=source, speaker_member_id=h.rows["member_player_a"].id)
+    assert response.status_code == 200, response.text
+    assert response.json()["author_member_id"] == h.rows["member_player_a"].id
+    assert set(response.json()["body"]) == {"text", "started_at", "ended_at", "source", "confidence"}
+    assert response.json()["audience"] == "table"
+    assert response.json()["kind"] == "utterance"
+    for value in response.json()["body"].values():
+        assert value != h.rows["member_player_a"].id
+
+
+@pytest.mark.parametrize("previous", ("off", "paused"))
+def test_ingest_refuses_off_or_paused_and_accepts_after_dm_resume(http_harness, previous):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    if previous == "paused":
+        assert state(h, client, "paused", "player_a").status_code == 200
+        row = events(h)[-1]
+        assert row.body == {"transcript_state": "paused", "previous": "on"}
+        assert row.audience == "table"
+        assert row.author_member_id == h.rows["member_player_a"].id
+    else:
+        assert state(h, client, "off").status_code == 200
+    # State failure precedes missing-consent failure.
+    assert client.delete(url(h), headers=h.headers("player_a")).status_code == 204
+    before = h.snapshot()
+    response = ingest(h, client)
+    assert response.status_code == 409
+    assert previous in response.json()["detail"]
+    assert h.snapshot() == before
+    assert grant(h, client).status_code == 200
+    assert state(h, client, "on").status_code == 200
+    assert ingest(h, client).status_code == 200
+
+
+def test_browser_dm_whisper_is_visible_only_to_speaker_and_dm_on_real_feed(http_harness):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    text = h.token("ingested_whisper.text", ("dm", "player_a"))
+    response = ingest(h, client, text=text, audience={"kind": "dm"})
+    assert response.status_code == 200, response.text
+    whisper_id = response.json()["id"]
+    assert response.json()["author_member_id"] == h.rows["member_player_a"].id
+    base = PREFIX.format(campaign_id=h.rows["campaign"].id)
+    feed = base + f"/sessions/{h.rows['campaign_session'].id}/events"
+    for viewer in ("dm", "player_a", "player_b", "no_character", "outsider", "other_campaign"):
+        result = client.get(feed, headers=h.headers(viewer))
+        h.assert_no_leak(result, viewer)
+        if viewer in ("outsider", "other_campaign"):
+            assert result.status_code == 404
+            continue
+        assert result.status_code == 200, result.text
+        matches = [event for event in result.json() if event["id"] == whisper_id]
+        assert bool(matches) is (viewer in ("dm", "player_a"))
+        if matches:
+            assert matches[0]["body"]["text"] == text
+        for path in (base + "/journal", base + f"/sessions/{h.rows['campaign_session'].id}/journal", base + "/sessions/current"):
+            journal = client.get(path, headers=h.headers(viewer))
+            assert journal.status_code == 200, journal.text
+            h.assert_no_leak(journal, viewer)
+
+
+def test_ingest_request_id_retry_is_same_event_and_changed_payload_conflicts(http_harness):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    request_id = str(uuid4())
+    first = ingest(h, client, request_id=request_id)
+    assert first.status_code == 200, first.text
+    before = h.snapshot()
+    assert ingest(h, client, request_id=request_id).json() == first.json()
+    assert h.snapshot() == before
+    assert ingest(h, client, request_id=request_id, text="Different text").status_code == 409
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("changes", (
+    {"audio": "raw bytes"}, {"unknown": "payload"},
+    {"text": ""}, {"text": "x" * 4001}, {"speaker_label": "x" * 81},
+    {"confidence": -0.1}, {"confidence": 1.1},
+    {"started_at": "2026-10-10T12:00:00"},
+    {"ended_at": "2026-10-10T12:00:01"},
+    {"ended_at": "2026-10-10T11:59:59Z"}, {"source": "microphone"},
+    {"audience": {"kind": "table", "audio": "raw bytes"}},
+    {"audience": {"kind": "table", "pc_ids": ["invalid"]}},
+    {"audience": {"kind": "pcs", "pc_ids": []}},
+    {"audience": {"kind": "pcs", "pc_ids": ["invalid"]}},
+    {"source": "table"}, {"source": "table", "speaker_label": ""},
+    {"source": "discord", "speaker_label": "Unattributed"},
+))
+def test_ingest_is_text_only_and_validates_bounds_timing_and_attribution(http_harness, changes):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    before = h.snapshot()
+    assert ingest(h, client, "dm", **changes).status_code == 422
+    assert h.snapshot() == before
+
+
+def test_ingest_ended_or_foreign_session_is_rejected_without_mutation(http_harness):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    for session_id in (str(uuid4()), h.rows["other_session"].id):
+        before = h.snapshot()
+        assert ingest(h, client, session_id=session_id).status_code == 404
+        assert h.snapshot() == before
+    h.rows["campaign_session"].status = "ended"
+    h.session.commit()
+    before = h.snapshot()
+    assert ingest(h, client).status_code == 409
+    assert h.snapshot() == before
+
+
+def test_ingest_lock_order_refreshes_session_then_share_locks_consent(http_harness, monkeypatch):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    execute = h.session.exec
+    statements = []
+
+    def record(statement):
+        if getattr(statement, "_for_update_arg", None) is not None:
+            statements.append(statement)
+        return execute(statement)
+
+    monkeypatch.setattr(h.session, "exec", record)
+    assert ingest(h, client).status_code == 200
+    sql = [str(statement.compile(dialect=postgresql.dialect())) for statement in statements]
+    assert "game_session" in sql[0] and sql[0].endswith("FOR UPDATE")
+    assert "transcript_consent" in sql[1] and sql[1].endswith("FOR SHARE")
+    assert "game_session" in sql[2] and sql[2].endswith("FOR UPDATE")
+    assert all(statement.get_execution_options()["populate_existing"] for statement in statements)
+
+
+def test_ingest_refreshes_stale_session_before_admitting_text(http_harness):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    cached = h.rows["campaign_session"]
+    assert cached.transcript_state == "on"
+    with Session(h.session.get_bind()) as other:
+        row = other.get(GameSession, cached.id)
+        row.transcript_state = "paused"
+        other.commit()
+    assert cached.transcript_state == "on"
+    assert ingest(h, client).status_code == 409
+    h.session.refresh(cached)
+    assert cached.transcript_state == "paused"
+
+
+def test_dm_pc_aside_uses_existing_audience_and_hides_other_member_ids(http_harness):
+    h, client = http_harness
+    assert state(h, client, "on").status_code == 200
+    response = ingest(h, client, "dm", source="table", speaker_member_id=h.rows["member_dm"].id,
+                      audience={"kind": "pcs", "pc_ids": [h.rows["character_a"].id]})
+    assert response.status_code == 200, response.text
+    feed = PREFIX.format(campaign_id=h.rows["campaign"].id) + f"/sessions/{h.rows['campaign_session'].id}/events"
+    for viewer in ("dm", "player_a", "player_b"):
+        result = client.get(feed, headers=h.headers(viewer))
+        assert result.status_code == 200
+        h.assert_no_leak(result, viewer)
+        matches = [event for event in result.json() if event["id"] == response.json()["id"]]
+        assert bool(matches) is (viewer in ("dm", "player_a"))
+        if viewer == "player_a":
+            assert matches[0]["author_member_id"] is None
+
+
 def own_rows(h, viewer="player_a"):
     member = h.rows["member" if viewer == "player_b" else f"member_{viewer}"]
     return h.session.exec(

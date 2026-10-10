@@ -1,12 +1,14 @@
 """Real migrations, row-lock concurrency, rollback, and private-child lifecycle."""
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import delete, event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
@@ -20,7 +22,9 @@ from grimoire.models import (
     GameSession,
     PlayerCharacter,
     SessionEvent,
+    TranscriptConsent,
 )
+from grimoire.router import UtteranceRequest, ingest_utterance, revoke_transcript_consent
 from grimoire.session_events import append_event
 
 
@@ -61,6 +65,7 @@ def lane(pg):
             member_id=member.id,
             pc_id=pc.id,
             user_id=user.id,
+            email=user.email,
         )
     try:
         yield info
@@ -80,6 +85,58 @@ def _append(session, game_session, lane, *, audience=None, body=None):
         author_member_id=lane.member_id,
         body=body or {},
     )
+
+
+def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
+    with Session(lane.engine) as session:
+        game_session = session.get(GameSession, lane.session_id)
+        game_session.transcript_state = "on"
+        consent = TranscriptConsent(
+            campaign_id=lane.campaign_id, member_id=lane.member_id, processor="Local STT"
+        )
+        session.add(consent)
+        session.commit()
+        consent_id = consent.id
+
+    cached = Event()
+    revoked = Event()
+
+    def ingest_after_revoke():
+        with Session(lane.engine) as session:
+            # Keep an unrevoked identity-map object across the other connection's
+            # commit. The ingest must query active consent under FOR SHARE.
+            old = session.get(TranscriptConsent, consent_id)
+            assert old.revoked_at is None
+            cached.set()
+            assert revoked.wait(timeout=10)
+            now = datetime.now(timezone.utc)
+            with pytest.raises(HTTPException) as error:
+                ingest_utterance(
+                    lane.campaign_id, lane.session_id,
+                    UtteranceRequest(
+                        text="Must not be stored", source="browser", confidence=1,
+                        started_at=now, ended_at=now,
+                    ),
+                    email=lane.email, session=session,
+                )
+            assert error.value.status_code == 403
+            assert error.value.detail == "active transcript consent required"
+            session.rollback()
+
+    def revoke():
+        assert cached.wait(timeout=10)
+        with Session(lane.engine) as session:
+            assert revoke_transcript_consent(lane.campaign_id, email=lane.email, session=session).status_code == 204
+        revoked.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ingest_result = pool.submit(ingest_after_revoke)
+        revoke_result = pool.submit(revoke)
+        revoke_result.result(timeout=20)
+        ingest_result.result(timeout=20)
+    with Session(lane.engine) as session:
+        assert session.get(TranscriptConsent, consent_id).revoked_at is not None
+        assert session.exec(select(SessionEvent).where(SessionEvent.session_id == lane.session_id)).all() == []
 
 
 def test_uuid_audience_uses_persisted_canonical_ids(lane):

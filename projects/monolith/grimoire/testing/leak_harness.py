@@ -412,6 +412,30 @@ def build_fixture(session: Session) -> LeakHarness:
                 ),
             )
 
+    for key, audience, allowed in (
+        ("utterance_whisper", "dm", ("dm", "player_a")),
+        ("utterance_table", "table", MEMBERS),
+    ):
+        keep(
+            key,
+            SessionEvent(
+                id=mark(f"{key}.id", allowed, True),
+                campaign_id=rows["campaign"].id,
+                session_id=rows["campaign_session"].id,
+                seq=1 + sum(isinstance(obj, SessionEvent) for obj in objects),
+                kind="utterance",
+                author_member_id=rows["member_player_a"].id,
+                audience=audience,
+                body={
+                    "text": mark(f"{key}.text", allowed),
+                    "started_at": "2026-10-10T12:00:00+00:00",
+                    "ended_at": "2026-10-10T12:00:01+00:00",
+                    "source": "browser",
+                    "confidence": 0.9,
+                },
+            ),
+        )
+
     keep(
         "invitation",
         CampaignInvitation(

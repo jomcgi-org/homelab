@@ -107,7 +107,7 @@ snippets.
 
 ## Transcripts
 
-The transcript control routes require both `GRIMOIRE_PLAY_ENABLED` and
+The transcript routes require both `GRIMOIRE_PLAY_ENABLED` and
 `GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly `true`, read on every request.
 `grimoire.transcript.enabled` defaults to false until the capture surface is
 ready. No deploy override enables it.
@@ -119,7 +119,7 @@ row; changing processor revokes it and creates a replacement in one transaction.
 Players read only their own history, without member ids. DMs read all campaign
 consent rows. Grant and revoke serialize on the member row with `FOR NO KEY
 UPDATE`, permitting event-author foreign-key checks. Revocation updates the
-consent row so it will wait for an ingest reader's shared lock.
+consent row so it waits for an ingest reader's shared lock.
 
 Sessions start with transcripts off. DMs can set off, on or paused. Players can
 pause from on, and a repeated pause is a no-op. Ended sessions refuse all state
@@ -128,17 +128,30 @@ system event with the caller as author, the previous state and the new state.
 All members read the current state. Consent and state requests forbid unknown
 fields, including audio. No raw audio is accepted or stored by this surface.
 
+Utterance ingest accepts attributed text with timezone-aware start and end
+times, confidence and a browser, table or Discord source. Browser speakers
+must be the caller. Table and Discord adapters authenticate as the campaign DM
+and name a campaign member; a table adapter may instead supply a label for an
+unknown speaker. That unknown-speaker path requires consent from every current
+campaign member. The server locks the session before share-locking active
+consent rows and appending the utterance. Off, paused and ended sessions reject
+ingest. Member ids remain outside the event body. Retry ids deduplicate the
+same utterance; a changed payload conflicts.
+
+Table talk defaults to all campaign members. DM whispers use the existing
+audience contract, including its characterless-member restriction below.
+DM-authored PC asides reach the listed characters and DM. Event-list responses
+project author ids for the caller; the journal currently does not fold
+utterance text. Ingest forbids unknown fields, including raw audio.
+
 The campaign retention column defaults to 30 days, constrained to 1 through
-365. Utterance ingest, retention settings and the daily redaction job remain
-outstanding in #6618. Their settled contract uses text only, server-created
-timestamps for retention, and the existing audience projection: table talk for
-members, DM whispers for the speaker and DM, and PC-scoped asides for the listed
-characters and DM. Redaction will keep timing stubs and remove transcript
-embeddings; derived summaries, journal entries and facts will remain. This
-control slice does not enforce ingest consent or redact existing utterances.
+365. Retention settings and the daily redaction job remain outstanding in
+#6618. Their settled contract uses server-created timestamps, preserves timing
+stubs and removes transcript embeddings. Derived summaries, journal entries
+and facts will remain. This head does not redact existing utterances.
 
 **Why.** Consent and off-the-record state are server-owned controls shared by
-capture providers. Keeping capture disabled while ingest and retention remain
+capture providers. Keeping capture disabled while retention remains
 unfinished avoids admitting transcript text before those privacy guarantees
 exist.
 

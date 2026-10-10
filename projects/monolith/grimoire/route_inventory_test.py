@@ -369,8 +369,8 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    # Main: 60 (58 plus handout upload and image); 5 transcript routes -> 65.
-    assert len(enumerated) == 65
+    # Main: 60 (58 plus handout upload and image); 5 transcript routes -> 66.
+    assert len(enumerated) == 66
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -603,11 +603,27 @@ def test_scanner_clean_body_and_audience_matrix(harness):
                     harness.assert_no_leak(response, viewer)
 
 
+def test_transcript_canaries_reach_only_their_real_feed_audiences(harness):
+    h = harness
+    h.prepare("play")
+    path = PREFIX + "/sessions/{session_id}/events"
+    with TestClient(h.app()) as client:
+        for viewer in ROLES:
+            response = call(client, h, "GET", path, CASES["GET", path], viewer)
+            if viewer in ("outsider", "other_campaign"):
+                assert response.status_code == 404
+                continue
+            assert response.status_code == 200, response.text
+            assert h.rows["utterance_table"].body["text"] in response.text
+            whisper = h.rows["utterance_whisper"].body["text"]
+            assert (whisper in response.text) is (viewer in ("dm", "player_a"))
+
+
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
     # Main's 240 (eight inventory items add four canaries each) plus six for the
     # two seeded handouts (id, title and markdown on the live and retracted twin).
-    assert len(tokens) == 253
+    assert len(tokens) == 257
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
