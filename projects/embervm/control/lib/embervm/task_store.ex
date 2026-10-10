@@ -513,11 +513,17 @@ defmodule Embervm.TaskStore do
     end
   end
 
+  # A worker outcome can land after the task left the in-flight states: a
+  # node-down reassign already re-queued it, a retry already ran on another
+  # brick, or redrive moved it. The FSM has no edge for that pair, so ask it
+  # with transition/2 and reply :illegal_transition like :retry and :redrive
+  # do. transition!/2 here would raise inside the GenServer and take the store
+  # (and every rest_for_one sibling after it) down on one stale outcome.
   def handle_call({:fail, task_id, reason, usage}, _from, state) do
-    with {:ok, task} <- fetch_task(state, task_id) do
-      cfg = cfg_for(task.workload)
-      event = Embervm.Retry.classify(reason, task.attempt, cfg)
-      next = TaskState.transition!(task.state, event)
+    with {:ok, task} <- fetch_task(state, task_id),
+         cfg = cfg_for(task.workload),
+         event = Embervm.Retry.classify(reason, task.attempt, cfg),
+         {:ok, next} <- TaskState.transition(task.state, event) do
       payload = maybe_put_usage(%{state: next, reason: reason}, usage)
 
       case append_and_update(state, task, :failed, next, payload) do
