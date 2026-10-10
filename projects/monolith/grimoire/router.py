@@ -3406,13 +3406,21 @@ def ingest_utterance(
         if speaker is None:
             if body.source != "table" or not body.speaker_label:
                 raise HTTPException(422, detail="table speaker requires a label")
-        elif session.exec(
-            select(CampaignMember.id).where(
-                CampaignMember.id == speaker,
-                CampaignMember.campaign_id == campaign_id,
-            )
-        ).one_or_none() is None:
-            raise HTTPException(403, detail="speaker must belong to this campaign")
+        else:
+            # The wire contract is str, while PostgreSQL stores UUIDs. Reject a
+            # malformed attribution before it can become a database cast error.
+            try:
+                UUID(speaker)
+            except ValueError as exc:
+                raise HTTPException(403, detail="speaker must belong to this campaign") from exc
+            speaker = session.exec(
+                select(CampaignMember.id).where(
+                    CampaignMember.id == speaker,
+                    CampaignMember.campaign_id == campaign_id,
+                )
+            ).one_or_none()
+            if speaker is None:
+                raise HTTPException(403, detail="speaker must belong to this campaign")
     if body.audience.kind == "pcs":
         _require_dm(session, campaign_id, email)
 

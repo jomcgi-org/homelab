@@ -155,7 +155,7 @@ def test_browser_attribution_defaults_to_caller_and_accepts_own_id(http_harness,
 def test_dm_adapter_attribution_is_campaign_scoped_and_response_is_projected(http_harness, source):
     h, client = http_harness
     assert state(h, client, "on").status_code == 200
-    for speaker in (h.rows["member_other_campaign"].id, str(uuid4())):
+    for speaker in (h.rows["member_other_campaign"].id, str(uuid4()), "not-a-uuid"):
         before = h.snapshot()
         assert ingest(h, client, "dm", source=source, speaker_member_id=speaker).status_code == 403
         assert h.snapshot() == before

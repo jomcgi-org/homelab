@@ -139,6 +139,26 @@ def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
         assert session.exec(select(SessionEvent).where(SessionEvent.session_id == lane.session_id)).all() == []
 
 
+@pytest.mark.parametrize("source", ("table", "discord"))
+def test_adapter_ingest_rejects_malformed_speaker_before_postgres_uuid_cast(lane, source):
+    with Session(lane.engine) as session:
+        game_session = session.get(GameSession, lane.session_id)
+        game_session.transcript_state = "on"
+        session.commit()
+        now = datetime.now(timezone.utc)
+        with pytest.raises(HTTPException) as error:
+            ingest_utterance(
+                lane.campaign_id, lane.session_id,
+                UtteranceRequest(
+                    speaker_member_id="not-a-uuid", source=source,
+                    text="Invalid speaker", confidence=1, started_at=now, ended_at=now,
+                ),
+                email=lane.email, session=session,
+            )
+        assert error.value.status_code == 403
+        assert session.exec(select(SessionEvent).where(SessionEvent.session_id == lane.session_id)).all() == []
+
+
 def test_uuid_audience_uses_persisted_canonical_ids(lane):
     with Session(lane.engine) as session:
         row = _append(
