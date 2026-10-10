@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import Page from "./+page.svelte";
+import { load } from "./+page.server.js";
+import { GET } from "./state/+server.js";
 
 const campaignId = "11111111-1111-4111-8111-111111111111";
 const sessionId = "33333333-3333-4333-8333-333333333333";
@@ -90,7 +92,201 @@ afterEach(async () => {
   instance = undefined;
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
+});
+
+describe("private session events from server projections", () => {
+  const publicEvent = event("public-control", 1, "Everyone hears the bell.");
+  const action = event("private-action-a", 2, "I conceal the silver compass.", {
+    kind: "action",
+    audience: "dm",
+    author_member_id: "member-a",
+  });
+  const reply = event(
+    "private-reply-a",
+    3,
+    "Only you feel the compass pulse.",
+    {
+      audience: "pcs",
+      audience_pc_ids: [pcA],
+      body: {
+        text: "Only you feel the compass pulse.",
+        reply_to: action.id,
+        resolved: true,
+      },
+    },
+  );
+  const characters = [
+    { id: pcA, campaign_id: campaignId, character_name: "Aria" },
+    { id: pcB, campaign_id: campaignId, character_name: "Bram" },
+  ];
+  const viewers = [
+    { id: "user-a", role: "player", pcs: [characters[0]] },
+    { id: "user-dm", role: "dm", pcs: characters },
+    { id: "user-b", role: "player", pcs: [characters[1]] },
+  ];
+
+  // These are mocked backend responses, already scoped by the server to
+  // each viewer. No browser/test filtering implements authorization here:
+  // vitest exercises the actual BFF load/GET and page state/render paths.
+  // Backend isolation tests remain the evidence for authorization itself.
+  function projectedServer(viewer, initial, polled) {
+    let events = initial;
+    const token = `test-token-${viewer.id}`;
+    const fetch = vi.fn(async (url, options) => {
+      expect(options.headers["x-grimoire-token"]).toBe(token);
+      const path = new URL(url).pathname;
+      if (path.endsWith("/lobby"))
+        return json({
+          user: { id: viewer.id },
+          campaigns: [
+            {
+              id: campaignId,
+              name: "Adventure",
+              role: viewer.role,
+              player_character_id:
+                viewer.role === "dm" ? null : viewer.pcs[0].id,
+            },
+          ],
+        });
+      if (path.endsWith("/characters")) return json(viewer.pcs);
+      if (path.endsWith("/sheets")) return json({ versions: [] });
+      if (path.endsWith("/sessions"))
+        return json([{ id: sessionId, status: "active" }]);
+      if (path.endsWith("/events")) return json(events);
+      if (path.endsWith("/journal")) return json({});
+      if (path.endsWith("/members"))
+        return json([
+          { id: "member-a", role: "player", player_character_id: pcA },
+          { id: "member-b", role: "player", player_character_id: pcB },
+        ]);
+      throw new Error(`Unexpected backend request ${url}`);
+    });
+    return {
+      context: {
+        fetch,
+        cookies: { get: () => token },
+        params: { id: campaignId },
+        setHeaders: vi.fn(),
+      },
+      poll: () => {
+        events = polled;
+      },
+    };
+  }
+
+  async function renderViewers(projections, assertions) {
+    vi.useFakeTimers();
+    vi.stubEnv("API_BASE", "http://backend.test");
+    vi.stubEnv("GRIMOIRE_PLAY_ENABLED", "true");
+    const servers = viewers.map((viewer) => {
+      const [initial, polled] = projections[viewer.id];
+      return projectedServer(viewer, initial, polled);
+    });
+    // Interleave the real BFF loads to catch shared cross-request state.
+    const initialStates = await Promise.all(
+      servers.map((server) => load(server.context)),
+    );
+    for (const [index, viewer] of viewers.entries()) {
+      const server = servers[index];
+      expect(initialStates[index].user.id).toBe(viewer.id);
+      expect(initialStates[index].characters.map((pc) => pc.id)).toEqual(
+        viewer.pcs.map((pc) => pc.id),
+      );
+      const fetch = vi.fn(async (url) => {
+        if (String(url).includes("?notes=")) return json([]);
+        expect(url).toBe(endpoint);
+        return GET({
+          ...server.context,
+          url: new URL(url, "http://frontend.test"),
+        });
+      });
+      vi.stubGlobal("fetch", fetch);
+      await render(initialStates[index]);
+      assertions(viewer, false);
+      server.poll();
+      await vi.advanceTimersByTimeAsync(2000);
+      await settle();
+      expect(statePolls(fetch)).toHaveLength(1);
+      assertions(viewer, true);
+      await unmount(instance);
+      instance = undefined;
+      document.body.innerHTML = "";
+    }
+  }
+
+  function assertAction(viewer, resolved = false) {
+    expect(
+      document.getElementById(`event-${publicEvent.id}`).textContent,
+    ).toContain(publicEvent.body.text);
+    if (viewer.id === "user-b") {
+      expect(feedIds()).toEqual([`event-${publicEvent.id}`]);
+      expect(document.body.innerHTML).not.toContain(action.id);
+      expect(document.body.textContent).not.toContain(action.body.text);
+      expect(document.querySelector(".private-action")).toBeNull();
+    } else {
+      const rendered = document.getElementById(`event-${action.id}`);
+      expect(rendered.textContent).toContain(action.body.text);
+      expect(rendered.querySelector(".private-action small").textContent).toBe(
+        resolved ? "Resolved" : "Waiting for DM",
+      );
+      if (viewer.role === "dm")
+        expect(rendered.textContent.includes("Reply privately to Aria")).toBe(
+          !resolved,
+        );
+    }
+  }
+
+  it("renders A's pending private action for A and DM, never B, on load and poll", async () => {
+    await renderViewers(
+      {
+        "user-a": [
+          [publicEvent, action],
+          [publicEvent, action],
+        ],
+        "user-dm": [
+          [publicEvent, action],
+          [publicEvent, action],
+        ],
+        "user-b": [[publicEvent], [publicEvent]],
+      },
+      (viewer) => assertAction(viewer),
+    );
+  });
+
+  it("renders the resolved DM reply only for A and DM and clears their pending indicator", async () => {
+    await renderViewers(
+      {
+        "user-a": [
+          [publicEvent, action],
+          [publicEvent, action, reply],
+        ],
+        "user-dm": [
+          [publicEvent, action],
+          [publicEvent, action, reply],
+        ],
+        "user-b": [[publicEvent], [publicEvent]],
+      },
+      (viewer, polled) => {
+        assertAction(viewer, polled);
+        if (viewer.id === "user-b" || !polled) {
+          expect(document.body.innerHTML).not.toContain(reply.id);
+          expect(document.body.textContent).not.toContain(reply.body.text);
+        } else {
+          expect(feedIds()).toEqual([
+            `event-${publicEvent.id}`,
+            `event-${action.id}`,
+            `event-${reply.id}`,
+          ]);
+          expect(
+            document.getElementById(`event-${reply.id}`).textContent,
+          ).toContain(reply.body.text);
+          expect(document.body.textContent).not.toContain("Waiting for DM");
+        }
+      },
+    );
+  });
 });
 
 describe("session feed polling", () => {
