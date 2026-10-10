@@ -3,6 +3,8 @@
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import GrantEditor from "$lib/grimoire/GrantEditor.svelte";
+  import RevealPanel from "$lib/grimoire/RevealPanel.svelte";
+  import { scopeLabel } from "$lib/grimoire/knowledge-fields.js";
   let { data } = $props();
   let query = $state("");
   let type = $state("");
@@ -47,6 +49,11 @@
   >
   <h1>Knowledge at your table</h1>
   <p>{data.campaign.name}</p>
+  <RevealPanel
+    endpoint={`/grimoire/campaigns/${data.campaign.id}/session/state`}
+    characters={data.characters}
+    changed={invalidateAll}
+  />
   <div class="filters">
     <label>Find knowledge<input bind:value={query} /></label><label
       >Entity type<select bind:value={type}
@@ -89,10 +96,16 @@
                   disabled={!ready}
                   aria-label={`Edit ${entity.name} for ${pc.character_name}`}
                   onclick={() => (selection = { entity, pc })}
-                  >{grantFor(entity, pc)?.grant_scope?.replaceAll("_", " ") ||
-                    (entity.is_global
-                      ? "Full by default"
-                      : "Not granted")}</button
+                  >{#if grantFor(entity, pc)}<span
+                      class="badge"
+                      data-scope={grantFor(entity, pc).grant_scope}
+                      >{scopeLabel(grantFor(entity, pc).grant_scope)}</span
+                    >{:else if entity.is_global}<span
+                      class="badge"
+                      data-scope="full">Full by default</span
+                    >{:else}<span class="badge" data-scope="none"
+                      >Not granted</span
+                    >{/if}</button
                 ></td
               >{/each}</tr
           >{/each}</tbody
@@ -146,6 +159,25 @@
     text-align: left;
     color: var(--grim-ink-soft);
     padding: 12px 0;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 0.875rem;
+    color: var(--grim-ink);
+    background: var(--grim-accent-soft);
+    border: 2px solid var(--grim-accent);
+  }
+  .badge[data-scope="partial"] {
+    border-style: dashed;
+  }
+  .badge[data-scope="name_only"] {
+    border-style: dotted;
+  }
+  .badge[data-scope="none"] {
+    background: transparent;
+    border-color: var(--grim-line);
+    color: var(--grim-ink-soft);
   }
   small {
     display: block;

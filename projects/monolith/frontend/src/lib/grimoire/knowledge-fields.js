@@ -55,3 +55,13 @@ export function scopeOf(knowledge) {
   if (projection?.recognition_only) return "name_only";
   return projection?.revealed_details ? "partial" : "full";
 }
+
+const SCOPE_LABELS = {
+  full: "Full",
+  partial: "Partial",
+  name_only: "Name only",
+};
+
+export function scopeLabel(scope) {
+  return SCOPE_LABELS[scope] || String(scope).replaceAll("_", " ");
+}
