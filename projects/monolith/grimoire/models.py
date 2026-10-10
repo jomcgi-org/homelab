@@ -20,9 +20,9 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
-    Float,
     Index,
     Integer,
+    REAL,
     String,
     UniqueConstraint,
     func,
@@ -816,10 +816,10 @@ class CampaignVoice(SQLModel, table=True):
         sa_column=Column(_JSONB, nullable=False, server_default=text("'{}'")),
     )
     rate: float = Field(
-        default=1, sa_column=Column(Float, nullable=False, server_default=text("1"))
+        default=1, sa_column=Column(REAL, nullable=False, server_default=text("1"))
     )
     pitch: float = Field(
-        default=1, sa_column=Column(Float, nullable=False, server_default=text("1"))
+        default=1, sa_column=Column(REAL, nullable=False, server_default=text("1"))
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
