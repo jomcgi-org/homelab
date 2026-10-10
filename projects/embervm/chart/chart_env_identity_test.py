@@ -1988,7 +1988,12 @@ def test_gke_rbac_is_namespace_scoped():
         },
     ]
     expected = _role_pair(
-        "ClusterRole", name, None, [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE], name, release
+        "ClusterRole",
+        name,
+        None,
+        [_NODE_INVENTORY_RULE, _TOKEN_REVIEW_RULE],
+        name,
+        release,
     )
     expected.update(
         _role_pair("Role", f"{name}-runtime", release, runtime_rules, name, release)

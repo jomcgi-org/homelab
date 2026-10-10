@@ -11,14 +11,25 @@ from typing import Any
 import yaml
 
 _CHART_DIR = Path(__file__).resolve().parent
-_PROD_VALUES = Path(os.environ.get("PROD_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml"))
-_GKE_VALUES = Path(os.environ.get("GKE_VALUES", _CHART_DIR.parent / "deploy" / "values-gke.yaml"))
+_PROD_VALUES = Path(
+    os.environ.get("PROD_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
+)
+_GKE_VALUES = Path(
+    os.environ.get("GKE_VALUES", _CHART_DIR.parent / "deploy" / "values-gke.yaml")
+)
 
 _SA_MOUNT = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
 def _render(release: str, values: list[Path]) -> list[dict[str, Any]]:
-    argv = [os.environ.get("HELM_BIN", "helm"), "template", release, str(_CHART_DIR), "--namespace", release]
+    argv = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        release,
+        str(_CHART_DIR),
+        "--namespace",
+        release,
+    ]
     for path in values:
         argv += ["--values", str(path)]
     result = subprocess.run(argv, capture_output=True, text=True)
@@ -50,12 +61,28 @@ def test_brick_pod_projects_the_sa_token_into_noded_only() -> None:
         assert projected["sources"][0]["serviceAccountToken"]["path"] == "token"
 
         for container in pod["containers"] + pod.get("initContainers", []):
-            mounts = [mount for mount in container.get("volumeMounts", []) if mount["mountPath"] == _SA_MOUNT]
+            mounts = [
+                mount
+                for mount in container.get("volumeMounts", [])
+                if mount["mountPath"] == _SA_MOUNT
+            ]
             if container["name"] == "noded":
-                assert mounts and mounts[0]["name"] == "noded-sa-token" and mounts[0]["readOnly"] is True
+                assert (
+                    mounts
+                    and mounts[0]["name"] == "noded-sa-token"
+                    and mounts[0]["readOnly"] is True
+                )
             else:
-                assert not mounts, f"{container['name']} mounts the ServiceAccount token"
-            assert not any(mount["name"] == "noded-sa-token" for mount in container.get("volumeMounts", [])) or container["name"] == "noded"
+                assert not mounts, (
+                    f"{container['name']} mounts the ServiceAccount token"
+                )
+            assert (
+                not any(
+                    mount["name"] == "noded-sa-token"
+                    for mount in container.get("volumeMounts", [])
+                )
+                or container["name"] == "noded"
+            )
 
 
 def test_production_control_plane_rbac_is_namespace_scoped() -> None:
@@ -64,19 +91,36 @@ def test_production_control_plane_rbac_is_namespace_scoped() -> None:
     for document in documents:
         by_kind.setdefault(document["kind"], []).append(document)
 
-    cluster_roles = [role for role in by_kind["ClusterRole"] if role["metadata"]["name"] == "embervm-embervm"]
+    cluster_roles = [
+        role
+        for role in by_kind["ClusterRole"]
+        if role["metadata"]["name"] == "embervm-embervm"
+    ]
     assert len(cluster_roles) == 1
     cluster_rules = cluster_roles[0]["rules"]
-    cluster_resources = {resource for rule in cluster_rules for resource in rule["resources"]}
+    cluster_resources = {
+        resource for rule in cluster_rules for resource in rule["resources"]
+    }
     # Only what cannot be namespaced stays on the ClusterRole.
     assert cluster_resources == {"nodes", "tokenreviews"}
     for rule in cluster_rules:
         assert "secrets" not in rule["resources"]
         assert "deployments/scale" not in rule["resources"]
 
-    runtime_roles = [role for role in by_kind["Role"] if role["metadata"]["name"] == "embervm-embervm-runtime"]
+    runtime_roles = [
+        role
+        for role in by_kind["Role"]
+        if role["metadata"]["name"] == "embervm-embervm-runtime"
+    ]
     assert len(runtime_roles) == 1
-    runtime_resources = {resource for rule in runtime_roles[0]["rules"] for resource in rule["resources"]}
-    assert {"workloads", "workloads/status", "deployments", "deployments/scale"} <= runtime_resources
+    runtime_resources = {
+        resource for rule in runtime_roles[0]["rules"] for resource in rule["resources"]
+    }
+    assert {
+        "workloads",
+        "workloads/status",
+        "deployments",
+        "deployments/scale",
+    } <= runtime_resources
     # No production workload declares a control-plane-read secretRef.
     assert "secrets" not in runtime_resources
