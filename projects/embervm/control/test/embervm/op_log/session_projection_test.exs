@@ -318,6 +318,73 @@ defmodule Embervm.OpLog.SessionProjectionTest do
     :ok = GenServer.stop(server)
   end
 
+  test "a parked or destroying session still pins the ops-journal marker", %{path: path} do
+    server = start_server(path, journal_horizon_ms: 0)
+
+    # A parked workspace is dormant but restorable warmth: its row is live, so its
+    # ops must not be compacted. parking and destroying are the other durable
+    # non-terminal strings the projection writes; none of the three pinned before.
+    {:ok, live_seq} = SQLite.append(server, created_op("s-parked", "p1", 100))
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :session_parking,
+        tenant: "t1",
+        principal: "p1",
+        workload: "sandbox-session",
+        session_id: "s-parked",
+        ts: 101,
+        payload: %{volume_node_id: "node-4"}
+      })
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :session_parked,
+        tenant: "t1",
+        principal: "p1",
+        workload: "sandbox-session",
+        session_id: "s-parked",
+        ts: 102,
+        payload: %{volume_node_id: "node-4"}
+      })
+
+    {:ok, _} = SQLite.append(server, %Op{kind: :denied, tenant: "t1", ts: 103, payload: %{}})
+
+    {:ok, res} = SQLite.compact(server, 10_000)
+    assert res.compacted_through == live_seq - 1
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :session_destroying,
+        tenant: "t1",
+        principal: "p1",
+        workload: "sandbox-session",
+        session_id: "s-parked",
+        ts: 104,
+        payload: %{}
+      })
+
+    {:ok, res} = SQLite.compact(server, 10_000)
+    assert res.compacted_through == live_seq - 1
+
+    {:ok, _} =
+      SQLite.append(server, %Op{
+        kind: :session_destroyed,
+        tenant: "t1",
+        principal: "p1",
+        workload: "sandbox-session",
+        session_id: "s-parked",
+        ts: 105,
+        payload: %{reason: "destroyed"}
+      })
+
+    {:ok, res2} = SQLite.compact(server, 10_000)
+    {:ok, max_seq} = SQLite.compacted_through(server)
+    assert res2.compacted_through == max_seq
+
+    :ok = GenServer.stop(server)
+  end
+
   test "kill/restart rebuilds live and terminal session state from the projection", %{path: path} do
     server = start_server(path)
 

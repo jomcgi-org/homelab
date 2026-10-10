@@ -35,11 +35,30 @@ defmodule Embervm.OpLog.Postgres do
 
   alias Embervm.OpLog.Op
 
+  # Retention and compaction key off the PROJECTION's state strings, which are
+  # not the FSM atoms one for one (the group projection writes "starting" for the
+  # FSM's creating and "degraded" for a flagged running instance), so each list
+  # names the strings the project/3 clauses in this module actually write. A live
+  # (non-terminal) row pins its ops against prefix compaction and is never pruned
+  # by the retention sweep; a terminal row prunes past retention and releases its
+  # ops. Every durable non-terminal string must appear below: parking, parked and
+  # destroying (sessions) and destroying (serving, stateful, group) were missing,
+  # so a dormant parked workspace or an in-flight teardown older than the journal
+  # horizon had its ops compacted while the row was still live.
   @terminal_states ["succeeded", "failed_permanent", "dead_lettered"]
   @live_states ["queued", "assigned", "running", "failed_retryable"]
 
   @session_terminal_states ["expired", "evicted", "destroyed", "failed"]
-  @session_live_states ["creating", "running", "banking", "banked", "relighting"]
+  @session_live_states [
+    "creating",
+    "running",
+    "banking",
+    "banked",
+    "relighting",
+    "parking",
+    "parked",
+    "destroying"
+  ]
 
   @serving_terminal_states ["evicted", "destroyed", "failed"]
   @serving_live_states [
@@ -48,7 +67,8 @@ defmodule Embervm.OpLog.Postgres do
     "draining",
     "banking",
     "banked",
-    "relighting"
+    "relighting",
+    "destroying"
   ]
 
   @stateful_terminal_states ["evicted", "destroyed", "failed"]
@@ -58,7 +78,8 @@ defmodule Embervm.OpLog.Postgres do
     "banking",
     "banked",
     "relighting",
-    "cold_booting"
+    "cold_booting",
+    "destroying"
   ]
 
   @group_terminal_states ["evicted", "destroyed", "failed"]
@@ -69,12 +90,10 @@ defmodule Embervm.OpLog.Postgres do
     "banking",
     "banked",
     "relighting",
-    "fresh_booting"
+    "fresh_booting",
+    "destroying"
   ]
 
-  # Same retention/horizon/batch defaults as Embervm.OpLog.SQLite; see that
-  # module's moduledoc for the rationale (distinct terminal-task retention vs.
-  # ops-journal horizon, and the 5ms-append-budget batch ceiling).
   @default_retention_ms 7 * 24 * 60 * 60 * 1000
   @default_journal_horizon_ms 30 * 24 * 60 * 60 * 1000
   @default_compact_batch_size 500
