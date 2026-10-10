@@ -2214,6 +2214,12 @@ cfIngress:
   # shared cloudflare-ingress Gateway. True here, false in dev's overlay.
   shipsRedirect:
     enabled: true
+    # The one cloudflare-ingress Gateway every HTTPRoute here attaches to.
+    # Named here because the public route block that used to carry it is gone
+    # (jomcgi.dev is served by monolith-public).
+    gateway:
+      name: cloudflare-ingress
+      namespace: envoy-gateway-system
   private:
     enabled: true
     # Which gate gets attached to this route. `cloudflare` is production's
