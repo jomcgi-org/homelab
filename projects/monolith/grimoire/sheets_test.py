@@ -186,6 +186,7 @@ def test_approved_history_is_immutable_and_later_edits_create_new_draft(
     assert first["derived"]["ability_modifiers"]["strength"] == 3
     assert first["derived"]["saving_throw_bonuses"]["strength"] == 6
     assert first["derived"]["saving_throw_bonuses"]["wisdom"] == 1
+    assert first["derived"]["attack_bonuses"] == {"melee": 6, "ranged": 5}
     assert first["derived"]["unarmored_armor_class"] == 12
     assert first["derived"]["max_hit_points"] == 44
 

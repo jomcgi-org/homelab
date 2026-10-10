@@ -156,6 +156,10 @@ def derive_sheet(
         "ability_modifiers": modifiers,
         "proficiency_bonus": proficiency_bonus,
         "saving_throw_bonuses": saving_throws,
+        "attack_bonuses": {
+            "melee": modifiers["strength"] + proficiency_bonus,
+            "ranged": modifiers["dexterity"] + proficiency_bonus,
+        },
         "unarmored_armor_class": 10 + modifiers["dexterity"],
         "max_hit_points": first_level_hp + (sheet.level - 1) * later_level_hp,
         "hit_die": f"d{hit_die}",
