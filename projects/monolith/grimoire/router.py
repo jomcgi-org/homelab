@@ -18,6 +18,7 @@ import base64
 import binascii
 import json
 import logging
+from collections.abc import Collection
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -54,8 +55,10 @@ from grimoire.handouts import (
     IMAGE_CONTENT_TYPES,
     MAX_UPLOAD_BYTES,
     handout_bucket,
+    handout_entity_ids,
     new_upload_key,
     open_licensed_image_chunk,
+    project_handout_body,
     sniff_image,
     valid_upload_key,
     validate_handout_body,
@@ -669,21 +672,30 @@ def create_note(
         ).first()
         if event is None or event.retracted_at is not None:
             raise HTTPException(404, detail="event not found")
-        projection = _event_view(event, member).body
+        visible = _visible_handout_entities(session, campaign_id, viewer, [event])
+        projection = _event_view(event, member, visible).body
         if not projection or projection.get("retracted"):
             raise HTTPException(404, detail="event not found")
-        body.markdown = _event_note_markdown(projection)
-        items = reveal_items(projection)
-        body.title = (
-            projection.get("name")
-            or ", ".join(item["name"] for item in items)
-            or body.title
-            or "Session note"
-        )
-        body.links = NoteLinks(
-            entity_ids=[item["entity_id"] for item in reveal_items(projection)],
-            event_ids=[event.id],
-        )
+        body.markdown = _event_note_markdown(projection, event.kind)
+        if event.kind == "handout":
+            # Link the entity only when this viewer can already see it: a pin
+            # never fails or leaks because of the handout's entity reference.
+            linked = [visible[c] for c in handout_entity_ids([event]) if c in visible]
+            title = projection.get("title")
+            body.title = (title if isinstance(title, str) else "") or "Handout"
+            body.links = NoteLinks(entity_ids=linked, event_ids=[event.id])
+        else:
+            items = reveal_items(projection)
+            body.title = (
+                projection.get("name")
+                or ", ".join(item["name"] for item in items)
+                or body.title
+                or "Session note"
+            )
+            body.links = NoteLinks(
+                entity_ids=[item["entity_id"] for item in items],
+                event_ids=[event.id],
+            )
         body.created_in_session = event.session_id
         body.pinned = True
     if body.created_in_session is not None:
@@ -3053,8 +3065,33 @@ def _session_in_campaign(
     return row
 
 
-def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
-    """Project retractions and avoid exposing other members' administrative ids."""
+def _visible_handout_entities(
+    session: Session, campaign_id: str, viewer: Viewer, rows
+) -> dict[str, str]:
+    """Entities referenced by ``rows``' handouts that ``viewer`` can already see,
+    as ``{canonical id: persisted id}``. Fails closed: no viewer or no grant
+    means not visible."""
+    candidates = handout_entity_ids(rows)
+    if not candidates:
+        return {}
+    # SQLite fixtures keep the persisted spelling, which may be uppercase.
+    ids = sorted(candidates | {value.upper() for value in candidates})
+    return {
+        str(UUID(entity["id"])): entity["id"]
+        for entity in _note_entities(session, campaign_id, viewer, ids)
+    }
+
+
+def _event_view(
+    row: SessionEvent,
+    member: CampaignMember,
+    handout_entities: Collection[str] = frozenset(),
+) -> SessionEventView:
+    """Project retractions and avoid exposing other members' administrative ids.
+
+    A handout's ``entity_id`` reaches a non-DM only when it is in
+    ``handout_entities`` (see ``_visible_handout_entities``); the default drops it.
+    """
     dm = member.role == "dm"
     body = row.body if dm or row.retracted_at is None else None
     if not dm and body and ("reveals" in body or row.kind == "reveal"):
@@ -3076,6 +3113,8 @@ def _event_view(row: SessionEvent, member: CampaignMember) -> SessionEventView:
             **body,
             "speaker_key": speaker_ref(row.campaign_id, body["speaker_key"]),
         }
+    if not dm and body and row.kind == "handout":
+        body = project_handout_body(body, handout_entities)
     return SessionEventView(
         id=row.id,
         campaign_id=row.campaign_id,
@@ -3152,7 +3191,7 @@ def _require_journal_session_scope(
 
 def _journal_context(session, campaign_id, viewer, member, events, view):
     rows = visible_rows(viewer, member, events, view)
-    candidates = narration_entity_ids(rows)
+    candidates = narration_entity_ids(rows) | handout_entity_ids(rows)
     entities = {}
     if candidates:
         for entity, grant in session.exec(
@@ -3544,7 +3583,12 @@ def list_session_events(
         .order_by(SessionEvent.seq)
         .limit(limit)
     ).all()
-    return [_event_view(row, member) for row in rows]
+    visible = (
+        {}
+        if viewer == "dm"
+        else _visible_handout_entities(session, campaign_id, viewer, rows)
+    )
+    return [_event_view(row, member, visible) for row in rows]
 
 
 @router.post(
