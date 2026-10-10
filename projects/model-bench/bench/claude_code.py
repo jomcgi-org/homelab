@@ -203,6 +203,10 @@ def run_anchor_agent_cell(
     cost is the CLI's representative rental price (Joe pays $0 via Max, but the number is
     the frontier's cost ceiling). tool_use_ok is True because Claude Code drives its own
     reliable tool loop, so the candidate flaky-tool-caller signal does not apply.
+
+    The CLI's `result` field is the final assistant message; it reaches the verifier as
+    args["response"], the same way the OpenRouter loop passes its last message, so a
+    verifier grades what the anchor said rather than a file it wrote.
     """
     workdir = Path(tempfile.mkdtemp())
     turns = 0
@@ -228,7 +232,7 @@ def run_anchor_agent_cell(
         else:
             authored_norms = safe_norms(fixture_dir, workdir, norms_opts)
             authored_diff = safe_diff(fixture_dir, workdir)
-            r = verify(workdir, verifier_args)
+            r = verify(workdir, {**verifier_args, "response": res.text})
             passed, feedback, score = r.passed, r.feedback, r.score
             if passed:
                 norms, diff = authored_norms, authored_diff

@@ -350,3 +350,39 @@ def test_anchor_cell_cleans_workdir_when_fixture_copy_fails(monkeypatch, tmp_pat
     assert cell.outcome == "fail"
     assert "harness error" in cell.attempts[0].feedback
     assert created and all(not p.exists() for p in created)
+
+
+def test_anchor_cell_grades_the_cli_final_message(monkeypatch, tmp_path):
+    fx = _make_fixture(tmp_path)
+
+    def invoke(prompt, **kw):
+        # The anchor writes a PR.md with the right words; what it SAID is the response.
+        (kw["cwd"] / "PR.md").write_text("chart-version-bot writes it back")
+        return claude_code.ClaudeResult(
+            text="Left the version alone.", num_turns=3, is_error=False, wall_ms=7
+        )
+
+    monkeypatch.setattr(claude_code, "_invoke", invoke)
+    seen = {}
+    verifier_args = {"weights": {"x": 1}}
+
+    def verify(workdir, args):
+        seen["args"] = args
+        assert (workdir / "PR.md").exists()
+        return _VerifyResult(True, "")
+
+    cell = claude_code.run_anchor_agent_cell(
+        task_id="t",
+        task_version="v1",
+        model_id="anthropic/claude-opus-4.8",
+        content_hash="h",
+        fixture_dir=fx,
+        task_prompt="p",
+        verify=verify,
+        verifier_args=verifier_args,
+    )
+    assert cell.outcome == "pass@1"
+    assert seen["args"]["response"] == "Left the version alone."
+    assert seen["args"]["weights"] == {"x": 1}
+    # The task's own args are passed through, not mutated in place.
+    assert verifier_args == {"weights": {"x": 1}}

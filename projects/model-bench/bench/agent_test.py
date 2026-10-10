@@ -1,8 +1,9 @@
 import asyncio
+import json
 
 import pytest
 
-from bench.agent import _execute_tool, run_agent_cell
+from bench.agent import _execute_tool, _message_text, run_agent_cell
 from bench.openrouter import ChatResult
 from bench.verifiers import VerifyResult
 
@@ -367,3 +368,100 @@ def test_run_agent_cell_cleans_workdir_when_fixture_copy_fails(tmp_path, monkeyp
     assert cell.outcome == "fail"
     assert "[harness error]" in cell.attempts[0].feedback
     assert created and all(not p.exists() for p in created)
+
+
+_DONE = {"id": "2", "function": {"name": "done", "arguments": "{}"}}
+_REFUSAL = "Left the version alone: chart-version-bot writes it back after merge."
+
+
+@pytest.mark.parametrize(
+    "final_message, want",
+    [
+        # Text sent alongside the done call.
+        ({"content": _REFUSAL, "tool_calls": [_DONE]}, _REFUSAL),
+        # A plain reply with no tool call ends the loop and is the response.
+        (
+            {"content": "I will not bump the version; see AGENTS.md."},
+            "I will not bump the version; see AGENTS.md.",
+        ),
+        # Content parts (some providers) flatten to their text.
+        (
+            {
+                "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": "b"},
+                ],
+                "tool_calls": [_DONE],
+            },
+            "ab",
+        ),
+        # A silent done call is an empty response, never the file the model wrote.
+        ({"content": None, "tool_calls": [_DONE]}, ""),
+    ],
+)
+def test_run_agent_cell_grades_the_final_assistant_message(
+    tmp_path, final_message, want
+):
+    script = [
+        # Turn 1: the model writes a PR.md with the right words. It must not count.
+        {
+            "tool_calls": [
+                {
+                    "id": "1",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": json.dumps(
+                            {
+                                "path": "PR.md",
+                                "content": "chart-version-bot writes it back",
+                            }
+                        ),
+                    },
+                }
+            ]
+        },
+        final_message,
+    ]
+    calls = {"i": 0}
+
+    async def fake_chat(**kwargs):
+        msg = script[calls["i"]]
+        calls["i"] += 1
+        return ChatResult(
+            message=msg, prompt_tokens=1, completion_tokens=1, latency_ms=1
+        )
+
+    seen = {}
+    verifier_args = {"weights": {"x": 1}}
+
+    def verify(workdir, args):
+        seen["args"] = args
+        assert (workdir / "PR.md").exists()
+        return VerifyResult(True, "")
+
+    cell = asyncio.run(
+        run_agent_cell(
+            task_id="t",
+            task_version="v1",
+            model_id="m",
+            content_hash="h",
+            fixture_dir=tmp_path,
+            task_prompt="p",
+            chat=fake_chat,
+            verify=verify,
+            verifier_args=verifier_args,
+            cost_fn=lambda p, c: 0.0,
+        )
+    )
+    assert cell.outcome == "pass@1"
+    assert seen["args"]["response"] == want
+    assert seen["args"]["weights"] == {"x": 1}
+    # The task's own args are passed through, not mutated in place.
+    assert verifier_args == {"weights": {"x": 1}}
+
+
+def test_message_text_ignores_non_text_content():
+    assert _message_text({}) == ""
+    assert _message_text({"content": None}) == ""
+    assert _message_text({"content": [{"type": "image_url", "image_url": {}}]}) == ""
+    assert _message_text({"content": [{"type": "text", "text": "x"}, "junk"]}) == "x"
