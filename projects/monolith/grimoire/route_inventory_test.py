@@ -77,7 +77,9 @@ CASES = {
         denied_writers=(),
     ),
     ("DELETE", PREFIX + "/transcript/consent"): Case(
-        caller="player_a", success=204, denied_writers=(),
+        caller="player_a",
+        success=204,
+        denied_writers=(),
     ),
     ("GET", PREFIX + "/transcript/consent"): Case(),
     ("GET", PREFIX + "/sessions/{session_id}/transcript"): Case(

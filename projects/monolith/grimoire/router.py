@@ -3109,7 +3109,11 @@ def _consent_view(row: TranscriptConsent, *, dm: bool = False) -> dict:
     def iso(value: datetime | None) -> str | None:
         if value is None:
             return None
-        return value.replace(tzinfo=timezone.utc).isoformat() if value.tzinfo is None else value.isoformat()
+        return (
+            value.replace(tzinfo=timezone.utc).isoformat()
+            if value.tzinfo is None
+            else value.isoformat()
+        )
 
     return {
         **({"member_id": row.member_id} if dm else {}),
@@ -3131,7 +3135,9 @@ def _lock_consent_member(session: Session, member: CampaignMember) -> None:
         raise HTTPException(404, detail="campaign not found")
 
 
-def _active_consent(session: Session, member: CampaignMember) -> TranscriptConsent | None:
+def _active_consent(
+    session: Session, member: CampaignMember
+) -> TranscriptConsent | None:
     return session.exec(
         select(TranscriptConsent)
         .where(
@@ -3209,10 +3215,14 @@ def get_transcript_consent(
     session: Session = Depends(get_session),
 ) -> dict:
     member = _get_member_or_404(session, campaign_id, email)
-    query = select(TranscriptConsent).where(TranscriptConsent.campaign_id == campaign_id)
+    query = select(TranscriptConsent).where(
+        TranscriptConsent.campaign_id == campaign_id
+    )
     if member.role != "dm":
         query = query.where(TranscriptConsent.member_id == member.id)
-    rows = session.exec(query.order_by(TranscriptConsent.granted_at, TranscriptConsent.id)).all()
+    rows = session.exec(
+        query.order_by(TranscriptConsent.granted_at, TranscriptConsent.id)
+    ).all()
     return {"consents": [_consent_view(row, dm=member.role == "dm") for row in rows]}
 
 
@@ -3227,7 +3237,9 @@ def get_transcript_state(
     session: Session = Depends(get_session),
 ) -> dict:
     _get_member_or_404(session, campaign_id, email)
-    return {"state": _session_in_campaign(session, campaign_id, session_id).transcript_state}
+    return {
+        "state": _session_in_campaign(session, campaign_id, session_id).transcript_state
+    }
 
 
 @router.put(
