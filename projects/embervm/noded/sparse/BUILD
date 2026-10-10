@@ -22,7 +22,10 @@ go_library(
 
 go_test(
     name = "sparse_test",
-    srcs = ["sparse_linux_test.go"],
+    srcs = [
+        "sparse_linux_test.go",
+        "sparse_zero_linux_test.go",
+    ],
     embed = [":sparse"],
     deps = select({
         "@rules_go//go/platform:android": [

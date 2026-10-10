@@ -13,6 +13,7 @@ go_library(
         "group_member.go",
         "group_registry.go",
         "guest_memory.go",
+        "ids.go",
         "preemption.go",
         "pressure.go",
         "register.go",
@@ -52,6 +53,7 @@ go_library(
 go_test(
     name = "server_test",
     srcs = [
+        "activator_redirect_test.go",
         "activator_test.go",
         "budget_test.go",
         "capability_test.go",
@@ -64,6 +66,7 @@ go_test(
         "group_member_test.go",
         "group_test.go",
         "guest_memory_test.go",
+        "ids_test.go",
         "pressure_test.go",
         "register_test.go",
         "registry_workload_test.go",
