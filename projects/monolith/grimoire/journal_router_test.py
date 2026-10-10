@@ -60,11 +60,13 @@ def test_both_routes_pass_shared_leak_canaries(harness, session_route, view):
                 else response.json()["sessions"][0]["journal"]
             )
             assert len(data["received"]) == (
-                1
+                2
                 if view == "party" or viewer == "no_character"
-                else 4
+                else 6
                 if viewer == "dm"
-                else 2
+                else 4
+                if viewer == "player_a"
+                else 3
             )
             assert data["learned"] == []
             assert (
@@ -131,7 +133,7 @@ def test_reveal_snapshot_visibility_and_silent_revocation_on_routes(
     reveal = SessionEvent(
         campaign_id=h.rows["campaign"].id,
         session_id=h.rows["campaign_session"].id,
-        seq=9,
+        seq=11,
         kind="reveal",
         audience="pcs",
         audience_pc_ids=[pc],
@@ -156,7 +158,7 @@ def test_reveal_snapshot_visibility_and_silent_revocation_on_routes(
     narration = SessionEvent(
         campaign_id=h.rows["campaign"].id,
         session_id=h.rows["campaign_session"].id,
-        seq=10,
+        seq=12,
         kind="narration",
         audience="table",
         audience_pc_ids=[],
