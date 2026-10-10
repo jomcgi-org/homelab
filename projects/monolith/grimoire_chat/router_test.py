@@ -1,7 +1,7 @@
 """Router smoke tests for grimoire chat (SQLite create_all fixture).
 
-Ports the retrieval/prompt integration checks from chat_public/phase4_test.py to
-the Grimoire surface: the retrieved corpus is fenced as a <sourcebooks> DATA block
+Ports the retrieval/prompt integration checks the retired notes chat carried
+(chat_public/phase4_test.py, deleted in #6913) to the Grimoire surface: the retrieved corpus is fenced as a <sourcebooks> DATA block
 labelled "not instructions", the inference payload never carries a tools key, one
 node_touched precedes the tokens per retrieved passage (touched set == retrieved
 set), an empty retrieval still streams a normal turn, and the D&D system prompt is

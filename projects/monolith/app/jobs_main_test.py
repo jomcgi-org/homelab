@@ -958,13 +958,11 @@ def test_ember_triggers_budget_inside_step_deadline(monkeypatch):
 
     monkeypatch.setattr(jobs_main, "_post_internal", fake_post)
     for command in (
-        "ember-synthetic-trigger",
         "ember-codex-synthetic-trigger",
         "ember-spark-synthetic-trigger",
     ):
         result = runner.invoke(jobs_main.app, [command])
         assert result.exit_code == 0, result.output
 
-    assert seen["ember-synthetic-trigger"] == (180, 240)
     assert seen["ember-codex-synthetic-trigger"] == (180, 240)
     assert seen["ember-spark-synthetic-trigger"] == (420, 450)

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 #
 # Caveat worth knowing: this bounds fan-out WITHIN one job process. It is not a
 # cross-pod semaphore, so two async jobs running at once can still take two
-# slots. chat_public solves the cross-pod version with Postgres advisory locks
+# slots. grimoire_chat solves the cross-pod version with Postgres advisory locks
 # if this ever needs to be enforced globally rather than by convention.
 ASYNC_SLOT_BUDGET = 1
 

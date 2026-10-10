@@ -71,21 +71,12 @@ describe("reroute", () => {
     ).toBeUndefined();
   });
 
-  it("maps the chat BFF paths to /public/chat/* on any host", () => {
+  it("no longer special-cases the retired notes chat BFF paths", () => {
+    // The /chat/* browser paths have no route any more (the notes chat is
+    // retired); they fall through to the ordinary apex/public prefixing.
     expect(reroute({ url: url("jomcgi.dev", "/chat/session") })).toBe(
       "/public/chat/session",
     );
-    expect(reroute({ url: url("jomcgi.dev", "/chat/message") })).toBe(
-      "/public/chat/message",
-    );
-    expect(reroute({ url: url("jomcgi.dev", "/chat/share") })).toBe(
-      "/public/chat/share",
-    );
-    expect(reroute({ url: url("jomcgi.dev", "/chat/fork") })).toBe(
-      "/public/chat/fork",
-    );
-    // Host-independent: the same browser path resolves under /public on the
-    // public subdomain too.
     expect(reroute({ url: url("public.jomcgi.dev", "/chat/share") })).toBe(
       "/public/chat/share",
     );

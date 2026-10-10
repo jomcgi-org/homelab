@@ -1,19 +1,17 @@
 <script>
-  // The in-page knowledge-graph view for public chat (ADR 005, Phase 4b).
+  // The in-page knowledge-graph view for /app/notes (ADR 005, Phase 4b).
   //
-  // This is the lazy half of the /app/notes chat-vs-graph toggle: the page
-  // dynamically imports this component (and, through it, the heavy
-  // KnowledgeGraph canvas + d3 layout) only when the visitor switches to the
-  // graph view, so the initial chat load stays light. The graph DATA is fetched
-  // here too (on mount) from the same-origin /app/notes/graph proxy, so nothing
-  // is loaded until the view is opened.
+  // Built as the graph half of the notes chat's chat-vs-graph toggle; the chat
+  // is retired (#6913) and this is now the whole /app/notes page. The page
+  // mounts it in the browser only (and, through it, the heavy KnowledgeGraph
+  // canvas + d3 layout), and the graph DATA is fetched here (on mount) from the
+  // same-origin /app/notes/graph proxy, so the SSR shell stays light.
   //
   // Reuses the exact graph render + note panel from the standalone graph
-  // (KnowledgeGraph / NotePanel / GraphSearch / GraphLegend). The nodes a chat
-  // turn grounded on (`touched`) are passed to the canvas as `touchedIds`, which
-  // paints an accent halo + label on each; clicking any node expands its body
-  // via the browser-direct /app/notes/body/[id] proxy (NotePanel's `apiBase`),
-  // never the chat stream.
+  // (KnowledgeGraph / NotePanel / GraphSearch / GraphLegend). An optional
+  // `touched` set is passed to the canvas as `touchedIds`, which paints an
+  // accent halo + label on each; clicking any node expands its body via the
+  // browser-direct /app/notes/body/[id] proxy (NotePanel's `apiBase`).
   import { onMount } from "svelte";
   import KnowledgeGraph from "$lib/components/notes/KnowledgeGraph.svelte";
   import NotePanel from "$lib/components/notes/NotePanel.svelte";
@@ -22,11 +20,11 @@
   import {
     initialGraphSelection,
     selectionForFocus,
-  } from "$lib/public/chat/chat-state.js";
+  } from "$lib/public/notes/graph-selection.js";
   import {
     getCachedGraph,
     setCachedGraph,
-  } from "$lib/public/chat/graph-cache.js";
+  } from "$lib/public/notes/graph-cache.js";
 
   /** @type {{
    *   touched?: { id: any, title: string }[],
@@ -59,19 +57,20 @@
   let zoom = $state(1);
   let hoverTitle = $state("");
 
-  // A chip click on the chat side passes a focusId; mirror it into the panel
-  // selection so the graph zooms to that node and expands its body. A null
-  // focusId (the GRAPH tab / DEEP DIVE) leaves the panel empty.
+  // A deep link (?focus=<note id>, used by the factory context viewer) passes
+  // a focusId; mirror it into the panel selection so the graph zooms to that
+  // node and expands its body. A null focusId leaves the panel empty.
   $effect(() => {
     const sel = selectionForFocus(focusId);
     if (sel != null) selectedId = sel;
   });
 
   async function loadGraph() {
-    // Toggling Chat <-> Graph remounts this component. Reuse the parsed graph
-    // from a prior open in this page session instead of re-fetching and
-    // re-parsing ~3.4 MB every time (the HTTP layer's s-maxage/ETag still
-    // governs freshness across full page loads, when the module cache resets).
+    // Client-side navigation back to /app/notes remounts this component.
+    // Reuse the parsed graph from a prior open in this page session instead of
+    // re-fetching and re-parsing ~3.4 MB every time (the HTTP layer's
+    // s-maxage/ETag still governs freshness across full page loads, when the
+    // module cache resets).
     const cached = getCachedGraph();
     if (cached) {
       nodes = cached.nodes;

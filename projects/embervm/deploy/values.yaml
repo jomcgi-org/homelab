@@ -452,11 +452,9 @@ scratchPostgres:
 # scratch-postgres guest image pin + Secret; its own volume keeps demo rows out
 # of real tenants' data.
 #
-# COUPLING (#4198): the monolith side gates DEMO_POSTGRES_DSN on its own
-# scratchPostgres.demoListenPort (projects/monolith/deploy/values.yaml) and
-# nothing cross-checks the two. If you disable this demo, clear demoListenPort
-# there in the same change, or the monolith renders a DSN to a nonexistent
-# workload and the synthetic probe latches red (503 /api/health).
+# The monolith side of this demo (its DEMO_POSTGRES_DSN and synthetic probe)
+# was retired with the public Ember exhibits in 2026-10 (#6913), so nothing
+# consumes this workload any more.
 demoPostgres:
   enabled: false
 

@@ -4,31 +4,34 @@
    *
    * The deliberate Phase 2 scope: render the challenge with the public site key,
    * and on solve exchange the token for a server-side session via the SSR proxy.
-   * It carries NO chat UI: the neo-brutalist chat box / graph overlay is Phase 4,
-   * which restyles and places this gate. Keep this a thin shell around
-   * `createChatSession` (the testable admission seam).
+   * It carries NO chat UI: the caller's page restyles and places this gate.
+   * Keep this a thin shell around the caller's `admit` (the testable admission
+   * seam).
    *
    * The site key is public by design; the Turnstile *secret* never leaves the
    * FastAPI backend. The challenge script + iframe load from
    * https://challenges.cloudflare.com. The app sets no Content-Security-Policy
    * (a CSP hardening layer is deferred to a later pass).
    *
-   * `admit` is the token-exchange seam: it takes the solved Turnstile token and
-   * resolves to `{ ok }`. It defaults to `createChatSession` (open a fresh
-   * session); the shared-snapshot "fork this chat" flow passes a variant that
-   * forks the snapshot instead. Keeping it a prop lets one gate serve both
-   * admission paths without duplicating the widget lifecycle.
+   * `admit` is the token-exchange seam and is REQUIRED: it takes the solved
+   * Turnstile token and resolves to `{ ok }`. Each surface passes its own
+   * helper (the Grimoire's `createChatSession` opens a fresh session; the
+   * shared-snapshot "fork this chat" flow passes a variant that forks the
+   * snapshot instead). There is no default: the old one was the retired notes
+   * chat's helper, whose /chat/session route no longer exists, so a gate that
+   * forgot to pass `admit` silently never admitted anyone. Keeping it a prop
+   * lets one gate serve every admission path without duplicating the widget
+   * lifecycle.
    *
    * @type {{
    *   siteKey: string,
+   *   admit: (token: string) => Promise<{ ok: boolean }>,
    *   onAdmitted?: () => void,
-   *   admit?: (token: string) => Promise<{ ok: boolean }>,
    * }}
    */
   import { onMount } from "svelte";
-  import { createChatSession } from "$lib/public/chat/admission.js";
 
-  let { siteKey, onAdmitted, admit = createChatSession } = $props();
+  let { siteKey, admit, onAdmitted } = $props();
 
   const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
 

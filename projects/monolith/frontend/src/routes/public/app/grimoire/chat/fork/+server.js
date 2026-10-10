@@ -1,7 +1,7 @@
 import { json } from "@sveltejs/kit";
 
-// Server-only BFF for "fork this chat" (mirrors
-// routes/public/chat/fork/+server.js, the notes-chat proxy). A shared
+// Server-only BFF for "fork this chat" (began as a copy of the retired
+// notes-chat proxy). A shared
 // snapshot is read-only; forking it mints a NEW server-side session seeded
 // with the snapshot's frozen transcript so the visitor can continue it. The
 // browser POSTs here same-origin (/app/grimoire/chat/fork) with a solved

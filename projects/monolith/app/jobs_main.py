@@ -280,28 +280,15 @@ def _shutdown_otel(provider) -> None:
         logger.warning("Failed to shut down OpenTelemetry", exc_info=True)
 
 
-@app.command("ember-synthetic-trigger")
-def ember_synthetic_trigger() -> None:
-    """Trigger the synthetic probes in the monolith API pod.
-
-    Deliberately lightweight: it POSTs the running API pod's internal endpoint,
-    which fires the demo probes IN THAT process (where the EmberVM credentials,
-    DEMO_POSTGRES_DSN, and a DB session already live). The
-    probes run in the API pod, not this ephemeral job pod, so the job needs
-    only HTTP access, not tokens or DB.
-    """
-    # The three demo probes carry a 90s internal retry budget, so a 240s total
-    # client budget keeps every attempt inside the 300s step deadline.
-    _post_internal(
-        "/internal/ember/synthetic-probe",
-        "ember-synthetic-trigger",
-        max_elapsed_s=240,
-    )
-
-
 @app.command("ember-codex-synthetic-trigger")
 def ember_codex_synthetic_trigger() -> None:
-    """Trigger the Codex session synthetic in the monolith API pod."""
+    """Trigger the Codex session synthetic in the monolith API pod.
+
+    Deliberately lightweight: it POSTs the running API pod's internal endpoint,
+    which runs the probe IN THAT process (where the EmberVM credentials and a
+    DB session already live). The probe runs in the API pod, not this
+    ephemeral job pod, so the job needs only HTTP access, not tokens or DB.
+    """
     # A read timeout means the probe is still running in the API pod, so a
     # retry only re-runs it. 240s gives up first, inside the 300s deadline.
     _post_internal(

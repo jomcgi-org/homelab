@@ -1,7 +1,7 @@
 """Rolling-summary compaction for grimoire chat (ADR 005 layer 4).
 
-A verbatim copy of ``chat_public/summarizer.py`` with imports repointed at
-``grimoire_chat``. When the live context (system prompt + existing summary +
+A verbatim copy of the retired notes chat's ``chat_public/summarizer.py``
+(deleted in #6913) with imports repointed at ``grimoire_chat``. When the live context (system prompt + existing summary +
 recent turns) approaches a configured fraction of the model window, the older
 turns are folded into a rolling summary stored on the session row, so each
 request's context stays bounded as the conversation grows. The summary call goes
@@ -9,7 +9,7 @@ through the same vLLM endpoint as a normal turn and runs under the same global
 in-flight slot the turn already holds (sessions.compact_if_needed is called from
 inside the held slot), so it spends GPU within the same reserved-headroom budget.
 
-Like chat_public.summarizer this is the chat/summarizer.py PATTERN adapted, not
+Like its predecessor this is the chat/summarizer.py PATTERN adapted, not
 imported: the public binary must never import the private ``chat`` domain
 (enforced by ``app/main_public_imports_test.py`` and pruned from the public
 image).

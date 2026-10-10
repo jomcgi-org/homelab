@@ -1,4 +1,4 @@
-"""Public read-side access to the ember synthetic probe latch."""
+"""Private read-side access to the ember synthetic probe latch."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def _read_probe_sync(demo: str) -> EmberSyntheticProbe | None:
 
 
 async def read_probe(demo: str) -> EmberSyntheticProbe | None:
-    """Read one probe row by demo name using the default public_reader engine.
+    """Read one probe row by demo name using the default engine.
 
     The synchronous helper opens its own Session(get_engine()) in a worker
     thread. Missing table during the pre-migration rollout is deliberately

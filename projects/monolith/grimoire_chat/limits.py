@@ -1,6 +1,7 @@
 """The single home for every grimoire-chat budget check (ADR 005, layer 2+4).
 
-A verbatim copy of ``chat_public/limits.py`` (the budgets are corpus-agnostic).
+A verbatim copy of the retired notes chat's ``chat_public/limits.py`` (the
+budgets are corpus-agnostic); the ``CHAT_PUBLIC_*`` env vars keep their name.
 There is no ``if len(x) > ...`` anywhere else in ``grimoire_chat``: every
 per-session and per-message ceiling is enforced here, so the limits are auditable
 in one place and the tests assert against one set of knobs.

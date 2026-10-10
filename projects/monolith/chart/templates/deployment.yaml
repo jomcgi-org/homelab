@@ -144,10 +144,6 @@ spec:
             - name: EMBER_DURABILITY_HEALTH_URL
               value: {{ .Values.emberDurability.url | quote }}
             {{- end }}
-            {{- if .Values.emberSynthetic.baseUrl }}
-            - name: EMBER_SYNTHETIC_BASE_URL
-              value: {{ .Values.emberSynthetic.baseUrl | quote }}
-            {{- end }}
             {{- if or .Values.tokenBroker.url .Values.tokenBroker.spiffe.enabled }}
             # OAuth token broker (ADR 048): the agent surface proxies its
             # device-code login flow so a login can run from a chat.
@@ -393,21 +389,18 @@ spec:
             - name: SWARM_QUOTA_FLOORS
               value: {{ .Values.swarm.quotaFloors | default dict | toJson | quote }}
             {{- end }}
-            {{- if and .Values.scratchPostgres.onepassword.itemPath (or .Values.scratchPostgres.enabled .Values.scratchPostgres.demoListenPort) }}
-            # Shared postgres password for the EmberVM stateful DSNs below. Comes
-            # from the monolith-namespace Secret the OnePasswordItem syncs (the
-            # SAME 1Password item embervm uses). Rendered whenever EITHER DSN is:
-            # demo-postgres reuses the scratch-postgres Secret on the embervm
-            # side, so the demo DSN needs this even with the scratch workload
-            # disabled. SCRATCH_PG_PASSWORD is a separate env var so the secret
-            # never appears inline; $(SCRATCH_PG_PASSWORD) is expanded by the
-            # kubelet at container start.
+            {{- if and .Values.scratchPostgres.onepassword.itemPath .Values.scratchPostgres.enabled }}
+            # Shared postgres password for the EmberVM scratch-postgres DSN below.
+            # Comes from the monolith-namespace Secret the OnePasswordItem syncs
+            # (the SAME 1Password item embervm uses). SCRATCH_PG_PASSWORD is a
+            # separate env var so the secret never appears inline;
+            # $(SCRATCH_PG_PASSWORD) is expanded by the kubelet at container
+            # start.
             - name: SCRATCH_PG_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "monolith.fullname" . }}-scratch-postgres
                   key: POSTGRES_PASSWORD
-            {{- if .Values.scratchPostgres.enabled }}
             # EmberVM R4 scratch-postgres DSN (D-R4.PR-11.1). Agent run_code python
             # sessions psycopg-connect to the scale-to-zero scratch Postgres via
             # this DSN; the host is the embervm serving Service, which routes the
@@ -416,16 +409,6 @@ spec:
             # untouched and the feature is off.
             - name: SCRATCH_POSTGRES_DSN
               value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.listenPort }}/scratch"
-            {{- end }}
-            {{- if .Values.scratchPostgres.demoListenPort }}
-            # Demo-postgres DSN (the public Ember Postgres exhibit): the SAME
-            # serving Service and password (the demo workload reuses the scratch-
-            # postgres Secret on the embervm side), a different stateful listen
-            # port. The public API connects here so a page visit wakes the demo
-            # VM, never the real scratch-postgres tenant.
-            - name: DEMO_POSTGRES_DSN
-              value: "postgresql://postgres:$(SCRATCH_PG_PASSWORD)@{{ .Values.scratchPostgres.servingService }}.{{ .Values.scratchPostgres.embervmNamespace }}.svc:{{ .Values.scratchPostgres.demoListenPort }}/scratch"
-            {{- end }}
             {{- end }}
             {{- if .Values.chat.enabled }}
             - name: DISCORD_BOT_TOKEN

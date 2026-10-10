@@ -1,6 +1,6 @@
 // Client-side Grimoire-chat turn streaming (ADR 005 pattern, grimoire_chat
-// backend). Mirrors lib/public/chat/stream.js (the notes chat seam) exactly;
-// only the proxy path differs.
+// backend). Began as a copy of the retired notes chat's stream seam; only the
+// proxy path differed.
 //
 // The browser never talks to the internal chat API: it POSTs the single user
 // message to the same-origin SSR proxy (/app/grimoire/chat/message), which
@@ -19,11 +19,11 @@
 
 // Same-origin SSR proxy path. This route lives directly under
 // routes/public/app/grimoire/chat/message, so no reroute-hook mapping is
-// needed (unlike the top-level /chat/* paths the notes surface uses).
+// needed (unlike the top-level /chat/* paths the retired notes surface used).
 export const MESSAGE_PROXY_PATH = "/app/grimoire/chat/message";
 
-// Mirrors the backend CHAT_PUBLIC_CHAR_CAP default (grimoire_chat/limits.py,
-// a verbatim copy of chat_public/limits.py). The server is authoritative;
+// Mirrors the backend CHAT_PUBLIC_CHAR_CAP default (grimoire_chat/limits.py).
+// The server is authoritative;
 // this is only a courtesy ceiling on the textarea so a user does not compose
 // a message the backend will reject with a 400 char_cap.
 export const CHARACTER_LIMIT = 8000;

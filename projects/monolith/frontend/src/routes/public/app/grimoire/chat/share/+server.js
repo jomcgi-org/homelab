@@ -1,7 +1,7 @@
 import { json } from "@sveltejs/kit";
 
-// Server-only BFF for "share this chat" (mirrors
-// routes/public/chat/share/+server.js, the notes-chat proxy). The browser
+// Server-only BFF for "share this chat" (began as a copy of the retired
+// notes-chat proxy). The browser
 // POSTs here same-origin (/app/grimoire/chat/share); the session id comes from
 // the httpOnly "gcs" cookie set by /app/grimoire/chat/session, never from the
 // body. The backend mints the snapshot SERVER-SIDE from the stored transcript

@@ -99,8 +99,6 @@ tokenBroker:
     serverId: "spiffe://embervm.jomcgi.dev/ns/embervm-dev/sa/embervm-dev-embervm-tokenbroker"
 sandbox:
   workloadPrefix: "sandbox-dev-"
-emberSynthetic:
-  baseUrl: ""
 emberDurability:
   url: ""
 
@@ -138,7 +136,6 @@ grimoire:
   enabled: false
 scratchPostgres:
   enabled: false
-  demoListenPort: ""
 sharedS3:
   enabled: false
 stars:

@@ -1,6 +1,6 @@
 // Server-loads any existing Grimoire chat session so a reload, or a freshly
 // forked session, lands the visitor back in their conversation instead of the
-// admission gate. Mirrors routes/public/app/notes/+page.server.js's session
+// admission gate. Mirrors the retired notes chat page loader's session
 // rehydration; the ticker/stats seeding that file also does is intentionally
 // dropped here (the Grimoire chat has no live ticker).
 //

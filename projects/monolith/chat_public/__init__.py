@@ -1,31 +1,19 @@
-"""Public-tier chat domain (ADR 005).
+"""Residue of the public-tier notes chat domain (ADR 005).
 
-The anonymous, internet-facing chat surface, composed into the public binary
-only. It is distinct from the private ``chat`` domain (Discord + /explore) and
-shares no code with it: the public binary must never import anything under
-``chat/`` (enforced by ``app/main_public_imports_test.py`` and pruned by
-``_PUBLIC_PRUNE_EXCLUDE`` in ``projects/monolith/BUILD``). The router mounts
-under an internal prefix and is never added to the public HTTPRoute; the SSR app
-is the only public origin.
+The anonymous, internet-facing notes chat was retired in 2026-10 (#6913): its
+router, admission, inference, retrieval and cache code are gone and the domain
+is composed into no binary. What remains is what outlived the chat surface:
 
-This is a public-tier-only domain, so it exposes ``register_public`` (and an
-alias ``register``); there is no private surface.
+- ``retention`` and the ``chat_public`` schema it purges, driven by the
+  ``chat-public-retention`` and ``chat-public-takedown`` CronWorkflows through
+  ``app/jobs_main.py`` (the tables and their ``public_writer`` grants stay);
+- ``models`` (the schema's SQLModel shape) and ``db`` (the public_writer
+  engine) the retention core and its tests read;
+- ``sse`` and its ``api`` re-export, the one surface other domains may import
+  (``moving.chat`` renders its SSE frames with it).
+
+It is still distinct from the private ``chat`` domain (Discord + /explore) and
+shares no code with it. Grimoire chat (``grimoire_chat``) is the live public
+chat surface; it was copied from this domain and shares its ``CHAT_PUBLIC_*``
+budgets and the ``public_writer`` role.
 """
-
-from __future__ import annotations
-
-from fastapi import FastAPI
-
-__all__ = ["register", "register_public"]
-
-
-def register_public(app: FastAPI) -> None:
-    """Register the internal public-chat routes on the public app."""
-    from chat_public.router import router
-
-    app.include_router(router)
-
-
-# Public-tier-only: there is no separate private surface, so register aliases
-# register_public for any composition path that calls register().
-register = register_public

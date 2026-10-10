@@ -1,41 +1,33 @@
-"""Public-safe ember (embervm) domain: the scale-to-zero Postgres demo.
+"""Ember agent-lane synthetic probes and their health components.
 
-The demo-postgres core (control-plane status polling, the timed query
-roundtrip, session minting, and the all-time sleep-savings counter) lives here
-so it can be composed on both the public and private tiers through the public
-Ember pages, sharing one implementation. This package must stay importable in
-the public closure: it never imports ``sandbox.client`` or anything else on
-``app/main_public_imports_test.py``'s forbidden list. ``EMBERVM_URL`` is read
-directly from the environment here for that reason.
+The public Ember exhibits (the scale-to-zero Postgres demo and the Bazel
+Skyframe query demo) were retired in 2026-10 (#6913): their pages redirect to
+the recorded Firecracker replay and their routers are gone. What remains is
+the private-tier production probe path that outlived them:
 
-This is a public-tier domain, so it exposes ``register_public`` (mounted by
-``app/modules_public.py``); the private registry mounts the same router via
-``register`` so the paths are identical on both tiers.
+- ``synthetic_probe`` runs a real Codex (hourly) or Spark (manual) agent
+  session and latches the outcome into ``ember_synthetic_probe``;
+- ``synthetic_router`` is the ``/internal/ember/*`` trigger surface the
+  ``ember-codex-session-synthetic`` and ``ember-spark-session-synthetic``
+  CronWorkflows POST to (see ``app/jobs_main.py``);
+- ``health`` folds the Codex latch into ``/api/health`` and ``durability``
+  reads the EmberVM control plane's durability surface.
+
+The package keeps its historical name so the ``ember_public`` domain label,
+image fan-out and health component names stay stable. It is composed into the
+private binary only (``app/modules_private.py``); nothing here ships in the
+public image.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-__all__ = ["register", "register_public"]
-
-
-def register_public(app: FastAPI) -> None:
-    """Register the demo-postgres and bazel-query routers on the public app."""
-    from ember_public.bazel_router import router as bazel_router
-    from ember_public.router import router
-
-    app.include_router(router)
-    app.include_router(bazel_router)
+__all__ = ["register"]
 
 
 def register(app: FastAPI) -> None:
-    """Register the demo-postgres and bazel-query routers on the private app
-    (same routers as the public app)."""
-    from ember_public.bazel_router import router as bazel_router
-    from ember_public.router import router
+    """Register the internal synthetic-probe trigger routes on the private app."""
     from ember_public.synthetic_router import internal_router
 
-    app.include_router(router)
-    app.include_router(bazel_router)
     app.include_router(internal_router)
