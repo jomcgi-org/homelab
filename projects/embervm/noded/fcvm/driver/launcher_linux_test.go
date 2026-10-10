@@ -96,6 +96,7 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 		Logger:        slog.New(slog.NewJSONHandler(&output, nil)),
 		Bin:           os.Args[0],
 		JailerBin:     wrapper,
+		Env:           os.Environ(),
 		JailerEnabled: true,
 		ReadyTimeout:  2 * time.Second,
 		allocateJailUID: func() (int, func(), error) {
@@ -196,6 +197,7 @@ func TestExecLauncherReadinessFailureFlushesFinalOutput(t *testing.T) {
 	var output lockedBuffer
 	launcher := &ExecLauncher{
 		Bin:          wrapper,
+		Env:          os.Environ(),
 		Logger:       slog.New(slog.NewJSONHandler(&output, nil)),
 		ReadyTimeout: 500 * time.Millisecond,
 	}
@@ -234,6 +236,7 @@ func TestExecLauncherCgroupFailureCleansJailAndFallsBack(t *testing.T) {
 	launcher := &ExecLauncher{
 		Bin:           wrapper,
 		JailerBin:     wrapper,
+		Env:           os.Environ(),
 		JailerEnabled: true,
 		ReadyTimeout:  2 * time.Second,
 		allocateJailUID: func() (int, func(), error) {

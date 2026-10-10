@@ -3,6 +3,7 @@
 package sparse
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,16 @@ const (
 	holeBlockSize = int64(4096)
 	holeChunkSize = int64(1 << 20)
 )
+
+// zeroBlock is one all-zero filesystem block, compared against with bytes.Equal
+// (memequal, word-at-a-time) rather than a byte loop. DigHoles runs over the
+// whole memfile on every bank's critical path, so the scan speed is the bank
+// latency floor for a mostly-zero guest.
+var zeroBlock = make([]byte, holeBlockSize)
+
+func isZeroBlock(block []byte) bool {
+	return bytes.Equal(block, zeroBlock)
+}
 
 // DigHoles deallocates all-zero regions of the file at path, leaving its
 // logical size and its contents-as-read unchanged. It returns the number of
@@ -58,14 +69,7 @@ func DigHoles(path string) (freed int64, err error) {
 		}
 		for blockOffset := int64(0); blockOffset+holeBlockSize <= int64(n); blockOffset += holeBlockSize {
 			block := buf[blockOffset : blockOffset+holeBlockSize]
-			zero := true
-			for _, b := range block {
-				if b != 0 {
-					zero = false
-					break
-				}
-			}
-			if zero {
+			if isZeroBlock(block) {
 				if runLength == 0 {
 					runStart = offset + blockOffset
 				}

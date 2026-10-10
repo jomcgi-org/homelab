@@ -228,9 +228,15 @@ func (d *Driver) prepareSerialOutput(threadID string) (string, error) {
 // ({size, refill_time, one_time_burst}), not the drive/net {bandwidth: ...}
 // wrapper: the fleet answered our first wrapped body with SerdeJson "missing
 // field `size`" pointing at the end of the bandwidth object.
+//
+// Firecracker refills a bucket of `size` tokens every `refill_time` ms, so the
+// SUSTAINED rate is size / refill_time and one_time_burst is spent exactly once.
+// Folding the burst into size made the sustained rate 1 MiB + 64 KiB per second,
+// about seventeen times the documented cap, which let one flooding guest fill
+// the brick's scratch with console output and swamp the daemon's log pipeline.
 func serialRateLimiter() *fcclient.TokenBucket {
 	return &fcclient.TokenBucket{
-		Size:         serialBurstBytes + serialBandwidthBytesPerSec,
+		Size:         serialBandwidthBytesPerSec,
 		OneTimeBurst: serialBurstBytes,
 		RefillTime:   serialBandwidthRefillMs,
 	}
