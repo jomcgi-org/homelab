@@ -205,9 +205,7 @@ attrs==25.4.0 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   aiohttp
-    #   cattrs
     #   cyclopts
-    #   jsii
     #   jsonschema
     #   rasterio
     #   referencing
@@ -334,19 +332,6 @@ caio==0.9.25 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   aiofile
-cattrs==25.3.0 \
-    --hash=sha256:1ac88d9e5eda10436c4517e390a4142d88638fe682c436c93db7ce4a277b884a \
-    --hash=sha256:9896e84e0a5bf723bc7b4b68f4481785367ce07a8a02e7e9ee6eb2819bc306ff
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   jsii
-cdk8s==2.70.50 \
-    --hash=sha256:17f146bc51575eca992849a3d62f52b704631f99fd3e6e18557079a5337b03b9 \
-    --hash=sha256:cbba4ddc26b8b07f300cde1d68c75bc29ecbfbbc9bb2fbfd177abe047909e848
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
 certifi==2026.2.25 \
     --hash=sha256:027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa \
     --hash=sha256:e887ab5cee78ea814d3472169153c2d12cd43b14bd03329a39a9c6e2e80bfba7
@@ -597,13 +582,6 @@ colorama==0.4.6 ; sys_platform == 'win32' \
     #   pytest
     #   tqdm
     #   uvicorn
-constructs==10.5.1 \
-    --hash=sha256:c0e90bb2b9c2782f292017820b91714321cb78393c8965c9362b0b624bfaf23b \
-    --hash=sha256:fc5c14f6b2770c8542a43e298aa29b63dee4b18701763e8c0fdce202624c3a7c
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   cdk8s
 cryptography==50.0.0 \
     --hash=sha256:031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03 \
     --hash=sha256:06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7 \
@@ -1180,13 +1158,6 @@ importlib-metadata==8.7.1 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   opentelemetry-api
-importlib-resources==6.5.2 \
-    --hash=sha256:185f87adef5bcc288449d98fb4fba07cea78bc036455dd44c5fc4a2fe78fed2c \
-    --hash=sha256:789cfdc3ed28c78b67a06acb8126751ced69a3d5f79c095a98298cd8a760ccec
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   jsii
 iniconfig==2.3.0 \
     --hash=sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730 \
     --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
@@ -1345,14 +1316,6 @@ joserfc==1.7.3 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   authlib
-jsii==1.127.0 \
-    --hash=sha256:631a13d73265eaa22c0c0804e77fe59c8fcc3af3a94de9923af65380b6ad267a \
-    --hash=sha256:92a11f39e461f5168e2467efd53351cc32b118314b95cc6323c2d044eb299eaf
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   cdk8s
-    #   constructs
 jsonref==1.1.0 \
     --hash=sha256:32fe8e1d85af0fdefbebce950af85590b22b60f9e95443176adbde4e1ecea552 \
     --hash=sha256:590dc7773df6c21cbf948b5dac07a72a251db28b0238ceecce0a2abfa8ec30a9
@@ -2187,15 +2150,6 @@ psycopg-binary==3.3.3 ; implementation_name != 'pypy' \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   psycopg
-publication==0.0.3 \
-    --hash=sha256:0248885351febc11d8a1098d5c8e3ab2dabcf3e8c0c96db1e17ecd12b53afbe6 \
-    --hash=sha256:68416a0de76dddcdd2930d1c8ef853a743cc96c82416c4e4d3b5d901c6276dc4
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   cdk8s
-    #   constructs
-    #   jsii
 py-key-value-aio[filetree, keyring, memory]==0.4.4 \
     --hash=sha256:18e17564ecae61b987f909fc2cd41ee2012c84b4b1dcb8c055cf8b4bc1bf3f5d \
     --hash=sha256:e3012e6243ed7cc09bb05457bd4d03b1ba5c2b1ca8700096b3927db79ffbbe55
@@ -2536,7 +2490,6 @@ python-dateutil==2.9.0.post0 \
     #   botocore
     #   dbos
     #   icalendar
-    #   jsii
     #   kubernetes-asyncio
     #   pandas
 python-dotenv==1.2.2 \
@@ -3259,15 +3212,6 @@ truststore==0.10.4 ; sys_platform != 'emscripten' \
     #   -r bazel/requirements/runtime.txt
     #   httpcore2
     #   httpx2
-typeguard==2.13.3 \
-    --hash=sha256:00edaa8da3a133674796cf5ea87d9f4b4c367d77476e185e80251cc13dfbb8c4 \
-    --hash=sha256:5e3e3be01e887e7eafae5af63d1f36c849aaa94e3a0112097312aabfa16284f1
-    # via
-    #   -c bazel/requirements/runtime.txt
-    #   -r bazel/requirements/runtime.txt
-    #   cdk8s
-    #   constructs
-    #   jsii
 typer==0.24.1 \
     --hash=sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e \
     --hash=sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45
@@ -3281,10 +3225,8 @@ typing-extensions==4.15.0 \
     #   -c bazel/requirements/runtime.txt
     #   -r bazel/requirements/runtime.txt
     #   beautifulsoup4
-    #   cattrs
     #   fastapi
     #   grpcio
-    #   jsii
     #   mcp
     #   openai
     #   opentelemetry-api
