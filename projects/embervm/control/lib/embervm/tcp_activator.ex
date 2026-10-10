@@ -101,6 +101,11 @@ defmodule Embervm.TcpActivator do
   """
 
   use GenServer
+
+  # How long pump_both waits for the upstream->client pump after the client has
+  # half-closed, before closing both sockets. Bounds a half-open upstream without
+  # cutting a legitimately slow response short.
+  @peer_drain_bound_ms 10 * 60 * 1000
   require Logger
 
   # Tracer.with_span/set_attributes are OpenTelemetry.Tracer MACROS, so the module
@@ -378,14 +383,17 @@ defmodule Embervm.TcpActivator do
 
     bytes_in = pump(csock, usock, 0)
 
-    # Wait briefly for the peer to notice the shutdown and finish its own
-    # drain; it is linked so a crash here would already have propagated, this
-    # is just to avoid leaking the peer task if it is still draining.
+    # The client half-closed its write side, but the upstream may still be
+    # streaming its response (a long query result, a slow dump): wait for the
+    # peer pump to finish that drain. The peer exits when the upstream closes or
+    # errors, so this only needs a backstop against an upstream that never
+    # closes a half-open socket; the old 5 s cutoff truncated any response that
+    # outlived it. The peer is linked, so a crash there already propagated.
     bytes_out =
       receive do
         {:peer_done, ^peer, n} -> n
       after
-        5_000 -> 0
+        @peer_drain_bound_ms -> 0
       end
 
     :gen_tcp.close(csock)

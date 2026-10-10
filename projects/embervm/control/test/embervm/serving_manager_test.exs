@@ -549,6 +549,51 @@ defmodule Embervm.ServingManagerTest do
     assert Agent.get(ctx.starts, & &1) == 0
   end
 
+  test "adoption leaves a :banking instance and a bank-draining instance alone while the node still reports the VM" do
+    ctx = start_stack()
+    serving_workload(ctx, "wl-a")
+
+    for {instance_id, vm_id, ip} <- [{"srv-banking", "vm-banking", "10.99.0.11"}, {"srv-draining", "vm-draining", "10.99.0.12"}] do
+      {:ok, _} =
+        ServingStore.start(ctx.store, %{
+          instance_id: instance_id,
+          tenant: "homelab",
+          principal: "serving:wl-a",
+          workload: "wl-a",
+          node_id: "node-4",
+          vm_id: vm_id,
+          ip: ip,
+          port: 8080
+        })
+
+      {:ok, _} = ServingStore.publish(ctx.store, instance_id, ip, 8080, :started)
+    end
+
+    # The sweeper's drain-before-bank: unpublish with reason :bank, then mark
+    # :bank. The VM stays live (and healthy) on the node through both steps.
+    {:ok, _} = ServingStore.unpublish(ctx.store, "srv-draining", :bank)
+    {:ok, _} = ServingStore.unpublish(ctx.store, "srv-banking", :bank)
+    {:ok, _} = ServingStore.mark(ctx.store, "srv-banking", :bank)
+
+    serving_node(ctx, "node-4",
+      serving_vms: [
+        %{vm_id: "vm-banking", workload: "wl-a", ip: "10.99.0.11", port: 8080, healthy: true, last_probe_unix_ms: 1},
+        %{vm_id: "vm-draining", workload: "wl-a", ip: "10.99.0.12", port: 8080, healthy: true, last_probe_unix_ms: 1}
+      ]
+    )
+
+    :ok = ServingManager.reconcile(ctx.mgr)
+
+    # Neither row is forced back to :published: the endpoint stays out of the
+    # fan-out and the sweeper's bank_ready transition stays legal.
+    {:ok, banking} = ServingStore.get(ctx.store, "srv-banking")
+    assert banking.state == :banking
+    {:ok, draining} = ServingStore.get(ctx.store, "srv-draining")
+    assert draining.state == :draining
+    assert ServingStore.published_endpoints(ctx.store, "wl-a") == []
+    assert {:ok, _} = ServingStore.mark(ctx.store, "srv-banking", :bank_ready)
+  end
+
   test "node-confirmed reconcile leaves an unconfirmed destroy intent and re-drives it" do
     ctx = start_stack(node_confirmed_destroy: true, destroy_confirmed: false)
     serving_workload(ctx, "wl-a")
