@@ -39,6 +39,24 @@ class Case:
 # $row.column values resolve against real persisted fixture rows. Bodies are
 # valid requests; no denial may pass through FastAPI's validation error (422).
 CASES = {
+    ("GET", PREFIX + "/inventory"): Case(),
+    ("GET", PREFIX + "/inventory/changes"): Case(),
+    ("POST", PREFIX + "/inventory"): Case(body={"owner": "party", "name": "Rope"}),
+    ("PATCH", PREFIX + "/inventory/{item_id}"): Case(
+        params={"item_id": "$item_a.id"},
+        body={"quantity": 2, "reason": "Used one"},
+        caller="player_a",
+        denied_writers=("player_b", "no_character"),
+    ),
+    ("POST", PREFIX + "/inventory/{item_id}/move"): Case(
+        params={"item_id": "$item_a.id"},
+        body={"owner": "party"},
+        caller="player_a",
+        denied_writers=("player_b", "no_character"),
+    ),
+    ("DELETE", PREFIX + "/inventory/{item_id}"): Case(
+        params={"item_id": "$item_party.id"}, success=204
+    ),
     ("POST", PREFIX + "/grants/preview"): Case(
         state="play",
         read_only=True,
@@ -283,7 +301,7 @@ def assert_inventory(app):
         f"Missing CASES: {sorted(enumerated - set(CASES))}; "
         f"stale CASES: {sorted(set(CASES) - enumerated)}"
     )
-    assert len(enumerated) == 49
+    assert len(enumerated) == 55  # Six inventory routes extend the exact registry.
     capability_routes = set()
     for context in iter_route_contexts(app.routes):
         if not CAPABILITY_SHAPE.match(context.path):
@@ -513,7 +531,7 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 208
+    assert len(tokens) == 240  # Eight inventory items add four canaries each.
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]

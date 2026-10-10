@@ -10,6 +10,7 @@ py_library(
     srcs = [
         "__init__.py",
         "audience_matrix.py",
+        "inventory_matrix.py",
         "leak_harness.py",
         "notes_matrix.py",
         "play_embedding_matrix.py",

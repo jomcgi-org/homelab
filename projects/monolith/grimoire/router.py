@@ -42,7 +42,13 @@ from grimoire.access import (
     get_grimoire_operator_email,
 )
 from grimoire.accounts import find_registered_user
-from grimoire.audience import Audience, AudienceKind, audience_predicate, note_predicate
+from grimoire.audience import (
+    Audience,
+    AudienceKind,
+    audience_predicate,
+    inventory_predicate,
+    note_predicate,
+)
 from grimoire.dice import DiceFormulaError, DiceRng, get_dice_rng, roll
 from grimoire.invitation_provider import enrollment_enabled
 from grimoire.join_links import links_enabled
@@ -62,6 +68,8 @@ from grimoire.models import (
     EventKind,
     GameSession,
     GrantScope,
+    InventoryChange,
+    InventoryItem,
     KnowledgeChunk,
     KnowledgeGrant,
     MemberRole,
@@ -713,6 +721,444 @@ def delete_note(
     row.deleted_at = row.updated_at = datetime.now(timezone.utc)
     sync_note_embeddings(session, row)
     session.commit()
+
+
+# --- Inventory --------------------------------------------------------
+
+
+class InventoryCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    owner: str
+    name: str = Field(min_length=1, max_length=200)
+    quantity: int = Field(default=1, ge=1, le=1000000)
+    notes: str = Field(default="", max_length=20000)
+    entity_id: str | None = None
+    hidden_from_party: bool = False
+    reason: str = Field(default="", max_length=500)
+    source_event_id: str | None = None
+
+    @field_validator("entity_id", "source_event_id")
+    @classmethod
+    def link_uuid(cls, value):
+        if value is not None:
+            UUID(value)
+        return value
+
+
+class InventoryPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=20000)
+    entity_id: str | None = None
+    hidden_from_party: bool | None = None
+    quantity: int | None = Field(default=None, ge=0, le=1000000)
+    reason: str = Field(default="", max_length=500)
+
+    @field_validator("name", "notes", "entity_id", "hidden_from_party", "quantity")
+    @classmethod
+    def fields_not_null(cls, value):
+        if value is None:
+            raise ValueError("Inventory fields cannot be null")
+        return value
+
+    @field_validator("entity_id")
+    @classmethod
+    def entity_uuid(cls, value):
+        UUID(value)
+        return value
+
+
+class InventoryMoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    owner: str
+    quantity: int | None = Field(default=None, ge=1, le=1000000)
+    reason: str = Field(default="", max_length=500)
+
+    @field_validator("quantity")
+    @classmethod
+    def quantity_not_null(cls, value):
+        if value is None:
+            raise ValueError("Move quantity cannot be null")
+        return value
+
+
+def _inventory_iso(value):
+    return (
+        (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value)
+        .astimezone(timezone.utc)
+        .isoformat()
+    )
+
+
+def _inventory_owner(row):
+    return "party" if row.owner_kind == "party" else row.player_character_id
+
+
+def _inventory_destination(session, campaign_id, owner):
+    if owner == "party":
+        return "party", None
+    try:
+        UUID(owner)
+    except ValueError as exc:
+        raise HTTPException(
+            404, detail="player character not found in this campaign"
+        ) from exc
+    pc = _get_character_in_campaign_or_404(session, campaign_id, owner)
+    return "character", pc.id
+
+
+def _inventory_view(session, row, viewer):
+    entities = _note_entities(
+        session, row.campaign_id, viewer, [row.entity_id] if row.entity_id else []
+    )
+    return {
+        "id": row.id,
+        "owner": _inventory_owner(row),
+        "is_mine": viewer not in (None, "dm") and row.player_character_id == viewer,
+        "name": row.name,
+        "quantity": row.quantity,
+        "notes": row.notes,
+        "hidden_from_party": row.hidden_from_party,
+        "entity": entities[0] if entities else None,
+        "created_at": _inventory_iso(row.created_at),
+        "updated_at": _inventory_iso(row.updated_at),
+    }
+
+
+def _get_inventory_or_404(session, campaign_id, item_id, viewer, *, lock=False):
+    query = select(InventoryItem).where(
+        InventoryItem.campaign_id == campaign_id,
+        InventoryItem.id == item_id,
+        inventory_predicate(InventoryItem, viewer),
+    )
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    row = session.exec(query).one_or_none()
+    if row is None:
+        raise HTTPException(404, detail="item not found")
+    return row
+
+
+def _inventory_change(row, member, action, delta, reason, changes):
+    return InventoryChange(
+        campaign_id=row.campaign_id,
+        item_id=row.id,
+        who_member_id=member.id,
+        action=action,
+        delta=delta,
+        quantity_after=row.quantity,
+        reason=reason,
+        changes=changes,
+    )
+
+
+def _record_inventory(session, row, member, changes):
+    """Flush the event before inserting audit rows, never update an audit row."""
+    current = _current_reveal_session(session, row.campaign_id)
+    event = None
+    if current is not None:
+        if not row.hidden_from_party:
+            owner = (
+                "the party pool"
+                if row.owner_kind == "party"
+                else "a character's inventory"
+            )
+            try:
+                event = append_event(
+                    session,
+                    game_session=current,
+                    kind="system",
+                    audience=Audience("table", frozenset(), author_member_id=member.id),
+                    author_member_id=member.id,
+                    body={
+                        "text": f"Inventory changed in {owner}.",
+                        "inventory_change_ids": [change.id for change in changes],
+                        "action": changes[0].action,
+                    },
+                )
+            except SessionEndedError as exc:
+                session.rollback()
+                raise HTTPException(409, detail=str(exc)) from exc
+            except Exception:
+                session.rollback()
+                raise
+        for change in changes:
+            change.session_id = current.id
+            change.event_id = event.id if event else None
+    session.add_all(changes)
+    session.commit()
+
+
+def _inventory_change_view(session, row, viewer, member):
+    changes = dict(row.changes)
+    if viewer != "dm":
+        if "owner" in changes:
+            changes["owner"] = {
+                key: "party"
+                if value == "party"
+                else "you"
+                if value == viewer
+                else "character"
+                for key, value in changes["owner"].items()
+            }
+        # Audit edits must not bypass entity/event audience projections.
+        if "entity_id" in changes:
+            changes["entity_id"] = {
+                key: value
+                if value and _note_entities(session, row.campaign_id, viewer, [value])
+                else None
+                for key, value in changes["entity_id"].items()
+            }
+        if "source_event_id" in changes:
+            visible = session.exec(
+                select(SessionEvent.id).where(
+                    SessionEvent.id == changes["source_event_id"],
+                    SessionEvent.campaign_id == row.campaign_id,
+                    audience_predicate(SessionEvent, viewer, member),
+                )
+            ).first()
+            if visible is None:
+                changes.pop("source_event_id")
+    result = {
+        "id": row.id,
+        "item_id": row.item_id,
+        "action": row.action,
+        "delta": row.delta,
+        "quantity_after": row.quantity_after,
+        "reason": row.reason,
+        "session_id": row.session_id,
+        "event_id": row.event_id,
+        "created_at": _inventory_iso(row.created_at),
+        "is_mine": row.who_member_id is not None and row.who_member_id == member.id,
+        "changes": changes,
+    }
+    if viewer == "dm":
+        result["who_member_id"] = row.who_member_id
+    return result
+
+
+@router.get("/campaigns/{campaign_id}/inventory")
+def list_inventory(
+    campaign_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    rows = session.exec(
+        select(InventoryItem)
+        .where(
+            InventoryItem.campaign_id == campaign_id,
+            inventory_predicate(InventoryItem, viewer),
+        )
+        .order_by(
+            (InventoryItem.owner_kind == "party").desc(),
+            InventoryItem.player_character_id,
+            InventoryItem.name,
+            InventoryItem.id,
+        )
+    ).all()
+    return [_inventory_view(session, row, viewer) for row in rows]
+
+
+@router.get("/campaigns/{campaign_id}/inventory/changes")
+def list_inventory_changes(
+    campaign_id: str,
+    item_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    query = (
+        select(InventoryChange)
+        .join(InventoryItem, InventoryItem.id == InventoryChange.item_id)
+        .where(
+            InventoryChange.campaign_id == campaign_id,
+            InventoryItem.campaign_id == campaign_id,
+        )
+    )
+    if viewer != "dm":
+        query = query.where(inventory_predicate(InventoryItem, viewer))
+    if item_id is not None:
+        try:
+            UUID(item_id)
+        except ValueError as exc:
+            raise HTTPException(422, detail="invalid item id") from exc
+        # A requested invisible item is indistinguishable from a missing one.
+        if viewer != "dm":
+            _get_inventory_or_404(session, campaign_id, str(item_id), viewer)
+        query = query.where(InventoryChange.item_id == str(item_id))
+    rows = session.exec(
+        query.order_by(
+            InventoryChange.created_at.desc(), InventoryChange.id.desc()
+        ).limit(limit)
+    ).all()
+    return [_inventory_change_view(session, row, viewer, member) for row in rows]
+
+
+@router.post("/campaigns/{campaign_id}/inventory")
+def create_inventory(
+    campaign_id: str,
+    body: InventoryCreateRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _require_dm(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    kind, pc_id = _inventory_destination(session, campaign_id, body.owner)
+    if body.entity_id is not None:
+        _validate_note_links(
+            session, campaign_id, viewer, NoteLinks(entity_ids=[body.entity_id])
+        )
+    changes = {}
+    if body.source_event_id is not None:
+        event = session.exec(
+            select(SessionEvent).where(
+                SessionEvent.id == str(body.source_event_id),
+                SessionEvent.campaign_id == campaign_id,
+            )
+        ).first()
+        if event is None:
+            raise HTTPException(404, detail="event not found")
+        changes["source_event_id"] = event.id
+    row = InventoryItem(
+        campaign_id=campaign_id,
+        owner_kind=kind,
+        player_character_id=pc_id,
+        name=body.name,
+        quantity=body.quantity,
+        notes=body.notes,
+        entity_id=str(body.entity_id) if body.entity_id else None,
+        hidden_from_party=body.hidden_from_party,
+    )
+    session.add(row)
+    _record_inventory(
+        session,
+        row,
+        member,
+        [_inventory_change(row, member, "create", row.quantity, body.reason, changes)],
+    )
+    session.refresh(row)
+    return _inventory_view(session, row, viewer)
+
+
+@router.patch("/campaigns/{campaign_id}/inventory/{item_id}")
+def patch_inventory(
+    campaign_id: str,
+    item_id: str,
+    body: InventoryPatchRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    row = _get_inventory_or_404(session, campaign_id, item_id, viewer, lock=True)
+    fields = body.model_dump(exclude_unset=True, exclude={"reason"})
+    if viewer != "dm" and (
+        row.player_character_id != viewer or set(fields) - {"quantity"}
+    ):
+        raise HTTPException(403, detail="inventory edit not permitted")
+    if body.entity_id is not None:
+        _validate_note_links(
+            session, campaign_id, viewer, NoteLinks(entity_ids=[body.entity_id])
+        )
+        fields["entity_id"] = str(body.entity_id)
+    old_quantity = row.quantity
+    changes = {
+        key: {"from": getattr(row, key), "to": value} for key, value in fields.items()
+    }
+    for key, value in fields.items():
+        setattr(row, key, value)
+    row.updated_at = datetime.now(timezone.utc)
+    _record_inventory(
+        session,
+        row,
+        member,
+        [
+            _inventory_change(
+                row, member, "update", row.quantity - old_quantity, body.reason, changes
+            )
+        ],
+    )
+    session.refresh(row)
+    return _inventory_view(session, row, viewer)
+
+
+@router.post("/campaigns/{campaign_id}/inventory/{item_id}/move")
+def move_inventory(
+    campaign_id: str,
+    item_id: str,
+    body: InventoryMoveRequest,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+) -> dict:
+    member = _get_member_or_404(session, campaign_id, email)
+    viewer = _viewer_for_member(session, campaign_id, member)
+    row = _get_inventory_or_404(session, campaign_id, item_id, viewer, lock=True)
+    if viewer != "dm" and not (
+        not row.hidden_from_party
+        and (
+            row.player_character_id == viewer
+            and body.owner == "party"
+            or row.owner_kind == "party"
+            and body.owner == viewer
+        )
+    ):
+        raise HTTPException(403, detail="inventory move not permitted")
+    kind, pc_id = _inventory_destination(session, campaign_id, body.owner)
+    quantity = row.quantity if body.quantity is None else body.quantity
+    if not 0 < quantity <= row.quantity:
+        raise HTTPException(422, detail="move quantity exceeds available inventory")
+    changes = {
+        "owner": {
+            "from": _inventory_owner(row),
+            "to": "party" if kind == "party" else pc_id,
+        }
+    }
+    row.updated_at = datetime.now(timezone.utc)
+    if quantity == row.quantity:
+        row.owner_kind, row.player_character_id = kind, pc_id
+        destination = row
+        audit = [_inventory_change(row, member, "move", 0, body.reason, changes)]
+    else:
+        row.quantity -= quantity
+        destination = InventoryItem(
+            campaign_id=campaign_id,
+            owner_kind=kind,
+            player_character_id=pc_id,
+            name=row.name,
+            quantity=quantity,
+            notes=row.notes,
+            entity_id=row.entity_id,
+            hidden_from_party=row.hidden_from_party,
+        )
+        session.add_all([row, destination])
+        audit = [
+            _inventory_change(row, member, "move", -quantity, body.reason, changes),
+            _inventory_change(
+                destination, member, "move", quantity, body.reason, changes
+            ),
+        ]
+    _record_inventory(session, destination, member, audit)
+    session.refresh(destination)
+    return _inventory_view(session, destination, viewer)
+
+
+@router.delete("/campaigns/{campaign_id}/inventory/{item_id}", status_code=204)
+def delete_inventory(
+    campaign_id: str,
+    item_id: str,
+    email: str = Depends(get_authenticated_email),
+    session: Session = Depends(get_session),
+):
+    member = _require_dm(session, campaign_id, email)
+    row = _get_inventory_or_404(session, campaign_id, item_id, "dm", lock=True)
+    row.deleted_at = row.updated_at = datetime.now(timezone.utc)
+    _record_inventory(
+        session, row, member, [_inventory_change(row, member, "delete", 0, "", {})]
+    )
 
 
 class CampaignSettingsRequest(BaseModel):

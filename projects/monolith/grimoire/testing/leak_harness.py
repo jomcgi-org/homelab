@@ -49,6 +49,8 @@ from grimoire.models import (
     Entity,
     EntityNpc,
     GameSession,
+    InventoryChange,
+    InventoryItem,
     KnowledgeChunk,
     KnowledgeGrant,
     Note,
@@ -599,6 +601,82 @@ def build_fixture(session: Session) -> LeakHarness:
             detail={"hit_die": "d10", "saves": "Strength, Constitution"},
         ),
     )
+    for key, character_key, hidden, deleted, campaign_key, allowed, entity_key in (
+        (
+            "item_party",
+            None,
+            False,
+            False,
+            "campaign",
+            ("dm", "player_a", "player_b"),
+            None,
+        ),
+        ("item_party_hidden", None, True, False, "campaign", ("dm",), None),
+        ("item_a", "character_a", False, False, "campaign", ("dm", "player_a"), None),
+        (
+            "item_a_hidden",
+            "character_a",
+            True,
+            False,
+            "campaign",
+            ("dm", "player_a"),
+            None,
+        ),
+        ("item_b", "character", False, False, "campaign", ("dm", "player_b"), None),
+        (
+            "item_party_entity",
+            None,
+            False,
+            False,
+            "campaign",
+            ("dm", "player_a", "player_b"),
+            "private",
+        ),
+        # Deleted items remain visible only through the DM audit endpoint.
+        ("item_deleted", None, False, True, "campaign", ("dm",), None),
+        ("item_foreign", None, False, False, "other", ("other_campaign",), None),
+    ):
+        item = keep(
+            key,
+            InventoryItem(
+                id=mark(f"{key}.id", allowed, True),
+                campaign_id=rows[campaign_key].id,
+                owner_kind="character" if character_key else "party",
+                player_character_id=rows[character_key].id if character_key else None,
+                name=mark(f"{key}.name", allowed),
+                notes=mark(f"{key}.notes", allowed),
+                quantity=3,
+                hidden_from_party=hidden,
+                entity_id=rows[entity_key].id if entity_key else None,
+                deleted_at=datetime.now(timezone.utc) if deleted else None,
+            ),
+        )
+        keep(
+            f"{key}_change",
+            InventoryChange(
+                campaign_id=item.campaign_id,
+                item_id=item.id,
+                who_member_id=rows[
+                    "member_player_a"
+                    if campaign_key == "campaign"
+                    else "member_other_campaign"
+                ].id,
+                action="move",
+                delta=0,
+                quantity_after=item.quantity,
+                reason=mark(f"{key}.reason", allowed),
+                changes={
+                    "owner": {
+                        "from": rows[
+                            "character_a"
+                            if campaign_key == "campaign"
+                            else "other_character"
+                        ].id,
+                        "to": "party",
+                    }
+                },
+            ),
+        )
     session.add_all(objects)
     session.commit()
     return h

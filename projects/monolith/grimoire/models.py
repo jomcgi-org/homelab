@@ -970,6 +970,149 @@ class GameSession(SQLModel, table=True):
     # create_all fixtures; enforce it in application code on the write path.
 
 
+# nosemgrep: sqlmodel-datetime-without-factory (deleted_at is NULL until deletion)
+class InventoryItem(SQLModel, table=True):
+    __tablename__ = "inventory_item"
+    __table_args__ = (
+        CheckConstraint(
+            "owner_kind IN ('party', 'character')", name="inventory_item_kind_chk"
+        ),
+        CheckConstraint(
+            "(owner_kind = 'party') = (player_character_id IS NULL)",
+            name="inventory_item_owner_chk",
+        ),
+        CheckConstraint(
+            "length(name) BETWEEN 1 AND 200", name="inventory_item_name_chk"
+        ),
+        CheckConstraint(
+            "quantity BETWEEN 0 AND 1000000", name="inventory_item_quantity_chk"
+        ),
+        Index(
+            "inventory_item_campaign_live_idx",
+            "campaign_id",
+            "owner_kind",
+            "player_character_id",
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign.id", ondelete="CASCADE"
+        )
+    )
+    owner_kind: Literal["party", "character"] = Field(
+        sa_column=Column(String, nullable=False)
+    )
+    player_character_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.player_character.id", ondelete="CASCADE"),
+    )
+    name: str = Field(sa_column=Column(String, nullable=False))
+    entity_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.entity.id", ondelete="SET NULL"),
+    )
+    quantity: int = Field(default=1, sa_column=Column(Integer, nullable=False))
+    notes: str = Field(
+        default="", sa_column=Column(String, nullable=False, server_default=text("''"))
+    )
+    hidden_from_party: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class InventoryChange(SQLModel, table=True):
+    """Append-only audit; PostgreSQL's migration also guards direct UPDATE."""
+
+    __tablename__ = "inventory_change"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('create', 'update', 'move', 'delete')",
+            name="inventory_change_action_chk",
+        ),
+        CheckConstraint(
+            "quantity_after BETWEEN 0 AND 1000000", name="inventory_change_quantity_chk"
+        ),
+        CheckConstraint("length(reason) <= 500", name="inventory_change_reason_chk"),
+        CheckConstraint(
+            "jsonb_typeof(changes) = 'object'", name="inventory_change_object_chk"
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "json_type(changes) = 'object'", name="inventory_change_object_chk"
+        ).ddl_if(dialect="sqlite"),
+        Index(
+            "inventory_change_campaign_item_idx", "campaign_id", "item_id", "created_at"
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign.id", ondelete="CASCADE"
+        )
+    )
+    item_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.inventory_item.id", ondelete="CASCADE"
+        )
+    )
+    who_member_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.campaign_member.id", ondelete="SET NULL"),
+    )
+    action: Literal["create", "update", "move", "delete"] = Field(
+        sa_column=Column(String, nullable=False)
+    )
+    delta: int = Field(sa_column=Column(Integer, nullable=False))
+    quantity_after: int = Field(sa_column=Column(Integer, nullable=False))
+    reason: str = Field(
+        default="", sa_column=Column(String, nullable=False, server_default=text("''"))
+    )
+    changes: dict = Field(
+        default_factory=dict,
+        sa_column=Column(_JSONB, nullable=False, server_default=text("'{}'")),
+    )
+    session_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.game_session.id", ondelete="SET NULL"),
+    )
+    event_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.session_event.id", ondelete="SET NULL"),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (deleted_at is NULL until soft delete)
 class Note(SQLModel, table=True):
     __tablename__ = "note"
