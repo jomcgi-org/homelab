@@ -537,10 +537,23 @@ instead reuse one shared L7 activator endpoint, with the injected
 `x-ember-workload` header disambiguating the workload. Active TCP health checks
 eject unreachable live endpoints, so traffic falls through to the activator and
 returns to the live priority when it recovers. A control-plane `StartServing`
-or `StartStateful` call carries a deadline past noded's readiness budget
+call carries a deadline past noded's readiness budget
 (`EMBERVM_NODED_BOOT_READY_TIMEOUT`, 180 s in production, plus a 30 s RPC
-margin), as `StartGroupMember` already did: the grpc-elixir default of 10 s
-cancelled any slower boot mid-gate and the daemon reaped the healthy VM.
+margin) and a `StartStateful` call one derived from the workload's own wake
+bound (`wakeTimeoutSeconds` plus margin, plus the same 30 s), as
+`StartGroupMember` already did: the grpc-elixir default of 10 s cancelled any
+slower boot mid-gate and the daemon reaped the healthy VM, while a deadline far
+past the stateful wake bound would leave the daemon booting a VM whose callers
+were already failed. Every stateful wake outcome carries the token of the wake
+that spawned it, so a worker that outlives its `wake_timeout` cannot complete a
+later wake with its VM; its orphan is reclaimed by reconcile. Serving
+drain-before-bank bookkeeping (the drain timer, the draining map, the bank
+worker's reply address) is sweeper-process state over ServingStore rows that
+`ServingManager` adoption deliberately leaves alone, so every sweep re-adopts
+the rows it is not tracking: a drained row gets its window re-armed and a
+banking row is settled from the node's report (VM live: bank again; VM gone and
+an unclaimed snapshot reported: adopt it; neither: terminal). A sweeper restart
+therefore cannot strand a healthy VM out of the fan-out.
 On the stateful L4 path, a
 connection that reaches the activator withdraws the stale resident health fact
 before starting the ordinary rate-limited wake, unless it is within the
