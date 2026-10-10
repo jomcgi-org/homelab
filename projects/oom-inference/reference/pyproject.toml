@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "CPU reference fixtures for oom-inference, from the HF transformers model implementations"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "torch==2.11.0",
+    "torch==2.13.0",
     # 5.16.1 is the first version we verified ships models/qwen4_exp.
     "transformers==5.16.1",
     "safetensors>=0.6,<1",
