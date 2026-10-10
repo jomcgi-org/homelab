@@ -16,7 +16,9 @@
 #
 # LEAN by design: the daemon's driver boots one shared rootfs READ-ONLY per
 # microVM (the fc-invoke warm-base pattern, provisioner disabled), so it never
-# execs dmsetup and needs neither lvm2 nor util-linux.
+# execs dmsetup. The devmapper CoW provisioner (ADR 026) is dead code at runtime
+# here; if it is ever enabled for noded, add lvm2 + util-linux back (fc-invoke's
+# base carries them for that mode).
 contents:
   repositories:
     - https://packages.wolfi.dev/os
