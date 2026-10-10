@@ -17,10 +17,24 @@ defmodule Embervm.RouterTest do
 
   defmodule FakeAuth do
     @allowed "system:serviceaccount:embervm:embervm"
+    @noded_sa "system:serviceaccount:embervm:embervm-noded"
     def authenticate("good"), do: {:ok, @allowed}
     def authenticate("good2"), do: {:ok, "principal-2"}
     def authenticate("forbidden"), do: {:error, :forbidden}
+    # The noded ServiceAccount: a valid identity that is NOT on the task-submit
+    # allow-list, exactly as in production (bricks register, they never submit).
+    def authenticate("noded"), do: {:error, {:forbidden, @noded_sa}}
     def authenticate(_), do: {:error, :unauthenticated}
+
+    def authenticate_identity("noded") do
+      {:ok,
+       %Embervm.Auth.Identity{
+         username: @noded_sa,
+         pod_uid: "router-test-noded",
+         pod_name: "embervm-brick-noded",
+         node_name: "node-4"
+       }}
+    end
 
     def authenticate_identity("good") do
       {:ok,
@@ -576,6 +590,10 @@ defmodule Embervm.RouterTest do
 
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
+    # "good" is the platform's own SA and, as in the reference deployment, the
+    # admin; the object-level authorization tests below clear this to exercise
+    # the self-scoped posture every other allow-listed principal gets.
+    Application.put_env(:embervm, :usage_admins, [@allowed])
 
     on_exit(fn ->
       # Only the two registers that return 200 actually create an instance; the
@@ -2684,5 +2702,111 @@ defmodule Embervm.RouterTest do
       "action" => "prime",
       "vars" => %{"vm_id" => "vm-#{seq}", "node_id" => "node-1"}
     }
+  end
+
+  # -- object-level authorization ---------------------------------------------
+
+  describe "object-level authorization" do
+    test "a task is addressable only by its principal or an admin" do
+      Application.put_env(:embervm, :usage_admins, [])
+      wl = unique("wl")
+      {:ok, :created, task_id} = TaskStore.submit(%{tenant: "homelab", principal: @allowed, workload: wl})
+
+      # The owner reads it.
+      assert req(:get, "/v1/tasks/#{task_id}", auth("good")).status == 200
+      # Another allow-listed principal sees exactly what it would for an unknown id.
+      assert req(:get, "/v1/tasks/#{task_id}", auth("good2")).status == 404
+      assert req(:get, "/v1/tasks/#{task_id}/result", auth("good2")).status == 404
+      assert req(:post, "/v1/tasks/#{task_id}/redrive", auth("good2")).status == 404
+      # The task was not touched by the refused redrive.
+      assert json(req(:get, "/v1/tasks/#{task_id}", auth("good")).body)["state"] == "queued"
+
+      # An admin that is not the owner reads it.
+      Application.put_env(:embervm, :usage_admins, ["principal-2"])
+      assert req(:get, "/v1/tasks/#{task_id}", auth("good2")).status == 200
+    end
+
+    test "dead letters list only the caller's own tasks unless it is an admin" do
+      Application.put_env(:embervm, :usage_admins, [])
+      wl = unique("wl")
+      {:ok, :created, task_id} = TaskStore.submit(%{tenant: "homelab", principal: @allowed, workload: wl})
+      {:ok, _} = TaskStore.assign(task_id)
+      {:ok, _} = TaskStore.start(task_id)
+      {:ok, dl} = TaskStore.fail(task_id, :guest4xx)
+      assert dl.state == :dead_lettered
+
+      other = json(req(:get, "/v1/workloads/#{wl}/dead-letters", auth("good2")).body)
+      assert other["items"] == []
+      assert other["total"] == 0
+
+      owner = json(req(:get, "/v1/workloads/#{wl}/dead-letters", auth("good")).body)
+      assert [%{"task_id" => ^task_id}] = owner["items"]
+      assert owner["total"] == 1
+    end
+
+    test "a management token reads a session only when it names the session's principal" do
+      Application.put_env(:embervm, :usage_admins, [])
+      with_session_fakes()
+
+      # s-live belongs to principal "p": the session token still reads it, a
+      # management token of another principal does not, an admin does.
+      assert req(:get, "/v1/sessions/s-live", auth("sess-token-live")).status == 200
+      assert req(:get, "/v1/sessions/s-live", auth("good")).status == 404
+      Application.put_env(:embervm, :usage_admins, [@allowed])
+      assert req(:get, "/v1/sessions/s-live", auth("good")).status == 200
+    end
+
+    test "another principal cannot destroy a session" do
+      Application.put_env(:embervm, :usage_admins, [])
+      with_session_fakes()
+
+      # The fake manager would destroy s-live; the router refuses before it is asked.
+      assert req(:delete, "/v1/sessions/s-live", auth("good")).status == 404
+      Application.put_env(:embervm, :usage_admins, [@allowed])
+      assert req(:delete, "/v1/sessions/s-live", auth("good")).status == 200
+    end
+
+    test "a session list hides other principals' sessions from a non-admin" do
+      Application.put_env(:embervm, :usage_admins, [])
+      with_session_fakes()
+      Application.put_env(:embervm, :node_registry_mod, FakeNodeRegistry)
+      Application.put_env(:embervm, :node_registry, self())
+
+      resp = req(:get, "/v1/workloads/wl-many/sessions", auth("good"))
+      assert resp.status == 200
+      assert json(resp.body)["items"] == []
+      assert json(resp.body)["total"] == 0
+    end
+
+    test "destructive workload verbs require an admin" do
+      Application.put_env(:embervm, :usage_admins, [])
+      with_stateful_manager_fake()
+
+      refused = req(:delete, "/v1/stateful/wl-live/instance", auth("good"))
+      assert refused.status == 403
+      assert json(refused.body)["error"] == "admin required"
+      assert req(:delete, "/v1/stateful/wl-clean/volume", auth("good")).status == 403
+
+      Application.put_env(:embervm, :usage_admins, [@allowed])
+      assert req(:delete, "/v1/stateful/wl-live/instance", auth("good")).status == 200
+    end
+  end
+
+  # -- node-authenticated artifact routes ----------------------------------------
+
+  test "POST /v1/artifacts/wrap and /rewrap authenticate the noded ServiceAccount in-handler" do
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :noded_service_account, "system:serviceaccount:embervm:embervm-noded")
+
+    # The brick's own SA is not on the submit allow-list. Both routes must bypass
+    # the management plug and reach their handler, which then judges the body:
+    # an empty body is the handler's 400, never the plug's 401 or 403.
+    for path <- ["/v1/artifacts/wrap", "/v1/artifacts/rewrap"] do
+      resp = req(:post, path, auth("noded"), "")
+      assert resp.status == 400, "#{path} answered #{resp.status}, want the handler's 400"
+    end
+
+    # A management principal that is not the noded SA is refused by the handler.
+    assert req(:post, "/v1/artifacts/rewrap", auth("good2"), "").status == 403
   end
 end

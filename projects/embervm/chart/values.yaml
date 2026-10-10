@@ -405,8 +405,14 @@ quota:
   # means deny every unlisted principal by default.
   defaultDailyVcpuSeconds: ""
 
-# ServiceAccount usernames allowed to read OTHER principals' usage at
-# GET /v1/usage (?principal=). Everyone else is self-scoped. Empty = self only.
+# ServiceAccount usernames with ADMIN reach on the management API: they may read
+# OTHER principals' usage at GET /v1/usage (?principal=), address tasks and
+# sessions they did not create (GET /v1/tasks/:id, its result, redrive, session
+# list/get/delete), and call the destructive workload-level verbs (serving force
+# roll, stateful instance destroy, volume delete, handover, group force roll).
+# Every other allow-listed principal is self-scoped: another principal's task or
+# session reads as 404 and the destructive verbs answer 403. Empty = nobody is
+# admin, so those verbs are unreachable until a principal is named here.
 usageAdmins: []
 
 # OpenTelemetry OTLP/gRPC tracing. Empty endpoint means tracing is off. Opting in
