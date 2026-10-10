@@ -1385,7 +1385,10 @@ defmodule Embervm.BrickController do
   end
 
   defp pick_archive_victim(state, facts, class) do
-    eligible = Enum.filter(facts, &legacy_victim?(&1, class))
+    eligible =
+      facts
+      |> archive_deployment_facts(state, class)
+      |> Enum.filter(&legacy_victim?(&1, class))
     safe =
       Enum.filter(
         eligible,
@@ -1414,6 +1417,32 @@ defmodule Embervm.BrickController do
             {:pending, victim}
         end
     end
+  end
+
+  # A same-class floor or another release's brick cannot authorize shrinking
+  # this elastic Deployment. Retain all facts for the node hold, but restrict
+  # archive candidates to pods whose controlling ReplicaSet is this Deployment's
+  # generated <deployment>-<pod-template-hash>. Unknown ownership fails closed.
+  defp archive_deployment_facts(facts, %{archive_ack_gate: false}, _class), do: facts
+  defp archive_deployment_facts(facts, state, class) do
+    case state.pods_fun.(state.namespace, brick_pod_selector(class)) do
+      {:ok, pods} ->
+        uids = pods
+          |> Enum.filter(&class_deployment_pod?(state, class, &1))
+          |> MapSet.new(& &1.uid)
+        Enum.filter(facts, &MapSet.member?(uids, Map.get(&1, :pod_uid)))
+      {:error, _} -> []
+    end
+  end
+
+  defp brick_pod_selector(class),
+    do: "app.kubernetes.io/component=noded-brick,embervm.jomcgi.dev/size-class=#{class}"
+
+  defp class_deployment_pod?(%{archive_ack_gate: false}, _class, _pod), do: true
+  defp class_deployment_pod?(state, class, pod) do
+    hash = Map.get(pod, :template_hash)
+    is_binary(hash) and hash != "" and
+      Map.get(pod, :replica_set) == state.deployment_prefix <> class <> "-" <> hash
   end
 
   # The channel key of the brick, by the repo's one dial-key rule.
@@ -1511,11 +1540,13 @@ defmodule Embervm.BrickController do
   # refused) skips the scale-down rather than shrinking with an undirected
   # victim choice.
   defp direct_victim(state, class, victim) do
-    selector = "app.kubernetes.io/component=noded-brick,embervm.jomcgi.dev/size-class=#{class}"
+    selector = brick_pod_selector(class)
 
     with {:ok, pods} <- state.pods_fun.(state.namespace, selector),
          %{name: pod_name} <-
-           Enum.find(pods, :no_pod, fn pod -> pod.uid == Map.get(victim, :pod_uid) end),
+           Enum.find(pods, :no_pod, fn pod ->
+             pod.uid == Map.get(victim, :pod_uid) and class_deployment_pod?(state, class, pod)
+           end),
          :ok <-
            state.annotate_fun.(state.namespace, pod_name, %{
              @deletion_cost_annotation => @victim_deletion_cost

@@ -1230,6 +1230,13 @@ archivable single-instance candidate. When its sibling deregisters, normal
 per-process export acknowledgement resumes. The earlier per-workload sibling
 filter is removed because the whole-node hold covers it.
 
+Archive candidates must also belong to the elastic class Deployment being
+shrunk. The pod's controlling ReplicaSet name must equal that Deployment's name
+plus its `pod-template-hash`; a same-class floor or another release's pod cannot
+authorize deleting an elastic replica. Missing ownership or a failed pod list
+withholds scale-down. The directing lookup checks ownership again before
+annotating. Floor facts still participate in the registered-instance node hold.
+
 Joe accepted losing brick bin-packing and the extra node spend. If the sum of
 class `maxReplicas` plus floor replicas exceeds eligible FC nodes, pods can stay
 Pending. A same-release DaemonSet also consumes those eligible slots. Pending

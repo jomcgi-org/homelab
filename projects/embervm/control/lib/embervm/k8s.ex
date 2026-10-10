@@ -523,11 +523,12 @@ defmodule Embervm.K8s do
   @doc """
   Lists pods in `namespace` matching `label_selector`, projected to just the
   identity fields the BrickController's victim-directing needs (`name` to PATCH
-  the annotation, `uid` to match the capacity fact's `pod_uid`). Namespaced
+  the annotation, `uid` to match the capacity fact's `pod_uid`, and the controlling
+  ReplicaSet plus template hash to verify the exact Deployment being shrunk). Namespaced
   `pods list` RBAC, granted by the brick-pods Role only when bricks are enabled.
   """
   @spec list_pods(String.t(), String.t()) ::
-          {:ok, [%{name: String.t(), uid: String.t()}]} | {:error, term()}
+          {:ok, [map()]} | {:error, term()}
   def list_pods(namespace, label_selector) do
     path =
       "/api/v1/namespaces/#{URI.encode(namespace)}/pods?labelSelector=#{URI.encode_www_form(label_selector)}"
@@ -538,12 +539,7 @@ defmodule Embervm.K8s do
           body
           |> :json.decode()
           |> Map.get("items", [])
-          |> Enum.map(fn item ->
-            %{
-              name: get_in(item, ["metadata", "name"]),
-              uid: get_in(item, ["metadata", "uid"])
-            }
-          end)
+          |> Enum.map(&pod_identity/1)
 
         {:ok, pods}
 
@@ -553,6 +549,21 @@ defmodule Embervm.K8s do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc false
+  def pod_identity(item) do
+    owner =
+      Enum.find(get_in(item, ["metadata", "ownerReferences"]) || [], fn owner ->
+        owner["kind"] == "ReplicaSet" and owner["controller"] == true
+      end)
+
+    %{
+      name: get_in(item, ["metadata", "name"]),
+      uid: get_in(item, ["metadata", "uid"]),
+      replica_set: if(owner, do: owner["name"], else: nil),
+      template_hash: get_in(item, ["metadata", "labels", "pod-template-hash"])
+    }
   end
 
   @doc """

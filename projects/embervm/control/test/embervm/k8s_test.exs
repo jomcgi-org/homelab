@@ -13,6 +13,16 @@ defmodule Embervm.K8sTest do
 
   @required_audience "embervm-public-faas"
 
+  test "pod identity preserves the controlling ReplicaSet and template hash" do
+    metadata = %{"name" => "brick-a", "uid" => "uid-a",
+      "labels" => %{"pod-template-hash" => "hash"},
+      "ownerReferences" => [%{"kind" => "ReplicaSet", "name" => "ignored", "controller" => false},
+        %{"kind" => "ReplicaSet", "name" => "class-hash", "controller" => true}]}
+    assert K8s.pod_identity(%{"metadata" => metadata}) ==
+      %{name: "brick-a", uid: "uid-a", replica_set: "class-hash", template_hash: "hash"}
+    assert K8s.pod_identity(%{"metadata" => Map.delete(metadata, "ownerReferences")}).replica_set == nil
+  end
+
   test "TokenReview request requires the component audience" do
     request = K8s.review_request("secret-token", @required_audience) |> :json.decode()
 
