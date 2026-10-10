@@ -390,7 +390,7 @@
               <select bind:value={rollKind} aria-label="Sheet roll type"
                 ><option value="checks">Ability checks</option><option
                   value="saves">Saving throws</option
-                ></select
+                ><option value="attacks">Attacks</option></select
               >
               <select bind:value={rollMode} aria-label="Sheet roll mode"
                 ><option value="normal">Normal</option><option value="adv"
