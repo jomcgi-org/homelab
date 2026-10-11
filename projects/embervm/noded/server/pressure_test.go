@@ -1229,6 +1229,45 @@ func TestRelightNeedFallsBackToBundleRecordedMemMib(t *testing.T) {
 	}
 }
 
+// TestRestoreNeedChargesTheLargerOfRegistryAndBundle: a workload's memMib
+// lowered after its base was built, or while a session was banked, must not
+// shrink the reservation below the guest the restore lands, because the driver
+// counts the restored VM at its snapshot's size (admission.tla, NoOvercommit).
+func TestRestoreNeedChargesTheLargerOfRegistryAndBundle(t *testing.T) {
+	drv := &fakeDriver{}
+	_, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
+	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 1024}})
+
+	seedBase(srv, "echo__big", "echo")
+	if err := os.WriteFile(filepath.Join(srv.cfg.SnapshotRoot, "bases", "echo__big", "mem_mib"), []byte("3072"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, size := srv.primeSizing("echo", "echo__big")
+	if size != 1024 {
+		t.Fatalf("primeSizing memMib = %d, want the registry's 1024 for a cold boot", size)
+	}
+	if got := srv.primeAdmitMib(size, "echo__big"); got != 3072 {
+		t.Fatalf("primeAdmitMib = %d, want the base snapshot's 3072", got)
+	}
+	if got := srv.primeAdmitMib(4096, "echo__big"); got != 4096 {
+		t.Fatalf("primeAdmitMib above the snapshot = %d, want 4096", got)
+	}
+
+	if err := os.MkdirAll(filepath.Join(drv.SessionsDir(), "banked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(drv.SessionsDir(), "banked", "mem_mib"), []byte("3072"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.relightNeedMib("echo", "banked"); got != 3072 {
+		t.Fatalf("relightNeedMib = %d, want the banked bundle's 3072 over the registry's 1024", got)
+	}
+	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 4096}})
+	if got := srv.relightNeedMib("echo", "banked"); got != 4096 {
+		t.Fatalf("relightNeedMib = %d, want the registry's 4096 over the bundle's 3072", got)
+	}
+}
+
 // exhaustedCgroup installs a cgroup fixture whose numeric limit is fully used,
 // the reading that used to collide with the unknown sentinel (S16).
 func exhaustedCgroup(t *testing.T) {
