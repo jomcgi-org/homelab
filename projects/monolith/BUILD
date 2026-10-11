@@ -6520,6 +6520,30 @@ py_test(
     ],
 )
 
+py_test(
+    name = "grimoire_character_facts_test",
+    srcs = ["grimoire/character_facts_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+bdd_test(
+    name = "grimoire_character_facts_postgres_test",
+    srcs = ["grimoire/character_facts_postgres_test.py"],
+    deps = [
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
 bdd_test(
     name = "grimoire_play_embeddings_postgres_test",
     srcs = ["grimoire/play_embeddings_postgres_test.py"],

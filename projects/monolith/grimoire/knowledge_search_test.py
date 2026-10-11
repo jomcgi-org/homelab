@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 from sqlmodel import select
 
 from grimoire import search
-from grimoire.models import Embedding, SessionEvent
+from grimoire.models import CharacterFact, Embedding, SessionEvent
 from grimoire.play_embeddings import audience_columns
 from grimoire.testing.leak_harness import (
     ROLES,
@@ -131,6 +131,8 @@ def test_deleted_retracted_and_foreign_sources_never_return(harness, viewer):
         "note_deleted_party",
         "note_foreign",
         "event_foreign",
+        "fact_foreign",
+        "fact_retracted",
         "foreign",
     ):
         assert h.rows[key].id not in response.text
@@ -219,6 +221,18 @@ def test_sqlite_knn_applies_candidate_predicate_independently_of_recheck(
             )
         ):
             expected.add(note.id)
+    for fact in h.rows.values():
+        if (
+            isinstance(fact, CharacterFact)
+            and fact.campaign_id == h.rows["campaign"].id
+            and viewer != "no_character"
+            and (
+                fact.viewer_key == "party"
+                or viewer == "dm"
+                or fact.player_character_id == member.player_character_id
+            )
+        ):
+            expected.add(fact.id)
     # Compare pre-resolution ids. The live-source check cannot conceal a widened
     # SQL predicate, including foreign rows or DM-readable private-note copies.
     assert set(candidates) == expected
@@ -242,7 +256,13 @@ def test_types_sources_sorting_limit_and_live_note_preview(harness, monkeypatch)
     with TestClient(h.app()) as client:
         result = request(client, h, "player_a").json()
         limited = request(client, h, "player_a", k=2).json()
-    assert {row["type"] for row in result} == {"entity", "note", "event", "chunk"}
+    assert {row["type"] for row in result} == {
+        "entity",
+        "note",
+        "event",
+        "chunk",
+        "fact",
+    }
     assert result == sorted(result, key=lambda row: row["score"], reverse=True)
     assert len(limited) == 2 and limited == result[:2]
     assert len(calls) == 2 and calls[1][1] == 2 * search.OVERFETCH_FACTOR
@@ -252,12 +272,46 @@ def test_types_sources_sorting_limit_and_live_note_preview(harness, monkeypatch)
             assert row["source"] == {"session_id": row["session_id"], "seq": row["seq"]}
         elif row["type"] == "chunk":
             assert row["source"] == {"book_id": row["book_id"], "chunk_id": row["id"]}
+        elif row["type"] == "fact":
+            assert row["source"] == {
+                "fact_id": row["id"],
+                "session_id": h.rows["campaign_session"].id,
+            }
+            assert row["status"] in ("active", "disputed")
         else:
             assert row["source"] == expected[row["type"]]
     assert (
         next(row for row in result if row["id"] == note.id)["preview"]
         == note.markdown[:200]
     )
+
+
+@pytest.mark.parametrize("viewer,key", (("player_a", "fact_a"), ("player_b", "fact_b")))
+def test_search_returns_own_and_party_facts_but_never_another_pc(harness, viewer, key):
+    h = harness
+    with TestClient(h.app()) as client:
+        response = request(client, h, viewer)
+    facts = {row["id"]: row for row in response.json() if row["type"] == "fact"}
+    assert h.rows[key].id in facts and h.rows["fact_party"].id in facts
+    if viewer == "player_a":
+        assert facts[h.rows["fact_disputed"].id]["status"] == "disputed"
+        assert h.rows["fact_b"].id not in facts
+    else:
+        assert h.rows["fact_a"].id not in facts
+
+
+def test_live_fact_owner_and_status_override_forged_embedding_copies(harness):
+    h = harness
+    fact = h.rows["fact_a"]
+    fact.viewer_key = h.rows["character"].id
+    fact.player_character_id = fact.viewer_key
+    h.rows["fact_party"].status = "retracted"
+    h.session.commit()
+    assert h.rows["embedding_fact_a"].audience_pc_ids == [h.rows["character_a"].id]
+    with TestClient(h.app()) as client:
+        response = request(client, h, "player_a")
+    assert fact.id not in response.text
+    assert h.rows["fact_party"].id not in response.text
 
 
 @pytest.mark.parametrize("params", [{"q": ""}, {"q": "x" * 201}, {"k": 0}, {"k": 51}])

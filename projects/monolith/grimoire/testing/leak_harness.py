@@ -27,7 +27,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from auth.api import Authority, Principal, PrincipalKind
 from core.db import get_session
@@ -43,6 +43,7 @@ from grimoire.models import (
     Campaign,
     CampaignInvitation,
     CampaignMember,
+    CharacterFact,
     CharacterSheetVersion,
     ChunkEntityMention,
     Embedding,
@@ -129,11 +130,11 @@ class LeakHarness:
                 self.session.delete(member)
         elif state == "submitted":
             self.rows["sheet"].status = "submitted"
-            self.rows["sheet"].submitted_at = datetime.now(timezone.utc)
+            self.rows["sheet"].submitted_at = datetime.now(UTC)
         elif state == "closed":
             self.rows["sheet"].status = "approved"
-            self.rows["sheet"].submitted_at = datetime.now(timezone.utc)
-            self.rows["sheet"].decided_at = datetime.now(timezone.utc)
+            self.rows["sheet"].submitted_at = datetime.now(UTC)
+            self.rows["sheet"].decided_at = datetime.now(UTC)
             self.rows["sheet"].decided_by_email = self.emails["dm"]
         elif state == "submit":
             self.rows["sheet"].sheet = dict(SHEET_BODY)
@@ -287,12 +288,8 @@ def build_fixture(session: Session) -> LeakHarness:
                     },
                     derived={"secret": mark(f"{sheet_key}.derived", allowed)},
                     created_by_email=f"{mark(f'{sheet_key}.created_by_email', allowed)}@example.test".lower(),
-                    submitted_at=datetime.now(timezone.utc)
-                    if status == "approved"
-                    else None,
-                    decided_at=datetime.now(timezone.utc)
-                    if status == "approved"
-                    else None,
+                    submitted_at=datetime.now(UTC) if status == "approved" else None,
+                    decided_at=datetime.now(UTC) if status == "approved" else None,
                     decided_by_email=(
                         f"{mark(f'{sheet_key}.decided_by_email', allowed)}@example.test".lower()
                         if status == "approved"
@@ -362,13 +359,9 @@ def build_fixture(session: Session) -> LeakHarness:
                     "event_ids": [mark(f"{key}.event_id", allowed, True)],
                 },
                 created_in_session=rows[f"{campaign_key}_session"].id,
-                created_at=datetime(
-                    2026, 10, 2, 1, len(h.canaries) % 60, tzinfo=timezone.utc
-                ),
-                updated_at=datetime(
-                    2026, 10, 2, 2, len(h.canaries) % 60, tzinfo=timezone.utc
-                ),
-                deleted_at=datetime.now(timezone.utc) if deleted else None,
+                created_at=datetime(2026, 10, 2, 1, len(h.canaries) % 60, tzinfo=UTC),
+                updated_at=datetime(2026, 10, 2, 2, len(h.canaries) % 60, tzinfo=UTC),
+                deleted_at=datetime.now(UTC) if deleted else None,
             ),
         )
 
@@ -394,7 +387,7 @@ def build_fixture(session: Session) -> LeakHarness:
                     body={
                         "secret": mark(f"{key}.body", ("dm",) if retracted else allowed)
                     },
-                    retracted_at=datetime.now(timezone.utc) if retracted else None,
+                    retracted_at=datetime.now(UTC) if retracted else None,
                 ),
             )
 
@@ -547,14 +540,41 @@ def build_fixture(session: Session) -> LeakHarness:
             body={"text": mark("event_foreign.body", ("other_campaign",))},
         ),
     )
-    # Seed stale vectors even for deleted notes and retracted events. The fake
+    for key, pc_key, campaign_key, status, allowed in (
+        ("fact_a", "character_a", "campaign", "active", ("dm", "player_a")),
+        ("fact_b", "character", "campaign", "active", ("dm", "player_b")),
+        ("fact_party", None, "campaign", "active", ("dm", "player_a", "player_b")),
+        ("fact_disputed", "character_a", "campaign", "disputed", ("dm", "player_a")),
+        ("fact_retracted", "character_a", "campaign", "retracted", ()),
+        ("fact_foreign", "other_character", "other", "active", ("other_campaign",)),
+    ):
+        pc_id = rows[pc_key].id if pc_key else None
+        keep(
+            key,
+            CharacterFact(
+                id=mark(f"{key}.id", allowed, True),
+                campaign_id=rows[campaign_key].id,
+                session_id=rows[f"{campaign_key}_session"].id,
+                player_character_id=pc_id,
+                viewer_key=pc_id or "party",
+                statement=mark(f"{key}.statement", allowed),
+                evidence_event_ids=[rows["event_foreign"].id]
+                if campaign_key == "other"
+                else [rows["event_table"].id],
+                extraction_version="fixture/v1",
+                status=status,
+            ),
+        )
+    # Seed stale vectors even for deleted notes and retracted events/facts. The fake
     # nearest-neighbor seam ignores all filters to exercise live-source checks.
     for key, row in list(rows.items()):
-        if isinstance(row, (Note, SessionEvent)):
+        if isinstance(row, (Note, SessionEvent, CharacterFact)):
             keep(
                 f"embedding_{key}",
                 Embedding(
-                    embeddable_kind="note"
+                    embeddable_kind="fact"
+                    if isinstance(row, CharacterFact)
+                    else "note"
                     if isinstance(row, Note)
                     else event_embedding_kind(row),
                     embeddable_id=row.id,

@@ -12,10 +12,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
 from grimoire.audience import Member, Viewer, audience_predicate, note_predicate
-from grimoire.models import Embedding, Note, SessionEvent
+from grimoire.models import CharacterFact, Embedding, Note, SessionEvent
 from grimoire.reveals import reveal_items
 
-PLAY_KINDS = ("note", "event", "transcript")
+PLAY_KINDS = ("note", "event", "transcript", "fact")
 EVENT_KINDS = ("narration", "handout", "reveal", "utterance")
 
 
@@ -41,6 +41,14 @@ def play_embedding_predicate(campaign_id: str, viewer: Viewer, member: Member):
             or_(
                 and_(
                     Embedding.embeddable_kind.in_(("event", "transcript")),
+                    audience_predicate(Embedding, viewer, member),
+                ),
+                and_(
+                    Embedding.embeddable_kind == "fact",
+                    # Like party notes, party facts require an associated PC (or DM).
+                    viewer is not None,
+                    Embedding.audience.in_(("table", "pcs")),
+                    Embedding.author_member_id.is_(None),
                     audience_predicate(Embedding, viewer, member),
                 ),
                 and_(
@@ -130,7 +138,21 @@ def event_text(event: SessionEvent) -> str | None:
     return "\n\n".join(texts).strip() or None
 
 
-def audience_columns(row: Note | SessionEvent) -> dict:
+def fact_text(fact: CharacterFact) -> str | None:
+    return fact.statement if fact.status in ("active", "disputed") else None
+
+
+def audience_columns(row: Note | SessionEvent | CharacterFact) -> dict:
+    if isinstance(row, CharacterFact):
+        return {
+            "campaign_id": row.campaign_id,
+            "audience": "table" if row.viewer_key == "party" else "pcs",
+            "audience_pc_ids": [row.player_character_id]
+            if row.player_character_id
+            else [],
+            "author_member_id": None,
+            "dm_readable": None,
+        }
     return {
         "campaign_id": row.campaign_id,
         "audience": row.kind if isinstance(row, Note) else row.audience,
@@ -145,10 +167,10 @@ def content_hash(text: str) -> str:
 
 
 def _sync_embeddings(
-    session: Session, row: Note | SessionEvent, kinds: tuple[str, ...]
+    session: Session, row: Note | SessionEvent | CharacterFact, kinds: tuple[str, ...]
 ) -> None:
-    source_text = note_text(row) if isinstance(row, Note) else event_text(row)
-    expected_kind = "note" if isinstance(row, Note) else event_embedding_kind(row)
+    source_text = _text(row)
+    expected_kind = _kind(row)
     embeddings = session.exec(
         select(Embedding).where(
             Embedding.embeddable_kind.in_(kinds),
@@ -175,7 +197,14 @@ def sync_note_embeddings(session: Session, note: Note) -> None:
 
 
 def sync_event_embeddings(session: Session, event: SessionEvent) -> None:
+    from grimoire.character_facts import retract_facts_for_event
+
     _sync_embeddings(session, event, ("event", "transcript"))
+    retract_facts_for_event(session, event)
+
+
+def sync_fact_embeddings(session: Session, fact: CharacterFact) -> None:
+    _sync_embeddings(session, fact, ("fact",))
 
 
 @dataclass(frozen=True)
@@ -186,18 +215,25 @@ class PlayEmbeddingInput:
 
 
 def _source(session: Session, kind: str, source_id: str):
+    model = {"note": Note, "fact": CharacterFact}.get(kind, SessionEvent)
     return session.exec(
-        select(Note if kind == "note" else SessionEvent)
-        .where(
-            (Note if kind == "note" else SessionEvent).id == source_id,
-        )
+        select(model)
+        .where(model.id == source_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one_or_none()
 
 
 def _text(row):
+    if isinstance(row, CharacterFact):
+        return fact_text(row)
     return note_text(row) if isinstance(row, Note) else event_text(row)
+
+
+def _kind(row):
+    if isinstance(row, CharacterFact):
+        return "fact"
+    return "note" if isinstance(row, Note) else event_embedding_kind(row)
 
 
 def collect_play_inputs(
@@ -224,6 +260,7 @@ def collect_play_inputs(
     inputs = []
     for source_model, predicate in (
         (Note, Note.deleted_at.is_(None)),
+        (CharacterFact, CharacterFact.status.in_(("active", "disputed"))),
         (
             SessionEvent,
             SessionEvent.retracted_at.is_(None) & SessionEvent.kind.in_(EVENT_KINDS),
@@ -238,7 +275,7 @@ def collect_play_inputs(
             source_text = _text(row)
             if source_text is None:
                 continue
-            kind = "note" if isinstance(row, Note) else event_embedding_kind(row)
+            kind = _kind(row)
             embedding = session.exec(
                 select(Embedding).where(
                     Embedding.embeddable_kind == kind,
