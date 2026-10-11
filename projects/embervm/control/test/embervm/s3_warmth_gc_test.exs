@@ -259,6 +259,154 @@ defmodule Embervm.S3WarmthGcTest do
     {agent, result}
   end
 
+  defp tombstone_registry do
+    %{
+      "node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"},
+      "gone/pod-old" => %{configured_id: "gone", pod_uid: "pod-old", expired_at: @mono - 1}
+    }
+  end
+
+  describe "expired host retirement" do
+    test "complete host absence permits deletion, rechecking at all three gates" do
+      %{agent: agent, s3: s3, prefix: prefix, base_opts: opts} = orphan_fixture()
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+      inventory = fn ->
+        Agent.update(calls, &(&1 + 1))
+        {:ok, MapSet.new(["node-4"])}
+      end
+      gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: &tombstone_registry/0,
+        node_inventory_fun: inventory])
+      assert {:ok, %{deleted: [^prefix]}} = S3WarmthGc.sweep_now(gc)
+      assert length(deleted(agent)) == 2
+      assert Agent.get(calls, & &1) == 3
+    end
+
+    for evidence <- [:present, :partial, :error, :malformed, :raise, :exit] do
+      test "#{evidence} host inventory cannot retire a missing-capacity tombstone" do
+        %{agent: agent, s3: s3, base_opts: opts} = orphan_fixture()
+        evidence = unquote(evidence)
+        inventory = fn ->
+          case evidence do
+            :present -> {:ok, MapSet.new(["node-4", "gone"])}
+            :partial -> {:error, :incomplete_node_inventory}
+            :error -> {:error, :forbidden}
+            :malformed -> {:ok, ["node-4"]}
+            :raise -> raise "unavailable"
+            :exit -> exit(:timeout)
+          end
+        end
+        gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: &tombstone_registry/0,
+          node_inventory_fun: inventory])
+        assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+        assert deleted(agent) == []
+        assert puts(agent) == []
+      end
+    end
+
+    for stage <- [2, 3], change <- [:host_return, :partial, :reregister, :identity] do
+      test "#{change} at gate #{stage} blocks deletion" do
+        %{agent: agent, s3: s3, base_opts: opts} = orphan_fixture()
+        {:ok, calls} = Agent.start_link(fn -> 0 end)
+        stage = unquote(stage)
+        change = unquote(change)
+        registry = fn ->
+          original = tombstone_registry()
+          if Agent.get(calls, & &1) >= stage do
+            case change do
+              :reregister -> update_in(original, ["gone/pod-old"], &Map.delete(&1, :expired_at))
+              :identity -> put_in(original, ["gone/pod-old", :pod_uid], "replacement")
+              _ -> original
+            end
+          else
+            original
+          end
+        end
+        inventory = fn ->
+          call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+          case {call >= stage, change} do
+            {true, :host_return} -> {:ok, MapSet.new(["node-4", "gone"])}
+            {true, :partial} -> {:error, :incomplete_node_inventory}
+            _ -> {:ok, MapSet.new(["node-4"])}
+          end
+        end
+        gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: registry,
+          node_inventory_fun: inventory])
+        if stage == 2 do
+          assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+          assert puts(agent) == []
+        else
+          assert {:ok, %{deleted: []}} = S3WarmthGc.sweep_now(gc)
+        end
+        assert deleted(agent) == []
+      end
+    end
+
+    test "a host returning after one prefix deletes aborts remaining prefixes" do
+      prior = "stateful/amd/dead-wl/state-prior"
+      %{agent: agent, s3: s3, base_opts: opts} = orphan_fixture(artifact(prior, @wall - 40 * @day))
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+      inventory = fn ->
+        call = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+        {:ok, MapSet.new(if(call < 4, do: ["node-4"], else: ["node-4", "gone"]))}
+      end
+      gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: &tombstone_registry/0,
+        node_inventory_fun: inventory])
+      assert {:ok, %{deleted: [^prior]}} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == [prior <> "/meta.json", prior <> "/memfile"]
+    end
+
+    test "the production parser rejects a successful but paginated host list" do
+      %{agent: agent, s3: s3, base_opts: opts} = orphan_fixture()
+      inventory = fn ->
+        Embervm.K8s.parse_node_names(~s({"kind":"NodeList","metadata":{"continue":"next"},"items":[]}))
+      end
+      gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: &tombstone_registry/0,
+        node_inventory_fun: inventory])
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "an absent host never exempts an active identity missing capacity" do
+      %{agent: agent, s3: s3, base_opts: opts} = orphan_fixture()
+      registry = fn -> update_in(tombstone_registry(), ["gone/pod-old"], &Map.delete(&1, :expired_at)) end
+      gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: registry,
+        node_inventory_fun: fn -> flunk("active identities do not consult absence evidence") end])
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "absent expired hosts alone never establish a live fleet" do
+      %{agent: agent, s3: s3, table: table, base_opts: opts} = orphan_fixture()
+      NodeCapacity.drop(table, {"node-4", "pod"})
+      gc = start_gc(s3, opts ++ [enabled: true,
+        node_registry_fun: fn -> Map.delete(tombstone_registry(), "node-4/pod") end,
+        node_inventory_fun: fn -> {:ok, MapSet.new()} end])
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "retired identity with a remaining capacity row fails closed" do
+      %{agent: agent, s3: s3, table: table, base_opts: opts} = orphan_fixture()
+      NodeCapacity.put(table, {"gone", "pod-old"}, %{instance_id: "gone/pod-old"})
+      gc = start_gc(s3, opts ++ [enabled: true, node_registry_fun: &tombstone_registry/0,
+        node_inventory_fun: fn -> {:ok, MapSet.new(["node-4"])} end])
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+      assert deleted(agent) == []
+    end
+
+    test "host exemption does not bypass dry run or age and reference holds" do
+      young = "stateful/amd/dead-wl/state-young"
+      %{agent: agent, s3: s3, prefix: prefix, table: table, base_opts: opts} =
+        orphan_fixture(artifact(young, @wall - 1))
+      put_node_fact(table, "node-4", [%{snapshot_ref: "state-orphan1"}], [])
+      gc = start_gc(s3, opts ++ [enabled: false, node_registry_fun: &tombstone_registry/0,
+        node_inventory_fun: fn -> {:ok, MapSet.new(["node-4"])} end])
+      assert {:ok, %{deleted: [], plan: [], held: held}} = S3WarmthGc.sweep_now(gc)
+      assert Enum.sort(Enum.map(held, & &1.prefix)) == Enum.sort([young, prefix])
+      assert deleted(agent) == []
+    end
+  end
+
   # -- destructive happy path --------------------------------------------------
 
   describe "gated deletion" do
