@@ -2868,18 +2868,28 @@ def test_shared_scratch_refuses_unsafe_shapes() -> None:
             _render_with_set("shared", base + extra)
 
 
-def test_brick_classes_carry_the_noded_per_vm_overhead() -> None:
+def test_brick_classes_carry_the_per_vm_overhead_noded_charges() -> None:
     """The control plane's class fit charges what every brick charges.
 
     BrickController fits a need into a class only when an empty brick of that
     class would admit it, which under the reserved model includes the per-VM
     overhead. Each EMBERVM_BRICK_CLASSES entry must therefore carry the same
-    noded.vmOverheadMib the brick pods render, at the default and under an
-    override.
+    noded.vmOverheadMib the brick pods render when they admit on reservation,
+    at the default and under an override. Under observed noded still renders
+    and reports the value but charges none, so the classes carry 0.
     """
-    for settings in (
-        ["bricks.enabled=true"],
-        ["bricks.enabled=true", "noded.vmOverheadMib=96"],
+    for settings, charged in (
+        (["bricks.enabled=true"], False),
+        (["bricks.enabled=true", "noded.vmOverheadMib=96"], False),
+        (["bricks.enabled=true", "noded.admissionModel=reserved"], True),
+        (
+            [
+                "bricks.enabled=true",
+                "noded.admissionModel=reserved",
+                "noded.vmOverheadMib=96",
+            ],
+            True,
+        ),
     ):
         rendered = _render_with_set("brick-overhead", settings)
         noded = set(
@@ -2888,6 +2898,8 @@ def test_brick_classes_carry_the_noded_per_vm_overhead() -> None:
             )
         )
         assert len(noded) == 1, f"bricks disagree on the per-VM overhead: {noded}"
+        configured = int(noded.pop())
+        assert configured > 0, "the bricks render no overhead; this test is inert"
 
         declared = [
             json.loads(entry["value"])
@@ -2899,7 +2911,8 @@ def test_brick_classes_carry_the_noded_per_vm_overhead() -> None:
         ]
         assert len(declared) == 1, "expected one control-plane brick class environment"
         assert declared[0], "the brick class environment is empty; this test is inert"
-        assert {entry["vm_overhead_mib"] for entry in declared[0]} == {int(noded.pop())}
+        expected = configured if charged else 0
+        assert {entry["vm_overhead_mib"] for entry in declared[0]} == {expected}, settings
 
 
 def test_brick_classes_count_the_node_floors_pinned_to_each_class() -> None:

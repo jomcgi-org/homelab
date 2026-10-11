@@ -1127,9 +1127,10 @@ admit for one more VM at that instant, computed by the same function; it is the
 one memory predicate the control plane trusts.
 
 The control plane keeps its own in-flight ledger (`Embervm.Scheduler.Inflight`).
-Every new-VM placement claims its declared memory on the chosen brick before
-the boot RPC, releases it on a refusal, and holds it for a few seconds after a
-successful boot so the brick's next report already counts the VM.
+Every new-VM placement claims what the chosen brick will charge (its declared
+memory, plus `vmOverheadMib` under `reserved`) before the boot RPC, releases it
+on a refusal, and holds it for a few seconds after a successful boot so the
+brick's next report already counts the VM.
 `Scheduler.mem_eligible?/2` admits a need only when it fits
 `mem_admittable_mib` net of those pending claims, and a classed brick reporting
 a zero budget is not placeable. Two placers racing between reports can still

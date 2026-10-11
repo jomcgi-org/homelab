@@ -186,10 +186,11 @@ defmodule Embervm.WakeInstance do
 
   @doc """
   Claims one more VM of `need_mib` on the brick dialled as `dial_id` in the
-  in-flight ledger under `ref`, charging the brick's per-VM overhead on top
-  (`Embervm.Brick.charge_mib/2`, read from its capacity fact; a brick with no
-  fact is charged `need_mib`). For a boot whose target is already chosen (a
-  group member on its anchor, a retry hop); the caller settles or releases it.
+  in-flight ledger under `ref`, charging the per-VM overhead the brick's model
+  charges on top (`Embervm.Brick.charge_mib/2`, read from its capacity fact; a
+  brick with no fact is charged `need_mib`). For a boot whose target is already
+  chosen (a group member on its anchor, a retry hop); the caller settles or
+  releases it.
 
   Options: `:table` (the capacity table) and `:inflight` (as in `select/2`).
   """
