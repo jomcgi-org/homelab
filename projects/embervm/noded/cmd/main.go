@@ -55,7 +55,18 @@ func run(logger *slog.Logger) error {
 	logger.Info("embervm-noded starting",
 		"listen", cfg.ListenAddr, "health", cfg.HealthAddr,
 		"node", cfg.Node, "arch", cfg.Arch,
-		"maxLiveVMs", cfg.MaxLiveVMs, "registryCache", cfg.RegistryCachePath)
+		"maxLiveVMs", cfg.MaxLiveVMs, "registryCache", cfg.RegistryCachePath,
+		"jailer", cfg.JailerEnabled)
+	// An armed jailer must be able to contain guests before anything forks: the
+	// cgroup delegation moves every process in the container into the daemon
+	// child, which a short-lived child would race. A brick that cannot contain
+	// guests fails startup loudly instead of running them unjailed.
+	if cfg.JailerEnabled {
+		if err := driver.PrepareJailer(cfg.JailerBinPath); err != nil {
+			return fmt.Errorf("jailer enabled but VM containment unavailable (noded.jailer.enabled=false is the escape hatch): %w", err)
+		}
+		logger.Info("jailer cgroup delegation prepared", "jailer", cfg.JailerBinPath)
+	}
 
 	// Claim our own per-instance warmth before inspecting any sibling. A brick
 	// that cannot publish its claim must not boot, because another brick could
@@ -481,14 +492,23 @@ func newDriver(cfg config.Config, logger *slog.Logger, x driverExtras) *driver.D
 		WarmRestoreWithVolume:       cfg.WarmRestoreWithVolume,
 		DiffBanking:                 cfg.DiffBanking,
 		EnforceBundleRootfsIdentity: cfg.EnforceBundleRootfsIdentity,
-	}, &driver.ExecLauncher{
-		Logger:         logger,
-		Bin:            cfg.BinPath,
-		JailerBin:      cfg.JailerBinPath,
-		JailerEnabled:  cfg.JailerEnabled,
-		OOMScoreAdj:    cfg.GuestOomScoreAdj,
-		MountNamespace: true,
-	}, nil)
+	}, newExecLauncher(cfg, logger), nil)
+}
+
+// newExecLauncher builds the production launcher. Every launcher in the daemon
+// shares one uid lease and one delegated cgroup parent, so each gets the same
+// node-shared lease directory and daemon reserve.
+func newExecLauncher(cfg config.Config, logger *slog.Logger) *driver.ExecLauncher {
+	return &driver.ExecLauncher{
+		Logger:           logger,
+		Bin:              cfg.BinPath,
+		JailerBin:        cfg.JailerBinPath,
+		JailerEnabled:    cfg.JailerEnabled,
+		DaemonReserveMib: cfg.DaemonReserveMib,
+		UIDLeaseDir:      cfg.SnapshotRoot,
+		OOMScoreAdj:      cfg.GuestOomScoreAdj,
+		MountNamespace:   true,
+	}
 }
 
 func logBaseAdoptionRetry(logger *slog.Logger, err error) {
