@@ -64,7 +64,15 @@ are documented with the individual specs below.
   `warmth_gc_unexpired.cfg`, `warmth_gc_age_floor.cfg`,
   `warmth_gc_newest_ref.cfg` : the positive model and seven focused negative
   mutations for issue #4705 (below).
-- `BUILD` : thirty-eight genrules run TLC over the nine specs, one per cfg, via the
+- `admission.tla` : the pure TLA+ model of memory admission across bricks:
+  noded's atomic reserved-model ticket ledger, lazy guest growth, the control
+  plane's pending-claim ledger placed from stale reports, and the reject/retry
+  walk, with each 2026-10-10 hole behind a flag.
+- `admission.cfg`, `admission_liveness.cfg`, `admission_liveness_no_walk.cfg`,
+  `admission_observed.cfg`, `admission_check_then_act.cfg`,
+  `admission_single_attempt.cfg` : the safety model, two liveness
+  configurations, and three focused negative mutations (below).
+- `BUILD` : forty-four genrules run TLC over the ten specs, one per cfg, via the
   `//bazel/tla` prebuilt toolchain (tla2tools.jar + a pinned Temurin JRE).
 - `vocabulary.exs` : the layer-1 manifest declaring, per implementation surface
   (proto RPC verbs, health states, op-log kinds), what the specs model vs
@@ -748,9 +756,188 @@ A2 and A3 at the modeled observation points; A1 remains outside the results.
   destructive gate stays default-off; no live activation or storage redesign is
   part of this correction.
 
+## Memory admission across bricks (`admission.tla`)
+
+On 2026-10-10 production bricks were OOMKilled three times in about 70
+minutes. noded admitted on observed cgroup headroom while restored guests
+fault their RAM in lazily, so an 8gi brick (budget 7936 MiB) admitted 5-7
+claude-runtime guests of 3072 MiB declared, they grew, and the brick died.
+Separately the control plane placed a burst of creates on one brick from one
+stale `NodeStatus`, with no in-flight accounting and one attempt, so noded's
+refusals surfaced as failed creates. `admission.tla` models the protocol that
+replaced both, at revision c05e43f66, with each historical hole behind a
+constant so all six cfgs check the same spec text.
+
+```
+  control plane                                noded (one brick)
+  view[b]  <------------- Report(b) ----------  Admittable(b), under admission.mu
+  Place(r): view[b] - Pending(b) >= need
+    claim row (unsettled) -- boot RPC ------->  Admit: need <= Admittable(b)
+                                                  yes: ticket (inflight += need)
+    Refused: release row;  <-- RESOURCE_EXH. --   no:  refuse
+      walk the frontier, or requeue as :capacity
+                                                Land: VM joins the live map
+                                                ReleaseTicket: inflight -= need
+    Booted: row becomes a hold <-- success ----
+    Expire: hold dropped                        Grow: guest faults its RAM in
+                                                Destroy: VMM exits, entry removed
+```
+
+| Guard (constant) | Implementation | Without it |
+| --- | --- | --- |
+| `AdmitReserved` | `admittableMib` reserved term, `EMBERVM_NODED_ADMISSION_MODEL=reserved` | admission reads resident memory, which lags declared memory by however much the guests have not faulted in yet |
+| `AtomicAdmit` | `Server.admit` checks and reserves under `admission.mu` | two boots pass one reading |
+| `WalkFrontier` | `Scheduler.Retry.run` behind `EMBERVM_PLACEMENT_RETRY` | a refusal ends the attempt (still retryable when the next guard holds) |
+| `RetryableDenial` | `:capacity` is always retryable (`Embervm.Retry.classify/3`) | a refusal is a terminal failure |
+| `UnclaimedRequests` (a bound, not a guard) | lanes that write no `Inflight` row | the CP debits nothing for that lane's boots in flight |
+
+The per-action source map and assumptions A1-A10 are in the spec header. The
+ones that matter most: a ticket reserves exactly what the landed VM's live-map
+entry declares (A2), the per-VM overhead bounds the real host cost of a VM
+beyond its guest RAM (A3), and a report is produced and received in one step
+at an arbitrary time (A5), so the CP places on each brick as it was at its
+last delivered report, arbitrarily old. A separate send and receive multiplied
+the state space twelvefold; only CP choices read the view, and noded re-checks
+every boot.
+
+### Properties
+
+- `NoOvercommit`: the declared memory of every VM in a brick's live map and
+  every boot holding a ticket, each with its overhead, fits the budget.
+- `ResidentWithinBudget`: resident guest RAM plus per-VM overhead fits the
+  budget. This is what the 2026-10-10 bricks lost.
+- `NoLeakedClaim`: an unsettled claim row exists only while its request's boot
+  RPC to that brick is outstanding; a held row only for a VM that booted
+  there. `ClaimsDrain` (liveness) checks every row, held ones included,
+  eventually disappears.
+- `TicketsBalanced`: noded's `inflightMib`/`inflightVMs` counters, moved by
+  `+=` and `-=`, always equal the boots that hold a ticket, so no ticket is
+  released twice or leaked. `TicketsEventuallyReleased` (liveness) is the "at
+  least once" half.
+- `NoStrandedRequest`: a refusal never terminally fails a request an empty
+  brick would admit. It is the safety reformulation of `EventuallyPlaced`,
+  which the liveness cfgs check directly, so the negative mode can name its
+  invariant.
+
+### Bounds, assumptions, and results
+
+Memory is in abstract units. The safety cfgs use three interchangeable bricks
+of budget 6 (with `BrickSymmetry`, sound for these brick-quantified
+invariants), overhead 1, floor 2 (above the overhead, as 512 > 64 MiB in
+production, so the observed guard binds once a guest has grown), two small
+requests of 2 and one large of 3, one small one placed by a lane that writes
+no claim, and one injectable boot failure. A brick holds two small guests or
+one large one. The liveness cfgs use two bricks of budget 3 (one guest each),
+three small requests (again one claimless), overhead 1, floor 1, no lazy
+growth, no boot failure and no symmetry, because the liveness tableau is the
+expensive part and symmetry is unsound for it. Three requests on two
+one-guest bricks force one to wait for a destroy.
+
+All results below were produced on Linux by the repository's pinned TLC 1.7.4
+and the `//bazel/tla:tlc.sh` driver, with 4 workers. The positive and
+liveness queues drained fully. Negative runs stop at the named violation, so
+their counts are not coverage.
+
+| cfg | changed guard | checked result | generated / distinct / queue | depth | time |
+| --- | --- | --- | --- | --- | --- |
+| `admission.cfg` | none | all six invariants pass exhaustively | 14,816,704 / 2,488,811 / 0 | 33 | 60 s |
+| `admission_liveness.cfg` | none (lean bounds) | `EventuallyPlaced`, `ClaimsDrain`, `TicketsEventuallyReleased` pass | 164,273 / 42,219 / 0 | 23 | 57 s |
+| `admission_liveness_no_walk.cfg` | `WalkFrontier = FALSE` | the same three properties pass | 127,547 / 33,675 / 0 | 23 | 38 s |
+| `admission_observed.cfg` | `AdmitReserved = FALSE` | `ResidentWithinBudget` violated | 12,063 / 5,514 / 3,283 | 10 | under 1 s |
+| `admission_check_then_act.cfg` | `AtomicAdmit = FALSE` | `NoOvercommit` violated | 978 / 537 / 325 | 8 | under 1 s |
+| `admission_single_attempt.cfg` | `WalkFrontier = FALSE`, `RetryableDenial = FALSE` | `NoStrandedRequest` violated | 379 / 229 / 161 | 7 | under 1 s |
+
+With 4 workers the negative runs' counts and depth vary a little from run to
+run, because TLC stops at the first violation a worker finds; the
+counterexamples themselves (10, 7 and 7 states) do not. Each negative cfg
+keeps every other constant of `admission.cfg` and lists only `TypeOK` and its
+intended invariant, so a different safety failure cannot satisfy the driver's
+expected-failure mode. The counterexamples, in table order:
+
+- **Observed admission under lazy growth.** The claimless lane boots a small
+  guest on an empty brick; it lands with only its overhead resident. The CP
+  places the large request on the same brick, and observed headroom less the
+  floor admits it. Both guests fault their RAM in: 3 + 4 = 7 > 6.
+- **Check-then-act.** The claimless lane and the large request are both placed
+  on one empty brick; both checks read it empty and pass, both reserve, and
+  the brick has committed 7 > 6. With the atomic gate the second check sees
+  the first ticket.
+- **Single terminal attempt.** The claimless lane boots on an empty brick and
+  the CP places a second request there from the same report. Its boot reaches
+  noded in the instant after the first VM's driver call returned and before
+  its ticket was released, when that VM counts twice, so noded refuses it,
+  and the request fails although two other bricks are empty.
+
+`admission_liveness_no_walk.cfg` pins which guard liveness rests on: with the
+frontier walk off (the deployed default) every satisfiable request is still
+placed, because the refusal is a retryable `:capacity` denial. The walk saves
+a round trip; the retryable denial is what keeps a refusal from stranding a
+request.
+
+The positive run is not vacuous. Scratch reachability probes (each a
+deliberately false invariant, not committed) confirmed that its state space
+contains a refusal, a two-hop frontier walk, a requeue after an exhausted
+frontier, an injected boot failure, the landed double-count instant, a refusal
+that only the observed guard caused, two guests packed onto one brick at
+exactly the budget, and the state where every request has run and been
+destroyed.
+
+### Implementation conformance gaps found by the mapping
+
+The modeled protocol satisfies every property. Writing the mapping surfaced
+these differences between that protocol and the tree at c05e43f66:
+
+- **Two lanes write no claim, and one of them does not walk.**
+  `Scheduler.place_and_claim/2` has no production caller. The dispatcher's
+  task miss (`spawn_assign_worker`, `prime_with_retry`) and the pool refill
+  (`start_prime_worker`) claim; `session_manager.ex` `place_create/4` plus
+  `prime/6` and `serving_manager.ex` `run_cold/4` debit other claims but write
+  none. That is `UnclaimedRequests`: noded's gate keeps every safety property
+  (the positive cfg includes such a lane), but placements herd and noded
+  refuses more. Session create also takes only the head brick, records no
+  autoscaler demand for a refusal, and surfaces it as `{:prime_failed, _}`,
+  which `router.ex` `create_denial/3` answers with a generic 500 (`retryable:
+  true`). For that lane `EventuallyPlaced` rests on the client retrying a 500.
+- **The deploy values select the negative configuration.** The chart default
+  `noded.admissionModel: observed` is not overridden in `deploy/values.yaml` or
+  `deploy/values-gke.yaml`, and `dispatcher.placementRetry` stays `false`. The
+  bricks therefore run `admission_observed.cfg`'s admission until #4185 moves
+  them to `reserved`. Liveness for the task lane holds without the walk
+  (`admission_liveness_no_walk.cfg`).
+- **A ticket can reserve less than the VM it lands (A2).** `relightNeedMib`
+  (`noded/server/pressure.go`) charges the workload's registry sizing before
+  the banked bundle's recorded size, but `RestoreSession` restores the guest
+  at its banked size and the live map records `snapshotMemMib` of the bundle
+  (`noded/fcvm/driver/driver.go`, `loadPatchAndResumeWithDiff`). If a
+  workload's `memMib` is lowered while sessions are banked at the old size,
+  the ticket under-reserves and the landed VM's claimed memory exceeds what
+  admission checked, which is `NoOvercommit` breaking at `Land`. `primeSizing`
+  has the same shape against a base's memfile. Charging the larger of the
+  registry and recorded sizes would discharge A2.
+- **A volume-forced cold boot ignores its sizing.** `Prime` sets
+  `ClaimSpec.ColdBootVCPUs` and `ColdBootMemMib` (`noded/server/server.go`),
+  but the fcvm driver's `Claim` cold-boot branches pass `d.cfg.VCPUs` and
+  `d.cfg.MemMib`, and the shared restore driver is built with zero sizing
+  (`noded/cmd/main.go`), so it defaults to 1 vCPU and 1024 MiB. Admission
+  charges the declared size, so this over-reserves and is memory-safe, but the
+  guest boots undersized. It is reached only when a warm restore cannot carry
+  the volume (a class outside `warmRestoreWithVolumeClasses`, or a base with no
+  captured volume drive).
+- **Two overhead figures (A3).** Admission charges `vmOverheadMib` (64) per
+  VM, while the jailer's per-VM cgroup ceiling assumes up to
+  `VMMMemoryOverheadMib` (192, `noded/fcvm/driver/launcher.go`) beyond guest
+  RAM. `ResidentWithinBudget` follows from `NoOvercommit` only while the real
+  overhead stays under the admission charge; section 7 of ARCHITECTURE.md
+  records a measured 3 MiB or so per guest.
+- **Conservative double counts.** A boot is counted by both the CP's pending
+  row and the brick's reported in-flight ledger from admission until its hold
+  expires, and noded counts a landed VM twice between `track()` and
+  `release()`. Neither can overcommit, but in a burst they cost refusals and
+  spurious `:capacity` denials that reach the autoscaler as demand.
+
 ## Running TLC
 
-CI runs all thirty-eight genrules through the repository's affected-target
+CI runs all forty-four genrules through the repository's affected-target
 Linux path. There is
 no local Bazel test loop in this repo. To iterate on a spec locally you need a JRE
 (>= 11) and `tla2tools.jar` (v1.7.4, the version `//bazel/tla` pins); then, from a
@@ -780,6 +967,7 @@ covers issue #5051 alongside them. The stateful lifecycle model `stateful.tla`
 covers the bounded destroy and writable-attach escapes. The session lineage
 model covers issue #4701's handoff and no-loss invariants, and the warmth GC
 model `warmth_gc.tla` covers issue #4705's durable-workspace retention contract
-against the S3 sweep. Layer-2 trace validation
+against the S3 sweep. The admission model `admission.tla` covers memory
+placement across bricks after the 2026-10-10 OOMKills. Layer-2 trace validation
 (op-log events mapped to TLA+ actions and checked against a drill trace) is a
 separate follow-up and is deliberately not built here.
