@@ -308,7 +308,7 @@ defmodule Embervm.WakeInstanceTest do
     end
   end
 
-  describe "DS wildcard is always mem-eligible" do
+  describe "DS wildcard is always mem-eligible, a blind classed brick never is" do
     test "an empty-size-class instance is eligible even with zero headroom", %{table: table} do
       wildcard =
         put_instance(table, "node-4", "ds", size_class: "", mem_headroom_mib: 0, mem_budget_mib: 0, max_live_vms: 10)
@@ -317,12 +317,15 @@ defmodule Embervm.WakeInstanceTest do
                WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 4_000)
     end
 
-    test "a zero-budget (no cgroup limit) instance is eligible even with a non-empty class", %{table: table} do
-      # Non-empty class but mem_budget_mib 0 (no cgroup limit): treated as the big
-      # burst envelope, always mem-eligible.
-      wildcard = put_instance(table, "node-4", "burst", size_class: "8gi", mem_headroom_mib: 0, mem_budget_mib: 0)
+    test "a zero-budget CLASSED instance is blind and never eligible (fail closed)", %{table: table} do
+      # Deliberately inverted from the old fail-open reading. A classed brick
+      # reporting mem_budget_mib 0 used to count as the unlimited burst envelope,
+      # but that is also exactly what a jailer-armed brick whose cgroup readout
+      # broke reports, and placing on it would admit every guest. Only an EMPTY
+      # class is the wildcard now; a classed zero budget is blind.
+      _blind = put_instance(table, "node-4", "burst", size_class: "8gi", mem_headroom_mib: 0, mem_budget_mib: 0)
 
-      assert {:ok, ^wildcard} =
+      assert {:error, :no_eligible_instance} =
                WakeInstance.select("node-4", table: table, workload: "wl-a", need_mib: 4_000)
     end
   end

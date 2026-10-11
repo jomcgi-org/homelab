@@ -88,9 +88,14 @@ defmodule Embervm.NodeRegistry do
   require Logger
 
   alias Embervm.NodeCapacity
+  alias Embervm.Scheduler.Inflight
 
   @vmm_exit_reasons ~w(host_requested host_cgroup_oom guest_kernel_panic unclassified)
   @guest_memory_states ~w(pending ok stale unsupported error)
+  # NodeStatus.admission_refusals (47) and launch_modes (49) keys. Closed sets,
+  # like the exit reasons above: a key outside them never becomes a label.
+  @admission_refusal_reasons ~w(pressure:mem pressure:taps slots)
+  @launch_modes ~w(jailed direct_exec refused)
   @uint64_max 18_446_744_073_709_551_615
 
   # Empty proto3 maps cannot distinguish an older daemon from disabled feedback.
@@ -102,7 +107,11 @@ defmodule Embervm.NodeRegistry do
     %{
       vmm_exit_counts: diagnostic_counts(Map.get(status, :vmm_exit_counts), @vmm_exit_reasons),
       guest_memory_state_counts: states,
-      guest_oom_count: if(is_nil(states), do: nil, else: diagnostic_count(Map.get(status, :guest_oom_count)))
+      guest_oom_count: if(is_nil(states), do: nil, else: diagnostic_count(Map.get(status, :guest_oom_count))),
+      # Cumulative since daemon start, keyed by the daemon's stable token. nil on
+      # a daemon that predates the field or has counted nothing yet.
+      admission_refusals: diagnostic_counts(Map.get(status, :admission_refusals), @admission_refusal_reasons),
+      launch_modes: diagnostic_counts(Map.get(status, :launch_modes), @launch_modes)
     }
   end
 
@@ -417,6 +426,10 @@ defmodule Embervm.NodeRegistry do
       Keyword.get(opts, :reservation_drop_fun, &Embervm.Scheduler.Reservation.drop_instance_shadow/1)
 
     NodeCapacity.create(table)
+    # The in-flight placement ledger lives next to the capacity table it debits,
+    # and a brick's claims are dropped when the registry forgets the brick.
+    inflight_table = Keyword.get(opts, :inflight_table, Inflight.table())
+    Inflight.create(inflight_table)
 
     now = clock.()
 
@@ -428,6 +441,7 @@ defmodule Embervm.NodeRegistry do
 
     state = %{
       table: table,
+      inflight_table: inflight_table,
       clock: clock,
       connect_fun: connect_fun,
       watch_fun: watch_fun,
@@ -929,6 +943,16 @@ defmodule Embervm.NodeRegistry do
     state
   end
 
+  # A forgotten brick's in-flight debits go with it, keyed the way
+  # Embervm.Brick.dial_id/1 reads the facts this instance published. Only on
+  # expiry, like the shadow reservation drop: a retract (a stream blip, a drain)
+  # keeps them, because a brick that comes back must not look emptier than the
+  # boots still racing it, and an unused debit expires on its own.
+  defp drop_inflight(state, rt) do
+    dial_id = Embervm.Brick.dial_id(%{instance_id: rt.instance_id, configured_id: rt.configured_id})
+    Inflight.drop(dial_id, table: state.inflight_table)
+  end
+
   # The ETS/capacity key for an instance: the {node_name, pod_uid} tuple. A
   # statically-seeded instance carries pod_uid "" and keys as {node, ""}
   # (node-scoped, matching the pre-dial-home behaviour).
@@ -1008,6 +1032,24 @@ defmodule Embervm.NodeRegistry do
       # inferred from a zero sum because an empty reservation ledger is valid.
       mem_reserved_mib: Map.get(s, :mem_reserved_mib, 0),
       admits_on_reservation: Map.get(s, :admits_on_reservation, false),
+      # The per-VM overhead (field 37) the reserved predicate charges every live
+      # VM plus the new one, and that an in-flight claim adds to the guest's need.
+      vm_overhead_mib: Map.get(s, :vm_overhead_mib, 0),
+      # Admission ledger (fields 43-46): the daemon's own verdict for ONE more VM,
+      # evaluated by the function its boot verbs call, and the boots it has
+      # admitted that have not joined its live map yet. admission_reported false
+      # (a daemon that predates them) makes Embervm.Brick.admittable_mib/1 fall
+      # back to the per-model predicate on the facts above. The refusal counts
+      # (47) ride diagnostic_facts/1 below.
+      admission_reported: Map.get(s, :admission_reported, false) == true,
+      mem_admittable_mib: Map.get(s, :mem_admittable_mib, 0),
+      mem_inflight_mib: Map.get(s, :mem_inflight_mib, 0),
+      inflight_vms: Map.get(s, :inflight_vms, 0),
+      # Jailer fact (48): the daemon's jailer is armed AND its startup preflight
+      # passed (a brick whose preflight fails never registers). The per-mode
+      # launch counts (49) ride diagnostic_facts/1. Diagnostic only: placement
+      # does not read either.
+      jailer_armed: Map.get(s, :jailer_armed, false) == true,
       cpu_headroom_millicores: s.cpu_headroom_millicores,
       live_vms: s.live_vms,
       max_live_vms: s.max_live_vms,
@@ -1983,6 +2025,7 @@ defmodule Embervm.NodeRegistry do
 
     state = retract_capacity(state, instance_id)
     safe_reservation_drop(state.reservation_drop_fun, instance_id)
+    if rt, do: drop_inflight(state, rt)
 
     state =
       case state.node_runtime[instance_id] do
