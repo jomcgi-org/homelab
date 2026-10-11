@@ -1135,8 +1135,10 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 			resources = append(resources, JailResource{Role: "legacy-placeholder-backing", HostPath: placeholder, JailPath: placeholder, Writable: true, PrivateCopy: true})
 		}
 		if !hasResourceRole(resources, "rootfs") {
+			// Only a direct exec can run it. A disarmed launcher does; an armed
+			// launcher refuses it (ErrJailerContainment), never running it unjailed.
 			directExec = true
-			slog.Warn("driver: restoring legacy bundle without jail resource metadata via direct exec",
+			slog.Warn("driver: legacy bundle without jail resource metadata can only run via direct exec",
 				"snapshot", snapPath, "vm", vmID)
 		}
 	}
@@ -3380,9 +3382,9 @@ func (d *Driver) ClaimedMib() uint64 {
 }
 
 // JailerLaunchCounts reports whether this driver's launcher arms the jailer and
-// the daemon's cumulative launches by mode: jailed, direct exec (a legacy
-// bundle with no jail metadata, or the jailer disarmed) and refused (a jailed
-// launch that failed closed). The counts are shared by every launcher in the
+// the daemon's cumulative launches by mode: jailed, direct exec (the jailer
+// disarmed) and refused (a jailed launch that failed closed, or a legacy bundle
+// with no jail metadata that an armed launcher will not run unjailed). The counts are shared by every launcher in the
 // daemon. A launcher other than ExecLauncher reports disarmed and zero.
 func (d *Driver) JailerLaunchCounts() (armed bool, jailed, directExec, refused uint64) {
 	launcher, ok := d.launcher.(*ExecLauncher)

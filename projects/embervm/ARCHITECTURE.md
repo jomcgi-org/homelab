@@ -1958,7 +1958,9 @@ embervm/032).
   startup and per launch: an armed brick that cannot delegate cgroups, find
   the jailer, or open every READY base rootfs through a jailed preflight exits
   before it registers; a jailed launch that cannot be contained is refused,
-  never retried unjailed; a startup sweep removes jails a dead daemon left.
+  never retried unjailed, and so is a legacy bundle whose metadata names no
+  rootfs, which could only run direct; a startup sweep removes jails a dead
+  daemon left.
   `NodeStatus` reports `jailer_armed` and cumulative `launch_modes`
   (`jailed`, `direct_exec`, `refused`), and conformance S7, once dev arms it,
   fails the dev gate on any unjailed or refused launch. Every deployment keeps
