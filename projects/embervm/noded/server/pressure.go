@@ -585,6 +585,57 @@ func (s *Server) relightNeedMib(workload, ref string) uint64 {
 	return max(need, uint64(recordedBundleMemMib(filepath.Join(s.sessionDriver.SessionsDir(), ref))))
 }
 
+// bundleAdmitMib is the memory a tap or group RELIGHT is charged: the larger of
+// the request's declared memMib and the size recorded with the banked bundle in
+// dir. The driver's live map counts the restored VM at its snapshot's size, so a
+// memMib lowered while the bundle was banked must not shrink the reservation
+// below the guest the restore lands, exactly as relightNeedMib does for a
+// session. An empty dir (no bundle the request can name) charges the declared
+// size.
+func bundleAdmitMib(declaredMib uint32, dir string) uint64 {
+	if dir == "" {
+		return uint64(declaredMib)
+	}
+	return uint64(max(declaredMib, recordedBundleMemMib(dir)))
+}
+
+// servingAdmitMib is StartServing's admission need: the declared size for a
+// FRESH cold boot, and for a RELIGHT the larger of it and the banked serving
+// bundle's recorded size.
+func (s *Server) servingAdmitMib(req *nodev1.StartServingRequest) uint64 {
+	dir := ""
+	if ref := req.GetRelight().GetSnapshotRef(); safeSegment(ref) {
+		dir = filepath.Join(s.servingDriver.ServingDir(), ref)
+	}
+	return bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+}
+
+// statefulAdmitMib is StartStateful's admission need: the declared size for a
+// FRESH or COLD boot, and for a RELIGHT the larger of it and the banked
+// stateful bundle's recorded size. A RELIGHT whose bundle turns out stale falls
+// back to a cold boot at the declared size; it keeps the larger charge, which
+// can refuse a fallback that would have fit but never under-reserves.
+func (s *Server) statefulAdmitMib(req *nodev1.StartStatefulRequest) uint64 {
+	dir := ""
+	if ref := req.GetRelightSnapshotRef(); req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT && safeSegment(ref) {
+		dir = filepath.Join(s.statefulDriver.StatefulDir(), ref)
+	}
+	return bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+}
+
+// groupMemberAdmitMib is StartGroupMember's admission need: the declared size
+// for a FRESH cold boot, and for a RELIGHT the larger of it and the recorded
+// size of the member bundle its group/<set_id>/<member> snapshot_ref names.
+func (s *Server) groupMemberAdmitMib(req *nodev1.StartGroupMemberRequest) uint64 {
+	dir := ""
+	if req.GetMode() == nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT {
+		if setID, member, ok := parseGroupMemberRef(req.GetSnapshotRef()); ok && safeSegment(setID) && safeSegment(member) {
+			dir = filepath.Join(s.groupDriver.GroupSetsDir(), setID, member)
+		}
+	}
+	return bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+}
+
 // recordedBundleMemMib reads the guest memory size a snapshot bundle was taken
 // at: the driver's mem_mib sidecar, else the memfile size rounded up to whole
 // MiB (a full snapshot's memfile is exactly the guest memory). 0 when neither is

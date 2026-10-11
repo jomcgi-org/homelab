@@ -1268,6 +1268,108 @@ func TestRestoreNeedChargesTheLargerOfRegistryAndBundle(t *testing.T) {
 	}
 }
 
+// writeBundleMemMib records a banked bundle's guest size the way the driver's
+// mem_mib sidecar does.
+func writeBundleMemMib(t *testing.T, dir string, memMib int) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mem_mib"), []byte(fmt.Sprint(memMib)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTapAndGroupRelightChargeTheLargerOfDeclaredAndBundle: a serving, stateful
+// or group-member RELIGHT lands the VM at its banked bundle's recorded size, so
+// a request declaring a smaller memMib (lowered while the bundle was banked) is
+// charged the bundle's size and refused on a reserved brick it would overcommit,
+// before any tap or restore (admission.tla A2, NoOvercommit). A FRESH boot of
+// the same declared size is still charged only what it declares.
+func TestTapAndGroupRelightChargeTheLargerOfDeclaredAndBundle(t *testing.T) {
+	res := &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}
+	reserve := func(s *Server) {
+		s.cfg.AdmissionModel = admissionModelReserved
+		s.memBudget = func() uint64 { return 2000 }
+	}
+	assertBundleRefusal := func(t *testing.T, s *Server, err error) {
+		t.Helper()
+		if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), "need 3072 MiB") {
+			t.Fatalf("relight of a 3072 MiB bundle declaring 512 MiB into a 2000 MiB budget = %v, want a pressure:mem refusal at need 3072", err)
+		}
+		if snap := s.admissionStatus(); snap.inflightMib != 0 || snap.inflightVMs != 0 {
+			t.Fatalf("refused relight left a reservation: %+v", snap)
+		}
+	}
+
+	t.Run("serving", func(t *testing.T) {
+		s, fsn, fsd := newServingTestServer(t)
+		reserve(s)
+		writeBundleMemMib(t, filepath.Join(fsd.ServingDir(), "serv-big"), 3072)
+		s.servingSnap.add(servingSnapshotEntry{snapshotRef: "serv-big", workload: "wl-serve"})
+		_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+			Resources: res,
+			Source:    &nodev1.StartServingRequest_Relight{Relight: &nodev1.RelightSource{SnapshotRef: "serv-big"}},
+			Port:      8080,
+			Trace:     &nodev1.Trace{Workload: "wl-serve"},
+		})
+		assertBundleRefusal(t, s, err)
+		if fsn.allocs != 0 || fsd.liveCount() != 0 {
+			t.Fatalf("refused serving relight allocated %d taps and restored %d VMs", fsn.allocs, fsd.liveCount())
+		}
+		if got := s.servingAdmitMib(&nodev1.StartServingRequest{
+			Resources: res,
+			Source:    &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "serv-big"}},
+		}); got != 512 {
+			t.Fatalf("FRESH serving need = %d, want the declared 512", got)
+		}
+	})
+
+	t.Run("stateful", func(t *testing.T) {
+		s, fsn, fsd := newStatefulTestServer(t)
+		reserve(s)
+		writeBundleMemMib(t, filepath.Join(fsd.StatefulDir(), "stf-big"), 3072)
+		relight := &nodev1.StartStatefulRequest{
+			Resources:          res,
+			Mode:               nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
+			RelightSnapshotRef: "stf-big",
+			BootImageRef:       "img-a",
+			Port:               5432,
+			Trace:              &nodev1.Trace{Workload: "wl-state"},
+		}
+		_, err := s.StartStateful(context.Background(), relight)
+		assertBundleRefusal(t, s, err)
+		if fsn.allocs != 0 || fsd.claimCount != 0 || fsd.restores != 0 {
+			t.Fatalf("refused stateful relight allocated %d taps, booted %d and restored %d VMs", fsn.allocs, fsd.claimCount, fsd.restores)
+		}
+		cold := &nodev1.StartStatefulRequest{Resources: res, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD, RelightSnapshotRef: "stf-big"}
+		if got := s.statefulAdmitMib(cold); got != 512 {
+			t.Fatalf("COLD stateful need = %d, want the declared 512", got)
+		}
+	})
+
+	t.Run("group member", func(t *testing.T) {
+		s, _, gmd, _ := newGroupMemberTestServer(t)
+		reserve(s)
+		writeBundleMemMib(t, filepath.Join(gmd.GroupSetsDir(), "set-1", "server"), 3072)
+		gmd.banked["set-1/server"] = true
+		_, err := s.StartGroupMember(context.Background(), &nodev1.StartGroupMemberRequest{
+			Resources:       res,
+			Mode:            nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT,
+			GroupInstanceId: "grp-A",
+			MemberName:      "server",
+			SnapshotRef:     "group/set-1/server",
+			Ip:              "127.0.0.1",
+			HealthPort:      8080,
+			Trace:           &nodev1.Trace{Workload: "wl-group"},
+		})
+		assertBundleRefusal(t, s, err)
+		if gmd.claims != 0 || gmd.restores != 0 {
+			t.Fatalf("refused member relight booted %d and restored %d VMs", gmd.claims, gmd.restores)
+		}
+	})
+}
+
 // exhaustedCgroup installs a cgroup fixture whose numeric limit is fully used,
 // the reading that used to collide with the unknown sentinel (S16).
 func exhaustedCgroup(t *testing.T) {

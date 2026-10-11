@@ -907,10 +907,13 @@ these differences between that protocol and the tree at c05e43f66:
   `relightNeedMib` charged the workload's registry sizing before the banked
   bundle's recorded size, while the live map records the restored guest at
   `snapshotMemMib` of its bundle, so a `memMib` lowered while sessions were
-  banked broke `NoOvercommit` at `Land`; a base Prime had the same shape.
-  Both now charge the larger of the registry and recorded sizes
-  (`relightNeedMib`, `primeAdmitMib` in `noded/server/pressure.go`), which
-  discharges A2.
+  banked broke `NoOvercommit` at `Land`; a base Prime had the same shape, and
+  so did a serving, stateful or group-member RELIGHT, which charged the
+  request's declared `memMib` and restored at the bundle's. All five now charge
+  the larger of the declared and recorded sizes (`relightNeedMib`,
+  `primeAdmitMib` and `bundleAdmitMib` in `noded/server/pressure.go`), so a
+  ticket never reserves less than the VM it lands, which is the half of A2
+  `NoOvercommit` needs.
 - **A volume-forced cold boot ignored its sizing (resolved).** `Prime` sets
   `ClaimSpec.ColdBootVCPUs` and `ColdBootMemMib`, but the fcvm driver's
   `Claim` cold-boot branches booted at the driver default (1 vCPU, 1024 MiB).
