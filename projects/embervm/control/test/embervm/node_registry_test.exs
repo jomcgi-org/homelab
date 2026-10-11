@@ -386,7 +386,7 @@ defmodule Embervm.NodeRegistryTest do
     assert facts.cpu_headroom_millicores == 1500
   end
 
-  test "registry projects the admission ledger and jailer facts (NodeStatus 37, 43-49)" do
+  test "registry projects the admission ledger and jailer facts (NodeStatus 37, 44-50)" do
     {reg, table} = start_registry([])
 
     # A daemon that predates the fields: every one reads as the legacy default,
