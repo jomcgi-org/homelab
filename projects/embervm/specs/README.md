@@ -887,42 +887,34 @@ destroyed.
 The modeled protocol satisfies every property. Writing the mapping surfaced
 these differences between that protocol and the tree at c05e43f66:
 
-- **Two lanes write no claim, and one of them does not walk.**
-  `Scheduler.place_and_claim/2` has no production caller. The dispatcher's
-  task miss (`spawn_assign_worker`, `prime_with_retry`) and the pool refill
-  (`start_prime_worker`) claim; `session_manager.ex` `place_create/4` plus
-  `prime/6` and `serving_manager.ex` `run_cold/4` debit other claims but write
-  none. That is `UnclaimedRequests`: noded's gate keeps every safety property
-  (the positive cfg includes such a lane), but placements herd and noded
-  refuses more. Session create also takes only the head brick, records no
-  autoscaler demand for a refusal, and surfaces it as `{:prime_failed, _}`,
-  which `router.ex` `create_denial/3` answers with a generic 500 (`retryable:
-  true`). For that lane `EventuallyPlaced` rests on the client retrying a 500.
-- **The deploy values select the negative configuration.** The chart default
-  `noded.admissionModel: observed` is not overridden in `deploy/values.yaml` or
-  `deploy/values-gke.yaml`, and `dispatcher.placementRetry` stays `false`. The
-  bricks therefore run `admission_observed.cfg`'s admission until #4185 moves
-  them to `reserved`. Liveness for the task lane holds without the walk
-  (`admission_liveness_no_walk.cfg`).
-- **A ticket can reserve less than the VM it lands (A2).** `relightNeedMib`
-  (`noded/server/pressure.go`) charges the workload's registry sizing before
-  the banked bundle's recorded size, but `RestoreSession` restores the guest
-  at its banked size and the live map records `snapshotMemMib` of the bundle
-  (`noded/fcvm/driver/driver.go`, `loadPatchAndResumeWithDiff`). If a
-  workload's `memMib` is lowered while sessions are banked at the old size,
-  the ticket under-reserves and the landed VM's claimed memory exceeds what
-  admission checked, which is `NoOvercommit` breaking at `Land`. `primeSizing`
-  has the same shape against a base's memfile. Charging the larger of the
-  registry and recorded sizes would discharge A2.
-- **A volume-forced cold boot ignores its sizing.** `Prime` sets
-  `ClaimSpec.ColdBootVCPUs` and `ColdBootMemMib` (`noded/server/server.go`),
-  but the fcvm driver's `Claim` cold-boot branches pass `d.cfg.VCPUs` and
-  `d.cfg.MemMib`, and the shared restore driver is built with zero sizing
-  (`noded/cmd/main.go`), so it defaults to 1 vCPU and 1024 MiB. Admission
-  charges the declared size, so this over-reserves and is memory-safe, but the
-  guest boots undersized. It is reached only when a warm restore cannot carry
-  the volume (a class outside `warmRestoreWithVolumeClasses`, or a base with no
-  captured volume drive).
+- **Every new-VM lane now claims (resolved on the same branch).** At
+  c05e43f66 session create and serving cold create debited other claims but
+  wrote none, and session create tried only its head brick and answered a
+  refusal with a 500. Session create, rejoin and relight, serving, stateful
+  and group placement now claim through `Scheduler.place_and_claim/2` or
+  `Inflight.claim/3`, and session create walks its candidates on a refusal,
+  records demand once and answers a retryable 429 `no_capacity`.
+  `UnclaimedRequests` stays in the model as the bound for any future lane that
+  forgets to claim: noded's gate keeps every safety property for it.
+- **The deploy values select the negative configuration until #6965.** The
+  chart default `noded.admissionModel: observed` is not overridden in
+  `deploy/values.yaml` or `deploy/values-gke.yaml`, and
+  `dispatcher.placementRetry` stays `false`. The bricks therefore run
+  `admission_observed.cfg`'s admission until each stage flips to `reserved`
+  after this chart reaches it. Liveness for the task lane holds without the
+  walk (`admission_liveness_no_walk.cfg`).
+- **A ticket could reserve less than the VM it lands (A2, resolved).**
+  `relightNeedMib` charged the workload's registry sizing before the banked
+  bundle's recorded size, while the live map records the restored guest at
+  `snapshotMemMib` of its bundle, so a `memMib` lowered while sessions were
+  banked broke `NoOvercommit` at `Land`; a base Prime had the same shape.
+  Both now charge the larger of the registry and recorded sizes
+  (`relightNeedMib`, `primeAdmitMib` in `noded/server/pressure.go`), which
+  discharges A2.
+- **A volume-forced cold boot ignored its sizing (resolved).** `Prime` sets
+  `ClaimSpec.ColdBootVCPUs` and `ColdBootMemMib`, but the fcvm driver's
+  `Claim` cold-boot branches booted at the driver default (1 vCPU, 1024 MiB).
+  They now boot at the declared size admission charged.
 - **Two overhead figures (A3).** Admission charges `vmOverheadMib` (64) per
   VM, while the jailer's per-VM cgroup ceiling assumes up to
   `VMMMemoryOverheadMib` (192, `noded/fcvm/driver/launcher.go`) beyond guest
