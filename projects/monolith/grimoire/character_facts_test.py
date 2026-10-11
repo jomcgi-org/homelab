@@ -418,6 +418,71 @@ def test_embedding_lock_order_is_events_before_facts_with_paired_vectors(
     assert not any(kind in ("event", "transcript") for kind, _ in calls[first_fact:])
 
 
+def test_grant_history_batch_locks_facts_in_transaction_wide_order(
+    harness, monkeypatch
+):
+    from grimoire.router import _retract_grant_history
+
+    h = harness
+    original = h.rows["reveal_partial"]
+    events = [
+        SessionEvent(
+            id=f"00000000-0000-0000-0000-{number:012d}",
+            campaign_id=original.campaign_id,
+            session_id=original.session_id,
+            seq=1000 + number,
+            kind=original.kind,
+            audience=original.audience,
+            audience_pc_ids=list(original.audience_pc_ids),
+            body=dict(original.body),
+        )
+        for number in (10, 20)
+    ]
+    h.session.add_all(events)
+    h.session.commit()
+    facts = [
+        write(
+            h,
+            [
+                FactCandidate(
+                    statement=f"Fact {event.seq}", evidence_event_ids=[event.id]
+                )
+            ],
+        ).written[0]
+        for event in events
+    ]
+    # E1 precedes E2, but its dependent F2 follows E2's dependent F1.
+    facts[0].id = "00000000-0000-0000-0000-000000000040"
+    facts[1].id = "00000000-0000-0000-0000-000000000030"
+    h.session.commit()
+    for fact in facts:
+        embed_fact(h, fact)
+    calls = []
+    original_sync = play_embeddings.sync_fact_embeddings
+
+    def sync_fact(session, fact):
+        calls.append(fact.id)
+        original_sync(session, fact)
+
+    monkeypatch.setattr(play_embeddings, "sync_fact_embeddings", sync_fact)
+    with capture_sql(h.session.get_bind()) as sql:
+        _retract_grant_history(h.session, h.rows["grant_partial"])
+        h.session.commit()
+    assert calls == sorted(fact.id for fact in facts)
+    fact_reads = [
+        statement
+        for statement in sql
+        if statement.startswith("SELECT character_fact.id,")
+    ]
+    assert len(fact_reads) == 1
+    assert "ORDER BY character_fact.id" in fact_reads[0]
+    assert all(fact.status == "retracted" for fact in facts)
+    assert not h.session.exec(
+        select(Embedding).where(Embedding.embeddable_id.in_(calls))
+    ).all()
+    assert_no_knowledge_sql(sql)
+
+
 def test_payload_and_writer_refresh_cached_visibility(harness):
     h = harness
     grant = h.rows["grant_a_only"]
