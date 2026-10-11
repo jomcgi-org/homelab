@@ -385,6 +385,37 @@ defmodule Embervm.TaskStoreTest do
     assert Embervm.Retry.classify(:transport, 1, cfg) == :fail_permanent
   end
 
+  test "the backoff bound stops at the cap however far :capacity retries push attempt" do
+    # :capacity never spends the budget, so attempt grows until the task's TTL.
+    # The float form raised badarith at attempt 1016 (1000 * 2^1015 overflows a
+    # double) inside TaskStore's :fail handler.
+    cfg = Embervm.Retry.default_config()
+    assert Embervm.Retry.backoff_ms(1, cfg, & &1) == 1_000
+    assert Embervm.Retry.backoff_ms(3, cfg, & &1) == 4_000
+    assert Embervm.Retry.backoff_ms(1_016, cfg, & &1) == 60_000
+    assert Embervm.Retry.backoff_ms(5_000, cfg, & &1) == 60_000
+    assert Embervm.Retry.backoff_ms(5_000, %{cfg | backoff_ms: 0}, & &1) == 0
+    assert Embervm.Retry.backoff_ms(5_000, %{cfg | backoff_cap_ms: 0}, & &1) == 0
+  end
+
+  test "a task refused for capacity past attempt 1016 still fails retryably", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, :created, task_id} = TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-cap-long"})
+
+    # A brick that keeps refusing under pressure for hours. The failure at
+    # attempt 1016 is the one whose backoff used to crash the store.
+    for _ <- 1..1_015 do
+      {:ok, _} = TaskStore.assign(store, task_id)
+      {:ok, %{state: :failed_retryable}, _backoff} = TaskStore.fail(store, task_id, :capacity)
+      {:ok, _} = TaskStore.retry(store, task_id)
+    end
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    assert {:ok, %{state: :failed_retryable, attempt: 1_016}, backoff} = TaskStore.fail(store, task_id, :capacity)
+    assert backoff in 0..60_000
+    assert Process.alive?(store)
+  end
+
   test "permanent-on-4xx: guest4xx is never retryable, goes straight to dead-lettered", %{path: path} do
     {_op_log, store} = start_pair(path)
 

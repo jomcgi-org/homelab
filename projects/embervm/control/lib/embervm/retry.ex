@@ -72,14 +72,17 @@ defmodule Embervm.Retry do
   # sampled uniformly from [0, bound] rather than always sleeping the full
   # bound. This spreads a thundering herd of simultaneously-failed tasks
   # across the whole window instead of retrying them all in lockstep.
+  #
+  # Integer math with a capped exponent: :capacity retries leave attempt
+  # unbounded, and the float form raised badarith once 2^(attempt - 1)
+  # overflowed a double (attempt 1016 at the default base), inside TaskStore.
+  @max_backoff_exponent 32
+
   @spec backoff_ms(pos_integer(), retry_config(), (non_neg_integer() -> non_neg_integer())) ::
           non_neg_integer()
   def backoff_ms(attempt, retry_config, rand_fun \\ &default_rand/1) do
-    bound =
-      min(
-        retry_config.backoff_cap_ms,
-        trunc(retry_config.backoff_ms * :math.pow(2, attempt - 1))
-      )
+    exponent = attempt |> Kernel.-(1) |> max(0) |> min(@max_backoff_exponent)
+    bound = min(retry_config.backoff_cap_ms, retry_config.backoff_ms * Integer.pow(2, exponent))
 
     rand_fun.(bound)
   end

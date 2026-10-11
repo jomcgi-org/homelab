@@ -78,7 +78,7 @@ defmodule Embervm.Dispatcher do
   (`note_denial`) and is always retryable without consuming the task's attempt
   budget (`Embervm.Retry`). Like a task held queued on `:no_capacity`, it waits
   for capacity until its TTL (`expires_at`) if it has one, at the full-jitter
-  backoff's capped pace of about one Prime a minute.
+  backoff's capped pace: at most a minute between Primes, about 30 s on average.
 
   ## weights are a parameter, not a redesign
 
