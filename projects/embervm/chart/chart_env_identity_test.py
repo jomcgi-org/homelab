@@ -3180,5 +3180,7 @@ def test_jailer_scenario_gates_default_off() -> None:
     assert values["conformance"]["egressProbe"] is False
     for key in ("PROD_VALUES", "GKE_VALUES"):
         prod = yaml.safe_load(Path(os.environ[key]).read_text()) or {}
-        assert ((prod.get("noded") or {}).get("jailer") or {}).get("enabled", False) is False
+        assert ((prod.get("noded") or {}).get("jailer") or {}).get(
+            "enabled", False
+        ) is False
         assert "conformance" not in prod
