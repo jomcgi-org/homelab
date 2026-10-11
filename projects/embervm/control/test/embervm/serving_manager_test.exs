@@ -1323,17 +1323,21 @@ defmodule Embervm.ServingManagerTest do
              manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
   end
 
-  test "a restore-relight pinned to a full snapshot node records no demand and claims nothing" do
+  test "a restore-relight whose full anchor node is the only brick wakes cold, records demand once and claims nothing" do
     ctx = start_stack()
     sized_serving_workload(ctx, "wl-a", 3_000)
     # The banked snapshot's node reports a reachable store but no local snapshot, so
-    # the wake restores onto a cold pick ON THAT NODE, whose only brick is full.
+    # the wake plans a restore onto a cold pick ON THAT NODE, whose only brick is
+    # full. The pinned pick records no demand; the unpinned cold create it falls
+    # back to finds no room either, and only that miss records demand.
     sized_serving_brick(ctx, "node-4", "pod-a", 1_000, store_reachable: true)
     seed_banked(ctx, "srv-1", "base-a", "serving/s-1")
 
-    assert {{:error, {:wake_failed, :no_eligible_instance}}, []} =
+    assert {{:error, {:wake_failed, :no_capacity}}, [{:denial, "wl-a", 3_000}]} =
              manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
 
+    assert Agent.get(ctx.starts, & &1) == 0
+    assert {:ok, %{state: :banked, snapshot_ref: "serving/s-1"}} = ServingStore.get(ctx.store, "srv-1")
     assert Inflight.entries(table: ctx.inflight_table) == []
   end
 
@@ -1398,6 +1402,41 @@ defmodule Embervm.ServingManagerTest do
     refute_received {:start, _, _}
     assert {:ok, %{state: :banked}} = ServingStore.get(ctx.store, "srv-1")
     assert [%{state: :published, node_id: "node-5"}] = woken_instances(ctx)
+  end
+
+  test "a restore-relight whose anchor node is full wakes cold on another brick and keeps the snapshot banked" do
+    {:ok, restore_calls} = Agent.start_link(fn -> [] end)
+
+    restore_fun = fn _ch, req ->
+      Agent.update(restore_calls, &[req | &1])
+      {:error, :unused}
+    end
+
+    ctx =
+      start_stack(
+        start_serving_fun: full_brick_start_fun("node-4/pod-a"),
+        channel_fun: fn dial_id -> {:ok, dial_id} end,
+        restore_artifact_fun: restore_fun
+      )
+
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    # The snapshot's anchor node reports a reachable store but no local snapshot, so
+    # the wake plans a restore onto that node, whose only brick cannot fit the guest.
+    sized_serving_brick(ctx, "node-4", "pod-a", 1_000, store_reachable: true)
+    sized_serving_brick(ctx, "node-5", "pod-b", 4_000)
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1")
+
+    assert {{:ok, %{ip: "10.99.0.5", port: 8080}}, []} =
+             manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+
+    # No restore onto the full node: the same wake booted fresh on the brick with room.
+    assert Agent.get(restore_calls, & &1) == []
+    assert_received {:start, "node-5/pod-b", :fresh}
+    refute_received {:start, _, _}
+    assert {:ok, %{state: :banked, snapshot_ref: "serving/s-1"}} = ServingStore.get(ctx.store, "srv-1")
+    assert [%{state: :published, node_id: "node-5"}] = woken_instances(ctx)
+    assert Inflight.pending_mib("node-4/pod-a", table: ctx.inflight_table) == 0
+    assert Inflight.pending_mib("node-5/pod-b", table: ctx.inflight_table) == 3_000
   end
 
   test "a refused relight with nowhere else to boot records demand once and fails the wake" do
