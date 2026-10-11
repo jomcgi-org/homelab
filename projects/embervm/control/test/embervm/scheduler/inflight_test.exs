@@ -148,6 +148,8 @@ defmodule Embervm.Scheduler.InflightTest do
         admits_on_reservation: true,
         mem_inflight_mib: 3_072,
         inflight_vms: 1,
+        mem_inflight_placed_mib: 3_072,
+        inflight_placed_vms: 1,
         vm_overhead_mib: 64
       }
 
@@ -158,14 +160,47 @@ defmodule Embervm.Scheduler.InflightTest do
       :ok = Inflight.claim("n/a", :racing, 3_136, opts)
       assert Inflight.debit_mib("n/a", reporting, opts) == 3_136
 
-      # Never cancels more than the control plane's own claims, so a daemon
-      # in-flight boot the control plane did not place adds no headroom.
-      busy = %{reporting | mem_inflight_mib: 9_000, inflight_vms: 3}
+      # Never below zero: placed boots beyond the claims still on the ledger
+      # (one released while its boot carries on) add no headroom.
+      busy = %{reporting | mem_inflight_placed_mib: 9_000, inflight_placed_vms: 3}
       assert Inflight.debit_mib("n/a", busy, opts) == 0
 
       # A settled claim counts in full until a report follows it.
+      idle = %{reporting | mem_inflight_mib: 0, inflight_vms: 0, mem_inflight_placed_mib: 0, inflight_placed_vms: 0}
       :ok = Inflight.settle("n/a", :admitted, opts)
-      assert Inflight.debit_mib("n/a", %{reporting | mem_inflight_mib: 0, inflight_vms: 0}, opts) == 3_136 + 3_136
+      assert Inflight.debit_mib("n/a", idle, opts) == 3_136 + 3_136
+    end
+
+    test "a boot the control plane did not place cancels none of its claims", %{opts: opts} do
+      # An activator wake of 2048 MiB is in flight on a reserved brick: the
+      # daemon's admittable already subtracts it, and it is in the totals but not
+      # in the placed figure. A create the daemon has not admitted yet must stay
+      # charged in full, or the next placement lands in its room (delta review,
+      # ledger).
+      wake_in_flight = %{
+        admission_reported: true,
+        admits_on_reservation: true,
+        mem_inflight_mib: 2_048,
+        inflight_vms: 1,
+        mem_inflight_placed_mib: 0,
+        inflight_placed_vms: 0,
+        vm_overhead_mib: 64
+      }
+
+      :ok = Inflight.claim("n/a", :create, 2_112, opts)
+      assert Inflight.debit_mib("n/a", wake_in_flight, opts) == 2_112
+
+      # Once the daemon admits the create it shows in the placed figure, at its
+      # declared size, and cancels exactly that claim.
+      admitted = %{
+        wake_in_flight
+        | mem_inflight_mib: 4_096,
+          inflight_vms: 2,
+          mem_inflight_placed_mib: 2_048,
+          inflight_placed_vms: 1
+      }
+
+      assert Inflight.debit_mib("n/a", admitted, opts) == 0
     end
 
     test "an observed brick's reported overhead cancels nothing, since no claim on it carries one", %{opts: opts} do
@@ -177,6 +212,8 @@ defmodule Embervm.Scheduler.InflightTest do
         admits_on_reservation: false,
         mem_inflight_mib: 3_072,
         inflight_vms: 1,
+        mem_inflight_placed_mib: 3_072,
+        inflight_placed_vms: 1,
         vm_overhead_mib: 64
       }
 
@@ -192,6 +229,26 @@ defmodule Embervm.Scheduler.InflightTest do
       :ok = Inflight.claim("n/a", :two, 1_000, opts)
       :ok = Inflight.settle("n/a", :two, opts)
       assert Inflight.debit_mib("n/a", %{admission_reported: false, mem_inflight_mib: 3_072}, opts) == 4_136
+    end
+
+    test "a report that does not charge landed VMs keeps settled claims until their hold", %{opts: opts} do
+      now = 1_000
+      at = Keyword.put(opts, :now, now)
+      :ok = Inflight.claim("n/a", :landed, 3_072, at)
+      :ok = Inflight.settle("n/a", :landed, Keyword.put(at, :hold_ms, 5_000))
+
+      # An observed brick's report: the landed guest has not faulted its memory
+      # in, so the report does not charge it and the settled claim stays.
+      :ok = Inflight.observe_report("n/a", Keyword.put(at, :counts_landed, false))
+      :ok = Inflight.observe_report("n/a", Keyword.put(at, :counts_landed, false))
+      assert Inflight.pending("n/a", at) == {0, 3_072}
+
+      # The hold still bounds it.
+      assert Inflight.pending("n/a", Keyword.put(opts, :now, now + 5_000)) == {0, 0}
+
+      # A reserved brick's report charges it through the live map, so it drops.
+      :ok = Inflight.observe_report("n/a", at)
+      assert Inflight.pending("n/a", at) == {0, 0}
     end
 
     test "drop forgets the brick's report sequence with its claims", %{opts: opts} do

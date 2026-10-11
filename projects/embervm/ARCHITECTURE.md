@@ -1146,12 +1146,16 @@ one memory predicate the control plane trusts.
 
 The control plane keeps its own in-flight ledger (`Embervm.Scheduler.Inflight`).
 Every new-VM placement claims what the chosen brick will charge (its declared
-memory, plus `vmOverheadMib` under `reserved`) before the boot RPC, releases it
-on a refusal, and holds it for a few seconds after a successful boot so the
-brick's next report already counts the VM.
+memory, plus `vmOverheadMib` under `reserved`) before the boot RPC and releases it
+on a refusal. After a successful boot it keeps the claim until the brick's next
+report under `reserved`, which charges the landed VM, and for a 5 second hold
+under `observed`, which does not charge a guest until it faults its memory in.
 `Scheduler.mem_eligible?/2` admits a need only when it fits
-`mem_admittable_mib` net of those pending claims, and a classed brick reporting
-a zero budget is not placeable. Two placers racing between reports can still
+`mem_admittable_mib` net of the claims that report does not count yet. noded
+reports separately the in-flight boots it admitted for a control-plane RPC
+still open (`mem_inflight_placed_mib`), and the control plane nets its unsettled
+claims against that figure only, so a node-local activator wake cannot hide one
+of its claims. A classed brick reporting a zero budget is not placeable. Two placers racing between reports can still
 pick the same brick; the brick's own admission refuses the loser, and with
 `dispatcher.placementRetry` (armed with reserved admission per stage, #6965) task, serving
 and session placement moves on to the next candidate instead of failing the

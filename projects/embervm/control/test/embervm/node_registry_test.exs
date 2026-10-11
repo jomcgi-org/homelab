@@ -398,6 +398,8 @@ defmodule Embervm.NodeRegistryTest do
     assert old.mem_admittable_mib == 0
     assert old.mem_inflight_mib == 0
     assert old.inflight_vms == 0
+    assert old.mem_inflight_placed_mib == 0
+    assert old.inflight_placed_vms == 0
     assert old.admission_refusals == nil
     assert old.jailer_armed == false
     assert old.launch_modes == nil
@@ -409,6 +411,8 @@ defmodule Embervm.NodeRegistryTest do
         mem_admittable_mib: -64,
         mem_inflight_mib: 3_072,
         inflight_vms: 1,
+        mem_inflight_placed_mib: 2_048,
+        inflight_placed_vms: 1,
         admission_refusals: %{"pressure:mem" => 2, "slots" => 0, "vm-evil" => 9},
         jailer_armed: true,
         launch_modes: %{"jailed" => 5, "direct_exec" => 1, "guest-label" => 3}
@@ -421,6 +425,8 @@ defmodule Embervm.NodeRegistryTest do
     assert facts.mem_admittable_mib == -64
     assert facts.mem_inflight_mib == 3_072
     assert facts.inflight_vms == 1
+    assert facts.mem_inflight_placed_mib == 2_048
+    assert facts.inflight_placed_vms == 1
     # Closed key sets, like the exit reasons: an unknown key never becomes a label.
     assert facts.admission_refusals == %{"pressure:mem" => 2, "slots" => 0}
     assert facts.jailer_armed == true
@@ -451,6 +457,27 @@ defmodule Embervm.NodeRegistryTest do
     assert :ok = NodeRegistry.unregister(reg, "node-4", "")
     assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 0
     assert Embervm.Scheduler.Inflight.pending_mib("some/other-brick", table: inflight) == 512
+  end
+
+  test "a report drops a settled claim on a reserved brick and keeps its hold on an observed one" do
+    inflight = Embervm.Scheduler.Inflight.create(:"nr_inflight_#{System.unique_integer([:positive])}")
+    {reg, table} = start_registry(inflight_table: inflight)
+
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status())
+    assert [facts] = NodeRegistry.capacity(table)
+    dial_id = Embervm.Brick.dial_id(facts)
+    Embervm.Scheduler.Inflight.claim(dial_id, {:create, 1}, 3_072, table: inflight)
+    Embervm.Scheduler.Inflight.settle(dial_id, {:create, 1}, table: inflight)
+
+    # Observed: the report does not charge the landed guest until it faults its
+    # memory in, so the settled claim keeps its hold across reports.
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | admits_on_reservation: false})
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | admits_on_reservation: false})
+    assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 3_072
+
+    # Reserved: the report charges it through the live map, so it drops.
+    :ok = NodeRegistry.inject_status(reg, "node-4", %{node_status() | admits_on_reservation: true})
+    assert Embervm.Scheduler.Inflight.pending_mib(dial_id, table: inflight) == 0
   end
 
   test "a draining NodeStatus stops new assignments immediately (fail-closed, zero facts)" do

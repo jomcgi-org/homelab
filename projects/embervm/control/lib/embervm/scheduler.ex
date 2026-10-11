@@ -14,7 +14,7 @@ defmodule Embervm.Scheduler do
 
   Before it filters or scores, `place/1` charges every candidate with the memory
   other placements have claimed against it and the brick has not yet reported
-  (`Embervm.Scheduler.Inflight.pending_mib/2`, read from `req.inflight`). Both the
+  (`Embervm.Scheduler.Inflight.debit_mib/3`, read from `req.inflight`). Both the
   memory gate and the PACK score see that assumed load, so a burst scored on one
   stale `NodeStatus` spreads instead of herding onto one head brick. The bricks
   returned are the caller's own maps, unchanged. `place_and_claim/2` places and
