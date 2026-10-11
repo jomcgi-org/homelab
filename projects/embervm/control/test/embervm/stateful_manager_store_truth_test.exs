@@ -612,6 +612,7 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
         publisher: publisher,
         capacity_table: capacity_table,
         catalog_table: catalog_table,
+        inflight_table: Embervm.Scheduler.Inflight.create(:"store_truth_inflight_#{suffix}"),
         clock: fn -> Agent.get(now, & &1) end,
         channel_fun: fn _node -> {:ok, :channel} end,
         invalidate_fun: fn _node, _channel -> :ok end,
