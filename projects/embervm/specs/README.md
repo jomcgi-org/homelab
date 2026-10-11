@@ -921,11 +921,15 @@ these differences between that protocol and the tree at c05e43f66:
   RAM. `ResidentWithinBudget` follows from `NoOvercommit` only while the real
   overhead stays under the admission charge; section 7 of ARCHITECTURE.md
   records a measured 3 MiB or so per guest.
-- **Conservative double counts.** A boot is counted by both the CP's pending
-  row and the brick's reported in-flight ledger from admission until its hold
-  expires, and noded counts a landed VM twice between `track()` and
-  `release()`. Neither can overcommit, but in a burst they cost refusals and
-  spurious `:capacity` denials that reach the autoscaler as demand.
+- **Conservative double counts (the CP one resolved).** A boot was counted by
+  both the CP's pending row and the brick's reported in-flight ledger from
+  admission until its hold expired; the multi-brick simulation measured the
+  cost (one claude-runtime guest per 8gi brick instead of two in a burst, with
+  the difference reported to the autoscaler as demand). `Inflight.debit_mib/3`
+  now charges a reporting brick only the claims its report does not show, and a
+  settled claim drops on the brick's next report. noded still counts a landed
+  VM twice between `track()` and `release()`, for microseconds; that cannot
+  overcommit and costs at most a refusal the CP retries.
 
 ## Running TLC
 
