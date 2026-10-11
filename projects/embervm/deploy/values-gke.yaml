@@ -44,9 +44,13 @@ noded:
     # restore on the rolled bricks: the jailed Firecracker cannot open the
     # node-shared base rootfs under /var/lib/embervm/scratch ("Permission
     # denied (os error 13)" from the virtio block backend), so the 2gi and
-    # 4gi bricks came up with no bootable VM. The scratch tree is owned by
-    # noded's uid and the jailer drops to its own; that ownership contract
-    # has to land before the flag can go back on. Tracked on #5255.
+    # 4gi bricks came up with no bootable VM. The cause was the inode mode,
+    # not directory ownership: the rootfs builder and rootfs-store published
+    # the base rootfs root-owned 0600, and jail staging skipped the a+r fixup
+    # for the rootfs role, so the dropped per-VM uid had no read bit. Staging
+    # now adds a+r to any input the jail uid cannot read and the producers
+    # publish 0644; the shared files stay root-owned and are never chowned to
+    # a jail uid. Re-arming is still gated on #5255.
     enabled: false
   drain:
     # Since #6256 (PR 6268) a brick publication interrupts the running guest
