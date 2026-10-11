@@ -1887,3 +1887,88 @@ func TestNodeStatusReportsKnownZeroAdmission(t *testing.T) {
 		}
 	}
 }
+
+type pendingLaunchError struct{ done <-chan struct{} }
+
+func (e *pendingLaunchError) Error() string                 { return "launch failed with process teardown pending" }
+func (e *pendingLaunchError) TeardownDone() <-chan struct{} { return e.done }
+func (e *pendingLaunchError) FailedLaunchHandle() substrate.Handle {
+	return substrate.Handle{ID: "failed", ThreadID: "failed-thread"}
+}
+
+func TestBuildFailedLaunchRetainsPendingUntilTeardown(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprint(canceled), func(t *testing.T) {
+			done := make(chan struct{})
+			s, _, build, _ := buildAdmissionServer(t, nil)
+			s.cfg.AdmissionModel = admissionModelReserved
+			s.memBudget = func() (uint64, bool) { return 3840, true }
+			s.memHeadroom = func() (uint64, bool) { return 0, false }
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ticket, err := s.admit(ctx, "BuildBase", 3072, 3072, classMemOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			build.failClaim = fmt.Errorf("wrapped: %w", &pendingLaunchError{done: done})
+			if canceled {
+				cancel()
+			}
+			_, err = s.runBuild(ctx, build, ticket, "base", "workload", "/ready", nil)
+			if err == nil {
+				t.Fatal("expected failed claim")
+			}
+			l := s.admissionStatus()
+			if l.inflightMib != 3072 || l.inflightVMs != 1 || l.facts.buildResidentMib != 0 || l.placedMib != 0 || l.placedVMs != 0 {
+				t.Fatalf("pending failure ledger: %+v", l)
+			}
+			if _, _, removed, _ := build.counts(); removed != 0 {
+				t.Fatal("bundle removed before teardown")
+			}
+			if next, err := s.admit(t.Context(), "test", 3072, 0, classMemOnly); err == nil {
+				next.release()
+				t.Fatal("pending failed build admitted another guest")
+			}
+			close(done)
+			deadline := time.Now().Add(time.Second)
+			for {
+				l = s.admissionStatus()
+				if l.inflightVMs == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("ticket never released: %+v", l)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if _, _, removed, _ := build.counts(); removed != 1 {
+				t.Fatalf("removed=%d", removed)
+			}
+			if l.inflightMib != 0 || l.facts.buildResidentMib != 0 {
+				t.Fatalf("leftover ledger: %+v", l)
+			}
+		})
+	}
+}
+
+func TestFailedLaunchVolumeFencesConcurrentFailuresUntilEachCleanup(t *testing.T) {
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 0)
+	first, second := make(chan struct{}), make(chan struct{})
+	cleaned := make(chan struct{}, 2)
+	s.fenceFailedLaunchVolume(&pendingLaunchError{first}, "", "workload", func() { cleaned <- struct{}{} })
+	s.fenceFailedLaunchVolume(&pendingLaunchError{second}, "", "workload", func() { cleaned <- struct{}{} })
+	close(second)
+	<-cleaned
+	if !s.failedLaunchVolumePending("/a/workspace", "workload") {
+		t.Fatal("newer completion cleared older process fence")
+	}
+	close(first)
+	<-cleaned
+	deadline := time.Now().Add(time.Second)
+	for s.failedLaunchVolumePending("/a/workspace", "workload") {
+		if time.Now().After(deadline) {
+			t.Fatal("completed fence retained")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

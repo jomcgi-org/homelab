@@ -53,6 +53,9 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.isDraining() {
 		return nil, status.Error(codes.Unavailable, "noded: draining")
 	}
+	if s.failedLaunchGroupPending(req.GetGroupInstanceId(), req.GetMemberName()) {
+		return nil, status.Error(codes.FailedPrecondition, "noded: group member launch teardown pending")
+	}
 	// The ResourceSpec is the admission need for both modes and the boot size for
 	// FRESH; without it the member would be charged 0 MiB and booted at the
 	// driver default, so refuse rather than guess.
@@ -154,7 +157,7 @@ func (s *Server) startGroupMemberFresh(ctx context.Context, req *nodev1.StartGro
 	h, err := s.groupDriver.ClaimGroupMember(ctx, req.GetTrace().GetWorkload(), rootfsPath, harnessInit, int(res.GetVcpus()), int(res.GetMemMib()), nic, env)
 	admissionLanded(ctx)
 	if err != nil {
-		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
+		s.fenceFailedLaunchGroup(err, groupInstanceID, memberName, func() { s.groupNet.RemoveMemberTap(context.Background(), groupInstanceID, tap, ip) })
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: cold-boot group member: %v", err)
 	}
 	return s.finishGroupMemberStart(ctx, h, req.GetTrace().GetWorkload(), groupInstanceID, memberName, req.GetMemberIndex(), tap, ip, healthPort, req.GetEntryGuestPort(), false, "", groupMemberReadyBudget(req, s.cfg.BootReadyTimeout), origin)
@@ -203,7 +206,7 @@ func (s *Server) startGroupMemberRelight(ctx context.Context, req *nodev1.StartG
 	h, err := s.groupDriver.RestoreGroupMember(ctx, req.GetTrace().GetWorkload(), setID, memberName)
 	admissionLanded(ctx)
 	if err != nil {
-		s.groupNet.RemoveMemberTap(ctx, groupInstanceID, tap, ip)
+		s.fenceFailedLaunchGroup(err, groupInstanceID, memberName, func() { s.groupNet.RemoveMemberTap(context.Background(), groupInstanceID, tap, ip) })
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relight group member %q: %v", ref, err)
 	}
 
@@ -504,4 +507,26 @@ func splitPath(ref string) []string {
 	}
 	out = append(out, ref[start:])
 	return out
+}
+
+type failedLaunchGroup struct{ group, member string }
+
+func (s *Server) fenceFailedLaunchGroup(err error, group, member string, cleanup func()) {
+	if failedLaunchDone(err) == nil {
+		cleanup()
+		return
+	}
+	token := &failedLaunchGroup{group: group, member: member}
+	s.failedLaunchGroups.Store(token, struct{}{})
+	afterFailedLaunch(err, func() { cleanup(); s.failedLaunchGroups.Delete(token) })
+}
+
+func (s *Server) failedLaunchGroupPending(group, member string) bool {
+	pending := false
+	s.failedLaunchGroups.Range(func(key, _ any) bool {
+		entry := key.(*failedLaunchGroup)
+		pending = entry.group == group && (member == "" || entry.member == member)
+		return !pending
+	})
+	return pending
 }

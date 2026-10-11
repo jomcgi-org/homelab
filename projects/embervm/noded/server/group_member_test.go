@@ -854,3 +854,53 @@ func TestReconcileGroupReadsInstanceSidecar(t *testing.T) {
 		t.Fatalf("worker-1 (pre-sidecar) groupInstanceID = %q, want \"\"", got)
 	}
 }
+
+func TestGroupFailedLaunchRetainsTapUntilTeardown(t *testing.T) {
+	s, network, driver, _ := newGroupMemberTestServer(t)
+	done := make(chan struct{})
+	driver.failClaim = &pendingLaunchError{done}
+	ctx, cancel := context.WithCancel(t.Context())
+	req := &nodev1.StartGroupMemberRequest{Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}, Mode: nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_FRESH, GroupInstanceId: "grp-A", MemberName: "worker", Ip: "127.0.0.1", Source: "src-a", HealthPort: 8080, Trace: &nodev1.Trace{Workload: "wl-group"}}
+	_, err := s.StartGroupMember(ctx, req)
+	cancel()
+	if err == nil {
+		t.Fatal("expected launch failure")
+	}
+	network.mu.Lock()
+	removed := len(network.removedTaps)
+	network.mu.Unlock()
+	if removed != 0 {
+		t.Fatal("tap removed before process teardown")
+	}
+	if _, err := s.DeleteGroupNetwork(t.Context(), &nodev1.DeleteGroupNetworkRequest{GroupInstanceId: "grp-A"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("network deleted with pending process: %v", err)
+	}
+	if !s.failedLaunchGroupPending("grp-A", "worker") {
+		t.Fatal("member reuse not fenced")
+	}
+	if _, err := s.StartGroupMember(t.Context(), req); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("member reused pending tap: %v", err)
+	}
+	s.invalidateScratchInventories()
+	if !network.Has("grp-A") {
+		t.Fatal("scratch invalidation deleted protected bridge")
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for {
+		network.mu.Lock()
+		removed = len(network.removedTaps)
+		network.mu.Unlock()
+		if removed == 1 && !s.failedLaunchGroupPending("grp-A", "") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tap cleanup count=%d", removed)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.invalidateScratchInventories()
+	if network.Has("grp-A") {
+		t.Fatal("confirmed teardown prevented later bridge invalidation")
+	}
+}

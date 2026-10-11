@@ -4142,3 +4142,82 @@ func TestWorkspaceLineageFenceAllowsDescendantAndLegacyCopies(t *testing.T) {
 		t.Fatalf("store holds %q, want v4", got)
 	}
 }
+
+func TestPrimeFailedLaunchRetainsWorkspaceFenceUntilTeardown(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	seedBase(s, "sbx__deadbeef03", "sbx")
+	done := make(chan struct{})
+	s.driver.(*fakeDriver).failClaim = &pendingLaunchError{done}
+	req := &nodev1.PrimeRequest{SnapshotRef: "sbx__deadbeef03", LineageId: "failed-workspace", VolumeMount: "/session", VolumeSizeBytes: 1 << 20}
+	ctx, cancel := context.WithCancel(t.Context())
+	_, err := s.Prime(ctx, req)
+	cancel()
+	if err == nil {
+		t.Fatal("expected failed launch")
+	}
+	if !s.lineageAttached("sbx", "failed-workspace") {
+		t.Fatal("failed process lost workspace ownership")
+	}
+	if _, err := s.DeleteVolume(t.Context(), &nodev1.DeleteVolumeRequest{Workload: "sbx", LineageId: "failed-workspace"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("deletion did not respect pending teardown: %v", err)
+	}
+	if _, err := s.Prime(t.Context(), req); err == nil || !strings.Contains(err.Error(), "teardown pending") {
+		t.Fatalf("workspace reuse did not respect pending teardown: %v", err)
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for s.lineageAttached("sbx", "failed-workspace") {
+		if time.Now().After(deadline) {
+			t.Fatal("workspace fence did not clear")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := s.DeleteVolume(t.Context(), &nodev1.DeleteVolumeRequest{Workload: "sbx", LineageId: "failed-workspace"}); err != nil {
+		t.Fatalf("confirmed teardown retained workspace: %v", err)
+	}
+}
+
+type failedVolumeLaunchError struct {
+	*pendingLaunchError
+	paths []string
+}
+
+func (e *failedVolumeLaunchError) FailedLaunchVolumePaths() []string { return e.paths }
+
+type failedSessionLaunchDriver struct {
+	*fakeDriver
+	err error
+}
+
+func (d *failedSessionLaunchDriver) RestoreSession(context.Context, string, string, bool) (substrate.Handle, error) {
+	return substrate.Handle{}, d.err
+}
+
+func TestRelightFailedLaunchFencesEmbeddedWorkspace(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	done := make(chan struct{})
+	path := s.volumes.SessionVolumePath("sbx", "embedded")
+	s.sessionDriver = &failedSessionLaunchDriver{fakeDriver: &fakeDriver{}, err: &failedVolumeLaunchError{pendingLaunchError: &pendingLaunchError{done}, paths: []string{path}}}
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "session-old", workload: "sbx"})
+	_, err := s.Relight(t.Context(), &nodev1.RelightRequest{SnapshotRef: "session-old", SessionId: "session-id", Trace: &nodev1.Trace{Workload: "sbx"}})
+	if err == nil {
+		t.Fatal("expected failed restore")
+	}
+	if !s.lineageAttached("sbx", "embedded") {
+		t.Fatal("embedded workspace unprotected")
+	}
+	if s.lineageAttached("sbx", "unrelated") {
+		t.Fatal("known workspace path unnecessarily blocked unrelated lineage")
+	}
+	if _, err := s.DeleteVolume(t.Context(), &nodev1.DeleteVolumeRequest{Workload: "sbx", LineageId: "embedded"}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("embedded workspace deletion allowed: %v", err)
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for s.lineageAttached("sbx", "embedded") {
+		if time.Now().After(deadline) {
+			t.Fatal("restored workspace fence never cleared")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

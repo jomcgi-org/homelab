@@ -3383,3 +3383,201 @@ func TestColdBootAdmissionCeilingMatchesDeclaredOverrideAndDefault(t *testing.T)
 		}
 	}
 }
+
+// launchOwnershipProcess makes teardown failures explicit without reporting exit
+// merely because a signal was attempted. Its state is shared with retry workers.
+type launchOwnershipProcess struct {
+	Process
+	mu               sync.Mutex
+	killErr, waitErr error
+	kills            int
+}
+
+func (p *launchOwnershipProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.kills++
+	if p.killErr != nil {
+		return p.killErr
+	}
+	return p.Process.Kill()
+}
+
+func (p *launchOwnershipProcess) Wait() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.waitErr != nil {
+		return p.waitErr
+	}
+	return p.Process.Wait()
+}
+
+func (p *launchOwnershipProcess) allowCleanup() {
+	p.mu.Lock()
+	p.killErr = nil
+	p.waitErr = nil
+	p.mu.Unlock()
+}
+
+type launchOwnershipLauncher struct {
+	*fakeLauncher
+	proc                                *launchOwnershipProcess
+	partial, missingSerial, waitFailure bool
+	cancel                              context.CancelFunc
+}
+
+func (l *launchOwnershipLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, error) {
+	p, err := l.fakeLauncher.Launch(ctx, spec)
+	if err != nil {
+		return p, err
+	}
+	l.proc = &launchOwnershipProcess{Process: p, killErr: errors.New("injected unproven kill")}
+	if l.waitFailure {
+		l.proc.killErr = nil
+		l.proc.waitErr = errors.New("injected unproven wait")
+	}
+	if l.missingSerial {
+		if err := os.Remove(spec.SerialPath); err != nil {
+			return l.proc, err
+		}
+	}
+	if l.cancel != nil {
+		l.cancel()
+	}
+	if l.partial {
+		return l.proc, errors.New("injected partial launch")
+	}
+	return l.proc, nil
+}
+
+type launchTeardownProof interface {
+	TeardownDone() <-chan struct{}
+	TeardownConfirmed() bool
+	FailedLaunchHandle() substrate.Handle
+}
+
+func requireRetainedLaunch(t *testing.T, d *Driver, l *launchOwnershipLauncher, err error, wantMib uint64) {
+	t.Helper()
+	if l.proc == nil {
+		t.Fatalf("failure preceded process launch: %v", err)
+	}
+	// Also reap the fake on a failed assertion when this test runs against the old
+	// implementation, which has no retry owner.
+	defer func() { l.proc.allowCleanup(); _ = l.proc.Kill() }()
+	if err == nil {
+		t.Fatal("launch unexpectedly succeeded")
+	}
+	if got := d.ClaimedMib(); got != wantMib || d.LiveCount() != 1 {
+		t.Fatalf("unproven launch lost charge: live=%d memory=%d want=%d", d.LiveCount(), got, wantMib)
+	}
+	var proof launchTeardownProof
+	if !errors.As(err, &proof) {
+		t.Fatalf("launch failure has no teardown proof: %v", err)
+	}
+	if proof.TeardownConfirmed() {
+		t.Fatal("failed teardown was confirmed")
+	}
+	h := proof.FailedLaunchHandle()
+	if h.ID == "" || d.get(h.ID) == nil {
+		t.Fatal("failed launch lost retry identity")
+	}
+	select {
+	case <-proof.TeardownDone():
+		t.Fatal("teardown closed before exit proof")
+	default:
+	}
+	l.proc.allowCleanup()
+	// The cancelled-request case must be reaped by the independent retry owner.
+	if l.cancel == nil {
+		if err := d.Release(context.Background(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.proc.mu.Lock()
+	kills := l.proc.kills
+	l.proc.mu.Unlock()
+	select {
+	case <-proof.TeardownDone():
+	case <-time.After(3 * time.Second):
+		t.Fatal("retry owner failed to acknowledge completed release")
+	}
+	l.proc.mu.Lock()
+	after := l.proc.kills
+	l.proc.mu.Unlock()
+	if l.cancel == nil && after != kills {
+		t.Fatalf("retry killed already released process: %d -> %d", kills, after)
+	}
+	if !proof.TeardownConfirmed() || d.LiveCount() != 0 || d.ClaimedMib() != 0 {
+		t.Fatal("proven teardown retained charge")
+	}
+	if err := d.Release(context.Background(), h); err == nil {
+		t.Fatal("second public Release should report unknown handle")
+	}
+}
+
+func TestFailedLaunchRetainsMemoryUntilProvenTeardown(t *testing.T) {
+	for _, kind := range []string{"actions", "partial-launch", "cancelled", "unproven-wait", "serial-follower", "restore"} {
+		t.Run(kind, func(t *testing.T) {
+			l := &launchOwnershipLauncher{fakeLauncher: &fakeLauncher{failPath: "/actions"}}
+			d := testDriverWithLauncher(t, l)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch kind {
+			case "partial-launch":
+				l.partial = true
+			case "cancelled":
+				l.cancel = cancel
+			case "unproven-wait":
+				l.waitFailure = true
+			case "serial-follower":
+				l.missingSerial = true
+			}
+			var err error
+			if kind == "restore" {
+				d.launcher = &fakeLauncher{}
+				h, e := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "retained-restore", ColdBootMemMib: 3072})
+				if e != nil {
+					t.Fatal(e)
+				}
+				ref, e := d.Snapshot(ctx, h)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = d.Release(ctx, h); e != nil {
+					t.Fatal(e)
+				}
+				l.fakeLauncher.failPath = "/snapshot/load"
+				d.launcher = l
+				_, err = d.Restore(ctx, ref)
+			} else {
+				_, err = d.Claim(ctx, substrate.ClaimSpec{ThreadID: "retained-launch", ColdBootMemMib: 3072})
+			}
+			requireRetainedLaunch(t, d, l, err, 3072)
+		})
+	}
+}
+
+type exitedOwnershipProcess struct{ *delayedReleaseProcess }
+
+func (*exitedOwnershipProcess) Exited() bool { return true }
+func TestStopExitedProcessClosesSerialFollower(t *testing.T) {
+	d := testDriver(t)
+	path := filepath.Join(shortTempDir(t), "serial.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := newSerialFollower(path, d.logger, "test", "init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Stop()
+	p := &guestOutputProcess{Process: &exitedOwnershipProcess{&delayedReleaseProcess{killErr: errors.New("already exited")}}, follower: f}
+	if err := stopProcess(p); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.done:
+	default:
+		t.Fatal("exit proof released ownership but leaked serial follower")
+	}
+}

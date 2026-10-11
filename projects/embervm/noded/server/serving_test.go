@@ -910,3 +910,35 @@ func TestReconcileServingFromDisk(t *testing.T) {
 		t.Errorf("rescan did not recover the pinned IP: %+v", got)
 	}
 }
+
+func TestServingFailedLaunchRetainsTapUntilTeardown(t *testing.T) {
+	s, network, driver := newServingTestServer(t)
+	done := make(chan struct{})
+	driver.failClaim = &pendingLaunchError{done}
+	ctx, cancel := context.WithCancel(t.Context())
+	_, err := s.StartServing(ctx, &nodev1.StartServingRequest{Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}, Source: &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}}, Port: 8080, Trace: &nodev1.Trace{Workload: "wl-serve"}})
+	cancel()
+	if err == nil {
+		t.Fatal("expected launch failure")
+	}
+	network.mu.Lock()
+	released := len(network.released)
+	network.mu.Unlock()
+	if released != 0 {
+		t.Fatal("tap released before process teardown")
+	}
+	close(done)
+	deadline := time.Now().Add(time.Second)
+	for {
+		network.mu.Lock()
+		released = len(network.released)
+		network.mu.Unlock()
+		if released == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tap cleanup count=%d", released)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

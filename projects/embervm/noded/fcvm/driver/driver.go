@@ -174,7 +174,9 @@ type Process interface {
 }
 
 // Launcher starts a Firecracker process whose API socket is at socketPath and
-// returns once the socket accepts connections.
+// returns once the socket accepts connections. On error, a non-nil process
+// transfers ownership of a partially launched process to the caller; nil means
+// no process remains. Callers must handle the process even when err is non-nil.
 type Launcher interface {
 	Launch(ctx context.Context, spec LaunchSpec) (Process, error)
 }
@@ -202,8 +204,10 @@ type fcAPI = API
 
 // Driver implements substrate.Substrate and substrate.Snapshotable for FC-direct.
 type Driver struct {
-	cfg    Config
-	logger *slog.Logger
+	preflightOnce sync.Once
+	preflightGate chan struct{}
+	cfg           Config
+	logger        *slog.Logger
 	// diffBanking is the process-lifetime runtime gate. New clears it when the
 	// configured snapshot-editor is unavailable or not executable.
 	diffBanking bool
@@ -1189,22 +1193,32 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 		MemMib: memMib, Resources: resources, DirectExec: directExec,
 		SerialPath: serialPath, OnExit: d.recordVMMExit,
 	})
+	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
+	inst := &instance{
+		handle: h, workload: workload, proc: proc, dir: dir, sock: sock,
+		memMib: memMib, resources: resources, trackingDirtyPages: enableDiffSnapshots,
+	}
 	if err != nil {
+		if proc != nil {
+			return d.abortWithSerialDiag(inst, fmt.Errorf("driver: launch firecracker for restore: %w", err), threadID)
+		}
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
 	}
 	proc, err = d.routeGuestOutput(proc, serialPath, workload, guestPhaseVM)
 	if err != nil {
-		return substrate.Handle{}, err
+		return d.abortWithSerialDiag(inst, err, threadID)
 	}
+	inst.proc = proc
 	client := d.clientForProcess(sock, proc)
+	inst.client = client
 	if err := d.bindJailedVsock(proc, threadID); err != nil {
-		return d.abortWithSerialDiag(proc, err, threadID)
+		return d.abortWithSerialDiag(inst, err, threadID)
 	}
 	// Serial configuration is deliberately NOT part of the snapshot state: this
 	// fresh process has no UART sink until told, and resume_vm may start the
 	// guest immediately, so PutSerial MUST precede LoadSnapshot (issue #4404).
 	if err := issueSerial(ctx, client, serialPath); err != nil {
-		return d.abortWithSerialDiag(proc, err, threadID)
+		return d.abortWithSerialDiag(inst, err, threadID)
 	}
 	resumeVM := !patchVolume
 	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(memMib))
@@ -1223,30 +1237,18 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	})
 	cancelSnapshot()
 	if err != nil {
-		return d.abortWithSerialDiag(proc, err, threadID)
+		return d.abortWithSerialDiag(inst, err, threadID)
 	}
 	if patchVolume {
 		if err := client.PatchDrive(ctx, "volume", fcclient.PatchedDrive{
 			DriveID:    "volume",
 			PathOnHost: volumeDiskPath,
 		}); err != nil {
-			return d.abortWithSerialDiag(proc, err, threadID)
+			return d.abortWithSerialDiag(inst, err, threadID)
 		}
 		if err := client.Resume(ctx); err != nil {
-			return d.abortWithSerialDiag(proc, err, threadID)
+			return d.abortWithSerialDiag(inst, err, threadID)
 		}
-	}
-	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	inst := &instance{
-		handle:             h,
-		workload:           workload,
-		proc:               proc,
-		client:             client,
-		dir:                dir,
-		sock:               sock,
-		memMib:             memMib,
-		resources:          resources,
-		trackingDirtyPages: enableDiffSnapshots,
 	}
 	if bankBase {
 		inst.bankBaseMemPath = memPath
@@ -1451,16 +1453,26 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		MemMib: cb.memMib, Resources: launchResources,
 		SerialPath: serialPath, OnExit: d.recordVMMExit,
 	})
+	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
+	inst := &instance{
+		handle: h, workload: cb.workload, proc: proc, dir: dir, sock: sock,
+		memMib: cb.memMib, resources: driveResources, trackingDirtyPages: cb.trackDirtyPages,
+	}
 	if err != nil {
+		if proc != nil {
+			return d.abortWithSerialDiag(inst, fmt.Errorf("driver: launch firecracker: %w", err), threadID)
+		}
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker: %w", err)
 	}
 	proc, err = d.routeGuestOutput(proc, serialPath, cb.workload, guestPhaseInit)
 	if err != nil {
-		return substrate.Handle{}, err
+		return d.abortWithSerialDiag(inst, err, threadID)
 	}
+	inst.proc = proc
 	client := d.clientForProcess(sock, proc)
+	inst.client = client
 	if err := d.bindJailedVsock(proc, threadID); err != nil {
-		return d.abortWithSerialDiag(proc, err, threadID)
+		return d.abortWithSerialDiag(inst, err, threadID)
 	}
 
 	// firecracker_boot: configure the microVM and Start it (the kernel boot + the
@@ -1539,21 +1551,10 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 	}()
 	bspan.End()
 	if bootErr != nil {
-		return d.abortWithSerialDiag(proc, bootErr, threadID)
+		return d.abortWithSerialDiag(inst, bootErr, threadID)
 	}
 
-	h := substrate.Handle{ThreadID: threadID, ID: vmID, Node: d.cfg.Node}
-	d.track(&instance{
-		handle:             h,
-		workload:           cb.workload,
-		proc:               proc,
-		client:             client,
-		dir:                dir,
-		sock:               sock,
-		memMib:             cb.memMib,
-		resources:          driveResources,
-		trackingDirtyPages: cb.trackDirtyPages,
-	})
+	d.track(inst)
 	return h, nil
 }
 
@@ -3156,6 +3157,10 @@ func (d *Driver) Release(_ context.Context, h substrate.Handle) error {
 	if !ok {
 		return fmt.Errorf("driver: release of unknown handle %q", h.ID)
 	}
+	return d.releaseInstance(inst)
+}
+
+func (d *Driver) releaseInstance(inst *instance) error {
 	// Keep ownership and memory charged until Kill has waited for process exit.
 	// Serialize only this VM, so status and unrelated releases stay responsive.
 	inst.releaseMu.Lock()
@@ -3163,22 +3168,13 @@ func (d *Driver) Release(_ context.Context, h substrate.Handle) error {
 	if inst.released {
 		return nil
 	}
-	killErr := inst.proc.Kill()
-	if killErr != nil {
-		return fmt.Errorf("driver: kill firecracker: %w", killErr)
-	}
-	// The production process caches Wait, including the normal killed exit
-	// status. Keep the driver's contract explicit for every Process implementation.
-	if waitErr := inst.proc.Wait(); waitErr != nil {
-		var exited *exec.ExitError
-		if !errors.As(waitErr, &exited) || exited.ProcessState == nil {
-			return fmt.Errorf("driver: wait firecracker: %w", waitErr)
-		}
+	if err := stopProcess(inst.proc); err != nil {
+		return err
 	}
 	_ = os.Remove(inst.sock)
 	inst.released = true
 	d.mu.Lock()
-	delete(d.live, h.ID)
+	delete(d.live, inst.handle.ID)
 	d.mu.Unlock()
 	return nil
 }
@@ -3205,9 +3201,7 @@ func (d *Driver) MarkGuestReady(h substrate.Handle) {
 func (d *Driver) routeGuestOutput(proc Process, path, workload, phase string) (Process, error) {
 	follower, err := newSerialFollower(path, d.logger, workload, phase)
 	if err != nil {
-		_ = proc.Kill()
-		_ = proc.Wait()
-		return nil, err
+		return proc, err
 	}
 	return &guestOutputProcess{Process: proc, follower: follower}, nil
 }
@@ -3439,4 +3433,94 @@ func bundleSize(paths ...string) int64 {
 		}
 	}
 	return total
+}
+
+// stopProcess accepts only process-exit evidence. A failed signal must not block
+// waiting on a process that may still be running; its owner retries separately.
+func processExited(proc Process) bool {
+	reporter, ok := proc.(exitReporter)
+	return ok && reporter.Exited()
+}
+
+func stopProcess(proc Process) error {
+	if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !processExited(proc) {
+		return fmt.Errorf("driver: kill firecracker: %w", err)
+	}
+	// Even a previously reaped process may have a wrapper with a serial follower
+	// to stop. Never skip its Wait after trusted exit evidence.
+	if err := proc.Wait(); !waitProvesExit(err) && !processExited(proc) {
+		return fmt.Errorf("driver: wait firecracker: %w", err)
+	}
+	return nil
+}
+
+func waitProvesExit(err error) bool {
+	if err == nil {
+		return true
+	}
+	var exited *exec.ExitError
+	return errors.As(err, &exited) && exited.ProcessState != nil
+}
+
+// failedLaunchError preserves the primary failure and the cleanup owner. The
+// channel closes only after teardown is proven; build drivers and tap/volume
+// owners outside this live map use it to release their own reservations.
+type failedLaunchError struct {
+	cause, errorCleanup error
+	handle              substrate.Handle
+	done                <-chan struct{}
+	volumePaths         []string
+}
+
+func (e *failedLaunchError) Error() string {
+	if err := errors.Join(e.cause, e.errorCleanup); err != nil {
+		return err.Error()
+	}
+	return "launch teardown confirmed"
+}
+func (e *failedLaunchError) Unwrap() []error                      { return []error{e.cause, e.errorCleanup} }
+func (e *failedLaunchError) TeardownDone() <-chan struct{}        { return e.done }
+func (e *failedLaunchError) FailedLaunchHandle() substrate.Handle { return e.handle }
+func (e *failedLaunchError) FailedLaunchVolumePaths() []string {
+	return append([]string(nil), e.volumePaths...)
+}
+
+func (e *failedLaunchError) TeardownConfirmed() bool {
+	select {
+	case <-e.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *Driver) retainFailedLaunch(inst *instance, cause error) (substrate.Handle, error) {
+	d.track(inst)
+	done := make(chan struct{})
+	cleanupErr := d.releaseInstance(inst)
+	if cleanupErr == nil {
+		close(done)
+	} else {
+		d.logger.Warn("driver: failed launch retains process ownership", "vm", inst.handle.ID, "err", cleanupErr)
+		// This owner outlives the request context. Cancellation cannot surrender a
+		// process, its memory, or its backing resources. Release is serialized and
+		// idempotent, including when another owner already completed teardown.
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				if d.releaseInstance(inst) == nil {
+					close(done)
+					return
+				}
+			}
+		}()
+	}
+	var volumePaths []string
+	for _, r := range inst.resources {
+		if r.Role == "volume" {
+			volumePaths = append(volumePaths, r.HostPath)
+		}
+	}
+	return substrate.Handle{}, &failedLaunchError{cause: cause, errorCleanup: cleanupErr, handle: inst.handle, done: done, volumePaths: volumePaths}
 }

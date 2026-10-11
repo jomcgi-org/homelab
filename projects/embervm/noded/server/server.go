@@ -340,9 +340,11 @@ type Server struct {
 	// no half-written snapshot survives (meta.json-last already covers the store
 	// side). buildsWG counts the same builds so the drain waits for a clean finish
 	// until the deadline before it cancels.
-	buildsMu     sync.Mutex
-	activeBuilds map[string]context.CancelFunc
-	buildsWG     sync.WaitGroup
+	failedLaunchGroups  sync.Map // unique failedLaunchGroup -> pending cleanup
+	failedLaunchVolumes sync.Map // unique failedLaunchVolume -> pending cleanup
+	buildsMu            sync.Mutex
+	activeBuilds        map[string]context.CancelFunc
+	buildsWG            sync.WaitGroup
 
 	// store is the off-node object-store client the R6 continuity verbs and the
 	// async export queue use. nil disables the store (no endpoint configured):
@@ -1276,6 +1278,19 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admission
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
+		if done := failedLaunchDone(err); done != nil {
+			released = false
+			go func() {
+				<-done
+				var failed interface{ FailedLaunchHandle() substrate.Handle }
+				if errors.As(err, &failed) {
+					if rerr := bd.RemoveBundle(failed.FailedLaunchHandle().ThreadID); rerr != nil {
+						s.logger.Warn("noded: remove failed build bundle", "err", rerr)
+					}
+				}
+				ticket.release()
+			}()
+		}
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
 	released = false
@@ -1495,6 +1510,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if readyPath == "" {
 		readyPath = defaultReadyPath
 	}
+	var launchErr error
 	volumeDiskPath := req.GetVolumeDiskPath()
 	if req.GetLineageId() != "" {
 		// Guard like every other volume RPC does: a nil manager here would be a
@@ -1504,10 +1520,13 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured; session persistence unavailable on this node")
 		}
 		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
+		if s.failedLaunchVolumePending(volumeDiskPath, base.workload) {
+			return nil, status.Error(codes.FailedPrecondition, "noded: session volume launch teardown pending")
+		}
 		// The guest can write before AttachLineage runs after boot. Hold the
 		// workspace export fence throughout provisioning and readiness.
 		finishWorkspaceUse := s.beginWorkspaceUse(base.workload, req.GetLineageId())
-		defer finishWorkspaceUse()
+		defer func() { afterFailedLaunch(launchErr, finishWorkspaceUse) }()
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
@@ -1528,6 +1547,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		if err := s.volumes.ClearRetirementIntent(base.workload, req.GetLineageId()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: clear retirement intent: %v", err)
 		}
+	}
+	if volumeDiskPath != "" && s.failedLaunchVolumePending(volumeDiskPath, base.workload) {
+		return nil, status.Error(codes.FailedPrecondition, "noded: session volume launch teardown pending")
 	}
 	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 
@@ -1575,6 +1597,10 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		spec.ColdBootMemMib = int(sizeMemMib)
 	}
 	h, err := s.driver.Claim(substrate.WithMemoryReservation(ctx, primeNeed), spec)
+	launchErr = err
+	if volumeDiskPath != "" {
+		s.fenceFailedLaunchVolume(err, volumeDiskPath, base.workload)
+	}
 	ticket.release()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore snapshot %q: %v", ref, err)
@@ -1771,6 +1797,74 @@ func (s *Server) Destroy(ctx context.Context, req *nodev1.DestroyRequest) (*node
 		return nil, status.Errorf(codes.Internal, "noded: reap vm %q: %v", vmID, err)
 	}
 	return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
+}
+
+// failedLaunchDone is evidence of a process that cannot yet relinquish its
+// resources. A nil channel or unmarked error carries no such ownership.
+func failedLaunchDone(err error) <-chan struct{} {
+	var proof interface{ TeardownDone() <-chan struct{} }
+	if errors.As(err, &proof) {
+		return proof.TeardownDone()
+	}
+	return nil
+}
+
+// afterFailedLaunch detaches cleanup from a canceled RPC, but never from the
+// driver's proof of teardown. Already-complete and prelaunch errors clean inline.
+func afterFailedLaunch(err error, cleanup func()) {
+	if done := failedLaunchDone(err); done != nil {
+		select {
+		case <-done:
+		default:
+			go func() { <-done; cleanup() }()
+			return
+		}
+	}
+	cleanup()
+}
+
+type failedLaunchVolume struct{ path, workload string }
+
+func (s *Server) fenceFailedLaunchVolume(err error, path, workload string, cleanup ...func()) {
+	finish := func() {
+		for _, f := range cleanup {
+			f()
+		}
+	}
+	done := failedLaunchDone(err)
+	if done == nil {
+		finish()
+		return
+	}
+	if path == "" && len(cleanup) == 0 {
+		var volumes interface{ FailedLaunchVolumePaths() []string }
+		if errors.As(err, &volumes) {
+			paths := volumes.FailedLaunchVolumePaths()
+			if len(paths) > 0 {
+				for _, p := range paths {
+					if p != "" {
+						s.fenceFailedLaunchVolume(err, p, workload)
+					}
+				}
+				return
+			}
+		}
+	}
+	// Older drivers may not expose embedded session workspace paths. Keep a
+	// conservative workload fence in that case until teardown completes.
+	token := &failedLaunchVolume{path: path, workload: workload}
+	s.failedLaunchVolumes.Store(token, struct{}{})
+	afterFailedLaunch(err, func() { finish(); s.failedLaunchVolumes.Delete(token) })
+}
+
+func (s *Server) failedLaunchVolumePending(path, workload string) bool {
+	pending := false
+	s.failedLaunchVolumes.Range(func(key, _ any) bool {
+		entry := key.(*failedLaunchVolume)
+		pending = entry.path != "" && entry.path == path || (entry.path == "" || path == "") && entry.workload == workload
+		return !pending
+	})
+	return pending
 }
 
 func snapshotTeardownConfirmed(err error) bool {
@@ -2226,8 +2320,12 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		return nil, err
 	}
 	defer ticket.release()
+	if s.failedLaunchVolumePending("", workload) {
+		return nil, status.Error(codes.FailedPrecondition, "noded: session launch teardown pending")
+	}
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
 	h, err := s.sessionDriver.RestoreSession(substrate.WithMemoryReservation(ctx, relightNeed), workload, ref, trackDirtyPages)
+	s.fenceFailedLaunchVolume(err, "", workload)
 	ticket.release()
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).
@@ -3113,6 +3211,10 @@ func (s *Server) sessionVolumesStatus() ([]*nodev1.SessionVolume, bool) {
 }
 
 func (s *Server) lineageAttached(workload, lineageID string) bool {
+	if s.volumes != nil && s.failedLaunchVolumePending(s.volumes.SessionVolumePath(workload, lineageID), workload) {
+		return true
+	}
+
 	s.vmLifecycleMu.Lock()
 	defer s.vmLifecycleMu.Unlock()
 	key := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}, s.cfg.CpuVendor)
@@ -4181,6 +4283,9 @@ func (s *Server) invalidateScratchInventories() {
 	s.groupBundles.reset()
 	if s.groupNet != nil {
 		for _, network := range s.groupNet.List() {
+			if s.failedLaunchGroupPending(network.GroupInstanceID, "") {
+				continue
+			}
 			if err := s.groupNet.DeleteGroupNetwork(context.Background(), network.GroupInstanceID); err != nil {
 				s.logger.Warn("noded: invalidate group network after scratch generation change",
 					"group", network.GroupInstanceID, "err", err)
