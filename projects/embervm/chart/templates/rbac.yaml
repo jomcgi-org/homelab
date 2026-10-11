@@ -179,7 +179,9 @@ subjects:
     name: {{ include "embervm.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
-{{- if and .Values.bricks.enabled (or (eq $scope "cluster") (eq .Values.bricks.autoscale.mode "full")) }}
+{{- $directVictims := or (eq $scope "cluster") (eq .Values.bricks.autoscale.mode "full") }}
+{{- $observeArchives := and .Values.bricks.autoscale.archiveAckGate.enabled (has .Values.bricks.autoscale.mode (list "observe" "up")) }}
+{{- if and .Values.bricks.enabled (or $directVictims $observeArchives) }}
 ---
 # Drain-aware brick scale-down (Axis C, bricks.autoscale.mode=full): before
 # shrinking a brick Deployment the BrickController picks its own idle,
@@ -188,9 +190,10 @@ subjects:
 # resolves the victim's name from the capacity fact's uid, `pods patch` writes
 # the annotation. A namespaced Role (not more rules on the ClusterRole above):
 # the controller only ever touches brick pods in its own release namespace, and
-# pods patch is too broad a grant to hold cluster-wide. Rendered only when
-# bricks are enabled by default; namespace mode additionally requires full
-# autoscale, the only mode that selects and patches drain victims.
+# pods patch is too broad a grant to hold cluster-wide. Namespace-scoped
+# observe/up modes with the archive gate enabled need list without patch to
+# report pending archives and verify Deployment ownership. Patch remains
+# limited to cluster scope or full autoscale, where victims are directed.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -205,7 +208,9 @@ rules:
       - pods
     verbs:
       - list
+{{- if $directVictims }}
       - patch
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
