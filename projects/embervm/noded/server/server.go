@@ -1253,6 +1253,7 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 			finishAdmission()
 		}
 	}()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
@@ -1263,10 +1264,12 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	defer func() {
 		egressCancel()
 		s.forgetGuestMemory(h)
-		if rerr := bd.Release(context.Background(), h); rerr != nil {
-			s.logger.Warn("noded: release build guest; memory reservation retained", "base", baseKey, "err", rerr)
-		} else {
-			released = true
+		if !released {
+			if rerr := bd.Release(context.Background(), h); rerr != nil {
+				s.logger.Warn("noded: release build guest; memory reservation retained", "base", baseKey, "err", rerr)
+			} else {
+				released = true
+			}
 		}
 		if rerr := bd.RemoveBundle(h.ThreadID); rerr != nil {
 			s.logger.Warn("noded: remove build bundle", "base", baseKey, "err", rerr)
@@ -1306,6 +1309,10 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	s.forgetGuestMemory(h)
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
+		var proof interface{ TeardownConfirmed() bool }
+		if errors.As(err, &proof) && proof.TeardownConfirmed() {
+			released = true
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.logger.Warn("noded: base snapshot create timed out",
 				"base", baseKey, "concurrent_builds", s.activeBuildCount(), "err", err)
@@ -1441,16 +1448,18 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	// Cheap rejection under real memory pressure (ADR embervm/014 decision 3), read
 	// AFTER the base is resolved (so the workload's mem footprint is known) but
 	// BEFORE the expensive Claim/restore. Prime is vsock-only (no tap), so it is
-	// memory-only. The base is resolved above; its workload's registry sizing gives
-	// the need (0 when unknown, gating on the floor alone).
+	// memory-only. Charge the larger of registry sizing and the stored snapshot,
+	// including the driver's cold-boot fallback for volume-bearing claims.
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	finishAdmission, err := s.reserveAdmission(s.primeNeedMib(base.workload), classMemOnly)
+	needMib := snapshotNeedMib(s.driver, s.primeNeedMib(base.workload), "base", ref, "")
+	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
 	if err != nil {
 		return nil, err
 	}
 	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	// While the registry is stale, a Prime that would be the FIRST warm VM for a
 	// workload is cold placement (refused); a Prime that refills an already-warm
 	// workload keeps existing warmth topped up (allowed). This preserves "serve
@@ -2191,16 +2200,16 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		// the identity into the in-memory registry.
 		workload = req.GetTrace().GetWorkload()
 	}
-	// Memory admission charges the workload's declared need, resolved from the
-	// registry exactly as Prime does (#4186). A restore faults the whole banked
-	// memory back in, so asking with need=0 admitted a 4 GiB session onto a brick
-	// with floor-only headroom. The lookup runs after the ref check so an unknown
-	// ref still reports FAILED_PRECONDITION rather than a spurious pressure reject.
-	finishAdmission, err := s.reserveAdmission(s.primeNeedMib(workload), classMemOnly)
+	// A banked session can be larger than the workload's current declaration.
+	// Resolve snapshot sizing before reserving, after the inventory lookup so an
+	// unknown ref still reports FAILED_PRECONDITION.
+	needMib := snapshotNeedMib(s.sessionDriver, s.primeNeedMib(workload), "session", ref, "")
+	finishAdmission, err := s.reserveAdmission(needMib, classMemOnly)
 	if err != nil {
 		return nil, err
 	}
 	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
 	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
 	if err != nil {

@@ -227,3 +227,14 @@ func (s *Server) primeNeedMib(workload string) uint64 {
 	}
 	return 0
 }
+
+// snapshotNeedMib protects restores of older, larger snapshots after a workload
+// resize. Production uses the driver's own bundle paths and sizing rules.
+func snapshotNeedMib(driver any, declared uint64, kind, ref, member string) uint64 {
+	if d, ok := driver.(interface {
+		SnapshotMemoryMib(string, string, string) uint64
+	}); ok {
+		return max(declared, d.SnapshotMemoryMib(kind, ref, member))
+	}
+	return declared
+}

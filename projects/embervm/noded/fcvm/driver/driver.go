@@ -1096,6 +1096,10 @@ func (d *Driver) loadBankingInto(ctx context.Context, workload, threadID, snapPa
 // is still paused. enableDiffSnapshots re-arms dirty tracking; bankBase marks a
 // restored session full as the base for the next sequential diff.
 func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threadID, snapPath, memPath, sockName, volumeDiskPath string, patchVolume, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
+	memMib := snapshotMemMib(memPath, d.cfg.MemMib)
+	if err := substrate.CheckMemoryReservation(ctx, memMib); err != nil {
+		return substrate.Handle{}, err
+	}
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -1112,7 +1116,6 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	// clear any stale socket first so the restore does not fail on EADDRINUSE.
 	d.removeStaleVsockUDS(threadID)
 	vmID := newID("vm")
-	memMib := snapshotMemMib(memPath, d.cfg.MemMib)
 	resources, hasMetadata, err := readJailResources(filepath.Dir(snapPath))
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: read jail resources for %q: %w", snapPath, err)
@@ -1389,6 +1392,9 @@ type coldBootSpec struct {
 // the ONLY serving-specific step and is skipped entirely when nic is nil, so the
 // task/session cold boot is byte-unchanged.
 func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec) (substrate.Handle, error) {
+	if err := substrate.CheckMemoryReservation(ctx, cb.memMib); err != nil {
+		return substrate.Handle{}, err
+	}
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -1819,8 +1825,10 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		return substrate.SnapshotRef{}, err
 	}
 	if err := inst.client.Resume(ctx); err != nil {
-		_ = d.Release(ctx, h)
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after base snapshot: %w", err)
+		return substrate.SnapshotRef{}, &snapshotTeardownError{
+			cause:      fmt.Errorf("driver: resume after base snapshot: %w", err),
+			releaseErr: d.Release(ctx, h),
+		}
 	}
 	// Punch after resume so the guest is paused for less time. The base memfile
 	// is finalized here and is not read by the running guest afterward.
@@ -3235,6 +3243,34 @@ func (d *Driver) vsockDevicePath(proc Process, threadID string) string {
 		return provider.Jail().VsockPath()
 	}
 	return d.VsockUDSPath(threadID)
+}
+
+// SnapshotMemoryMib uses the same sizing as the restore path. Base claims may
+// fall back to cold boot when a volume requires it, so reserve that size too.
+func (d *Driver) SnapshotMemoryMib(kind, ref, member string) uint64 {
+	var path string
+	switch kind {
+	case "base":
+		path = d.baseMemfile(ref)
+	case "session":
+		path = d.sessionMemfile(ref)
+	case "serving":
+		path = d.servingMemfile(ref)
+	case "stateful":
+		path = d.statefulMemfile(ref)
+	case "group":
+		path = d.groupMemberMemfile(ref, member)
+	default:
+		return 0
+	}
+	mib := snapshotMemMib(path, d.cfg.MemMib)
+	if kind == "base" && mib < d.cfg.MemMib {
+		mib = d.cfg.MemMib
+	}
+	if mib <= 0 {
+		return 0
+	}
+	return uint64(mib)
 }
 
 func snapshotMemMib(memPath string, fallback int) int {

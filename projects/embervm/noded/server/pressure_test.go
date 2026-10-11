@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
@@ -469,4 +470,177 @@ func (d *admissionTestDriver) LiveMemoryClaims() (uint64, uint64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return uint64(d.live), uint64(d.live) * d.perVMMib
+}
+
+type snapshotAdmissionDriver struct{ *admissionTestDriver }
+
+func (d *snapshotAdmissionDriver) SnapshotMemoryMib(string, string, string) uint64 { return 3072 }
+
+func TestPrimeReservesOlderSnapshotAfterWorkloadShrink(t *testing.T) {
+	drv := &snapshotAdmissionDriver{&admissionTestDriver{fakeDriver: &fakeDriver{live: 1}, perVMMib: 2048}}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	seedBase(srv, "old-large", "echo")
+	srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 512}})
+	srv.memBudget = func() (uint64, bool) { return 3840, true }
+	srv.memHeadroom = func() (uint64, bool) { return 8192, true }
+	_, err := client.Prime(t.Context(), &nodev1.PrimeRequest{SnapshotRef: "old-large"})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("oversized snapshot admitted: %v", err)
+	}
+	if drv.claims != 0 || srv.pendingMib != 0 || srv.pendingVMs != 0 {
+		t.Fatal("rejected restore created a claim")
+	}
+}
+
+func TestOlderSnapshotReservationCoversConcurrencyAndFailure(t *testing.T) {
+	drv := &snapshotAdmissionDriver{&admissionTestDriver{fakeDriver: &fakeDriver{}, perVMMib: 3072}}
+	ready := make(chan string, 1)
+	resume := make(chan struct{})
+	tr := &fakeTransport{waitReadyStarted: ready, waitReadyContinue: resume, waitReadyErr: errors.New("not ready")}
+	client, srv := newTestServer(t, drv, tr, 8)
+	seedBase(srv, "old-large", "echo")
+	srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 512}})
+	srv.cfg.RestoreReadyTimeout = 5 * time.Second
+	srv.memBudget = func() (uint64, bool) { return 3840, true }
+	srv.memHeadroom = func() (uint64, bool) { return 8192, true }
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Prime(t.Context(), &nodev1.PrimeRequest{SnapshotRef: "old-large"})
+		done <- err
+	}()
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restore did not reach readiness")
+	}
+	srv.admissionMu.Lock()
+	pending := srv.pendingMib
+	srv.admissionMu.Unlock()
+	if pending != 3072 {
+		t.Errorf("pending=%d, want snapshot size 3072", pending)
+	}
+	if _, err := client.Prime(t.Context(), &nodev1.PrimeRequest{SnapshotRef: "old-large"}); status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("concurrent restore admitted: %v", err)
+	}
+	close(resume)
+	if err := <-done; status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("readiness error: %v", err)
+	}
+	if srv.pendingMib != 0 || drv.LiveCount() != 0 || srv.memExhausted(3072) {
+		t.Fatal("confirmed cleanup retained snapshot reservation")
+	}
+}
+
+type internallyReapedBuildDriver struct{ *fakeDriver }
+
+func (d *internallyReapedBuildDriver) SnapshotBase(ctx context.Context, h substrate.Handle, _ string) (substrate.SnapshotRef, error) {
+	err := d.fakeDriver.Release(ctx, h)
+	return substrate.SnapshotRef{}, &fakeSnapshotTeardownError{cause: errors.New("resume after base snapshot"), confirmed: err == nil}
+}
+
+func (d *internallyReapedBuildDriver) Release(ctx context.Context, h substrate.Handle) error {
+	if d.LiveCount() == 0 {
+		return errors.New("unknown handle")
+	}
+	return d.fakeDriver.Release(ctx, h)
+}
+
+func TestBuildSnapshotInternalReapFreesReservation(t *testing.T) {
+	for _, failReap := range []bool{false, true} {
+		_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+		srv.memBudget = func() (uint64, bool) { return 3840, true }
+		build := &internallyReapedBuildDriver{&fakeDriver{}}
+		if failReap {
+			build.failRelease = errors.New("reap failed")
+		}
+		if _, err := srv.runBuild(t.Context(), build, "build-base", "echo", "/ready", nil, 3072); err == nil {
+			t.Fatal("expected snapshot failure")
+		}
+		if srv.memExhausted(3072) != failReap {
+			t.Fatalf("retained=%v, failed reap=%v", srv.memExhausted(3072), failReap)
+		}
+		if !failReap && (srv.pendingVMs != 0 || srv.pendingMib != 0 || build.releases != 1) {
+			t.Fatal("confirmed internal reap did not free reservation exactly once")
+		}
+	}
+}
+
+type snapshotRequirement struct {
+	t                 *testing.T
+	kind, ref, member string
+}
+
+func (s snapshotRequirement) SnapshotMemoryMib(kind, ref, member string) uint64 {
+	s.t.Helper()
+	if kind != s.kind || ref != s.ref || member != s.member {
+		s.t.Fatalf("snapshot lookup %q/%q/%q, want %q/%q/%q", kind, ref, member, s.kind, s.ref, s.member)
+	}
+	return 3072
+}
+
+type (
+	sizedServingDriver struct {
+		*fakeServingDriver
+		snapshotRequirement
+	}
+	sizedStatefulDriver struct {
+		*fakeStatefulDriver
+		snapshotRequirement
+	}
+	sizedGroupDriver struct {
+		*fakeGroupMemberDriver
+		snapshotRequirement
+	}
+)
+
+func TestRelightClassesChargeSnapshotBeforeRestore(t *testing.T) {
+	for _, kind := range []string{"session", "serving", "stateful", "group"} {
+		t.Run(kind, func(t *testing.T) {
+			var s *Server
+			var restore func() error
+			resources := &nodev1.ResourceSpec{MemMib: 512}
+			switch kind {
+			case "session":
+				drv := &snapshotAdmissionDriver{&admissionTestDriver{fakeDriver: &fakeDriver{}, perVMMib: 3072}}
+				_, s = newTestServer(t, drv, &fakeTransport{}, 8)
+				s.sessionDriver = drv
+				s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "old", workload: "echo"})
+				s.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 512}})
+				restore = func() error { _, err := s.Relight(t.Context(), &nodev1.RelightRequest{SnapshotRef: "old"}); return err }
+			case "serving":
+				var d *fakeServingDriver
+				s, _, d = newServingTestServer(t)
+				s.servingDriver = &sizedServingDriver{d, snapshotRequirement{t, kind, "old", ""}}
+				restore = func() error {
+					_, err := s.StartServing(t.Context(), &nodev1.StartServingRequest{Trace: &nodev1.Trace{Workload: "echo"}, Resources: resources, Source: &nodev1.StartServingRequest_Relight{Relight: &nodev1.RelightSource{SnapshotRef: "old"}}})
+					return err
+				}
+			case "stateful":
+				var d *fakeStatefulDriver
+				s, _, d = newStatefulTestServer(t)
+				s.statefulDriver = &sizedStatefulDriver{d, snapshotRequirement{t, kind, "old", ""}}
+				restore = func() error {
+					_, err := s.StartStateful(t.Context(), &nodev1.StartStatefulRequest{Trace: &nodev1.Trace{Workload: "echo"}, Resources: resources, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT, RelightSnapshotRef: "old"})
+					return err
+				}
+			case "group":
+				var d *fakeGroupMemberDriver
+				s, _, d, _ = newGroupMemberTestServer(t)
+				s.groupDriver = &sizedGroupDriver{d, snapshotRequirement{t, kind, "old", "member"}}
+				restore = func() error {
+					_, err := s.StartGroupMember(t.Context(), &nodev1.StartGroupMemberRequest{GroupInstanceId: "grp-A", MemberName: "member", SnapshotRef: "group/old/member", Resources: resources, Mode: nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT})
+					return err
+				}
+			}
+			s.driver = &fakeDriver{live: 1, claimedMib: 2048}
+			s.memBudget = func() (uint64, bool) { return 3840, true }
+			s.memHeadroom = func() (uint64, bool) { return 8192, true }
+			if err := restore(); status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("restore escaped snapshot admission: %v", err)
+			}
+			if s.pendingVMs != 0 || s.pendingMib != 0 {
+				t.Fatal("rejected restore left a pending claim")
+			}
+		})
+	}
 }

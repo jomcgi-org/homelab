@@ -79,11 +79,16 @@ func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulReq
 	// Cheap rejection under real memory/tap pressure (ADR embervm/014 decision 3),
 	// BEFORE the tap allocation and boot below. Stateful is tap-bearing; the
 	// workload's mem need comes from the request's ResourceSpec.
-	finishAdmission, err := s.reserveAdmission(uint64(req.GetResources().GetMemMib()), classTapBearing)
+	needMib := uint64(req.GetResources().GetMemMib())
+	if req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT {
+		needMib = snapshotNeedMib(s.statefulDriver, needMib, "stateful", req.GetRelightSnapshotRef(), "")
+	}
+	finishAdmission, err := s.reserveAdmission(needMib, classTapBearing)
 	if err != nil {
 		return nil, err
 	}
 	defer finishAdmission()
+	ctx = substrate.WithMemoryReservation(ctx, needMib)
 	workload := req.GetTrace().GetWorkload()
 	if workload == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: trace.workload required")

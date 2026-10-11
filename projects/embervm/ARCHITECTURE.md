@@ -1100,8 +1100,12 @@ pages in lazily. Both admission modes now charge declared live and pending guest
 memory plus configured per-VM overhead against the finite cgroup budget. The
 observed mode also retains its reject floor. Boot reservations are acquired
 atomically and held through readiness, conservatively overlapping the driver's
-live claim until the RPC returns. Build guests use separate drivers, so their
-reservation lasts through confirmed teardown; a failed build teardown retains
+live claim until the RPC returns. Restores reserve the larger of current
+workload sizing and stored snapshot sizing, including base cold-boot fallback.
+The driver checks the resolved size against that reservation before launch.
+Build guests use separate drivers, so their
+reservation lasts through confirmed teardown, including explicit evidence from
+an internal snapshot-failure reap; a failed build teardown retains
 its reservation until daemon restart. Unknown guest sizing is refused when the
 budget is finite. Cgroup accounting takes the tightest visible ancestor limit
 and headroom, including sibling usage, and keeps finite zero distinct from an
