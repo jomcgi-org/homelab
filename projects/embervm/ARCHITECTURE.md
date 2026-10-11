@@ -1178,6 +1178,20 @@ up. An overcommit ratio was rejected while production runs without the
 jailer, because without the `embervm-vms` cap an overcommit failure still kills
 the whole brick. Rollback is `noded.admissionModel: observed`.
 
+Memory admission across bricks is model-checked (`admission.tla`): noded's
+`reserved` model admits a boot atomically against the declared memory of its
+live VMs, its in-flight tickets and the per-VM overhead, and the control plane
+places on each brick's last, possibly stale, `mem_admittable_mib` net of its
+own pending claims and retries a `RESOURCE_EXHAUSTED` refusal. TLC shows no
+brick commits or holds more than its budget as lazily restored guests fault
+their RAM in, every ticket is released once, every claim drains, and every
+request an empty brick would admit is eventually placed, with or without the
+frontier walk. Its negative modes re-find the 2026-10-10 OOMKills (observed
+admission), a check-then-act double admit, and a single terminal attempt
+stranding a request. The result covers the reserved configuration, which each
+stage arms after this chart reaches it (#6965); the specs README records what
+the model abstracts away.
+
 **Built**: every brick and the serving relay run a disposable-shaped
 priority class (`homelab-disposable`, or `homelab-preemptible` on GKE, see
 below), so guests are the first to yield under node memory pressure;
