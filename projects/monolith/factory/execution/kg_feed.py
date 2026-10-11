@@ -12,7 +12,11 @@ from sqlalchemy import exists, text
 from sqlalchemy.orm import defer
 from sqlmodel import Session, func, select
 
-from factory.execution.constants import KG_NODE_KEY, SYNTHETIC_SESSION_PREFIX
+from factory.execution.constants import (
+    GRIMOIRE_KG_NODE_KEY,
+    KG_NODE_KEY,
+    SYNTHETIC_SESSION_PREFIX,
+)
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 from factory.execution.rationale import parse_rationale
 from factory.execution.redact import redact_text
@@ -120,6 +124,8 @@ def pick_finished_sessions(
         .where(AgentSession.created_at >= since_floor)
         .where(AgentSession.last_turn_at < quiet_before)
         .where(AgentSession.node_key.is_distinct_from(KG_NODE_KEY))
+        # Campaign prompts/results belong only to grimoire, never system raws.
+        .where(AgentSession.node_key.is_distinct_from(GRIMOIRE_KG_NODE_KEY))
         .where(~AgentSession.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX))
         # Lane-internal work on the general drainer kind (docfix PRs and their
         # reviews) is not knowledge about the system; session extraction never

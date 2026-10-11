@@ -14,6 +14,8 @@ py_library(
         "leak_harness.py",
         "notes_matrix.py",
         "play_embedding_matrix.py",
+        "routine_jobs.py",
+        "sql_capture.py",
     ],
     imports = ["../.."],
     visibility = ["//projects/monolith:__pkg__"],

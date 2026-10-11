@@ -531,11 +531,11 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    assert len(tokens) == 240  # Eight inventory items add four canaries each.
+    assert len(tokens) == 252  # Inventory and character facts have audience canaries.
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
-    assert len(embeddings) == 25
+    assert len(embeddings) == 31
     assert all(row.dim == 1024 and len(row.vector) == 1024 for row in embeddings)
     storage = str(harness.snapshot()).casefold()
     for token in tokens:

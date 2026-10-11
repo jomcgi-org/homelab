@@ -31,7 +31,11 @@ from sqlalchemy import bindparam, text
 from sqlmodel import Session
 
 from agent.api import list_jobs, load_drainer_settings
-from factory.execution.constants import DRAINER_NODE_KEY, KG_NODE_KEY
+from factory.execution.constants import (
+    DRAINER_NODE_KEY,
+    GRIMOIRE_KG_NODE_KEY,
+    KG_NODE_KEY,
+)
 from core.db import get_engine
 from core.github import GITHUB_API
 from factory.orchestration import drain_console
@@ -192,7 +196,11 @@ def _load_drainer_sessions(limit: int = _SESSION_SCAN_LIMIT) -> list[dict]:
     )
     with Session(get_engine()) as session:
         rows = session.execute(
-            sql, {"node_keys": [DRAINER_NODE_KEY, KG_NODE_KEY], "limit": limit}
+            sql,
+            {
+                "node_keys": [DRAINER_NODE_KEY, KG_NODE_KEY, GRIMOIRE_KG_NODE_KEY],
+                "limit": limit,
+            },
         ).fetchall()
     return [
         {

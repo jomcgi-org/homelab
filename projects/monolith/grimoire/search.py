@@ -21,7 +21,15 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, select
 
 from grimoire.audience import Member, can_see, can_see_note
-from grimoire.models import Book, Embedding, Entity, KnowledgeChunk, Note, SessionEvent
+from grimoire.models import (
+    Book,
+    CharacterFact,
+    Embedding,
+    Entity,
+    KnowledgeChunk,
+    Note,
+    SessionEvent,
+)
 from grimoire.play_embeddings import (
     event_embedding_kind,
     event_text,
@@ -257,6 +265,31 @@ def _resolve_knowledge_hits(
                     "score": 1.0 - distance,
                     "source": {"note_id": note.id},
                 }
+        elif kind == "fact":
+            fact = session.get(CharacterFact, source_id, populate_existing=True)
+            if (
+                fact is not None
+                and fact.campaign_id == campaign_id
+                and fact.status in ("active", "disputed")
+                and viewer is not None
+                and (
+                    (fact.viewer_key == "party" and fact.player_character_id is None)
+                    or viewer == "dm"
+                    or (
+                        viewer is not None
+                        and fact.player_character_id == viewer
+                        and fact.viewer_key == viewer
+                    )
+                )
+            ):
+                resolved = {
+                    "type": "fact",
+                    "id": fact.id,
+                    "status": fact.status,
+                    "preview": fact.statement[:_CHUNK_PREVIEW_LEN],
+                    "score": 1.0 - distance,
+                    "source": {"fact_id": fact.id, "session_id": fact.session_id},
+                }
         elif kind in ("event", "transcript"):
             event = session.get(SessionEvent, source_id)
             if (
@@ -299,7 +332,7 @@ async def search_knowledge(
     hits = knn_embeddings(
         session,
         query_vector,
-        ("entity", "chunk", "note", "event", "transcript"),
+        ("entity", "chunk", "note", "event", "transcript", "fact"),
         k * OVERFETCH_FACTOR,
         where=play_embedding_predicate(campaign_id, viewer, member),
     )

@@ -5,20 +5,22 @@ transaction. Expired observers and unknown network outcomes never free permits.
 All helpers taking a Session leave commit/rollback to their domain caller.
 """
 
-from datetime import datetime, timedelta, timezone
 import logging
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
+from core.db import get_engine
 from sqlalchemy import exists, or_, update
-from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from factory.execution.constants import (
     DRAINER_NODE_KEY,
+    GRIMOIRE_KG_NODE_KEY,
     KG_NODE_KEY,
     UNKNOWN_INVOCATION,
 )
@@ -29,7 +31,6 @@ from factory.execution.models import (
     AgentTurn,
     PendingMessage,
 )
-from core.db import get_engine
 
 # Code defaults, kept at the numbers this pool shipped with so a process
 # started with no environment behaves exactly as it did. The chart raises
@@ -172,7 +173,7 @@ def _adopt(
         if (
             routine_name is None
             and agent.workflow_id
-            and agent.node_key in {KG_NODE_KEY, DRAINER_NODE_KEY}
+            and agent.node_key in {KG_NODE_KEY, GRIMOIRE_KG_NODE_KEY, DRAINER_NODE_KEY}
         ):
             prefix = f"{agent.workflow_id}:{agent.node_key}:"
             if agent.local_session_id.startswith(prefix):
