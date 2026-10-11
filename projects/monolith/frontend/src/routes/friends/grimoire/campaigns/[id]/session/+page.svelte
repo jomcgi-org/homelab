@@ -72,7 +72,9 @@
     inventoryPrefill = {
       name: knowledge
         ? knowledge.name
-        : (event.body?.text || "").split("\n")[0].slice(0, 200),
+        : (event.body?.title || event.body?.text || "")
+            .split("\n")[0]
+            .slice(0, 200),
       entity_id: knowledge?.entity_id || null,
       owner:
         knowledge &&
@@ -421,7 +423,7 @@
             <button
               class="secondary"
               onclick={() => giveItem(event)}
-              aria-label={`Give item from ${event.body?.text?.split("\n")[0] || "handout"}`}
+              aria-label={`Give item from ${event.body?.title || event.body?.text?.split("\n")[0] || "handout"}`}
               >Give item</button
             >
           {/if}

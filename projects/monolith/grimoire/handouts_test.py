@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import select
 
 from grimoire import handouts
-from grimoire.models import Book, KnowledgeChunk, Note, SessionEvent
+from grimoire.models import Book, GameSession, KnowledgeChunk, Note, SessionEvent
 from grimoire.testing.leak_harness import PNG_BYTES, seed_handouts, sqlite_harness
 
 
@@ -351,6 +351,16 @@ def test_table_handout_reaches_every_member_with_an_upload_image(env):
         assert get_image(env, viewer, event).status_code == 404, viewer
 
 
+def test_handout_image_is_404_through_another_session_of_the_campaign(env):
+    h, client, _ = env
+    other = GameSession(campaign_id=h.rows["campaign"].id, status="active")
+    h.session.add(other)
+    h.session.commit()
+    url = base(h) + f"/sessions/{other.id}/events/{h.rows['event_handout'].id}/image"
+    assert client.get(url, headers=h.headers("dm")).status_code == 404
+    assert client.get(url, headers=h.headers("player_a")).status_code == 404
+
+
 def test_non_handout_and_imageless_events_have_no_image(env):
     h = env[0]
     imageless = post_event(env, {"title": "t", "markdown": ""}).json()
@@ -431,6 +441,47 @@ def test_entity_id_is_dropped_unless_the_viewer_can_see_the_entity(env):
         assert "entity_id" not in player_b[shared["id"]]["body"]
         assert player_b[shared["id"]]["body"]["title"] == "t"
         assert "entity_id" not in source(env, "no_character")[shared["id"]]["body"]
+
+
+def campaign_journal_received(env, viewer):
+    h, client, _ = env
+    response = client.get(base(h) + "/journal", headers=h.headers(viewer))
+    assert response.status_code == 200, response.text
+    h.assert_no_leak(response, viewer)
+    rows = {}
+    for entry in response.json()["sessions"]:
+        rows.update({row["id"]: row for row in entry["journal"]["received"]})
+    return rows
+
+
+def test_image_reference_reaches_only_the_dm_never_the_key_or_chunk_id(env):
+    h = env[0]
+    key = upload(env, PNG_BYTES).json()["key"]
+    uploaded = post_event(
+        env,
+        {"title": "u", "markdown": "", "image": {"source": "upload", "key": key}},
+    ).json()
+    chunked = post_event(
+        env,
+        {"title": "c", "markdown": "", "image": chunk_image(h, "open")},
+    ).json()
+    sources = (events_for, journal_received, campaign_journal_received)
+    for source in sources:
+        dm = source(env, "dm")
+        assert dm[uploaded["id"]]["body"]["image"] == {"source": "upload", "key": key}
+        assert dm[chunked["id"]]["body"]["image"] == chunk_image(h, "open")
+    for viewer in ("player_a", "player_b", "no_character"):
+        for source in sources:
+            seen = source(env, viewer)
+            for event_id, source_name in (
+                (uploaded["id"], "upload"),
+                (chunked["id"], "chunk"),
+            ):
+                assert seen[event_id]["body"]["image"] == {"source": source_name}
+            text = str(seen)
+            assert key not in text
+            assert "chunk_id" not in text
+            assert h.rows["chunk_image_open"].id not in text
 
 
 def pin(env, viewer, event_id):
