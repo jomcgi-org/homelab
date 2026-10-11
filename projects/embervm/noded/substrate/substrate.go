@@ -14,6 +14,7 @@ package substrate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -367,4 +368,23 @@ type Substrate interface {
 type Snapshotable interface {
 	Snapshot(ctx context.Context, h Handle) (SnapshotRef, error)
 	Restore(ctx context.Context, ref SnapshotRef) (Handle, error)
+}
+
+// WithMemoryReservation carries the admission ceiling into the launch path.
+// The driver rechecks the resolved size before starting a process, including
+// when snapshot metadata changes between admission and restore.
+func WithMemoryReservation(ctx context.Context, mib uint64) context.Context {
+	return context.WithValue(ctx, memoryReservationKey{}, mib)
+}
+
+type memoryReservationKey struct{}
+
+// CheckMemoryReservation leaves direct driver callers without a reservation
+// unchanged; server boot paths always provide one.
+func CheckMemoryReservation(ctx context.Context, mib int) error {
+	reserved, ok := ctx.Value(memoryReservationKey{}).(uint64)
+	if ok && (mib <= 0 || uint64(mib) > reserved) {
+		return fmt.Errorf("memory requirement %d MiB exceeds admission reservation %d MiB", mib, reserved)
+	}
+	return nil
 }

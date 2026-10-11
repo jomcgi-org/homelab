@@ -1096,6 +1096,10 @@ func (d *Driver) loadBankingInto(ctx context.Context, workload, threadID, snapPa
 // is still paused. enableDiffSnapshots re-arms dirty tracking; bankBase marks a
 // restored session full as the base for the next sequential diff.
 func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threadID, snapPath, memPath, sockName, volumeDiskPath string, patchVolume, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
+	memMib := snapshotMemMib(memPath, d.cfg.MemMib)
+	if err := substrate.CheckMemoryReservation(ctx, memMib); err != nil {
+		return substrate.Handle{}, err
+	}
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -1112,7 +1116,6 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 	// clear any stale socket first so the restore does not fail on EADDRINUSE.
 	d.removeStaleVsockUDS(threadID)
 	vmID := newID("vm")
-	memMib := snapshotMemMib(memPath, d.cfg.MemMib)
 	resources, hasMetadata, err := readJailResources(filepath.Dir(snapPath))
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: read jail resources for %q: %w", snapPath, err)
@@ -1391,6 +1394,9 @@ type coldBootSpec struct {
 // the ONLY serving-specific step and is skipped entirely when nic is nil, so the
 // task/session cold boot is byte-unchanged.
 func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec) (substrate.Handle, error) {
+	if err := substrate.CheckMemoryReservation(ctx, cb.memMib); err != nil {
+		return substrate.Handle{}, err
+	}
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -1821,8 +1827,7 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		return substrate.SnapshotRef{}, err
 	}
 	if err := inst.client.Resume(ctx); err != nil {
-		_ = d.Release(ctx, h)
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: resume after base snapshot: %w", err)
+		return substrate.SnapshotRef{}, &snapshotTeardownError{cause: fmt.Errorf("driver: resume after base snapshot: %w", err), releaseErr: d.Release(ctx, h)}
 	}
 	// Punch after resume so the guest is paused for less time. The base memfile
 	// is finalized here and is not read by the running guest afterward.
@@ -3252,6 +3257,40 @@ func (d *Driver) vsockDevicePath(proc Process, threadID string) string {
 	return d.VsockUDSPath(threadID)
 }
 
+// ColdBootMemoryMib resolves an omitted request exactly as the cold-boot
+// entrypoints do. Admission must charge this size before installing its ceiling.
+func (d *Driver) ColdBootMemoryMib(requested uint64) uint64 {
+	if requested > 0 {
+		return requested
+	}
+	return uint64(d.cfg.MemMib)
+}
+
+// SnapshotMemoryMib uses the same paths and sizing as the restore path.
+// A base cold-boot override is charged separately by its caller.
+func (d *Driver) SnapshotMemoryMib(kind, ref, member string) uint64 {
+	var path string
+	switch kind {
+	case "base":
+		path = d.baseMemfile(ref)
+	case "session":
+		path = d.sessionMemfile(ref)
+	case "serving":
+		path = d.servingMemfile(ref)
+	case "stateful":
+		path = d.statefulMemfile(ref)
+	case "group":
+		path = d.groupMemberMemfile(ref, member)
+	default:
+		return 0
+	}
+	mib := snapshotMemMib(path, d.cfg.MemMib)
+	if mib <= 0 {
+		return 0
+	}
+	return uint64(mib)
+}
+
 func snapshotMemMib(memPath string, fallback int) int {
 	if b, err := os.ReadFile(filepath.Join(filepath.Dir(memPath), "mem_mib")); err == nil {
 		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 {
@@ -3350,35 +3389,32 @@ func (d *Driver) RemoveBundle(threadID string) error {
 // LiveCount reports how many microVMs the driver is currently supervising. A
 // VMM that exited on its own stops counting once it is reaped, although its
 // entry stays until Release.
-func (d *Driver) LiveCount() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	n := 0
-	for _, inst := range d.live {
-		if !inst.vmmExited() {
-			n++
-		}
-	}
-	return n
-}
+func (d *Driver) LiveCount() int { count, _ := d.LiveMemoryClaims(); return count }
 
-// ClaimedMib derives the declared memory sum from the live map. It is a
-// projection, never a counter, so it cannot leak: Release removes the live-map
-// entry, and a daemon restart starts with an empty map because Firecracker
-// children are owned by noded and there is no adoption path for pre-existing VMs.
-// A VMM that exits on its own (a guest panic, a per-VM cgroup OOM) stops
-// counting once it is reaped and its cgroup is gone; its entry stays until
-// Release, so ownership and teardown are unchanged.
-func (d *Driver) ClaimedMib() uint64 {
+func (d *Driver) ClaimedMib() uint64 { _, memory := d.LiveMemoryClaims(); return memory }
+
+// LiveMemoryClaims samples each exit flag once under the live-map lock, so
+// count and declared memory describe the same set of unreaped running VMMs.
+func (d *Driver) LiveMemoryClaims() (int, uint64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var total uint64
+	count := 0
+	var memory uint64
 	for _, inst := range d.live {
-		if inst.memMib > 0 && !inst.vmmExited() {
-			total += uint64(inst.memMib)
+		if inst.vmmExited() {
+			continue
+		}
+		count++
+		if inst.memMib > 0 {
+			size := uint64(inst.memMib)
+			if size > ^uint64(0)-memory {
+				memory = ^uint64(0)
+			} else {
+				memory += size
+			}
 		}
 	}
-	return total
+	return count, memory
 }
 
 // JailerLaunchCounts reports whether this driver's launcher arms the jailer and

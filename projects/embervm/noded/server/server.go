@@ -193,11 +193,11 @@ type Server struct {
 
 	// memHeadroom reads free guest memory in MiB (cgroup v2, best-effort).
 	// Overridable in tests.
-	memHeadroom func() uint64
+	memHeadroom func() (uint64, bool)
 	// memBudget reads the cgroup memory ceiling in MiB (memory.max minus the
-	// daemon RSS reserve). 0 means unknown (unlimited cgroup or read error),
-	// never a guess. Overridable in tests.
-	memBudget func() uint64
+	// daemon RSS reserve). The bool distinguishes finite zero from an unlimited
+	// cgroup or read error. Overridable in tests.
+	memBudget func() (uint64, bool)
 	// cpuBudget reads the cgroup CPU ceiling in millicores from cpu.max. 0
 	// means unknown. Overridable in tests.
 	cpuBudget func() uint64
@@ -534,8 +534,8 @@ func New(opts Options) *Server {
 		s.groupClock = &realGroupClock{}
 	}
 	s.budget = newBudget(uint64(opts.Config.DaemonReserveMib))
-	s.memHeadroom = s.budget.MemHeadroomMib
-	s.memBudget = s.budget.MemBudgetMib
+	s.memHeadroom = s.budget.memHeadroomReading
+	s.memBudget = s.budget.memBudgetReading
 	s.cpuBudget = s.budget.CpuBudgetMillicores
 	s.cpuHeadroom = s.budget.CpuHeadroomMillicores
 	s.slotCeiling = s.budget.SlotCeiling
@@ -919,11 +919,28 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if buildNeedMib == 0 {
 		buildNeedMib = s.primeNeedMib(workload)
 	}
+	harnessInit := img.HarnessInit
+	if harnessInit == "" {
+		harnessInit = s.cfg.HarnessInit
+	}
+	bd := s.newBuildDriver(BuildDriverSpec{
+		RootfsPath:  img.RootfsPath,
+		HarnessInit: harnessInit,
+		VCPUs:       int(res.GetVcpus()),
+		MemMib:      int(res.GetMemMib()),
+	})
+
+	buildNeedMib = max(buildNeedMib, coldBootNeedMib(bd, uint64(res.GetMemMib())))
 	ticket, err := s.admit(ctx, "BuildBase", buildNeedMib, buildNeedMib, classMemOnly)
 	if err != nil {
 		return nil, err
 	}
-	defer ticket.release()
+	ticketOwned := true
+	defer func() {
+		if ticketOwned {
+			ticket.release()
+		}
+	}()
 	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey, existed); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: reclaim stale base staging for %q: %v", baseKey, err)
 	} else if reclaimed {
@@ -946,21 +963,8 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	s.registerBuild(baseKey, cancelBuild)
 	defer s.finishBuild(baseKey)
 
-	harnessInit := img.HarnessInit
-	if harnessInit == "" {
-		harnessInit = s.cfg.HarnessInit
-	}
-	bd := s.newBuildDriver(BuildDriverSpec{
-		RootfsPath:  img.RootfsPath,
-		HarnessInit: harnessInit,
-		VCPUs:       int(res.GetVcpus()),
-		MemMib:      int(res.GetMemMib()),
-	})
-
+	ticketOwned = false // runBuild now owns release, or retains the ticket on an unconfirmed reap.
 	sizeBytes, err := s.runBuild(buildCtx, bd, ticket, baseKey, workload, readyPath, archive)
-	// runBuild has torn the build guest down (its deferred Release) on every
-	// path, so the reservation is no longer backing any memory.
-	ticket.release()
 	if err != nil {
 		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
 		s.signalChange()
@@ -1254,22 +1258,41 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
 //
-// ticket is the build's admission ticket. The caller releases it after runBuild
-// returns; runBuild only marks the guest booted once Claim succeeds, so the
-// observed admission term stops counting it on top of the cgroup headroom.
+// runBuild owns the ticket until teardown is confirmed. A failed reap retains
+// its memory and slot, but no longer offsets a control-plane placement. A booted
+// build remains in the build-resident accounting throughout that fence.
 func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admissionTicket, baseKey, workload, readyPath string, archive []byte) (int64, error) {
+	released := true
+	defer func() {
+		if released {
+			ticket.release()
+		} else if ticket != nil {
+			ticket.rpcEnded()
+		}
+	}()
+	if ticket != nil {
+		ctx = substrate.WithMemoryReservation(ctx, ticket.needMib)
+	}
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
+	released = false
 	ticket.buildGuestBooted()
 	egressCancel := func() {}
 	defer func() {
 		egressCancel()
 		s.forgetGuestMemory(h)
-		if rerr := bd.Release(context.Background(), h); rerr != nil {
-			s.logger.Warn("noded: release build guest", "base", baseKey, "err", rerr)
+		if !released {
+			if rerr := bd.Release(context.Background(), h); rerr != nil {
+				s.logger.Warn("noded: release build guest; reservation retained", "base", baseKey, "err", rerr)
+			} else {
+				released = true
+			}
+		}
+		if !released {
+			return
 		}
 		if rerr := bd.RemoveBundle(h.ThreadID); rerr != nil {
 			s.logger.Warn("noded: remove build bundle", "base", baseKey, "err", rerr)
@@ -1309,6 +1332,10 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admission
 	s.forgetGuestMemory(h)
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
+		var proof interface{ TeardownConfirmed() bool }
+		if errors.As(err, &proof) && proof.TeardownConfirmed() {
+			released = true
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.logger.Warn("noded: base snapshot create timed out",
 				"base", baseKey, "concurrent_builds", s.activeBuildCount(), "err", err)
@@ -1547,7 +1574,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		spec.ColdBootVCPUs = int(sizeVCPUs)
 		spec.ColdBootMemMib = int(sizeMemMib)
 	}
-	h, err := s.driver.Claim(ctx, spec)
+	h, err := s.driver.Claim(substrate.WithMemoryReservation(ctx, primeNeed), spec)
 	ticket.release()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore snapshot %q: %v", ref, err)
@@ -2200,7 +2227,7 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 	}
 	defer ticket.release()
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
-	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
+	h, err := s.sessionDriver.RestoreSession(substrate.WithMemoryReservation(ctx, relightNeed), workload, ref, trackDirtyPages)
 	ticket.release()
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).
@@ -2556,7 +2583,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		SizeClass:              s.cfg.SizeClass,
 		CpuVendor:              s.cfg.CpuVendor,
 		Workloads:              caps,
-		MemHeadroomMib:         s.memHeadroom(),
+		MemHeadroomMib:         admission.facts.headroomMib,
 		MemRejectFloorMib:      s.memRejectFloorMib(),
 		CpuHeadroomMillicores:  uint32(s.cpuHeadroom()),
 		LiveVms:                uint32(live),
@@ -2580,8 +2607,8 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		GroupMemberVms:         groupMemberVMs,
 		GroupBundleSets:        s.groupBundleSetsStatus(),
 		StoreReachable:         s.storeReachableNow(),
-		MemBudgetMib:           s.memBudget(),
-		MemReservedMib:         s.claimedMib(),
+		MemBudgetMib:           admission.facts.budgetMib,
+		MemReservedMib:         admission.facts.claimedMib,
 		AdmitsOnReservation:    s.cfg.AdmissionModel == admissionModelReserved,
 		VmOverheadMib:          s.vmOverheadMib(),
 		CpuBudgetMillicores:    s.cpuBudget(),

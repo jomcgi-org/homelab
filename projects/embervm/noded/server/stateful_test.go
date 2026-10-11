@@ -357,7 +357,7 @@ func newStatefulTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeStatefu
 		VolumeRoot:     volumeRoot,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	// Seed a READY base "img-a" the way a real BuildBase would have. An image-lane
 	// stateful boot resolves boot_image_ref against the BASE registry (not the
 	// serving-image inventory: an opaque-L4 guest has no handler artifact), then

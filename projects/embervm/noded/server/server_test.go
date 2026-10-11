@@ -509,8 +509,8 @@ func newTestServer(t *testing.T, drv vmDriver, tr *fakeTransport, maxLive int) (
 		Transport: tr,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }                           // deterministic, no cgroup read
-	s.slotCeiling = func(configured uint64) uint64 { return configured } // report configured max, no host cgroup read
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 } // deterministic, no cgroup read
+	s.slotCeiling = func(configured uint64) uint64 { return configured }      // report configured max, no host cgroup read
 
 	lis := bufconn.Listen(1 << 20)
 	gs := grpc.NewServer()
@@ -554,7 +554,7 @@ func newSessionTestServer(t *testing.T, drv *fakeDriver, tr *fakeTransport, maxL
 		Transport:     tr,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.slotCeiling = func(configured uint64) uint64 { return configured }
 
 	lis := bufconn.Listen(1 << 20)
@@ -2542,7 +2542,7 @@ func TestParseMemHeadroomMib(t *testing.T) {
 	}{
 		{"max\n", "1048576\n", 0},        // unlimited
 		{"2097152\n", "1048576\n", 1},    // 2MiB - 1MiB = 1MiB
-		{"1048576", "2097152", 1},        // current over max: known exhausted, never the unknown 0
+		{"1048576", "2097152", 0},        // current over max: exhausted (reader preserves known flag)
 		{"garbage", "1", 0},              // unparseable
 		{"104857600\n", "4194304\n", 96}, // 100MiB - 4MiB
 	}
@@ -2653,7 +2653,7 @@ func TestNodeStatusCarriesBudgetFields(t *testing.T) {
 	drv := &fakeDriver{}
 	tr := &fakeTransport{}
 	client, srv := newTestServer(t, drv, tr, 8)
-	srv.memBudget = func() uint64 { return 3584 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(3584); return v, v > 0 }
 	srv.cpuBudget = func() uint64 { return 2000 }
 	srv.cpuHeadroom = func() uint64 { return 1500 }
 
@@ -3675,7 +3675,7 @@ func TestSessionInventoryRescanOnRestart(t *testing.T) {
 		Transport:     &fakeTransport{},
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.ReconcileSessionsFromDisk()
 
 	ns := s.nodeStatus()

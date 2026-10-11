@@ -375,7 +375,7 @@ func newServingTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeServingD
 		ServingDriver: fsd,
 		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	// Seed a built serving image "img-a" mapping to the runtime rootfs "img-a" and a
 	// handler artifact, so a fresh cold boot resolves the serving-images inventory
 	// (D-R3.11.2) exactly as a real BuildBase would have populated it.

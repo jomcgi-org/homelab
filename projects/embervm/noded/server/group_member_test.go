@@ -223,7 +223,7 @@ func newGroupMemberTestServer(t *testing.T) (*Server, *fakeGroupNet, *fakeGroupM
 		GroupClock:   clock,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	// A composite member FRESH is a plain rootfs cold boot: the source names a
 	// PROVISIONED IMAGE directly (the control plane sends member.image_ref), not a
 	// built base snapshot. "src-a" is provisioned above in Config.Images.
@@ -791,7 +791,7 @@ func TestReconcileGroupBundlesFromDisk(t *testing.T) {
 		GroupDriver:  gmd,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.ReconcileGroupBundlesFromDisk()
 
 	ns := s.nodeStatus()
@@ -840,7 +840,7 @@ func TestReconcileGroupReadsInstanceSidecar(t *testing.T) {
 		GroupDriver:  gmd,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	s.ReconcileGroupBundlesFromDisk()
 
 	byRef := map[string]string{} // snapshotRef -> groupInstanceID

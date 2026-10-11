@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 )
 
@@ -164,8 +165,10 @@ func (l *admissionLedger) noteRefusalLocked(reason rejectReason) (logIt bool, su
 // apart.
 type admissionFacts struct {
 	model string
-	// budgetMib is memory.max minus the daemon reserve; 0 means unknown.
-	budgetMib uint64
+	// budgetMib is the finite cgroup ceiling minus the daemon reserve;
+	// budgetKnown distinguishes exhausted capacity from unknown capacity.
+	budgetMib   uint64
+	budgetKnown bool
 	// headroomMib is the observed cgroup headroom; meaningful only when
 	// headroomKnown.
 	headroomMib   uint64
@@ -210,18 +213,28 @@ func (f admissionFacts) modelName() string {
 // itself, so the observed term subtracts only the tickets whose memory the
 // cgroup cannot see yet.
 func (f admissionFacts) admittableMib() (int64, bool) {
-	var (
-		admittable int64
-		finite     bool
-	)
+	if f.budgetKnown && f.budgetMib == 0 {
+		return -1, true
+	}
+	var admittable int64
+	finite := false
 	if f.headroomKnown {
 		unseen := f.inflightMib - min(f.buildResidentMib, f.inflightMib)
-		admittable = clampInt64(f.headroomMib) - clampInt64(unseen) - clampInt64(f.floorMib)
+		admittable = subtractCharge(subtractCharge(clampInt64(f.headroomMib), unseen), f.floorMib)
 		finite = true
 	}
-	if f.model == admissionModelReserved && f.budgetMib > 0 {
-		vms := int64(f.live) + int64(f.inflightVMs) + 1
-		reserved := clampInt64(f.budgetMib) - clampInt64(f.claimedMib) - clampInt64(f.inflightMib) - clampInt64(f.overheadMib)*vms
+	if f.model == admissionModelReserved && (f.budgetKnown || f.budgetMib > 0) {
+		reserved := subtractCharge(subtractCharge(clampInt64(f.budgetMib), f.claimedMib), f.inflightMib)
+		if f.live < 0 || f.inflightVMs < 0 || f.live >= math.MaxInt-f.inflightVMs {
+			reserved = math.MinInt64
+		} else {
+			vms := uint64(f.live) + uint64(f.inflightVMs) + 1
+			if f.overheadMib > math.MaxInt64/vms {
+				reserved = math.MinInt64
+			} else {
+				reserved = subtractCharge(reserved, f.overheadMib*vms)
+			}
+		}
 		if !finite || reserved < admittable {
 			admittable = reserved
 		}
@@ -230,17 +243,25 @@ func (f admissionFacts) admittableMib() (int64, bool) {
 	return admittable, finite
 }
 
+// Saturate debt instead of wrapping an overcommitted ledger into free capacity.
+func subtractCharge(remaining int64, charge uint64) int64 {
+	if charge > math.MaxInt64 || remaining < math.MinInt64+int64(charge) {
+		return math.MinInt64
+	}
+	return remaining - int64(charge)
+}
+
 // memAdmits reports whether a boot declaring needMib passes the memory
 // predicate.
 func (f admissionFacts) memAdmits(needMib uint64) bool {
 	admittable, finite := f.admittableMib()
-	return !finite || clampInt64(needMib) <= admittable
+	return !finite || (needMib <= math.MaxInt64 && int64(needMib) <= admittable)
 }
 
 // slotsFull reports whether the live-VM backstop refuses one more boot: live VMs
 // plus boots in flight already reach the ceiling. A zero ceiling is unlimited.
 func (f admissionFacts) slotsFull() bool {
-	return f.slotCeiling > 0 && f.live+f.inflightVMs >= f.slotCeiling
+	return f.slotCeiling > 0 && (f.live >= f.slotCeiling || f.inflightVMs >= f.slotCeiling-f.live)
 }
 
 func clampInt64(v uint64) int64 {
@@ -256,21 +277,22 @@ func clampInt64(v uint64) int64 {
 // claim through it, so LiveCount and ClaimedMib already sum every class.
 func (s *Server) admissionFactsLocked() admissionFacts {
 	headroom, known := s.observedHeadroomMib()
+	budget, budgetKnown := s.memoryBudgetReading()
+	live, claimed := s.liveMemoryClaims()
 	f := admissionFacts{
 		model:            s.cfg.AdmissionModel,
-		budgetMib:        s.memBudgetMib(),
+		budgetMib:        budget,
+		budgetKnown:      budgetKnown,
 		headroomMib:      headroom,
 		headroomKnown:    known,
-		claimedMib:       s.claimedMib(),
+		claimedMib:       claimed,
+		live:             live,
 		inflightMib:      s.admission.inflightMib,
 		inflightVMs:      s.admission.inflightVMs,
 		buildResidentMib: s.admission.buildResidentMib,
 		overheadMib:      s.vmOverheadMib(),
 		floorMib:         s.memRejectFloorMib(),
 		slotCeiling:      s.SlotCeiling(),
-	}
-	if s.driver != nil {
-		f.live = s.driver.LiveCount()
 	}
 	return f
 }
@@ -382,6 +404,9 @@ type admissionTicketKey struct{}
 // group boot paths, so the driver call deep in each mode can release it via
 // admissionLanded without threading it through every helper signature.
 func withAdmissionTicket(ctx context.Context, t *admissionTicket) context.Context {
+	if t != nil {
+		ctx = substrate.WithMemoryReservation(ctx, t.needMib)
+	}
 	return context.WithValue(ctx, admissionTicketKey{}, t)
 }
 
@@ -413,7 +438,7 @@ func (s *Server) admit(ctx context.Context, verb string, needMib, placedMib uint
 	switch {
 	case f.slotsFull():
 		reason = reasonSlots
-	case !f.memAdmits(needMib):
+	case needMib > math.MaxUint64-l.inflightMib || l.inflightVMs == math.MaxInt || placedMib > math.MaxUint64-l.placedMib || (placedMib > 0 && l.placedVMs == math.MaxInt) || !f.memAdmits(needMib):
 		reason = reasonPressureMem
 	case class == classTapBearing && s.tapsExhausted():
 		reason = reasonPressureTaps
@@ -511,6 +536,7 @@ func (s *Server) refusal(verb string, reason rejectReason, needMib uint64, f adm
 
 // admissionSnapshot is the NodeStatus projection of the ledger.
 type admissionSnapshot struct {
+	facts admissionFacts
 	// admittableMib is meaningful only when reported (a finite bound).
 	admittableMib int64
 	reported      bool
@@ -530,6 +556,7 @@ func (s *Server) admissionStatus() admissionSnapshot {
 	defer l.mu.Unlock()
 	f := s.admissionFactsLocked()
 	snap := admissionSnapshot{
+		facts:       f,
 		inflightMib: l.inflightMib,
 		inflightVMs: l.inflightVMs,
 		placedMib:   l.placedMib,
@@ -599,18 +626,16 @@ func (s *Server) observedHeadroomMib() (uint64, bool) {
 	if s.memHeadroom == nil {
 		return 0, false
 	}
-	headroom := s.memHeadroom()
-	return headroom, headroom > 0
+	return s.memHeadroom()
 }
 
-// memBudgetMib reads the cgroup memory budget (memory.max minus the daemon
-// reserve); 0 means unknown.
-func (s *Server) memBudgetMib() uint64 {
+func (s *Server) memoryBudgetReading() (uint64, bool) {
 	if s.memBudget == nil {
-		return 0
+		return 0, false
 	}
 	return s.memBudget()
 }
+func (s *Server) memBudgetMib() uint64 { value, _ := s.memoryBudgetReading(); return value }
 
 // vmOverheadMib is the per-VM host memory the reserved model charges on top of
 // each guest's declared memory (EMBERVM_NODED_VM_OVERHEAD_MIB, validated
@@ -686,6 +711,9 @@ func (s *Server) primeSizing(workload, ref string) (vcpus, memMib uint32) {
 	if memMib == 0 {
 		memMib = recordedBundleMemMib(filepath.Join(s.cfg.SnapshotRoot, "bases", ref))
 	}
+	if memMib == 0 {
+		memMib = uint32(coldBootNeedMib(s.driver, 0))
+	}
 	return vcpus, memMib
 }
 
@@ -696,7 +724,7 @@ func (s *Server) primeSizing(workload, ref string) (vcpus, memMib uint32) {
 // lowered after its base was built) would under-reserve the moment the VM
 // lands (admission.tla, NoOvercommit).
 func (s *Server) primeAdmitMib(sizeMemMib uint32, ref string) uint64 {
-	return uint64(max(sizeMemMib, recordedBundleMemMib(filepath.Join(s.cfg.SnapshotRoot, "bases", ref))))
+	return snapshotNeedMib(s.driver, uint64(max(sizeMemMib, recordedBundleMemMib(filepath.Join(s.cfg.SnapshotRoot, "bases", ref)))), "base", ref, "")
 }
 
 // relightNeedMib resolves a session relight's memory need: the larger of the
@@ -709,7 +737,7 @@ func (s *Server) relightNeedMib(workload, ref string) uint64 {
 	if s.sessionDriver == nil {
 		return need
 	}
-	return max(need, uint64(recordedBundleMemMib(filepath.Join(s.sessionDriver.SessionsDir(), ref))))
+	return snapshotNeedMib(s.sessionDriver, max(need, uint64(recordedBundleMemMib(filepath.Join(s.sessionDriver.SessionsDir(), ref)))), "session", ref, "")
 }
 
 // bundleAdmitMib is the memory a tap or group RELIGHT is charged: the larger of
@@ -734,7 +762,11 @@ func (s *Server) servingAdmitMib(req *nodev1.StartServingRequest) uint64 {
 	if ref := req.GetRelight().GetSnapshotRef(); safeSegment(ref) {
 		dir = filepath.Join(s.servingDriver.ServingDir(), ref)
 	}
-	return bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+	need := bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+	if dir != "" {
+		return snapshotNeedMib(s.servingDriver, need, "serving", req.GetRelight().GetSnapshotRef(), "")
+	}
+	return need
 }
 
 // statefulAdmitMib is StartStateful's admission need: the declared size for a
@@ -747,7 +779,11 @@ func (s *Server) statefulAdmitMib(req *nodev1.StartStatefulRequest) uint64 {
 	if ref := req.GetRelightSnapshotRef(); req.GetMode() == nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT && safeSegment(ref) {
 		dir = filepath.Join(s.statefulDriver.StatefulDir(), ref)
 	}
-	return bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+	need := bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+	if dir != "" {
+		return snapshotNeedMib(s.statefulDriver, need, "stateful", req.GetRelightSnapshotRef(), "")
+	}
+	return need
 }
 
 // groupMemberAdmitMib is StartGroupMember's admission need: the declared size
@@ -760,7 +796,12 @@ func (s *Server) groupMemberAdmitMib(req *nodev1.StartGroupMemberRequest) uint64
 			dir = filepath.Join(s.groupDriver.GroupSetsDir(), setID, member)
 		}
 	}
-	return bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+	need := bundleAdmitMib(req.GetResources().GetMemMib(), dir)
+	if dir != "" {
+		set, member, _ := parseGroupMemberRef(req.GetSnapshotRef())
+		return snapshotNeedMib(s.groupDriver, need, "group", set, member)
+	}
+	return need
 }
 
 // recordedBundleMemMib reads the guest memory size a snapshot bundle was taken
@@ -789,4 +830,34 @@ func requireBootResources(verb string, res *nodev1.ResourceSpec) error {
 		return status.Errorf(codes.InvalidArgument, "noded: %s requires resources with nonzero vcpus and mem_mib (got vcpus %d, mem_mib %d)", verb, res.GetVcpus(), res.GetMemMib())
 	}
 	return nil
+}
+
+func (s *Server) liveMemoryClaims() (int, uint64) {
+	if d, ok := s.driver.(interface{ LiveMemoryClaims() (int, uint64) }); ok {
+		return d.LiveMemoryClaims()
+	}
+	if s.driver == nil {
+		return 0, 0
+	}
+	return s.driver.LiveCount(), s.claimedMib()
+}
+
+// snapshotNeedMib protects restores of older, larger snapshots after a workload
+// resize. Production uses the driver's own bundle paths and sizing rules.
+func snapshotNeedMib(driver any, declared uint64, kind, ref, member string) uint64 {
+	if d, ok := driver.(interface {
+		SnapshotMemoryMib(string, string, string) uint64
+	}); ok {
+		return max(declared, d.SnapshotMemoryMib(kind, ref, member))
+	}
+	return declared
+}
+
+// coldBootNeedMib resolves driver defaults while the request is still outside
+// admission. An omitted declaration is not a zero-byte launch reservation.
+func coldBootNeedMib(driver any, declared uint64) uint64 {
+	if d, ok := driver.(interface{ ColdBootMemoryMib(uint64) uint64 }); ok {
+		return d.ColdBootMemoryMib(declared)
+	}
+	return declared
 }
