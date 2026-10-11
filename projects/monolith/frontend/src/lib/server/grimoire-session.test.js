@@ -17,6 +17,8 @@ describe("sessionState", () => {
       if (url.endsWith("/sessions"))
         return response([{ id: "latest" }, { id: "old" }]);
       if (url.includes("/sessions/old/events")) return response([]);
+      if (url.endsWith("/sessions/old/initiative"))
+        return response({ round: 1, active_index: null, entries: [] });
       if (url.includes("/sessions/old/journal")) return response({});
       throw new Error(`Unexpected request ${url}`);
     });
@@ -53,6 +55,8 @@ describe("sessionState", () => {
       if (url.endsWith("/characters")) return response([{ id: "own-pc" }]);
       if (url.endsWith("/sheets")) return response({ versions: [] });
       if (url.endsWith("/sessions")) return response([{ id: "session" }]);
+      if (url.endsWith("/initiative"))
+        return response({ round: 2, active_index: 0, entries: [] });
       if (url.endsWith("/journal?view=party"))
         return response({
           rolls: [{ id: "party-roll", body: { total: 4 } }],
@@ -112,6 +116,11 @@ describe("sessionState", () => {
         /\/campaigns\/campaign\/sessions\/session\/journal\?view=party$/,
       ),
     ]);
+    expect(state.initiative).toEqual({
+      round: 2,
+      active_index: 0,
+      entries: [],
+    });
     expect(state.events).toHaveLength(501);
     expect(state.events.at(-1).seq).toBe(1003);
     expect(state).not.toHaveProperty("members");
@@ -130,6 +139,7 @@ describe("sessionState", () => {
     expect(state.session).toBeNull();
     expect(state.journal).toBeNull();
     expect(state.events).toEqual([]);
+    expect(state.initiative).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 });

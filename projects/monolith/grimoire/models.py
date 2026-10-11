@@ -1113,6 +1113,65 @@ class InventoryChange(SQLModel, table=True):
     )
 
 
+class SessionInitiative(SQLModel, table=True):
+    """Private encounter order; turn events store only the player projection."""
+
+    __tablename__ = "session_initiative"
+    __table_args__ = (
+        CheckConstraint("round >= 1", name="session_initiative_round_chk"),
+        CheckConstraint(
+            "active_index >= 0", name="session_initiative_active_index_chk"
+        ),
+        CheckConstraint(
+            "hidden_display IN ('mask', 'omit')",
+            name="session_initiative_hidden_display_chk",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(entries) = 'array'", name="session_initiative_entries_chk"
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "json_type(entries) = 'array'", name="session_initiative_entries_chk"
+        ).ddl_if(dialect="sqlite"),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    session_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True,
+            nullable=False,
+            fk="grimoire.game_session.id",
+            ondelete="CASCADE",
+        )
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False,
+            fk="grimoire.campaign.id",
+            ondelete="CASCADE",
+        )
+    )
+    entries: list[dict] = Field(
+        default_factory=list,
+        sa_column=Column(_JSONB, nullable=False, server_default=text("'[]'")),
+    )
+    round: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default=text("1"))
+    )
+    active_index: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default=text("0"))
+    )
+    hidden_display: Literal["mask", "omit"] = Field(
+        default="mask",
+        sa_column=Column(String, nullable=False, server_default=text("'mask'")),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
+    )
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (deleted_at is NULL until soft delete)
 class Note(SQLModel, table=True):
     __tablename__ = "note"

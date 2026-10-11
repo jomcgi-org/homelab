@@ -57,6 +57,7 @@ from grimoire.models import (
     PlayerCharacter,
     Relationship,
     SessionEvent,
+    SessionInitiative,
 )
 from grimoire.play_embeddings import audience_columns, event_embedding_kind
 
@@ -599,6 +600,37 @@ def build_fixture(session: Session) -> LeakHarness:
             name="Fighter",
             is_global=True,
             detail={"hit_die": "d10", "saves": "Strength, Constitution"},
+        ),
+    )
+    # Seeded order: members see the visible label, only the DM sees the hidden
+    # NPC's real label (players get the mask). The PC entry carries a
+    # per-player canary id: only the DM and that PC's owner may see it.
+    keep(
+        "initiative",
+        SessionInitiative(
+            session_id=rows["campaign_session"].id,
+            campaign_id=rows["campaign"].id,
+            entries=[
+                {
+                    "label": mark("initiative.visible_label", MEMBERS),
+                    "player_character_id": None,
+                    "initiative": 14,
+                    "hidden": False,
+                },
+                {
+                    "label": "Bram",
+                    "player_character_id": rows["character"].id,
+                    "initiative": 12,
+                    "hidden": False,
+                },
+                {
+                    "label": mark("initiative.hidden_label", ("dm",)),
+                    "player_character_id": None,
+                    "initiative": 9,
+                    "hidden": True,
+                },
+            ],
+            hidden_display="mask",
         ),
     )
     for key, character_key, hidden, deleted, campaign_key, allowed, entity_key in (

@@ -372,12 +372,13 @@ def test_dm_route_fixture_matches_require_dm_guards():
     guarded = _dm_guarded_routes()
     listed = {tuple(route) for route in _DM_ROUTE_FIXTURE["routes"]}
     assert listed <= guarded, f"not _require_dm routes: {sorted(listed - guarded)}"
-    # The BFF reaches grants, sessions and inventory, so every guarded route there
+    # The BFF reaches grants, sessions, inventory and initiative only, so every guarded route there
     # must be listed or a new DM route could slip past the player test.
     reachable = {
         route
         for route in guarded
         if "/grants" in route[1]
+        or "/initiative" in route[1]
         or "/inventory" in route[1]
         or route[1].endswith(("/sessions", "/{session_id}"))
     }
