@@ -1095,7 +1095,7 @@ a brick's size is fixed for its lifetime.
 
 | Layer | Owner | EmberVM's lever |
 | ----- | ----- | --------------- |
-| VM to brick slot | EmberVM control plane | per-brick contiguous-headroom ledger; pack-to-empty scoring; class-exact placement (no cross-class borrowing) |
+| VM to brick slot | EmberVM control plane | per-brick contiguous-headroom ledger; pack-to-empty scoring; best-fit placement across classes |
 | Brick pod to node | kube-scheduler | pod shape only |
 | Node provisioning | Karpenter or equivalent (cloud) / none (fixed fleet) | brick count vector from the single-writer controller; a Pending brick is the signal |
 
@@ -1195,7 +1195,12 @@ ignores `/spec/replicas` fleet-wide and git-declared replicas would not
 sync; instance identity is the kubelet pod UID. Brick autoscale is configured
 at rung `full` on the `observe -> up -> full` ladder: denial-driven scale-up
 acts, clamped to the chart's maxReplicas, and drain-aware scale-down may act
-after its idle and fully-exported victim rails pass. This is staged repository
+after its idle and fully-exported victim rails pass. Because placement is
+best-fit across classes, a denial scales the smallest class whose empty brick
+would admit the need and that still has replica headroom (never one at an
+operative ceiling of 0), and demand for which every fitting class is at its
+bound latches the `ceiling_exhausted` capacity condition with or without a
+`ceilingBound`. This is staged repository
 configuration, not proof of a rollout or live behavior. Post-rollout
 operational acceptance remains outstanding on #6059. The current brick mix is
 deployment state and lives in the fleet section.
