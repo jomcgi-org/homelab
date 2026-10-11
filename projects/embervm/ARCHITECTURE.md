@@ -2192,7 +2192,11 @@ at least one `jailed` launch on a brick whose counters ran unbroken across the
 suite, and a nonzero budget with its own admission predicate on every classed
 brick. A brick that registers or restarts mid-suite counts its startup
 preflight as a jailed launch and has lost any earlier counts, so it credits
-nothing, and S7 fails when no brick kept its counters. S8 has a task guest dial the host's egress
+nothing. S7 fails at once when every brick from suite start is listed with its
+counters reset. When no listed brick kept its counters but one from suite start
+is missing from `/v1/capacity`, S7 keeps polling inside its budget, since the
+registry drops a brick whose stream is unknown or draining and restores it
+with its counters. S8 has a task guest dial the host's egress
 vsock port and requires the egress sidecar's CA certificate back, which proves
 a jailed Firecracker can connect to its egress socket. A
 failed or all-vacuous run blocks promotion; Freight approval is the explicit

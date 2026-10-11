@@ -21,10 +21,14 @@ import (
 // launch_modes.jailed moved on a brick whose counters ran unbroken from suite
 // start (the guests S1 to S5 booted went through the jailer). A brick that
 // registers or restarts mid-suite counts its startup preflight as a jailed
-// launch and has no counts from before, so it credits nothing, and S7 fails
-// when no brick kept its counters across the suite. A classed brick must also
-// report a nonzero budget and its own admission predicate, which is what a
-// jailer cgroup delegation that hid the brick's memory.max would break.
+// launch and has no counts from before, so it credits nothing. S7 fails at once
+// when every brick from suite start is listed with its counters reset. When no
+// listed brick kept its counters but one from suite start is missing from the
+// read, S7 keeps polling inside its budget: the registry drops a brick whose
+// stream is unknown or draining and restores it with its counters. A classed
+// brick must also report a nonzero budget and its own admission predicate,
+// which is what a jailer cgroup delegation that hid the brick's memory.max
+// would break.
 //
 // S8 runs one task on the task workload that dials the host's egress vsock
 // port itself and asks the egress sidecar for its CA certificate. A PEM back
@@ -164,8 +168,10 @@ func evaluateS7(before, after capacityReport) s7Evaluation {
 	// unbroken counts the bricks whose counters ran from suite start to now
 	// without a reset: the only bricks whose jailed launches are the suite's.
 	unbroken := 0
+	listed := make(map[string]bool, len(instances))
 	for _, instance := range instances {
 		id := instance.InstanceID
+		listed[id] = true
 		if !instance.JailerArmed {
 			failures = append(failures, fmt.Sprintf("brick %s reports jailer_armed=false", id))
 			continue
@@ -212,10 +218,26 @@ func evaluateS7(before, after capacityReport) s7Evaluation {
 	if len(pending) > 0 {
 		return s7Evaluation{detail: strings.Join(pending, "; ")}
 	}
-	// No later read can bring back a brick's lost counters, so a fleet with no
-	// unbroken brick can never show the suite's launches: fail rather than
-	// wait out the budget or pass on preflight launches alone.
 	if unbroken == 0 {
+		// A baseline brick absent from this read may only be out of the
+		// registry for now: NodeRegistry drops a brick's row while its stream
+		// is unknown or draining and restores it, same instance id and counters
+		// intact, on its next healthy status. Wait for it, and let the S7
+		// budget bound a fleet that really was replaced.
+		var missing []string
+		for id := range baseline {
+			if !listed[id] {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			return s7Evaluation{detail: fmt.Sprintf("baseline bricks missing from GET /v1/capacity: %s (a brick drops out while its stream is unknown or draining and returns with its counters); no listed brick kept its launch counters across the suite; %s", strings.Join(missing, ", "), strings.Join(summaries, "; "))}
+		}
+		// Every baseline brick is listed and reset its counters. No later read
+		// can bring back a reset brick's lost counts, so the suite's launches
+		// are unobservable: fail rather than wait out the budget or pass on
+		// preflight launches alone.
 		return s7Evaluation{verdict: verdictFail, detail: "no brick kept its launch counters across the suite (every brick registered or restarted mid-suite), so the suite's launches are unobservable; " + strings.Join(summaries, "; ")}
 	}
 	if jailedDelta == 0 {
