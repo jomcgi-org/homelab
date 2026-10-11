@@ -2177,8 +2177,11 @@ scenarios run after the rest once embervm-dev arms them with the jailer
 (`conformance.requireJailer`, `conformance.egressProbe`; #5255, #6965). S7 reads
 `/v1/capacity` before S1 and after the suite and requires every brick to
 report `jailer_armed`, no `direct_exec` or `refused` launch across the suite,
-at least one `jailed` launch, and a nonzero budget with its own admission
-predicate on every classed brick. S8 has a task guest dial the host's egress
+at least one `jailed` launch on a brick whose counters ran unbroken across the
+suite, and a nonzero budget with its own admission predicate on every classed
+brick. A brick that registers or restarts mid-suite counts its startup
+preflight as a jailed launch and has lost any earlier counts, so it credits
+nothing, and S7 fails when no brick kept its counters. S8 has a task guest dial the host's egress
 vsock port and requires the egress sidecar's CA certificate back, which proves
 a jailed Firecracker can connect to its egress socket. A
 failed or all-vacuous run blocks promotion; Freight approval is the explicit
