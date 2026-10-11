@@ -524,12 +524,13 @@ defmodule Embervm.TaskStore do
   def handle_call({:fail, task_id, reason, usage}, _from, state) do
     with {:ok, task} <- fetch_task(state, task_id),
          cfg = cfg_for(task.workload),
-         event = Embervm.Retry.classify(reason, task.attempt, cfg),
+         event = Embervm.Retry.classify(reason, budget_attempt(task), cfg),
          {:ok, next} <- TaskState.transition(task.state, event) do
       payload = maybe_put_usage(%{state: next, reason: reason}, usage)
 
       case append_and_update(state, task, :failed, next, payload) do
         {:ok, updated} ->
+          updated = count_capacity_retry(state, updated, reason)
           notify_metered(state, updated, usage)
           reply_after_fail(state, updated, event, task.attempt, cfg)
 
@@ -656,7 +657,7 @@ defmodule Embervm.TaskStore do
 
       case call_op_log(fn -> state.op_log_mod.append(state.op_log, op) end) do
         {:ok, _seq} ->
-          updated = %{task | state: next, attempt: 1, updated_at: ts}
+          updated = %{task | state: next, attempt: 1, updated_at: ts} |> Map.delete(:capacity_retries)
           :ets.insert(state.tasks, {task_id, updated})
           notify_queued(state, updated)
           {:reply, {:ok, updated}, state}
@@ -894,6 +895,22 @@ defmodule Embervm.TaskStore do
     end
   end
 
+  # The attempt the retry budget is charged at. `attempt` stays strictly
+  # monotonic (it is the async-lifecycle epoch fence), so the :capacity
+  # failures it counted are netted out here instead: a node refusing to boot
+  # under pressure ran no guest and must not spend the task's budget. The
+  # count is ETS-only, so a control-plane restart resets it (those retries then
+  # count once, the pre-:capacity behaviour), and redrive clears it.
+  defp budget_attempt(task), do: max(task.attempt - Map.get(task, :capacity_retries, 0), 1)
+
+  defp count_capacity_retry(state, task, :capacity) do
+    updated = Map.update(task, :capacity_retries, 1, &(&1 + 1))
+    :ets.insert(state.tasks, {task.task_id, updated})
+    updated
+  end
+
+  defp count_capacity_retry(_state, task, _reason), do: task
+
   # After a :failed op lands, a permanent failure chains into :dead_letter when
   # the workload's DLQ is enabled (the default). A retryable failure instead
   # reports the backoff so a future dispatcher (Task 11) knows when to call
@@ -929,7 +946,7 @@ defmodule Embervm.TaskStore do
   # a downed node's other tasks must still be reassigned.
   defp reassign_one(state, task, reason) do
     cfg = cfg_for(task.workload)
-    event = Embervm.Retry.classify(reason, task.attempt, cfg)
+    event = Embervm.Retry.classify(reason, budget_attempt(task), cfg)
     next = TaskState.transition!(task.state, event)
 
     case append_and_update(state, task, :failed, next, %{state: next, reason: reason}) do

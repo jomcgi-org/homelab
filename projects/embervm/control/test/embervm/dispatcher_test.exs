@@ -15,7 +15,7 @@ defmodule Embervm.DispatcherTest do
 
   alias Embervm.{Dispatcher, NodeCapacity, TaskStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
-  alias Embervm.Scheduler.Score
+  alias Embervm.Scheduler.{Inflight, Score}
   alias Embervm.Node.V1.{AssignRequest, AssignResponse, GuestResponse, PrimeResponse, Trace, UsageStats}
 
   # -- harness ---------------------------------------------------------------
@@ -26,6 +26,9 @@ defmodule Embervm.DispatcherTest do
     cat_table = :"cat_#{suffix}"
     depth_table = :"depth_#{suffix}"
     disp_name = :"disp_#{suffix}"
+    # A private in-flight ledger, so this stack's claims never debit another
+    # test's identically named bricks.
+    inflight_table = Inflight.create(Keyword.get(opts, :inflight_table, :"infl_#{suffix}"))
 
     NodeCapacity.create(cap_table)
     WorkloadCatalog.create(cat_table)
@@ -50,8 +53,13 @@ defmodule Embervm.DispatcherTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         depth_table: depth_table,
+        inflight_table: inflight_table,
         clock: fn -> 1_000_000 end,
         channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
+        # Recorders by default: the real ones disconnect a channel this test never
+        # dialed, and cast demand to the application's own BrickController.
+        invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _channel -> :ok end),
+        note_denial_fun: Keyword.get(opts, :note_denial_fun, fn _wl, _need -> :ok end),
         assign_fun: Keyword.get(opts, :assign_fun, fn _ch, _req -> {:ok, success_resp()} end),
         prime_fun: Keyword.get(opts, :prime_fun, fn _ch, _req -> {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}} end),
         start_sweep: false
@@ -82,7 +90,8 @@ defmodule Embervm.DispatcherTest do
       op_log: op_log,
       cap_table: cap_table,
       cat_table: cat_table,
-      depth_table: depth_table
+      depth_table: depth_table,
+      inflight_table: inflight_table
     }
   end
 
@@ -916,6 +925,331 @@ defmodule Embervm.DispatcherTest do
     open_gate(gate)
   end
 
+  # -- the shared channel survives a server answer (S8, D-R2.7.2) -----------
+
+  defp recording_invalidate(parent), do: fn node, channel -> send(parent, {:invalidated, node, channel}) end
+
+  # The reason of every :failed op the task recorded, oldest first.
+  defp failure_reasons(ctx, tid) do
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    for %{kind: :failed, task_id: ^tid, payload: payload} <- ops,
+        do: to_string(Map.get(payload, "reason") || Map.get(payload, :reason))
+  end
+
+  @dead_transport %GRPC.RPCError{status: 2, message: "error occurred while receiving data: the connection is closed"}
+
+  test "a pressure-rejected Prime keeps the shared channel up" do
+    System.delete_env("EMBERVM_PLACEMENT_RETRY")
+    parent = self()
+
+    ctx =
+      start_stack(
+        invalidate_fun: recording_invalidate(parent),
+        prime_fun: fn _ch, _req ->
+          send(parent, :primed)
+          {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+        end
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 0)
+    _tid = submit(ctx, "wl-a", "p1")
+
+    assert_receive :primed, 2_000
+    refute_receive {:invalidated, _, _}, 300
+  end
+
+  test "a server-status Prime failure leaves the channel up, a dead transport drops it" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        invalidate_fun: recording_invalidate(parent),
+        prime_fun: fn _ch, _req -> {:error, %GRPC.RPCError{status: 9, message: "snapshot lost"}} end
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10)
+    put_facts(ctx, "wl-a", free: 0)
+    tid = submit(ctx, "wl-a", "p1")
+    assert eventually(fn -> state_of(ctx, tid) == :dead_lettered end)
+    refute_received {:invalidated, _, _}
+
+    dead = start_stack(invalidate_fun: recording_invalidate(parent), prime_fun: fn _ch, _req -> {:error, @dead_transport} end)
+    put_catalog(dead, "wl-b", cap: 10)
+    put_facts(dead, "wl-b", free: 0)
+    _tid = submit(dead, "wl-b", "p1")
+    assert_receive {:invalidated, "node-4", :ch}, 2_000
+  end
+
+  test "a server-status Assign failure leaves the channel up and keeps its classification" do
+    parent = self()
+
+    for {status, outcome} <- [{4, :timeout}, {14, :transport}, {9, :transport}] do
+      ctx =
+        start_stack(
+          invalidate_fun: recording_invalidate(parent),
+          assign_fun: fn _ch, _req -> {:error, %GRPC.RPCError{status: status, message: "server said no"}} end
+        )
+
+      put_catalog(ctx, "wl-a",
+        cap: 10,
+        retry: %{max_attempts: 1, backoff_ms: 1, backoff_cap_ms: 1, retry_on: [:transport, :timeout]}
+      )
+
+      put_facts(ctx, "wl-a", free: 1)
+      Dispatcher.deposit(ctx.name, "node-4", "wl-a", "vm-#{status}")
+      tid = submit(ctx, "wl-a", "p1")
+
+      assert eventually(fn -> state_of(ctx, tid) == :dead_lettered end)
+      assert List.last(failure_reasons(ctx, tid)) == Atom.to_string(outcome)
+      refute_received {:invalidated, _, _}
+    end
+  end
+
+  test "a dead-transport Assign failure drops the shared channel" do
+    parent = self()
+
+    for reason <- [@dead_transport, :closed] do
+      ctx = start_stack(invalidate_fun: recording_invalidate(parent), assign_fun: fn _ch, _req -> {:error, reason} end)
+      put_catalog(ctx, "wl-a", cap: 10)
+      put_facts(ctx, "wl-a", free: 1)
+      Dispatcher.deposit(ctx.name, "node-4", "wl-a", "vm-dead")
+      _tid = submit(ctx, "wl-a", "p1")
+
+      assert_receive {:invalidated, "node-4", :ch}, 2_000
+    end
+  end
+
+  # -- a pressure refusal is a capacity outcome (S11) ------------------------
+
+  test "gate OFF: pressure refusals never burn the attempt budget and record demand" do
+    System.delete_env("EMBERVM_PLACEMENT_RETRY")
+    parent = self()
+    {:ok, primes} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        invalidate_fun: recording_invalidate(parent),
+        note_denial_fun: fn wl, need -> send(parent, {:denial, wl, need}) end,
+        prime_fun: fn _ch, _req ->
+          n = Agent.get_and_update(primes, fn n -> {n, n + 1} end)
+
+          if n < 3 do
+            {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem (need 512 MiB, floor 512 MiB)"}}
+          else
+            {:ok, %PrimeResponse{vm_id: "vm-finally"}}
+          end
+        end
+      )
+
+    # TaskStore reads the default retry config (3 attempts, transport among the
+    # retryable classes): three refusals classified as transport would have
+    # dead-lettered the task on the third.
+    put_catalog(ctx, "wl-a", cap: 10, mem_mib: 512)
+
+    put_facts(ctx, "wl-a", free: 0)
+    tid = submit(ctx, "wl-a", "p1")
+
+    # The default full-jitter backoff (up to 1 s, 2 s, 4 s) sets the pace.
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end, 20_000)
+    assert Agent.get(primes, & &1) == 4
+    assert failure_reasons(ctx, tid) == List.duplicate("capacity", 3)
+
+    # One demand signal per refused dispatch (each one an exhausted frontier).
+    for _ <- 1..3, do: assert_receive({:denial, "wl-a", 512}, 1_000)
+    refute_received {:denial, _, _}
+    assert Dispatcher.stats(ctx.name).denials.pressure == 3
+    refute_received {:invalidated, _, _}
+  end
+
+  test "gate ON: every brick refusing is one capacity outcome with one demand signal" do
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+    parent = self()
+    {:ok, refusals} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        invalidate_fun: recording_invalidate(parent),
+        note_denial_fun: fn wl, need -> send(parent, {:denial, wl, need}) end,
+        channel_fun: fn instance -> {:ok, instance} end,
+        prime_fun: fn channel, _req ->
+          # Both bricks refuse the first dispatch, then the next one succeeds.
+          if Agent.get_and_update(refusals, fn n -> {n, n + 1} end) < 2 do
+            send(parent, {:refused, channel})
+            {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+          else
+            {:ok, %PrimeResponse{vm_id: "vm-on-#{channel}"}}
+          end
+        end
+      )
+
+    two_colocated_bricks(ctx, "wl-a")
+    tid = submit(ctx, "wl-a", "p1")
+
+    assert_receive {:refused, first}, 2_000
+    assert_receive {:refused, second}, 2_000
+    assert Enum.sort([first, second]) == ["node-4/a", "node-4/b"]
+    assert_receive {:denial, "wl-a", 4_000}, 2_000
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    refute_received {:denial, _, _}
+    refute_received {:invalidated, _, _}
+    assert Dispatcher.stats(ctx.name).denials.pressure == 1
+  end
+
+  test "a frontier of unreachable bricks stays a transport failure" do
+    System.put_env("EMBERVM_PLACEMENT_RETRY", "1")
+    on_exit(fn -> System.delete_env("EMBERVM_PLACEMENT_RETRY") end)
+    parent = self()
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        note_denial_fun: fn wl, need -> send(parent, {:denial, wl, need}) end,
+        channel_fun: fn _instance -> {:error, :unavailable} end
+      )
+
+    two_colocated_bricks(ctx, "wl-a")
+    tid = submit(ctx, "wl-a", "p1")
+
+    assert eventually(fn -> state_of(ctx, tid) == :dead_lettered end)
+    assert Enum.uniq(failure_reasons(ctx, tid)) == ["transport"]
+    refute_received {:denial, _, _}
+    assert Dispatcher.stats(ctx.name).denials.pressure == 0
+  end
+
+  # -- in-flight claims (S1) --------------------------------------------------
+
+  test "a miss claims its memory before the Prime, holds it while the VM lives and releases on refusal" do
+    parent = self()
+    gate = new_gate()
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    table = :"infl_claim_#{System.unique_integer([:positive])}"
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance -> {:ok, instance} end,
+        prime_fun: fn channel, _req ->
+          # The claim is in place while the Prime is in flight.
+          send(parent, {:pending_during_prime, Inflight.pending_mib(channel, table: table)})
+
+          if Agent.get_and_update(calls, fn n -> {n, n + 1} end) == 0 do
+            {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+          else
+            {:ok, %PrimeResponse{vm_id: "vm-ok"}}
+          end
+        end,
+        assign_fun: fn channel, _req ->
+          send(parent, {:pending_during_assign, Inflight.pending_mib(channel, table: table)})
+          wait_open(gate)
+          {:ok, success_resp()}
+        end,
+        inflight_table: table
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10, mem_mib: 1_024)
+
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "c"},
+      instance_id: "node-4/c",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_000,
+      free: 0
+    )
+
+    tid = submit(ctx, "wl-a", "p1")
+
+    # Refused: the claim was held during the Prime and dropped after it.
+    assert_receive {:pending_during_prime, 1_024}, 2_000
+    # Retried (capacity, no attempt burned) and primed: claimed again...
+    assert_receive {:pending_during_prime, 1_024}, 2_000
+    # ...settled, so the debit holds while the VM lives (here, its Assign)...
+    assert_receive {:pending_during_assign, 1_024}, 2_000
+    open_gate(gate)
+    assert eventually(fn -> state_of(ctx, tid) == :succeeded end)
+    # ...and goes with the single-use VM once the worker is done.
+    assert eventually(fn -> Inflight.pending_mib("node-4/c", table: table) == 0 end)
+  end
+
+  test "serial misses in one drain never herd onto the same brick" do
+    parent = self()
+    gate = new_gate()
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance -> {:ok, instance} end,
+        prime_fun: fn channel, _req ->
+          send(parent, {:primed_on, channel})
+          wait_open(gate)
+          {:ok, %PrimeResponse{vm_id: "vm-#{System.unique_integer([:positive])}"}}
+        end
+      )
+
+    # Each brick admits 4000 MiB, so each fits exactly ONE 3072 MiB guest. On
+    # these identical stale facts both tasks would score the same head brick.
+    put_catalog(ctx, "wl-a", cap: 10, mem_mib: 3_072)
+
+    for pod <- ["a", "b"] do
+      put_facts(ctx, "wl-a",
+        key: {"node-4", pod},
+        instance_id: "node-4/#{pod}",
+        size_class: "8gi",
+        mem_budget: 7_936,
+        mem_headroom: 4_000,
+        free: 0
+      )
+    end
+
+    t1 = submit(ctx, "wl-a", "p1")
+    t2 = submit(ctx, "wl-a", "p2")
+
+    assert_receive {:primed_on, first}, 2_000
+    assert_receive {:primed_on, second}, 2_000
+    assert Enum.sort([first, second]) == ["node-4/a", "node-4/b"]
+
+    # A third task finds no brick with room and is denied, not herded.
+    t3 = submit(ctx, "wl-a", "p3")
+    assert eventually(fn -> Dispatcher.stats(ctx.name).denials.no_capacity >= 1 end)
+    assert state_of(ctx, t3) == :queued
+
+    open_gate(gate)
+    assert eventually(fn -> state_of(ctx, t1) == :succeeded and state_of(ctx, t2) == :succeeded end)
+  end
+
+  test "a miss worker that dies before it primed releases its claim" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        stale_after_ms: 60_000,
+        channel_fun: fn instance -> {:ok, instance} end,
+        prime_fun: fn _channel, _req ->
+          send(parent, {:priming, self()})
+          Process.exit(self(), :kill)
+        end
+      )
+
+    put_catalog(ctx, "wl-a", cap: 10, mem_mib: 1_024)
+
+    put_facts(ctx, "wl-a",
+      key: {"node-4", "d"},
+      instance_id: "node-4/d",
+      size_class: "8gi",
+      mem_budget: 8_192,
+      mem_headroom: 8_000,
+      free: 0
+    )
+
+    _tid = submit(ctx, "wl-a", "p1")
+    assert_receive {:priming, _worker}, 2_000
+    assert eventually(fn -> Inflight.pending_mib("node-4/d", table: ctx.inflight_table) == 0 end)
+  end
+
   # -- fail-closed -----------------------------------------------------------
 
   test "no capacity facts: task stays queued, denial recorded as :no_capacity" do
@@ -1379,29 +1713,33 @@ defmodule Embervm.DispatcherTest do
       )
     Embervm.SpecTrace.scope_writer(writer_name)
 
+    # The last element is how the task ends. Transport failures burn the three
+    # attempts and dead-letter. A pressure refusal is a :capacity outcome, which
+    # never consumes an attempt (S11): it keeps retrying, one dispatch_failed
+    # record per refusal, and must never dead-letter.
     cases = [
       {"wl-warm-no-channel", "no_channel", ":unavailable", "node-4",
        [channel_fun: fn _node -> {:error, :unavailable} end],
        fn ctx ->
          put_facts(ctx, "wl-warm-no-channel", free: 0)
          Dispatcher.deposit(ctx.name, "node-4", "wl-warm-no-channel", "vm-warm")
-       end},
+       end, :dead_lettered},
       {"wl-miss-no-channel", "no_channel", ":unavailable", "node-4",
        [channel_fun: fn _node -> {:error, :unavailable} end],
-       fn ctx -> put_facts(ctx, "wl-miss-no-channel", free: 1) end},
+       fn ctx -> put_facts(ctx, "wl-miss-no-channel", free: 1) end, :dead_lettered},
       {"wl-prime-failed", "prime_failed", ":unavailable", "node-4",
        [prime_fun: fn _channel, _req -> {:error, :unavailable} end],
-       fn ctx -> put_facts(ctx, "wl-prime-failed", free: 1) end},
+       fn ctx -> put_facts(ctx, "wl-prime-failed", free: 1) end, :dead_lettered},
       {"wl-resource-exhausted", "resource_exhausted", "pressure:mem", "node-4",
        [
          prime_fun: fn _channel, _req ->
            {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
          end
        ],
-       fn ctx -> put_facts(ctx, "wl-resource-exhausted", free: 1) end}
+       fn ctx -> put_facts(ctx, "wl-resource-exhausted", free: 1) end, :keeps_retrying}
     ]
 
-    for {workload, expected_reason, expected_detail, declined_node_id, opts, prepare} <- cases do
+    for {workload, expected_reason, expected_detail, declined_node_id, opts, prepare, ending} <- cases do
       ctx = start_stack(opts)
       put_catalog(ctx, workload,
         retry: %{
@@ -1422,9 +1760,20 @@ defmodule Embervm.DispatcherTest do
                    action: "dispatch_failed"
                  )
 
-               state_of(ctx, task_id) == :dead_lettered and
-                 Enum.count(failed_records, &(&1["vars"]["task_id"] == task_id)) == 3
+               count = Enum.count(failed_records, &(&1["vars"]["task_id"] == task_id))
+
+               case ending do
+                 :dead_lettered -> state_of(ctx, task_id) == :dead_lettered and count == 3
+                 :keeps_retrying -> count >= 3
+               end
              end)
+
+      if ending == :keeps_retrying do
+        # Three refusals is the whole attempt budget, so a transport
+        # classification would have dead-lettered by now.
+        refute state_of(ctx, task_id) in [:dead_lettered, :failed_permanent]
+        GenServer.stop(ctx.disp)
+      end
 
       :ok = Embervm.SpecTrace.drain(writer)
 
@@ -1433,7 +1782,7 @@ defmodule Embervm.DispatcherTest do
 
       records = Enum.filter(failed_records, &(&1["vars"]["task_id"] == task_id))
 
-      assert length(records) == 3
+      if ending == :dead_lettered, do: assert(length(records) == 3), else: assert(length(records) >= 3)
 
       for record <- records do
         assert record["vars"]["workload"] == workload
