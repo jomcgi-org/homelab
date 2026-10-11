@@ -1222,7 +1222,7 @@ defmodule Embervm.ServingManagerTest do
       live_vms: Keyword.get(opts, :live_vms, 0),
       workloads: %{"wl-a" => ready, "wl-b" => ready},
       serving_vms: [],
-      serving_snapshots: [],
+      serving_snapshots: Keyword.get(opts, :serving_snapshots, []),
       store_reachable: Keyword.get(opts, :store_reachable, false)
     })
   end
@@ -1334,6 +1334,85 @@ defmodule Embervm.ServingManagerTest do
     assert {{:error, {:wake_failed, :no_eligible_instance}}, []} =
              manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
 
+    assert Inflight.entries(table: ctx.inflight_table) == []
+  end
+
+  # -- a full owning brick wakes cold ------------------------------------------
+
+  @s1_snapshot [%{snapshot_ref: "serving/s-1", workload: "wl-a", size_bytes: 10, created_at_unix_ms: 1}]
+
+  # A StartServing stub that refuses every boot on the brick dialled as
+  # `full_dial` with RESOURCE_EXHAUSTED, as noded does when that brick cannot fit
+  # the guest, and boots anywhere else. Reports each dial and its source kind.
+  defp full_brick_start_fun(full_dial) do
+    test = self()
+
+    fn dial_id, req ->
+      send(test, {:start, dial_id, elem(req.source, 0)})
+
+      if dial_id == full_dial do
+        {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+      else
+        {:ok, %StartServingResponse{vm_id: "vm-#{dial_id}", ip: "10.99.0.5", port: 8080}}
+      end
+    end
+  end
+
+  defp woken_instances(ctx), do: Enum.reject(ServingStore.list(ctx.store, "wl-a"), &(&1.instance_id == "srv-1"))
+
+  test "a relight its owning brick refuses wakes cold on another brick and keeps the snapshot banked" do
+    ctx = start_stack(start_serving_fun: full_brick_start_fun("node-4/pod-a"), channel_fun: fn dial_id -> {:ok, dial_id} end)
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    # The owner's last report fits the guest, but a racing boot has taken the room
+    # by the time the relight lands. It is also the fuller brick, so a cold
+    # placement that did not skip it would dial it first and be refused again.
+    sized_serving_brick(ctx, "node-4", "pod-a", 3_600, serving_snapshots: @s1_snapshot)
+    sized_serving_brick(ctx, "node-5", "pod-b", 4_000)
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1")
+
+    assert {{:ok, %{ip: "10.99.0.5", port: 8080}}, []} =
+             manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+
+    assert_received {:start, "node-4/pod-a", :relight}
+    assert_received {:start, "node-5/pod-b", :fresh}
+    refute_received {:start, _, _}
+
+    # The snapshot stays banked for a later relight, and the cold boot serves.
+    assert {:ok, %{state: :banked, snapshot_ref: "serving/s-1"}} = ServingStore.get(ctx.store, "srv-1")
+    assert [%{state: :published, node_id: "node-5"}] = woken_instances(ctx)
+    assert Inflight.pending_mib("node-4/pod-a", table: ctx.inflight_table) == 0
+    assert Inflight.pending_mib("node-5/pod-b", table: ctx.inflight_table) == 3_000
+  end
+
+  test "a banked snapshot on a brick that cannot fit the guest wakes cold without a relight" do
+    ctx = start_stack(start_serving_fun: full_brick_start_fun("node-4/pod-a"), channel_fun: fn dial_id -> {:ok, dial_id} end)
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    sized_serving_brick(ctx, "node-4", "pod-a", 1_000, serving_snapshots: @s1_snapshot)
+    sized_serving_brick(ctx, "node-5", "pod-b", 4_000)
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1")
+
+    assert {{:ok, _endpoint}, []} =
+             manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+
+    assert_received {:start, "node-5/pod-b", :fresh}
+    refute_received {:start, _, _}
+    assert {:ok, %{state: :banked}} = ServingStore.get(ctx.store, "srv-1")
+    assert [%{state: :published, node_id: "node-5"}] = woken_instances(ctx)
+  end
+
+  test "a refused relight with nowhere else to boot records demand once and fails the wake" do
+    ctx = start_stack(start_serving_fun: full_brick_start_fun("node-4/pod-a"), channel_fun: fn dial_id -> {:ok, dial_id} end)
+    sized_serving_workload(ctx, "wl-a", 3_000)
+    sized_serving_brick(ctx, "node-4", "pod-a", 4_000, serving_snapshots: @s1_snapshot)
+    seed_banked(ctx, "srv-1", "base-a", "serving/s-1")
+
+    assert {{:error, {:wake_failed, :no_capacity}}, [{:denial, "wl-a", 3_000}]} =
+             manager_demand_casts(ctx, fn -> ServingManager.miss(ctx.mgr, "wl-a", req(), "serving:wl-a") end)
+
+    assert_received {:start, "node-4/pod-a", :relight}
+    refute_received {:start, _, _}
+    assert {:ok, %{state: :banked, snapshot_ref: "serving/s-1"}} = ServingStore.get(ctx.store, "srv-1")
+    assert woken_instances(ctx) == []
     assert Inflight.entries(table: ctx.inflight_table) == []
   end
 end
