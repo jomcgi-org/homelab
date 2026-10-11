@@ -19,6 +19,7 @@ go_library(
     srcs = [
         "main.go",
         "s6_trace.go",
+        "s7_jailer.go",
         "scenarios.go",
         "verdict.go",
     ],
@@ -36,6 +37,7 @@ go_test(
     name = "conformance_test",
     srcs = [
         "s6_trace_test.go",
+        "s7_jailer_test.go",
         "scenarios_test.go",
         "verdict_test.go",
     ],

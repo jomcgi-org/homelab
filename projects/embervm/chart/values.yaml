@@ -533,6 +533,26 @@ conformance:
     s4: 10s
     s5: 60s
     s6: 60s
+    # S7 polls GET /v1/capacity until a brick's next NodeStatus reports the
+    # suite's last launch; S8 is one task with a 10s connect timeout. Both
+    # count toward the dev verdictTimeout arithmetic in dev/deploy/values.yaml.
+    s7: 15s
+    s8: 20s
+  # S7 jailer and admission facts (#5255), staged default-off like s6. True
+  # makes the runner read GET /v1/capacity before S1 and again after the
+  # suite, and pass only when every brick reports jailer_armed, no brick's
+  # launch_modes.direct_exec or launch_modes.refused moved, launch_modes.jailed
+  # moved, and every classed brick reports a nonzero budget and its own
+  # admission predicate. Turn it on only where noded.jailer.enabled is true:
+  # an unarmed brick fails it by design.
+  requireJailer: false
+  # S8 jailed egress probe: one task on taskWorkload dials the host's egress
+  # vsock port (1025) and asks the egress sidecar for its CA certificate. It
+  # needs egress.enabled, taskWorkload in egress.workloads, egress.ca.enabled
+  # and a non-empty egress.secrets (the sidecar loads its CA only alongside a
+  # catalog; a sidecar with no CA closes without answering), or it fails by
+  # design.
+  egressProbe: false
   # S6 TLC trace validation (#6415), staged default-off. Narrower than and
   # independent of conformance.enabled: the runner only appends the S6 scenario
   # when this is true. Turning it on also renders the S6_TLC_* env pointing at
@@ -1580,8 +1600,31 @@ noded:
     interval: "10s"
 
   jailer:
-    # Shipped but suspended: land dark, then arm with a values-only change after
-    # live verification on one brick.
+    # Launch every VM through Firecracker's jailer (#5255): a per-VM chroot,
+    # a uid and gid from a block of the node's 20000-59999 range that this
+    # daemon leases for its lifetime, a cgroup v2 leaf with memory.max at the
+    # guest's memMib plus 192 MiB and memory.oom.group=1 under a shared
+    # embervm-vms parent capped at the brick limit minus
+    # bricks.daemonReserveMib, and a PID namespace noded creates with
+    # CLONE_NEWPID so Firecracker is init of its own namespace.
+    #
+    # Fail closed, at start and per launch. Before it registers, an armed
+    # brick proves it can contain guests: the jailer binary is executable,
+    # the memory delegation below its container cgroup is in place, and a
+    # preflight launches a jailed Firecracker that opens the probe drive and
+    # every READY base rootfs as the jail uid. A brick that fails any of this
+    # exits instead of registering. A jailed launch that cannot be contained
+    # is refused and never retried unjailed; only a legacy bundle whose
+    # metadata names no rootfs still runs direct. NodeStatus and
+    # /v1/capacity report jailer_armed and cumulative launch_modes (jailed,
+    # direct_exec, refused), so an armed brick running a guest uncontained
+    # shows as a moving direct_exec count.
+    #
+    # Arming needs what the brick pod already has (privileged, a writable
+    # cgroup v2 hierarchy) and conformance S7 green in embervm-dev, which arms
+    # it with conformance.requireJailer. Production stays false until a dev
+    # soak; arming it there is this one value. The escape hatch for a brick
+    # that will not start is setting this back to false.
     enabled: false
 
   # (Artifact-decoupling Phase 2: the node-side image identity table that USED to
