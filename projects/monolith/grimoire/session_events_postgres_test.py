@@ -163,6 +163,7 @@ def test_redaction_survives_embedder_lock_contention(lane):
         )
         session.commit()
         earlier_id, later_id = rows[0].id, rows[1].id
+
     def run_redaction():
         with Session(lane.engine) as redact_session:
             return redact_transcripts(redact_session, now=now)
@@ -187,7 +188,9 @@ def test_redaction_survives_embedder_lock_contention(lane):
             assert session.get(SessionEvent, row_id).body == stub
         assert (
             session.exec(
-                select(Embedding).where(Embedding.embeddable_id.in_((earlier_id, later_id)))
+                select(Embedding).where(
+                    Embedding.embeddable_id.in_((earlier_id, later_id))
+                )
             ).all()
             == []
         )

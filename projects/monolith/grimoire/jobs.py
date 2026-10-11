@@ -68,6 +68,8 @@ def _expired_utterances(campaign_id: str, cutoff: datetime):
         SessionEvent.created_at < cutoff,
         SessionEvent.body["redacted"].as_boolean().is_not(True),
     )
+
+
 # Concurrent extract calls. Extraction is asynchronous bulk work, so it gets the
 # async slot budget of one decode slot and never makes an interactive caller
 # queue. See shared.inference.ASYNC_SLOT_BUDGET and
