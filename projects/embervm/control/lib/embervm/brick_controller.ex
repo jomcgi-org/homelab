@@ -39,11 +39,18 @@ defmodule Embervm.BrickController do
   blocking placement) when demand hits a capacity wall: the cold wake pick
   (`Embervm.WakeInstance`) when NO brick on the node is slot/mem-eligible, and
   the dispatcher miss tier when ready candidates exist but none has budget/mem
-  headroom. A denial is attributed to the SMALLEST authorized class whose
-  usable capacity plus the admission floor fits the workload's `need_mib`; the
-  chart-declared capacity works even before a brick exists. `up_threshold` denials
-  (default 3) inside
-  `up_window_ms` (default 60s) step the class +1, clamped to `max`.
+  headroom. A class FITS a workload's `need_mib` when its empty brick would
+  admit the need: usable capacity covers the need plus the larger of the
+  admission floor and the per-VM overhead (noded's reserved model with its
+  observed guard); the chart-declared capacity works even before a brick exists.
+  Placement is best-fit across classes, so a denial is attributed to the
+  SMALLEST fitting authorized class that still has replica headroom (its last
+  acted count is below its operative ceiling, and it is neither fleet-full nor
+  floor-overflowed), falling back to the smallest fitting class when every
+  fitting class is at its bound. A class with an operative ceiling of 0 has no
+  headroom, so spilled demand never opens an ADR embervm/042 canary.
+  `up_threshold` denials (default 3) inside `up_window_ms` (default 60s) step
+  the class +1, clamped to `max`.
 
   Scale-from-zero signal: a placement that finds NO registered brick at all
   (`Embervm.Scheduler.place_with_demand/1` returning `:no_bricks`) cannot tell
@@ -84,11 +91,13 @@ defmodule Embervm.BrickController do
   The live `/scale` count reconstructs raised state conservatively after a
   controller restart. Pinned node-floor Deployments remain outside this loop.
 
-  Attributed demand that fits no authorized class, or continues after a class
-  reaches its outer bound, latches `no_fitting_class` or `ceiling_exhausted` in
-  the capacity report and the Workload `Capacity` condition. The condition is
-  transition-only and clears after one denial window without recurrence. It
-  never changes kubelet readiness or restarts pods.
+  Attributed demand that fits no authorized class, or continues after every
+  class it fits has reached its outer bound (its fixed max when no ceiling
+  bound is set), latches `no_fitting_class` or `ceiling_exhausted` in the
+  capacity report and the Workload `Capacity` condition, with or without
+  runtime ceiling ownership. The condition is transition-only and clears after
+  one denial window without recurrence. It never changes kubelet readiness or
+  restarts pods.
 
   Recorded policy (2026-07-20, values-declared, not hardcoded): per-class
   min-floor `{2gi: 0, 4gi: 0, 8gi: 0, 16gi: 1}` (one 16Gi stays warm for the
@@ -282,9 +291,10 @@ defmodule Embervm.BrickController do
   (the scale-up demand signal). Fire-and-forget cast so the placement hot path
   never blocks on (or crashes with) the controller; when the controller is not
   running (tests, DS-only fleets) the cast is a silent no-op. The denial is
-  attributed to the smallest authorized class whose capacity fits `need_mib`;
-  a need no authorized class can hold is logged/traced and latched in capacity
-  health when runtime ceiling ownership is enabled.
+  attributed to the smallest authorized class that fits `need_mib` and still
+  has replica headroom, else the smallest that fits; a need no authorized class
+  can hold is logged/traced and latched in capacity health as
+  `no_fitting_class`.
   """
   @spec note_denial(non_neg_integer()) :: :ok
   def note_denial(need_mib) when is_integer(need_mib) do
@@ -396,7 +406,13 @@ defmodule Embervm.BrickController do
       # active, hysteretically held capacity conditions exposed in /v1/capacity.
       capacity_conditions: %{},
       # Classes whose latest capacity-fact snapshot disagrees with declared usable_mib.
-      drifted: MapSet.new()
+      drifted: MapSet.new(),
+      # class => the replica count it last acted with (the written target, or
+      # the last good read when the write failed). Denial attribution reads it
+      # to spill demand past a class at its ceiling. Never deleted, so an
+      # unreadable /scale keeps the prior count; no entry means the class has
+      # not been reconciled since boot and has no known headroom.
+      last_acted: %{}
     }
 
     if Keyword.get(opts, :reconcile_on_start, true), do: send(self(), :reconcile)
@@ -425,14 +441,11 @@ defmodule Embervm.BrickController do
   end
 
   defp record_denial(state, workload, need_mib, at, facts) do
-    case class_for_need(state.classes, need_mib, facts) do
+    fitting = fitting_classes(state.classes, need_mib, facts)
+
+    case attributed_class(state, fitting) do
       nil ->
-        state =
-          if ceiling_feature_enabled?(state.classes) do
-            put_capacity_condition(state, workload, :no_fitting_class, nil, need_mib)
-          else
-            state
-          end
+        state = put_capacity_condition(state, workload, :no_fitting_class, nil, need_mib)
 
         Logger.warning("embervm brick denial cannot be served",
           workload: workload,
@@ -449,7 +462,9 @@ defmodule Embervm.BrickController do
         state
 
       class ->
-        denial = %{at: at, workload: workload, need_mib: need_mib}
+        # The fitting classes ride along so the exhaustion latch can tell
+        # demand with somewhere left to grow from demand with nowhere.
+        denial = %{at: at, workload: workload, need_mib: need_mib, fitting: fitting}
         state = refresh_capacity_condition(state, workload, class, at)
 
         %{
@@ -585,6 +600,11 @@ defmodule Embervm.BrickController do
           else
             {plan, st} = plan_class(st, class, now)
             {acting, outcome, st} = apply_plan(st, name, plan, now)
+
+            st =
+              if is_integer(acting),
+                do: %{st | last_acted: Map.put(st.last_acted, name, acting)},
+                else: st
 
             {os, fl, st} =
               case acting do
@@ -1052,14 +1072,30 @@ defmodule Embervm.BrickController do
       end
   end
 
+  # A class at its outer bound (the fixed max when no ceiling bound is set)
+  # under pressure latches exhaustion for the demand that continues there.
+  # Denials that drove its last up step were answered by that step, and a
+  # denial whose need another fitting class may still grow into is not
+  # exhausted either: its next occurrence spills there. Only demand with
+  # nowhere left to go latches.
   defp maybe_signal_ceiling_exhausted(state, class, current) do
     name = class_name(class)
-    events = Map.get(state.denials, name, [])
+    last_up = Map.get(state.last_up_at, name)
+
+    spills? = fn event ->
+      Enum.any?(Map.get(event, :fitting, []), &(&1 != name and replica_headroom?(state, &1)))
+    end
+
+    events =
+      state.denials
+      |> Map.get(name, [])
+      |> Enum.filter(&(is_nil(last_up) or &1.at > last_up))
+      |> Enum.reject(spills?)
+
     pressure? = length(events) >= state.up_threshold
     ceiling = operative_ceiling(state, class)
 
-    if ceiling_enabled?(class) and pressure? and current >= ceiling and
-         ceiling >= authorized_bound(class) do
+    if pressure? and current >= ceiling and ceiling >= authorized_bound(class) do
       events
       |> latest_denial_per_workload()
       |> Enum.reduce(state, fn event, acc ->
@@ -1710,16 +1746,36 @@ defmodule Embervm.BrickController do
     end)
   end
 
-  defp class_for_need(classes, need_mib, facts) do
-    case fitting_classes(classes, need_mib, facts) do
-      [] -> nil
-      [smallest | _] -> smallest
+  # The smallest fitting class with replica headroom, else the smallest fitting
+  # class: demand stays there once every fitting class is at its bound, which
+  # is what latches the exhaustion condition.
+  defp attributed_class(_state, []), do: nil
+
+  defp attributed_class(state, [smallest | _] = fitting) do
+    Enum.find(fitting, smallest, &replica_headroom?(state, &1))
+  end
+
+  # Whether a class can absorb attributed demand: its last acted count is known
+  # and below its operative ceiling, and nothing refuses its up steps
+  # (fleet-full) or suppresses its writes (floor overflow). A ceiling of 0 never
+  # has headroom, so spilled demand cannot open an ADR 042 canary. A class not
+  # reconciled since boot has none either; the boot tick is queued ahead of any
+  # denial, so in practice every class is known before demand is attributed.
+  defp replica_headroom?(state, name) do
+    with {:ok, acted} <- Map.fetch(state.last_acted, name),
+         %{} = class <- Enum.find(state.classes, &(class_name(&1) == name)) do
+      acted < operative_ceiling(state, class) and not MapSet.member?(state.flagged, name) and
+        not MapSet.member?(state.floor_overflow, name)
+    else
+      _ -> false
     end
   end
 
-  # Every authorized class whose capacity holds `need_mib` plus its admission
-  # floor, smallest capacity first. Chart-declared usable_mib makes this work
-  # with zero live bricks.
+  # Every authorized class whose EMPTY brick would admit `need_mib`, smallest
+  # capacity first. That is noded's reserved model with its observed guard:
+  # usable_mib covers the need plus the larger of the admission floor and the
+  # per-VM overhead. Chart-declared usable_mib makes this work with zero live
+  # bricks.
   defp fitting_classes(classes, need_mib, facts) do
     reported_floors =
       facts
@@ -1745,10 +1801,13 @@ defmodule Embervm.BrickController do
         Map.get(reported_floors, name) ||
           if(is_integer(configured_floor) and configured_floor > 0, do: configured_floor, else: 512)
 
-      {name, capacity, floor}
+      overhead = class_field(class, [:vm_overhead_mib, "vm_overhead_mib"])
+      overhead = if is_integer(overhead) and overhead > 0, do: overhead, else: 0
+
+      {name, capacity, max(floor, overhead)}
     end)
-    |> Enum.filter(fn {_name, capacity, floor} ->
-      is_integer(capacity) and capacity >= need_mib + floor
+    |> Enum.filter(fn {_name, capacity, cushion} ->
+      is_integer(capacity) and capacity >= need_mib + cushion
     end)
     |> Enum.sort_by(fn {_name, capacity, _floor} -> capacity end)
     |> Enum.map(&elem(&1, 0))
@@ -1925,8 +1984,6 @@ defmodule Embervm.BrickController do
   defp class_ceiling_bound(class), do: class_field(class, [:ceiling_bound, "ceiling_bound"]) || 0
 
   defp ceiling_enabled?(class), do: class_ceiling_bound(class) > 0
-
-  defp ceiling_feature_enabled?(classes), do: Enum.any?(classes, &ceiling_enabled?/1)
 
   # A bound below the bootstrap max cannot revoke already-authorized static
   # capacity. It simply grants no runtime headroom.

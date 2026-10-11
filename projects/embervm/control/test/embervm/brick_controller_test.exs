@@ -37,7 +37,10 @@ defmodule Embervm.BrickControllerTest do
       fleet_full_after_ms: 300_000,
       reconcile_on_start: false,
       registered_fun: fn -> %{} end,
-      catalog_fun: fn -> [] end
+      catalog_fun: fn -> [] end,
+      # Capacity latches stay inside the test instead of reaching the app's
+      # BaseBuilder; tests that assert transitions inject their own recorder.
+      condition_fun: fn _workload, _condition -> :ok end
     ]
 
     {:ok, pid} = BrickController.start_link(Keyword.merge(defaults, opts))
@@ -1955,6 +1958,294 @@ defmodule Embervm.BrickControllerTest do
       BrickController.reconcile_now(pid)
       assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 1
     end
+  end
+
+  # -- spill-over attribution and exhaustion (best-fit placement across classes)
+
+  @prefix "embervm-embervm-noded-brick-"
+
+  # An in-memory stand-in for the brick Deployments' /scale subresource: the
+  # controller's writes are what its next live read returns.
+  defp new_deployments(initial) do
+    {:ok, pid} = Agent.start_link(fn -> initial end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
+
+    scale = fn _ns, @prefix <> class, replicas ->
+      Agent.update(pid, &Map.put(&1, class, replicas))
+      :ok
+    end
+
+    get = fn _ns, @prefix <> class -> {:ok, Agent.get(pid, &Map.get(&1, class, 0))} end
+    replicas = fn -> Agent.get(pid, & &1) end
+    {scale, get, replicas}
+  end
+
+  defp new_transitions do
+    {:ok, pid} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(pid) end)
+
+    record = fn workload, condition ->
+      Agent.update(pid, &(&1 ++ [{workload, condition.status, condition.reason}]))
+    end
+
+    {record, fn -> Agent.get(pid, & &1) end}
+  end
+
+  # The hub shape of 2026-10-10: claude-runtime (3072 MiB) fits both 4gi
+  # (usable 3840) and 8gi (usable 7936) with the 512 MiB admission floor, and
+  # no class has a ceiling bound.
+  @hub_classes [
+    %{name: "4gi", desired: 1, min: 0, max: 2, usable_mib: 3_840, mem_reject_floor_mib: 512},
+    %{name: "8gi", desired: 1, min: 1, max: 3, usable_mib: 7_936, mem_reject_floor_mib: 512}
+  ]
+
+  defp denials(pid, count, workload \\ "claude-runtime", need \\ 3_072) do
+    for _ <- 1..count, do: BrickController.note_denial(pid, workload, need)
+  end
+
+  test "a denial spills to the next fitting class when the smallest is at its ceiling" do
+    {clock, advance} = new_clock()
+    {record, calls} = new_recorder()
+
+    pid =
+      start(
+        mode: :full,
+        classes: @hub_classes,
+        scale_fun: record,
+        scale_get_fun: fn
+          _ns, @prefix <> "4gi" -> {:ok, 2}
+          _ns, @prefix <> "8gi" -> {:ok, 1}
+        end,
+        facts_fun: fn -> [] end,
+        clock: clock
+      )
+
+    BrickController.reconcile_now(pid)
+    denials(pid, 3)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert log =~ "brick autoscale: scaling class 8gi from 1 to 2 (reason=denial_pressure)"
+    refute log =~ "class 4gi"
+    assert {"embervm", @prefix <> "8gi", 2} in calls.()
+    assert BrickController.capacity_health(pid).ok
+  end
+
+  test "spill climbs the ladder smallest first and latches only once every class is full" do
+    {clock, advance} = new_clock()
+    {scale, get, replicas} = new_deployments(%{"4gi" => 1, "8gi" => 1})
+    {condition_fun, transitions} = new_transitions()
+
+    pid =
+      start(
+        mode: :full,
+        classes: @hub_classes,
+        scale_fun: scale,
+        scale_get_fun: get,
+        facts_fun: fn -> [] end,
+        condition_fun: condition_fun,
+        clock: clock
+      )
+
+    BrickController.reconcile_now(pid)
+
+    round = fn ->
+      denials(pid, 3)
+      advance.(1)
+      BrickController.reconcile_now(pid)
+      counts = replicas.()
+      # A tick inside the same window must not latch on the demand that just
+      # stepped a class to its max while a larger class can still grow.
+      BrickController.reconcile_now(pid)
+      advance.(60_000)
+      counts
+    end
+
+    assert round.() == %{"4gi" => 2, "8gi" => 1}
+    assert BrickController.capacity_health(pid).ok
+    assert round.() == %{"4gi" => 2, "8gi" => 2}
+    assert BrickController.capacity_health(pid).ok
+    assert round.() == %{"4gi" => 2, "8gi" => 3}
+    assert BrickController.capacity_health(pid).ok
+    assert transitions.() == []
+
+    assert round.() == %{"4gi" => 2, "8gi" => 3}
+
+    assert BrickController.capacity_health(pid).conditions == [
+             %{
+               workload: "claude-runtime",
+               reason: :ceiling_exhausted,
+               size_class: "4gi",
+               need_mib: 3_072
+             }
+           ]
+
+    assert transitions.() == [{"claude-runtime", "False", :ceiling_exhausted}]
+  end
+
+  test "every fitting class at its bound latches a capacity condition without ceilingBound" do
+    {clock, advance} = new_clock()
+    {condition_fun, transitions} = new_transitions()
+
+    pid =
+      start(
+        mode: :full,
+        classes: @hub_classes,
+        scale_fun: fn _ns, _name, _replicas -> :ok end,
+        scale_get_fun: fn
+          _ns, @prefix <> "4gi" -> {:ok, 2}
+          _ns, @prefix <> "8gi" -> {:ok, 3}
+        end,
+        facts_fun: fn -> [] end,
+        registered_fun: fn -> %{"4gi" => 2, "8gi" => 3} end,
+        condition_fun: condition_fun,
+        up_window_ms: 60_000,
+        clock: clock
+      )
+
+    BrickController.reconcile_now(pid)
+    denials(pid, 3)
+    advance.(1)
+    first = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    second = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert first =~ "embervm workload capacity unavailable"
+    refute second =~ "embervm workload capacity unavailable"
+
+    health = BrickController.capacity_health(pid)
+    refute health.ok
+
+    assert health.conditions == [
+             %{
+               workload: "claude-runtime",
+               reason: :ceiling_exhausted,
+               size_class: "4gi",
+               need_mib: 3_072
+             }
+           ]
+
+    advance.(60_000)
+    recovered = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert recovered =~ "embervm workload capacity recovered"
+    assert BrickController.capacity_health(pid).ok
+
+    assert transitions.() == [
+             {"claude-runtime", "False", :ceiling_exhausted},
+             {"claude-runtime", "True", :capacity_available}
+           ]
+  end
+
+  test "a need no class fits latches no_fitting_class without a ceiling bound" do
+    pid =
+      start(
+        mode: :full,
+        classes: @hub_classes,
+        scale_fun: fn _ns, _name, _replicas -> :ok end,
+        scale_get_fun: fn _ns, _name -> {:ok, 1} end,
+        facts_fun: fn -> [] end
+      )
+
+    BrickController.note_denial(pid, "oversized", 9_000)
+    BrickController.reconcile_now(pid)
+
+    assert [%{workload: "oversized", reason: :no_fitting_class, size_class: nil}] =
+             BrickController.capacity_health(pid).conditions
+  end
+
+  test "small demand never spills into a ceiling-0 canary class" do
+    {clock, advance} = new_clock()
+    {record, calls} = new_recorder()
+
+    # The hub dev canary: 2gi pinned at min=max=1, and 4gi with bootstrap max 0
+    # and ceilingBound 1. A 512 MiB need fits both.
+    pid =
+      start(
+        mode: :full,
+        classes: [
+          %{name: "2gi", desired: 1, min: 1, max: 1, usable_mib: 1_792, mem_reject_floor_mib: 512},
+          %{
+            name: "4gi",
+            desired: 0,
+            min: 0,
+            max: 0,
+            ceiling_bound: 1,
+            usable_mib: 3_840,
+            mem_reject_floor_mib: 512
+          }
+        ],
+        scale_fun: record,
+        scale_get_fun: fn
+          _ns, @prefix <> "2gi" -> {:ok, 1}
+          _ns, @prefix <> "4gi" -> {:ok, 0}
+        end,
+        facts_fun: fn -> [] end,
+        registered_fun: fn -> %{"2gi" => 1} end,
+        clock: clock
+      )
+
+    BrickController.reconcile_now(pid)
+    denials(pid, 3, "small", 512)
+    advance.(1)
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+    BrickController.reconcile_now(pid)
+
+    refute log =~ "ceiling raising"
+    refute log =~ "ceiling would raise"
+    refute Enum.any?(calls.(), &(&1 == {"embervm", @prefix <> "4gi", 1}))
+
+    health = BrickController.capacity_health(pid)
+
+    assert health.ceilings == [
+             %{size_class: "4gi", bootstrap_max: 0, operative_ceiling: 0, ceiling_bound: 1}
+           ]
+
+    assert [%{workload: "small", reason: :ceiling_exhausted, size_class: "2gi"}] =
+             health.conditions
+  end
+
+  test "class fit charges the larger of the admission floor and the per-VM overhead" do
+    classes = fn overhead ->
+      for {name, usable} <- [{"4gi", 3_840}, {"8gi", 7_936}] do
+        %{
+          name: name,
+          desired: 0,
+          min: 0,
+          max: 2,
+          usable_mib: usable,
+          mem_reject_floor_mib: 512,
+          vm_overhead_mib: overhead
+        }
+      end
+    end
+
+    attributed = fn overhead, need ->
+      {clock, advance} = new_clock()
+
+      pid =
+        start(
+          mode: :observe,
+          classes: classes.(overhead),
+          scale_fun: fn _ns, _name, _replicas -> :ok end,
+          scale_get_fun: fn _ns, _name -> {:ok, 0} end,
+          facts_fun: fn -> [] end,
+          up_threshold: 1,
+          clock: clock
+        )
+
+      BrickController.note_denial(pid, need)
+      advance.(1)
+      log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+      Enum.filter(["4gi", "8gi"], &(log =~ "would scale class #{&1} from 0 to 1"))
+    end
+
+    # An overhead below the floor changes nothing: 3072 + 512 fits 4gi.
+    assert attributed.(192, 3_072) == ["4gi"]
+    # An overhead above the floor is the binding term: 3072 + 1024 does not
+    # fit 4gi (3840), while 2816 + 1024 fits it exactly.
+    assert attributed.(1_024, 3_072) == ["8gi"]
+    assert attributed.(1_024, 2_816) == ["4gi"]
   end
 
   # -- catalog floors and class authorization -----------------------------------
