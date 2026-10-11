@@ -1300,8 +1300,8 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 			return d.coldBoot(ctx, threadID, coldBootSpec{
 				workload:        spec.Workload,
 				rootfsPath:      coldBootRootfsPath,
-				vcpus:           d.cfg.VCPUs,
-				memMib:          d.cfg.MemMib,
+				vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
+				memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
 				trackDirtyPages: trackDirtyPages,
 				nic:             spec.NIC,
 				volumeDiskPath:  spec.VolumeDiskPath,
@@ -1321,8 +1321,8 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 	return d.coldBoot(ctx, threadID, coldBootSpec{
 		workload:        spec.Workload,
 		rootfsPath:      coldBootRootfsPath,
-		vcpus:           d.cfg.VCPUs,
-		memMib:          d.cfg.MemMib,
+		vcpus:           orDefault(spec.ColdBootVCPUs, d.cfg.VCPUs),
+		memMib:          orDefault(spec.ColdBootMemMib, d.cfg.MemMib),
 		trackDirtyPages: trackDirtyPages,
 		nic:             spec.NIC,
 		volumeDiskPath:  spec.VolumeDiskPath,

@@ -562,16 +562,27 @@ func (s *Server) primeSizing(workload, ref string) (vcpus, memMib uint32) {
 	return vcpus, memMib
 }
 
-// relightNeedMib resolves a session relight's memory need: the registry entry
-// for the workload, else the size recorded with the banked session bundle.
+// primeAdmitMib is the memory a Prime of base ref is charged: the larger of the
+// size it would cold boot at (sizeMemMib, from primeSizing) and the size its
+// base snapshot restores at. The driver's live map counts a restored VM at its
+// snapshot's size, so charging a smaller registry size (a workload's memMib
+// lowered after its base was built) would under-reserve the moment the VM
+// lands (admission.tla, NoOvercommit).
+func (s *Server) primeAdmitMib(sizeMemMib uint32, ref string) uint64 {
+	return uint64(max(sizeMemMib, recordedBundleMemMib(filepath.Join(s.cfg.SnapshotRoot, "bases", ref))))
+}
+
+// relightNeedMib resolves a session relight's memory need: the larger of the
+// workload's registry entry and the size recorded with the banked session
+// bundle. A relight restores at the bundle's size, which the driver's live map
+// then charges, so a memMib lowered while the session was banked must not shrink
+// the reservation below the guest it restores.
 func (s *Server) relightNeedMib(workload, ref string) uint64 {
-	if need := s.primeNeedMib(workload); need > 0 {
+	need := s.primeNeedMib(workload)
+	if s.sessionDriver == nil {
 		return need
 	}
-	if s.sessionDriver == nil {
-		return 0
-	}
-	return uint64(recordedBundleMemMib(filepath.Join(s.sessionDriver.SessionsDir(), ref)))
+	return max(need, uint64(recordedBundleMemMib(filepath.Join(s.sessionDriver.SessionsDir(), ref))))
 }
 
 // recordedBundleMemMib reads the guest memory size a snapshot bundle was taken
