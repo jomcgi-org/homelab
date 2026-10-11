@@ -438,6 +438,18 @@ defmodule Embervm.SchedulerTest do
     assert Inflight.pending_mib("n/o", table: table) == 1_000
   end
 
+  test "place skips excluded dial ids, and a pass they empty is a capacity miss, not an empty fleet" do
+    table = inflight_table()
+    a = brick(instance_id: "n/a", workloads: ready("wl"))
+    b = brick(instance_id: "n/b", workloads: ready("wl"))
+    req = %Request{bricks: [a, b], workload: "wl", need_mib: 512, base: :ready, record_demand: false, inflight: table}
+
+    assert [%{instance_id: "n/b"}] = Scheduler.place(%{req | exclude: ["n/a"]})
+    assert {:ok, [%{instance_id: "n/b"}]} = Scheduler.place_and_claim(%{req | exclude: ["n/a"]}, :r)
+    assert {:error, :capacity} = Scheduler.place_and_claim(%{req | exclude: ["n/a", "n/b"]}, :r2)
+    assert Inflight.pending_mib("n/a", table: table) == 0
+  end
+
   test "place_and_claim passes the base gate result through" do
     table = inflight_table()
     building = brick(configured_id: "node-base", workloads: %{})

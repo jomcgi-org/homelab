@@ -1137,7 +1137,11 @@ a zero budget is not placeable. Two placers racing between reports can still
 pick the same brick; the brick's own admission refuses the loser, and with
 `dispatcher.placementRetry` (armed with reserved admission per stage, #6965) task, serving
 and session placement moves on to the next candidate instead of failing the
-attempt, recording demand once.
+attempt, recording demand once. A serving relight is pinned to the brick
+holding its snapshot, so when that brick cannot fit the guest (by its report
+net of pending claims, or by refusing the relight) the same wake boots cold on
+another brick and the snapshot stays banked; only that cold placement records
+demand or fails the wake.
 
 `vmOverheadMib` and the jailer's ceilings are different numbers. The overhead
 is what admission charges each VM for host memory beyond guest RAM. The
