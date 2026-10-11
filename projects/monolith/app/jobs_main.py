@@ -978,7 +978,9 @@ def grimoire_embed_play() -> None:
 @app.command("grimoire-redact-transcripts")
 def grimoire_redact_transcripts() -> None:
     """Redact expired transcript text and vectors regardless of capture flags."""
-    _run_job("grimoire-redact-transcripts", "grimoire.jobs", "grimoire_redact_transcripts")
+    _run_job(
+        "grimoire-redact-transcripts", "grimoire.jobs", "grimoire_redact_transcripts"
+    )
 
 
 @app.command("grimoire-extract-entities")
