@@ -73,6 +73,7 @@ defmodule Embervm.ServingManager do
     ArtifactRef,
     FreshSource,
     RelightSource,
+    ResourceSpec,
     RestoreArtifactRequest,
     StartServingRequest,
     StartServingResponse,
@@ -617,7 +618,8 @@ defmodule Embervm.ServingManager do
       # guest port made relight probe tapIP:30002 -> connection refused (the guest is
       # on 8080). Cold boots always used serving_cfg.port and were unaffected.
       port: serving_cfg(entry).port,
-      health_path: serving_cfg(entry).health_path
+      health_path: serving_cfg(entry).health_path,
+      resources: resource_spec(entry)
     }
   end
 
@@ -629,8 +631,18 @@ defmodule Embervm.ServingManager do
       # artifact, it does not resume the base memory snapshot (D-R3.4.2/D-R3.11.2).
       source: {:fresh, %FreshSource{serving_image_ref: base_ref || ""}},
       port: serving_cfg(entry).port,
-      health_path: serving_cfg(entry).health_path
+      health_path: serving_cfg(entry).health_path,
+      resources: resource_spec(entry)
     }
+  end
+
+  # The workload's declared size from its catalog entry (spec.resources memMib
+  # and vcpus), the same need placement charged (plan_wake/2 gates on memMib,
+  # default 512). Without it noded admits the boot at need 0 and boots the
+  # driver default (1 vCPU / 1024 MiB), so a guest's real size would depend on
+  # which path woke it and every capacity model would charge the wrong number.
+  defp resource_spec(entry) do
+    %ResourceSpec{vcpus: Map.get(entry, :vcpus) || 1, mem_mib: Map.get(entry, :mem_mib) || 512}
   end
 
   # The relight RPC (in the spawned worker). Returns the outcome finish_wake
