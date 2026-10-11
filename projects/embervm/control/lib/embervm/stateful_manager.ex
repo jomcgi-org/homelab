@@ -2393,9 +2393,18 @@ defmodule Embervm.StatefulManager do
   defp start_mode(:fresh), do: :START_STATEFUL_MODE_FRESH
   defp start_mode(:cold), do: :START_STATEFUL_MODE_COLD
 
+  # The declared size placement charges and StartStateful boots at. The
+  # Workload watcher's catalog entry carries spec.resources as TOP-LEVEL
+  # :vcpus / :mem_mib (workload_watcher catalog_entry); a nested :resources map
+  # is read as a fallback. Reading only the nested map sized every real
+  # stateful workload at the 1 vCPU / 512 MiB default whatever its CR declared.
   defp resource_spec(entry) do
-    resources = Map.get(entry, :resources, %{})
-    %ResourceSpec{vcpus: Map.get(resources, :vcpus, 1), mem_mib: Map.get(resources, :mem_mib, 512)}
+    resources = Map.get(entry, :resources) || %{}
+
+    %ResourceSpec{
+      vcpus: Map.get(entry, :vcpus) || Map.get(resources, :vcpus) || 1,
+      mem_mib: Map.get(entry, :mem_mib) || Map.get(resources, :mem_mib) || 512
+    }
   end
 
   defp gib_to_bytes(nil), do: 0

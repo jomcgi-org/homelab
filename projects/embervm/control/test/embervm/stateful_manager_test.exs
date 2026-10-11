@@ -3795,6 +3795,31 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(dialed, & &1) == ["node-4/pod-b"]
   end
 
+  test "StartStateful carries the size the Workload watcher's catalog entry declares" do
+    # The watcher flattens spec.resources into TOP-LEVEL :vcpus / :mem_mib. The
+    # manager used to read only a nested :resources map, so every real stateful
+    # workload booted (and was placed) at the 1 vCPU / 512 MiB default.
+    {:ok, reqs} = Agent.start_link(fn -> [] end)
+
+    cold_fun = fn _ch, req ->
+      Agent.update(reqs, &[req | &1])
+      {:ok, %StartStatefulResponse{vm_id: "vm-sized", ip: "10.88.0.5", port: 5432, generation: 1, was_relight: false}}
+    end
+
+    ctx = start_stack(start_stateful_fun: cold_fun)
+    stateful_workload(ctx, "wl-a")
+    {:ok, entry} = WorkloadCatalog.fetch(ctx.cat_table, "wl-a")
+    WorkloadCatalog.upsert(ctx.cat_table, "wl-a", Map.merge(entry, %{vcpus: 2, mem_mib: 4_000}))
+
+    # Only the big brick fits 4000 MiB, which also proves placement read the size.
+    put_brick(ctx, "node-4", "pod-small", size_class: "2gi", mem_headroom_mib: 100, mem_budget_mib: 2_048)
+    put_brick(ctx, "node-4", "pod-big", size_class: "8gi", mem_headroom_mib: 8_000, mem_budget_mib: 8_192)
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [req] = Agent.get(reqs, & &1)
+    assert req.resources == %Embervm.Node.V1.ResourceSpec{vcpus: 2, mem_mib: 4_000}
+  end
+
   test "a cold wake dials a mem-eligible co-located instance and skips a too-small classed brick" do
     {:ok, dialed} = Agent.start_link(fn -> [] end)
 
