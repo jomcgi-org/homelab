@@ -105,6 +105,64 @@ images fail closed unless the book is explicitly classified as open-licensed;
 copyrighted books expose only derived entities, graph structure, and bounded
 snippets.
 
+## Transcripts
+
+The transcript routes require both `GRIMOIRE_PLAY_ENABLED` and
+`GRIMOIRE_TRANSCRIPT_ENABLED` to be exactly `true`, read on every request.
+`grimoire.transcript.enabled` defaults to false until the capture surface is
+ready. No deploy override enables it.
+
+Members grant or revoke their own consent per campaign, including the DM and
+members without characters. Consent records the named processor and grant and
+revocation times. Repeating an active grant for the same processor keeps the
+row; changing processor revokes it and creates a replacement in one transaction.
+Players read only their own history, without member ids. DMs read all campaign
+consent rows. Grant and revoke serialize on the member row with `FOR NO KEY
+UPDATE`, permitting event-author foreign-key checks. Revocation updates the
+consent row so it waits for an ingest reader's shared lock.
+
+Sessions start with transcripts off. DMs can set off, on or paused. Players can
+pause from on, and a repeated pause is a no-op. Ended sessions refuse all state
+writes. Each actual transition locks the session and appends one table-audience
+system event with the caller as author, the previous state and the new state.
+All members read the current state. Consent and state requests forbid unknown
+fields, including audio. No raw audio is accepted or stored by this surface.
+
+Utterance ingest accepts attributed text with timezone-aware start and end
+times, confidence and a browser, table or Discord source. Browser speakers
+must be the caller. Table and Discord adapters authenticate as the campaign DM
+and name a campaign member; a table adapter may instead supply a label for an
+unknown speaker. That unknown-speaker path requires consent from every current
+campaign member. The server locks the session before share-locking active
+consent rows and appending the utterance. Off, paused and ended sessions reject
+ingest. Member ids remain outside the event body. Retry ids deduplicate the
+same utterance; a changed payload conflicts.
+
+Table talk defaults to all campaign members. DM whispers use the existing
+audience contract, including its characterless-member restriction below.
+DM-authored PC asides reach the listed characters and DM. Event-list responses
+project author ids for the caller; the journal currently does not fold
+utterance text. Ingest forbids unknown fields, including raw audio.
+
+Every campaign member can read retention settings. The DM sets
+`transcript_retention_days` from 1 to 365 days, with a default of 30. The daily
+`grimoire-redact-transcripts` CronWorkflow in `monolith-workflows` runs at 03:32
+UTC regardless of the play and transcript flags. It redacts utterances older than the campaign window by
+server `created_at`, preserving a stub with `redacted: true`, timing, source
+and speaker label when present. The speaker remains in `author_member_id`.
+Event ids, sequence numbers and check-in state stay unchanged. Stubs retain
+the table, DM whisper and listed-PC audience rules above, including the
+characterless-member restriction. The job deletes each expired utterance's
+transcript and legacy event-keyed vectors; the embedder never re-indexes
+stubs. Derived summaries, journal entries and facts survive. Raw audio is
+never accepted or stored.
+
+**Why.** Consent, off-the-record state and retention are server-owned controls
+shared by capture providers. Members can read the retention window before
+consenting. Timing stubs preserve the session log without retaining spoken
+text. Capture stays default-off until live consent, pause, audience and
+retention execution checks are accepted.
+
 ## Audience contract
 
 `Audience` in `audience.py` has three values: `table`, `dm`, and `pcs` with a
@@ -188,8 +246,9 @@ hidden roll. Self visibility uses `pcs` containing the player's character
 with the same author provenance. A DM choosing self uses the dm audience.
 Characterless players may roll only table; restricted visibility returns 422
 because their audience contract would hide even their own restricted roll.
-These rules leave `audience_predicate` unchanged. There are 60 campaign routes
-in the route inventory, including the roller, bulk grants, inventory, voice map, and handout upload and image.
+These rules leave `audience_predicate` unchanged. There are 68 campaign routes
+in the route inventory, including the roller, bulk grants, inventory, voice map,
+handout upload and image, and transcript consent, ingest, and retention.
 
 **Why.** Server-side `secrets.SystemRandom` prevents clients from supplying
 results or seeds. A dependency override lets tests use a seeded RNG and assert

@@ -1132,6 +1132,20 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # Privacy retention runs regardless of the transcript capture flag.
+    - name: grimoire-redact-transcripts
+      args: ["grimoire-redact-transcripts"]
+      schedule: "32 3 * * *" # daily 03:32 UTC, off the */5 embed-play grid
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: false
+      grimoire: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     - name: grimoire-load-chunks
       args: ["grimoire-load-chunks"]
       schedule: "0 2 * * *" # daily 02:00 UTC
@@ -1969,6 +1983,9 @@ grimoire:
   enabled: false
   play:
     # Play routes stay off until the complete play surface is ready (#6612).
+    enabled: false
+  transcript:
+    # Off until the capture surface is ready.
     enabled: false
   s3Bucket: "grimoire"
   # Default extraction model (spec #5): DeepSeek V4 Flash via OpenRouter, with

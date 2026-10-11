@@ -59,6 +59,7 @@ from grimoire.models import (
     PlayerCharacter,
     Relationship,
     SessionEvent,
+    TranscriptConsent,
 )
 from grimoire.play_embeddings import audience_columns, event_embedding_kind
 
@@ -141,6 +142,9 @@ class LeakHarness:
             self.rows["sheet"].sheet = dict(SHEET_BODY)
         elif state == "play":
             self.rows["campaign_session"].status = "active"
+        elif state == "transcript":
+            self.rows["campaign_session"].status = "active"
+            self.rows["campaign_session"].transcript_state = "on"
         self.session.commit()
 
     def app(self) -> FastAPI:
@@ -327,6 +331,14 @@ def build_fixture(session: Session) -> LeakHarness:
                 player_character_id=rows[character_key].id if character_key else None,
             ),
         )
+        keep(
+            f"consent_{role}",
+            TranscriptConsent(
+                campaign_id=rows[campaign_key].id,
+                member_id=rows[member_key].id,
+                processor=mark(f"consent_{role}.processor", allowed),
+            ),
+        )
 
     for key, kind, readable, deleted, campaign_key, allowed in (
         ("note_private", "character", False, False, "campaign", ("player_a",)),
@@ -399,6 +411,30 @@ def build_fixture(session: Session) -> LeakHarness:
                     retracted_at=datetime.now(timezone.utc) if retracted else None,
                 ),
             )
+
+    for key, audience, allowed in (
+        ("utterance_whisper", "dm", ("dm", "player_a")),
+        ("utterance_table", "table", MEMBERS),
+    ):
+        keep(
+            key,
+            SessionEvent(
+                id=mark(f"{key}.id", allowed, True),
+                campaign_id=rows["campaign"].id,
+                session_id=rows["campaign_session"].id,
+                seq=1 + sum(isinstance(obj, SessionEvent) for obj in objects),
+                kind="utterance",
+                author_member_id=rows["member_player_a"].id,
+                audience=audience,
+                body={
+                    "text": mark(f"{key}.text", allowed),
+                    "started_at": "2026-10-10T12:00:00+00:00",
+                    "ended_at": "2026-10-10T12:00:01+00:00",
+                    "source": "browser",
+                    "confidence": 0.9,
+                },
+            ),
+        )
 
     keep(
         "invitation",

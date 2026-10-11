@@ -74,6 +74,15 @@ def test_grimoire_embed_play_dispatches_to_offloaded_handler():
     )
 
 
+def test_grimoire_redact_transcripts_dispatches_to_offloaded_handler():
+    with mock.patch.object(jobs_main, "_run_job") as run_job:
+        result = runner.invoke(jobs_main.app, ["grimoire-redact-transcripts"])
+    assert result.exit_code == 0, result.output
+    run_job.assert_called_once_with(
+        "grimoire-redact-transcripts", "grimoire.jobs", "grimoire_redact_transcripts"
+    )
+
+
 def test_worldcup_sim_dispatches_to_refresh_handler():
     handler = mock.AsyncMock(return_value=None)
     with (

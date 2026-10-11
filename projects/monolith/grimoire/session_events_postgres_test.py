@@ -1,27 +1,199 @@
 """Real migrations, row-lock concurrency, rollback, and private-child lifecycle."""
 
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import delete, event, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, create_engine, select
 
 from grimoire.audience import Audience
+from grimoire.jobs import redact_transcripts
 from grimoire.models import (
     AppUser,
     Campaign,
     CampaignMember,
+    Embedding,
     GameSession,
     PlayerCharacter,
     SessionEvent,
+    TranscriptConsent,
+)
+from grimoire.router import (
+    UtteranceRequest,
+    ingest_utterance,
+    revoke_transcript_consent,
 )
 from grimoire.session_events import append_event
+
+
+def retention_vectors(session, campaign_id):
+    return {
+        row.id: {**row.model_dump(exclude={"vector"}), "vector": list(row.vector)}
+        for row in session.exec(
+            select(Embedding).where(Embedding.campaign_id == campaign_id)
+        ).all()
+    }
+
+
+def test_postgres_retention_redacts_expired_utterance_and_both_vector_kinds(lane):
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    with Session(lane.engine) as session:
+        campaign = session.get(Campaign, lane.campaign_id)
+        campaign.transcript_retention_days = 2
+        rows = [
+            SessionEvent(
+                campaign_id=lane.campaign_id,
+                session_id=lane.session_id,
+                seq=index + 1,
+                kind="utterance",
+                author_member_id=lane.member_id,
+                audience="table",
+                created_at=now - timedelta(days=age),
+                body={
+                    "text": "PostgreSQL transcript",
+                    "confidence": 0.9,
+                    "started_at": "2026-01-01T12:00:00Z",
+                    "ended_at": "2026-01-01T12:00:01Z",
+                    "source": "browser",
+                },
+            )
+            for index, age in enumerate((3, 1, 2))
+        ]
+        session.add_all(rows)
+        session.add_all(
+            [
+                Embedding(
+                    embeddable_kind=kind,
+                    embeddable_id=row.id,
+                    model="retention-test",
+                    dim=1024,
+                    vector=[0.0] * 1024,
+                    campaign_id=lane.campaign_id,
+                    audience="table",
+                    audience_pc_ids=[],
+                    author_member_id=lane.member_id,
+                )
+                for row in rows
+                for kind in ("transcript", "event")
+            ]
+        )
+        session.commit()
+        for row in rows:
+            session.refresh(row)
+        before = {row.id: row.model_dump() for row in rows}
+        vectors_before = retention_vectors(session, lane.campaign_id)
+        assert redact_transcripts(session, now=now) == 1
+        for row in rows:
+            session.refresh(row)
+        assert rows[0].model_dump() == {
+            **before[rows[0].id],
+            "body": {
+                "redacted": True,
+                "started_at": "2026-01-01T12:00:00Z",
+                "ended_at": "2026-01-01T12:00:01Z",
+                "source": "browser",
+            },
+        }
+        for row in rows[1:]:
+            assert row.model_dump() == before[row.id]
+        remaining = retention_vectors(session, lane.campaign_id)
+        assert remaining == {
+            key: value
+            for key, value in vectors_before.items()
+            if value["embeddable_id"] != rows[0].id
+        }
+        after = {row.id: row.model_dump() for row in rows}
+        assert redact_transcripts(session, now=now) == 0
+        for row in rows:
+            session.refresh(row)
+        assert {row.id: row.model_dump() for row in rows} == after
+        assert retention_vectors(session, lane.campaign_id) == remaining
+
+
+def test_redaction_survives_embedder_lock_contention(lane):
+    """Redaction completes when the embedder holds source locks mid-scan."""
+    from grimoire.play_embeddings import _source
+
+    now = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
+    kept = {
+        "started_at": "2026-01-01T12:00:00Z",
+        "ended_at": "2026-01-01T12:00:01Z",
+        "source": "browser",
+    }
+    stub = {"redacted": True, **kept}
+    with Session(lane.engine) as session:
+        session.get(Campaign, lane.campaign_id).transcript_retention_days = 30
+        rows = [
+            SessionEvent(
+                campaign_id=lane.campaign_id,
+                session_id=lane.session_id,
+                seq=index + 1,
+                kind="utterance",
+                author_member_id=lane.member_id,
+                audience="table",
+                created_at=now - timedelta(days=31) + timedelta(hours=index),
+                body={"text": f"contention transcript {index}", **kept},
+            )
+            for index in range(2)
+        ]
+        session.add_all(rows)
+        session.add_all(
+            Embedding(
+                embeddable_kind=kind,
+                embeddable_id=row.id,
+                model="redact-contention",
+                dim=1024,
+                vector=[0.0] * 1024,
+                campaign_id=lane.campaign_id,
+                audience="table",
+                audience_pc_ids=[],
+                author_member_id=lane.member_id,
+            )
+            for row in rows
+            for kind in ("transcript", "event")
+        )
+        session.commit()
+        earlier_id, later_id = rows[0].id, rows[1].id
+
+    def run_redaction():
+        with Session(lane.engine) as redact_session:
+            return redact_transcripts(redact_session, now=now)
+
+    holder = Session(lane.engine)
+    try:
+        # Embedder mid-scan: holds the later-created row before redaction starts.
+        assert _source(holder, "transcript", later_id) is not None
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            redact_result = pool.submit(run_redaction)
+            # Let redaction lock the earlier row, then take the opposite order.
+            time.sleep(0.2)
+            assert _source(holder, "transcript", earlier_id) is not None
+            # Hold the later row while redaction revisits its skipped rows.
+            time.sleep(0.5)
+            holder.rollback()
+            assert redact_result.result(timeout=30) == 2
+    finally:
+        holder.close()
+    with Session(lane.engine) as session:
+        for row_id in (earlier_id, later_id):
+            assert session.get(SessionEvent, row_id).body == stub
+        assert (
+            session.exec(
+                select(Embedding).where(
+                    Embedding.embeddable_id.in_((earlier_id, later_id))
+                )
+            ).all()
+            == []
+        )
 
 
 def _delete_campaign(connection, campaign_id):
@@ -61,6 +233,7 @@ def lane(pg):
             member_id=member.id,
             pc_id=pc.id,
             user_id=user.id,
+            email=user.email,
         )
     try:
         yield info
@@ -80,6 +253,108 @@ def _append(session, game_session, lane, *, audience=None, body=None):
         author_member_id=lane.member_id,
         body=body or {},
     )
+
+
+def test_revoke_committed_before_ingest_rejects_even_cached_consent(lane):
+    with Session(lane.engine) as session:
+        game_session = session.get(GameSession, lane.session_id)
+        game_session.transcript_state = "on"
+        consent = TranscriptConsent(
+            campaign_id=lane.campaign_id,
+            member_id=lane.member_id,
+            processor="Local STT",
+        )
+        session.add(consent)
+        session.commit()
+        consent_id = consent.id
+
+    cached = Event()
+    revoked = Event()
+
+    def ingest_after_revoke():
+        with Session(lane.engine) as session:
+            # Keep an unrevoked identity-map object across the other connection's
+            # commit. The ingest must query active consent under FOR SHARE.
+            old = session.get(TranscriptConsent, consent_id)
+            assert old.revoked_at is None
+            cached.set()
+            assert revoked.wait(timeout=10)
+            now = datetime.now(timezone.utc)
+            with pytest.raises(HTTPException) as error:
+                ingest_utterance(
+                    lane.campaign_id,
+                    lane.session_id,
+                    UtteranceRequest(
+                        text="Must not be stored",
+                        source="browser",
+                        confidence=1,
+                        started_at=now,
+                        ended_at=now,
+                    ),
+                    email=lane.email,
+                    session=session,
+                )
+            assert error.value.status_code == 403
+            assert error.value.detail == "active transcript consent required"
+            session.rollback()
+
+    def revoke():
+        assert cached.wait(timeout=10)
+        with Session(lane.engine) as session:
+            assert (
+                revoke_transcript_consent(
+                    lane.campaign_id, email=lane.email, session=session
+                ).status_code
+                == 204
+            )
+        revoked.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ingest_result = pool.submit(ingest_after_revoke)
+        revoke_result = pool.submit(revoke)
+        revoke_result.result(timeout=20)
+        ingest_result.result(timeout=20)
+    with Session(lane.engine) as session:
+        assert session.get(TranscriptConsent, consent_id).revoked_at is not None
+        assert (
+            session.exec(
+                select(SessionEvent).where(SessionEvent.session_id == lane.session_id)
+            ).all()
+            == []
+        )
+
+
+@pytest.mark.parametrize("source", ("table", "discord"))
+def test_adapter_ingest_rejects_malformed_speaker_before_postgres_uuid_cast(
+    lane, source
+):
+    with Session(lane.engine) as session:
+        game_session = session.get(GameSession, lane.session_id)
+        game_session.transcript_state = "on"
+        session.commit()
+        now = datetime.now(timezone.utc)
+        with pytest.raises(HTTPException) as error:
+            ingest_utterance(
+                lane.campaign_id,
+                lane.session_id,
+                UtteranceRequest(
+                    speaker_member_id="not-a-uuid",
+                    source=source,
+                    text="Invalid speaker",
+                    confidence=1,
+                    started_at=now,
+                    ended_at=now,
+                ),
+                email=lane.email,
+                session=session,
+            )
+        assert error.value.status_code == 403
+        assert (
+            session.exec(
+                select(SessionEvent).where(SessionEvent.session_id == lane.session_id)
+            ).all()
+            == []
+        )
 
 
 def test_uuid_audience_uses_persisted_canonical_ids(lane):
