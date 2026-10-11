@@ -2363,8 +2363,8 @@ message NodeStatus {
   // registered brick with jailer_armed true has proven containment at start.
   bool jailer_armed = 49;
   // launch_modes is cumulative since daemon start, keyed "jailed",
-  // "direct_exec" (a legacy bundle with no jail metadata, or jailer disarmed)
-  // and "refused" (a jailed launch that failed closed). An armed brick whose
-  // direct_exec count moves is running a guest without containment.
+  // "direct_exec" (jailer disarmed) and "refused" (a jailed launch that failed
+  // closed, or a legacy bundle with no jail metadata that an armed brick will
+  // not run unjailed). An armed brick never moves direct_exec.
   map<string, uint64> launch_modes = 50;
 }

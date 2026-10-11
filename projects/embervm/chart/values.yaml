@@ -1622,11 +1622,12 @@ noded:
     # preflight launches a jailed Firecracker that opens the probe drive and
     # every READY base rootfs as the jail uid. A brick that fails any of this
     # exits instead of registering. A jailed launch that cannot be contained
-    # is refused and never retried unjailed; only a legacy bundle whose
-    # metadata names no rootfs still runs direct. NodeStatus and
-    # /v1/capacity report jailer_armed and cumulative launch_modes (jailed,
-    # direct_exec, refused), so an armed brick running a guest uncontained
-    # shows as a moving direct_exec count.
+    # is refused and never retried unjailed, and so is a legacy bundle whose
+    # metadata names no rootfs, which could only run direct: an armed brick
+    # refuses it rather than run it uncontained. NodeStatus and /v1/capacity
+    # report jailer_armed and cumulative launch_modes (jailed, direct_exec,
+    # refused); an armed brick counts every such refusal and never moves
+    # direct_exec.
     #
     # Arming needs what the brick pod already has (privileged, a writable
     # cgroup v2 hierarchy) and conformance S7 green in embervm-dev, which arms
