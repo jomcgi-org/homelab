@@ -1610,11 +1610,11 @@ noded:
   jailer:
     # Launch every VM through Firecracker's jailer (#5255): a per-VM chroot,
     # a uid and gid from a block of the node's 20000-59999 range that this
-    # daemon leases for its lifetime, a cgroup v2 leaf with memory.max at the
-    # guest's memMib plus 192 MiB and memory.oom.group=1 under a shared
-    # embervm-vms parent capped at the brick limit minus
-    # bricks.daemonReserveMib, and a PID namespace noded creates with
-    # CLONE_NEWPID so Firecracker is init of its own namespace.
+    # daemon leases for its lifetime (uidBlockBase below), a cgroup v2 leaf
+    # with memory.max at the guest's memMib plus 192 MiB and
+    # memory.oom.group=1 under a shared embervm-vms parent capped at the brick
+    # limit minus bricks.daemonReserveMib, and a PID namespace noded creates
+    # with CLONE_NEWPID so Firecracker is init of its own namespace.
     #
     # Fail closed, at start and per launch. Before it registers, an armed
     # brick proves it can contain guests: the jailer binary is executable,
@@ -1635,6 +1635,17 @@ noded:
     # soak; arming it there is this one value. The escape hatch for a brick
     # that will not start is setting this back to false.
     enabled: false
+    # First of the node's 40 jail uid blocks (1000 uids each) this release's
+    # daemons may lease; each takes the first free block from here up. The
+    # lease locks live under the release's own snapshot root, so bricks of one
+    # release never share a block, but two releases on one node pool never
+    # see each other's leases. Each release sharing a node pool must lease
+    # from a disjoint range: production 0, embervm-dev (nested under
+    # production's scratch on the same ember-bricks nodes) 20, set before it
+    # arms. A release leases upward from its base, so production at 0 stays
+    # clear of embervm-dev at 20 while it runs fewer than 20 bricks on one
+    # node. noded refuses to start on a value outside 0-39.
+    uidBlockBase: 0
 
   # (Artifact-decoupling Phase 2: the node-side image identity table that USED to
   # be rendered into the daemon's EMBERVM_NODED_IMAGES env from `noded.images` +

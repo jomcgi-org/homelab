@@ -3184,3 +3184,28 @@ def test_jailer_scenario_gates_default_off() -> None:
             "enabled", False
         ) is False
         assert "conformance" not in prod
+
+
+def test_jailer_uid_block_base_renders_on_every_noded() -> None:
+    """Each release leases jail uid blocks from its own base (default 0).
+
+    The lease locks live under each release's snapshot root, so two releases
+    on one node never see each other's leases; only disjoint bases keep their
+    jail uids apart. Every noded container renders the base, and an override
+    reaches it.
+    """
+    chart = _chart_dir()
+    values = yaml.safe_load((chart / "values.yaml").read_text())
+    assert values["noded"]["jailer"]["uidBlockBase"] == 0
+    rendered = _render("uid-base", [chart / "values.yaml"], ["bricks.enabled=true"])
+    bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
+    assert bases, "rendered no noded container; this test is inert"
+    assert set(bases) == {"0"}
+    rendered = _render(
+        "uid-base",
+        [chart / "values.yaml"],
+        ["bricks.enabled=true", "noded.jailer.uidBlockBase=20"],
+    )
+    bases = _rendered_noded_env_values(rendered, "EMBERVM_NODED_JAILER_UID_BLOCK_BASE")
+    assert bases
+    assert set(bases) == {"20"}
