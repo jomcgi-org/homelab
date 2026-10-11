@@ -936,6 +936,9 @@ func TestDriverClaimedMibProjectsLiveMap(t *testing.T) {
 	if got, want := d.ClaimedMib(), uint64(d.cfg.MemMib+200+300+400); got != want {
 		t.Fatalf("ClaimedMib = %d, want %d", got, want)
 	}
+	if count, memory := d.LiveMemoryClaims(); count != 4 || memory != uint64(d.cfg.MemMib+200+300+400) {
+		t.Fatalf("LiveMemoryClaims = (%d, %d), want all four VM classes", count, memory)
+	}
 	for _, h := range handles {
 		if err := d.Release(ctx, h); err != nil {
 			t.Fatalf("Release %s: %v", h.ID, err)

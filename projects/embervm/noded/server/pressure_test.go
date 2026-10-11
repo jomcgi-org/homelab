@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,7 +18,7 @@ import (
 // the workload's need plus the floor, Prime rejects RESOURCE_EXHAUSTED with the
 // machine-readable `pressure:mem` reason BEFORE claiming any resource, so no VM
 // state is created (ADR embervm/014 decision 3, cheap rejection). Deliberately
-// uses a nonzero headroom: a zero headroom is "unknown cgroup", which fails open.
+// uses a known headroom reading, independent of the host cgroup.
 func TestPrimeRejectsUnderMemPressure(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
@@ -23,7 +26,7 @@ func TestPrimeRejectsUnderMemPressure(t *testing.T) {
 	// The workload needs 2048 MiB; the floor defaults to minSlotWorkloadMib (512).
 	// Report 2000 MiB free (< 2048 + 512), so the predicate trips.
 	srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 2048}})
-	srv.memHeadroom = func() uint64 { return 2000 }
+	srv.memHeadroom = func() (uint64, bool) { return 2000, true }
 
 	_, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__pressure01"})
 	if status.Code(err) != codes.ResourceExhausted {
@@ -49,7 +52,7 @@ func TestPrimeAdmitsWithHeadroom(t *testing.T) {
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
 	seedBase(srv, "echo__pressure02", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 2048}})
-	srv.memHeadroom = func() uint64 { return 8192 } // 8192 >= 2048 + 512
+	srv.memHeadroom = func() (uint64, bool) { return 8192, true } // 8192 >= 2048 + 512
 
 	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__pressure02"}); err != nil {
 		t.Fatalf("Prime with ample headroom: %v", err)
@@ -59,9 +62,8 @@ func TestPrimeAdmitsWithHeadroom(t *testing.T) {
 	}
 }
 
-// TestPrimeUnknownHeadroomAdmits: a zero headroom is "unknown cgroup" (unlimited
-// or unreadable), which fails OPEN, so Prime admits regardless of need. This is
-// the invariant that keeps every existing memHeadroom==0 test green.
+// TestPrimeUnknownHeadroomAdmits: explicit unknown readings (unlimited or
+// unreadable) retain the fail-open behavior, unlike finite zero readings.
 func TestPrimeUnknownHeadroomAdmits(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
@@ -113,8 +115,8 @@ func TestStartServingRejectsUnderTapPressure(t *testing.T) {
 // the tap allocation.
 func TestStartServingRejectsUnderMemPressure(t *testing.T) {
 	s, fsn, fsd := newServingTestServer(t)
-	fsn.availableTaps = 1024                     // taps plentiful
-	s.memHeadroom = func() uint64 { return 600 } // 600 < 512(need) + 512(floor)
+	fsn.availableTaps = 1024                                   // taps plentiful
+	s.memHeadroom = func() (uint64, bool) { return 600, true } // 600 < 512(need) + 512(floor)
 
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
@@ -143,7 +145,7 @@ func TestStartServingRejectsUnderMemPressure(t *testing.T) {
 func TestUnderPressureFloorFallback(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
 	srv.cfg.MemRejectFloorMib = 0 // unset: falls back to minSlotWorkloadMib
-	srv.memHeadroom = func() uint64 { return minSlotWorkloadMib - 1 }
+	srv.memHeadroom = func() (uint64, bool) { return minSlotWorkloadMib - 1, true }
 
 	reason, exhausted := srv.underPressure(0, classMemOnly)
 	if !exhausted || reason != reasonPressureMem {
@@ -157,7 +159,7 @@ func TestUnderPressureFloorFallback(t *testing.T) {
 func TestReservedAdmissionBoundaryAndOverhead(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 400}, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = "reserved"
-	srv.memBudget = func() uint64 { return 1000 }
+	srv.memBudget = func() (uint64, bool) { return 1000, true }
 	if got := srv.memExhausted(600); got {
 		t.Fatal("reserved admission rejected the exact claimed+need boundary")
 	}
@@ -174,17 +176,31 @@ func TestReservedAdmissionBoundaryAndOverhead(t *testing.T) {
 	}
 }
 
-func TestObservedAdmissionMatchesExistingPredicate(t *testing.T) {
-	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 9999}, &fakeTransport{}, 8)
-	srv.cfg.AdmissionModel = "observed"
-	srv.memBudget = func() uint64 { return 4096 }
-	for _, headroom := range []uint64{0, 511, 512, 1024} {
-		srv.memHeadroom = func() uint64 { return headroom }
-		for _, need := range []uint64{0, 512, 1024} {
-			if got, want := srv.memExhausted(need), srv.memPressured(need); got != want {
-				t.Fatalf("observed admission headroom=%d need=%d = %v, want existing %v", headroom, need, got, want)
+func TestBothModelsRejectLazyAllocationOvercommit(t *testing.T) {
+	for _, model := range []string{"observed", "reserved"} {
+		t.Run(model, func(t *testing.T) {
+			drv := &fakeDriver{}
+			_, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+			srv.cfg.AdmissionModel = model
+			srv.cfg.VMOverheadMib = 64
+			srv.memBudget = func() (uint64, bool) { return 3840, true }
+			// Lazy allocation leaves plenty of measured headroom even after launch.
+			srv.memHeadroom = func() (uint64, bool) { return 4000, true }
+			if srv.memExhausted(3072) {
+				t.Fatal("first 3072 MiB guest should fit")
 			}
-		}
+			drv.live, drv.claimedMib = 1, 3072
+			if !srv.memExhausted(3072) {
+				t.Fatal("second 3072 MiB guest overcommits 3840 MiB capacity")
+			}
+			if srv.memExhausted(640) || !srv.memExhausted(641) {
+				t.Fatal("live plus incoming overhead must consume the exact remaining boundary")
+			}
+			srv.memHeadroom = func() (uint64, bool) { return 1, true }
+			if !srv.memExhausted(640) {
+				t.Fatal("declared capacity must not override actual pressure")
+			}
+		})
 	}
 }
 
@@ -192,8 +208,8 @@ func TestObservedModelRefusesOnLowHeadroomEvenWhenBudgetReadsZero(t *testing.T) 
 	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
 	// The admission model is unset, so this is the observed model. A zero budget
 	// with positive headroom is the memory.max <= DaemonReserveMib case.
-	srv.memBudget = func() uint64 { return 0 }
-	srv.memHeadroom = func() uint64 { return minSlotWorkloadMib - 1 }
+	srv.memBudget = func() (uint64, bool) { return 0, false }
+	srv.memHeadroom = func() (uint64, bool) { return minSlotWorkloadMib - 1, true }
 
 	if got := srv.memExhausted(0); !got {
 		t.Fatal("observed model admitted on low headroom even when budget reads zero")
@@ -202,7 +218,7 @@ func TestObservedModelRefusesOnLowHeadroomEvenWhenBudgetReadsZero(t *testing.T) 
 
 func TestUnknownBudgetAdmitsBothModels(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 2, claimedMib: 9999}, &fakeTransport{}, 8)
-	srv.memBudget = func() uint64 { return 0 }
+	srv.memBudget = func() (uint64, bool) { return 0, false }
 	for _, model := range []string{"observed", "reserved"} {
 		srv.cfg.AdmissionModel = model
 		if got := srv.memExhausted(1 << 30); got {
@@ -276,7 +292,7 @@ func TestRelightChargesWorkloadNeed(t *testing.T) {
 			drv := &fakeDriver{}
 			client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
 			srv.registry.sync(tc.registry)
-			srv.memHeadroom = func() uint64 { return tc.headroom }
+			srv.memHeadroom = func() (uint64, bool) { return tc.headroom, tc.headroom != 0 }
 
 			drv.mu.Lock()
 			if drv.sessionBundles == nil {
@@ -304,4 +320,153 @@ func TestRelightChargesWorkloadNeed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKnownZeroMemoryRefusesBothModels(t *testing.T) {
+	for _, model := range []string{"observed", "reserved"} {
+		_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+		srv.cfg.AdmissionModel = model
+		srv.memBudget = func() (uint64, bool) { return 0, true }
+		if !srv.memExhausted(1) {
+			t.Fatalf("%s admitted known zero budget", model)
+		}
+		srv.memBudget = func() (uint64, bool) { return 4096, true }
+		if !srv.memExhausted(0) {
+			t.Fatalf("%s admitted unknown guest sizing against a finite budget", model)
+		}
+		srv.memHeadroom = func() (uint64, bool) { return 0, true }
+		if !srv.memExhausted(1) {
+			t.Fatalf("%s admitted known zero headroom", model)
+		}
+	}
+}
+
+func TestConcurrentAdmissionReservesBeforeDriverPublication(t *testing.T) {
+	for _, model := range []string{"observed", "reserved"} {
+		_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+		srv.cfg.AdmissionModel = model
+		srv.cfg.VMOverheadMib = 64
+		srv.memBudget = func() (uint64, bool) { return 3840, true }
+		srv.memHeadroom = func() (uint64, bool) { return 4000, true }
+		start := make(chan struct{})
+		releases := make(chan func(), 16)
+		var workers sync.WaitGroup
+		for i := 0; i < 16; i++ {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				<-start
+				release, err := srv.reserveAdmission(3072, classMemOnly)
+				if err == nil {
+					releases <- release
+				} else if status.Code(err) != codes.ResourceExhausted {
+					t.Errorf("unexpected admission error: %v", err)
+				}
+			}()
+		}
+		close(start)
+		workers.Wait()
+		close(releases)
+		if len(releases) != 1 {
+			t.Fatalf("%s admitted %d concurrent 3072 MiB guests, want 1", model, len(releases))
+		}
+		for release := range releases {
+			release()
+			release() // Idempotent cleanup cannot subtract another request's claim.
+		}
+		if srv.pendingMib != 0 || srv.pendingVMs != 0 || srv.memExhausted(3072) {
+			t.Fatal("aborted admission leaked its reservation")
+		}
+	}
+}
+
+func TestPrimeReservationCoversReadinessAndReleaseFailure(t *testing.T) {
+	for _, failRelease := range []bool{false, true} {
+		drv := &admissionTestDriver{fakeDriver: &fakeDriver{}, perVMMib: 3072}
+		if failRelease {
+			drv.failRelease = errors.New("reap unconfirmed")
+		}
+		ready := make(chan string, 1)
+		resume := make(chan struct{})
+		tr := &fakeTransport{waitReadyStarted: ready, waitReadyContinue: resume, waitReadyErr: errors.New("not ready")}
+		client, srv := newTestServer(t, drv, tr, 8)
+		seedBase(srv, "admission-base", "echo")
+		srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 3072}})
+		// Model a claim appearing in the live map only after admission.
+		srv.cfg.RestoreReadyTimeout = 5 * time.Second
+		srv.memBudget = func() (uint64, bool) { return 3840, true }
+		srv.memHeadroom = func() (uint64, bool) { return 8192, true }
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := client.Prime(ctx, &nodev1.PrimeRequest{SnapshotRef: "admission-base"})
+			done <- err
+		}()
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			t.Fatal("Prime did not reach readiness")
+		}
+		if !srv.memExhausted(3072) {
+			t.Fatal("in-flight readiness did not retain its pending reservation")
+		}
+		close(resume)
+		if err := <-done; status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("Prime readiness failure = %v", err)
+		}
+		if srv.pendingMib != 0 || srv.pendingVMs != 0 {
+			t.Fatal("failed RPC leaked its pending reservation")
+		}
+		if srv.memExhausted(3072) != failRelease {
+			t.Fatal("only a confirmed reap may free live memory")
+		}
+		if got := drv.LiveCount(); (got != 0) != failRelease {
+			t.Fatalf("live claims after reap = %d, failed release = %v", got, failRelease)
+		}
+	}
+}
+
+func TestAdmissionArithmeticCannotOverflow(t *testing.T) {
+	if memoryFits(4096, 0, 1, ^uint64(0), 3072) || memoryFits(4096, ^uint64(0), 2, 0) {
+		t.Fatal("overflowing memory charges were admitted")
+	}
+	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 1)
+	release, err := srv.reserveAdmission(1, classMemOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := srv.reserveAdmission(1, classMemOnly); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("pending boot bypassed live-VM cap: %v", err)
+	}
+}
+
+func TestBuildReservationRetainedUntilConfirmedReap(t *testing.T) {
+	for _, failRelease := range []bool{false, true} {
+		_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{waitReadyErr: errors.New("not ready")}, 8)
+		srv.memBudget = func() (uint64, bool) { return 3840, true }
+		build := &fakeDriver{}
+		if failRelease {
+			build.failRelease = errors.New("reap unconfirmed")
+		}
+		if _, err := srv.runBuild(t.Context(), build, "build-base", "echo", "/ready", nil, 3072); err == nil {
+			t.Fatal("expected readiness failure")
+		}
+		if got := srv.memExhausted(3072); got != failRelease {
+			t.Fatalf("build reservation retained=%v, failed release=%v", got, failRelease)
+		}
+	}
+}
+
+// admissionTestDriver models the production live-map projection without KVM.
+type admissionTestDriver struct {
+	*fakeDriver
+	perVMMib uint64
+}
+
+func (d *admissionTestDriver) LiveMemoryClaims() (uint64, uint64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return uint64(d.live), uint64(d.live) * d.perVMMib
 }

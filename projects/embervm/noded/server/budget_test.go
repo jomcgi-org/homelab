@@ -445,3 +445,71 @@ func TestParseMemBudgetMib(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryReadingDistinguishesFiniteZero(t *testing.T) {
+	for _, tc := range []struct {
+		name, max, current         string
+		reserve                    uint64
+		budget, headroom           uint64
+		budgetKnown, headroomKnown bool
+	}{
+		{"zero limit", "0", "0", 0, 0, 0, true, true},
+		{"sub MiB", "524288", "0", 0, 0, 0, true, true},
+		{"reserve consumes capacity", "1048576", "0", 1, 0, 1, true, true},
+		{"usage at limit", "1048576", "1048576", 0, 1, 0, true, true},
+		{"usage above limit", "1048576", "2097152", 0, 1, 0, true, true},
+		{"sub MiB headroom", "2097152", "1572864", 0, 2, 0, true, true},
+		{"unlimited", "max", "0", 0, 0, 0, false, false},
+		{"invalid limit", "invalid", "0", 0, 0, 0, false, false},
+		{"invalid usage", "1048576", "invalid", 0, 1, 0, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withBudgetFsRoot(t, map[string]string{"memory.max": tc.max, "memory.current": tc.current})
+			got := newBudget(tc.reserve).readMemory()
+			want := memoryReading{budgetMib: tc.budget, headroomMib: tc.headroom, budgetKnown: tc.budgetKnown, headroomKnown: tc.headroomKnown}
+			if got != want {
+				t.Fatalf("memory reading = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestMemoryReadingAccountsForFiniteAncestorsAndSiblingUsage(t *testing.T) {
+	root := t.TempDir()
+	oldRoot, oldSelf := budgetFsRoot, selfCgroupPath
+	budgetFsRoot, selfCgroupPath = root, filepath.Join(root, "self")
+	t.Cleanup(func() { budgetFsRoot, selfCgroupPath = oldRoot, oldSelf })
+	if err := os.WriteFile(selfCgroupPath, []byte("0::/pod/container/embervm-noded-daemon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write := func(dir, max, current string) {
+		t.Helper()
+		path := filepath.Join(root, dir)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{"memory.max": max, "memory.current": current} {
+			if err := os.WriteFile(filepath.Join(path, name), []byte(value), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write("pod", "8589934592", "8053063680") // 8 GiB ceiling, only 512 MiB available.
+	write("pod/container", "4294967296", "1073741824")
+	write("pod/container/embervm-noded-daemon", "max", "134217728")
+	b := newBudget(256)
+	got := b.readMemory()
+	if got.budgetMib != 3840 || got.headroomMib != 512 || !got.budgetKnown || !got.headroomKnown {
+		t.Fatalf("ancestor reading = %+v, want budget 3840 and headroom 512", got)
+	}
+	// A finite exhausted ancestor must not be discarded because its leaf or
+	// another ancestor still has headroom. All reads must observe resize.
+	write("pod", "8589934592", "8589934592")
+	if got := b.readMemory(); !got.headroomKnown || got.headroomMib != 0 {
+		t.Fatalf("exhausted parent reading = %+v", got)
+	}
+	write("pod/container", "0", "0")
+	if got := b.readMemory(); !got.budgetKnown || got.budgetMib != 0 {
+		t.Fatalf("zero ancestor limit reading = %+v", got)
+	}
+}

@@ -1,26 +1,18 @@
 package server
 
 import (
+	"sync"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const minSlotWorkloadMib = 512
 
-// This file holds the node-side CHEAP rejection predicate (ADR embervm/014
-// decision 3: "placement is reject/retry, not ledger-perfect"). Before a boot
-// verb (Prime / StartServing / StartStateful / StartGroupMember) claims any
-// resources, it asks admitOrReject whether the node is under real memory or tap
-// pressure and, if so, returns RESOURCE_EXHAUSTED with a machine-readable reason
-// BEFORE doing any expensive work.
-//
-// The whole point is that rejection is O(1): every predicate reads an
-// already-maintained counter (the cgroup memory headroom the budget reader keeps,
-// the IP allocator's freelist size). No disk read, no netlink call, no restore is
-// on the reject path. That is what makes a wrong control-plane placement guess
-// cost one extra RPC instead of a multi-second wasted boot, and it is the same
-// predicate ADR 015's isolated-lane 503 admission check reuses (so it is written
-// as a standalone helper, not inlined into each handler).
+// Admission uses both declared guest commitments and measured cgroup pressure.
+// Lazy page allocation must not let two guests reserve the same finite budget.
+// Boot RPCs acquire a pending reservation before doing work; pressure probes only
+// inspect the same predicate without acquiring resources.
 
 // rejectReason is the machine-readable token stamped into the RESOURCE_EXHAUSTED
 // status message so the control plane (and ADR 015's admission layer) can tell
@@ -50,27 +42,8 @@ const (
 	classTapBearing
 )
 
-// admitOrReject is the single cheap-rejection gate every boot verb calls right
-// after the existing max-live-VMs backstop and before it claims any resource. It
-// returns a RESOURCE_EXHAUSTED error (same shape as the max-live-VMs rejection)
-// when the node is under pressure, or nil to admit. needMib is the workload's
-// memory footprint in MiB (0 when unknown, e.g. Prime for a base whose sizing the
-// daemon has no registry entry for); class selects whether tap capacity is
-// checked.
-//
-// Both predicates FAIL OPEN on an unknown reading, matching the budget reader's
-// own convention that 0 means "unknown, never a guess":
-//
-//   - memHeadroom() == 0 means the cgroup is unlimited or unreadable (the daemon
-//     cannot observe its own ceiling), so memory pressure is NOT asserted. This
-//     is also why every existing test that stubs memHeadroom to 0 keeps admitting.
-//   - a nil servingNet (serving disabled) has no tap notion, so tap pressure is
-//     not asserted either.
-//
-// Asserting pressure only on a POSITIVE observation (a real headroom number below
-// the threshold, a real freelist that is empty) is the safe direction: a brick
-// that cannot see its budget behaves exactly as it did before this predicate
-// existed rather than wedging itself out of all placement.
+// admitOrReject is the read-only pressure probe. Boot paths must instead use
+// reserveAdmission to make the check and pending claim atomic.
 func (s *Server) admitOrReject(needMib uint64, class pressureClass) error {
 	reason, exhausted := s.underPressure(needMib, class)
 	if !exhausted {
@@ -101,33 +74,100 @@ func (s *Server) underPressure(needMib uint64, class pressureClass) (rejectReaso
 	return "", false
 }
 
-// memExhausted selects the node's memory admission model. The observed model
-// delegates unchanged to today's cgroup-headroom predicate. The reserved model
-// derives declared claims from the driver's live map, charging the requested VM
-// and configured host overhead for the VM about to be admitted. A zero budget
-// means unlimited or unreadable cgroup and fails open for the reserved model
-// only.
+// reserveAdmission holds a pending claim until the boot RPC returns, on both
+// success and failure. A successful driver claim enters the live map before the
+// pending claim is released. This deliberately double-charges that VM during
+// readiness, a conservative overlap that avoids a check-to-publication gap.
+// If readiness cleanup cannot reap a VM, its driver claim remains charged.
+func (s *Server) reserveAdmission(needMib uint64, class pressureClass) (func(), error) {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	ceiling := s.SlotCeiling()
+	live, _ := s.liveMemoryClaims()
+	if ceiling > 0 && (live >= uint64(ceiling) || s.pendingVMs >= uint64(ceiling)-live) {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", ceiling)
+	}
+	if needMib > ^uint64(0)-s.pendingMib || s.pendingVMs == ^uint64(0) || s.memExhaustedLocked(needMib) {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: %s (need %d MiB, floor %d MiB)", reasonPressureMem, needMib, s.memRejectFloorMib())
+	}
+	if class == classTapBearing && s.tapsExhausted() {
+		return nil, status.Errorf(codes.ResourceExhausted, "noded: %s (serving tap allocator exhausted)", reasonPressureTaps)
+	}
+	s.pendingMib += needMib
+	s.pendingVMs++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.admissionMu.Lock()
+			defer s.admissionMu.Unlock()
+			s.pendingMib -= needMib
+			s.pendingVMs--
+		})
+	}, nil
+}
+
 func (s *Server) memExhausted(needMib uint64) bool {
-	// Observed model: unchanged from before the claims ledger existed. The
-	// budget guards below belong to the reserved arithmetic only; applying them
-	// here would fail open on a brick whose memory.max is at or below the daemon
-	// reserve, where budget reads 0 but headroom is still positive.
-	if s.cfg.AdmissionModel != "reserved" {
-		return s.memPressured(needMib)
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	return s.memExhaustedLocked(needMib)
+}
+
+// Both modes enforce declared commitments and actual headroom. Observed also
+// keeps its configured reject floor; reserved uses the daemon reserve in the
+// capacity calculation without adding that observed-mode floor.
+func (s *Server) memExhaustedLocked(needMib uint64) bool {
+	live, claimed := s.liveMemoryClaims()
+	overhead := s.vmOverheadMib()
+	if live == ^uint64(0) || s.pendingVMs > ^uint64(0)-live-1 {
+		return true
 	}
-	if s.memBudget == nil {
-		return false
+	if s.memBudget != nil {
+		capacity, known := s.memBudget()
+		if known && (capacity == 0 || needMib == 0 || !memoryFits(capacity, overhead, live+s.pendingVMs+1, claimed, s.pendingMib, needMib)) {
+			return true
+		}
 	}
-	budget := s.memBudget()
-	if budget == 0 {
-		return false
+	if s.memHeadroom != nil {
+		headroom, known := s.memHeadroom()
+		floor := uint64(0)
+		if s.cfg.AdmissionModel != "reserved" {
+			floor = s.memRejectFloorMib()
+		}
+		// Live memory already contributes to memory.current. Pending claims
+		// protect the interval before a new guest faults its pages in.
+		if known && (headroom == 0 || !memoryFits(headroom, overhead, s.pendingVMs+1, s.pendingMib, needMib, floor)) {
+			return true
+		}
 	}
-	live := uint64(s.driver.LiveCount())
-	overhead := uint64(0)
+	return false
+}
+
+// memoryFits subtracts charges instead of adding them, so overflow cannot turn
+// an oversized admission into an apparently small request.
+func memoryFits(capacity, overhead, count uint64, charges ...uint64) bool {
+	for _, charge := range charges {
+		if charge > capacity {
+			return false
+		}
+		capacity -= charge
+	}
+	return overhead == 0 || count <= capacity/overhead
+}
+
+func (s *Server) vmOverheadMib() uint64 {
 	if s.cfg.VMOverheadMib > 0 {
-		overhead = uint64(s.cfg.VMOverheadMib)
+		return uint64(s.cfg.VMOverheadMib)
 	}
-	return s.claimedMib()+needMib+overhead*(live+1) > budget
+	return 0
+}
+
+func (s *Server) liveMemoryClaims() (uint64, uint64) {
+	// Production snapshots both numbers under the driver's lock, so a release
+	// cannot pair a smaller VM count with an older declared-memory total.
+	if d, ok := s.driver.(interface{ LiveMemoryClaims() (uint64, uint64) }); ok {
+		return d.LiveMemoryClaims()
+	}
+	return uint64(s.driver.LiveCount()), s.claimedMib()
 }
 
 func (s *Server) claimedMib() uint64 {
@@ -137,21 +177,13 @@ func (s *Server) claimedMib() uint64 {
 	return 0
 }
 
-// memPressured reports whether free schedulable memory is below the workload's
-// need plus the reject floor. Reads the budget reader's cached cgroup headroom
-// (memory.max - memory.current, a cheap best-effort file read, no restore/disk
-// work). A zero headroom is UNKNOWN (unlimited or unreadable cgroup), not "zero
-// free": it fails open (no pressure), matching the budget reader's convention and
-// keeping a brick that cannot observe its cgroup exactly as permissive as before.
+// memPressured is the observed headroom-only probe, retained for diagnostics.
 func (s *Server) memPressured(needMib uint64) bool {
 	if s.memHeadroom == nil {
 		return false
 	}
-	headroom := s.memHeadroom()
-	if headroom == 0 {
-		return false // unknown cgroup ceiling: fail open, never a guess.
-	}
-	return headroom < needMib+s.memRejectFloorMib()
+	headroom, known := s.memHeadroom()
+	return known && (headroom == 0 || !memoryFits(headroom, s.vmOverheadMib(), 1, needMib, s.memRejectFloorMib()))
 }
 
 // tapsExhausted reports whether the serving IP/tap allocator has no free address.
@@ -183,8 +215,9 @@ func (s *Server) memRejectFloorMib() uint64 {
 // base snapshot whose footprint is fixed at build time), so the need comes from
 // the control-plane-pushed workload registry entry for the base's workload. An
 // absent entry (registry not yet synced, or a workload with no sizing) yields 0,
-// which makes the predicate gate on the floor alone (the conservative honest
-// default the plan sanctions).
+// which refuses admission when a finite budget is known: an unknown guest size
+// cannot safely reserve capacity. Unlimited/unreadable environments retain the
+// measured-headroom fallback.
 func (s *Server) primeNeedMib(workload string) uint64 {
 	if s.registry == nil || workload == "" {
 		return 0

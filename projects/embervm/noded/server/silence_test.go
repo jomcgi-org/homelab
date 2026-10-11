@@ -106,7 +106,8 @@ func TestWatchNodeSendRefreshesContact(t *testing.T) {
 		Transport: &fakeTransport{},
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
+	s.memBudget = func() (uint64, bool) { return 0, false }
 	s.slotCeiling = func(configured uint64) uint64 { return configured }
 	agedContact(s)
 	if !s.silenced() {

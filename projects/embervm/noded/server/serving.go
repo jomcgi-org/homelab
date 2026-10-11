@@ -48,9 +48,11 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classTapBearing); err != nil {
+	finishAdmission, err := s.reserveAdmission(uint64(req.GetResources().GetMemMib()), classTapBearing)
+	if err != nil {
 		return nil, err
 	}
+	defer finishAdmission()
 	port := req.GetPort()
 	if port == 0 {
 		return nil, status.Error(codes.InvalidArgument, "noded: port required")

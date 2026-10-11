@@ -631,7 +631,8 @@ func newStoreTestServerWithVendor(t *testing.T, fs *fakeStore, vendor string) *S
 		Store:          fs,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
+	s.memBudget = func() (uint64, bool) { return 0, false }
 	return s
 }
 
@@ -650,7 +651,8 @@ func newStoreTestServerWithSku(t *testing.T, fs *fakeStore, vendor, template str
 		Store:          fs,
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	s.memHeadroom = func() uint64 { return 0 }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
+	s.memBudget = func() (uint64, bool) { return 0, false }
 	return s
 }
 

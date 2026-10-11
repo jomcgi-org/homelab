@@ -3344,15 +3344,26 @@ func (d *Driver) LiveCount() int {
 // entry, and a daemon restart starts with an empty map because Firecracker
 // children are owned by noded and there is no adoption path for pre-existing VMs.
 func (d *Driver) ClaimedMib() uint64 {
+	_, memory := d.LiveMemoryClaims()
+	return memory
+}
+
+// LiveMemoryClaims takes one snapshot of live count and declared guest memory.
+// Admission needs a coherent pair to account for per-VM host overhead.
+func (d *Driver) LiveMemoryClaims() (uint64, uint64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var total uint64
 	for _, inst := range d.live {
 		if inst.memMib > 0 {
-			total += uint64(inst.memMib)
+			memory := uint64(inst.memMib)
+			if memory > ^uint64(0)-total {
+				return uint64(len(d.live)), ^uint64(0)
+			}
+			total += memory
 		}
 	}
-	return total
+	return uint64(len(d.live)), total
 }
 
 func bundleSize(paths ...string) int64 {

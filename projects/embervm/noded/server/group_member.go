@@ -64,9 +64,11 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	if s.slotsExhausted() {
 		return nil, status.Errorf(codes.ResourceExhausted, "noded: node live-VM cap %d reached", s.SlotCeiling())
 	}
-	if err := s.admitOrReject(uint64(req.GetResources().GetMemMib()), classMemOnly); err != nil {
+	finishAdmission, err := s.reserveAdmission(uint64(req.GetResources().GetMemMib()), classMemOnly)
+	if err != nil {
 		return nil, err
 	}
+	defer finishAdmission()
 	groupInstanceID := req.GetGroupInstanceId()
 	if groupInstanceID == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: group_instance_id required")

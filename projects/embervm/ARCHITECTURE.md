@@ -1083,7 +1083,7 @@ a brick's size is fixed for its lifetime.
 
 **Why.** The reserve constants are provisional and measured only once:
 `daemonReserveMib` (256 in the chart, 512 in the binary default when the chart
-does not inject it), `vmOverheadMib` (0 until a brick is switched to `reserved`),
+does not inject it), `vmOverheadMib` (currently defaults to 0, charged in both admission modes),
 and the roughly 3 MiB per guest the overhead script reported on the first hub
 samples. `Stats()` is read once at release, so there is no recurring per-VM RSS
 series and no separation of daemon working set from guest RSS from shared page
@@ -1094,6 +1094,19 @@ the existing facilities cannot supply. Recurring per-VM telemetry (#4773) is
 added when a named decision needs it, scoped to that decision, and never changes
 the reserve, admission or banking policy in the same change. The B5 shadow
 ledger (#6056) is the next measurement that exists by design.
+
+**Why.** Measured headroom alone admits overcommit while restored guests fault
+pages in lazily. Both admission modes now charge declared live and pending guest
+memory plus configured per-VM overhead against the finite cgroup budget. The
+observed mode also retains its reject floor. Boot reservations are acquired
+atomically and held through readiness, conservatively overlapping the driver's
+live claim until the RPC returns. Build guests use separate drivers, so their
+reservation lasts through confirmed teardown; a failed build teardown retains
+its reservation until daemon restart. Unknown guest sizing is refused when the
+budget is finite. Cgroup accounting takes the tightest visible ancestor limit
+and headroom, including sibling usage, and keeps finite zero distinct from an
+unknown reading. No chart values or admission-mode defaults change here;
+overhead calibration and rollout remain separate operational decisions.
 
 On a fixed fleet a Pending brick **is** the fleet-full signal: the
 controller flags `:fleet_full`, the dispatcher refuses placement (503), and
