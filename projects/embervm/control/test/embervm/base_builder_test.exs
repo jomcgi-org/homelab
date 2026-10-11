@@ -3759,6 +3759,42 @@ defmodule Embervm.BaseBuilderTest do
     assert_eventually(fn -> Inflight.pending_mib("node-4/big", table: inflight) == 0 end)
   end
 
+  test "a resync during the workload's own build keeps the pin and starts no second build" do
+    # Both bricks admit the 3072 MiB build guest (8gi: 4000 - 512 = 3488, 4gi:
+    # 3800 - 512 = 3288), so the larger 8gi brick takes it. Mid-build its own
+    # claim leaves it 416 MiB, and only the 4gi sibling would admit the build.
+    table = busy_and_free_bricks(4_000, 3_800)
+    inflight = new_inflight_table()
+    agent = start_recorder()
+    test_pid = self()
+
+    builder =
+      two_brick_builder(table,
+        inflight_table: inflight,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req ->
+          send(test_pid, {:building, self()})
+
+          receive do
+            :finish -> {:ok, resp("snap-big")}
+          end
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+    assert_receive {:building, worker}
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+
+    # WorkloadWatcher's periodic catalog resync re-casts the unchanged desc.
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+    refute_receive {:building, _}, 200
+
+    send(worker, :finish)
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-big"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+  end
+
   test "a built workload's pin does not chase transient headroom" do
     table = busy_and_free_bricks(7_900, 3_800)
     agent = start_recorder()
