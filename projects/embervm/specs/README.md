@@ -929,8 +929,13 @@ these differences between that protocol and the tree at c05e43f66:
   admission until its hold expired; the multi-brick simulation measured the
   cost (one claude-runtime guest per 8gi brick instead of two in a burst, with
   the difference reported to the autoscaler as demand). `Inflight.debit_mib/3`
-  now charges a reporting brick only the claims its report does not show, and a
-  settled claim drops on the brick's next report. noded still counts a landed
+  now charges a reporting brick only the claims its report does not show,
+  netting against the boots noded admitted for a control-plane RPC still open
+  (`mem_inflight_placed_mib`), so a node-local activator wake never cancels a
+  claim. A settled claim drops on a reserved brick's next report and keeps its
+  hold on an observed one, whose report does not charge a guest until it faults
+  its memory in. The model's CP nets nothing, so it charges the conservative
+  side of this. noded still counts a landed
   VM twice between `track()` and `release()`, for microseconds; that cannot
   overcommit and costs at most a refusal the CP retries. noded's own build
   double count is resolved too: a `BuildBase` holds its ticket for the whole
