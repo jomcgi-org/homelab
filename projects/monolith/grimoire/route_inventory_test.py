@@ -625,14 +625,14 @@ def test_transcript_canaries_reach_only_their_real_feed_audiences(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    # Main's 240 (eight inventory items add four canaries each) plus six for the
-    # two seeded handouts (id, title and markdown on the live and retracted twin).
+    # Main's 246 (eight inventory items add four canaries each, two seeded handouts
+    # add six) plus eleven for the seeded utterances and transcript state.
     assert len(tokens) == 257
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
-    # Main's 25 plus a vectored embedding for each of the two seeded handouts.
-    assert len(embeddings) == 27
+    # Main's 27 (handouts included) plus two vectored utterance embeddings.
+    assert len(embeddings) == 29
     assert all(row.dim == 1024 and len(row.vector) == 1024 for row in embeddings)
     storage = str(harness.snapshot()).casefold()
     for token in tokens:
