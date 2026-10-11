@@ -56,6 +56,18 @@ defmodule Embervm.ServingManager do
   with `minInstances > 0` below its floor, may start an additional instance up to
   `maxInstances`. There is NO load-based autoscaling between 1 and max in v1; only
   miss-driven starts and (Task 9) idle-driven banks change the instance count.
+
+  ## in-flight claims
+
+  A wake boots a new VM, so it claims the brick it boots on in the in-flight
+  ledger (`Embervm.Scheduler.Inflight`) on this serialized process, before the
+  worker sends StartServing: a cold create claims its placement head
+  (`Embervm.Scheduler.place_and_claim/2`), a relight claims the instance holding
+  its snapshot. The worker re-claims each reject/retry hop under the same ref,
+  settles the claim on the brick that booted and releases it on every brick that
+  refused or failed; a wake that fails as a whole drops whatever is left. A
+  relight is pinned to its snapshot's node, so a miss there records no
+  autoscaler demand; only the unpinned cold placement does.
   """
 
   use GenServer
@@ -67,7 +79,7 @@ defmodule Embervm.ServingManager do
 
   alias Embervm.{Brick, EndpointPublisher, NodeCapacity, ServingState, ServingStore, SessionTrace, WakeInstance, WorkloadCatalog}
   alias Embervm.Scheduler
-  alias Embervm.Scheduler.Request
+  alias Embervm.Scheduler.{Inflight, Request}
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -167,6 +179,9 @@ defmodule Embervm.ServingManager do
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
+      # The in-flight ledger every wake claims its brick in (the shared table in
+      # production; tests pass a private one).
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
       clock: clock,
       # Measure from manager boot even when the first reconcile is delayed. A
       # first-reconcile timestamp would renew the grace after scheduler stalls
@@ -210,6 +225,9 @@ defmodule Embervm.ServingManager do
       # wake RPC ran async in a spawned worker. Seeded by the first miss, cleared by
       # finish_wake. Absent (tracing off in CI) => spans are a clean no-op.
       wake_traces: %{},
+      # workload -> the in-flight claim ref of its wake, so finish_wake can drop
+      # whatever a failed wake left claimed.
+      wake_claims: %{},
       # principal -> [wake timestamps within the window]. Sliding-window counter.
       wake_events: %{},
       wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
@@ -349,13 +367,17 @@ defmodule Embervm.ServingManager do
   defp start_wake(state, workload) do
     owner = self()
     entry = catalog_entry(state, workload)
+    # One in-flight claim ref per wake: placement claims under it here, and every
+    # boot hop in the worker re-claims, settles or releases under it.
+    claim_ref = {:serving_wake, workload, make_ref()}
+    state = %{state | wake_claims: Map.put(state.wake_claims, workload, claim_ref)}
 
-    # Placement phase: the pure plan_wake read. Stamp its boundaries + the cold bool
-    # into the tracing bundle so finish_wake can emit the `placement` and `wake`
-    # child spans with real durations. placement_end == wake_start (the RPC begins
-    # the instant placement resolves).
+    # Placement phase: the plan_wake read (which claims a cold head). Stamp its
+    # boundaries + the cold bool into the tracing bundle so finish_wake can emit
+    # the `placement` and `wake` child spans with real durations. placement_end ==
+    # wake_start (the RPC begins the instant placement resolves).
     placement_start = :opentelemetry.timestamp()
-    plan = plan_wake(state, workload)
+    plan = plan_wake(state, workload, claim_ref)
     wake_start = :opentelemetry.timestamp()
     cold = match?({:cold, _}, plan)
 
@@ -373,7 +395,7 @@ defmodule Embervm.ServingManager do
         # BANKED this serving snapshot on disk (per-instance-on-disk, PR-2.5), so
         # dial that instance's instance_id rather than the collapsing node-name
         # alias. No owning instance -> a mem-eligible one; none at all -> fail clean.
-        case dial_instance(state, workload, entry, node_id, warmth_ref: instance.snapshot_ref) do
+        case dial_instance(state, workload, entry, node_id, warmth_ref: instance.snapshot_ref, claim_ref: claim_ref) do
           {:ok, dial_id} ->
             # Move the banked instance to relighting (ETS-only, no op) before the RPC,
             # so a concurrent reconcile does not touch it and the later serving_relit
@@ -381,7 +403,7 @@ defmodule Embervm.ServingManager do
             case ServingStore.mark(state.store, instance.instance_id, :relight) do
               {:ok, _} ->
                 req = relight_request(entry, instance)
-                spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, dial_id, req) end)
+                spawn_wake(owner, workload, fn -> run_relight(state, instance, node_id, dial_id, req, claim_ref) end)
 
               {:error, reason} ->
                 # The instance moved off banked concurrently: report a wake failure so
@@ -401,7 +423,7 @@ defmodule Embervm.ServingManager do
       {:restore_then_relight, instance, node_id} ->
         # The local snapshot is gone, so no instance reports it: selection falls to a
         # mem-eligible instance the restore lands the bundle onto.
-        case dial_instance(state, workload, entry, node_id, warmth_ref: instance.snapshot_ref) do
+        case dial_instance(state, workload, entry, node_id, warmth_ref: instance.snapshot_ref, claim_ref: claim_ref) do
           {:ok, dial_id} ->
             case ServingStore.mark(state.store, instance.instance_id, :relight) do
               {:ok, _} ->
@@ -413,7 +435,7 @@ defmodule Embervm.ServingManager do
                   # (PR-2.5), so restoring onto an arbitrary co-located instance while
                   # the boot runs on another leaves the boot's local disk empty.
                   _ = restore_bundle(state, dial_id, node_id, instance)
-                  run_relight(state, instance, node_id, dial_id, req)
+                  run_relight(state, instance, node_id, dial_id, req, claim_ref)
                 end)
 
               {:error, reason} ->
@@ -425,7 +447,7 @@ defmodule Embervm.ServingManager do
         end
 
       {:cold, candidates} ->
-        spawn_wake(owner, workload, fn -> run_cold(state, workload, candidates, entry) end)
+        spawn_wake(owner, workload, fn -> run_cold(state, workload, candidates, entry, claim_ref) end)
 
       {:error, reason} ->
         # No capacity / snapshot lost: report it so the parked callers 503.
@@ -439,8 +461,9 @@ defmodule Embervm.ServingManager do
   # instance that banked this workload's serving snapshot (its serving_snapshots
   # report `warmth_ref`), else a mem-eligible instance sized for the workload's
   # mem_mib, else `{:error, :no_eligible_instance}`. Returns the dial key
-  # (instance_id, or the node name for a legacy fact without one). A cold boot passes
-  # no `:warmth_ref` and goes straight to the mem-eligible pick.
+  # (instance_id, or the node name for a legacy fact without one), claimed in the
+  # in-flight ledger under the wake's `:claim_ref`. The snapshot pins the node, so
+  # a miss here is not fleet demand (record_demand: false).
   defp dial_instance(state, workload, entry, node_id, opts) do
     Embervm.WakeInstance.select(
       node_id,
@@ -448,7 +471,9 @@ defmodule Embervm.ServingManager do
         table: state.capacity_table,
         workload: workload,
         need_mib: Map.get(entry, :mem_mib) || 512,
-        warmth_key: :serving_snapshots
+        warmth_key: :serving_snapshots,
+        record_demand: false,
+        inflight: state.inflight_table
       ] ++ opts
     )
   end
@@ -487,7 +512,7 @@ defmodule Embervm.ServingManager do
   # degrades to a cold boot if the local bundle is truly gone). Serving carries no
   # volume/generation pairing (unlike stateful), so there is only this one bundle-
   # restore case, never a restore_volume branch.
-  defp plan_wake(state, workload) do
+  defp plan_wake(state, workload, claim_ref) do
     case pick_bankable_instance(state, workload) do
       {:ok, instance, node_id} ->
         if bundle_local?(state, node_id, instance.snapshot_ref) or
@@ -498,19 +523,34 @@ defmodule Embervm.ServingManager do
         end
 
       :none ->
+        need_mib = Map.get(catalog_entry(state, workload), :mem_mib) || 512
+
+        # The cold create is unpinned fleet placement: it claims its head under the
+        # wake's ref, and a miss records autoscaler demand. Each candidate carries
+        # what a claim on it costs, for the worker's retry hops.
         candidates =
-          case Scheduler.place_with_demand(%Request{
-            table: state.capacity_table,
-            workload: workload,
-            key: workload,
-            need_mib: Map.get(catalog_entry(state, workload), :mem_mib) || 512,
-            require_subnet: true,
-            base: {:ready, :serving_image_ref}
-          }) do
+          case Scheduler.place_and_claim(
+                 %Request{
+                   table: state.capacity_table,
+                   workload: workload,
+                   key: workload,
+                   need_mib: need_mib,
+                   require_subnet: true,
+                   base: {:ready, :serving_image_ref},
+                   inflight: state.inflight_table
+                 },
+                 claim_ref
+               ) do
             {:ok, bricks} ->
               Enum.map(bricks, fn brick ->
                 workload_entry = Map.get(brick.workloads, workload, %{})
-                %{instance_id: Brick.dial_id(brick), node_id: brick.configured_id, base_ref: Map.get(workload_entry, :serving_image_ref)}
+
+                %{
+                  instance_id: Brick.dial_id(brick),
+                  node_id: brick.configured_id,
+                  base_ref: Map.get(workload_entry, :serving_image_ref),
+                  charge_mib: Brick.charge_mib(brick, need_mib)
+                }
               end)
 
             {:error, :capacity} -> []
@@ -646,29 +686,37 @@ defmodule Embervm.ServingManager do
   end
 
   # The relight RPC (in the spawned worker). Returns the outcome finish_wake
-  # projects durably.
-  defp run_relight(state, instance, node_id, dial_id, req) do
+  # projects durably. start_wake claimed dial_id under `claim_ref`: the claim
+  # settles when the VM boots and is released otherwise.
+  defp run_relight(state, instance, node_id, dial_id, req, claim_ref) do
     case safe_start_serving(state, dial_id, req) do
       {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
       when is_binary(vm_id) and vm_id != "" ->
+        Inflight.settle(dial_id, claim_ref, table: state.inflight_table)
         shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
         {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port}}
 
       other ->
+        Inflight.release(dial_id, claim_ref, table: state.inflight_table)
         {:error, {:relight_failed, instance.instance_id, other}}
     end
   end
 
   # The cold-create RPC retries the ordered fleet frontier. Each candidate carries
   # its own dial key, configured node id, and serving image ref because serving
-  # bases are per-instance and may differ across vendors.
-  defp run_cold(state, workload, candidates, entry) do
-    attempt_fun = fn %{instance_id: dial_id, node_id: node_id, base_ref: base_ref} ->
+  # bases are per-instance and may differ across vendors, plus what a claim on it
+  # costs. Every hop claims its brick before StartServing (the head re-claims the
+  # claim placement made, refreshing only its expiry), settles the claim on success
+  # and releases it on a refusal or failure.
+  defp run_cold(state, workload, candidates, entry, claim_ref) do
+    attempt_fun = fn %{instance_id: dial_id, node_id: node_id, base_ref: base_ref} = candidate ->
       req = cold_request(entry, workload, base_ref)
+      Inflight.claim(dial_id, claim_ref, Map.get(candidate, :charge_mib, 0), table: state.inflight_table)
 
       case safe_start_serving(state, dial_id, req) do
         {:ok, %StartServingResponse{vm_id: vm_id, ip: ip, port: port}}
         when is_binary(vm_id) and vm_id != "" ->
+          Inflight.settle(dial_id, claim_ref, table: state.inflight_table)
           shadow_claim(dial_id, vm_id, workload, entry)
           attrs = %{
             tenant: state.tenant,
@@ -683,12 +731,14 @@ defmodule Embervm.ServingManager do
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
           # RESOURCE_EXHAUSTED: the brick rejected under node pressure (pressure:mem /
           # pressure:taps). Retryable: try the next candidate brick.
+          Inflight.release(dial_id, claim_ref, table: state.inflight_table)
           {:reject, rejected}
 
         other ->
           # Any other failure (transport, readiness, bad request) is terminal for
           # this create: retrying a DIFFERENT brick would just multiply an unrelated
           # failure, so stop and surface it exactly as the pre-retry code did.
+          Inflight.release(dial_id, claim_ref, table: state.inflight_table)
           {:error, {:start_failed, other}}
       end
     end
@@ -721,6 +771,7 @@ defmodule Embervm.ServingManager do
   defp finish_wake(state, workload, outcome) do
     {waiters, state} = pop_waiters(state, workload)
     {trace, state} = pop_wake_trace(state, workload)
+    state = release_failed_wake_claim(state, workload, outcome)
 
     # The wake RPC returned now: this closes the `wake` phase. Emit the retroactive
     # `park`/`placement`/`wake` child spans (Task 10) under the restored root: they
@@ -900,6 +951,23 @@ defmodule Embervm.ServingManager do
 
   # Merge boundary stamps into a workload's tracing bundle. A no-op when the miss
   # never seeded a bundle (a straggler proxied without a wake, or tracing off).
+  # A wake that did not boot leaves nothing worth debiting: the worker already
+  # released each brick it tried, and this drops a claim that a crashed worker or
+  # a wake that never dispatched left behind. A boot that succeeded keeps its
+  # settled claim until the daemon's next report counts the VM.
+  defp release_failed_wake_claim(state, workload, outcome) do
+    {claim_ref, wake_claims} = Map.pop(state.wake_claims, workload)
+
+    case outcome do
+      {:created, _attrs, _endpoint} -> :ok
+      {:relit, _instance_id, _node_id, _endpoint} -> :ok
+      _ when is_nil(claim_ref) -> :ok
+      _ -> Inflight.release_ref(claim_ref, table: state.inflight_table)
+    end
+
+    %{state | wake_claims: wake_claims}
+  end
+
   defp stamp_wake_trace(state, workload, fields) do
     case Map.get(state.wake_traces, workload) do
       nil -> state

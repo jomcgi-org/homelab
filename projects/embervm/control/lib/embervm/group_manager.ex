@@ -74,6 +74,15 @@ defmodule Embervm.GroupManager do
   endpoint. The derived `{pod IP, vmPort}` is recorded on the GroupStore instance
   (`entry_ip`/`entry_port_published`), so if Task 7 later has noded REPORT the entry
   endpoint via NodeStatus, it just overwrites the same fact with no migration.
+
+  ## in-flight claims
+
+  Every member start boots a new VM on the anchor instance, so it claims the
+  member's memory there in the in-flight ledger (`Embervm.Scheduler.Inflight`)
+  before StartGroupMember, settles the claim once the daemon returns a VM and
+  releases it when the daemon refuses or the start fails. Members of one start
+  order boot in parallel, so each claims for itself and a later placement sees
+  the whole order in flight before the daemon reports any of it.
   """
 
   use GenServer
@@ -82,7 +91,8 @@ defmodule Embervm.GroupManager do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{GroupState, GroupStore, NodeCapacity, WorkloadCatalog}
+  alias Embervm.{GroupState, GroupStore, NodeCapacity, WakeInstance, WorkloadCatalog}
+  alias Embervm.Scheduler.Inflight
 
   alias Embervm.Node.V1.{
     CreateGroupNetworkRequest,
@@ -211,6 +221,9 @@ defmodule Embervm.GroupManager do
       store: Keyword.get(opts, :store, GroupStore),
       publisher: Keyword.get(opts, :publisher, Embervm.EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
+      # The in-flight ledger member starts claim their memory in (the shared table
+      # in production; tests pass a private one).
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       supernet: Keyword.fetch!(opts, :supernet),
       port_base: Keyword.fetch!(opts, :port_base),
@@ -448,7 +461,7 @@ defmodule Embervm.GroupManager do
     # across every boot path; with one candidate it is exactly one attempt. Do NOT
     # expand this list: a different brick does not host this group's network.
     attempt_fun = fn _only ->
-      case safe_start_group_member(state, req) do
+      case start_member_claimed(state, member, req) do
         {:ok, %StartGroupMemberResponse{vm_id: vm_id, ip: ip} = resp} when is_binary(vm_id) and vm_id != "" ->
           shadow_claim(state.dial_id, vm_id, state.workload, member.mem_mib || 512)
           case GroupStore.member_started(state.store, state.instance_id, %{
@@ -879,7 +892,7 @@ defmodule Embervm.GroupManager do
         # through Embervm.Scheduler.Retry keeps the reject/retry POLICY one piece of
         # code; with one candidate it is exactly one attempt. Do NOT expand this list.
         attempt_fun = fn _only ->
-          case safe_start_group_member(state, req) do
+          case start_member_claimed(state, member, req) do
             {:ok, %StartGroupMemberResponse{vm_id: vm_id, was_relight: true} = resp}
             when is_binary(vm_id) and vm_id != "" ->
               shadow_claim(state.dial_id, vm_id, state.workload, member.mem_mib || 512)
@@ -1452,6 +1465,32 @@ defmodule Embervm.GroupManager do
     end
 
     :ok
+  end
+
+  # One member start under its own in-flight claim on the anchor instance. The
+  # claim settles whenever the daemon returns a VM, an unverified relight included
+  # (that VM is live until the fresh fallback destroys it), and is released on a
+  # refusal, an error or a raise, so a refused member never keeps debiting.
+  defp start_member_claimed(state, member, req) do
+    ref = {:group_member, state.instance_id, member.expanded_name, make_ref()}
+    ledger = [table: state.inflight_table]
+
+    WakeInstance.claim(state.dial_id, ref, member.mem_mib || 512,
+      table: state.capacity_table,
+      inflight: state.inflight_table
+    )
+
+    result = safe_start_group_member(state, req)
+
+    case result do
+      {:ok, %StartGroupMemberResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" ->
+        Inflight.settle(state.dial_id, ref, ledger)
+
+      _ ->
+        Inflight.release(state.dial_id, ref, ledger)
+    end
+
+    result
   end
 
   defp safe_start_group_member(state, req) do
