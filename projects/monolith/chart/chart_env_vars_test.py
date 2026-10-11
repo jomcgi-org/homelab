@@ -459,3 +459,11 @@ def test_rollout_termination_grace_is_a_chart_value():
         check=True,
     ).stdout
     assert "terminationGracePeriodSeconds: 42" in rendered
+
+
+def test_discord_ambient_pause_keeps_bot_and_kg_enabled(chart_context):
+    rendered = chart_context["rendered"]
+    assert re.search(r'- name: DISCORD_AMBIENT_ENABLED\n\s+value: "false"', rendered)
+    assert "name: DISCORD_BOT_TOKEN" in rendered
+    assert re.search(r'- name: KG_FEED_ENABLED\n\s+value: "true"', rendered)
+    assert "name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID" in rendered

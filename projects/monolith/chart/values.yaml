@@ -1588,6 +1588,9 @@ emberDurability:
 
 chat:
   enabled: false
+  # Pause Discord attention classification and automatic message triggers.
+  # Keeps storage/KG, mentions, commands, agent threads and Notify running.
+  discordAmbientEnabled: true
   # Synchronous Discord paths only. Accepted values are minimal, low, medium,
   # high, and xhigh. Meta rejects none with a 400 because Spark always reasons.
   # Empty uses the code default (minimal).

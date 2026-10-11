@@ -208,6 +208,9 @@ knowledge:
 
 chat:
   enabled: true
+  # Pause during Joe's UK move. Restore true only when asked to resume.
+  # No expiry; keeps Discord ingestion, explicit requests and Notify alerts.
+  discordAmbientEnabled: false
   llamaCppUrl: "http://inference.inference.svc.cluster.local:8080"
   movingChatInferenceUrl: "http://inference.inference.svc.cluster.local:8080"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
