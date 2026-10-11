@@ -1323,7 +1323,8 @@ class CharacterFact(SQLModel, table=True):
             name="character_fact_evidence_chk",
         ).ddl_if(dialect="postgresql"),
         CheckConstraint(
-            "json_type(evidence_event_ids) = 'array' AND json_array_length(evidence_event_ids) > 0",
+            "json_type(evidence_event_ids) = 'array' AND json_array_length(evidence_event_ids) > 0 "
+            "AND instr(evidence_event_ids, 'null') = 0",
             name="character_fact_evidence_chk",
         ).ddl_if(dialect="sqlite"),
         UniqueConstraint(

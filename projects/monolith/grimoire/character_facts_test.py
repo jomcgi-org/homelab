@@ -8,8 +8,9 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, SQLModel, select
 
+from grimoire import play_embeddings
 from grimoire.character_facts import (
     FactCandidate,
     build_fact_payload,
@@ -135,6 +136,15 @@ def test_empty_batch_does_not_write(harness):
         result = write(h, [])
     assert result.written == [] and result.rejections == []
     assert not any(statement.startswith("INSERT") for statement in sql)
+
+
+def test_sql_capture_guard_detects_flattened_sqlite_knowledge_access(harness):
+    h = harness
+    with capture_sql(h.session.get_bind()) as statements:
+        h.session.execute(select(SQLModel.metadata.tables["knowledge.notes"])).all()
+    assert "knowledge." not in statements[0]
+    with pytest.raises(AssertionError, match="notes"):
+        assert_no_knowledge_sql(statements)
 
 
 def test_invalid_viewer_or_session_context_fails_closed(harness):
@@ -302,6 +312,112 @@ def test_grant_history_retraction_cascades_to_fact(harness):
     assert_no_knowledge_sql(sql)
 
 
+def test_partial_grouped_reveal_revocation_invalidates_ambiguous_evidence(harness):
+    from grimoire.router import _retract_grant_history
+
+    h = harness
+    reveal = h.rows["reveal_partial"]
+    other = h.rows["a_only"]
+    reveal.body = {
+        "reveals": [
+            *reveal.body["reveals"],
+            {
+                "entity_id": other.id,
+                "name": other.name,
+                "entity_type": "npc",
+                "grant_scope": "full",
+                "entity": {"description": "Unchanged shared item"},
+            },
+        ]
+    }
+    h.session.commit()
+    fact = write(
+        h, [candidate(h, "reveal_partial", entity_id=h.rows["partial"].id)]
+    ).written[0]
+    ambiguous = write(
+        h,
+        [
+            FactCandidate(
+                statement="No item-level provenance", evidence_event_ids=[reveal.id]
+            )
+        ],
+    ).written[0]
+    other_support = write(
+        h,
+        [
+            FactCandidate(
+                statement="Other evidence survives",
+                evidence_event_ids=[reveal.id, h.rows["event_table"].id],
+            )
+        ],
+    ).written[0]
+    embed_fact(h, fact)
+    embed_fact(h, ambiguous)
+    _retract_grant_history(h.session, h.rows["grant_partial"])
+    h.session.commit()
+    assert reveal.retracted_at is None  # Surviving grouped item stays in the feed.
+    assert fact.status == ambiguous.status == "retracted"
+    assert other_support.status == "active"
+    assert not h.session.exec(
+        select(Embedding).where(Embedding.embeddable_id.in_([fact.id, ambiguous.id]))
+    ).all()
+    payload = build_fact_payload(
+        h.session, fact.campaign_id, fact.session_id, fact.viewer_key
+    )
+    assert reveal.id not in payload["evidence_event_ids"]
+    assert "Unchanged shared item" in json.dumps(payload)
+    assert write(h, [candidate(h, "reveal_partial", entity_id=other.id)]).rejections
+    h.rows["event_table"].retracted_at = datetime.now(UTC)
+    sync_event_embeddings(h.session, h.rows["event_table"])
+    h.session.commit()
+    assert other_support.status == "retracted"
+
+
+def test_embedding_lock_order_is_events_before_facts_with_paired_vectors(
+    harness, monkeypatch
+):
+    h = harness
+    fact = write(h, [candidate(h)]).written[0]
+    inputs = collect_play_inputs(h.session, "ordering", 100)
+    event = h.rows["event_table"]
+    by_id = {item.source_id: item for item in inputs}
+    assert inputs.index(by_id[event.id]) < inputs.index(by_id[fact.id])
+    h.session.commit()
+    calls = []
+    original = play_embeddings._source
+
+    def source(session, kind, source_id):
+        calls.append((kind, source_id))
+        return original(session, kind, source_id)
+
+    monkeypatch.setattr(play_embeddings, "_source", source)
+    # Persistence must impose lock order, even if the caller supplies fact first.
+    assert (
+        persist_play_vectors(
+            h.session,
+            "ordering",
+            [by_id[fact.id], by_id[event.id]],
+            [[0.2] * 1024, [0.1] * 1024],
+        )
+        == 2
+    )
+    assert calls == [("event", event.id), ("fact", fact.id)]
+    h.session.commit()
+    vectors = {
+        row.embeddable_id: row.vector
+        for row in h.session.exec(
+            select(Embedding).where(Embedding.model == "ordering")
+        ).all()
+    }
+    assert vectors[fact.id][0] == pytest.approx(0.2)
+    assert vectors[event.id][0] == pytest.approx(0.1)
+    calls.clear()
+    collect_play_inputs(h.session, "ordering", 100)
+    # Cleanup reads and locks existing event/transcript sources before facts too.
+    first_fact = next(index for index, (kind, _) in enumerate(calls) if kind == "fact")
+    assert not any(kind in ("event", "transcript") for kind, _ in calls[first_fact:])
+
+
 def test_payload_and_writer_refresh_cached_visibility(harness):
     h = harness
     grant = h.rows["grant_a_only"]
@@ -378,6 +494,7 @@ def test_embedding_write_rechecks_retracted_source(harness):
         {"player_character_id": None},
         {"status": "unknown"},
         {"evidence_event_ids": []},
+        {"evidence_event_ids": [None]},
     ),
 )
 def test_sqlite_fact_constraints(harness, changes):

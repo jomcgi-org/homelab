@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from uuid import uuid4
 
-from sqlalchemy import and_, null, or_
+from sqlalchemy import and_, case, null, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
@@ -17,6 +17,7 @@ from grimoire.reveals import reveal_items
 
 PLAY_KINDS = ("note", "event", "transcript", "fact")
 EVENT_KINDS = ("narration", "handout", "reveal", "utterance")
+_LOCK_ORDER = {"event": 0, "transcript": 0, "note": 1, "fact": 2}
 
 
 def play_embedding_predicate(campaign_id: str, viewer: Viewer, member: Member):
@@ -245,6 +246,15 @@ def collect_play_inputs(
         .where(
             Embedding.embeddable_kind.in_(PLAY_KINDS),
         )
+        .order_by(
+            case(
+                (Embedding.embeddable_kind.in_(("event", "transcript")), 0),
+                (Embedding.embeddable_kind == "note", 1),
+                else_=2,
+            ),
+            Embedding.embeddable_id,
+            Embedding.id,
+        )
         .execution_options(yield_per=500)
     ):
         row = _source(session, embedding.embeddable_kind, embedding.embeddable_id)
@@ -259,12 +269,12 @@ def collect_play_inputs(
             session.delete(embedding)
     inputs = []
     for source_model, predicate in (
-        (Note, Note.deleted_at.is_(None)),
-        (CharacterFact, CharacterFact.status.in_(("active", "disputed"))),
         (
             SessionEvent,
             SessionEvent.retracted_at.is_(None) & SessionEvent.kind.in_(EVENT_KINDS),
         ),
+        (Note, Note.deleted_at.is_(None)),
+        (CharacterFact, CharacterFact.status.in_(("active", "disputed"))),
     ):
         for row in session.exec(
             select(source_model)
@@ -307,7 +317,13 @@ def persist_play_vectors(
     if len(inputs) != len(vectors):
         raise ValueError("embedding batch returned the wrong number of vectors")
     values = []
-    for item, vector in zip(inputs, vectors, strict=True):
+    # Retraction and the writer lock events before dependent facts. Preserve
+    # that order even for caller-supplied batches; keep vectors paired on sort.
+    ordered = sorted(
+        zip(inputs, vectors, strict=True),
+        key=lambda pair: (_LOCK_ORDER[pair[0].kind], pair[0].source_id),
+    )
+    for item, vector in ordered:
         row = _source(session, item.kind, item.source_id)
         if (
             row is None

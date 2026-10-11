@@ -2218,11 +2218,15 @@ def list_grants(
 
 def _retract_grant_history(session: Session, grant: KnowledgeGrant) -> None:
     previous = session.exec(
-        select(SessionEvent).where(
+        select(SessionEvent)
+        .where(
             SessionEvent.campaign_id == grant.campaign_id,
             SessionEvent.kind == "reveal",
             SessionEvent.retracted_at.is_(None),
         )
+        .order_by(SessionEvent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).all()
     changed = []
     for event in previous:

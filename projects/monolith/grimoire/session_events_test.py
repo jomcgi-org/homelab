@@ -1336,7 +1336,10 @@ def test_retraction_locks_and_refreshes_event(http_harness, monkeypatch):
 
     def capture(statement, *args, **kwargs):
         if any(
-            description.get("entity") is SessionEvent
+            # Count full-row reads that must lock/refresh the event, excluding
+            # the fact cascade's supporting-evidence id probes.
+            description.get("expr") is SessionEvent
+            and statement._for_update_arg is not None
             for description in statement.column_descriptions
         ):
             statements.append(statement)
