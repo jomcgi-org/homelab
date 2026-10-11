@@ -113,6 +113,13 @@ def persisted(h, row):
     return row.model_dump()
 
 
+def retention_vectors(h):
+    return {
+        row.id: {**row.model_dump(exclude={"vector"}), "vector": list(row.vector)}
+        for row in h.session.exec(select(Embedding)).all()
+    }
+
+
 def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
     http_harness,
     monkeypatch,
@@ -186,9 +193,7 @@ def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
     h.session.commit()
     h.session.expire_all()
     before = {row.id: persisted(h, row) for row in rows}
-    vector_before = {
-        row.id: row.model_dump() for row in h.session.exec(select(Embedding)).all()
-    }
+    vector_before = retention_vectors(h)
     sessions_before = {
         key: persisted(h, h.rows[key]) for key in ("campaign_session", "other_session")
     }
@@ -211,9 +216,7 @@ def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
             assert row.model_dump() == {**original, "body": expected_body}
         else:
             assert row.model_dump() == original
-    remaining = {
-        row.id: row.model_dump() for row in h.session.exec(select(Embedding)).all()
-    }
+    remaining = retention_vectors(h)
     assert remaining == {
         key: value
         for key, value in vector_before.items()
@@ -226,9 +229,7 @@ def test_retention_redacts_expired_text_and_vectors_preserving_stubs_and_feed(
     assert redact_transcripts(h.session, now=now) == 0
     h.session.expire_all()
     assert {row.id: persisted(h, row) for row in rows} == after
-    assert {
-        row.id: row.model_dump() for row in h.session.exec(select(Embedding)).all()
-    } == remaining
+    assert retention_vectors(h) == remaining
     monkeypatch.setenv("GRIMOIRE_PLAY_ENABLED", "true")
     monkeypatch.setenv("GRIMOIRE_TRANSCRIPT_ENABLED", "true")
     path = (

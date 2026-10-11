@@ -36,7 +36,7 @@ from grimoire.session_events import append_event
 
 def retention_vectors(session, campaign_id):
     return {
-        row.id: {**row.model_dump(), "vector": list(row.vector)}
+        row.id: {**row.model_dump(exclude={"vector"}), "vector": list(row.vector)}
         for row in session.exec(
             select(Embedding).where(Embedding.campaign_id == campaign_id)
         ).all()
