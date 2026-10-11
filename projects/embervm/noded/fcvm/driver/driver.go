@@ -1132,7 +1132,7 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, workload, threa
 			if placeholderErr != nil {
 				return substrate.Handle{}, placeholderErr
 			}
-			resources = append(resources, JailResource{Role: "legacy-placeholder-backing", HostPath: placeholder, JailPath: placeholder, Writable: true})
+			resources = append(resources, JailResource{Role: "legacy-placeholder-backing", HostPath: placeholder, JailPath: placeholder, Writable: true, PrivateCopy: true})
 		}
 		if !hasResourceRole(resources, "rootfs") {
 			directExec = true
