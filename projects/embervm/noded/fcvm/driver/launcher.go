@@ -262,6 +262,9 @@ func (p *execProcess) Kill() error {
 		p.hostRequested = true
 	}
 	p.exitMu.Unlock()
+	if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+		return killErr
+	}
 	// Always reap the child, even when Kill reports it already exited (a crashed
 	// or panicked VM): without a Wait the dead process lingers as a zombie. Wait
 	// is the sole reaper, so it is safe to call once here. A successful Kill alone
@@ -288,7 +291,7 @@ func (p *execProcess) wait() error {
 		}
 		p.waitErr = wait()
 		p.exitMu.Lock()
-		p.exited = true
+		p.exited = waitProvesExit(p.waitErr) || (p.cmd != nil && p.cmd.ProcessState != nil)
 		p.exitMu.Unlock()
 		p.flushOnce.Do(func() {
 			if p.stdout != nil {
@@ -298,7 +301,7 @@ func (p *execProcess) wait() error {
 				p.stderr.Flush()
 			}
 		})
-		if p.exitCh != nil {
+		if p.exitCh != nil && p.exited {
 			close(p.exitCh)
 		}
 	})
@@ -306,6 +309,12 @@ func (p *execProcess) wait() error {
 }
 
 func (p *execProcess) cleanup() {
+	p.exitMu.Lock()
+	exited := p.exited
+	p.exitMu.Unlock()
+	if !exited {
+		return
+	}
 	p.cleanOnce.Do(func() {
 		p.observeExit()
 		if p.jail != nil {
@@ -526,6 +535,13 @@ func (l *ExecLauncher) launch(ctx context.Context, spec LaunchSpec, jailed bool)
 		}
 	}
 
+	fail := func(cause error) (Process, error) {
+		partial, err := failedProcessLaunch(proc, cause)
+		if partial == nil {
+			_ = os.Remove(spec.SocketPath)
+		}
+		return partial, err
+	}
 	timeout := l.ReadyTimeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
@@ -539,9 +555,7 @@ func (l *ExecLauncher) launch(ctx context.Context, spec LaunchSpec, jailed bool)
 				err = fmt.Errorf("%w: %w", ErrJailerContainment, err)
 			}
 		}
-		_ = proc.Kill()
-		_ = os.Remove(spec.SocketPath)
-		return nil, err
+		return fail(err)
 	}
 	if cg != nil {
 		// The jailer joins its leaf before it execs Firecracker, and Firecracker
@@ -553,9 +567,7 @@ func (l *ExecLauncher) launch(ctx context.Context, spec LaunchSpec, jailed bool)
 			if err == nil {
 				err = fmt.Errorf("firecracker pid %d is not in VM cgroup %q", cmd.Process.Pid, cg.Path())
 			}
-			_ = proc.Kill()
-			_ = os.Remove(spec.SocketPath)
-			return nil, fmt.Errorf("%w: verify VM cgroup membership: %w", ErrJailerContainment, err)
+			return fail(fmt.Errorf("%w: verify VM cgroup membership: %w", ErrJailerContainment, err))
 		}
 	}
 	return proc, nil
@@ -666,4 +678,12 @@ func waitForSocketOrExit(ctx context.Context, socketPath string, timeout time.Du
 		return ctx.Err()
 	}
 	return fmt.Errorf("driver: firecracker API socket %q not ready after %s: %w", socketPath, timeout, waitCtx.Err())
+}
+
+// A partial launch still transfers ownership unless stopping it is proven.
+func failedProcessLaunch(proc Process, cause error) (Process, error) {
+	if err := stopProcess(proc); err != nil {
+		return proc, errors.Join(cause, err)
+	}
+	return nil, cause
 }

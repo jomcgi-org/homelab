@@ -34,7 +34,7 @@ func TestReadyBaseRootfsPathsReturnsDistinctReadyRootfs(t *testing.T) {
 
 func TestBrickMemBudgetMibReportsTheBudgetReader(t *testing.T) {
 	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
-	s.memBudget = func() uint64 { return 3840 }
+	s.memBudget = func() (uint64, bool) { v := uint64(3840); return v, v > 0 }
 	if got := s.BrickMemBudgetMib(); got != 3840 {
 		t.Fatalf("BrickMemBudgetMib() = %d, want 3840", got)
 	}

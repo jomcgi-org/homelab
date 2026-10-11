@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -22,6 +24,8 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	fcvmdriver "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
 // TestMain isolates every test in this package from the host's own cgroup. New
@@ -56,7 +60,7 @@ func TestPrimeRejectsUnderMemPressure(t *testing.T) {
 	// The workload needs 2048 MiB; the floor defaults to minSlotWorkloadMib (512).
 	// Report 2000 MiB free (< 2048 + 512), so the predicate trips.
 	srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 2048}})
-	srv.memHeadroom = func() uint64 { return 2000 }
+	srv.memHeadroom = func() (uint64, bool) { v := uint64(2000); return v, v > 0 }
 
 	_, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__pressure01"})
 	if status.Code(err) != codes.ResourceExhausted {
@@ -87,7 +91,7 @@ func TestPrimeAdmitsWithHeadroom(t *testing.T) {
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
 	seedBase(srv, "echo__pressure02", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 2048}})
-	srv.memHeadroom = func() uint64 { return 8192 } // 8192 >= 2048 + 512
+	srv.memHeadroom = func() (uint64, bool) { v := uint64(8192); return v, v > 0 } // 8192 >= 2048 + 512
 
 	if _, err := client.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: "echo__pressure02"}); err != nil {
 		t.Fatalf("Prime with ample headroom: %v", err)
@@ -151,8 +155,8 @@ func TestStartServingRejectsUnderTapPressure(t *testing.T) {
 // the tap allocation.
 func TestStartServingRejectsUnderMemPressure(t *testing.T) {
 	s, fsn, fsd := newServingTestServer(t)
-	fsn.availableTaps = 1024                     // taps plentiful
-	s.memHeadroom = func() uint64 { return 600 } // 600 < 512(need) + 512(floor)
+	fsn.availableTaps = 1024                                                    // taps plentiful
+	s.memHeadroom = func() (uint64, bool) { v := uint64(600); return v, v > 0 } // 600 < 512(need) + 512(floor)
 
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
@@ -181,7 +185,7 @@ func TestStartServingRejectsUnderMemPressure(t *testing.T) {
 func TestUnderPressureFloorFallback(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
 	srv.cfg.MemRejectFloorMib = 0 // unset: falls back to minSlotWorkloadMib
-	srv.memHeadroom = func() uint64 { return minSlotWorkloadMib - 1 }
+	srv.memHeadroom = func() (uint64, bool) { v := uint64(minSlotWorkloadMib - 1); return v, v > 0 }
 
 	reason, exhausted := srv.underPressure(0, classMemOnly)
 	if !exhausted || reason != reasonPressureMem {
@@ -195,7 +199,7 @@ func TestUnderPressureFloorFallback(t *testing.T) {
 func TestReservedAdmissionBoundaryAndOverhead(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 400}, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = "reserved"
-	srv.memBudget = func() uint64 { return 1000 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(1000); return v, v > 0 }
 	if got := srv.memExhausted(600); got {
 		t.Fatal("reserved admission rejected the exact claimed+need boundary")
 	}
@@ -215,9 +219,9 @@ func TestReservedAdmissionBoundaryAndOverhead(t *testing.T) {
 func TestObservedAdmissionMatchesExistingPredicate(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 9999}, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = "observed"
-	srv.memBudget = func() uint64 { return 4096 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(4096); return v, v > 0 }
 	for _, headroom := range []uint64{0, 511, 512, 1024} {
-		srv.memHeadroom = func() uint64 { return headroom }
+		srv.memHeadroom = func() (uint64, bool) { v := uint64(headroom); return v, v > 0 }
 		for _, need := range []uint64{0, 512, 1024} {
 			if got, want := srv.memExhausted(need), srv.memPressured(need); got != want {
 				t.Fatalf("observed admission headroom=%d need=%d = %v, want existing %v", headroom, need, got, want)
@@ -230,8 +234,8 @@ func TestObservedModelRefusesOnLowHeadroomEvenWhenBudgetReadsZero(t *testing.T) 
 	_, srv := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
 	// The admission model is unset, so this is the observed model. A zero budget
 	// with positive headroom is the memory.max <= DaemonReserveMib case.
-	srv.memBudget = func() uint64 { return 0 }
-	srv.memHeadroom = func() uint64 { return minSlotWorkloadMib - 1 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
+	srv.memHeadroom = func() (uint64, bool) { v := uint64(minSlotWorkloadMib - 1); return v, v > 0 }
 
 	if got := srv.memExhausted(0); !got {
 		t.Fatal("observed model admitted on low headroom even when budget reads zero")
@@ -240,7 +244,7 @@ func TestObservedModelRefusesOnLowHeadroomEvenWhenBudgetReadsZero(t *testing.T) 
 
 func TestUnknownBudgetAdmitsBothModels(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 2, claimedMib: 9999}, &fakeTransport{}, 8)
-	srv.memBudget = func() uint64 { return 0 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(0); return v, v > 0 }
 	for _, model := range []string{"observed", "reserved"} {
 		srv.cfg.AdmissionModel = model
 		if got := srv.memExhausted(1 << 30); got {
@@ -314,7 +318,7 @@ func TestRelightChargesWorkloadNeed(t *testing.T) {
 			drv := &fakeDriver{}
 			client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
 			srv.registry.sync(tc.registry)
-			srv.memHeadroom = func() uint64 { return tc.headroom }
+			srv.memHeadroom = func() (uint64, bool) { v := uint64(tc.headroom); return v, v > 0 }
 
 			drv.mu.Lock()
 			if drv.sessionBundles == nil {
@@ -474,7 +478,7 @@ func reservedBurstServer(t *testing.T, fit int, needMib, overheadMib uint64, max
 	srv.cfg.VMOverheadMib = int(overheadMib)
 	// Room for exactly fit guests plus their overhead, and less than one more.
 	budget := uint64(fit)*(needMib+overheadMib) + needMib/2
-	srv.memBudget = func() uint64 { return budget }
+	srv.memBudget = func() (uint64, bool) { v := uint64(budget); return v, v > 0 }
 	seedBase(srv, "echo__burst", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: uint32(needMib)}})
 	return client, srv, drv, gate
@@ -582,7 +586,7 @@ func TestPrimeAdmissionReleasesOnBootFailureAndEarlyReturn(t *testing.T) {
 	drv := &fakeDriver{claimMib: need}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = admissionModelReserved
-	srv.memBudget = func() uint64 { return need }
+	srv.memBudget = func() (uint64, bool) { v := uint64(need); return v, v > 0 }
 	seedBase(srv, "echo__release", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: need}})
 	ctx := context.Background()
@@ -628,7 +632,7 @@ func TestObservedModelChargesInflightBoots(t *testing.T) {
 	gate := make(chan struct{})
 	drv := &fakeDriver{claimStarted: make(chan struct{}, 4), blockClaim: gate}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
-	srv.memHeadroom = func() uint64 { return 4085 } // fits one 3072 MiB guest plus the 512 floor
+	srv.memHeadroom = func() (uint64, bool) { v := uint64(4085); return v, v > 0 } // fits one 3072 MiB guest plus the 512 floor
 	seedBase(srv, "echo__observed", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 2, MemMib: 3072}})
 
@@ -954,7 +958,7 @@ func TestBuildBaseHoldsTicketForWholeBuild(t *testing.T) {
 		}
 	}()
 	s.cfg.AdmissionModel = admissionModelReserved
-	s.memBudget = func() uint64 { return 3000 }
+	s.memBudget = func() (uint64, bool) { v := uint64(3000); return v, v > 0 }
 	seedBase(s, "echo__afterbuild", "echo")
 	s.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 1024}})
 
@@ -1014,7 +1018,7 @@ func TestBuildBaseObservedTermCountsBootedBuildGuestOnce(t *testing.T) {
 	defer openReady()
 	var headroom atomic.Uint64
 	headroom.Store(6000) // an idle 8gi brick: memory.max less the daemon's own RSS
-	s.memHeadroom = headroom.Load
+	s.memHeadroom = func() (uint64, bool) { return headroom.Load(), true }
 	seedBase(s, "echo__beside", "echo")
 	s.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 3072}})
 
@@ -1090,7 +1094,7 @@ func TestBuildBaseRefusedUnderMemPressureLeavesNoBuildState(t *testing.T) {
 	gate := make(chan struct{})
 	close(gate)
 	s, _, build, _ := buildAdmissionServer(t, gate)
-	s.memHeadroom = func() uint64 { return 1000 } // < 3072 + 512
+	s.memHeadroom = func() (uint64, bool) { v := uint64(1000); return v, v > 0 } // < 3072 + 512
 
 	_, err := s.BuildBase(context.Background(), buildRequest(3072))
 	if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), string(reasonPressureMem)) {
@@ -1117,7 +1121,7 @@ func TestBuildBaseAlreadyBuiltBypassesAdmission(t *testing.T) {
 	if _, err := s.BuildBase(context.Background(), buildRequest(2048)); err != nil {
 		t.Fatalf("first BuildBase: %v", err)
 	}
-	s.memHeadroom = func() uint64 { return 1 } // known exhausted
+	s.memHeadroom = func() (uint64, bool) { v := uint64(1); return v, v > 0 } // known exhausted
 	resp, err := s.BuildBase(context.Background(), buildRequest(2048))
 	if err != nil || !resp.GetAlreadyBuilt() {
 		t.Fatalf("repeat BuildBase on a full brick = (%+v, %v), want AlreadyBuilt", resp, err)
@@ -1152,7 +1156,7 @@ func TestNodeStatusReportsAdmissionLedger(t *testing.T) {
 
 	srv.cfg.AdmissionModel = admissionModelReserved
 	srv.cfg.VMOverheadMib = 64
-	srv.memBudget = func() uint64 { return 7936 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(7936); return v, v > 0 }
 	srv.admission.inflightMib, srv.admission.inflightVMs = 1024, 1
 	ns, err := client.GetNodeStatus(context.Background(), &nodev1.GetNodeStatusRequest{})
 	if err != nil {
@@ -1213,8 +1217,8 @@ func TestNodeStatusAdmittableMatchesAdmit(t *testing.T) {
 		srv.cfg.AdmissionModel = model
 		srv.cfg.VMOverheadMib = rng.IntN(257)
 		srv.cfg.MemRejectFloorMib = rng.IntN(1025)
-		srv.memBudget = func() uint64 { return budget }
-		srv.memHeadroom = func() uint64 { return headroom }
+		srv.memBudget = func() (uint64, bool) { v := uint64(budget); return v, v > 0 }
+		srv.memHeadroom = func() (uint64, bool) { v := uint64(headroom); return v, v > 0 }
 		drv.mu.Lock()
 		drv.live = rng.IntN(10)
 		drv.claimedMib = rng.Uint64N(20000)
@@ -1258,7 +1262,7 @@ func TestAdmissionRefusalLogRateLimited(t *testing.T) {
 	srv.logger = slog.New(slog.NewJSONHandler(&buf, nil))
 	now := time.Unix(1_700_000_000, 0)
 	srv.admission.now = func() time.Time { return now }
-	srv.memHeadroom = func() uint64 { return 2000 }
+	srv.memHeadroom = func() (uint64, bool) { v := uint64(2000); return v, v > 0 }
 	seedBase(srv, "echo__logs", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 2048}})
 	prime := func() {
@@ -1321,7 +1325,7 @@ func refusalRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 func TestReservedRefusalMessageNamesTheModel(t *testing.T) {
 	_, srv := newTestServer(t, &fakeDriver{live: 1, claimedMib: 400}, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = admissionModelReserved
-	srv.memBudget = func() uint64 { return 1000 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(1000); return v, v > 0 }
 	_, err := srv.admit(context.Background(), "Prime", 601, 601, classMemOnly)
 	if want := "noded: pressure:mem (need 601 MiB, admittable 600 MiB, model reserved)"; status.Convert(err).Message() != want {
 		t.Fatalf("reserved refusal = %q, want %q", status.Convert(err).Message(), want)
@@ -1407,7 +1411,7 @@ func TestRelightNeedFallsBackToBundleRecordedMemMib(t *testing.T) {
 	drv := &fakeDriver{}
 	client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
 	srv.cfg.AdmissionModel = admissionModelReserved
-	srv.memBudget = func() uint64 { return 2000 }
+	srv.memBudget = func() (uint64, bool) { v := uint64(2000); return v, v > 0 }
 	drv.mu.Lock()
 	drv.sessionBundles = map[string]string{"big-ref": "state"}
 	drv.mu.Unlock()
@@ -1488,7 +1492,7 @@ func TestTapAndGroupRelightChargeTheLargerOfDeclaredAndBundle(t *testing.T) {
 	res := &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}
 	reserve := func(s *Server) {
 		s.cfg.AdmissionModel = admissionModelReserved
-		s.memBudget = func() uint64 { return 2000 }
+		s.memBudget = func() (uint64, bool) { v := uint64(2000); return v, v > 0 }
 	}
 	assertBundleRefusal := func(t *testing.T, s *Server, err error) {
 		t.Helper()
@@ -1586,7 +1590,7 @@ func TestPrimeRejectsWhenCgroupExhausted(t *testing.T) {
 	exhaustedCgroup(t)
 	drv := &fakeDriver{}
 	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
-	srv.memHeadroom = newBudget(0).MemHeadroomMib
+	srv.memHeadroom = newBudget(0).memHeadroomReading
 	seedBase(srv, "echo__exhausted", "echo")
 	srv.registry.sync([]workloadEntry{{Workload: "echo", VCPUs: 1, MemMib: 3072}})
 
@@ -1605,7 +1609,7 @@ func TestPrimeRejectsWhenCgroupExhausted(t *testing.T) {
 func TestActivatorServingWakeRejectsWhenCgroupExhausted(t *testing.T) {
 	exhaustedCgroup(t)
 	s, fsn, fsd := newServingTestServer(t)
-	s.memHeadroom = newBudget(0).MemHeadroomMib
+	s.memHeadroom = newBudget(0).memHeadroomReading
 	_, err := s.startServing(context.Background(), &nodev1.StartServingRequest{
 		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
 		Source:    &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
@@ -1617,5 +1621,354 @@ func TestActivatorServingWakeRejectsWhenCgroupExhausted(t *testing.T) {
 	}
 	if fsn.allocs != 0 || fsd.claims != 0 {
 		t.Fatalf("refused wake allocated %d taps and booted %d VMs", fsn.allocs, fsd.claims)
+	}
+}
+
+// Failed teardown of a separate build driver must survive the BuildBase caller's
+// return, including its normal deferred ticket cleanup.
+func TestBuildBaseRetainsUnconfirmedReap(t *testing.T) {
+	for _, internal := range []bool{false, true} {
+		for _, failed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("internal=%v/failed=%v", internal, failed), func(t *testing.T) {
+				gate := make(chan struct{})
+				close(gate)
+				s, _, build, _ := buildAdmissionServer(t, gate)
+				s.cfg.AdmissionModel = admissionModelReserved
+				s.memBudget = func() (uint64, bool) { return 3840, true }
+				s.memHeadroom = func() (uint64, bool) { return 0, false }
+				if failed {
+					build.failRelease = errors.New("reap unconfirmed")
+				}
+				if internal {
+					s.newBuildDriver = func(BuildDriverSpec) BuildDriver { return &internallyReapedBuildDriver{build} }
+				}
+				_, err := s.BuildBase(t.Context(), buildRequest(3072))
+				if internal && err == nil {
+					t.Fatal("expected snapshot resume failure")
+				}
+				l := &s.admission
+				if failed {
+					if l.inflightMib != 3072 || l.buildResidentMib != 3072 || l.inflightVMs != 1 || l.placedMib != 0 || l.placedVMs != 0 {
+						t.Fatalf("unconfirmed reap ledger: %+v", l)
+					}
+				} else if l.inflightMib != 0 || l.buildResidentMib != 0 || l.inflightVMs != 0 {
+					t.Fatalf("confirmed reap ledger: %+v", l)
+				}
+				ticket, err := s.admit(t.Context(), "test", 3072, 0, classMemOnly)
+				if (status.Code(err) == codes.ResourceExhausted) != failed {
+					t.Fatalf("next admission=%v, failed reap=%v", err, failed)
+				}
+				ticket.release()
+				if internal && !failed && build.releases != 1 {
+					t.Fatalf("confirmed internal reap released %d times", build.releases)
+				}
+			})
+		}
+	}
+}
+
+type internallyReapedBuildDriver struct{ *fakeDriver }
+
+func (d *internallyReapedBuildDriver) SnapshotBase(ctx context.Context, h substrate.Handle, _ string) (substrate.SnapshotRef, error) {
+	err := d.fakeDriver.Release(ctx, h)
+	return substrate.SnapshotRef{}, &fakeSnapshotTeardownError{cause: errors.New("resume after base snapshot"), confirmed: err == nil}
+}
+
+func (d *internallyReapedBuildDriver) Release(ctx context.Context, h substrate.Handle) error {
+	if d.LiveCount() == 0 {
+		return errors.New("unknown handle")
+	}
+	return d.fakeDriver.Release(ctx, h)
+}
+
+func TestAdmissionArithmeticSaturatesDebt(t *testing.T) {
+	for _, f := range []admissionFacts{
+		{headroomKnown: true, headroomMib: 4096, inflightMib: math.MaxUint64},
+		{headroomKnown: true, headroomMib: 4096, inflightMib: math.MaxInt64, floorMib: math.MaxUint64},
+		{model: admissionModelReserved, budgetKnown: true, budgetMib: 4096, claimedMib: math.MaxUint64},
+		{model: admissionModelReserved, budgetKnown: true, budgetMib: 4096, overheadMib: math.MaxUint64, live: 2},
+		{model: admissionModelReserved, budgetKnown: true, budgetMib: 4096, live: math.MaxInt, inflightVMs: 1},
+	} {
+		if n, known := f.admittableMib(); !known || n >= 0 || f.memAdmits(0) || f.memAdmits(math.MaxUint64) {
+			t.Fatalf("overflow admits: %+v => %d,%v", f, n, known)
+		}
+	}
+	for _, model := range []string{"observed", admissionModelReserved} {
+		f := admissionFacts{model: model, budgetKnown: true, headroomKnown: true, headroomMib: 8192}
+		if f.memAdmits(0) || f.memAdmits(1) {
+			t.Fatalf("known zero admits in %s", model)
+		}
+	}
+}
+
+func TestAdmissionLedgerOverflowFailsClosed(t *testing.T) {
+	for _, which := range []string{"memory", "placed", "slots", "placed-slots"} {
+		t.Run(which, func(t *testing.T) {
+			_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 0)
+			s.memBudget = func() (uint64, bool) { return 0, false }
+			s.memHeadroom = func() (uint64, bool) { return 0, false }
+			switch which {
+			case "memory":
+				s.admission.inflightMib = math.MaxUint64
+			case "placed":
+				s.admission.placedMib = math.MaxUint64
+			case "slots":
+				s.admission.inflightVMs = math.MaxInt
+			case "placed-slots":
+				s.admission.placedVMs = math.MaxInt
+			}
+			ticket, err := s.admit(t.Context(), "test", 1, 1, classMemOnly)
+			if ticket != nil || status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("overflow admission: %v", err)
+			}
+		})
+	}
+}
+
+type admissionBoundaryLauncher struct{ launch func(fcvmdriver.LaunchSpec) }
+
+func (l admissionBoundaryLauncher) Launch(_ context.Context, spec fcvmdriver.LaunchSpec) (fcvmdriver.Process, error) {
+	l.launch(spec)
+	return nil, errors.New("test launch boundary")
+}
+
+func TestBuildBaseChargesRealDriverDefault(t *testing.T) {
+	for _, configured := range []int{0, 1536} {
+		for _, capacity := range []string{"unknown", "zero", "insufficient", "enough"} {
+			t.Run(fmt.Sprintf("default=%d/%s", configured, capacity), func(t *testing.T) {
+				gate := make(chan struct{})
+				close(gate)
+				s, _, _, _ := buildAdmissionServer(t, gate)
+				s.cfg.AdmissionModel = admissionModelReserved
+				want := configured
+				if want == 0 {
+					want = 1024
+				}
+				launches := 0
+				d := fcvmdriver.New(fcvmdriver.Config{SnapshotRoot: t.TempDir(), MemMib: configured, RootfsPath: "/rootfs", KernelImagePath: "/kernel"}, admissionBoundaryLauncher{func(spec fcvmdriver.LaunchSpec) {
+					launches++
+					if spec.MemMib != want || s.admission.inflightMib != uint64(want) {
+						t.Errorf("launch=%d reservation=%d want=%d", spec.MemMib, s.admission.inflightMib, want)
+					}
+				}}, nil)
+				s.newBuildDriver = func(BuildDriverSpec) BuildDriver { return d }
+				s.memHeadroom = func() (uint64, bool) { return 0, false }
+				s.memBudget = func() (uint64, bool) {
+					switch capacity {
+					case "unknown":
+						return 0, false
+					case "zero":
+						return 0, true
+					case "insufficient":
+						return 512, true
+					default:
+						return 4096, true
+					}
+				}
+				_, err := s.BuildBase(t.Context(), buildRequest(0))
+				if capacity == "unknown" || capacity == "enough" {
+					if launches != 1 || err == nil || !strings.Contains(err.Error(), "test launch boundary") {
+						t.Fatalf("launches=%d err=%v", launches, err)
+					}
+				} else if launches != 0 || status.Code(err) != codes.ResourceExhausted {
+					t.Fatalf("launches=%d err=%v", launches, err)
+				}
+				if s.admission.inflightMib != 0 || s.admission.inflightVMs != 0 {
+					t.Fatal("failed launch leaked ticket")
+				}
+			})
+		}
+	}
+}
+
+type snapshotAdmissionDriver struct{ *fakeDriver }
+
+func (*snapshotAdmissionDriver) SnapshotMemoryMib(string, string, string) uint64 { return 3072 }
+
+type snapshotRequirement struct {
+	t                 *testing.T
+	kind, ref, member string
+}
+
+func (s snapshotRequirement) SnapshotMemoryMib(kind, ref, member string) uint64 {
+	s.t.Helper()
+	if kind != s.kind || ref != s.ref || member != s.member {
+		s.t.Fatalf("snapshot lookup %q/%q/%q, want %q/%q/%q", kind, ref, member, s.kind, s.ref, s.member)
+	}
+	return 3072
+}
+
+type (
+	sizedServingDriver struct {
+		*fakeServingDriver
+		snapshotRequirement
+	}
+	sizedStatefulDriver struct {
+		*fakeStatefulDriver
+		snapshotRequirement
+	}
+	sizedGroupDriver struct {
+		*fakeGroupMemberDriver
+		snapshotRequirement
+	}
+)
+
+func TestRelightClassesChargeDriverSnapshotBeforeRestore(t *testing.T) {
+	for _, kind := range []string{"session", "serving", "stateful", "group"} {
+		t.Run(kind, func(t *testing.T) {
+			var s *Server
+			var restore func() error
+			resources := &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512}
+			switch kind {
+			case "session":
+				drv := &snapshotAdmissionDriver{&fakeDriver{}}
+				_, s = newTestServer(t, drv, &fakeTransport{}, 8)
+				s.sessionDriver = drv
+				s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "old", workload: "echo"})
+				s.registry.sync([]workloadEntry{{Workload: "echo", MemMib: 512}})
+				restore = func() error { _, err := s.Relight(t.Context(), &nodev1.RelightRequest{SnapshotRef: "old"}); return err }
+			case "serving":
+				var d *fakeServingDriver
+				s, _, d = newServingTestServer(t)
+				s.servingDriver = &sizedServingDriver{d, snapshotRequirement{t, kind, "old", ""}}
+				restore = func() error {
+					_, err := s.StartServing(t.Context(), &nodev1.StartServingRequest{Trace: &nodev1.Trace{Workload: "echo"}, Resources: resources, Source: &nodev1.StartServingRequest_Relight{Relight: &nodev1.RelightSource{SnapshotRef: "old"}}})
+					return err
+				}
+			case "stateful":
+				var d *fakeStatefulDriver
+				s, _, d = newStatefulTestServer(t)
+				s.statefulDriver = &sizedStatefulDriver{d, snapshotRequirement{t, kind, "old", ""}}
+				restore = func() error {
+					_, err := s.StartStateful(t.Context(), &nodev1.StartStatefulRequest{Trace: &nodev1.Trace{Workload: "echo"}, Resources: resources, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT, RelightSnapshotRef: "old"})
+					return err
+				}
+			case "group":
+				var d *fakeGroupMemberDriver
+				s, _, d, _ = newGroupMemberTestServer(t)
+				s.groupDriver = &sizedGroupDriver{d, snapshotRequirement{t, kind, "old", "member"}}
+				restore = func() error {
+					_, err := s.StartGroupMember(t.Context(), &nodev1.StartGroupMemberRequest{GroupInstanceId: "grp-A", MemberName: "member", SnapshotRef: "group/old/member", Resources: resources, Mode: nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT})
+					return err
+				}
+			}
+			s.cfg.AdmissionModel = admissionModelReserved
+			s.driver = &fakeDriver{live: 1, claimedMib: 2048}
+			s.memBudget = func() (uint64, bool) { return 3840, true }
+			s.memHeadroom = func() (uint64, bool) { return 8192, true }
+			if err := restore(); status.Code(err) != codes.ResourceExhausted {
+				t.Fatalf("restore escaped snapshot admission: %v", err)
+			}
+			if s.admission.inflightVMs != 0 || s.admission.inflightMib != 0 {
+				t.Fatal("rejected restore left a pending claim")
+			}
+		})
+	}
+}
+
+func TestNodeStatusReportsKnownZeroAdmission(t *testing.T) {
+	for _, model := range []string{"observed", admissionModelReserved} {
+		for _, known := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/known=%v", model, known), func(t *testing.T) {
+				_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+				s.cfg.AdmissionModel = model
+				s.memBudget = func() (uint64, bool) { return 0, known }
+				s.memHeadroom = func() (uint64, bool) { return 0, false }
+				ns := s.nodeStatus()
+				if ns.AdmissionReported != known || (known && ns.MemAdmittableMib >= 0) {
+					t.Fatalf("reported=%v admittable=%d", ns.AdmissionReported, ns.MemAdmittableMib)
+				}
+				ticket, err := s.admit(t.Context(), "test", 0, 0, classMemOnly)
+				if (status.Code(err) == codes.ResourceExhausted) != known {
+					t.Fatalf("admission=%v known=%v", err, known)
+				}
+				ticket.release()
+			})
+		}
+	}
+}
+
+type pendingLaunchError struct{ done <-chan struct{} }
+
+func (e *pendingLaunchError) Error() string                 { return "launch failed with process teardown pending" }
+func (e *pendingLaunchError) TeardownDone() <-chan struct{} { return e.done }
+func (e *pendingLaunchError) FailedLaunchHandle() substrate.Handle {
+	return substrate.Handle{ID: "failed", ThreadID: "failed-thread"}
+}
+
+func TestBuildFailedLaunchRetainsPendingUntilTeardown(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprint(canceled), func(t *testing.T) {
+			done := make(chan struct{})
+			s, _, build, _ := buildAdmissionServer(t, nil)
+			s.cfg.AdmissionModel = admissionModelReserved
+			s.memBudget = func() (uint64, bool) { return 3840, true }
+			s.memHeadroom = func() (uint64, bool) { return 0, false }
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ticket, err := s.admit(ctx, "BuildBase", 3072, 3072, classMemOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			build.failClaim = fmt.Errorf("wrapped: %w", &pendingLaunchError{done: done})
+			if canceled {
+				cancel()
+			}
+			_, err = s.runBuild(ctx, build, ticket, "base", "workload", "/ready", nil)
+			if err == nil {
+				t.Fatal("expected failed claim")
+			}
+			l := s.admissionStatus()
+			if l.inflightMib != 3072 || l.inflightVMs != 1 || l.facts.buildResidentMib != 0 || l.placedMib != 0 || l.placedVMs != 0 {
+				t.Fatalf("pending failure ledger: %+v", l)
+			}
+			if _, _, removed, _ := build.counts(); removed != 0 {
+				t.Fatal("bundle removed before teardown")
+			}
+			if next, err := s.admit(t.Context(), "test", 3072, 0, classMemOnly); err == nil {
+				next.release()
+				t.Fatal("pending failed build admitted another guest")
+			}
+			close(done)
+			deadline := time.Now().Add(time.Second)
+			for {
+				l = s.admissionStatus()
+				if l.inflightVMs == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("ticket never released: %+v", l)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if _, _, removed, _ := build.counts(); removed != 1 {
+				t.Fatalf("removed=%d", removed)
+			}
+			if l.inflightMib != 0 || l.facts.buildResidentMib != 0 {
+				t.Fatalf("leftover ledger: %+v", l)
+			}
+		})
+	}
+}
+
+func TestFailedLaunchVolumeFencesConcurrentFailuresUntilEachCleanup(t *testing.T) {
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 0)
+	first, second := make(chan struct{}), make(chan struct{})
+	cleaned := make(chan struct{}, 2)
+	s.fenceFailedLaunchVolume(&pendingLaunchError{first}, "", "workload", func() { cleaned <- struct{}{} })
+	s.fenceFailedLaunchVolume(&pendingLaunchError{second}, "", "workload", func() { cleaned <- struct{}{} })
+	close(second)
+	<-cleaned
+	if !s.failedLaunchVolumePending("/a/workspace", "workload") {
+		t.Fatal("newer completion cleared older process fence")
+	}
+	close(first)
+	<-cleaned
+	deadline := time.Now().Add(time.Second)
+	for s.failedLaunchVolumePending("/a/workspace", "workload") {
+		if time.Now().After(deadline) {
+			t.Fatal("completed fence retained")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

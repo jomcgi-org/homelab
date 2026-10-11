@@ -55,6 +55,7 @@ type fakeLauncher struct {
 	serialPuts      []map[string]any
 	launchSpecs     []LaunchSpec
 	failDiffCreate  bool
+	failResume      bool
 	failPath        string // if set, return 500 for this API path
 	// serialOutput, when set, is what the fake guest "prints" to its UART: the
 	// PUT /serial handler truncates serial_out_path and writes it there,
@@ -152,6 +153,19 @@ func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, erro
 		// bytes: the file at serial_out_path is truncated then filled.
 		if path, ok := body["serial_out_path"].(string); ok && len(output) > 0 {
 			_ = os.WriteFile(path, output, 0o640)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if l.failResume && body["state"] == "Resumed" {
+			http.Error(w, "resume failed", 500)
+			return
+		}
+		if l.fail(r.URL.Path, w) {
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -3183,5 +3197,387 @@ func TestBootArgsForCarriesSessionHarnessInit(t *testing.T) {
 	args := d.bootArgsFor(coldBootSpec{harnessInit: "/usr/local/bin/ember-runtime-guest-init"})
 	if !strings.Contains(args, "init=/usr/local/bin/ember-runtime-guest-init") {
 		t.Fatalf("boot args = %q, want the harness init", args)
+	}
+}
+
+func TestSnapshotBaseResumeFailureConfirmsInternalReap(t *testing.T) {
+	d := testDriverWithLauncher(t, &fakeLauncher{failResume: true})
+	h, err := d.Claim(t.Context(), substrate.ClaimSpec{ThreadID: "build-resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.SnapshotBase(t.Context(), h, "resume-base")
+	var proof interface{ TeardownConfirmed() bool }
+	if err == nil || !strings.Contains(err.Error(), "resume after base snapshot") || !errors.As(err, &proof) || !proof.TeardownConfirmed() {
+		t.Fatalf("missing internal reap evidence: %v", err)
+	}
+	if d.LiveCount() != 0 {
+		t.Fatal("reaped build still live")
+	}
+	if err := d.Release(t.Context(), h); err == nil {
+		t.Fatal("second release should be unknown")
+	}
+}
+
+func TestSnapshotAdmissionMemoryMatchesRestoreAndRejectsResize(t *testing.T) {
+	for _, kind := range []string{"base", "session", "serving", "stateful", "group"} {
+		for _, metadata := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/metadata=%v", kind, metadata), func(t *testing.T) {
+				d := testDriver(t)
+				paths := map[string]string{"base": d.baseMemfile("old"), "session": d.sessionMemfile("old"), "serving": d.servingMemfile("old"), "stateful": d.statefulMemfile("old"), "group": d.groupMemberMemfile("old", "member")}
+				mem := paths[kind]
+				if err := os.MkdirAll(filepath.Dir(mem), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.Create(mem)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Truncate(3072 * 1024 * 1024); err != nil {
+					t.Fatal(err)
+				}
+				f.Close()
+				if metadata {
+					if err := os.WriteFile(filepath.Join(filepath.Dir(mem), "mem_mib"), []byte("3072"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if got := d.SnapshotMemoryMib(kind, "old", "member"); got != 3072 {
+					t.Fatalf("need=%d", got)
+				}
+				// A stale admission read must also fail before creating a process or bundle.
+				ctx := substrate.WithMemoryReservation(t.Context(), 512)
+				_, err = d.loadInto(ctx, "echo", "no-launch", filepath.Join(filepath.Dir(mem), "snapfile"), mem, "api.sock")
+				if err == nil || !strings.Contains(err.Error(), "exceeds admission") {
+					t.Fatalf("undersized reservation: %v", err)
+				}
+				if len(d.launcher.(*fakeLauncher).specs()) != 0 {
+					t.Fatal("restore launched before admission check")
+				}
+				if _, err := os.Stat(d.threadDir("no-launch")); !os.IsNotExist(err) {
+					t.Fatalf("restore created a bundle: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSnapshotAdmissionMemoryFallbacks(t *testing.T) {
+	for _, kind := range []string{"base", "session", "serving", "stateful", "group"} {
+		for _, tc := range []struct {
+			name, metadata string
+			bytes          int64
+			want           uint64
+		}{
+			{"missing", "", 0, 128},
+			{"rounded file", "", 1048577, 2},
+			{"invalid metadata", "bad", 1048577, 2},
+			{"zero metadata", "0", 1048577, 2},
+			{"metadata authoritative", "3072", 1048577, 3072},
+		} {
+			t.Run(kind+"/"+tc.name, func(t *testing.T) {
+				d := testDriver(t)
+				paths := map[string]string{"base": d.baseMemfile("old"), "session": d.sessionMemfile("old"), "serving": d.servingMemfile("old"), "stateful": d.statefulMemfile("old"), "group": d.groupMemberMemfile("old", "member")}
+				path := paths[kind]
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if tc.bytes > 0 {
+					file, err := os.Create(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := file.Truncate(tc.bytes); err != nil {
+						t.Fatal(err)
+					}
+					if err := file.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.metadata != "" {
+					if err := os.WriteFile(filepath.Join(filepath.Dir(path), "mem_mib"), []byte(tc.metadata), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := tc.want
+				if tc.bytes == 0 {
+					want = uint64(d.cfg.MemMib)
+				}
+				if got := d.SnapshotMemoryMib(kind, "old", "member"); got != want {
+					t.Fatalf("snapshot requirement %d, want %d", got, want)
+				}
+			})
+		}
+	}
+}
+
+type countedExitProcess struct {
+	Process
+	calls  int
+	exited bool
+}
+
+func (p *countedExitProcess) Exited() bool { p.calls++; return p.exited }
+
+func TestLiveMemoryClaimsCoherentAndSaturating(t *testing.T) {
+	d := testDriver(t)
+	maxInt := int(^uint(0) >> 1)
+	live := &countedExitProcess{}
+	dead := &countedExitProcess{exited: true}
+	d.live["live"] = &instance{memMib: maxInt, proc: live}
+	d.live["dead"] = &instance{memMib: maxInt, proc: dead}
+	count, memory := d.LiveMemoryClaims()
+	if count != 1 || memory != uint64(maxInt) || live.calls != 1 || dead.calls != 1 {
+		t.Fatalf("incoherent snapshot count=%d memory=%d exit samples=%d,%d", count, memory, live.calls, dead.calls)
+	}
+	// Three maximum int claims exceed uint64 on the supported amd64 platform.
+	if uint64(maxInt) <= ^uint64(0)/3 {
+		t.Skip("requires 64-bit int")
+	}
+	d.live["second"] = &instance{memMib: maxInt}
+	d.live["third"] = &instance{memMib: maxInt}
+	if count, memory := d.LiveMemoryClaims(); count != 3 || memory != ^uint64(0) {
+		t.Fatalf("overflow snapshot=(%d,%d)", count, memory)
+	}
+}
+
+func TestColdBootAdmissionCeilingMatchesDeclaredOverrideAndDefault(t *testing.T) {
+	for _, requested := range []uint64{0, 3072} {
+		for _, fits := range []bool{false, true} {
+			t.Run(fmt.Sprintf("requested=%d/fits=%t", requested, fits), func(t *testing.T) {
+				d := testDriver(t)
+				need := d.ColdBootMemoryMib(requested)
+				want := requested
+				if want == 0 {
+					want = uint64(d.cfg.MemMib)
+				}
+				if need != want {
+					t.Fatalf("cold requirement=%d want=%d", need, want)
+				}
+				ceiling := need
+				if !fits {
+					ceiling--
+				}
+				ctx := substrate.WithMemoryReservation(t.Context(), ceiling)
+				h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "cold-ceiling", ColdBootMemMib: int(requested)})
+				if fits {
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = d.Release(context.Background(), h) })
+					if got := d.ClaimedMib(); got != need {
+						t.Fatalf("claim=%d want=%d", got, need)
+					}
+				} else {
+					if err == nil || !strings.Contains(err.Error(), "exceeds admission") {
+						t.Fatalf("undersized cold reservation: %v", err)
+					}
+					if len(d.launcher.(*fakeLauncher).specs()) != 0 {
+						t.Fatal("cold boot launched before ceiling check")
+					}
+					if _, err := os.Stat(d.threadDir("cold-ceiling")); !os.IsNotExist(err) {
+						t.Fatalf("cold boot created bundle: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+// launchOwnershipProcess makes teardown failures explicit without reporting exit
+// merely because a signal was attempted. Its state is shared with retry workers.
+type launchOwnershipProcess struct {
+	Process
+	mu               sync.Mutex
+	killErr, waitErr error
+	kills            int
+}
+
+func (p *launchOwnershipProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.kills++
+	if p.killErr != nil {
+		return p.killErr
+	}
+	return p.Process.Kill()
+}
+
+func (p *launchOwnershipProcess) Wait() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.waitErr != nil {
+		return p.waitErr
+	}
+	return p.Process.Wait()
+}
+
+func (p *launchOwnershipProcess) allowCleanup() {
+	p.mu.Lock()
+	p.killErr = nil
+	p.waitErr = nil
+	p.mu.Unlock()
+}
+
+type launchOwnershipLauncher struct {
+	*fakeLauncher
+	proc                                *launchOwnershipProcess
+	partial, missingSerial, waitFailure bool
+	cancel                              context.CancelFunc
+}
+
+func (l *launchOwnershipLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, error) {
+	p, err := l.fakeLauncher.Launch(ctx, spec)
+	if err != nil {
+		return p, err
+	}
+	l.proc = &launchOwnershipProcess{Process: p, killErr: errors.New("injected unproven kill")}
+	if l.waitFailure {
+		l.proc.killErr = nil
+		l.proc.waitErr = errors.New("injected unproven wait")
+	}
+	if l.missingSerial {
+		if err := os.Remove(spec.SerialPath); err != nil {
+			return l.proc, err
+		}
+	}
+	if l.cancel != nil {
+		l.cancel()
+	}
+	if l.partial {
+		return l.proc, errors.New("injected partial launch")
+	}
+	return l.proc, nil
+}
+
+type launchTeardownProof interface {
+	TeardownDone() <-chan struct{}
+	TeardownConfirmed() bool
+	FailedLaunchHandle() substrate.Handle
+}
+
+func requireRetainedLaunch(t *testing.T, d *Driver, l *launchOwnershipLauncher, err error, wantMib uint64) {
+	t.Helper()
+	if l.proc == nil {
+		t.Fatalf("failure preceded process launch: %v", err)
+	}
+	// Also reap the fake on a failed assertion when this test runs against the old
+	// implementation, which has no retry owner.
+	defer func() { l.proc.allowCleanup(); _ = l.proc.Kill() }()
+	if err == nil {
+		t.Fatal("launch unexpectedly succeeded")
+	}
+	if got := d.ClaimedMib(); got != wantMib || d.LiveCount() != 1 {
+		t.Fatalf("unproven launch lost charge: live=%d memory=%d want=%d", d.LiveCount(), got, wantMib)
+	}
+	var proof launchTeardownProof
+	if !errors.As(err, &proof) {
+		t.Fatalf("launch failure has no teardown proof: %v", err)
+	}
+	if proof.TeardownConfirmed() {
+		t.Fatal("failed teardown was confirmed")
+	}
+	h := proof.FailedLaunchHandle()
+	if h.ID == "" || d.get(h.ID) == nil {
+		t.Fatal("failed launch lost retry identity")
+	}
+	select {
+	case <-proof.TeardownDone():
+		t.Fatal("teardown closed before exit proof")
+	default:
+	}
+	l.proc.allowCleanup()
+	// The cancelled-request case must be reaped by the independent retry owner.
+	if l.cancel == nil {
+		if err := d.Release(context.Background(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.proc.mu.Lock()
+	kills := l.proc.kills
+	l.proc.mu.Unlock()
+	select {
+	case <-proof.TeardownDone():
+	case <-time.After(3 * time.Second):
+		t.Fatal("retry owner failed to acknowledge completed release")
+	}
+	l.proc.mu.Lock()
+	after := l.proc.kills
+	l.proc.mu.Unlock()
+	if l.cancel == nil && after != kills {
+		t.Fatalf("retry killed already released process: %d -> %d", kills, after)
+	}
+	if !proof.TeardownConfirmed() || d.LiveCount() != 0 || d.ClaimedMib() != 0 {
+		t.Fatal("proven teardown retained charge")
+	}
+	if err := d.Release(context.Background(), h); err == nil {
+		t.Fatal("second public Release should report unknown handle")
+	}
+}
+
+func TestFailedLaunchRetainsMemoryUntilProvenTeardown(t *testing.T) {
+	for _, kind := range []string{"actions", "partial-launch", "cancelled", "unproven-wait", "serial-follower", "restore"} {
+		t.Run(kind, func(t *testing.T) {
+			l := &launchOwnershipLauncher{fakeLauncher: &fakeLauncher{failPath: "/actions"}}
+			d := testDriverWithLauncher(t, l)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch kind {
+			case "partial-launch":
+				l.partial = true
+			case "cancelled":
+				l.cancel = cancel
+			case "unproven-wait":
+				l.waitFailure = true
+			case "serial-follower":
+				l.missingSerial = true
+			}
+			var err error
+			if kind == "restore" {
+				d.launcher = &fakeLauncher{}
+				h, e := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "retained-restore", ColdBootMemMib: 3072})
+				if e != nil {
+					t.Fatal(e)
+				}
+				ref, e := d.Snapshot(ctx, h)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = d.Release(ctx, h); e != nil {
+					t.Fatal(e)
+				}
+				l.fakeLauncher.failPath = "/snapshot/load"
+				d.launcher = l
+				_, err = d.Restore(ctx, ref)
+			} else {
+				_, err = d.Claim(ctx, substrate.ClaimSpec{ThreadID: "retained-launch", ColdBootMemMib: 3072})
+			}
+			requireRetainedLaunch(t, d, l, err, 3072)
+		})
+	}
+}
+
+type exitedOwnershipProcess struct{ *delayedReleaseProcess }
+
+func (*exitedOwnershipProcess) Exited() bool { return true }
+func TestStopExitedProcessClosesSerialFollower(t *testing.T) {
+	d := testDriver(t)
+	path := filepath.Join(shortTempDir(t), "serial.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := newSerialFollower(path, d.logger, "test", "init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Stop()
+	p := &guestOutputProcess{Process: &exitedOwnershipProcess{&delayedReleaseProcess{killErr: errors.New("already exited")}}, follower: f}
+	if err := stopProcess(p); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.done:
+	default:
+		t.Fatal("exit proof released ownership but leaked serial follower")
 	}
 }

@@ -62,6 +62,10 @@ func cgroupDir() string {
 		return budgetFsRoot
 	}
 	joined := filepath.Join(budgetFsRoot, rel)
+	within, err := filepath.Rel(budgetFsRoot, joined)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return budgetFsRoot
+	}
 	if _, err := os.Stat(filepath.Join(joined, "memory.max")); err != nil {
 		// The self-path does not resolve to a cgroup dir with controller files
 		// under this root; fall back rather than read nothing.
@@ -130,38 +134,69 @@ func newBudget(reserveMib uint64) *budget {
 	return &budget{reserveMib: reserveMib, now: time.Now}
 }
 
-// MemBudgetMib returns memory.max minus the reserve, in MiB. Unlimited or
-// unreadable cgroups report 0 (unknown).
-func (b *budget) MemBudgetMib() uint64 {
-	dir := cgroupDir()
-	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
-	if err != nil {
-		return 0
-	}
-	return parseMemBudgetMib(string(maxRaw), b.reserveMib)
+// memoryReading keeps a finite zero distinct from an unlimited or unreadable
+// cgroup. The wire fields still use zero for unknown; admission must not.
+type memoryReading struct {
+	budgetMib, headroomMib     uint64
+	budgetKnown, headroomKnown bool
 }
 
-// MemHeadroomMib returns free schedulable guest memory in MiB. 0 means unknown
-// (unlimited cgroup, or memory.max or memory.current unreadable), never "full":
-// a cgroup whose numeric limit is exhausted reports at least 1 MiB (see
-// parseMemHeadroomMib), so admission can fail open on unknown and closed on
-// exhausted. An unreadable memory.stat falls back to max minus current, which is
-// conservative because it does not subtract any unverified reclaimable cache.
+// readMemory walks the visible cgroup hierarchy. Each finite ancestor constrains
+// the daemon, even when its own leaf is unlimited after jailer delegation. Read
+// usage at that same ancestor so sibling VMs and other consumers are included.
+func (b *budget) readMemory() memoryReading {
+	var result memoryReading
+	root := filepath.Clean(budgetFsRoot)
+	for dir := cgroupDir(); ; dir = filepath.Dir(dir) {
+		raw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
+		if err == nil {
+			if _, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64); err == nil {
+				capacity := parseMemBudgetMib(string(raw), b.reserveMib)
+				if !result.budgetKnown || capacity < result.budgetMib {
+					result.budgetMib = capacity
+				}
+				result.budgetKnown = true
+				current, readErr := os.ReadFile(filepath.Join(dir, "memory.current"))
+				if readErr == nil {
+					if _, err := strconv.ParseUint(strings.TrimSpace(string(current)), 10, 64); err == nil {
+						stat, _ := os.ReadFile(filepath.Join(dir, "memory.stat"))
+						headroom := parseMemHeadroomMib(string(raw), string(current), string(stat))
+						if !result.headroomKnown || headroom < result.headroomMib {
+							result.headroomMib = headroom
+						}
+						result.headroomKnown = true
+					}
+				}
+			}
+		}
+		if dir == root || filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return result
+}
+
+func (b *budget) memBudgetReading() (uint64, bool) {
+	r := b.readMemory()
+	return r.budgetMib, r.budgetKnown
+}
+
+func (b *budget) memHeadroomReading() (uint64, bool) {
+	r := b.readMemory()
+	return r.headroomMib, r.headroomKnown
+}
+
+// MemBudgetMib reports the tightest visible memory ceiling minus daemon reserve.
+// Zero is retained for unknown capacity in the existing status wire format.
+func (b *budget) MemBudgetMib() uint64 {
+	value, _ := b.memBudgetReading()
+	return value
+}
+
+// MemHeadroomMib reports the least headroom across finite visible ancestors.
 func (b *budget) MemHeadroomMib() uint64 {
-	dir := cgroupDir()
-	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
-	if err != nil {
-		return 0
-	}
-	curRaw, err := os.ReadFile(filepath.Join(dir, "memory.current"))
-	if err != nil {
-		return 0
-	}
-	statRaw, err := os.ReadFile(filepath.Join(dir, "memory.stat"))
-	if err != nil {
-		statRaw = nil
-	}
-	return parseMemHeadroomMib(string(maxRaw), string(curRaw), string(statRaw))
+	value, _ := b.memHeadroomReading()
+	return value
 }
 
 // CpuBudgetMillicores returns the cgroup v2 cpu.max quota/period pair
@@ -268,23 +303,18 @@ func (s *Server) StartBudgetLoop(ctx context.Context) {
 
 // parseMemHeadroomMib computes headroom in MiB from cgroup v2 memory.max,
 // memory.current, and memory.stat contents. "max" (unlimited) or a parse
-// error yields 0, which means UNKNOWN. Once both numbers parse, the reading is
-// known, and a known result is never 0: non-reclaimable memory at or over
-// memory.max, or less than 1 MiB free, reports 1. That keeps a full cgroup from
-// colliding with the unknown sentinel, which admission fails open on; 1 MiB is
-// always below any need plus the reject floor, so it refuses. Folded in from the
-// retired free-function readMemHeadroomMib.
+// error yields 0. Folded in from the retired free-function readMemHeadroomMib.
 func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	maxStr := strings.TrimSpace(maxRaw)
 	if maxStr == "max" || maxStr == "" {
 		return 0
 	}
-	maxB, err := strconv.ParseInt(maxStr, 10, 64)
-	if err != nil || maxB < 0 {
+	maxB, err := strconv.ParseUint(maxStr, 10, 64)
+	if err != nil {
 		return 0
 	}
-	curB, err := strconv.ParseInt(strings.TrimSpace(curRaw), 10, 64)
-	if err != nil || curB < 0 {
+	curB, err := strconv.ParseUint(strings.TrimSpace(curRaw), 10, 64)
+	if err != nil {
 		return 0
 	}
 	var fileB, shmemB uint64
@@ -320,11 +350,10 @@ func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	// because the kernel evicts it long before it OOM-kills. shmem is excluded
 	// because it is not reclaimable without swap.
 	// Subtracting only inactive_file was the incomplete earlier fix for #4058.
-	var freeMib uint64
-	if uint64(maxB) > nonReclaimableB {
-		freeMib = (uint64(maxB) - nonReclaimableB) / (1 << 20)
+	if uint64(maxB) <= nonReclaimableB {
+		return 0
 	}
-	return max(freeMib, 1)
+	return (uint64(maxB) - nonReclaimableB) / (1 << 20)
 }
 
 // parseMemBudgetMib computes (max - reserve) in MiB from cgroup v2
@@ -336,8 +365,8 @@ func parseMemBudgetMib(maxRaw string, reserveMib uint64) uint64 {
 	if maxStr == "max" || maxStr == "" {
 		return 0
 	}
-	maxB, err := strconv.ParseInt(maxStr, 10, 64)
-	if err != nil || maxB < 0 {
+	maxB, err := strconv.ParseUint(maxStr, 10, 64)
+	if err != nil {
 		return 0
 	}
 	maxMib := uint64(maxB) / (1 << 20)

@@ -1126,6 +1126,34 @@ map counts the restored VM at the snapshot's size. A refusal is
 admit for one more VM at that instant, computed by the same function; it is the
 one memory predicate the control plane trusts.
 
+The reader takes the tightest finite limit and observed headroom across visible
+cgroup ancestors, charging each ancestor's own usage so sibling consumers are
+included. Finite zero capacity remains known and refuses admission, including a
+sub-MiB limit or one consumed by the daemon reserve. Unlimited or unreadable
+capacity retains the existing unknown-capacity behavior. Charges saturate on
+arithmetic overflow instead of wrapping into available memory.
+
+**Why.** Admission must reserve the memory the driver will actually launch.
+Snapshot sizing uses the driver's metadata and memory-file fallback, and cold
+builds include the driver's configured default. Each launch checks that its
+resolved memory still fits the admitted ceiling. For a successfully claimed
+build guest, the separate build driver's ticket is released only after teardown
+is confirmed, including teardown performed internally after a snapshot resume
+failure. An unconfirmed reap retains its declared memory and slot but stops
+netting a control-plane placement after the RPC returns. These checks preserve
+the observed/reserved policy distinction and do not activate reserved mode.
+
+Failed launches also retain an owner. A launcher returns a partial process with
+its error unless teardown is proven; the driver charges that process before
+returning the failed boot and retries cleanup independently of request
+cancellation. The admission ticket transfers immediately to the shared driver's
+charge. A separate build driver instead keeps its nonresident ticket until the
+same teardown-completion evidence arrives. Taps and attached volumes remain
+fenced until that evidence permits cleanup and reuse. An arbitrary wait error
+is not proof of exit and cannot release a jail, uid, or memory charge. This
+closes the pre-registration cleanup gap without changing observed admission or
+the lifecycle-registry meaning of `LiveVms`.
+
 The control plane keeps its own in-flight ledger (`Embervm.Scheduler.Inflight`).
 Every new-VM placement claims what the chosen brick will charge (its declared
 memory, plus `vmOverheadMib` under `reserved`) before the boot RPC and releases it

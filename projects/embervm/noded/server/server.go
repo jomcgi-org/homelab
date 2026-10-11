@@ -193,11 +193,11 @@ type Server struct {
 
 	// memHeadroom reads free guest memory in MiB (cgroup v2, best-effort).
 	// Overridable in tests.
-	memHeadroom func() uint64
+	memHeadroom func() (uint64, bool)
 	// memBudget reads the cgroup memory ceiling in MiB (memory.max minus the
-	// daemon RSS reserve). 0 means unknown (unlimited cgroup or read error),
-	// never a guess. Overridable in tests.
-	memBudget func() uint64
+	// daemon RSS reserve). The bool distinguishes finite zero from an unlimited
+	// cgroup or read error. Overridable in tests.
+	memBudget func() (uint64, bool)
 	// cpuBudget reads the cgroup CPU ceiling in millicores from cpu.max. 0
 	// means unknown. Overridable in tests.
 	cpuBudget func() uint64
@@ -340,9 +340,11 @@ type Server struct {
 	// no half-written snapshot survives (meta.json-last already covers the store
 	// side). buildsWG counts the same builds so the drain waits for a clean finish
 	// until the deadline before it cancels.
-	buildsMu     sync.Mutex
-	activeBuilds map[string]context.CancelFunc
-	buildsWG     sync.WaitGroup
+	failedLaunchGroups  sync.Map // unique failedLaunchGroup -> pending cleanup
+	failedLaunchVolumes sync.Map // unique failedLaunchVolume -> pending cleanup
+	buildsMu            sync.Mutex
+	activeBuilds        map[string]context.CancelFunc
+	buildsWG            sync.WaitGroup
 
 	// store is the off-node object-store client the R6 continuity verbs and the
 	// async export queue use. nil disables the store (no endpoint configured):
@@ -534,8 +536,8 @@ func New(opts Options) *Server {
 		s.groupClock = &realGroupClock{}
 	}
 	s.budget = newBudget(uint64(opts.Config.DaemonReserveMib))
-	s.memHeadroom = s.budget.MemHeadroomMib
-	s.memBudget = s.budget.MemBudgetMib
+	s.memHeadroom = s.budget.memHeadroomReading
+	s.memBudget = s.budget.memBudgetReading
 	s.cpuBudget = s.budget.CpuBudgetMillicores
 	s.cpuHeadroom = s.budget.CpuHeadroomMillicores
 	s.slotCeiling = s.budget.SlotCeiling
@@ -919,11 +921,28 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if buildNeedMib == 0 {
 		buildNeedMib = s.primeNeedMib(workload)
 	}
+	harnessInit := img.HarnessInit
+	if harnessInit == "" {
+		harnessInit = s.cfg.HarnessInit
+	}
+	bd := s.newBuildDriver(BuildDriverSpec{
+		RootfsPath:  img.RootfsPath,
+		HarnessInit: harnessInit,
+		VCPUs:       int(res.GetVcpus()),
+		MemMib:      int(res.GetMemMib()),
+	})
+
+	buildNeedMib = max(buildNeedMib, coldBootNeedMib(bd, uint64(res.GetMemMib())))
 	ticket, err := s.admit(ctx, "BuildBase", buildNeedMib, buildNeedMib, classMemOnly)
 	if err != nil {
 		return nil, err
 	}
-	defer ticket.release()
+	ticketOwned := true
+	defer func() {
+		if ticketOwned {
+			ticket.release()
+		}
+	}()
 	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey, existed); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: reclaim stale base staging for %q: %v", baseKey, err)
 	} else if reclaimed {
@@ -946,21 +965,8 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	s.registerBuild(baseKey, cancelBuild)
 	defer s.finishBuild(baseKey)
 
-	harnessInit := img.HarnessInit
-	if harnessInit == "" {
-		harnessInit = s.cfg.HarnessInit
-	}
-	bd := s.newBuildDriver(BuildDriverSpec{
-		RootfsPath:  img.RootfsPath,
-		HarnessInit: harnessInit,
-		VCPUs:       int(res.GetVcpus()),
-		MemMib:      int(res.GetMemMib()),
-	})
-
+	ticketOwned = false // runBuild now owns release, or retains the ticket on an unconfirmed reap.
 	sizeBytes, err := s.runBuild(buildCtx, bd, ticket, baseKey, workload, readyPath, archive)
-	// runBuild has torn the build guest down (its deferred Release) on every
-	// path, so the reservation is no longer backing any memory.
-	ticket.release()
 	if err != nil {
 		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
 		s.signalChange()
@@ -1254,22 +1260,54 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 // -> Hydrate (POST the archive; zip lane only) -> WaitReady (/shim/ready flips 200
 // only after the shim unpacks + imports the handler) -> SnapshotBase.
 //
-// ticket is the build's admission ticket. The caller releases it after runBuild
-// returns; runBuild only marks the guest booted once Claim succeeds, so the
-// observed admission term stops counting it on top of the cgroup headroom.
+// runBuild owns the ticket until teardown is confirmed. A failed reap retains
+// its memory and slot, but no longer offsets a control-plane placement. A booted
+// build remains in the build-resident accounting throughout that fence.
 func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admissionTicket, baseKey, workload, readyPath string, archive []byte) (int64, error) {
+	released := true
+	defer func() {
+		if released {
+			ticket.release()
+		} else if ticket != nil {
+			ticket.rpcEnded()
+		}
+	}()
+	if ticket != nil {
+		ctx = substrate.WithMemoryReservation(ctx, ticket.needMib)
+	}
 	spec := substrate.ClaimSpec{Workload: workload, Arch: s.cfg.Arch, ThreadID: newID("build")}
 	h, err := bd.Claim(ctx, spec)
 	if err != nil {
+		if done := failedLaunchDone(err); done != nil {
+			released = false
+			go func() {
+				<-done
+				var failed interface{ FailedLaunchHandle() substrate.Handle }
+				if errors.As(err, &failed) {
+					if rerr := bd.RemoveBundle(failed.FailedLaunchHandle().ThreadID); rerr != nil {
+						s.logger.Warn("noded: remove failed build bundle", "err", rerr)
+					}
+				}
+				ticket.release()
+			}()
+		}
 		return 0, fmt.Errorf("cold boot: %w", err)
 	}
+	released = false
 	ticket.buildGuestBooted()
 	egressCancel := func() {}
 	defer func() {
 		egressCancel()
 		s.forgetGuestMemory(h)
-		if rerr := bd.Release(context.Background(), h); rerr != nil {
-			s.logger.Warn("noded: release build guest", "base", baseKey, "err", rerr)
+		if !released {
+			if rerr := bd.Release(context.Background(), h); rerr != nil {
+				s.logger.Warn("noded: release build guest; reservation retained", "base", baseKey, "err", rerr)
+			} else {
+				released = true
+			}
+		}
+		if !released {
+			return
 		}
 		if rerr := bd.RemoveBundle(h.ThreadID); rerr != nil {
 			s.logger.Warn("noded: remove build bundle", "base", baseKey, "err", rerr)
@@ -1309,6 +1347,10 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, ticket *admission
 	s.forgetGuestMemory(h)
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
+		var proof interface{ TeardownConfirmed() bool }
+		if errors.As(err, &proof) && proof.TeardownConfirmed() {
+			released = true
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			s.logger.Warn("noded: base snapshot create timed out",
 				"base", baseKey, "concurrent_builds", s.activeBuildCount(), "err", err)
@@ -1468,6 +1510,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	if readyPath == "" {
 		readyPath = defaultReadyPath
 	}
+	var launchErr error
 	volumeDiskPath := req.GetVolumeDiskPath()
 	if req.GetLineageId() != "" {
 		// Guard like every other volume RPC does: a nil manager here would be a
@@ -1477,10 +1520,13 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 			return nil, status.Error(codes.FailedPrecondition, "noded: volume manager not configured; session persistence unavailable on this node")
 		}
 		volumeDiskPath = s.volumes.SessionVolumePath(base.workload, req.GetLineageId())
+		if s.failedLaunchVolumePending(volumeDiskPath, base.workload) {
+			return nil, status.Error(codes.FailedPrecondition, "noded: session volume launch teardown pending")
+		}
 		// The guest can write before AttachLineage runs after boot. Hold the
 		// workspace export fence throughout provisioning and readiness.
 		finishWorkspaceUse := s.beginWorkspaceUse(base.workload, req.GetLineageId())
-		defer finishWorkspaceUse()
+		defer func() { afterFailedLaunch(launchErr, finishWorkspaceUse) }()
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
@@ -1501,6 +1547,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		if err := s.volumes.ClearRetirementIntent(base.workload, req.GetLineageId()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: clear retirement intent: %v", err)
 		}
+	}
+	if volumeDiskPath != "" && s.failedLaunchVolumePending(volumeDiskPath, base.workload) {
+		return nil, status.Error(codes.FailedPrecondition, "noded: session volume launch teardown pending")
 	}
 	readyTimeout := primeReadyTimeout(s.cfg, volumeDiskPath)
 
@@ -1547,7 +1596,11 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		spec.ColdBootVCPUs = int(sizeVCPUs)
 		spec.ColdBootMemMib = int(sizeMemMib)
 	}
-	h, err := s.driver.Claim(ctx, spec)
+	h, err := s.driver.Claim(substrate.WithMemoryReservation(ctx, primeNeed), spec)
+	launchErr = err
+	if volumeDiskPath != "" {
+		s.fenceFailedLaunchVolume(err, volumeDiskPath, base.workload)
+	}
 	ticket.release()
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore snapshot %q: %v", ref, err)
@@ -1744,6 +1797,74 @@ func (s *Server) Destroy(ctx context.Context, req *nodev1.DestroyRequest) (*node
 		return nil, status.Errorf(codes.Internal, "noded: reap vm %q: %v", vmID, err)
 	}
 	return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
+}
+
+// failedLaunchDone is evidence of a process that cannot yet relinquish its
+// resources. A nil channel or unmarked error carries no such ownership.
+func failedLaunchDone(err error) <-chan struct{} {
+	var proof interface{ TeardownDone() <-chan struct{} }
+	if errors.As(err, &proof) {
+		return proof.TeardownDone()
+	}
+	return nil
+}
+
+// afterFailedLaunch detaches cleanup from a canceled RPC, but never from the
+// driver's proof of teardown. Already-complete and prelaunch errors clean inline.
+func afterFailedLaunch(err error, cleanup func()) {
+	if done := failedLaunchDone(err); done != nil {
+		select {
+		case <-done:
+		default:
+			go func() { <-done; cleanup() }()
+			return
+		}
+	}
+	cleanup()
+}
+
+type failedLaunchVolume struct{ path, workload string }
+
+func (s *Server) fenceFailedLaunchVolume(err error, path, workload string, cleanup ...func()) {
+	finish := func() {
+		for _, f := range cleanup {
+			f()
+		}
+	}
+	done := failedLaunchDone(err)
+	if done == nil {
+		finish()
+		return
+	}
+	if path == "" && len(cleanup) == 0 {
+		var volumes interface{ FailedLaunchVolumePaths() []string }
+		if errors.As(err, &volumes) {
+			paths := volumes.FailedLaunchVolumePaths()
+			if len(paths) > 0 {
+				for _, p := range paths {
+					if p != "" {
+						s.fenceFailedLaunchVolume(err, p, workload)
+					}
+				}
+				return
+			}
+		}
+	}
+	// Older drivers may not expose embedded session workspace paths. Keep a
+	// conservative workload fence in that case until teardown completes.
+	token := &failedLaunchVolume{path: path, workload: workload}
+	s.failedLaunchVolumes.Store(token, struct{}{})
+	afterFailedLaunch(err, func() { finish(); s.failedLaunchVolumes.Delete(token) })
+}
+
+func (s *Server) failedLaunchVolumePending(path, workload string) bool {
+	pending := false
+	s.failedLaunchVolumes.Range(func(key, _ any) bool {
+		entry := key.(*failedLaunchVolume)
+		pending = entry.path != "" && entry.path == path || (entry.path == "" || path == "") && entry.workload == workload
+		return !pending
+	})
+	return pending
 }
 
 func snapshotTeardownConfirmed(err error) bool {
@@ -2199,8 +2320,12 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		return nil, err
 	}
 	defer ticket.release()
+	if s.failedLaunchVolumePending("", workload) {
+		return nil, status.Error(codes.FailedPrecondition, "noded: session launch teardown pending")
+	}
 	trackDirtyPages := s.cfg.DiffBanking && diffBankingWorkload(s.cfg.DiffBankingWorkloads, workload)
-	h, err := s.sessionDriver.RestoreSession(ctx, workload, ref, trackDirtyPages)
+	h, err := s.sessionDriver.RestoreSession(substrate.WithMemoryReservation(ctx, relightNeed), workload, ref, trackDirtyPages)
+	s.fenceFailedLaunchVolume(err, "", workload)
 	ticket.release()
 	if err != nil {
 		// The snapshot is left on disk (never deleted on a failed restore).
@@ -2556,7 +2681,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		SizeClass:              s.cfg.SizeClass,
 		CpuVendor:              s.cfg.CpuVendor,
 		Workloads:              caps,
-		MemHeadroomMib:         s.memHeadroom(),
+		MemHeadroomMib:         admission.facts.headroomMib,
 		MemRejectFloorMib:      s.memRejectFloorMib(),
 		CpuHeadroomMillicores:  uint32(s.cpuHeadroom()),
 		LiveVms:                uint32(live),
@@ -2580,8 +2705,8 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		GroupMemberVms:         groupMemberVMs,
 		GroupBundleSets:        s.groupBundleSetsStatus(),
 		StoreReachable:         s.storeReachableNow(),
-		MemBudgetMib:           s.memBudget(),
-		MemReservedMib:         s.claimedMib(),
+		MemBudgetMib:           admission.facts.budgetMib,
+		MemReservedMib:         admission.facts.claimedMib,
 		AdmitsOnReservation:    s.cfg.AdmissionModel == admissionModelReserved,
 		VmOverheadMib:          s.vmOverheadMib(),
 		CpuBudgetMillicores:    s.cpuBudget(),
@@ -3086,6 +3211,10 @@ func (s *Server) sessionVolumesStatus() ([]*nodev1.SessionVolume, bool) {
 }
 
 func (s *Server) lineageAttached(workload, lineageID string) bool {
+	if s.volumes != nil && s.failedLaunchVolumePending(s.volumes.SessionVolumePath(workload, lineageID), workload) {
+		return true
+	}
+
 	s.vmLifecycleMu.Lock()
 	defer s.vmLifecycleMu.Unlock()
 	key := artifactPrefix(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}, s.cfg.CpuVendor)
@@ -4154,6 +4283,9 @@ func (s *Server) invalidateScratchInventories() {
 	s.groupBundles.reset()
 	if s.groupNet != nil {
 		for _, network := range s.groupNet.List() {
+			if s.failedLaunchGroupPending(network.GroupInstanceID, "") {
+				continue
+			}
 			if err := s.groupNet.DeleteGroupNetwork(context.Background(), network.GroupInstanceID); err != nil {
 				s.logger.Warn("noded: invalidate group network after scratch generation change",
 					"group", network.GroupInstanceID, "err", err)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // jailingLauncher wraps fakeLauncher so each process carries a real prepared
@@ -207,4 +208,112 @@ func TestJailPreflightProbeMirrorsFreshRootfsMode(t *testing.T) {
 	if info.Mode().Perm() != 0o600 || info.Size() != jailPreflightProbeBytes {
 		t.Fatalf("probe mode=%o size=%d, want 0600 and %d", info.Mode().Perm(), info.Size(), jailPreflightProbeBytes)
 	}
+}
+
+func TestJailPreflightPartialLaunchPreservesProbeUntilTeardown(t *testing.T) {
+	l := &launchOwnershipLauncher{fakeLauncher: &fakeLauncher{}, partial: true}
+	d, root := preflightDriver(t, l)
+	err := d.JailPreflight(context.Background(), nil)
+	specs := l.launchSpecs
+	if len(specs) != 1 {
+		t.Fatalf("launches=%d", len(specs))
+	}
+	dir := filepath.Dir(specs[0].SocketPath)
+	if _, statErr := os.Stat(filepath.Join(dir, "probe.img")); statErr != nil {
+		t.Fatalf("live preflight lost backing probe: %v", statErr)
+	}
+	if e := d.JailPreflight(context.Background(), nil); e == nil || !strings.Contains(e.Error(), "still owns") {
+		t.Fatalf("second preflight bypassed retained owner: %v", e)
+	}
+	requireRetainedLaunch(t, d, l, err, jailPreflightMemMib)
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, e := os.Stat(filepath.Join(root, jailPreflightDirName))
+		if os.IsNotExist(e) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("proven preflight teardown kept scratch: %v", e)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+type blockedPreflightLauncher struct {
+	*launchOwnershipLauncher
+	started chan LaunchSpec
+	unblock chan struct{}
+}
+
+func (l *blockedPreflightLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, error) {
+	l.started <- spec
+	<-l.unblock
+	return l.launchOwnershipLauncher.Launch(ctx, spec)
+}
+
+func TestJailPreflightConcurrentRunPreservesActiveScratch(t *testing.T) {
+	l := &blockedPreflightLauncher{launchOwnershipLauncher: &launchOwnershipLauncher{fakeLauncher: &fakeLauncher{}, partial: true}, started: make(chan LaunchSpec, 2), unblock: make(chan struct{})}
+	d, _ := preflightDriver(t, l)
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(l.unblock) }) }
+	defer unblock()
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+	go func() { first <- d.JailPreflight(context.Background(), nil) }()
+	spec := <-l.started
+	go func() { second <- d.JailPreflight(context.Background(), nil) }()
+	select {
+	case <-l.started:
+		t.Fatal("concurrent preflight started before prior run surrendered scratch")
+	case err := <-second:
+		t.Fatalf("concurrent preflight unexpectedly finished early: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(spec.SocketPath), "probe.img")); err != nil {
+		t.Fatalf("second preflight removed active probe: %v", err)
+	}
+	unblock()
+	var firstErr error
+	select {
+	case firstErr = <-first:
+	case <-time.After(time.Second):
+		t.Fatal("first preflight blocked")
+	}
+	select {
+	case err := <-second:
+		if err == nil || !strings.Contains(err.Error(), "still owns") {
+			t.Fatalf("second preflight ignored retained owner: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second preflight blocked")
+	}
+	requireRetainedLaunch(t, d, l.launchOwnershipLauncher, firstErr, jailPreflightMemMib)
+}
+
+func TestJailPreflightCancellationWhileWaitingForActiveRun(t *testing.T) {
+	l := &blockedPreflightLauncher{launchOwnershipLauncher: &launchOwnershipLauncher{fakeLauncher: &fakeLauncher{}, partial: true}, started: make(chan LaunchSpec, 2), unblock: make(chan struct{})}
+	d, _ := preflightDriver(t, l)
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(l.unblock) }) }
+	defer unblock()
+	first := make(chan error, 1)
+	go func() { first <- d.JailPreflight(context.Background(), nil) }()
+	spec := <-l.started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := make(chan error, 1)
+	go func() { second <- d.JailPreflight(ctx, nil) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting preflight=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled preflight waited for active run")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(spec.SocketPath), "probe.img")); err != nil {
+		t.Fatal(err)
+	}
+	unblock()
+	requireRetainedLaunch(t, d, l.launchOwnershipLauncher, <-first, jailPreflightMemMib)
 }
