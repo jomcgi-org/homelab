@@ -124,24 +124,16 @@ defmodule Embervm.MultiBrickSchedulingSimTest do
   end
 
   describe "double counting under prompt reports" do
-    # noded signals a NodeStatus within milliseconds of every admission, and that
-    # report's mem_admittable_mib already subtracts the boot's in-flight ticket.
-    # Embervm.Scheduler.place/1 then subtracts the same boot again as the
-    # create's Inflight claim, until it lands and its settle hold lapses. On the
-    # incident fleet the 8gi brick takes one claude-runtime guest instead of two:
-    # three of the four creates noded would admit are placed, and the other seven
-    # are spurious :no_capacity denials, each recorded as autoscaler demand. Safe
-    # (noded stays the authority), and the specs README lists it under
-    # "Conservative double counts"; closing it changes what the Inflight debit
-    # means, so it is left for a design decision.
-    @tag :known_defect
-    @tag skip: "known defect: the CP debits an in-flight boot twice (its Inflight claim and noded's reported ticket)"
+    # A brick that reports its ledger already subtracts its own in-flight
+    # tickets from mem_admittable_mib, so the control plane must not charge its
+    # claim for the same boot again (Inflight.debit_mib/3). Before that fix only
+    # 3 of these 10 creates placed, and 7 were spurious :no_capacity denials
+    # that also reached the autoscaler as false demand.
     test "a burst with a report after every admission fills each brick to what noded admits" do
       Sim.with_sim([seed: 20_261_012, bricks: @incident_bricks, class_max: @incident_classes], fn sim ->
         sim =
           Enum.reduce(1..10, sim, fn _, s -> s |> Sim.step({:create, "claude-runtime"}) |> Sim.step(:report_all) end)
 
-        # Today: 3 tickets, 7 :no_capacity, all 7 spurious by noded's predicate.
         assert map_size(Fleet.snapshot(sim.fleet).tickets) == 4, Sim.summary(sim)
         assert sim.stats.spurious_no_capacity == 0, Sim.summary(sim)
         sim

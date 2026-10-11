@@ -2095,7 +2095,7 @@ defmodule Embervm.BaseBuilder do
   # The scheduler's own predicate (a free slot and admission memory), on the
   # instance's normalized brick net of what other placers have claimed on it.
   defp admits_build?(state, instance, need_mib) do
-    pending = Inflight.pending_mib(instance.instance_id, table: state.inflight_table)
+    pending = Inflight.debit_mib(instance.instance_id, instance.brick, table: state.inflight_table)
     Embervm.Scheduler.eligible?(Map.put(instance.brick, :pending_mib, pending), need_mib)
   end
 
