@@ -461,7 +461,9 @@ describe("session read-aloud controls and voice composer", () => {
     vi.useFakeTimers();
     const synth = speechDevice();
     const otherSessionId = "22222222-2222-4222-8222-222222222222";
-    const sessionTwo = pageData("dm", [event("s2-backlog", 1, "Session two story")]);
+    const sessionTwo = pageData("dm", [
+      event("s2-backlog", 1, "Session two story"),
+    ]);
     const sessionOne = {
       ...pageData("dm", [event("s1-backlog", 1, "SESSION_ONE_CANARY")]),
       session: { id: otherSessionId, status: "active" },

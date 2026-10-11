@@ -272,9 +272,7 @@ def _resolve_knowledge_hits(
                 # and journal projections, so a raw speaker UUID never reaches
                 # a preview.
                 body = event.body
-                if viewer != "dm" and body and isinstance(
-                    body.get("speaker_key"), str
-                ):
+                if viewer != "dm" and body and isinstance(body.get("speaker_key"), str):
                     body = {
                         **body,
                         "speaker_key": speaker_ref(
