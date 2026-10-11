@@ -3795,6 +3795,70 @@ defmodule Embervm.BaseBuilderTest do
     assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
   end
 
+  test "a spec edit that outgrows a queued workload's brick re-places it and drops the stale queue entry" do
+    # The 8gi brick is packed (500 - 512 admits nothing) and the 4gi sibling has
+    # room, so both 1024 MiB builds place there: "other" runs and "w" queues.
+    table = busy_and_free_bricks(500, 3_800)
+    agent = start_recorder()
+    test_pid = self()
+
+    builder =
+      two_brick_builder(table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, req ->
+          send(test_pid, {:building, req.trace.workload, req.resources.mem_mib, self()})
+
+          receive do
+            :finish -> {:ok, resp("snap-" <> req.trace.workload)}
+          end
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "other", mem_mib: 1_024}))
+    assert_receive {:building, "other", 1_024, other_worker}, 1_000
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 1_024}))
+    status = BaseBuilder.status(builder)
+    assert status.workloads["w"].node_id == "node-4/mid"
+    assert status.nodes["node-4/mid"].building == "other"
+    assert status.nodes["node-4/mid"].queued == ["w"]
+
+    # The 8gi brick frees up. A resync of the unchanged desc keeps the queued
+    # pin, since the 4gi brick can still build it.
+    put_brick(table, "node-4", "big",
+      size_class: "8gi",
+      mem_budget: 7_936,
+      mem_headroom: 7_900,
+      mem_reject_floor: 512
+    )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 1_024}))
+    status = BaseBuilder.status(builder)
+    assert status.workloads["w"].node_id == "node-4/mid"
+    assert status.nodes["node-4/mid"].queued == ["w"]
+    refute_receive {:building, "w", _, _}, 100
+
+    # A spec edit raises the guest above the 4gi brick's 3840 MiB budget, so
+    # only the 8gi brick can build it now.
+    :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, mem_mib: 6_144}))
+    status = BaseBuilder.status(builder)
+    assert status.workloads["w"].node_id == "node-4/big"
+    refute "w" in status.nodes["node-4/mid"].queued
+    assert_receive {:building, "w", 6_144, w_worker}, 1_000
+    assert BaseBuilder.status(builder).nodes["node-4/big"].building == "w"
+
+    # The build already running on the 4gi brick is left alone, and when it
+    # lands that brick pops nothing for "w".
+    assert BaseBuilder.status(builder).nodes["node-4/mid"].building == "other"
+    send(other_worker, :finish)
+    assert_eventually(fn -> BaseBuilder.status(builder).nodes["node-4/mid"].building == nil end)
+    refute_receive {:building, "w", _, _}, 200
+
+    send(w_worker, :finish)
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-w"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+  end
+
   test "a built workload's pin does not chase transient headroom" do
     table = busy_and_free_bricks(7_900, 3_800)
     agent = start_recorder()

@@ -960,10 +960,16 @@ defmodule Embervm.BaseBuilder do
   # configured yet means we cannot build: record the intent and report it.
   defp reconcile_desc(state, %{name: name} = desc) do
     prev = Map.get(state.workloads, name)
+    need_mib = Map.get(desc, :mem_mib) || 0
 
     node_id =
-      building_pin(state, prev, desc) ||
-        placement(state, prev, Map.get(desc, :mem_mib) || 0, builds?(prev, desc))
+      building_pin(state, prev, desc, need_mib) ||
+        placement(state, prev, need_mib, builds?(prev, desc))
+
+    # A pin that moves leaves no queued entry behind on the old brick: it would
+    # pop later and send the current desc to a brick that was passed over.
+    state =
+      if prev && prev.node_id != node_id, do: dequeue(state, prev.node_id, name), else: state
 
     w = merge_desc(prev, desc, node_id)
     state = put_in(state.workloads[name], w)
@@ -2095,18 +2101,47 @@ defmodule Embervm.BaseBuilder do
     not (w.built_signature == signature(w) and w.snapshot_ref != nil)
   end
 
-  # The current pin, when a build of the reconciled signature is already queued
-  # or running there; nil otherwise. A reconcile (WorkloadWatcher re-casts every
-  # Workload each minute) then keeps the pin instead of re-placing: mid-build the
-  # pinned brick carries its own build's claim and the daemon's build ticket, so
-  # it no longer admits the build and placement would move the pin and start a
-  # second BuildBase of the same base. A spec edit changes the signature, so it
-  # still re-places. The same guard retry_workload/2 applies.
-  defp building_pin(_state, nil, _desc), do: nil
+  # The current pin, when it already carries this workload's build; nil otherwise,
+  # so placement decides. A reconcile (WorkloadWatcher re-casts every Workload each
+  # minute) then keeps the pin instead of re-placing:
+  #
+  #   * RUNNING: the pinned brick is building this workload at the reconciled
+  #     signature. Mid-build it carries its own build's claim and the daemon's
+  #     build ticket, so it no longer admits the build, and placement would move
+  #     the pin and start a second BuildBase of the same base. A spec edit
+  #     changes the signature, so a running build no longer holds the pin.
+  #   * QUEUED: the workload waits in the pinned brick's queue. The queued entry
+  #     builds whatever desc is current when it pops, so it keeps the pin only
+  #     while that brick can still build `need_mib` (the same capability check
+  #     placement starts from). An edit that outgrows the brick re-places, and
+  #     reconcile_desc/2 drops the stale queue entry.
+  defp building_pin(_state, nil, _desc, _need_mib), do: nil
 
-  defp building_pin(state, prev, desc) do
-    sig = signature(merge_desc(prev, desc, prev.node_id))
-    if already_targeting?(state, prev.node_id, prev.name, sig), do: prev.node_id
+  defp building_pin(state, prev, desc, need_mib) do
+    case state.nodes[prev.node_id] do
+      nil ->
+        nil
+
+      n ->
+        sig = signature(merge_desc(prev, desc, prev.node_id))
+
+        cond do
+          n.building == prev.name and worker_signature(state, prev.node_id) == sig ->
+            prev.node_id
+
+          prev.name in n.queue and can_build_on?(state, prev.node_id, need_mib) ->
+            prev.node_id
+
+          true ->
+            nil
+        end
+    end
+  end
+
+  defp can_build_on?(state, instance_id, need_mib) do
+    state
+    |> capable_build_instances(need_mib)
+    |> Enum.any?(&(&1.instance_id == instance_id))
   end
 
   # The scheduler's own predicate (a free slot and admission memory), on the
@@ -2607,6 +2642,15 @@ defmodule Embervm.BaseBuilder do
 
   defp enqueue(state, node_id, name) do
     update_in(state.nodes[node_id].queue, fn q -> if name in q, do: q, else: q ++ [name] end)
+  end
+
+  # Drop `name` from one instance's queue. Only the queue changes: a build of
+  # `name` already running there keeps its worker and finishes normally.
+  defp dequeue(state, node_id, name) do
+    case state.nodes[node_id] do
+      nil -> state
+      _n -> update_in(state.nodes[node_id].queue, &List.delete(&1, name))
+    end
   end
 
   # -- forget ------------------------------------------------------------------
