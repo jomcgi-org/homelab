@@ -181,7 +181,7 @@ defmodule Embervm.Brick do
       mem_reserved_mib: num(facts, :mem_reserved_mib),
       admits_on_reservation: Map.get(facts, :admits_on_reservation) == true,
       vm_overhead_mib: num(facts, :vm_overhead_mib),
-      # Admission ledger (NodeStatus 43-47). A daemon that predates them reports
+      # Admission ledger (NodeStatus 44-48). A daemon that predates them reports
       # admission_reported false, and admittable_mib/1 falls back to the
       # per-model predicate on the facts above.
       admission_reported: Map.get(facts, :admission_reported) == true,
@@ -189,7 +189,7 @@ defmodule Embervm.Brick do
       mem_inflight_mib: num(facts, :mem_inflight_mib),
       inflight_vms: num(facts, :inflight_vms),
       admission_refusals: Map.get(facts, :admission_refusals) || %{},
-      # Jailer facts (NodeStatus 48-49), diagnostic: placement does not read them.
+      # Jailer facts (NodeStatus 49-50), diagnostic: placement does not read them.
       jailer_armed: Map.get(facts, :jailer_armed) == true,
       launch_modes: Map.get(facts, :launch_modes) || %{},
       configured_id: Map.get(facts, :configured_id) || "",

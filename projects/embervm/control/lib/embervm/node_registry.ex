@@ -92,7 +92,7 @@ defmodule Embervm.NodeRegistry do
 
   @vmm_exit_reasons ~w(host_requested host_cgroup_oom guest_kernel_panic unclassified)
   @guest_memory_states ~w(pending ok stale unsupported error)
-  # NodeStatus.admission_refusals (47) and launch_modes (49) keys. Closed sets,
+  # NodeStatus.admission_refusals (48) and launch_modes (50) keys. Closed sets,
   # like the exit reasons above: a key outside them never becomes a label.
   @admission_refusal_reasons ~w(pressure:mem pressure:taps slots)
   @launch_modes ~w(jailed direct_exec refused)
@@ -1039,19 +1039,19 @@ defmodule Embervm.NodeRegistry do
       # The per-VM overhead (field 37) the reserved predicate charges every live
       # VM plus the new one, and that an in-flight claim adds to the guest's need.
       vm_overhead_mib: Map.get(s, :vm_overhead_mib, 0),
-      # Admission ledger (fields 43-46): the daemon's own verdict for ONE more VM,
+      # Admission ledger (fields 44-47): the daemon's own verdict for ONE more VM,
       # evaluated by the function its boot verbs call, and the boots it has
       # admitted that have not joined its live map yet. admission_reported false
       # (a daemon that predates them) makes Embervm.Brick.admittable_mib/1 fall
       # back to the per-model predicate on the facts above. The refusal counts
-      # (47) ride diagnostic_facts/1 below.
+      # (48) ride diagnostic_facts/1 below.
       admission_reported: Map.get(s, :admission_reported, false) == true,
       mem_admittable_mib: Map.get(s, :mem_admittable_mib, 0),
       mem_inflight_mib: Map.get(s, :mem_inflight_mib, 0),
       inflight_vms: Map.get(s, :inflight_vms, 0),
-      # Jailer fact (48): the daemon's jailer is armed AND its startup preflight
+      # Jailer fact (49): the daemon's jailer is armed AND its startup preflight
       # passed (a brick whose preflight fails never registers). The per-mode
-      # launch counts (49) ride diagnostic_facts/1. Diagnostic only: placement
+      # launch counts (50) ride diagnostic_facts/1. Diagnostic only: placement
       # does not read either.
       jailer_armed: Map.get(s, :jailer_armed, false) == true,
       cpu_headroom_millicores: s.cpu_headroom_millicores,
