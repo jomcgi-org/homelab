@@ -15,13 +15,23 @@ defmodule Embervm.SessionManager do
        the per-workload live+disk count (banked and parked both hold a resource,
        a workspace volume, not a VM) against `session.maxSessions`, the live
        count (VM holders only) against `concurrency.cap`, and the principal's
-       daily quota;
-    2. place the session on an ordered, memory-eligible brick;
+       daily quota. An admitted create whose worker is still claiming or priming
+       has no row yet but becomes a live VM, so it counts as live against both
+       caps from admission;
+    2. place the session on the ordered, memory-eligible bricks and CLAIM the
+       head's memory in the in-flight ledger (`Embervm.Scheduler.Inflight`) in
+       the same synchronous step, so the next create this process places sees
+       it;
     3. CLAIM a primed pristine VM from the dispatcher's inventory for the workload
        (principal-bound at claim, the task-class assignment moment), or `Prime` one
-       on a pool miss;
-    4. append `session_created` (write-through, mints the id + token) and start the
-       session process under the DynamicSupervisor.
+       on a pool miss. A brick that refuses the Prime under node pressure
+       (RESOURCE_EXHAUSTED) hands the create to the next candidate through
+       `Embervm.Scheduler.Retry` (one attempt while `EMBERVM_PLACEMENT_RETRY` is
+       off); a create every candidate refused is a retryable `:no_capacity` that
+       records autoscaler demand once;
+    4. append `session_created` (write-through, mints the id + token) on the brick
+       that actually admitted the VM, and start the session process under the
+       DynamicSupervisor.
 
   A create denial is a structured 429/403 with a distinguishable reason and an
   audited op append (D12.2 cadence), returned to the router to shape the response.
@@ -69,7 +79,7 @@ defmodule Embervm.SessionManager do
     WakeInstance,
     WorkloadCatalog
   }
-  alias Embervm.Scheduler.Request
+  alias Embervm.Scheduler.{Inflight, Request}
   alias Embervm.Scheduler
   alias Embervm.PrimedOp
   alias Embervm.OpLog.Op
@@ -530,6 +540,13 @@ defmodule Embervm.SessionManager do
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_channel_fun: Keyword.get(opts, :invalidate_channel_fun, &Embervm.NodeChannel.invalidate/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
+      # The autoscaler demand signal for a create every candidate brick refused
+      # under node pressure. Injected for tests, which cannot observe a cast to
+      # the application's BrickController.
+      note_denial_fun: Keyword.get(opts, :note_denial_fun, &Embervm.BrickController.note_denial/2),
+      # The in-flight placement ledger every new-VM boot (create, rejoin,
+      # relight) claims before its RPC. Tests pass a private table.
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
       # Daemon session verb seams (Bank/Relight/EvictSnapshot). Injected for tests;
       # production dials the real NodeService stub over the shared NodeChannel.
       bank_fun: Keyword.get(opts, :bank_fun, &default_bank/2),
@@ -580,10 +597,13 @@ defmodule Embervm.SessionManager do
       # session_id -> %{node_id: n} for banks currently running async, so a mid-bank
       # invoke can park (relighting ledger) and be relit once the bank completes.
       banking: %{},
-      # create_ref -> {from, lineage_id, workload, principal, entry, node_id,
-      # snapshot_ref, dial_id, restore_lineage, idempotency_key}; claim/prime runs
-      # outside this process. restore_lineage is nil for a normal create (#4306
-      # slice 3); idempotency_key is nil for an unkeyed create (#4919).
+      # create_ref -> %{from, lineage_id, workload, principal, entry, node_id,
+      # snapshot_ref, dial_id, restore_lineage, idempotency_key, claim_ref,
+      # candidates, need_mib}; claim/prime runs outside this process. node_id,
+      # dial_id and snapshot_ref are the placed head; the worker reports the brick
+      # that actually admitted the VM. restore_lineage is nil for a normal create
+      # (#4306 slice 3); idempotency_key is nil for an unkeyed create (#4919).
+      # claim_ref keys the create's in-flight memory claims.
       create_inflight: %{},
       create_next_ref: 0,
       create_concurrency: create_concurrency,
@@ -691,6 +711,10 @@ defmodule Embervm.SessionManager do
       orphan_grace_ms: Keyword.get(opts, :orphan_grace_ms, 60_000),
       fleet_freshness_window_ms: Keyword.get(opts, :fleet_freshness_window_ms, @fleet_freshness_window_ms),
       orphan_volume_first_seen: %{},
+      # {dial_id, vm_id} -> monotonic first-seen of a persistence session
+      # workload's primed VM that no live row references (see
+      # destroy_unowned_primed_vms/3).
+      unowned_primed_first_seen: %{},
       # Ids already alarmed for being stuck in destroying, so the error logs once
       # per stuck id rather than every reconcile tick (pruned as ids terminalize).
       destroying_alarmed: MapSet.new(),
@@ -844,24 +868,24 @@ defmodule Embervm.SessionManager do
 
       true ->
         case do_create_inline(state, workload, principal, restore_lineage) do
-          {:ok,
-           %{
-             entry: entry,
-             node_id: node_id,
-             dial_id: dial_id,
-             retirement_dial_id: retirement_dial_id,
-             snapshot_ref: snapshot_ref,
-             lineage_id: lineage_id,
-             traceparent: traceparent
-           }} ->
+          {:ok, %{retirement_dial_id: retirement_dial_id, traceparent: traceparent} = placed} ->
             ref = state.create_next_ref
 
-            state =
-              put_in(
-                state.create_inflight[ref],
-                {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage,
-                 idempotency_key}
-              )
+            create =
+              placed
+              |> Map.take([:entry, :node_id, :dial_id, :snapshot_ref, :lineage_id, :claim_ref, :candidates, :need_mib])
+              |> Map.merge(%{
+                from: from,
+                workload: workload,
+                principal: principal,
+                restore_lineage: restore_lineage,
+                idempotency_key: idempotency_key
+              })
+
+            # The placement claim and this entry land in the SAME synchronous
+            # update, so the next {:create,...} sees both the claimed memory and
+            # the in-flight cap slot.
+            state = put_in(state.create_inflight[ref], create)
 
             # #4306/#4313 review fix 2: mark the lineage in flight in the SAME
             # state update, synchronously, before this handle_call returns (so
@@ -889,21 +913,7 @@ defmodule Embervm.SessionManager do
 
             state = %{state | create_next_ref: ref + 1}
 
-            {state, worker} =
-              spawn_create_worker(
-                state,
-                ref,
-                node_id,
-                dial_id,
-                workload,
-                snapshot_ref,
-                entry,
-                lineage_id,
-                restore_lineage,
-                retirement_dial_id,
-                principal,
-                traceparent
-              )
+            {state, worker} = spawn_create_worker(state, ref, create, retirement_dial_id, traceparent)
 
             {:noreply, put_in(state.create_workers[ref], worker)}
 
@@ -1383,9 +1393,14 @@ defmodule Embervm.SessionManager do
                          "ember.workload" => workload,
                          "ember.principal" => principal,
                          "ember.create.inflight" => map_size(state.create_workers),
+                         "ember.create.workload_inflight" => inflight_creates(state, workload),
                          "ember.create.concurrency" => state.create_concurrency
                        }
                      } do
+      # Unique per create, so a claim a crashed predecessor left in the ledger
+      # can never be confused with this one's.
+      claim_ref = {:session_create, make_ref()}
+
       with {:ok, entry} <- fetch_session_workload(state, workload),
            :ok <- check_session_cap(state, workload, entry),
            :ok <- check_workload_cap(state, workload, entry),
@@ -1403,15 +1418,18 @@ defmodule Embervm.SessionManager do
              ),
            pin_node_id =
              restore_lineage_volume_node(state, restore_holder, restore_lineage, workload),
-           {:ok, node_id, dial_id, snapshot_ref} <-
-             place_create_fenced(state, workload, entry, pin_node_id, restore_lineage) do
+           {:ok, [head | _] = candidates} <-
+             place_create_fenced(state, workload, entry, pin_node_id, restore_lineage, claim_ref) do
         {:ok,
          %{
            entry: entry,
-           node_id: node_id,
-           dial_id: dial_id,
+           node_id: head.configured_id,
+           dial_id: head.instance_id,
            retirement_dial_id: retirement_dial_id,
-           snapshot_ref: snapshot_ref,
+           snapshot_ref: head.snapshot_ref,
+           claim_ref: claim_ref,
+           candidates: candidates,
+           need_mib: create_need_mib(entry),
            # #4306 slice 3: a restoring create's lineage_id is the INHERITED
            # restore_lineage, not a freshly minted one (this is the divergence
            # point where session_id and lineage_id first differ; see
@@ -1447,11 +1465,11 @@ defmodule Embervm.SessionManager do
   # the create with the same retryable reason a racing restore does; the sweep
   # releases within one prefix delete. A non-restoring create (nil lineage) is
   # unaffected, and an absent fence table fails open for this warmth path.
-  defp place_create_fenced(state, workload, entry, pin_node_id, restore_lineage) do
+  defp place_create_fenced(state, workload, entry, pin_node_id, restore_lineage, claim_ref) do
     case Embervm.LineageFence.claim_restore(restore_lineage) do
       :ok ->
-        case place_create(state, workload, entry, pin_node_id) do
-          {:ok, _node_id, _dial_id, _snapshot_ref} = ok ->
+        case place_create(state, workload, entry, pin_node_id, restore_lineage, claim_ref) do
+          {:ok, _candidates} = ok ->
             ok
 
           {:error, _reason} = err ->
@@ -1669,20 +1687,11 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp spawn_create_worker(
-         state,
-         ref,
-         node_id,
-         dial_id,
-         workload,
-         snapshot_ref,
-         entry,
-         lineage_id,
-         restore_lineage,
-         retirement_dial_id,
-         principal,
-         traceparent
-       ) do
+  # The worker reports `{:ok, vm_id, restored, node_id, dial_id}` naming the
+  # brick that ADMITTED the VM, which a cross-brick retry can move off the placed
+  # head, or `{:error, reason}`. Its in-flight claims are settled or released per
+  # hop here; finish_create releases whatever a killed or crashed worker left.
+  defp spawn_create_worker(state, ref, create, retirement_dial_id, traceparent) do
     owner = self()
     timeout_ref = Process.send_after(owner, {:create_timeout, ref}, @create_worker_timeout_ms)
 
@@ -1691,25 +1700,9 @@ defmodule Embervm.SessionManager do
 
       result =
         try do
-          case restore_lineage do
-            nil ->
-              case claim_or_prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
-                {:ok, vm_id} -> {:ok, vm_id, false}
-                {:error, reason} -> {:error, reason}
-              end
-
-            _ ->
-              restore_then_prime(
-                state,
-                node_id,
-                workload,
-                snapshot_ref,
-                entry,
-                restore_lineage,
-                dial_id,
-                retirement_dial_id,
-                principal
-              )
+          case create.restore_lineage do
+            nil -> prime_on_candidates(state, create)
+            _ -> restore_then_prime(state, create, retirement_dial_id)
           end
         rescue
           exception -> {:error, {:create_worker_crashed, exception}}
@@ -1721,6 +1714,52 @@ defmodule Embervm.SessionManager do
     end)
 
     {state, {pid, monitor_ref, timeout_ref}}
+  end
+
+  # Claim or Prime across the create's ordered candidates through the shared
+  # reject/retry policy (ADR embervm/014 decision 3). Each hop claims its brick
+  # in the in-flight ledger before the RPC (the head re-claims the claim
+  # placement made, refreshing only its expiry), settles it when a Prime boots a
+  # new VM there, and releases it on a pool hit (no new VM), a refusal or a
+  # failure. Only a node-pressure refusal (RESOURCE_EXHAUSTED) advances to the
+  # next brick: noded refuses before it provisions anything, so the one lineage
+  # id this create minted is safe to reuse. Any other failure stays terminal,
+  # because an uncertain Prime must not be retried elsewhere (prime/6 already
+  # dropped a dead transport). With EMBERVM_PLACEMENT_RETRY off this is exactly
+  # one attempt, and its refusal is still a capacity outcome, not a 500.
+  defp prime_on_candidates(state, create) do
+    attempt_fun = fn %{instance_id: dial_id} = candidate ->
+      claim_create_hop(state, create, candidate)
+
+      case claim_or_prime(state, dial_id, create.workload, candidate.snapshot_ref, create.entry, create.lineage_id) do
+        {:ok, vm_id, :primed} ->
+          Inflight.settle(dial_id, create.claim_ref, table: state.inflight_table)
+          {:ok, {vm_id, candidate.configured_id, dial_id}}
+
+        {:ok, vm_id, :claimed} ->
+          Inflight.release(dial_id, create.claim_ref, table: state.inflight_table)
+          {:ok, {vm_id, candidate.configured_id, dial_id}}
+
+        {:error, reason} ->
+          Inflight.release(dial_id, create.claim_ref, table: state.inflight_table)
+          if prime_refused?(reason), do: {:reject, reason}, else: {:error, reason}
+      end
+    end
+
+    case Embervm.Scheduler.Retry.run(create.candidates, attempt_fun, return_rejects: true) do
+      {:ok, {vm_id, node_id, dial_id}} -> {:ok, vm_id, false, node_id, dial_id}
+      {:error, {:no_capacity, rejects}} -> {:error, {:node_pressure, rejects}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Exactly a node-pressure Prime refusal. Not pressure_denied?/1, whose tuple
+  # recursion would also match placement-shaped reasons.
+  defp prime_refused?({:prime_failed, {:error, %GRPC.RPCError{status: 8}}}), do: true
+  defp prime_refused?(_reason), do: false
+
+  defp claim_create_hop(state, create, %{instance_id: dial_id, charge_mib: charge_mib}) do
+    Inflight.claim(dial_id, create.claim_ref, charge_mib, table: state.inflight_table)
   end
 
   # Restore-then-prime for a restoring create (#4306 slice 3): the create-path
@@ -1753,22 +1792,24 @@ defmodule Embervm.SessionManager do
   # and falls back to placed_dial_id (always a real, dialable instance)
   # whenever dial_for_session_volume did not actually find an owning
   # instance.
-  defp restore_then_prime(
-         state,
-         node_id,
-         workload,
-         snapshot_ref,
-         entry,
-         restore_lineage,
-         placed_dial_id,
-         retirement_dial_id,
-         principal
-       ) do
+  #
+  # A restoring create is pinned to its volume, so it stays single-attempt: a
+  # pressure refusal is a capacity outcome, never a walk to another brick. The
+  # placement claim moves with the dial when the volume owner is a different
+  # co-located instance than the placed head.
+  defp restore_then_prime(state, create, retirement_dial_id) do
+    %{node_id: node_id, dial_id: placed_dial_id, workload: workload, restore_lineage: restore_lineage} = create
+
     dial_id =
       case Embervm.WakeInstance.dial_for_session_volume(state.capacity_table, node_id, restore_lineage) do
         ^node_id -> placed_dial_id
         resolved -> resolved
       end
+
+    if dial_id != placed_dial_id do
+      claim_create_hop(state, create, %{hd(create.candidates) | instance_id: dial_id})
+      Inflight.release(placed_dial_id, create.claim_ref, table: state.inflight_table)
+    end
 
     with :ok <-
            confirm_restore_relinquishment(
@@ -1778,19 +1819,38 @@ defmodule Embervm.SessionManager do
              restore_lineage
            ),
          {:ok, restored} <-
-           restore_session_workspace(state, dial_id, workload, restore_lineage, principal, 0),
-         {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, restore_lineage) do
-      {:ok, vm_id, restored}
+           restore_session_workspace(state, dial_id, workload, restore_lineage, create.principal, 0),
+         {:ok, vm_id} <- prime(state, dial_id, workload, create.snapshot_ref, create.entry, restore_lineage) do
+      Inflight.settle(dial_id, create.claim_ref, table: state.inflight_table)
+      {:ok, vm_id, restored, node_id, dial_id}
+    else
+      {:error, reason} ->
+        Inflight.release(dial_id, create.claim_ref, table: state.inflight_table)
+        if prime_refused?(reason), do: {:error, {:node_pressure, [{dial_id, reason}]}}, else: {:error, reason}
     end
   end
 
   defp finish_create(state, ref, outcome) do
     case Map.pop(state.create_inflight, ref) do
       {nil, _} ->
+        # A result that lost the race to its own timeout: the caller was already
+        # told the create failed, so a VM it primed has no owner and never will.
+        case outcome do
+          {:ok, vm_id, _restored, node_id, dial_id} -> destroy_unowned_vm_async(state, node_id, dial_id, vm_id)
+          _ -> :ok
+        end
+
         state
 
-      {{from, lineage_id, workload, principal, entry, node_id, _snapshot_ref, dial_id, restore_lineage,
-        idempotency_key}, inflight} ->
+      {%{
+         from: from,
+         lineage_id: lineage_id,
+         workload: workload,
+         principal: principal,
+         entry: entry,
+         restore_lineage: restore_lineage,
+         idempotency_key: idempotency_key
+       } = create, inflight} ->
         cleanup_create_worker(Map.get(state.create_workers, ref))
 
         state = %{state | create_inflight: inflight, create_workers: Map.delete(state.create_workers, ref)}
@@ -1808,10 +1868,19 @@ defmodule Embervm.SessionManager do
 
         {result, state} =
           case outcome do
-            {:ok, vm_id, restored} ->
+            # node_id and dial_id are the brick that ADMITTED the VM, which a
+            # refusal on the placed head moves down the candidate list: the row,
+            # the remembered dial and the session process all follow it.
+            {:ok, vm_id, restored, node_id, dial_id} ->
+              settle_create_claim(state, create, dial_id)
+
               register_and_start(state, workload, principal, entry, node_id, vm_id, dial_id, lineage_id, restore_lineage, restored, idempotency_key)
 
             {:error, reason} ->
+              # Every hop the worker reached released its own claim; a killed or
+              # crashed worker (timeout, DOWN) may not have, so drop them all.
+              Inflight.release_ref(create.claim_ref, table: state.inflight_table)
+              reason = create_failure_reason(state, create, reason)
               audit_denial(state, principal, workload, reason)
 
               # #4306/#4313: noded clears the lineage's retirement intent early
@@ -1820,10 +1889,10 @@ defmodule Embervm.SessionManager do
               # ran, i.e. validate_restore_lineage already passed) can leave
               # the volume on disk with no retirement intent and no live VM.
               # Re-drive reclamation so noded's sweep exports then deletes it
-              # instead of orphaning. node_id here is wherever the worker
-              # actually ran, pinned or not, so it is always the right target.
+              # instead of orphaning. A restoring create is single-attempt on
+              # its pinned node, so the placed node is where the worker ran.
               if restore_lineage do
-                _ = retire_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: restore_lineage})
+                _ = retire_session_volume(state, %{volume_node_id: create.node_id, workload: workload, lineage_id: restore_lineage})
               end
 
               {{:error, {:denied, reason}}, state}
@@ -1874,6 +1943,34 @@ defmodule Embervm.SessionManager do
   end
 
   defp cleanup_create_worker(_), do: :ok
+
+  # Keep the admitting brick's debit for its settle hold, so the daemon's next
+  # report counts the VM before the debit drops; drop any other brick this ref
+  # still holds (the worker releases each hop it leaves, so this is a backstop).
+  # A pool hit already released its claim and the settle is then a no-op.
+  defp settle_create_claim(state, create, dial_id) do
+    opts = [table: state.inflight_table]
+    Inflight.settle(dial_id, create.claim_ref, opts)
+
+    for dial <- Enum.uniq([create.dial_id | Enum.map(create.candidates, & &1.instance_id)]), dial != dial_id do
+      Inflight.release(dial, create.claim_ref, opts)
+    end
+
+    :ok
+  end
+
+  # Every candidate the worker tried refused the Prime under node pressure (with
+  # EMBERVM_PLACEMENT_RETRY off that is the one placed head). The fleet the
+  # control plane could see had room on paper and none in fact: record autoscaler
+  # demand once for this create, keep the cause in the placement-miss log, and
+  # deny with the retryable capacity reason the router already maps to 429.
+  defp create_failure_reason(state, create, {:node_pressure, rejects}) do
+    _ = safe(fn -> state.note_denial_fun.(create.workload, create.need_mib) end)
+    note_placement_miss(create.workload, {:node_pressure, rejects})
+    :no_capacity
+  end
+
+  defp create_failure_reason(_state, _create, reason), do: reason
 
   # Structured create log (Task 9): success at info, denial at warn, both keyed
   # with session_id (when minted)/workload/principal for consistent lifecycle logs.
@@ -1936,26 +2033,39 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # live + disk-held (banked or parked) < session.maxSessions (both hold a
-  # resource: a VM or disk).
+  # live + disk-held (banked or parked) + in-flight creates < session.maxSessions
+  # (each holds a resource: a VM or disk, or is about to).
   defp check_session_cap(state, workload, %{session: session}) do
     counts = SessionStore.counts(state.session_store, workload)
 
-    if counts.live + counts.banked < session.max_sessions do
+    if counts.live + counts.banked + inflight_creates(state, workload) < session.max_sessions do
       :ok
     else
       {:error, :session_cap}
     end
   end
 
-  # live session VMs < concurrency.cap (banked and parked sessions hold disk,
-  # not a VM). Wake asymmetry: rejoin and relight admit on placement memory
-  # headroom, not on cap, so cap is a create-time governor only.
+  # live session VMs + in-flight creates < concurrency.cap (banked and parked
+  # sessions hold disk, not a VM). Wake asymmetry: rejoin and relight admit on
+  # placement memory headroom, not on cap, so cap is a create-time governor only.
   defp check_workload_cap(state, workload, %{cap: cap}) do
     counts = SessionStore.counts(state.session_store, workload)
 
-    if counts.live < cap, do: :ok, else: {:error, :workload_cap}
+    if counts.live + inflight_creates(state, workload) < cap, do: :ok, else: {:error, :workload_cap}
   end
+
+  # Admitted creates whose worker is still claiming or priming hold no
+  # SessionStore row yet but become live VMs, so they occupy cap slots from
+  # admission; without this a burst inside one Prime overshoots both caps.
+  # Derived from create_inflight (at most create_concurrency entries), which
+  # finish_create pops in the same update that writes the row or the denial, so
+  # there is no second counter to drift and no double count at the handoff.
+  # Same-key idempotency waiters never enter create_inflight, so they never count.
+  defp inflight_creates(state, workload) do
+    Enum.count(state.create_inflight, fn {_ref, %{workload: wl}} -> wl == workload end)
+  end
+
+  defp create_need_mib(entry), do: Map.get(entry, :mem_mib) || 512
 
   defp check_quota(state, principal) do
     if Embervm.Metering.within_quota?(principal, state.clock.(), state.quota_config, state.quota_table) do
@@ -1969,23 +2079,45 @@ defmodule Embervm.SessionManager do
   # placement to a specific node, the same way perform_rejoin_prime pins
   # volume_node_id for a rejoin: a restoring create whose fleet facts locate
   # restore_lineage's volume must land where the volume already is.
-  defp place_create(state, workload, entry, pin_node_id) do
-    case Scheduler.place_with_demand(%Request{
-           table: state.capacity_table,
-           workload: workload,
-           key: workload,
-           node_id: pin_node_id,
-           need_mib: Map.get(entry, :mem_mib) || 512,
-           base: {:ready, :snapshot_ref}
-         }) do
-      {:ok, [brick | _]} ->
-        workload_entry = Map.get(brick.workloads, workload, %{})
-        {:ok, brick.configured_id, Brick.dial_id(brick), Map.get(workload_entry, :snapshot_ref)}
+  #
+  # Placement CLAIMS the head brick's memory under claim_ref before it returns,
+  # net of every claim still in flight, so a burst of creates scored on one stale
+  # NodeStatus spreads across bricks instead of herding onto the same head. The
+  # result is the ordered candidate list the worker walks, head first; a
+  # restoring create keeps only its head (it is pinned to its volume).
+  defp place_create(state, workload, entry, pin_node_id, restore_lineage, claim_ref) do
+    need_mib = create_need_mib(entry)
+
+    req = %Request{
+      table: state.capacity_table,
+      workload: workload,
+      key: workload,
+      node_id: pin_node_id,
+      need_mib: need_mib,
+      base: {:ready, :snapshot_ref},
+      inflight: state.inflight_table
+    }
+
+    case Scheduler.place_and_claim(req, claim_ref) do
+      {:ok, bricks} ->
+        candidates = Enum.map(bricks, &create_candidate(&1, workload, need_mib))
+        {:ok, if(restore_lineage, do: Enum.take(candidates, 1), else: candidates)}
 
       {:error, reason} ->
         note_placement_miss(workload, reason)
         {:error, :no_capacity}
     end
+  end
+
+  # One hop of a create's walk: the dial, the node row the session records, the
+  # brick's own base ref, and what the hop's in-flight claim debits there.
+  defp create_candidate(brick, workload, need_mib) do
+    %{
+      instance_id: Brick.dial_id(brick),
+      configured_id: brick.configured_id,
+      snapshot_ref: get_in(brick, [:workloads, workload, :snapshot_ref]),
+      charge_mib: Brick.charge_mib(brick, need_mib)
+    }
   end
 
   # All three scheduler misses stay `:no_capacity` on the wire: each is retryable
@@ -1999,33 +2131,45 @@ defmodule Embervm.SessionManager do
   # BrickController that never scaled up, but no capacity demand ever reached it.
   # The span attribute and log line keep the outcome, so a sustained run shows
   # which of the three owners should have acted.
+  #
+  # A fourth outcome, `node_pressure`, comes after placement: every brick the
+  # create tried refused its Prime (RESOURCE_EXHAUSTED), so the control plane's
+  # view had room the daemons did not. It records autoscaler demand like
+  # `capacity`, and the log carries each refusal so the stale view is visible.
   defp note_placement_miss(workload, reason) do
-    {outcome, node_id} =
+    {outcome, node_id, detail} =
       case reason do
-        :capacity -> {"capacity", nil}
-        :no_bricks -> {"no_bricks", nil}
-        {:base_missing, id} -> {"base_missing", id}
-        other -> {inspect(other), nil}
+        :capacity -> {"capacity", nil, nil}
+        :no_bricks -> {"no_bricks", nil, nil}
+        {:base_missing, id} -> {"base_missing", id, nil}
+        {:node_pressure, rejects} -> {"node_pressure", nil, refusal_detail(rejects)}
+        other -> {inspect(other), nil, nil}
       end
 
     attrs = %{"ember.placement.outcome" => outcome}
     attrs = if is_binary(node_id), do: Map.put(attrs, "ember.placement.base_missing_node", node_id), else: attrs
     Tracer.set_attributes(attrs)
 
-    Logger.info("embervm session placement miss",
-      workload: workload,
-      reason: outcome,
-      node_id: node_id
-    )
+    meta = [workload: workload, reason: outcome, node_id: node_id]
+    Logger.info("embervm session placement miss", if(detail, do: [{:error, detail} | meta], else: meta))
+  end
+
+  defp refusal_detail(rejects) do
+    Enum.map_join(rejects, "; ", fn
+      {dial, {:prime_failed, {:error, %GRPC.RPCError{message: message}}}} -> "#{dial}: #{message}"
+      {dial, other} -> "#{dial}: #{inspect(other, limit: 10, printable_limit: 200)}"
+    end)
   end
 
   # Claim a primed VM from the dispatcher's inventory, or Prime one on a miss (the
   # dispatcher's own miss path, run inline here since create latency is not the
-  # per-invoke hot path). A Prime failure is a create denial, not a crash.
+  # per-invoke hot path). A Prime failure is a create denial, not a crash. The
+  # third element says whether the VM is new on the brick (`:primed`, the
+  # placement claim settles) or was already there (`:claimed`, it releases).
   defp claim_or_prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
     if persistence_enabled_workload?(entry) do
       Tracer.set_attributes(%{"ember.pool_hit" => false})
-      prime(state, node_id, workload, snapshot_ref, entry, lineage_id)
+      prime_new(state, node_id, workload, snapshot_ref, entry, lineage_id)
     else
       case state.claim_fun.(state.dispatcher, node_id, workload) do
         {:ok, vm_id} ->
@@ -2034,12 +2178,19 @@ defmodule Embervm.SessionManager do
           Tracer.set_attributes(%{"ember.pool_hit" => true})
           :ok = reserve_session_vm(state, vm_id)
           shadow_claim(node_id, vm_id, workload, entry)
-          {:ok, vm_id}
+          {:ok, vm_id, :claimed}
 
         :miss ->
           Tracer.set_attributes(%{"ember.pool_hit" => false})
-          prime(state, node_id, workload, snapshot_ref, entry, lineage_id)
+          prime_new(state, node_id, workload, snapshot_ref, entry, lineage_id)
       end
+    end
+  end
+
+  defp prime_new(state, node_id, workload, snapshot_ref, entry, lineage_id) do
+    case prime(state, node_id, workload, snapshot_ref, entry, lineage_id) do
+      {:ok, vm_id} -> {:ok, vm_id, :primed}
+      {:error, _} = error -> error
     end
   end
 
@@ -2208,13 +2359,45 @@ defmodule Embervm.SessionManager do
       # one op-log). Resolve the holder to exactly what the fast path would have
       # answered: replay the live winner, conflict on a terminal one.
       {:error, {:duplicate_session_idempotency_key, holder}} ->
-        :ok = release_session_vm(state, vm_id)
-        resolve_lost_key_race(state, holder)
+        :ok = discard_create_vm(state, entry, node_id, dial_id, vm_id)
+        {resolve_lost_key_race(state, holder), state}
 
       {:error, reason} ->
-        :ok = release_session_vm(state, vm_id)
+        :ok = discard_create_vm(state, entry, node_id, dial_id, vm_id)
         {{:error, {:denied, {:store, reason}}}, state}
     end
+  end
+
+  # A VM this create claimed or primed that will never get a session row. A
+  # pristine pool VM goes back to the pool. A persistence workload's VM was cold
+  # primed with this create's lineage volume attached, and no create ever claims
+  # one from inventory, so releasing it would only park it there as dead weight
+  # holding a slot, its memory and the volume: destroy it instead. The destroy
+  # RPC runs off this process (a store outage failing many creates must not
+  # serialize 15s RPCs on the manager); an unconfirmed teardown leaves the VM
+  # reserved, never adopted, and destroy_unowned_primed_vms/3 reaps it.
+  defp discard_create_vm(state, entry, node_id, dial_id, vm_id) do
+    if persistence_enabled_workload?(entry) do
+      destroy_unowned_vm_async(state, node_id, dial_id, vm_id)
+    else
+      release_session_vm(state, vm_id)
+    end
+  end
+
+  defp destroy_unowned_vm_async(state, node_id, dial_id, vm_id) do
+    _ =
+      spawn(fn ->
+        confirmed = destroy_vm(state, %{session_id: nil, node_id: node_id, dial_id: dial_id, vm_id: vm_id})
+
+        Logger.warning("embervm unowned session vm destroyed",
+          node_id: node_id,
+          instance_id: dial_id,
+          vm_id: vm_id,
+          reason: if(confirmed, do: "teardown_confirmed", else: "teardown_unconfirmed")
+        )
+      end)
+
+    :ok
   end
 
   defp resolve_lost_key_race(state, holder) do
@@ -3562,6 +3745,7 @@ defmodule Embervm.SessionManager do
             Process.put(:workspace_prime_issued, true)
             prime_fun.(channel, request)
           end}
+          claim_ref = {:session_rejoin, session_id, make_ref()}
           outcome = try do
             Tracer.with_span "embervm.session.rejoin",
                              %{attributes: %{
@@ -3571,7 +3755,7 @@ defmodule Embervm.SessionManager do
                                "ember.volume_node_id" => volume_node_id
                              }} do
               with {:ok, node_id, vm_id, dial_id} <-
-                     perform_rejoin_prime(worker_state, volume_node_id, session) do
+                     perform_rejoin_prime(worker_state, volume_node_id, session, claim_ref) do
                 # noded's auto-destroy timer covers PrimeAssign after delivery starts.
                 # The CP destroys a successfully primed VM when delivery never starts.
                 {:ok, node_id, vm_id, 0, dial_id}
@@ -3586,6 +3770,10 @@ defmodule Embervm.SessionManager do
             kind, reason -> {:error, {:rejoin_raised, {kind, reason}}}
           end
 
+          # Each hop settles or releases its own claim; this drops whatever a
+          # placement miss or a raise left behind. A settled claim stays held.
+          if match?({:error, _}, outcome), do: Inflight.release_ref(claim_ref, table: state.inflight_table)
+
           send(owner, {:rejoin_done, session_id, outcome, Process.get(:workspace_prime_issued, false)})
         end)
 
@@ -3597,36 +3785,74 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp perform_rejoin_prime(state, volume_node_id, session) do
-    workload = session.workload
-    lineage_id = session.lineage_id
+  # The rejoin claims each brick's memory in the in-flight ledger before its
+  # Prime (placement claims the head under claim_ref), settles it on a boot and
+  # releases it on any failure. A rejoin pinned to its volume node is one
+  # attempt: a pressure refusal parks the wake (finish_rejoin), whose retry tick
+  # places again. A cross-node rejoin (the volume node cannot host it) walks its
+  # ordered targets through Embervm.Scheduler.Retry on a pressure refusal, each
+  # hop restoring the exported workspace onto its own target first, so it moves
+  # no faster than the pressure-wait retry would, only without the 5s tick.
+  defp perform_rejoin_prime(state, volume_node_id, session, claim_ref) do
+    with {:ok, entry} <- fetch_session_workload(state, session.workload),
+         {:ok, [head | _] = bricks} <- place_rejoin_brick(state, volume_node_id, session, entry, claim_ref) do
+      need_mib = create_need_mib(entry)
+      candidates = if head.node_id == volume_node_id, do: [head], else: bricks
+      attempt_fun = &rejoin_on_brick(state, volume_node_id, session, entry, &1, claim_ref, need_mib)
 
-    with {:ok, entry} <- fetch_session_workload(state, workload),
-         {:ok, [brick | _]} <- place_rejoin_brick(state, volume_node_id, session, entry),
-         # The scheduler's brick is the only instance guaranteed to fit the VM's
-         # memory. VolumeRoot is node-shared, so any instance can reach it, but
-         # both restore_session_workspace and prime must use the scheduled brick.
-         # Otherwise registration-order dial resolution can select an undersized
-         # brick and fail prime with pressure:mem forever (#4379).
-         dial_id <- Brick.dial_id(brick),
-         expected <- if(brick.node_id != volume_node_id, do: workspace_evidence(state, session).fingerprint, else: ""),
-         {:ok, _restored} <-
-           restore_session_workspace(
-             state,
-             dial_id,
-             workload,
-             lineage_id,
-             session.principal,
-             Map.get(session, :generation, 0) || 0,
-             expected,
-             if(expected != "", do: brick.node_id, else: nil)
-           ),
-         snapshot_ref <- get_in(brick, [:workloads, workload, :snapshot_ref]),
-         {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, lineage_id) do
-      {:ok, brick.node_id, vm_id, dial_id}
+      case Embervm.Scheduler.Retry.run(candidates, attempt_fun, return_rejects: true) do
+        {:ok, {node_id, vm_id, dial_id}} -> {:ok, node_id, vm_id, dial_id}
+        # The last refusal, so finish_rejoin parks the wake on node pressure.
+        {:error, {:no_capacity, rejects}} -> {:error, rejects |> List.last() |> elem(1)}
+        {:error, reason} -> {:error, reason}
+      end
     else
       {:error, reason} -> {:error, reason}
       other -> {:error, other}
+    end
+  end
+
+  # One rejoin hop. The scheduler's brick is the only instance guaranteed to fit
+  # the VM's memory. VolumeRoot is node-shared, so any instance can reach it, but
+  # both restore_session_workspace and prime must use the scheduled brick.
+  # Otherwise registration-order dial resolution can select an undersized brick
+  # and fail prime with pressure:mem forever (#4379).
+  defp rejoin_on_brick(state, volume_node_id, session, entry, brick, claim_ref, need_mib) do
+    workload = session.workload
+    dial_id = Brick.dial_id(brick)
+    opts = [table: state.inflight_table]
+    Inflight.claim(dial_id, claim_ref, Brick.charge_mib(brick, need_mib), opts)
+    expected = if brick.node_id != volume_node_id, do: workspace_evidence(state, session).fingerprint, else: ""
+
+    result =
+      with {:ok, _restored} <-
+             restore_session_workspace(
+               state,
+               dial_id,
+               workload,
+               session.lineage_id,
+               session.principal,
+               Map.get(session, :generation, 0) || 0,
+               expected,
+               if(expected != "", do: brick.node_id, else: nil)
+             ),
+           snapshot_ref = get_in(brick, [:workloads, workload, :snapshot_ref]),
+           {:ok, vm_id} <- prime(state, dial_id, workload, snapshot_ref, entry, session.lineage_id) do
+        {:ok, {brick.node_id, vm_id, dial_id}}
+      end
+
+    case result do
+      {:ok, _} = ok ->
+        Inflight.settle(dial_id, claim_ref, opts)
+        ok
+
+      {:error, reason} ->
+        Inflight.release(dial_id, claim_ref, opts)
+        if prime_refused?(reason), do: {:reject, reason}, else: {:error, reason}
+
+      other ->
+        Inflight.release(dial_id, claim_ref, opts)
+        {:error, other}
     end
   end
 
@@ -3637,18 +3863,19 @@ defmodule Embervm.SessionManager do
   # :capacity with a brick on the volume node is headroom pressure (park), and
   # :capacity with no brick on the volume node means the node vanished, which
   # must fail fast rather than wait out a bound that cannot clear.
-  defp place_rejoin_brick(state, volume_node_id, session, entry) do
+  defp place_rejoin_brick(state, volume_node_id, session, entry, claim_ref) do
     req = %Request{
       table: state.capacity_table,
       node_id: volume_node_id,
       workload: session.workload,
       key: session.workload,
-      need_mib: Map.get(entry, :mem_mib) || 512,
+      need_mib: create_need_mib(entry),
       base: {:ready, :snapshot_ref},
-      record_demand: not Map.has_key?(state.pressure_waits, session.session_id)
+      record_demand: not Map.has_key?(state.pressure_waits, session.session_id),
+      inflight: state.inflight_table
     }
 
-    case Scheduler.place_with_demand(req) do
+    case Scheduler.place_and_claim(req, claim_ref) do
       {:error, :capacity} = error ->
         cond do
           workspace_evidence(state, session) != nil and
@@ -3963,6 +4190,14 @@ defmodule Embervm.SessionManager do
             {:ok, dial_id} ->
               t0 = clock.()
 
+              # The relight boots a new VM from the bundle on this one instance (no
+              # reroute: the bundle lives on its disk), so it claims that brick's
+              # memory before the RPC like any other new-VM boot, settles it on a
+              # live VM and releases it on any failure.
+              claim_ref = {:session_relight, session_id, make_ref()}
+              entry = session_workload_entry(state, session.workload)
+              claim_relight(state, dial_id, claim_ref, entry)
+
               # dial_id is the OWNING instance the relight lands on (instance-key
               # unification PR-B0b); the durable row keeps the NODE name (session.
               # node_id), which adoption/drain read node-scoped. On the single-instance
@@ -3970,13 +4205,19 @@ defmodule Embervm.SessionManager do
               with {:ok, channel} <- safe_channel(channel_fun, dial_id),
                    {:ok, %RelightResponse{vm_id: vm_id}} when is_binary(vm_id) and vm_id != "" <-
                      safe_relight(relight_fun, channel, session) do
+                Inflight.settle(dial_id, claim_ref, table: state.inflight_table)
                 relight_ms = clock.() - t0
                 Tracer.set_attributes(%{"ember.relight_ms" => relight_ms})
-                shadow_claim(dial_id, vm_id, session.workload, session_workload_entry(state, session.workload))
+                shadow_claim(dial_id, vm_id, session.workload, entry)
                 {:ok, session.node_id, vm_id, relight_ms, dial_id}
               else
-                {:error, reason} -> classify_relight_error(reason)
-                other -> classify_relight_error({:relight_failed, other})
+                failure ->
+                  Inflight.release(dial_id, claim_ref, table: state.inflight_table)
+
+                  case failure do
+                    {:error, reason} -> classify_relight_error(reason)
+                    other -> classify_relight_error({:relight_failed, other})
+                  end
               end
 
             # :snapshot_lost fails the session. :no_bricks (#5777, CP blind) and
@@ -3999,6 +4240,21 @@ defmodule Embervm.SessionManager do
   # reflected in the CP's ETS facts. Otherwise the normal placement check.
   defp relight_node({:ok, node_id}, _session, _capacity_table), do: {:ok, node_id}
   defp relight_node(:none, session, capacity_table), do: WakeInstance.node_for_relight(session, capacity_table)
+
+  # The relight's charge on its brick: the workload's memory plus that brick's
+  # per-VM overhead, or the bare need when the dial has no capacity row (a
+  # legacy node-name dial).
+  defp claim_relight(state, dial_id, claim_ref, entry) do
+    need_mib = create_need_mib(entry)
+
+    charge_mib =
+      case Enum.find(Brick.bricks(state.capacity_table), &(Brick.dial_id(&1) == dial_id)) do
+        nil -> need_mib
+        brick -> Brick.charge_mib(brick, need_mib)
+      end
+
+    Inflight.claim(dial_id, claim_ref, charge_mib, table: state.inflight_table)
+  end
 
   # Whether the session's bundle should be restored before the relight: the
   # session's recorded node_id + snapshot_ref are both present, the bundle is NOT
@@ -4736,9 +4992,66 @@ defmodule Embervm.SessionManager do
     state = retire_orphan_session_volumes(state, facts, nodes_facts)
 
     if state.node_confirmed_destroy do
-      destroy_orphan_session_vms(state, facts, live_vms)
+      state
+      |> destroy_orphan_session_vms(facts, live_vms)
+      |> destroy_unowned_primed_vms(facts, sessions)
     else
       state
+    end
+  end
+
+  # Direction 2 for the one VM shape destroy_orphan_session_vms cannot see: a
+  # persistence session workload's PRIMED VM that no live row references. Such a
+  # create always cold primes with its own lineage volume and never claims from
+  # the pool, so an unreferenced primed VM is one whose create failed or timed out
+  # after the Prime (or whose manager died mid-create). The Dispatcher would adopt
+  # it as task inventory nothing ever claims, holding a slot, its memory and the
+  # lineage volume until the brick restarts. Destroy it once it has stayed
+  # unreferenced for longer than any create could still be registering it (the
+  # create worker bound, or the orphan grace if longer), on a fresh fact only. A
+  # workload with a primed floor is skipped: its pool is not a leak.
+  # Rate-limited by restarting the first-seen clock on each destroy attempt.
+  defp destroy_unowned_primed_vms(state, facts, sessions) do
+    now = state.monotonic_clock.()
+    grace = max(state.orphan_grace_ms, @create_worker_timeout_ms)
+
+    referenced =
+      for s <- sessions, not SessionState.terminal?(s.state), is_binary(s.vm_id), into: MapSet.new(), do: s.vm_id
+
+    unowned =
+      for f <- facts,
+          {workload, wc} <- Map.get(f, :workloads) || %{},
+          is_map(wc),
+          vm_id <- Map.get(wc, :primed_vm_ids) || [],
+          not MapSet.member?(referenced, vm_id),
+          reapable_primed_workload?(state, workload),
+          do: {{fact_dial_id(f), vm_id}, f}
+
+    first_seen = Map.take(state.unowned_primed_first_seen, Enum.map(unowned, &elem(&1, 0)))
+
+    first_seen =
+      Enum.reduce(unowned, first_seen, fn {{dial_id, vm_id} = key, f}, acc ->
+        seen = Map.get(acc, key, now)
+        fresh = now - Map.get(f, :updated_at, 0) <= state.fleet_freshness_window_ms
+
+        if fresh and now - seen >= grace do
+          destroy_unowned_vm_async(state, f.configured_id, dial_id, vm_id)
+          Map.put(acc, key, now)
+        else
+          Map.put(acc, key, seen)
+        end
+      end)
+
+    %{state | unowned_primed_first_seen: first_seen}
+  end
+
+  defp reapable_primed_workload?(state, workload) do
+    case WorkloadCatalog.fetch(state.catalog_table, workload) do
+      {:ok, %{class: "session"} = entry} ->
+        persistence_enabled_workload?(entry) and (Map.get(entry, :floor) || 0) == 0
+
+      _ ->
+        false
     end
   end
 
@@ -6393,11 +6706,17 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
+  defp destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id} = target)
        when is_binary(node_id) and is_binary(vm_id) do
     # Match the bank path: prefer current ownership, then the placed dial retained
-    # by the manager, and only then preserve the legacy bare-node fallback.
-    dial_key = session_dial(state, session_id, node_id, vm_id)
+    # by the manager, and only then preserve the legacy bare-node fallback. A
+    # caller that knows the exact instance (a primed VM no row owns, which no
+    # session-VM fact or remembered dial can locate) passes it as :dial_id.
+    dial_key =
+      case Map.get(target, :dial_id) do
+        dial when is_binary(dial) and dial != "" -> dial
+        _ -> session_dial(state, session_id, node_id, vm_id)
+      end
 
     case safe_channel(state.channel_fun, dial_key) do
       {:ok, channel} ->
