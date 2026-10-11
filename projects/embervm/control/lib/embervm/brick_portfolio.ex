@@ -3,12 +3,16 @@ defmodule Embervm.Brick.Portfolio do
   Derives the minimum size-class portfolio from declared workload floors.
 
   Every positive workload floor emits that many memory-sized items. Items are
-  assigned to the smallest declared class whose admission capacity can hold
-  them, then packed within that exact class using deterministic
-  first-fit-decreasing. Admission capacity is usable memory minus the daemon's
-  memory rejection cushion. The cushion is reserved once per bin, while the bin
-  is also capped by the declared live-VM slot limit. Items never move to a
-  larger class to reduce the number of bins.
+  assigned to the smallest class with a positive authorized bound whose
+  admission capacity can hold them (the eligibility `Embervm.BrickController`
+  uses for denials), then packed within that exact class using deterministic
+  first-fit-decreasing. Admission capacity follows noded's reserved model with
+  its observed guard: a bin's declared memory plus the daemon's memory
+  rejection cushion must fit usable memory, and so must its declared memory
+  plus the per-VM overhead of each item. The cushion is reserved once per bin
+  and the overhead once per VM, while the bin is also capped by the declared
+  live-VM slot limit. Items never move to a larger class to reduce the number
+  of bins.
 
   `floors/2` returns one result per declared class, keyed by class name:
 
@@ -24,15 +28,19 @@ defmodule Embervm.Brick.Portfolio do
   maximum of it and `computed_floor`. `flag` is `:floor_overflow` when the
   computed floor exceeds the class's authorized outer bound (or its fixed
   maximum when runtime ceiling ownership is disabled), or when an item cannot
-  fit even the largest declared class.
+  fit even the largest declared class. An item no authorized class can hold is
+  charged to the smallest declared class that can, which then overflows and
+  names the class an operator would need to authorize.
 
   Catalog entries and class declarations are already validated at their input
   boundaries. This function remains total for stale or legacy maps: entries
   without a positive integer floor and memory size contribute nothing, while a
-  class without positive admission capacity cannot receive an item. A zero
-  slot limit means no node-side slot ceiling, matching noded's configuration
-  contract.
+  class without positive admission capacity cannot receive an item, and an
+  absent per-VM overhead reads 0. A zero slot limit means no node-side slot
+  ceiling, matching noded's configuration contract.
   """
+
+  @empty_bin %{used_mib: 0, used_slots: 0}
 
   @type class_result :: %{
           computed_floor: non_neg_integer(),
@@ -86,6 +94,7 @@ defmodule Embervm.Brick.Portfolio do
             name: name,
             usable_mib: usable_mib,
             capacity_mib: max(usable_mib - reject_floor_mib, 0),
+            overhead_mib: non_negative(field(class, [:vm_overhead_mib, "vm_overhead_mib"]), 0),
             slots: slots,
             min: min,
             max: authorized_max
@@ -116,7 +125,11 @@ defmodule Embervm.Brick.Portfolio do
   end
 
   defp pack_item(item, classes, bins_by_class) do
-    case Enum.find(classes, &(&1.capacity_mib >= item.mem_mib)) do
+    fitting = Enum.filter(classes, &fits?(@empty_bin, item.mem_mib, &1))
+
+    # A class the controller can never scale (authorized bound 0) is charged
+    # only when no authorized class holds the item, so the overflow names it.
+    case Enum.find(fitting, &(&1.max > 0)) || List.first(fitting) do
       nil ->
         mark_unplaceable(item, classes, bins_by_class)
 
@@ -153,6 +166,7 @@ defmodule Embervm.Brick.Portfolio do
 
   defp fits?(bin, mem_mib, class) do
     bin.used_mib + mem_mib <= class.capacity_mib and
+      bin.used_mib + mem_mib + (bin.used_slots + 1) * class.overhead_mib <= class.usable_mib and
       (class.slots == 0 or bin.used_slots < class.slots)
   end
 

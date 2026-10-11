@@ -1956,4 +1956,46 @@ defmodule Embervm.BrickControllerTest do
       assert hd(BrickController.capacity_health(pid).ceilings).operative_ceiling == 1
     end
   end
+
+  # -- catalog floors and class authorization -----------------------------------
+
+  test "a catalog floor skips an unauthorized class and scales the authorized one" do
+    {record, calls} = new_recorder()
+
+    pid =
+      start(
+        classes: [
+          %{
+            name: "1gi",
+            desired: 0,
+            min: 0,
+            max: 0,
+            usable_mib: 768,
+            mem_reject_floor_mib: 512,
+            slots: 6
+          },
+          %{
+            name: "2gi",
+            desired: 0,
+            min: 0,
+            max: 4,
+            usable_mib: 1_792,
+            mem_reject_floor_mib: 512,
+            slots: 14
+          }
+        ],
+        catalog_fun: fn -> [%{name: "pi", floor: 1, mem_mib: 256}] end,
+        scale_fun: record
+      )
+
+    log = ExUnit.CaptureLog.capture_log(fn -> BrickController.reconcile_now(pid) end)
+
+    assert calls.() == [
+             {"embervm", "embervm-embervm-noded-brick-1gi", 0},
+             {"embervm", "embervm-embervm-noded-brick-2gi", 1}
+           ]
+
+    refute BrickController.floor_overflow?(pid, "1gi")
+    refute log =~ "embervm brick floor overflow"
+  end
 end
