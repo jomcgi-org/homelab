@@ -20,6 +20,13 @@ import (
 // be reused across bricks and restarts.
 const testJailUID, testJailGID = vmUIDBase, vmUIDBase
 
+// Keep the main goroutine on the main thread for the whole test binary. A
+// goroutine that exits while locked to the main thread wedges it instead of
+// terminating it, so if asJailedVMM ever ran there the thread group leader
+// would stay chrooted, and every later /proc/self read in the package would
+// see the jail's root.
+func init() { runtime.LockOSThread() }
+
 // requireRootJailTest skips a test that needs a real uid drop, chroot or mount
 // unless it runs as root. EMBERVM_REQUIRE_ROOT_TESTS=1 turns the skip into a
 // failure, so a run meant to prove the jailer cannot pass vacuously.
