@@ -3013,3 +3013,45 @@ def test_brick_classes_count_the_node_floors_pinned_to_each_class() -> None:
         ]
     )
     assert pinned == {name: 0 for name in unpinned} | {"2gi": 2, "16gi": 1}
+
+
+# The committed hub overlays and their releases (the Applications' releaseName).
+_HUB_OVERLAYS = {
+    "prod": ("embervm", ["PROD_VALUES", "GKE_VALUES"]),
+    "dev": ("embervm-dev", ["DEV_VALUES", "DEV_GKE_VALUES"]),
+}
+
+
+def _overlay_documents(release: str, value_keys: list[str]) -> list[dict]:
+    rendered = _render(
+        release,
+        [_chart_dir() / "values.yaml", *[Path(os.environ[key]) for key in value_keys]],
+    )
+    return [doc for doc in yaml.safe_load_all(rendered) if isinstance(doc, dict)]
+
+
+def _containers(documents: list[dict], component: str | None = None):
+    for doc in documents:
+        if doc.get("kind") not in {"Deployment", "DaemonSet"}:
+            continue
+        template = doc["spec"]["template"]
+        labels = template["metadata"].get("labels", {})
+        if component and labels.get("app.kubernetes.io/component") != component:
+            continue
+        for container in template["spec"].get("containers", []):
+            yield doc["metadata"]["name"], container
+
+
+def _plain_env(container: dict) -> dict[str, str | None]:
+    return {entry["name"]: entry.get("value") for entry in container.get("env", [])}
+
+
+def test_jailer_scenario_gates_default_off() -> None:
+    values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    assert values["noded"]["jailer"]["enabled"] is False
+    assert values["conformance"]["requireJailer"] is False
+    assert values["conformance"]["egressProbe"] is False
+    for key in ("PROD_VALUES", "GKE_VALUES"):
+        prod = yaml.safe_load(Path(os.environ[key]).read_text()) or {}
+        assert ((prod.get("noded") or {}).get("jailer") or {}).get("enabled", False) is False
+        assert "conformance" not in prod

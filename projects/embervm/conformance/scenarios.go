@@ -50,7 +50,11 @@ type config struct {
 	tlcJava        string
 	tlcJar         string
 	tlcSpecDir     string
-	budgets        map[string]time.Duration
+	// S7 jailer and admission facts and S8 jailed egress probe (#5255), staged
+	// default-off: with both false the suite is exactly S1..S6.
+	requireJailer bool
+	egressProbe   bool
+	budgets       map[string]time.Duration
 }
 
 type controlPlaneClient struct {
@@ -196,6 +200,9 @@ func unreadyWorkloads(view nodesView, workloads []string) []string {
 }
 
 func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, started time.Time) []scenarioVerdict {
+	// Before S1, so S7 compares launch counters across everything the suite boots.
+	baseline := readJailerBaseline(ctx, cfg, client)
+
 	s1 := runBudgeted(ctx, "S1", cfg.budgets["S1"], func(scenarioCtx context.Context) scenarioVerdict {
 		return runS1(scenarioCtx, cfg, client, started)
 	})
@@ -236,7 +243,7 @@ func runScenarios(ctx context.Context, cfg config, client *controlPlaneClient, s
 		logScenario(s6)
 		scenarios = append(scenarios, s6)
 	}
-	return scenarios
+	return append(scenarios, runJailerScenarios(ctx, cfg, client, started, baseline)...)
 }
 
 func runBudgeted(parent context.Context, id string, budget time.Duration, run func(context.Context) scenarioVerdict) scenarioVerdict {
