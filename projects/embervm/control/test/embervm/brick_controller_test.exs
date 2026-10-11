@@ -1034,6 +1034,37 @@ defmodule Embervm.BrickControllerTest do
       assert :sys.get_state(ctx.pid).archive_pending == %{}
       refute_receive {:archive, _, _}
     end
+
+    test "#{mode} fails closed when archive observation cannot list pods" do
+      ctx = archive_gate_stack(mode: unquote(mode),
+        pods_fun: fn _ns, _selector -> {:error, :forbidden} end)
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=archive_pending"
+      refute log =~ "reason=idle_drain"
+      assert ctx.annotated.() == []
+      assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+      assert :sys.get_state(ctx.pid).archive_pending == %{}
+      refute_receive {:archive, _, _}
+    end
+
+    test "#{mode} reports a safe archive observation without acting on it" do
+      ctx = archive_gate_stack(mode: unquote(mode))
+      Agent.update(ctx.facts, fn [victim] -> [%{victim | session_volumes: []}] end)
+      log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+      assert log =~ "reason=idle_drain"
+      assert ctx.annotated.() == []
+      assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+      refute_receive {:archive, _, _}
+    end
+  end
+
+  test "full mode still skips archive scale-down when pod listing is forbidden" do
+    ctx = archive_gate_stack(pods_fun: fn _ns, _selector -> {:error, :forbidden} end)
+    log = ExUnit.CaptureLog.capture_log(fn -> archive_gate_tick(ctx) end)
+    assert log =~ "reason=no_safe_victim"
+    assert ctx.annotated.() == []
+    assert Enum.all?(ctx.calls.(), fn {_, _, replicas} -> replicas == 2 end)
+    refute_receive {:archive, _, _}
   end
 
   test "full mode scale-down annotates the idle victim then shrinks" do

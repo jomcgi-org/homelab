@@ -21,7 +21,9 @@ _GKE_VALUES = Path(
 _SA_MOUNT = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
-def _render(release: str, values: list[Path]) -> list[dict[str, Any]]:
+def _render(
+    release: str, values: list[Path], overrides: list[str] | None = None
+) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -32,6 +34,8 @@ def _render(release: str, values: list[Path]) -> list[dict[str, Any]]:
     ]
     for path in values:
         argv += ["--values", str(path)]
+    for override in overrides or []:
+        argv += ["--set", override]
     result = subprocess.run(argv, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
@@ -124,3 +128,50 @@ def test_production_control_plane_rbac_is_namespace_scoped() -> None:
     } <= runtime_resources
     # No production workload declares a control-plane-read secretRef.
     assert "secrets" not in runtime_resources
+
+
+def _assert_archive_pod_access(mode: str, gate_enabled: bool) -> None:
+    documents = _render(
+        "embervm",
+        [_PROD_VALUES, _GKE_VALUES],
+        [
+            "rbac.scope=namespace",
+            "bricks.enabled=true",
+            f"bricks.autoscale.mode={mode}",
+            f"bricks.autoscale.archiveAckGate.enabled={str(gate_enabled).lower()}",
+        ],
+    )
+    pod_rules = [
+        (role, rule)
+        for role in documents
+        if role["kind"] in {"Role", "ClusterRole"}
+        for rule in role.get("rules", [])
+        if "pods" in rule["resources"]
+    ]
+    bindings = [
+        document
+        for document in documents
+        if document["kind"] == "RoleBinding"
+        and document["roleRef"]["name"] == "embervm-embervm-brick-pods"
+    ]
+    if mode != "full" and not gate_enabled:
+        assert pod_rules == []
+        assert bindings == []
+        return
+
+    assert len(pod_rules) == 1
+    role, rule = pod_rules[0]
+    assert role["kind"] == "Role"
+    assert role["metadata"]["name"] == "embervm-embervm-brick-pods"
+    assert role["metadata"]["namespace"] == "embervm"
+    assert rule["apiGroups"] == [""]
+    assert rule["resources"] == ["pods"]
+    assert rule["verbs"] == (["list", "patch"] if mode == "full" else ["list"])
+    assert len(bindings) == 1
+    assert bindings[0]["subjects"][0]["name"] == "embervm-embervm"
+
+
+def test_archive_observation_pod_access_is_read_only() -> None:
+    for mode in ["observe", "up", "full"]:
+        for gate_enabled in [False, True]:
+            _assert_archive_pod_access(mode, gate_enabled)

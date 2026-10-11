@@ -690,9 +690,11 @@ defmodule Embervm.BrickController do
     state = if target >= current or state.mode != :full,
       do: clear_archive_pending(state, name), else: state
     # Observation is read-only: report the workspace rail without requesting RPCs.
+    # A missing victim includes failed pod reads or unknown ownership. Only a
+    # positively verified safe victim can report an unobstructed scale-down.
     reason =
       if target < current and state.mode in [:observe, :up] and state.archive_ack_gate and
-           match?({:pending, _}, pick_archive_victim(state, archive_facts(state), name)),
+           not match?({:safe, _}, pick_archive_victim(state, archive_facts(state), name)),
         do: :archive_pending, else: reason
     # What the decision span reports: the autoscale target and reason even when
     # the mode or the victim rail means nothing is written.
