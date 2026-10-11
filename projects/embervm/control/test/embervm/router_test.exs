@@ -176,6 +176,17 @@ defmodule Embervm.RouterTest do
     def create(_srv, "wl-lineage-relinquishment-failed", _principal, _restore_lineage, _opts),
       do: {:error, {:denied, {:lineage_relinquishment_failed, {:error, :dial_down}}}}
 
+    # Residual Prime failures after the manager's capacity mapping: a transport
+    # fault, a brick that could not be dialed, and an unmapped pressure refusal.
+    def create(_srv, "wl-prime-failed", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:prime_failed, {:error, %GRPC.RPCError{status: 2, message: "the connection is closed"}}}}}
+
+    def create(_srv, "wl-prime-dial-failed", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:prime_dial_failed, {:error, :unknown_node}}}}
+
+    def create(_srv, "wl-prime-pressure", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, {:prime_failed, {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}}}}
+
     # #4919: the replay/conflict/invalid-key response shapes, plus wl-idem-echo,
     # which answers successfully ONLY when the router threaded the exact
     # Idempotency-Key header value through, proving the hop.
@@ -1655,6 +1666,39 @@ defmodule Embervm.RouterTest do
              "reason" => "create_saturated",
              "retryable" => true,
              "workload" => "wl-create-saturated"
+           }
+  end
+
+  test "a residual Prime failure is a retryable 503 that names the failed step" do
+    with_session_fakes()
+
+    for {workload, step, detail} <- [
+          {"wl-prime-failed", "prime_failed", "the connection is closed"},
+          {"wl-prime-dial-failed", "prime_dial_failed", "unknown_node"}
+        ] do
+      resp = req(:post, "/v1/workloads/#{workload}/sessions", auth("good"))
+      body = json(resp.body)
+
+      assert resp.status == 503
+      assert body["reason"] == step
+      assert body["retryable"] == true
+      assert body["workload"] == workload
+      assert body["detail"] =~ detail
+    end
+  end
+
+  test "an unmapped Prime pressure refusal keeps the retryable 429 capacity contract" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/workloads/wl-prime-pressure/sessions", auth("good"))
+
+    assert resp.status == 429
+
+    assert json(resp.body) == %{
+             "error" => "session create denied",
+             "reason" => "no_capacity",
+             "retryable" => true,
+             "workload" => "wl-prime-pressure"
            }
   end
 
