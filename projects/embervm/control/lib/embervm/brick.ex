@@ -130,12 +130,22 @@ defmodule Embervm.Brick do
   end
 
   @doc """
+  The per-VM overhead this brick's admission charges: `vm_overhead_mib` under
+  the reserved model, 0 under observed. noded reports the configured value in
+  both models but charges it only under reserved.
+  """
+  @spec charged_overhead_mib(map()) :: non_neg_integer()
+  def charged_overhead_mib(brick) do
+    if reservation?(brick), do: max(num(brick, :vm_overhead_mib), 0), else: 0
+  end
+
+  @doc """
   What one more VM of `need_mib` costs this brick's admission: the guest's
-  declared memory plus the per-VM overhead the daemon charges (0 unless
-  configured). This is what an in-flight claim debits.
+  declared memory plus the per-VM overhead the daemon charges
+  (`charged_overhead_mib/1`). This is what an in-flight claim debits.
   """
   @spec charge_mib(map(), non_neg_integer() | nil) :: non_neg_integer()
-  def charge_mib(brick, need_mib), do: max((need_mib || 0) + num(brick, :vm_overhead_mib), 0)
+  def charge_mib(brick, need_mib), do: max((need_mib || 0) + charged_overhead_mib(brick), 0)
 
   @doc """
   Returns the dial key for a brick. Legacy or statically-seeded capacity facts

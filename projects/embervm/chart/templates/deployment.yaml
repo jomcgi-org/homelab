@@ -425,10 +425,11 @@ spec:
             # array of {name,desired,min,max,ceiling_bound,usable_mib,
             # mem_reject_floor_mib,vm_overhead_mib,slots,floors};
             # capacities are declared here rather than observed because classes
-            # must work before any brick exists. vm_overhead_mib is
-            # noded.vmOverheadMib, the per-VM charge every brick makes under the
-            # reserved admission model, so a class fits a need only when its
-            # empty brick would admit one. floors counts the bricks.nodeFloors
+            # must work before any brick exists. vm_overhead_mib is the per-VM
+            # charge every brick's admission makes: noded.vmOverheadMib under the
+            # reserved model, 0 under observed (noded reports the value but does
+            # not charge it), so a class fits a need only when its empty brick
+            # would admit one. floors counts the bricks.nodeFloors
             # pinned to the class, so the controller looks for floor pods only
             # where some exist.
             # desired from the bricks.desiredReplicas
@@ -446,7 +447,10 @@ spec:
             {{- $bounds := $auto.ceilingBound | default dict }}
             {{- $daemonReserve := .Values.bricks.daemonReserveMib | default 512 | int }}
             {{- $rejectFloor := .Values.noded.memRejectFloorMib | default 512 | int }}
-            {{- $vmOverhead := .Values.noded.vmOverheadMib | default 0 | int }}
+            {{- $vmOverhead := 0 }}
+            {{- if eq (.Values.noded.admissionModel | default "") "reserved" }}
+            {{- $vmOverhead = .Values.noded.vmOverheadMib | default 0 | int }}
+            {{- end }}
             {{- $classes := list }}
             {{- range .Values.bricks.classes }}
             {{- $className := .name }}

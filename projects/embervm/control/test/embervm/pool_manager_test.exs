@@ -707,7 +707,7 @@ defmodule Embervm.PoolManagerTest do
   end
 
   test "the in-pass gate stays cumulative on a brick that reports its own admission" do
-    reported = %{admission_reported: true, mem_admittable_mib: 5_000, vm_overhead_mib: 100}
+    reported = %{admission_reported: true, admits_on_reservation: true, mem_admittable_mib: 5_000, vm_overhead_mib: 100}
     ctx = start_pool()
     put_catalog(ctx, "wl-a", 3, resources: %{"memMib" => 2048})
 
@@ -720,6 +720,26 @@ defmodule Embervm.PoolManagerTest do
     )
 
     # 5000 -> 2852 (2048 + 100 overhead) -> 704: two primes.
+    :ok = PoolManager.refill(ctx.pool)
+    assert prime_counts(ctx) == %{"wl-a" => 2}
+  end
+
+  test "an observed brick's reported overhead is not charged in the pass" do
+    # noded reports vm_overhead_mib under observed but admits on the need alone:
+    # 4100 -> 2052 -> 4, two primes. Charging the 100 MiB overhead would stop
+    # at one (4100 -> 1952).
+    observed = %{admission_reported: true, admits_on_reservation: false, mem_admittable_mib: 4_100, vm_overhead_mib: 100}
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 3, resources: %{"memMib" => 2048})
+
+    put_instance_facts(ctx, "d", [{"wl-a", 0}],
+      max: 16,
+      size_class: "8gi",
+      mem_budget_mib: 7_936,
+      mem_headroom_mib: 7_900,
+      extra: observed
+    )
+
     :ok = PoolManager.refill(ctx.pool)
     assert prime_counts(ctx) == %{"wl-a" => 2}
   end

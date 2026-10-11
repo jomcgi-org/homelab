@@ -439,8 +439,9 @@ defmodule Embervm.PoolManager do
   # Every input of Brick.admittable_mib/1 moves, so the pass stays cumulative in
   # whichever model the brick admits on: observed headroom drops by the need, the
   # declared reservation grows by it (live_vms + 1 advances the reserved model's
-  # per-VM overhead term), and a daemon-reported admittable value drops by the
-  # need plus that overhead.
+  # per-VM overhead term), and a daemon-reported admittable value drops by what
+  # a claim charges (Brick.charge_mib/2: the need, plus that overhead only under
+  # the reserved model).
   defp consume(instance, wl) do
     need = instance.workloads[wl].mem_mib || 0
     %{instance |

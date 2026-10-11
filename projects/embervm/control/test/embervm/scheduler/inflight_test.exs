@@ -143,7 +143,13 @@ defmodule Embervm.Scheduler.InflightTest do
     end
 
     test "a brick reporting its ledger is charged only the claims it does not yet show", %{opts: opts} do
-      reporting = %{admission_reported: true, mem_inflight_mib: 3_072, inflight_vms: 1, vm_overhead_mib: 64}
+      reporting = %{
+        admission_reported: true,
+        admits_on_reservation: true,
+        mem_inflight_mib: 3_072,
+        inflight_vms: 1,
+        vm_overhead_mib: 64
+      }
 
       :ok = Inflight.claim("n/a", :admitted, 3_136, opts)
       # The daemon already counts the admitted boot (need plus overhead).
@@ -160,6 +166,25 @@ defmodule Embervm.Scheduler.InflightTest do
       # A settled claim counts in full until a report follows it.
       :ok = Inflight.settle("n/a", :admitted, opts)
       assert Inflight.debit_mib("n/a", %{reporting | mem_inflight_mib: 0, inflight_vms: 0}, opts) == 3_136 + 3_136
+    end
+
+    test "an observed brick's reported overhead cancels nothing, since no claim on it carries one", %{opts: opts} do
+      # noded reports vm_overhead_mib under observed but charges none, so a claim
+      # there is the bare need (Brick.charge_mib/2) and the daemon's in-flight
+      # boot cancels exactly that.
+      observed = %{
+        admission_reported: true,
+        admits_on_reservation: false,
+        mem_inflight_mib: 3_072,
+        inflight_vms: 1,
+        vm_overhead_mib: 64
+      }
+
+      :ok = Inflight.claim("n/a", :admitted, 3_072, opts)
+      assert Inflight.debit_mib("n/a", observed, opts) == 0
+
+      :ok = Inflight.claim("n/a", :racing, 3_072, opts)
+      assert Inflight.debit_mib("n/a", observed, opts) == 3_072
     end
 
     test "a brick that does not report its ledger is charged every claim", %{opts: opts} do

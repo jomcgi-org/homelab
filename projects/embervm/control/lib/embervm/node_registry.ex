@@ -1037,7 +1037,8 @@ defmodule Embervm.NodeRegistry do
       mem_reserved_mib: Map.get(s, :mem_reserved_mib, 0),
       admits_on_reservation: Map.get(s, :admits_on_reservation, false),
       # The per-VM overhead (field 37) the reserved predicate charges every live
-      # VM plus the new one, and that an in-flight claim adds to the guest's need.
+      # VM plus the new one, and that an in-flight claim on a reserved brick adds
+      # to the guest's need. Reported under observed too, where nothing charges it.
       vm_overhead_mib: Map.get(s, :vm_overhead_mib, 0),
       # Admission ledger (fields 44-47): the daemon's own verdict for ONE more VM,
       # evaluated by the function its boot verbs call, and the boots it has

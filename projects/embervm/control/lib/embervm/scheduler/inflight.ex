@@ -36,7 +36,8 @@ defmodule Embervm.Scheduler.Inflight do
   difference into false autoscaler demand. `debit_mib/3` therefore charges a
   reporting brick only the unsettled claims its report does not yet show, never
   less than zero and never cancelling more than the control plane's own claims
-  (`max(0, unsettled - (mem_inflight_mib + vm_overhead_mib * inflight_vms))`),
+  (`max(0, unsettled - (mem_inflight_mib + vm_overhead_mib * inflight_vms))`,
+  the overhead term only under the reserved model, the one that charges it),
   plus settled claims no report has followed yet. A brick that does not report its ledger is charged every claim.
 
   Every row carries an ABSOLUTE expiry (default 200_000 ms, above the
@@ -245,9 +246,11 @@ defmodule Embervm.Scheduler.Inflight do
     {unsettled, settled} = pending(dial_id, opts)
 
     if Map.get(brick, :admission_reported) == true do
-      # A claim charges need plus the per-VM overhead (Brick.charge_mib/2); the
-      # daemon's admittable already subtracts both for each boot in flight.
-      reported = count(brick, :mem_inflight_mib) + count(brick, :vm_overhead_mib) * count(brick, :inflight_vms)
+      # A claim charges need plus the per-VM overhead the brick's model charges
+      # (Brick.charge_mib/2, none under observed); the daemon's admittable
+      # already subtracts both for each boot in flight.
+      overhead = Embervm.Brick.charged_overhead_mib(brick)
+      reported = count(brick, :mem_inflight_mib) + overhead * count(brick, :inflight_vms)
       max(unsettled - reported, 0) + settled
     else
       unsettled + settled
