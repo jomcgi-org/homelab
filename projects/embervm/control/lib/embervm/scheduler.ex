@@ -2,12 +2,13 @@ defmodule Embervm.Scheduler do
   @moduledoc """
   Unified placement entry point for brick-aware scheduling.
 
-  `place/1` resolves explicit bricks or reads the capacity table, applies all
-  requested filters in node, subnet, slots, memory, and base order, then returns
-  the surviving brick maps in `Score` order. `:none` skips the base gate.
-  `Brick.free_slots/1` is polymorphic across normalized bricks, raw facts, and
-  PoolManager instance maps. A nil memory need skips the memory gate entirely,
-  which is intentionally different from a need of zero.
+  `place/1` resolves explicit bricks or reads the capacity table, drops the
+  request's `exclude` dial ids, applies all requested filters in node, subnet,
+  slots, memory, and base order, then returns the surviving brick maps in
+  `Score` order. `:none` skips the base gate. `Brick.free_slots/1` is
+  polymorphic across normalized bricks, raw facts, and PoolManager instance
+  maps. A nil memory need skips the memory gate entirely, which is
+  intentionally different from a need of zero.
 
   ## in-flight memory
 
@@ -42,6 +43,7 @@ defmodule Embervm.Scheduler do
     bricks
     |> Enum.with_index()
     |> Enum.map(fn {brick, index} -> {with_pending(brick, pending), index} end)
+    |> Enum.reject(fn {b, _} -> Brick.dial_id(b) in req.exclude end)
     |> Enum.filter(fn {b, _} -> node_match?(b, req.node_id) end)
     |> Enum.filter(fn {b, _} -> subnet_match?(b, req.require_subnet) end)
     |> Enum.filter(fn {b, _} -> Brick.free_slots(b) > 0 end)

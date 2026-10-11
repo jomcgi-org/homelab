@@ -68,6 +68,17 @@ defmodule Embervm.ServingManager do
   refused or failed; a wake that fails as a whole drops whatever is left. A
   relight is pinned to its snapshot's node, so a miss there records no
   autoscaler demand; only the unpinned cold placement does.
+
+  ## a full owning brick wakes cold
+
+  Serving warmth is optional. When the brick holding the banked snapshot cannot
+  fit the guest on its last report (net of pending claims), the wake skips the
+  relight and creates cold on the fleet frontier. When that brick refuses the
+  relight anyway (`RESOURCE_EXHAUSTED`), the instance returns to banked with its
+  snapshot, and the same wake (parked callers, claim ref) continues as a cold
+  create that excludes the refusing brick. Only that cold placement's miss
+  records demand and 503s the callers, so a full brick never pins a workload to
+  503s while another brick has room.
   """
 
   use GenServer
@@ -268,9 +279,14 @@ defmodule Embervm.ServingManager do
     {:reply, :ok, do_reconcile(state)}
   end
 
+  # A relight its owning brick refused: the wake is not over, it continues cold.
+  @impl true
+  def handle_info({:wake_done, workload, {:relight_refused, _instance_id, _dial_id, _reason} = refused}, state) do
+    {:noreply, relight_refused(state, workload, refused)}
+  end
+
   # The async wake worker finished: complete the durable transition + publish, then
   # resolve every parked caller for the workload.
-  @impl true
   def handle_info({:wake_done, workload, outcome}, state) do
     {:noreply, finish_wake(state, workload, outcome)}
   end
@@ -499,8 +515,9 @@ defmodule Embervm.ServingManager do
   end
 
   # Decide relight-vs-cold PURELY (ETS reads only): the freshest banked instance
-  # whose serving snapshot a node still reports relights; otherwise a cold create on
-  # a serving-capable node with the workload's base + budget. Returns
+  # whose serving snapshot a node still reports relights, unless the brick holding
+  # it cannot fit the guest; otherwise a cold create on a serving-capable node with
+  # the workload's base + budget. Returns
   # `{:relight, instance, node_id}` | `{:restore_then_relight, instance, node_id}` |
   # `{:cold, candidates}` | `{:error, r}`.
   #
@@ -515,50 +532,88 @@ defmodule Embervm.ServingManager do
   defp plan_wake(state, workload, claim_ref) do
     case pick_bankable_instance(state, workload) do
       {:ok, instance, node_id} ->
-        if bundle_local?(state, node_id, instance.snapshot_ref) or
-             not store_reachable?(state, node_id) do
-          {:relight, instance, node_id}
-        else
-          {:restore_then_relight, instance, node_id}
+        cond do
+          # The relight is pinned to the brick holding the snapshot, and the warmth
+          # is optional: when that brick cannot fit the guest, wake cold elsewhere
+          # rather than send a relight it refuses (the snapshot stays banked).
+          not owner_admits_relight?(state, workload, node_id, instance) ->
+            cold_plan(state, workload, claim_ref)
+
+          bundle_local?(state, node_id, instance.snapshot_ref) or not store_reachable?(state, node_id) ->
+            {:relight, instance, node_id}
+
+          true ->
+            {:restore_then_relight, instance, node_id}
         end
 
       :none ->
-        need_mib = Map.get(catalog_entry(state, workload), :mem_mib) || 512
+        cold_plan(state, workload, claim_ref)
+    end
+  end
 
-        # The cold create is unpinned fleet placement: it claims its head under the
-        # wake's ref, and a miss records autoscaler demand. Each candidate carries
-        # what a claim on it costs, for the worker's retry hops.
-        candidates =
-          case Scheduler.place_and_claim(
-                 %Request{
-                   table: state.capacity_table,
-                   workload: workload,
-                   key: workload,
-                   need_mib: need_mib,
-                   require_subnet: true,
-                   base: {:ready, :serving_image_ref},
-                   inflight: state.inflight_table
-                 },
-                 claim_ref
-               ) do
-            {:ok, bricks} ->
-              Enum.map(bricks, fn brick ->
-                workload_entry = Map.get(brick.workloads, workload, %{})
+  # The cold create is unpinned fleet placement: it claims its head under the
+  # wake's ref, and a miss records autoscaler demand. Each candidate carries
+  # what a claim on it costs, for the worker's retry hops. `exclude` names dial
+  # ids the placement must skip (a brick that just refused this wake's relight).
+  defp cold_plan(state, workload, claim_ref, exclude \\ []) do
+    need_mib = wake_need_mib(state, workload)
 
-                %{
-                  instance_id: Brick.dial_id(brick),
-                  node_id: brick.configured_id,
-                  base_ref: Map.get(workload_entry, :serving_image_ref),
-                  charge_mib: Brick.charge_mib(brick, need_mib)
-                }
-              end)
+    candidates =
+      case Scheduler.place_and_claim(
+             %Request{
+               table: state.capacity_table,
+               workload: workload,
+               key: workload,
+               need_mib: need_mib,
+               require_subnet: true,
+               base: {:ready, :serving_image_ref},
+               inflight: state.inflight_table,
+               exclude: exclude
+             },
+             claim_ref
+           ) do
+        {:ok, bricks} ->
+          Enum.map(bricks, fn brick ->
+            workload_entry = Map.get(brick.workloads, workload, %{})
 
-            {:error, :capacity} -> []
-            {:error, :no_bricks} -> []
-            {:error, _reason} -> []
-          end
+            %{
+              instance_id: Brick.dial_id(brick),
+              node_id: brick.configured_id,
+              base_ref: Map.get(workload_entry, :serving_image_ref),
+              charge_mib: Brick.charge_mib(brick, need_mib)
+            }
+          end)
 
-        if candidates == [], do: {:error, :no_capacity}, else: {:cold, candidates}
+        {:error, :capacity} -> []
+        {:error, :no_bricks} -> []
+        {:error, _reason} -> []
+      end
+
+    if candidates == [], do: {:error, :no_capacity}, else: {:cold, candidates}
+  end
+
+  defp wake_need_mib(state, workload), do: Map.get(catalog_entry(state, workload), :mem_mib) || 512
+
+  # Whether the instance reporting the banked snapshot would admit the relight on
+  # its last report, net of what other placers have claimed on it (the debit the
+  # scheduler charges, Inflight.debit_mib/3). True when no instance on the node
+  # reports the snapshot: dial_instance/5 then picks a mem-eligible one itself.
+  defp owner_admits_relight?(state, workload, node_id, instance) do
+    owner =
+      WakeInstance.owning_instance_for(
+        state.capacity_table,
+        node_id,
+        :serving_snapshots,
+        :snapshot_ref,
+        instance.snapshot_ref
+      )
+
+    with {:ok, dial_id} <- owner,
+         %{} = brick <- Enum.find(Brick.bricks(state.capacity_table), &(Brick.dial_id(&1) == dial_id)) do
+      debit = Inflight.debit_mib(dial_id, brick, table: state.inflight_table)
+      Scheduler.mem_eligible?(Map.put(brick, :pending_mib, debit), wake_need_mib(state, workload))
+    else
+      _ -> true
     end
   end
 
@@ -696,6 +751,13 @@ defmodule Embervm.ServingManager do
         shadow_claim(dial_id, vm_id, instance.workload, catalog_entry(state, instance.workload))
         {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port}}
 
+      {:error, %GRPC.RPCError{status: 8}} = rejected ->
+        # RESOURCE_EXHAUSTED: the owning brick is too full to resume the guest.
+        # The snapshot is intact, so the manager continues this wake cold on
+        # another brick (relight_refused/3) instead of failing it.
+        Inflight.release(dial_id, claim_ref, table: state.inflight_table)
+        {:relight_refused, instance.instance_id, dial_id, rejected}
+
       other ->
         Inflight.release(dial_id, claim_ref, table: state.inflight_table)
         {:error, {:relight_failed, instance.instance_id, other}}
@@ -757,6 +819,35 @@ defmodule Embervm.ServingManager do
       # callers 503 and the next miss retries, never a queue wedge.
       {:error, :no_capacity} -> {:error, {:start_failed, {:error, :no_capacity}}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A relight the owning brick refused with RESOURCE_EXHAUSTED (its report was
+  # stale, or a racing boot took the room). The snapshot is intact, so the
+  # instance returns relighting -> banked, and the SAME wake (its parked callers,
+  # claim ref and trace) continues as an unpinned cold create on any other brick:
+  # serving warmth is optional, and a pinned retry would 503 every miss until that
+  # brick frees memory. Only that cold placement fails the wake, and its miss
+  # records autoscaler demand.
+  defp relight_refused(state, workload, {:relight_refused, instance_id, dial_id, reason}) do
+    Logger.info("embervm serving relight refused; waking cold elsewhere",
+      workload: workload,
+      instance_id: instance_id,
+      brick_id: dial_id,
+      reason: inspect(reason)
+    )
+
+    _ = ServingStore.mark(state.store, instance_id, :relight_abort)
+    claim_ref = Map.get(state.wake_claims, workload)
+
+    case cold_plan(state, workload, claim_ref, [dial_id]) do
+      {:cold, candidates} ->
+        entry = catalog_entry(state, workload)
+        spawn_wake(self(), workload, fn -> run_cold(state, workload, candidates, entry, claim_ref) end)
+        stamp_wake_trace(state, workload, %{cold: true})
+
+      {:error, reason} ->
+        finish_wake(state, workload, {:error, reason})
     end
   end
 

@@ -10,6 +10,10 @@ defmodule Embervm.Scheduler.Request do
   pending claims debit each candidate before filtering and scoring: `:default`
   is the shared table, an atom is a private table (tests), and `false` turns
   the debit off.
+
+  `exclude` lists dial ids (`Embervm.Brick.dial_id/1`) the pass must not
+  return, such as a brick that just refused this boot. They stay in the
+  universe, so a pass they empty is a capacity miss, not an empty fleet.
   """
 
   @typedoc """
@@ -27,7 +31,8 @@ defmodule Embervm.Scheduler.Request do
           base: :none | :ready | {:ready, atom()},
           require_subnet: boolean(),
           record_demand: boolean(),
-          inflight: :default | atom() | false
+          inflight: :default | atom() | false,
+          exclude: [String.t()]
         }
 
   defstruct bricks: nil,
@@ -39,5 +44,6 @@ defmodule Embervm.Scheduler.Request do
             base: :none,
             require_subnet: false,
             record_demand: true,
-            inflight: :default
+            inflight: :default,
+            exclude: []
 end
