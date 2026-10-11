@@ -265,7 +265,7 @@ def test_workload_rollout_must_be_complete(change, reason):
     [
         (
             lambda p: p["metadata"].__setitem__("deletionTimestamp", "now"),
-            "pod_not_running",
+            "pod_count_mismatch",
         ),
         (
             lambda p: p["status"]["conditions"][0].__setitem__("status", "False"),
@@ -1460,3 +1460,47 @@ def test_first_covering_publication_must_be_provable_within_two_pages():
         "commits?sha=main&per_page=100&page=1",
         "commits?sha=main&per_page=100&page=2",
     ]
+
+
+@pytest.mark.parametrize(
+    "phase,deleting", [("Failed", False), ("Succeeded", False), ("Running", True)]
+)
+def test_stale_pod_remnant_does_not_block_healthy_replacement(phase, deleting):
+    state = snapshot()
+    stale = deepcopy(state["pods"]["demo"][0])
+    stale["metadata"]["name"] = "backend-old"
+    stale["status"]["phase"] = phase
+    stale["spec"]["containers"][0]["image"] = "old:image"
+    if deleting:
+        stale["metadata"]["deletionTimestamp"] = "2026-10-11T00:00:00Z"
+    state["pods"]["demo"].append(stale)
+    assert verify(state)["verified"] is True
+    # Filtering remnants cannot manufacture a replacement that is not present.
+    state["pods"]["demo"] = [stale]
+    assert verify(state)["reason"] == "pod_count_mismatch"
+
+
+@pytest.mark.parametrize("phase", ["Pending", "Unknown", "Running", None])
+def test_active_extra_pod_still_blocks_rollout(phase):
+    state = snapshot()
+    active = deepcopy(state["pods"]["demo"][0])
+    active["status"]["phase"] = phase
+    active["spec"]["containers"][0]["image"] = "old:image"
+    state["pods"]["demo"].append(active)
+    assert verify(state)["reason"] == "pod_count_mismatch"
+
+
+def test_stale_filter_does_not_hide_active_unhealthy_or_wrong_revision():
+    for failure in ("not_ready", "wrong_image"):
+        state = snapshot()
+        stale = deepcopy(state["pods"]["demo"][0])
+        stale["status"]["phase"] = "Failed"
+        state["pods"]["demo"].append(stale)
+        active = state["pods"]["demo"][0]
+        if failure == "not_ready":
+            active["status"]["conditions"][0]["status"] = "False"
+            reason = "pod_not_ready"
+        else:
+            active["spec"]["containers"][0]["image"] = "old:image"
+            reason = "running_image_unconfirmed"
+        assert verify(state)["reason"] == reason

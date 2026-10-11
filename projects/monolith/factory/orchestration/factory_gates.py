@@ -111,7 +111,10 @@ GATE_PROMPT = (
     "use kind `repository_delivered` (`reversible`) with `delivered_prs`, "
     "`live_checks`, and `tracked_in` only if the rescope names an open issue "
     "owning those checks; the server hands them to a person. "
-    "Return the gate with the would-be needs-human/escalate/pause artifact, "
+    "Carry a live_validation gate on ordinary plan/add_node decisions as well "
+    "as completed implementation artifacts when repository work can proceed "
+    "but operational acceptance remains. Graph edits never replace that durable "
+    "checklist. Return the gate with the would-be needs-human/escalate/pause artifact, "
     "including the proposed default or scope, so the server can continue it. "
 )
 
@@ -124,6 +127,17 @@ def live_checks(task: dict) -> list[str]:
     return list(
         dict.fromkeys(
             check for gate in decisions(task) for check in gate.get("live_checks", [])
+        )
+    )
+
+
+def pending_live_validation(body: str | None) -> bool:
+    """Explicit rescope prose is a closure veto, never authority to run checks."""
+    return bool(
+        re.search(
+            r"(?im)^(?:Conductor rescope:|#{1,6}\s+(?:live validation|operational acceptance)"
+            r"\b[^\n]*(?:outstanding|pending|not claimed))",
+            body or "",
         )
     )
 
@@ -233,6 +247,20 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
         if gate["kind"] == "parameter"
         else rescope_text(gate)
     )
+    # Persist the acceptance contract before GitHub writes. A failed comment or
+    # PR update must not leave landing believing there are no live checks.
+    with _locked_session() as (db, _control):
+        row = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        direction = json.loads(row.direction_json) if row.direction_json else {}
+        saved = direction.setdefault("conductor_gates", [])
+        if gate not in saved:
+            saved.append(gate)
+        row.direction_json = json.dumps(direction)
+        row.updated_at = _now()
+        db.add(row)
+    task["conductor_gates"] = saved
     conductor._post_decision_card(repo, number, marker, text)
     if gate["kind"] == "live_validation":
         issue = conductor.github_get(repo, f"issues/{number}")
@@ -249,16 +277,6 @@ def resolve(task: dict, artifact: dict, cause: str) -> bool:
             task, artifact.get("pr_number") or task.get("delivery_pr_number"), gate
         )
     with _locked_session() as (db, _control):
-        row = db.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
-        ).one()
-        direction = json.loads(row.direction_json) if row.direction_json else {}
-        saved = direction.setdefault("conductor_gates", [])
-        if gate not in saved:
-            saved.append(gate)
-        row.direction_json = json.dumps(direction)
-        row.updated_at = _now()
-        db.add(row)
         from factory.orchestration.factory_models import FactoryAudit
 
         prior = db.exec(
