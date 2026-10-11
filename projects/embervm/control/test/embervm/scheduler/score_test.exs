@@ -14,9 +14,37 @@ defmodule Embervm.Scheduler.ScoreTest do
     }
   end
 
-  test "wildcards score last" do
+  test "wildcards and blind classed bricks score last" do
     assert Score.score(brick(size_class: "", live_vms: 0)) == -1.0
-    assert Score.score(brick(mem_budget_mib: 0, live_vms: 0)) == -1.0
+    # A classed brick with a zero budget is no longer a wildcard: it is BLIND
+    # (Brick.blind?/1) and the memory gate refuses it. It still has no memory
+    # signal to pack on, so it scores on the spread scale, which only orders a
+    # request with no memory gate at all.
+    blind = brick(mem_budget_mib: 0, live_vms: 0)
+    refute Embervm.Brick.wildcard?(blind)
+    assert Embervm.Brick.blind?(blind)
+    assert Score.score(blind) == -1.0
+  end
+
+  test "a reservation brick packs on declared use, net of the in-flight debit" do
+    # Declared: 2048 reserved of 8192, no overhead, so admittable is 6144 and the
+    # memory half of the score is 2048 / 8192 = 0.25, whatever observed headroom
+    # says (here it claims the brick is nearly empty).
+    reserved = Map.merge(brick(mem_headroom_mib: 8_000, live_vms: 0), %{admits_on_reservation: true, mem_reserved_mib: 2_048})
+    assert_in_delta Score.score(reserved), 0.125, 0.0001
+
+    # An in-flight claim of 2048 counts as allocated: 4096 / 8192.
+    assert_in_delta Score.score(Map.put(reserved, :pending_mib, 2_048)), 0.25, 0.0001
+
+    # A daemon that reports its own admission ledger is taken at its word.
+    reported = Map.merge(reserved, %{admission_reported: true, mem_admittable_mib: 0})
+    assert_in_delta Score.score(reported), 0.5, 0.0001
+  end
+
+  test "an observed brick keeps the headroom ratio, net of the in-flight debit" do
+    observed = brick(mem_headroom_mib: 4_096, live_vms: 0)
+    assert_in_delta Score.score(observed), 0.25, 0.0001
+    assert_in_delta Score.score(Map.put(observed, :pending_mib, 2_048)), 0.375, 0.0001
   end
 
   test "classed fullness scores from empty to full" do
