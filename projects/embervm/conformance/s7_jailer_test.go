@@ -120,14 +120,37 @@ func TestEvaluateS7(t *testing.T) {
 			detail:  "jailed +5",
 		},
 		{
-			// The brick replaced mid-suite counts its preflight launch as jailed;
-			// that is not evidence that S1..S5 booted through the jailer, and with
-			// no brick left from suite start no later read can be.
-			name:    "a fleet replaced mid-suite fails rather than credit preflights",
-			before:  report(armedBrick("n1/a", 4, 0, 0)),
-			after:   report(armedBrick("n2/b", 7, 0, 0)),
+			// The brick registered mid-suite counts its preflight launch as jailed,
+			// which is not evidence that S1..S5 booted through the jailer. The
+			// baseline brick may only be missing from this read (NodeRegistry
+			// drops it while its stream is unknown or draining and restores it
+			// with its counters), so S7 waits for it inside its budget.
+			name:   "a baseline brick missing from the read stays pending beside a newcomer",
+			before: report(armedBrick("n1/a", 4, 0, 0)),
+			after:  report(armedBrick("n2/b", 7, 0, 0)),
+			detail: "baseline bricks missing from GET /v1/capacity: n1/a",
+		},
+		{
+			name:   "one baseline brick missing beside a restarted one stays pending",
+			before: report(armedBrick("n1/a", 40, 0, 0), armedBrick("n1/b", 2, 0, 0)),
+			after:  report(armedBrick("n1/a", 1, 0, 0), armedBrick("n2/c", 7, 0, 0)),
+			detail: "baseline bricks missing from GET /v1/capacity: n1/b",
+		},
+		{
+			// Every baseline brick is listed and every one reset its counters: no
+			// later read can bring the lost counts back.
+			name:    "a fleet whose every baseline brick restarted fails beside a newcomer",
+			before:  report(armedBrick("n1/a", 40, 0, 0)),
+			after:   report(armedBrick("n1/a", 1, 0, 0), armedBrick("n2/b", 7, 0, 0)),
 			verdict: verdictFail,
 			detail:  "no brick kept its launch counters across the suite",
+		},
+		{
+			name:    "a returned baseline brick carries the suite beside a newcomer",
+			before:  report(armedBrick("n1/a", 4, 0, 0)),
+			after:   report(armedBrick("n1/a", 9, 0, 0), armedBrick("n2/b", 7, 0, 0)),
+			verdict: verdictPass,
+			detail:  "jailed +5 across the suite",
 		},
 		{
 			name:    "a brick registered mid-suite credits no jailed launches",
@@ -237,6 +260,39 @@ func TestRunS7PollsUntilTheJailedLaunchIsReported(t *testing.T) {
 	}
 	if n := reads.Load(); n != 2 {
 		t.Fatalf("capacity reads = %d, want 2 (one pending, one pass)", n)
+	}
+}
+
+// A baseline brick drops out of /v1/capacity while its stream is unknown and
+// comes back with its counters intact on its next healthy status; the read in
+// between lists only a brick that registered mid-suite.
+func TestRunS7WaitsForAMissingBaselineBrick(t *testing.T) {
+	baseline := report(armedBrick("n1/a", 2, 0, 0))
+	client, reads := fakeCapacityServer(t,
+		report(armedBrick("n2/b", 1, 0, 0)),
+		report(armedBrick("n1/a", 4, 0, 0), armedBrick("n2/b", 1, 0, 0)),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got := runS7(ctx, client, jailerBaseline{report: baseline})
+	if got.Verdict != verdictPass || !strings.Contains(got.Detail, "jailed +2 across the suite") {
+		t.Fatalf("S7 = %#v, want a pass crediting n1/a's jailed +2", got)
+	}
+	if n := reads.Load(); n != 2 {
+		t.Fatalf("capacity reads = %d, want 2 (one with n1/a missing, one with it back)", n)
+	}
+}
+
+// A fleet that really was replaced never brings the baseline brick back, so
+// the S7 budget bounds the wait and the failure names the missing brick.
+func TestRunS7FailsAtItsBudgetWhenABaselineBrickNeverReturns(t *testing.T) {
+	baseline := report(armedBrick("n1/a", 2, 0, 0))
+	client, _ := fakeCapacityServer(t, report(armedBrick("n2/b", 1, 0, 0)))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*pollInterval/2)
+	defer cancel()
+	got := runS7(ctx, client, jailerBaseline{report: baseline})
+	if got.Verdict != verdictFail || !strings.Contains(got.Detail, "baseline bricks missing from GET /v1/capacity: n1/a") || !strings.Contains(got.Detail, context.DeadlineExceeded.Error()) {
+		t.Fatalf("S7 = %#v, want a budget failure naming missing brick n1/a", got)
 	}
 }
 
