@@ -60,13 +60,30 @@ defmodule Embervm.WakeInstance do
   hit for co-located bricks (and post-B0c a bare node name no longer misroutes: it
   fails closed to `:unknown_node`). The selection logic is unchanged; only the dial
   key degrades gracefully.
+
+  ## in-flight claims and pinned demand
+
+  A wake that boots a new VM claims the brick it picked in the in-flight ledger
+  (`Embervm.Scheduler.Inflight`) before its boot RPC, so the next placement (this
+  manager's next wake, or any other placer) sees the memory the brick has not
+  reported yet. `select/2` and `cold_candidates/2` take that claim when the caller
+  passes `:claim_ref`: the cold pick claims through `Scheduler.place_and_claim/2`
+  (re-reading the brick's pending debit), and an owning instance is claimed as
+  is, because the warmth it holds pins the wake there. The caller settles the
+  claim when the boot succeeds and releases it when the brick refuses or the RPC
+  fails. `claim/4` is the same debit for a boot whose target is already chosen.
+
+  Every selection here is scoped to one node. A caller whose node is pinned (by
+  the warmth or the volume the wake needs, or because it is one probe of
+  several) passes `record_demand: false`, so its miss stays out of the
+  autoscaler: only an unpinned miss is class-wide demand.
   """
 
   require Logger
 
   alias Embervm.{Brick, NodeCapacity}
   alias Embervm.Scheduler
-  alias Embervm.Scheduler.Request
+  alias Embervm.Scheduler.{Inflight, Request}
 
   # How often one {workload, node} pair may log a cold-rejection diagnostic. An
   # autoWake workload whose placement fails retries every ~10s indefinitely
@@ -96,6 +113,13 @@ defmodule Embervm.WakeInstance do
     * `:warmth_match_field` - the row field the `:warmth_ref` is matched against
       (default `:snapshot_ref`; groups pass `:set_id`).
     * `:table` - the capacity ETS table (default `NodeCapacity.table()`).
+    * `:record_demand` - whether a cold miss records autoscaler demand (default
+      true). A placement pinned to this node passes false.
+    * `:claim_ref` - when set, claim the selected instance in the in-flight
+      ledger under this ref before returning (see the moduledoc). The caller
+      settles or releases it.
+    * `:inflight` - the ledger the cold pick reads and the claim lands in:
+      `:default` (the shared table), a private table name, or false (no debit).
   """
   @spec select(String.t(), keyword()) :: {:ok, String.t()} | {:error, :no_eligible_instance}
   def select(node_id, opts) when is_binary(node_id) do
@@ -104,8 +128,18 @@ defmodule Embervm.WakeInstance do
     need_mib = Keyword.fetch!(opts, :need_mib)
 
     case owning_instance(table, node_id, opts) do
-      {:ok, instance_id} -> {:ok, instance_id}
-      :none -> cold_instance(table, node_id, workload, need_mib)
+      {:ok, instance_id} ->
+        # The owner holds the warmth this wake resumes, so it is not re-gated on
+        # capacity; the daemon's own admission refuses a resume it cannot fit.
+        case Keyword.get(opts, :claim_ref) do
+          nil -> :ok
+          ref -> claim(instance_id, ref, need_mib, table: table, inflight: Keyword.get(opts, :inflight, :default))
+        end
+
+        {:ok, instance_id}
+
+      :none ->
+        cold_instance(table, node_id, workload, need_mib, opts)
     end
   end
 
@@ -119,9 +153,11 @@ defmodule Embervm.WakeInstance do
   `{:ok, [dial_id]}` (never empty on success) or `{:error, :no_eligible_instance}`.
 
   Same node scoping, same `Embervm.Scheduler` readiness/eligibility rule, and the
-  same Axis-C denial note as `cold_instance/4`, so the single-attempt cold pick and
+  same Axis-C denial note as `cold_instance/5`, so the single-attempt cold pick and
   the retry candidate list cannot drift. A cold create passes NO `:warmth_key`
   (there is no owning snapshot to prefer); this is the cold frontier only.
+  `:record_demand`, `:claim_ref` and `:inflight` behave as in `select/2`; with a
+  claim, the head of the list is the claimed instance.
   """
   @spec cold_candidates(String.t(), keyword()) ::
           {:ok, [String.t()]} | {:error, :no_eligible_instance}
@@ -129,8 +165,9 @@ defmodule Embervm.WakeInstance do
     table = Keyword.get(opts, :table, NodeCapacity.table())
     workload = Keyword.fetch!(opts, :workload)
     need_mib = Keyword.fetch!(opts, :need_mib)
+    req = cold_request(table, node_id, workload, need_mib, opts)
 
-    case Scheduler.place_with_demand(%Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}) do
+    case place_cold(req, opts) do
       {:error, :capacity} ->
         {:error, :no_eligible_instance}
 
@@ -146,6 +183,32 @@ defmodule Embervm.WakeInstance do
   end
 
   def cold_candidates(_node_id, _opts), do: {:error, :no_eligible_instance}
+
+  @doc """
+  Claims one more VM of `need_mib` on the brick dialled as `dial_id` in the
+  in-flight ledger under `ref`, charging the brick's per-VM overhead on top
+  (`Embervm.Brick.charge_mib/2`, read from its capacity fact; a brick with no
+  fact is charged `need_mib`). For a boot whose target is already chosen (a
+  group member on its anchor, a retry hop); the caller settles or releases it.
+
+  Options: `:table` (the capacity table) and `:inflight` (as in `select/2`).
+  """
+  @spec claim(String.t(), term(), non_neg_integer() | nil, keyword()) :: :ok
+  def claim(dial_id, ref, need_mib, opts \\ []) do
+    case inflight_opts(Keyword.get(opts, :inflight, :default)) do
+      nil ->
+        :ok
+
+      ledger ->
+        charge =
+          case brick_for_dial(Keyword.get(opts, :table, NodeCapacity.table()), dial_id) do
+            nil -> max(need_mib || 0, 0)
+            brick -> Brick.charge_mib(brick, need_mib)
+          end
+
+        Inflight.claim(dial_id, ref, charge, ledger)
+    end
+  end
 
   @doc """
   The channel key of the instance on `node_id` currently RUNNING `vm_id` (its
@@ -431,10 +494,10 @@ defmodule Embervm.WakeInstance do
   # used: it gates EVERY brick on headroom, wrongly excluding a zero-headroom wildcard
   # on the still-DS-only fleet. This is the COLD path only; the warmth/relight-owner
   # branch of `select/2` is unchanged (the banked instance already holds the base).
-  defp cold_instance(table, node_id, workload, need_mib) do
-    req = %Request{table: table, node_id: node_id, workload: workload, need_mib: need_mib, base: :ready}
+  defp cold_instance(table, node_id, workload, need_mib, opts) do
+    req = cold_request(table, node_id, workload, need_mib, opts)
 
-    case Scheduler.place_with_demand(req) do
+    case place_cold(req, opts) do
       {:error, :no_bricks} ->
         # No brick is registered: either the CP is blind (NodeCapacity is
         # fail-closed empty until a brick dials home, the restart window) or the
@@ -460,6 +523,37 @@ defmodule Embervm.WakeInstance do
         {:ok, dial_id_from_brick(brick)}
     end
   end
+
+  defp cold_request(table, node_id, workload, need_mib, opts) do
+    %Request{
+      table: table,
+      node_id: node_id,
+      workload: workload,
+      need_mib: need_mib,
+      base: :ready,
+      record_demand: Keyword.get(opts, :record_demand, true),
+      inflight: Keyword.get(opts, :inflight, :default)
+    }
+  end
+
+  # The cold pick claims its head when the caller asked for a claim, so the
+  # debit lands on the same pending-net read that chose the brick.
+  defp place_cold(req, opts) do
+    case Keyword.get(opts, :claim_ref) do
+      nil -> Scheduler.place_with_demand(req)
+      ref -> Scheduler.place_and_claim(req, ref)
+    end
+  end
+
+  defp brick_for_dial(table, dial_id) do
+    table
+    |> Brick.bricks()
+    |> Enum.find(&(Brick.dial_id(&1) == dial_id))
+  end
+
+  defp inflight_opts(false), do: nil
+  defp inflight_opts(:default), do: [table: Inflight.table()]
+  defp inflight_opts(table) when is_atom(table), do: [table: table]
 
   # Record WHY a cold pick found nothing, at the moment it happens (issue #4077).
   #
@@ -498,7 +592,8 @@ defmodule Embervm.WakeInstance do
   end
 
   # One flat line describing the rejection. `capacity_denial=true` is a real
-  # capacity wall (the only case that feeds the autoscaler); `false` means bricks
+  # capacity wall (the only case that can feed the autoscaler, and only when the
+  # caller did not pass record_demand: false); `false` means bricks
   # were slot/mem-eligible but none base-READY, i.e. a provisioning wait a
   # scale-up would not help.
   @doc false
