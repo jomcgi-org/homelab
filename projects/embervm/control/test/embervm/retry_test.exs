@@ -117,6 +117,37 @@ defmodule Embervm.Scheduler.RetryTest do
     end
   end
 
+  describe "return_rejects" do
+    test "an exhausted frontier names every rejection in attempt order", %{rec: rec} do
+      script = %{"a" => {:reject, :pressure_a}, "b" => {:reject, {:no_channel, :down}}}
+
+      assert {:error, {:no_capacity, [{"a", :pressure_a}, {"b", {:no_channel, :down}}]}} =
+               Retry.run([brick("a"), brick("b")], scripted(script, rec), enabled?: true, return_rejects: true)
+    end
+
+    test "gate off names the single rejection", %{rec: rec} do
+      assert {:error, {:no_capacity, [{"a", :pressure}]}} =
+               Retry.run([brick("a"), brick("b")], scripted(%{}, rec), enabled?: false, return_rejects: true)
+    end
+
+    test "an empty frontier names none, and success and terminal errors are unchanged", %{rec: rec} do
+      assert {:error, {:no_capacity, []}} = Retry.run([], scripted(%{}, rec), return_rejects: true)
+
+      assert {:ok, :booted_b} =
+               Retry.run([brick("a"), brick("b")], scripted(%{"b" => {:ok, :booted_b}}, rec),
+                 enabled?: true,
+                 return_rejects: true
+               )
+
+      assert {:error, :bad} =
+               Retry.run([brick("c")], scripted(%{"c" => {:error, :bad}}, rec), return_rejects: true)
+    end
+
+    test "the default result shape stays the bare :no_capacity", %{rec: rec} do
+      assert {:error, :no_capacity} = Retry.run([brick("a")], scripted(%{}, rec), enabled?: true)
+    end
+  end
+
   describe "enabled?/0 reads the env gate" do
     test "unset / falsey is OFF, truthy is ON" do
       original = System.get_env("EMBERVM_PLACEMENT_RETRY")
