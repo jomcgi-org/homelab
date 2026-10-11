@@ -49,7 +49,9 @@ def validate_speaker_key(session: Session, campaign_id: str, key: object) -> str
     try:
         entity_id = str(UUID(key))
     except ValueError:
-        if re.fullmatch(r"[A-Za-z0-9 _'.-]{1,64}", key) is None:
+        # Dot-only labels are rejected: "/voices/.." normalizes to another path.
+        valid = re.fullmatch(r"[A-Za-z0-9 _'.-]{1,64}", key) is not None
+        if not valid or not key.strip("."):
             raise HTTPException(422, "invalid speaker key") from None
         return key
     entity = session.exec(

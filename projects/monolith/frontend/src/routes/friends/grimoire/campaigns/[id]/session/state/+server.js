@@ -166,7 +166,8 @@ export async function POST({ request, fetch, cookies, params }) {
     } else if (["saveVoice", "deleteVoice"].includes(input.operation)) {
       if (
         typeof input.speakerKey !== "string" ||
-        !/^[A-Za-z0-9 _'.-]{1,64}$/.test(input.speakerKey)
+        !/^[A-Za-z0-9 _'.-]{1,64}$/.test(input.speakerKey) ||
+        /^\.+$/.test(input.speakerKey)
       )
         throw new Error("Choose a narrator, NPC or speaker label.");
       path = `/campaigns/${params.id}/voices/${encodeURIComponent(input.speakerKey)}`;

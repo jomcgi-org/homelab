@@ -59,7 +59,7 @@
             type="checkbox"
             checked={settings.reveals}
             onchange={(event) => toggle("reveals", event.currentTarget.checked)}
-          />Read my reveals</label
+          />Read my reveals and private narration</label
         >{/if}
       <button
         type="button"

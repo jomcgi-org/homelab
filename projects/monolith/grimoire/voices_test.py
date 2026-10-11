@@ -108,7 +108,7 @@ def test_invalid_presets_are_rejected_without_mutation(setup, body):
     assert h.snapshot() == before
 
 
-@pytest.mark.parametrize("key", ["ref:opaque", "x" * 65, "bad!label"])
+@pytest.mark.parametrize("key", ["ref:opaque", "x" * 65, "bad!label", ".", ".."])
 def test_invalid_speaker_keys_are_rejected(setup, key):
     client, h = setup
     before = h.snapshot()

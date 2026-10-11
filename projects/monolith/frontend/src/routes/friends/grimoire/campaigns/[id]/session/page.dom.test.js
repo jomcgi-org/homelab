@@ -412,7 +412,9 @@ describe("session read-aloud controls and voice composer", () => {
     expect(document.body.textContent).not.toContain("NPC_CANARY");
     expect(document.body.textContent).not.toContain("ref:");
     expect(checkbox("Read DM narration").checked).toBe(false);
-    expect(checkbox("Read my reveals").checked).toBe(false);
+    expect(checkbox("Read my reveals and private narration").checked).toBe(
+      false,
+    );
   });
 
   it("skips backlog, speaks new table narration by default on DM refresh, and stops", async () => {
@@ -424,7 +426,7 @@ describe("session read-aloud controls and voice composer", () => {
     await settle();
     expect(synth.speak).not.toHaveBeenCalled();
     expect(checkbox("Read DM narration").checked).toBe(true);
-    expect(checkbox("Read my reveals")).toBeUndefined();
+    expect(checkbox("Read my reveals and private narration")).toBeUndefined();
     data = pageData("dm", [
       ...data.events,
       event("new", 2, "New story"),
@@ -486,7 +488,7 @@ describe("session read-aloud controls and voice composer", () => {
     let data = pageData("player", []);
     stubFetch(() => data);
     await render(data);
-    checkbox("Read my reveals").click();
+    checkbox("Read my reveals and private narration").click();
     await tick();
     data = pageData("player", [
       event("reveal", 1, "", {
@@ -559,6 +561,45 @@ describe("session read-aloud controls and voice composer", () => {
       operation: "deleteVoice",
       speakerKey: "narrator",
     });
+  });
+});
+
+describe("voice preset editor across state polls", () => {
+  it("keeps unsaved edits through a poll and reloads after the save lands", async () => {
+    vi.useFakeTimers();
+    const preset = (lang) => ({
+      speaker_key: "narrator",
+      voice_hint: { lang, names: ["English"] },
+      rate: 1,
+      pitch: 1,
+    });
+    // Every poll returns a fresh voices array, as the real BFF does.
+    let current = { ...pageData("dm", []), voices: [preset("en-US")] };
+    const fetch = stubFetch(() => ({
+      ...current,
+      voices: [...current.voices],
+    }));
+    await render(current);
+    const field = () => document.querySelector('[aria-label="Language hint"]');
+    field().value = "en-GB";
+    field().dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(field().value).toBe("en-GB");
+    document
+      .querySelector(".voice-presets form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(posted(fetch)[0]).toMatchObject({
+      operation: "saveVoice",
+      voice_hint: { lang: "en-GB", names: ["English"] },
+    });
+    // The saved preset arrives on the next poll and the form reloads from it.
+    current = { ...current, voices: [preset("fr-FR")] };
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(field().value).toBe("fr-FR");
   });
 });
 

@@ -14,8 +14,14 @@
         !npcs.some((npc) => npc.id === row.speaker_key),
     ),
   );
+  // Compared by value: the session poll hands over a new array every 2s, which
+  // must not reload the form over unsaved edits. A save or delete changes the
+  // stored preset, so this still reloads then.
+  let saved = $derived(
+    JSON.stringify(presets.find((row) => row.speaker_key === key) ?? null),
+  );
   $effect(() => {
-    const preset = presets.find((row) => row.speaker_key === key);
+    const preset = JSON.parse(saved);
     lang = preset?.voice_hint?.lang || "";
     names = preset?.voice_hint?.names?.join(", ") || "";
     rate = preset?.rate ?? 1;
@@ -77,7 +83,7 @@
           aria-label="Preset label"
           bind:value={freeLabel}
           maxlength="64"
-          pattern="[A-Za-z0-9 _'.\-]+"
+          pattern="(?!\.+$)[A-Za-z0-9 _'.\-]+"
           required
         /></label
       >{/if}
