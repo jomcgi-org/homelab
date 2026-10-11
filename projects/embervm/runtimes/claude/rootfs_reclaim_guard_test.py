@@ -13,6 +13,7 @@ values.
 
 import os
 import re
+import stat
 import subprocess
 import sys
 import textwrap
@@ -497,8 +498,42 @@ def test_concurrent_rootfs_builders_download_once_and_share_inode(tmp_path, same
         ]
         assert len({path.stat().st_ino for path in paths}) == 1
         assert all(path.read_bytes() == b"x" * 2048 for path in paths)
+        # A jailed Firecracker opens the shared inode as its per-VM uid, while
+        # mktemp and rootfs-store both create 0600 (#5255).
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o644 for path in paths)
     finally:
         _stop_builders(processes)
+
+
+def test_rootfs_cache_hit_heals_a_private_cache_mode(tmp_path):
+    """A cache published 0600 before the producer fix is world-readable after
+    its next hit, without a download and without replacing the inode."""
+    script, env = _rootfs_download_harness(tmp_path)
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache = cache_dir / f"rootfs-{'a' * 64}-size-4G-format-b2.ext4"
+    cache.write_bytes(b"cached-rootfs")
+    cache.chmod(0o600)
+    inode = cache.stat().st_ino
+    (tmp_path / "release").touch()
+
+    process = _start_builder(script, env, tmp_path, "hit")
+    output, _ = process.communicate(timeout=15)
+
+    assert process.returncode == 0, output
+    assert not (tmp_path / "downloads").exists(), "a cache hit must not download"
+    linked = cache_dir / "base-hit.ext4"
+    assert linked.stat().st_ino == inode
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o644
+
+
+def test_publish_makes_the_rootfs_readable_before_the_rename():
+    script = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    chmod = script.index('chmod 0644 "$cache_tmp"')
+    publish = script.index('mv -f "$cache_tmp" "$cache"')
+    assert chmod < publish, "the cache must never be visible at the mktemp mode"
 
 
 def test_size_and_format_changes_miss_without_reusing_legacy_cache(tmp_path):

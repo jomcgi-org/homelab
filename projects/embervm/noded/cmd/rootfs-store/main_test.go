@@ -552,6 +552,15 @@ func TestGetVerifiesChecksumAndPublishesOutput(t *testing.T) {
 	if !bytes.Equal(got, contents) {
 		t.Fatalf("downloaded contents = %q, want %q", got, contents)
 	}
+	// A jailed Firecracker opens the published rootfs as its per-VM uid, so the
+	// CreateTemp default of 0600 would make every jailed boot fail with EACCES.
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o644 {
+		t.Fatalf("published rootfs mode = %04o, want 0644", mode)
+	}
 }
 
 func TestCacheIdentitySeparatesSizeFormatAndLegacyNamespace(t *testing.T) {

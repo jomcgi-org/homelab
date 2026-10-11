@@ -258,6 +258,12 @@ func getRootfs(ctx context.Context, s *store.Store, identity cacheIdentity, out 
 		tmp.Close()
 		return fmt.Errorf("download %q: %w", marker.PayloadKey, err)
 	}
+	// CreateTemp makes the file 0600, but the published rootfs is a shared,
+	// immutable input that a jailed Firecracker opens as its per-VM uid.
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod temporary output: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temporary output: %w", err)
 	}
