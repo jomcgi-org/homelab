@@ -2941,3 +2941,37 @@ def test_shared_scratch_refuses_unsafe_shapes() -> None:
     ]:
         with pytest.raises(RuntimeError, match=message):
             _render_with_set("shared", base + extra)
+
+
+def test_brick_classes_carry_the_noded_per_vm_overhead() -> None:
+    """The control plane's class fit charges what every brick charges.
+
+    BrickController fits a need into a class only when an empty brick of that
+    class would admit it, which under the reserved model includes the per-VM
+    overhead. Each EMBERVM_BRICK_CLASSES entry must therefore carry the same
+    noded.vmOverheadMib the brick pods render, at the default and under an
+    override.
+    """
+    for settings in (
+        ["bricks.enabled=true"],
+        ["bricks.enabled=true", "noded.vmOverheadMib=96"],
+    ):
+        rendered = _render_with_set("brick-overhead", settings)
+        noded = set(
+            re.findall(
+                r'name:\s*EMBERVM_NODED_VM_OVERHEAD_MIB\s+value:\s*"([^"]+)"', rendered
+            )
+        )
+        assert len(noded) == 1, f"bricks disagree on the per-VM overhead: {noded}"
+
+        declared = [
+            json.loads(entry["value"])
+            for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict) and document.get("kind") == "Deployment"
+            for container in document["spec"]["template"]["spec"].get("containers", [])
+            for entry in container.get("env", [])
+            if entry.get("name") == "EMBERVM_BRICK_CLASSES"
+        ]
+        assert len(declared) == 1, "expected one control-plane brick class environment"
+        assert declared[0], "the brick class environment is empty; this test is inert"
+        assert {entry["vm_overhead_mib"] for entry in declared[0]} == {int(noded.pop())}
