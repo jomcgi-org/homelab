@@ -165,6 +165,9 @@ defmodule Embervm.MultiBrickSim.Fleet do
      %{
        harness: Keyword.fetch!(opts, :harness),
        cap_table: Keyword.fetch!(opts, :cap_table),
+       # The registry drops settled in-flight debits on every report it writes
+       # (NodeRegistry.refresh_capacity); nil when the CP debit is disabled.
+       inflight_table: Keyword.get(opts, :inflight_table),
        workloads: Keyword.fetch!(opts, :workloads),
        updated_at: Keyword.get(opts, :updated_at, 1_000_000),
        bricks: %{},
@@ -430,6 +433,8 @@ defmodule Embervm.MultiBrickSim.Fleet do
       stateful_vms: [],
       group_member_vms: []
     })
+
+    if st.inflight_table, do: Embervm.Scheduler.Inflight.observe_report(brick.dial, table: st.inflight_table)
   end
 end
 
@@ -583,7 +588,13 @@ defmodule Embervm.MultiBrickSim do
       WorkloadCatalog.upsert(wl, task_entry(wl, mib))
     end
 
-    {:ok, fleet} = Fleet.start_link(harness: harness, cap_table: cap_table, workloads: workloads)
+    {:ok, fleet} =
+      Fleet.start_link(
+        harness: harness,
+        cap_table: cap_table,
+        inflight_table: if(debit?, do: inflight_table),
+        workloads: workloads
+      )
     {:ok, callers} = Task.Supervisor.start_link()
 
     path = Path.join(System.tmp_dir!(), "embervm_msim_#{suffix}.db")
@@ -932,7 +943,7 @@ defmodule Embervm.MultiBrickSim do
     # their declared RAM, and the BrickController's clock moves on.
     if sim.config.debit do
       table = sim.ctx.inflight_table
-      for {key, mib, exp} <- :ets.tab2list(table), do: :ets.insert(table, {key, mib, exp - ms})
+      for {key, mib, exp, settled} <- :ets.tab2list(table), do: :ets.insert(table, {key, mib, exp - ms, settled})
     end
 
     :atomics.add(sim.ctx.clock, 1, ms)

@@ -191,7 +191,8 @@ defmodule Embervm.Scheduler do
   keeps the `mem_reject_floor_mib` term, because noded admits on need PLUS its
   floor and gating on need alone places workloads the node then refuses forever,
   issue #4137) and `:pending_mib` is the in-flight debit `place/1` charges
-  (absent reads as 0).
+  (`Embervm.Scheduler.Inflight.debit_mib/3`: the control plane's claims the
+  brick's report does not already count; absent reads as 0).
   """
   @spec mem_eligible?(brick(), non_neg_integer()) :: boolean()
   def mem_eligible?(brick, need_mib) do
@@ -236,11 +237,11 @@ defmodule Embervm.Scheduler do
 
   # The in-flight debit lookup for one request. `:default` reads the shared
   # ledger, an atom names a private table (tests), `false` disables the debit.
-  defp pending_fun(false), do: fn _dial -> 0 end
+  defp pending_fun(false), do: fn _dial, _brick -> 0 end
 
   defp pending_fun(inflight) do
     opts = inflight_opts(inflight)
-    fn dial -> Inflight.pending_mib(dial, opts) end
+    fn dial, brick -> Inflight.debit_mib(dial, brick, opts) end
   end
 
   defp inflight_opts(false), do: nil
@@ -248,7 +249,7 @@ defmodule Embervm.Scheduler do
   defp inflight_opts(table) when is_atom(table), do: [table: table]
 
   defp with_pending(brick, pending) do
-    case pending.(Brick.dial_id(brick)) do
+    case pending.(Brick.dial_id(brick), brick) do
       0 -> brick
       mib -> Map.put(brick, :pending_mib, pending_of(brick) + mib)
     end
