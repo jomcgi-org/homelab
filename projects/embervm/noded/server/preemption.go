@@ -71,6 +71,10 @@ func (s *Server) watchPreemptionNotices(ctx context.Context, client *http.Client
 			s.logger.Warn("GCE preemption notice watcher: bad endpoint", "err", err)
 			return
 		}
+		if (requestURL.Scheme != "http" && requestURL.Scheme != "https") || requestURL.Host == "" {
+			s.logger.Warn("GCE preemption notice watcher: endpoint must be an absolute HTTP URL")
+			return
+		}
 		query := requestURL.Query()
 		query.Set("wait_for_change", "true")
 		query.Set("last_etag", etag)

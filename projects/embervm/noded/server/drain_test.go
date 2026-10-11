@@ -529,3 +529,13 @@ func TestPreemptionWatcherRetriesAfterAnEarlierSuccess(t *testing.T) {
 		t.Fatal("the notice seen on the retry should have started the drain")
 	}
 }
+
+func TestPreemptionWatcherRejectsInvalidEndpointWithoutRetry(t *testing.T) {
+	for _, endpoint := range []string{"", "/relative", "ftp://metadata.example/path", "http:///path", "://bad"} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 8)
+			s.cfg.PreemptionNoticeEnabled = true
+			s.watchPreemptionNotices(t.Context(), http.DefaultClient, endpoint, func() { t.Error("invalid endpoint initiated drain") }, func(context.Context, time.Duration) bool { t.Error("invalid endpoint retried"); return false })
+		})
+	}
+}
