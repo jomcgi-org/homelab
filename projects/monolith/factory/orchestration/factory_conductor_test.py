@@ -19987,6 +19987,64 @@ def test_normal_graph_decision_persists_live_gate_before_edits(
     assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
 
 
+@pytest.mark.parametrize("action", ["plan", "add_node"])
+@pytest.mark.parametrize("failure", ["connect", "http_503"])
+@pytest.mark.parametrize("sync_step", ["card", "issue_patch"])
+def test_apply_decision_retries_gate_sync_before_graph_edits(
+    feedback_db, monkeypatch, action, failure, sync_step
+):
+    import httpx
+
+    from factory.orchestration import factory_landing as landing
+
+    task, policy = feedback_task()
+    edit = plan_edit("staged", "implement")
+    decision = (
+        {"action": "plan", "reason": "staged delivery", "edits": [edit]}
+        if action == "plan"
+        else edit
+    )
+    decision["gate"] = live_gate()
+    run = complete_feedback_node(task, policy, "conductor_1", decision)
+    cause = "factory-decision:conductor_1:1"
+    attempts = []
+
+    def fail(*_args, **_kwargs):
+        attempts.append(True)
+        if failure == "connect":
+            raise httpx.ConnectError("unavailable")
+        httpx.Response(
+            503, request=httpx.Request("GET", "https://example.test/gate")
+        ).raise_for_status()
+
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": ""})
+    if sync_step == "card":
+        monkeypatch.setattr(conductor, "_post_decision_card", fail)
+    else:
+        monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: None)
+        monkeypatch.setattr(landing, "github_write", fail)
+    for _ in range(2):
+        conductor.apply_decision(conductor._task(task["id"]), policy, run, [])
+        assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
+        assert not conductor._decision_processed(task["id"], cause)
+        assert not conductor._decision_processed(task["id"], cause + ":gate")
+        assert "implement_staged" not in {
+            n["node_key"] for n in conductor.graph.load_graph(task["id"])
+        }
+    assert len(attempts) == 2
+    monkeypatch.setattr(conductor, "_post_decision_card", lambda *_: None)
+    monkeypatch.setattr(conductor, "github_get", lambda *_: {"body": ""})
+    monkeypatch.setattr(landing, "github_write", lambda *a, **kw: None)
+    for _ in range(2):
+        conductor.apply_decision(conductor._task(task["id"]), policy, run, [])
+    assert conductor._decision_processed(task["id"], cause)
+    assert conductor._decision_processed(task["id"], cause + ":gate")
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])].count(
+        "implement_staged"
+    ) == 1
+    assert conductor._task(task["id"])["conductor_gates"] == [live_gate()]
+
+
 def test_live_gate_survives_failed_github_sync(feedback_db, monkeypatch):
     import httpx
 

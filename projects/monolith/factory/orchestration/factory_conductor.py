@@ -3942,16 +3942,34 @@ def _apply_decision(
             )
         # Keep a distinct cause: recording the gate must not mark the graph
         # decision processed if the process exits before applying its edits.
-        factory_gates.resolve(
-            task,
-            {
-                **decision,
-                "pr_number": decision.get("pr_number")
-                or _latest_pr(runs)
-                or delivery_pr_number(task),
-            },
-            cause + ":gate",
-        )
+        try:
+            factory_gates.resolve(
+                task,
+                {
+                    **decision,
+                    "pr_number": decision.get("pr_number")
+                    or _latest_pr(runs)
+                    or delivery_pr_number(task),
+                },
+                cause + ":gate",
+            )
+        except httpx.HTTPError as exc:
+            # Gate persistence precedes GitHub synchronization. A transient
+            # sync failure must leave the graph cause available for retry,
+            # rather than reach apply_decision's terminal evidence rejection.
+            code = (
+                f"github_http_{exc.response.status_code}"
+                if isinstance(exc, httpx.HTTPStatusError)
+                else "github_sync_failed"
+            )
+            _audit_once(
+                task["id"],
+                cause + ":gate-sync",
+                "conductor_gate_sync_deferred",
+                {"cause": cause, "decision_action": action, "code": code},
+            )
+            return
+
     if action == "plan":
         edits = decision["edits"]
         if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
