@@ -711,7 +711,8 @@ def test_factory_node_sessions_keep_recall_out_of_the_system_prompt(
     )
 
 
-def test_kg_drain_node_gets_no_recall_anywhere(monkeypatch, tmp_path):
+@pytest.mark.parametrize("node_key", ["kg-drain", "grimoire-kg-drain"])
+def test_kg_drain_node_gets_no_recall_anywhere(monkeypatch, tmp_path, node_key):
     engine = _factory_recall_engine(
         tmp_path, {"t-kg": "Extract facts from the merged pull request."}
     )
@@ -729,6 +730,7 @@ def test_kg_drain_node_gets_no_recall_anywhere(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp, "get_engine", lambda: engine)
     monkeypatch.setattr(mcp.store, "create_session", create_session)
     monkeypatch.setattr(recall, "recall_block", unexpected_recall)
+    monkeypatch.setenv("KNOWLEDGE_RECALL_ENABLED", "true")
 
     mcp._persist_session(
         "kg",
@@ -737,11 +739,12 @@ def test_kg_drain_node_gets_no_recall_anywhere(monkeypatch, tmp_path):
         "luna",
         system_prompt="base prompt",
         prompt="the first user task is long enough",
-        node_key=recall.KG_NODE_KEY,
+        node_key=node_key,
     )
-    message = mcp._factory_first_message("the node prompt", "t-kg", recall.KG_NODE_KEY)
+    message = mcp._factory_first_message("the node prompt", "t-kg", node_key)
 
     assert sessions[0]["system_prompt"] == "base prompt"
+    assert sessions[0]["recall_pending"] is False
     assert message == "the node prompt"
 
 

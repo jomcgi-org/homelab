@@ -10,25 +10,29 @@ sessions created afterwards.
 
 from __future__ import annotations
 
-from concurrent.futures import (
-    ThreadPoolExecutor,
-    TimeoutError as FutureTimeoutError,
-)
 import logging
 import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from concurrent.futures import (
+    ThreadPoolExecutor,
+)
+from concurrent.futures import (
+    TimeoutError as FutureTimeoutError,
+)
+from datetime import UTC, datetime
 
 from sqlmodel import Session
 
-from knowledge.recall_cache import cached_vector, prepare_recall, query_text
 from knowledge.clones import dedupe
 from knowledge.freshness import utc
+from knowledge.recall_cache import cached_vector, prepare_recall, query_text
 from knowledge.recall_metrics import increment, record_served
 
 KG_NODE_KEY = "kg-drain"
+GRIMOIRE_KG_NODE_KEY = "grimoire-kg-drain"
+NO_RECALL_NODE_KEYS = frozenset({KG_NODE_KEY, GRIMOIRE_KG_NODE_KEY})
 RECALL_LIMIT_DEFAULT = 5
 RECALL_MIN_PROMPT_CHARS = 24
 RECALL_TIMEOUT_SECONDS = 4.0
@@ -199,7 +203,7 @@ def recall_block(
     if any(value is None for value in deadlines):
         return None
     expires = min(deadlines)
-    clock = now if now is not None else datetime.now(timezone.utc)
+    clock = now if now is not None else datetime.now(UTC)
     if expires <= clock:
         return None
     record_served(items)
@@ -268,20 +272,22 @@ def recall_prompt_ready(prompt: str | None) -> bool:
 def defer_recall(prompt: str | None, *, node_key: str | None) -> bool:
     """Wait for the first meaningful user prompt on an otherwise empty session."""
     return (
-        recall_enabled() and node_key != KG_NODE_KEY and not recall_prompt_ready(prompt)
+        recall_enabled()
+        and node_key not in NO_RECALL_NODE_KEYS
+        and not recall_prompt_ready(prompt)
     )
 
 
 def attach_recall(
     system_prompt: str | None, prompt: str | None, *, node_key: str | None
 ) -> str | None:
-    """Append recall to a system prompt unless this is the KG drain lane.
+    """Append recall to a system prompt except in extraction-only drain lanes.
 
     Interactive sessions get recall only when a cached vector exists. A retry
     keyed on the first ready message is the follow-up; a cache miss currently
     consumes the session's one recall attempt.
     """
-    if node_key == KG_NODE_KEY:
+    if node_key in NO_RECALL_NODE_KEYS:
         return system_prompt
     block = recall_block(prompt)
     if block is None:
@@ -294,13 +300,13 @@ def attach_recall(
 def append_message_recall(
     message: str, recall_text: str | None, *, node_key: str | None
 ) -> str:
-    """Append recall to the end of a first user message, never the KG lane.
+    """Append recall to a first user message, never an extraction drain lane.
 
     Factory node sessions keep their system prompt identical across tasks so
     the provider prompt cache can share it, which leaves the first user message,
     after the node's own text, as the place for this per-task block.
     """
-    if node_key == KG_NODE_KEY:
+    if node_key in NO_RECALL_NODE_KEYS:
         return message
     block = recall_block(recall_text)
     if block is None:

@@ -670,7 +670,7 @@ def build_fixture(session: Session) -> LeakHarness:
                 quantity=3,
                 hidden_from_party=hidden,
                 entity_id=rows[entity_key].id if entity_key else None,
-                deleted_at=datetime.now(timezone.utc) if deleted else None,
+                deleted_at=datetime.now(UTC) if deleted else None,
             ),
         )
         keep(

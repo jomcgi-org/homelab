@@ -1030,13 +1030,13 @@ class InventoryItem(SQLModel, table=True):
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
             DateTime(timezone=True), nullable=False, server_default=func.now()
         ),
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
             DateTime(timezone=True), nullable=False, server_default=func.now()
         ),
@@ -1109,7 +1109,7 @@ class InventoryChange(SQLModel, table=True):
         sa_column=_uuid_column(fk="grimoire.session_event.id", ondelete="SET NULL"),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
             DateTime(timezone=True), nullable=False, server_default=func.now()
         ),
