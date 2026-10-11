@@ -22,6 +22,7 @@ from opentelemetry.trace import Status, StatusCode
 from factory.execution.constants import (
     CLEAN_TERMINAL_REASONS,
     DRAINER_NODE_KEY,
+    GRIMOIRE_KG_NODE_KEY,
     INTERRUPTED_TERMINAL_REASONS,
     KG_NODE_KEY,
     UNKNOWN_INVOCATION,
@@ -39,6 +40,8 @@ IDLE_POLL_SECONDS = 5
 IDLE_POLL_LIMIT = 180
 SPAN_SUMMARY_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 2000
+GRIMOIRE_KG_JOB_KIND = GRIMOIRE_KG_NODE_KEY
+KG_JOB_KINDS = frozenset((KG_JOB_KIND, GRIMOIRE_KG_JOB_KIND))
 DOCFIX_PR_URL_RE = re.compile(r"github\.com/jomcgi-org/homelab/pull/(\d+)")
 DOCFIX_REVIEW_SUMMARY_RE = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
@@ -124,6 +127,9 @@ def pin_drainer_settings() -> dict:
                 "drain.job_kinds": ",".join(settings["job_kinds"]),
                 "drain.max_jobs_per_cycle": settings["max_jobs_per_cycle"],
                 "drain.kg_max_jobs_per_day": settings["kg_max_jobs_per_day"],
+                "drain.grimoire_kg_max_jobs_per_day": settings.get(
+                    "grimoire_kg_max_jobs_per_day", 0
+                ),
                 "drain.docfix_auto_merge": settings.get("docfix_auto_merge", False),
                 "drain.docfix_review_enabled": settings.get(
                     "docfix_review_enabled", False
@@ -227,6 +233,8 @@ def claim_drainer_job(
     workflow_id: str,
     base_kg_cap: int,
     claim_index: int,
+    *,
+    base_grimoire_kg_cap: int = 0,
 ) -> dict | None:
     """Claim a lease only after reserving its future session under the pool lock."""
     from agent.api import claim_job
@@ -280,10 +288,14 @@ def claim_drainer_job(
             idle(f"provider_walled: {reason}")
             return None
         kg_walled, kg_reason = kg_provider_walled()
-        remaining_kinds = tuple(kinds)
-        if kg_walled and KG_JOB_KIND in remaining_kinds:
+        remaining_kinds = tuple(
+            kind
+            for kind in kinds
+            if kind != GRIMOIRE_KG_JOB_KIND or base_grimoire_kg_cap > 0
+        )
+        if kg_walled and KG_JOB_KINDS.intersection(remaining_kinds):
             remaining_kinds = tuple(
-                kind for kind in remaining_kinds if kind != KG_JOB_KIND
+                kind for kind in remaining_kinds if kind not in KG_JOB_KINDS
             )
             set_attributes(span, {"drain.kg_deferred": kg_reason})
             logger.info(
@@ -316,8 +328,9 @@ def claim_drainer_job(
                 idle("; ".join(reasons))
                 session.commit()
                 return None
-            is_kg = job["routine_kind"] == KG_JOB_KIND
-            node_key = KG_NODE_KEY if is_kg else DRAINER_NODE_KEY
+            job_kind = job["routine_kind"]
+            is_kg = job_kind in KG_JOB_KINDS
+            node_key = _node_key(job_kind)
             model = DRAIN_MODEL if is_kg else _job_model(job.get("payload"))
             if model != DRAIN_MODEL:
                 # The lane gate above judged DRAIN_MODEL; a job on another
@@ -342,19 +355,27 @@ def claim_drainer_job(
                             f"SELECT count(*) FROM {table} WHERE node_key = :node_key "
                             f"AND created_at >= {cutoff}"
                         ),
-                        {"node_key": KG_NODE_KEY},
+                        {"node_key": node_key},
                     ).scalar_one()
                 )
-                burst = kg_burst_state(session)
-                cap = base_kg_cap
-                if burst.active:
+                cap = (
+                    base_grimoire_kg_cap
+                    if job_kind == GRIMOIRE_KG_JOB_KIND
+                    else base_kg_cap
+                )
+                burst = kg_burst_state(session) if job_kind == KG_JOB_KIND else None
+                if burst is not None and burst.active:
                     # Every unbound start spends both the rolling allowance and
                     # the usable grant remainder, including parallel claimers.
                     cap = min(
                         base_kg_cap + burst.extra_jobs, used + burst.remaining_jobs
                     )
                 daily = {
-                    "daily_key": "kg-rolling-24h",
+                    "daily_key": (
+                        "grimoire-kg-rolling-24h"
+                        if job_kind == GRIMOIRE_KG_JOB_KIND
+                        else "kg-rolling-24h"
+                    ),
                     "daily_limit": cap,
                     "daily_used": used,
                 }
@@ -383,14 +404,19 @@ def claim_drainer_job(
             savepoint.rollback()
             if is_kg:
                 set_attributes(span, {"drain.kg_refusal": refusal})
-            reasons.append(f"{'kg' if is_kg else 'project'}_refused: {refusal}")
+            lane = (
+                "grimoire_kg"
+                if job_kind == GRIMOIRE_KG_JOB_KIND
+                else ("kg" if is_kg else "project")
+            )
+            reasons.append(f"{lane}_refused: {refusal}")
             if not is_kg:
                 idle("; ".join(reasons))
                 session.commit()
                 return None
             # A full KG lane or daily limit must not hide ordinary project work.
             remaining_kinds = tuple(
-                kind for kind in remaining_kinds if kind != KG_JOB_KIND
+                kind for kind in remaining_kinds if kind != job_kind
             )
         idle("; ".join(reasons))
         session.commit()
@@ -466,12 +492,26 @@ def drainer_wait_enabled() -> bool:
 
 
 def _claim_with_idle_wait(
-    ttl_secs, kinds, workflow_id, base_kg_cap, claim_index, *, wait_allowed
+    ttl_secs,
+    kinds,
+    workflow_id,
+    base_kg_cap,
+    claim_index,
+    *,
+    wait_allowed,
+    base_grimoire_kg_cap=0,
 ):
     for poll in range(IDLE_POLL_LIMIT + 1):
         if not drainer_wait_enabled():
             return None, False
-        job = claim_drainer_job(ttl_secs, kinds, workflow_id, base_kg_cap, claim_index)
+        grimoire_cap = (
+            {"base_grimoire_kg_cap": base_grimoire_kg_cap}
+            if GRIMOIRE_KG_JOB_KIND in kinds
+            else {}
+        )
+        job = claim_drainer_job(
+            ttl_secs, kinds, workflow_id, base_kg_cap, claim_index, **grimoire_cap
+        )
         if job is not None:
             return job, False
         if not wait_allowed or IDLE_POLL_LIMIT <= 0 or not drainer_wait_enabled():
@@ -516,6 +556,32 @@ def kg_jobs_today() -> int:
                     """
                 ),
                 {"node_key": KG_NODE_KEY},
+            ).scalar_one()
+        )
+
+
+@DBOS.step()
+def grimoire_kg_jobs_today() -> int:
+    from core.db import get_engine
+    from sqlalchemy import text
+    from sqlmodel import Session
+
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "agent_sessions" if sqlite else "agent_sessions.agent_sessions"
+    cutoff = (
+        "datetime(CURRENT_TIMESTAMP, '-24 hours')"
+        if sqlite
+        else "now() - interval '24 hours'"
+    )
+    with Session(engine) as session:
+        return int(
+            session.execute(
+                text(
+                    f"SELECT count(*) FROM {table} WHERE node_key = :node_key "
+                    f"AND created_at >= {cutoff}"
+                ),
+                {"node_key": GRIMOIRE_KG_NODE_KEY},
             ).scalar_one()
         )
 
@@ -740,6 +806,66 @@ def apply_kg_extraction(
             correction=correction,
             transaction_guard=check_claim if expected_holder is not None else None,
         )
+
+
+@DBOS.step()
+def build_grimoire_kg_prompt(payload: dict) -> str:
+    from core.db import get_engine
+    from grimoire.fact_extraction import build_fact_prompt
+    from sqlmodel import Session
+
+    values = _grimoire_payload_values(payload)
+    with Session(get_engine()) as session:
+        return build_fact_prompt(session, **values)
+
+
+@DBOS.step()
+def apply_grimoire_kg_extraction(
+    name: str, payload: dict, result_text: str, *, expected_holder: str | None = None
+) -> dict:
+    from agent.api import lock_claim
+    from core.db import get_engine
+    from grimoire.character_facts import write_character_facts
+    from grimoire.fact_extraction import EXTRACTION_VERSION, parse_facts
+    from sqlmodel import Session
+
+    values = _grimoire_payload_values(payload)
+    candidates = [fact.model_dump() for fact in parse_facts(result_text)]
+    with Session(get_engine()) as session:
+        if not lock_claim(session, name, expected_holder):
+            raise RuntimeError("routine job claim ownership changed")
+        result = write_character_facts(
+            session,
+            **values,
+            extraction_version=EXTRACTION_VERSION,
+            candidates=candidates,
+        )
+        session.commit()
+        return {
+            "written": len(result.written),
+            "rejected": len(result.rejections),
+            "summary": f"facts={len(result.written)} rejected={len(result.rejections)}",
+        }
+
+
+def _grimoire_payload_values(payload: object) -> dict:
+    from uuid import UUID
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "campaign_id",
+        "session_id",
+        "viewer_key",
+    }:
+        raise MalformedPayload("expected campaign_id, session_id and viewer_key only")
+    try:
+        for key, value in payload.items():
+            if key != "viewer_key" or value != "party":
+                UUID(value)
+        # Preserve UUID spelling: PostgreSQL compares canonically, but SQLite's
+        # test stand-ins store UUIDs as case-sensitive strings.
+        return dict(payload)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise MalformedPayload("invalid campaign, session or viewer identity") from exc
 
 
 @DBOS.step()
@@ -1125,10 +1251,21 @@ def _lost_owner_workflow(permit) -> str | None:
     """The drain workflow that reserved this permit, from its deterministic key."""
     if not permit.routine_job_name or permit.tier not in {"kg", "project"}:
         return None
-    node_key = KG_NODE_KEY if permit.tier == "kg" else DRAINER_NODE_KEY
-    suffix = f":{node_key}:{permit.routine_job_name}"
     local = permit.local_session_id or ""
-    if not local.endswith(suffix):
+    node_keys = (
+        (KG_NODE_KEY, GRIMOIRE_KG_NODE_KEY)
+        if permit.tier == "kg"
+        else (DRAINER_NODE_KEY,)
+    )
+    suffix = next(
+        (
+            f":{key}:{permit.routine_job_name}"
+            for key in node_keys
+            if local.endswith(f":{key}:{permit.routine_job_name}")
+        ),
+        None,
+    )
+    if suffix is None:
         return None
     workflow_id = local[: -len(suffix)]
     if not workflow_id.startswith("_drainer-worker:"):
@@ -1366,8 +1503,21 @@ def _is_audit(payload: object) -> bool:
 
 def _job_kinds(settings: dict) -> tuple[str, ...]:
     if "job_kinds" in settings:
-        return tuple(settings["job_kinds"])
-    return (settings.get("job_kind", "qwen-drain"),)
+        kinds = tuple(settings["job_kinds"])
+    else:
+        kinds = (settings.get("job_kind", "qwen-drain"),)
+    return tuple(
+        kind
+        for kind in kinds
+        if kind != GRIMOIRE_KG_JOB_KIND
+        or settings.get("grimoire_kg_max_jobs_per_day", 0) > 0
+    )
+
+
+def _node_key(job_kind: str) -> str:
+    if job_kind == GRIMOIRE_KG_JOB_KIND:
+        return GRIMOIRE_KG_NODE_KEY
+    return KG_NODE_KEY if job_kind == KG_JOB_KIND else DRAINER_NODE_KEY
 
 
 def _incremented_kg_payload(payload: object) -> tuple[dict, int]:
@@ -1505,7 +1655,7 @@ def _turn_timeout(settings: dict, job_kind: str) -> int:
     deadline would hit mid-history and diverge from the recorded steps. Never
     reread live config in the workflow.
     """
-    if job_kind == KG_JOB_KIND:
+    if job_kind in KG_JOB_KINDS:
         return settings.get("kg_turn_timeout_seconds", settings["turn_timeout_seconds"])
     return settings["turn_timeout_seconds"]
 
@@ -1565,7 +1715,7 @@ def drain_cycle() -> dict:
         # turns, and confirmed cleanup. Expiring its lease at one turn's 900s
         # could admit a second owner while this workflow still owns the job.
         lease_timeout = settings["turn_timeout_seconds"]
-        if KG_JOB_KIND in enabled_kinds:
+        if KG_JOB_KINDS.intersection(enabled_kinds):
             lease_timeout = max(
                 lease_timeout, 2 * settings.get("kg_turn_timeout_seconds", 900)
             )
@@ -1583,6 +1733,7 @@ def drain_cycle() -> dict:
                 settings.get("kg_max_jobs_per_day", 40),
                 claim_index,
                 wait_allowed=processed == 0 or succeeded > 0,
+                base_grimoire_kg_cap=settings.get("grimoire_kg_max_jobs_per_day", 0),
             )
             if job is None:
                 break
@@ -1615,10 +1766,31 @@ def drain_cycle() -> dict:
                     claim_kinds = [kind for kind in claim_kinds if kind != KG_JOB_KIND]
                     continue
 
+                if (
+                    job_kind == GRIMOIRE_KG_JOB_KIND
+                    and DBOS.patch("grimoire-kg-daily-cap-v1")
+                    and grimoire_kg_jobs_today()
+                    >= settings.get("grimoire_kg_max_jobs_per_day", 0)
+                ):
+                    cancel_drainer_reservation(
+                        _session_key(workflow_id, name, GRIMOIRE_KG_NODE_KEY)
+                    )
+                    finish_drainer_job(
+                        name,
+                        "deferred",
+                        "grimoire kg daily cap reached",
+                        defer_seconds=3600,
+                        **ownership,
+                    )
+                    claim_kinds = [
+                        kind for kind in claim_kinds if kind != GRIMOIRE_KG_JOB_KIND
+                    ]
+                    continue
+
                 processed += 1
 
                 session_id = None
-                node_key = KG_NODE_KEY if job_kind == KG_JOB_KIND else DRAINER_NODE_KEY
+                node_key = _node_key(job_kind)
                 local_session_id = _session_key(workflow_id, name, node_key)
                 set_attributes(
                     job_span,
@@ -1666,6 +1838,19 @@ def drain_cycle() -> dict:
                         branch = settings["branch"]
                         reasoning = settings.get("reasoning", False)
                         model = DRAIN_MODEL
+                    elif job_kind == GRIMOIRE_KG_JOB_KIND:
+                        job_payload = job.get("payload")
+                        if not DBOS.patch("grimoire-kg-prompt-v1"):
+                            raise MalformedPayload(
+                                "grimoire extraction not in this cycle history"
+                            )
+                        prompt = build_grimoire_kg_prompt(job_payload)
+                        # Campaign extraction needs no repository checkout or
+                        # tools. All authorized input is in the prompt.
+                        repo = ""
+                        branch = settings["branch"]
+                        reasoning = settings.get("reasoning", False)
+                        model = DRAIN_MODEL
                     else:
                         prompt, repo, branch, reasoning = _payload_values(
                             job.get("payload"), settings
@@ -1688,7 +1873,7 @@ def drain_cycle() -> dict:
                         enabled as review_enabled,
                     )
 
-                    if review_enabled():
+                    if job_kind != GRIMOIRE_KG_JOB_KIND and review_enabled():
                         from factory.reservation_reviews import routine_guidance
 
                         prompt += routine_guidance(name)
@@ -1703,7 +1888,7 @@ def drain_cycle() -> dict:
                         node_key,
                         None,
                         reasoning,
-                        admission_tier="kg" if job_kind == KG_JOB_KIND else "project",
+                        admission_tier="kg" if job_kind in KG_JOB_KINDS else "project",
                     )
                     set_attributes(job_span, {"drain.session_id": session_id})
                     turn_timeout = _turn_timeout(settings, job_kind)
@@ -1785,6 +1970,15 @@ def drain_cycle() -> dict:
                                 f"doc_drift={applied['doc_drift']} "
                                 f"docfix_jobs={applied['docfix_jobs']}"
                             )
+                    elif job_kind == GRIMOIRE_KG_JOB_KIND:
+                        result_text = str(turn.get("result_text") or "")
+                        if not DBOS.patch("grimoire-kg-apply-v1"):
+                            raise MalformedPayload(
+                                "grimoire extraction not in this cycle history"
+                            )
+                        summary = apply_grimoire_kg_extraction(
+                            name, job_payload, result_text, **ownership
+                        )["summary"]
                     else:
                         result_text = str(turn.get("result_text") or "")
                         summary = (
@@ -1792,7 +1986,7 @@ def drain_cycle() -> dict:
                             if name.startswith("docfix-review:")
                             else output
                         )
-                    if job_kind == KG_JOB_KIND:
+                    if job_kind in KG_JOB_KINDS:
                         finish_drainer_job(
                             name, "ok", summary, not recurring, **ownership
                         )

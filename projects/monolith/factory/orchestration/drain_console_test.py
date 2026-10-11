@@ -81,6 +81,14 @@ class TestSessionKey:
             == "kg:raw-1"
         )
 
+    def test_parses_grimoire_job_name(self):
+        assert (
+            drain_console.job_name_from_session_key(
+                "wf:grimoire-kg-drain:grimoire-kg-drain:session:party"
+            )
+            == "grimoire-kg-drain:session:party"
+        )
+
     def test_rejects_foreign_keys(self):
         assert drain_console.job_name_from_session_key("plain-uuid") is None
         assert drain_console.job_name_from_session_key(None) is None

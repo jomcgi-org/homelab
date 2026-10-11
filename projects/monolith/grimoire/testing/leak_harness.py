@@ -60,6 +60,7 @@ from grimoire.models import (
     SessionEvent,
 )
 from grimoire.play_embeddings import audience_columns, event_embedding_kind
+from grimoire.testing.routine_jobs import create_routine_jobs_table
 
 ROLES = ("dm", "player_a", "player_b", "no_character", "outsider", "other_campaign")
 MEMBERS = frozenset(("dm", "player_a", "player_b", "no_character"))
@@ -183,6 +184,7 @@ def sqlite_harness(path):
             table.schema = None
         SQLModel.metadata.create_all(engine)
         with Session(engine) as session:
+            create_routine_jobs_table(session)
             yield build_fixture(session)
     finally:
         engine.dispose()

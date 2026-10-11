@@ -230,7 +230,7 @@ agents:
     stallThresholdSeconds: 2700
     # Claim the existing general-purpose lane and the knowledge extraction lane.
     # Set jobKinds: [] to pause all claims while leaving the drainer enabled.
-    jobKinds: ["qwen-drain", "kg-drain"]
+    jobKinds: ["qwen-drain", "kg-drain", "grimoire-kg-drain"]
     # Bound knowledge extraction turns independently of the general queue.
     kgMaxJobsPerDay: 40
     # Permit repo-diff extraction to queue human-reviewed documentation PRs.
@@ -1957,6 +1957,10 @@ platformAuth:
   enrollmentFlowUrl: ""
 
 grimoire:
+  kg:
+    # Session-end facts queue regardless; this separate rolling daily cap gates
+    # Luna claims. Enable only after reviewing real-session operational checks.
+    dailyCap: 0
   invitationLinks:
     enabled: false
     enrollmentEnabled: false

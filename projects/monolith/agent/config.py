@@ -37,6 +37,7 @@ class DrainerSettings:
     docfix_auto_merge: bool = False
     docfix_review_enabled: bool = False
     kg_turn_timeout_seconds: int = 900
+    grimoire_kg_max_jobs_per_day: int = 0
 
 
 AgentSessionsChannelNotify = Literal["needs-input", "all", "none"]
@@ -76,7 +77,11 @@ def load_drainer_settings() -> DrainerSettings:
         )
     else:
         legacy_kind = os.environ.get("DRAINER_JOB_KIND", "").strip()
-        job_kinds = (legacy_kind,) if legacy_kind else ("qwen-drain", "kg-drain")
+        job_kinds = (
+            (legacy_kind,)
+            if legacy_kind
+            else ("qwen-drain", "kg-drain", "grimoire-kg-drain")
+        )
     return DrainerSettings(
         enabled=drainer_enabled(),
         max_jobs_per_cycle=int(os.environ.get("DRAINER_MAX_JOBS_PER_CYCLE", "3")),
@@ -91,6 +96,9 @@ def load_drainer_settings() -> DrainerSettings:
         ),
         job_kinds=job_kinds,
         kg_max_jobs_per_day=int(os.environ.get("DRAINER_KG_MAX_JOBS_PER_DAY", "40")),
+        grimoire_kg_max_jobs_per_day=int(
+            os.environ.get("DRAINER_GRIMOIRE_KG_MAX_JOBS_PER_DAY", "0")
+        ),
         docfix_auto_merge=(
             os.environ.get("DRAINER_DOCFIX_AUTO_MERGE", "false").lower() == "true"
         ),

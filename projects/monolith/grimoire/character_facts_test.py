@@ -204,6 +204,26 @@ def test_payload_is_json_serializable_and_passes_leak_canaries(harness):
     assert h.rows["event_character_a"].id not in response.text
 
 
+@pytest.mark.parametrize("body", [{"ooc": True}, {"redacted": True}])
+def test_writer_rejects_excluded_transcript_evidence(harness, body):
+    h = harness
+    event = SessionEvent(
+        campaign_id=h.rows["campaign"].id,
+        session_id=h.rows["campaign_session"].id,
+        seq=150,
+        kind="utterance",
+        audience="table",
+        body={"text": "not character knowledge", **body},
+    )
+    h.session.add(event)
+    h.session.commit()
+    result = write(
+        h, [FactCandidate(statement="invalid", evidence_event_ids=[event.id])]
+    )
+    assert not result.written
+    assert "not live and visible" in result.rejections[0].reason
+
+
 def test_payload_transcript_excludes_ooc_other_pc_and_dm(harness):
     h = harness
     rows = []

@@ -10,7 +10,11 @@ from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from factory.execution import kg_feed
-from factory.execution.constants import KG_NODE_KEY, SYNTHETIC_SESSION_PREFIX
+from factory.execution.constants import (
+    GRIMOIRE_KG_NODE_KEY,
+    KG_NODE_KEY,
+    SYNTHETIC_SESSION_PREFIX,
+)
 from factory.execution.models import AgentSession, AgentTurn, PendingMessage
 from knowledge.models import KnowledgeFeedState, RawInput
 
@@ -97,6 +101,7 @@ def test_pick_finished_sessions_applies_all_predicates(engine):
         )
         _add_session(session, "not-quiet", age_seconds=5)
         _add_session(session, "kg", node_key=KG_NODE_KEY)
+        _add_session(session, "campaign-facts", node_key=GRIMOIRE_KG_NODE_KEY)
         _add_session(session, f"{SYNTHETIC_SESSION_PREFIX}job")
         _add_session(session, "wf:qwen-drain:docfix:abc123", node_key="qwen-drain")
         _add_session(

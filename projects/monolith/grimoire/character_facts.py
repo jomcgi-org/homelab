@@ -118,8 +118,13 @@ def _supports_fact(event: SessionEvent) -> bool:
     # event itself. Facts have event-level provenance, so that changed snapshot
     # cannot prove which item originally supported a statement. Precision first:
     # keep the surviving items in the journal, but stop using it as evidence.
-    return event.retracted_at is None and not (
-        event.kind == "reveal" and event.body.get("retracted_entity_ids")
+    return (
+        event.retracted_at is None
+        and not (
+            event.kind == "utterance"
+            and (event.body.get("ooc") is True or event.body.get("redacted") is True)
+        )
+        and not (event.kind == "reveal" and event.body.get("retracted_entity_ids"))
     )
 
 
@@ -167,7 +172,7 @@ def build_fact_payload(
     vocabulary = _vocabulary(session, campaign_id, viewer)
     projected = []
     for row in events:
-        if row.kind == "utterance" and row.body.get("ooc") is True:
+        if row.kind == "utterance" and not _supports_fact(row):
             continue
         body = row.body
         if row.kind == "reveal":

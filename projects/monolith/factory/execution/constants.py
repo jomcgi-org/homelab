@@ -10,6 +10,7 @@ from shared.invocation_outcomes import UNKNOWN_INVOCATION as UNKNOWN_INVOCATION
 # runtime switch.
 DRAINER_NODE_KEY = "qwen-drain"
 KG_NODE_KEY = "kg-drain"
+GRIMOIRE_KG_NODE_KEY = "grimoire-kg-drain"
 
 # Retired synthetic sessions are not operator work, so console queries keep
 # using their origin marker and original prompt to hide existing database rows.

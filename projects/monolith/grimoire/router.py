@@ -2936,6 +2936,10 @@ def update_game_session(
     game_session.status = body.status
     if body.status == "ended" and game_session.ended_at is None:
         game_session.ended_at = datetime.now(timezone.utc)
+    if body.status == "ended":
+        from grimoire.fact_extraction import enqueue_session_facts
+
+        enqueue_session_facts(session, campaign_id, session_id)
 
     session.add(game_session)
     session.commit()

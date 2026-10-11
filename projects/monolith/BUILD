@@ -1531,6 +1531,7 @@ py_library(
         ":pkg_core",
         ":pkg_cyclegroup",
         ":pkg_framework",
+        ":pkg_grimoire",
         ":pkg_knowledge",
         ":swarm_factory_controls",
         "@pip//certifi",
@@ -5565,8 +5566,10 @@ py_test(
         ":pkg_agent_sessions",
         ":pkg_cyclegroup",
         ":pkg_factory",
+        ":pkg_grimoire",
         ":pkg_knowledge",
         ":pkg_swarm",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
@@ -6521,6 +6524,21 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_fact_extraction_test",
+    srcs = ["grimoire/fact_extraction_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_character_facts_test",
     srcs = ["grimoire/character_facts_test.py"],
     imports = ["."],
@@ -6743,6 +6761,7 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_grimoire",
+        "//projects/monolith/grimoire/testing:pkg_grimoire_testing",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",

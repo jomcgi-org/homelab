@@ -47,6 +47,10 @@ SETTINGS = {
 class FakeDBOS:
     workflow_id = "workflow-1"
 
+    @staticmethod
+    def patch(_name):
+        return True
+
 
 @pytest.fixture(autouse=True)
 def _clear_spans(monkeypatch):
@@ -99,7 +103,7 @@ def _run(
     )
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
 
-    def claim(ttl_secs, kinds, _workflow_id, _base_cap, _index):
+    def claim(ttl_secs, kinds, _workflow_id, _base_cap, _index, **kwargs):
         claims.append((ttl_secs, kinds))
         return next(queued)
 
@@ -145,6 +149,299 @@ def _run(
 
     result = drainer.drain_cycle.__wrapped__()
     return result, claims, starts, completions, notifications, destroys
+
+
+@pytest.mark.parametrize("cap", [0, -1, 10])
+def test_grimoire_claim_kind_is_default_off(cap):
+    settings = SETTINGS | {
+        "job_kinds": (*SETTINGS["job_kinds"], "grimoire-kg-drain"),
+        "grimoire_kg_max_jobs_per_day": cap,
+    }
+    assert ("grimoire-kg-drain" in drainer._job_kinds(settings)) is (cap > 0)
+    assert "kg-drain" in drainer._job_kinds(settings)
+    assert "grimoire-kg-drain" not in drainer._job_kinds(
+        {"job_kinds": ("grimoire-kg-drain",)}
+    )
+
+
+def test_grimoire_uses_pinned_cap_kg_tier_luna_and_own_writer(monkeypatch):
+    payload = {"campaign_id": "c", "session_id": "s", "viewer_key": "v"}
+    applied = []
+    tiers = []
+    monkeypatch.setattr(drainer, "grimoire_kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(
+        drainer, "build_grimoire_kg_prompt", lambda value: "campaign prompt"
+    )
+    monkeypatch.setattr(
+        drainer,
+        "apply_grimoire_kg_extraction",
+        lambda *args, **kwargs: (
+            applied.append((args, kwargs)) or {"summary": "facts=1 rejected=0"}
+        ),
+    )
+    for method in (
+        "build_kg_prompt",
+        "apply_kg_extraction",
+        "record_kg_failure",
+        "increment_kg_job_attempt",
+    ):
+        monkeypatch.setattr(
+            drainer,
+            method,
+            lambda *_args, **_kwargs: pytest.fail(
+                "campaign content entered knowledge path"
+            ),
+        )
+    result, claims, starts, completions, _, destroys = _run(
+        monkeypatch,
+        [
+            {
+                "name": "campaign-job",
+                "routine_kind": "grimoire-kg-drain",
+                "payload": payload,
+                "locked_by": "owner",
+            }
+        ],
+        settings=SETTINGS
+        | {"job_kinds": ("grimoire-kg-drain",), "grimoire_kg_max_jobs_per_day": 10},
+        start_session=lambda *_args, **kwargs: (
+            tiers.append(kwargs["admission_tier"]) or 101
+        ),
+    )
+    assert result["processed"] == 1
+    assert claims[0][1] == ("grimoire-kg-drain",)
+    assert starts[0][0] == "workflow-1:grimoire-kg-drain:campaign-job"
+    assert starts[0][1:4] == ("campaign prompt", "luna", "")
+    assert tiers == ["kg"]
+    assert applied == [
+        (("campaign-job", payload, "finished"), {"expected_holder": "owner"})
+    ]
+    assert completions == [("campaign-job", "ok", "facts=1 rejected=0", True)]
+    assert destroys == [(101, "workflow-1:grimoire-kg-drain:campaign-job")]
+
+
+def test_grimoire_cap_reached_defers_without_hiding_kg(monkeypatch):
+    monkeypatch.setattr(drainer, "grimoire_kg_jobs_today", lambda: 10)
+    monkeypatch.setattr(
+        drainer, "build_grimoire_kg_prompt", lambda *_: pytest.fail("cap spent")
+    )
+    result, claims, starts, completions, *_ = _run(
+        monkeypatch,
+        [{"name": "campaign-job", "routine_kind": "grimoire-kg-drain", "payload": {}}],
+        settings=SETTINGS
+        | {
+            "job_kinds": (*SETTINGS["job_kinds"], "grimoire-kg-drain"),
+            "grimoire_kg_max_jobs_per_day": 10,
+        },
+    )
+    assert result["processed"] == 0 and not starts
+    assert completions == [
+        ("campaign-job", "deferred", "grimoire kg daily cap reached", 3600)
+    ]
+    assert claims[-1][1] == SETTINGS["job_kinds"]
+
+
+def test_grimoire_malformed_output_fails_without_knowledge_retry(monkeypatch):
+    from grimoire.fact_extraction import parse_facts
+
+    monkeypatch.setattr(drainer, "grimoire_kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_grimoire_kg_prompt", lambda *_: "prompt")
+    monkeypatch.setattr(
+        drainer,
+        "apply_grimoire_kg_extraction",
+        lambda _name, _payload, output: parse_facts(output),
+    )
+    monkeypatch.setattr(
+        drainer, "record_kg_failure", lambda *_: pytest.fail("knowledge write")
+    )
+    result, _, _, completions, _, destroys = _run(
+        monkeypatch,
+        [{"name": "campaign-job", "routine_kind": "grimoire-kg-drain", "payload": {}}],
+        settings=SETTINGS
+        | {"job_kinds": ("grimoire-kg-drain",), "grimoire_kg_max_jobs_per_day": 10},
+    )
+    assert result["processed"] == 1
+    assert completions[0][:2] == ("campaign-job", "error")
+    assert "missing valid JSON object" in completions[0][2]
+    assert len(destroys) == 1
+
+
+def test_grimoire_apply_guards_ownership_and_never_writes_knowledge(
+    tmp_path, monkeypatch
+):
+    from grimoire.models import CharacterFact
+    from grimoire.testing.leak_harness import sqlite_harness
+    from grimoire.testing.sql_capture import assert_no_knowledge_sql, capture_sql
+    from sqlmodel import select
+
+    with sqlite_harness(tmp_path / "campaign-apply.db") as h:
+        monkeypatch.setattr("core.db.get_engine", lambda: h.session.get_bind())
+        payload = {
+            "campaign_id": h.rows["campaign"].id,
+            "session_id": h.rows["campaign_session"].id,
+            "viewer_key": h.rows["character_a"].id,
+        }
+        h.session.execute(
+            text(
+                "INSERT INTO routine_jobs (name,routine_kind,locked_by) VALUES ('campaign-job','grimoire-kg-drain','owner')"
+            )
+        )
+        h.session.commit()
+        output = json.dumps(
+            {
+                "facts": [
+                    {
+                        "statement": "Gundren owes us 10gp",
+                        "evidence_event_ids": [h.rows["event_character_a"].id],
+                        "entity_id": h.rows["a_only"].id,
+                        "confidence": 0.1,
+                    }
+                ]
+            }
+        )
+        with capture_sql(h.session.get_bind()) as sql:
+            with pytest.raises(RuntimeError, match="ownership changed"):
+                drainer.apply_grimoire_kg_extraction.__wrapped__(
+                    "campaign-job", payload, output, expected_holder="stale"
+                )
+            applied = drainer.apply_grimoire_kg_extraction.__wrapped__(
+                "campaign-job", payload, output, expected_holder="owner"
+            )
+            replayed = drainer.apply_grimoire_kg_extraction.__wrapped__(
+                "campaign-job", payload, output, expected_holder="owner"
+            )
+        assert_no_knowledge_sql(sql)
+        assert (
+            applied
+            == replayed
+            == {"written": 1, "rejected": 0, "summary": "facts=1 rejected=0"}
+        )
+        facts = h.session.exec(
+            select(CharacterFact).where(
+                CharacterFact.statement == "Gundren owes us 10gp"
+            )
+        ).all()
+        assert len(facts) == 1
+        assert facts[0].extraction_version == "grimoire-kg-drain/luna@v1"
+        bad = json.loads(output)
+        bad["facts"][0]["evidence_event_ids"] = [h.rows["event_dm"].id]
+        assert (
+            drainer.apply_grimoire_kg_extraction.__wrapped__(
+                "campaign-job", payload, json.dumps(bad), expected_holder="owner"
+            )["rejected"]
+            == 1
+        )
+
+
+@pytest.mark.parametrize("cap", [0, 1])
+def test_grimoire_admission_cap_is_separate_and_reserves_unbound_starts(
+    admission_database, cap
+):
+    from sqlmodel import select
+
+    from factory.execution.models import AgentCapacityReservation
+
+    for name in ("campaign-a", "campaign-b"):
+        _queued_job(admission_database, name, kind="grimoire-kg-drain")
+    kinds = ("grimoire-kg-drain",)
+    first = drainer.claim_drainer_job.__wrapped__(
+        2100, kinds, "wf-a", 0, 0, base_grimoire_kg_cap=cap
+    )
+    assert (first is not None) is (cap > 0)
+    assert (
+        drainer.claim_drainer_job.__wrapped__(
+            2100, kinds, "wf-b", 999, 0, base_grimoire_kg_cap=cap
+        )
+        is None
+    )
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert len(reservations) == cap
+        if cap:
+            assert reservations[0].daily_key == "grimoire-kg-rolling-24h"
+            assert reservations[0].tier == "kg"
+        assert (
+            db.execute(
+                text("SELECT count(*) FROM routine_jobs WHERE locked_by IS NOT NULL")
+            ).scalar_one()
+            == cap
+        )
+
+
+def test_grimoire_provider_wall_does_not_hide_project_jobs(
+    admission_database, monkeypatch
+):
+    _queued_job(admission_database, "campaign", kind="grimoire-kg-drain")
+    _queued_job(admission_database, "project", kind="qwen-drain")
+    monkeypatch.setattr(drainer, "kg_provider_walled", lambda: (True, "unobserved"))
+    job = drainer.claim_drainer_job.__wrapped__(
+        2100, ("grimoire-kg-drain", "qwen-drain"), "wf", 40, 0, base_grimoire_kg_cap=10
+    )
+    assert job["name"] == "project"
+
+
+def test_parallel_grimoire_claims_cannot_spend_last_daily_job(admission_database):
+    from concurrent.futures import ThreadPoolExecutor
+
+    for name in ("campaign-a", "campaign-b"):
+        _queued_job(admission_database, name, kind="grimoire-kg-drain")
+
+    def claim(workflow):
+        return drainer.claim_drainer_job.__wrapped__(
+            2100,
+            ("grimoire-kg-drain",),
+            workflow,
+            999,
+            0,
+            base_grimoire_kg_cap=1,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        jobs = list(workers.map(claim, ("wf-a", "wf-b")))
+    assert sum(job is not None for job in jobs) == 1
+
+
+def test_grimoire_daily_count_is_separate_from_ordinary_kg(admission_database):
+    from factory.execution.models import AgentSession
+
+    with Session(admission_database) as db:
+        db.add_all(
+            [
+                AgentSession(
+                    local_session_id=f"session-{kind}",
+                    workspace="",
+                    branch="main",
+                    node_key=kind,
+                    status="completed",
+                    admission_tier="kg",
+                )
+                for kind in ("kg-drain", "grimoire-kg-drain")
+            ]
+        )
+        db.commit()
+    assert drainer.grimoire_kg_jobs_today.__wrapped__() == 1
+    _queued_job(admission_database, "campaign", kind="grimoire-kg-drain")
+    _queued_job(admission_database, "ordinary")
+    job = drainer.claim_drainer_job.__wrapped__(
+        2100,
+        ("grimoire-kg-drain", "kg-drain"),
+        "wf",
+        10,
+        0,
+        base_grimoire_kg_cap=1,
+    )
+    assert job["name"] == "ordinary"
+
+
+def test_grimoire_unbound_permit_owner_is_recoverable():
+    from types import SimpleNamespace
+
+    permit = SimpleNamespace(
+        routine_job_name="grimoire-kg-drain:session:party",
+        tier="kg",
+        local_session_id="_drainer-worker:0:1:grimoire-kg-drain:grimoire-kg-drain:session:party",
+    )
+    assert drainer._lost_owner_workflow(permit) == "_drainer-worker:0:1"
 
 
 def test_kg_rejection_gets_exactly_one_correction_turn(monkeypatch):
