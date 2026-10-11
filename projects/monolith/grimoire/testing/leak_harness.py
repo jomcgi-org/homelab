@@ -809,6 +809,21 @@ def seed_handouts(h: LeakHarness) -> FakeS3Client:
                 retracted_at=datetime.now(timezone.utc) if retracted else None,
             ),
         )
+    # Like main's play events, seed a vector for the live handout and its
+    # retracted twin so knowledge search reaches them and the audience filter,
+    # not an empty index, is what keeps them from other viewers.
+    for key in ("event_handout", "event_handout_retracted"):
+        keep(
+            f"embedding_{key}",
+            Embedding(
+                embeddable_kind=event_embedding_kind(rows[key]),
+                embeddable_id=rows[key].id,
+                model="harness-play",
+                dim=1024,
+                vector=[0.0] * 1024,
+                **audience_columns(rows[key]),
+            ),
+        )
     h.session.add_all(objects)
     h.session.commit()
     client = FakeS3Client()
