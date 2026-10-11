@@ -76,9 +76,10 @@ defmodule Embervm.ServingManager do
   relight and creates cold on the fleet frontier. When that brick refuses the
   relight anyway (`RESOURCE_EXHAUSTED`), the instance returns to banked with its
   snapshot, and the same wake (parked callers, claim ref) continues as a cold
-  create that excludes the refusing brick. Only that cold placement's miss
-  records demand and 503s the callers, so a full brick never pins a workload to
-  503s while another brick has room.
+  create that excludes the refusing brick. A store restore whose anchor node has
+  no brick that fits the guest continues cold the same way. Only the cold
+  placement's miss records demand and 503s the callers, so a full brick never
+  pins a workload to 503s while another brick has room.
   """
 
   use GenServer
@@ -431,6 +432,8 @@ defmodule Embervm.ServingManager do
             send(self(), {:wake_done, workload, {:error, reason}})
         end
 
+        state
+
       # Restore-on-miss (R6): the local snapshot is gone but its store copy is
       # recoverable. Restore the SERVING bundle inside the wake worker FIRST (so
       # park/single-flight semantics are unchanged), then relight exactly as the warm
@@ -458,19 +461,37 @@ defmodule Embervm.ServingManager do
                 send(self(), {:wake_done, workload, {:error, {:relight_mark, reason}}})
             end
 
+            state
+
+          # No brick on the anchor node fits the guest (the node-scoped pick took no
+          # claim). The store copy keeps the instance banked, and the SAME wake
+          # continues as an unpinned cold create, as relight_refused/3 does: a
+          # pinned restore would 503 every miss while another brick has room.
+          {:error, :no_eligible_instance} ->
+            case cold_plan(state, workload, claim_ref) do
+              {:cold, candidates} ->
+                spawn_wake(owner, workload, fn -> run_cold(state, workload, candidates, entry, claim_ref) end)
+                stamp_wake_trace(state, workload, %{cold: true})
+
+              {:error, reason} ->
+                send(self(), {:wake_done, workload, {:error, reason}})
+                state
+            end
+
           {:error, reason} ->
             send(self(), {:wake_done, workload, {:error, reason}})
+            state
         end
 
       {:cold, candidates} ->
         spawn_wake(owner, workload, fn -> run_cold(state, workload, candidates, entry, claim_ref) end)
+        state
 
       {:error, reason} ->
         # No capacity / snapshot lost: report it so the parked callers 503.
         send(self(), {:wake_done, workload, {:error, reason}})
+        state
     end
-
-    state
   end
 
   # Select the SPECIFIC instance on the resolved node to dial (Step 4): prefer the
