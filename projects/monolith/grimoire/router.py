@@ -84,6 +84,7 @@ from grimoire.play_embeddings import (
 )
 from grimoire.play_embeddings import (
     sync_event_embeddings,
+    sync_events_embeddings,
     sync_note_embeddings,
 )
 from grimoire.reveals import reveal_items
@@ -2247,7 +2248,6 @@ def _retract_grant_history(session: Session, grant: KnowledgeGrant) -> None:
                 }
                 if not reveal_items(event.body):
                     event.retracted_at = datetime.now(timezone.utc)
-                sync_event_embeddings(session, event)
                 changed.append(event)
             continue
         if (
@@ -2255,9 +2255,9 @@ def _retract_grant_history(session: Session, grant: KnowledgeGrant) -> None:
             and grant.player_character_id in event.audience_pc_ids
         ):
             event.retracted_at = datetime.now(timezone.utc)
-            sync_event_embeddings(session, event)
             changed.append(event)
     session.add_all(changed)
+    sync_events_embeddings(session, changed)
 
 
 @router.patch(

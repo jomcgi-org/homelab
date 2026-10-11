@@ -198,10 +198,15 @@ def sync_note_embeddings(session: Session, note: Note) -> None:
 
 
 def sync_event_embeddings(session: Session, event: SessionEvent) -> None:
-    from grimoire.character_facts import retract_facts_for_event
+    sync_events_embeddings(session, [event])
 
-    _sync_embeddings(session, event, ("event", "transcript"))
-    retract_facts_for_event(session, event)
+
+def sync_events_embeddings(session: Session, events: list[SessionEvent]) -> None:
+    from grimoire.character_facts import retract_facts_for_events
+
+    for event in sorted(events, key=lambda row: row.id):
+        _sync_embeddings(session, event, ("event", "transcript"))
+    retract_facts_for_events(session, events)
 
 
 def sync_fact_embeddings(session: Session, fact: CharacterFact) -> None:

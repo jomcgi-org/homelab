@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import and_, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
@@ -345,24 +346,43 @@ def write_character_facts(
 
 
 def retract_facts_for_event(session: Session, event: SessionEvent) -> None:
-    """Retract facts when no unchanged live evidence survives, in this transaction."""
+    """Single-event convenience wrapper for the transaction-wide cascade."""
+    retract_facts_for_events(session, [event])
+
+
+def retract_facts_for_events(session: Session, events: list[SessionEvent]) -> None:
+    """Lock all affected facts in id order before cascading a batch of events.
+
+    Callers must gather the whole transaction's changed events before invoking
+    this function, after acquiring event locks in id order.
+    """
     from grimoire.play_embeddings import sync_fact_embeddings
 
-    if _supports_fact(event):
+    changed = [event for event in events if not _supports_fact(event)]
+    if not changed:
         return
+    scopes = {(event.campaign_id, event.session_id) for event in changed}
+    event_ids = {event.id for event in changed}
     query = select(CharacterFact).where(
-        CharacterFact.campaign_id == event.campaign_id,
-        CharacterFact.session_id == event.session_id,
+        or_(
+            *[
+                and_(
+                    CharacterFact.campaign_id == campaign_id,
+                    CharacterFact.session_id == session_id,
+                )
+                for campaign_id, session_id in sorted(scopes)
+            ]
+        ),
         CharacterFact.status != "retracted",
     )
     if session.get_bind().dialect.name == "postgresql":
-        query = query.where(CharacterFact.evidence_event_ids.contains([event.id]))
+        query = query.where(CharacterFact.evidence_event_ids.overlap(sorted(event_ids)))
     for fact in session.exec(
         query.order_by(CharacterFact.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).all():
-        if event.id not in fact.evidence_event_ids:
+        if not event_ids.intersection(fact.evidence_event_ids):
             continue
         surviving = session.exec(
             select(SessionEvent)
