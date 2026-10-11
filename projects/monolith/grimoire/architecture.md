@@ -188,8 +188,8 @@ hidden roll. Self visibility uses `pcs` containing the player's character
 with the same author provenance. A DM choosing self uses the dm audience.
 Characterless players may roll only table; restricted visibility returns 422
 because their audience contract would hide even their own restricted roll.
-These rules leave `audience_predicate` unchanged. There are 52 campaign routes
-in the route inventory, including the roller, bulk grants, and voice map.
+These rules leave `audience_predicate` unchanged. There are 58 campaign routes
+in the route inventory, including the roller, bulk grants, inventory, and voice map.
 
 **Why.** Server-side `secrets.SystemRandom` prevents clients from supplying
 results or seeds. A dependency override lets tests use a seeded RNG and assert
