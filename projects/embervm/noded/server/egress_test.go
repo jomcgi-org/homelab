@@ -82,6 +82,9 @@ func newBuildEgressServer(t *testing.T, enabled bool, workloads []string, tr *fa
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         logger,
 	})
+	// Egress lifecycle tests do not depend on the test host's cgroup capacity.
+	s.memBudget = func() (uint64, bool) { return 0, false }
+	s.memHeadroom = func() (uint64, bool) { return 0, false }
 	return s, build
 }
 

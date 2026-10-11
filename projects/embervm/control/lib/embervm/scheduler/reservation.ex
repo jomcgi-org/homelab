@@ -171,17 +171,12 @@ defmodule Embervm.Scheduler.Reservation do
   other signal is `live_vms`, an aggregate COUNT with no ids. So a row rebuilt
   by adoption under-counts by the number of in-flight task assignments.
 
-  That fails safe in the direction it fails: an under-count means the CP believes
-  a brick has more room than it does, so it may over-place. On today's fleet the
-  backstop is noded's OBSERVED headroom gate, because the missing VM's memory is
-  already inside the brick's cgroup usage: the node charges it by measurement,
-  with no ledger involved, and a genuinely full brick refuses the boot for one
-  rejected RPC. That protection is lag-bounded rather than absolute, since a
-  just-restored guest faults its pages in lazily, which is the same lag this ledger
-  exists to close. Once admission flips to `reserved` it becomes exact: noded's
-  claims are a projection of its own live VM map, which DOES include in-flight
-  assigned task VMs, so the node refuses precisely the placements an under-counted
-  CP row would allow.
+  An under-count means the CP believes a brick has more room than it does, so it
+  may over-place. Noded enforces declared live and pending claims in both
+  admission modes, including assigned task VMs, before admitting another boot.
+  Measured cgroup headroom remains an additional guard, but is not sufficient on
+  its own because restored guests fault pages in lazily. CP adoption is advisory;
+  the node's atomic admission reservation is the capacity backstop.
 
   A missing catalog entry is skipped rather than raised. Adoption runs in this
   GenServer, which is supervised under `:rest_for_one`; raising here would restart

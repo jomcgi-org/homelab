@@ -55,6 +55,7 @@ type fakeLauncher struct {
 	serialPuts      []map[string]any
 	launchSpecs     []LaunchSpec
 	failDiffCreate  bool
+	failResume      bool
 	failPath        string // if set, return 500 for this API path
 	// serialOutput, when set, is what the fake guest "prints" to its UART: the
 	// PUT /serial handler truncates serial_out_path and writes it there,
@@ -152,6 +153,19 @@ func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, erro
 		// bytes: the file at serial_out_path is truncated then filled.
 		if path, ok := body["serial_out_path"].(string); ok && len(output) > 0 {
 			_ = os.WriteFile(path, output, 0o640)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if l.failResume && body["state"] == "Resumed" {
+			http.Error(w, "resume failed", 500)
+			return
+		}
+		if l.fail(r.URL.Path, w) {
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -935,6 +949,9 @@ func TestDriverClaimedMibProjectsLiveMap(t *testing.T) {
 	}
 	if got, want := d.ClaimedMib(), uint64(d.cfg.MemMib+200+300+400); got != want {
 		t.Fatalf("ClaimedMib = %d, want %d", got, want)
+	}
+	if count, memory := d.LiveMemoryClaims(); count != 4 || memory != uint64(d.cfg.MemMib+200+300+400) {
+		t.Fatalf("LiveMemoryClaims = (%d, %d), want all four VM classes", count, memory)
 	}
 	for _, h := range handles {
 		if err := d.Release(ctx, h); err != nil {
@@ -3151,5 +3168,67 @@ func TestBootArgsForCarriesSessionHarnessInit(t *testing.T) {
 	args := d.bootArgsFor(coldBootSpec{harnessInit: "/usr/local/bin/ember-runtime-guest-init"})
 	if !strings.Contains(args, "init=/usr/local/bin/ember-runtime-guest-init") {
 		t.Fatalf("boot args = %q, want the harness init", args)
+	}
+}
+
+func TestSnapshotBaseResumeFailureConfirmsInternalReap(t *testing.T) {
+	d := testDriverWithLauncher(t, &fakeLauncher{failResume: true})
+	h, err := d.Claim(t.Context(), substrate.ClaimSpec{ThreadID: "build-resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.SnapshotBase(t.Context(), h, "resume-base")
+	var proof interface{ TeardownConfirmed() bool }
+	if err == nil || !strings.Contains(err.Error(), "resume after base snapshot") || !errors.As(err, &proof) || !proof.TeardownConfirmed() {
+		t.Fatalf("missing internal reap evidence: %v", err)
+	}
+	if d.LiveCount() != 0 {
+		t.Fatal("reaped build still live")
+	}
+	if err := d.Release(t.Context(), h); err == nil {
+		t.Fatal("second release should be unknown")
+	}
+}
+
+func TestSnapshotAdmissionMemoryMatchesRestoreAndRejectsResize(t *testing.T) {
+	for _, kind := range []string{"base", "session", "serving", "stateful", "group"} {
+		for _, metadata := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/metadata=%v", kind, metadata), func(t *testing.T) {
+				d := testDriver(t)
+				paths := map[string]string{"base": d.baseMemfile("old"), "session": d.sessionMemfile("old"), "serving": d.servingMemfile("old"), "stateful": d.statefulMemfile("old"), "group": d.groupMemberMemfile("old", "member")}
+				mem := paths[kind]
+				if err := os.MkdirAll(filepath.Dir(mem), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.Create(mem)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Truncate(3072 * 1024 * 1024); err != nil {
+					t.Fatal(err)
+				}
+				f.Close()
+				if metadata {
+					if err := os.WriteFile(filepath.Join(filepath.Dir(mem), "mem_mib"), []byte("3072"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if got := d.SnapshotMemoryMib(kind, "old", "member"); got != 3072 {
+					t.Fatalf("need=%d", got)
+				}
+				// A stale admission read must also fail before creating a process or bundle.
+				ctx := substrate.WithMemoryReservation(t.Context(), 512)
+				_, err = d.loadInto(ctx, "echo", "no-launch", filepath.Join(filepath.Dir(mem), "snapfile"), mem, "api.sock")
+				if err == nil || !strings.Contains(err.Error(), "exceeds admission") {
+					t.Fatalf("undersized reservation: %v", err)
+				}
+				if len(d.launcher.(*fakeLauncher).specs()) != 0 {
+					t.Fatal("restore launched before admission check")
+				}
+				if _, err := os.Stat(d.threadDir("no-launch")); !os.IsNotExist(err) {
+					t.Fatalf("restore created a bundle: %v", err)
+				}
+			})
+		}
 	}
 }
