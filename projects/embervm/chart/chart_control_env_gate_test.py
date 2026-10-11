@@ -21,6 +21,7 @@ _GATES = (
     "EMBERVM_PLACEMENT_RETRY",
     "EMBERVM_ASYNC_LIFECYCLE_WRITES",
     "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS",
+    "EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS",
     "EMBERVM_CROSS_NODE_REJOIN",
     "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES",
 )
@@ -66,6 +67,7 @@ def test_gates_default_off() -> None:
         "EMBERVM_PLACEMENT_RETRY": "false",
         "EMBERVM_ASYNC_LIFECYCLE_WRITES": "false",
         "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS": "false",
+        "EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS": "false",
         "EMBERVM_CROSS_NODE_REJOIN": "false",
         "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES": "false",
     }
@@ -109,6 +111,7 @@ def test_workspace_archive_ack_gate_is_inert_without_bricks() -> None:
         ("dispatcher.placementRetry", "EMBERVM_PLACEMENT_RETRY"),
         ("asyncLifecycleWrites", "EMBERVM_ASYNC_LIFECYCLE_WRITES"),
         ("drainInstanceScopedSessions", "EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS"),
+        ("drainInstanceScopedWorkloads", "EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS"),
         ("crossNodeRejoin", "EMBERVM_CROSS_NODE_REJOIN"),
         ("restartFlushInflightInvokes", "EMBERVM_RESTART_FLUSH_INFLIGHT_INVOKES"),
     ],

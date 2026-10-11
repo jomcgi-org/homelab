@@ -273,6 +273,14 @@ restartFlushInflightInvokes: false
 # whose placement is unknown is still drained.
 drainInstanceScopedSessions: false
 
+# Instance-scoped class drain for serving, stateful and group workloads. Read
+# at boot as EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS. False (the default) keeps
+# the old behaviour: a brick drain edge force-banks every serving, stateful and
+# group guest on the node. True spares a guest only when a sibling brick on the
+# same node positively reports it, so one brick's drain no longer banks its
+# neighbours' guests. A guest whose placement is unknown is still drained.
+drainInstanceScopedWorkloads: false
+
 # EMBERVM_CROSS_NODE_REJOIN. False preserves node-pinned workspace rejoin.
 # True permits another brick only after a synchronous export proves the current
 # unattached workspace fingerprint. CP restarts discard that in-memory proof.

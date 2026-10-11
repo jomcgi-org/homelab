@@ -147,6 +147,9 @@ spec:
             # session on its node (co-located bricks share a node).
             - name: EMBERVM_DRAIN_INSTANCE_SCOPED_SESSIONS
               value: {{ if .Values.drainInstanceScopedSessions }}"true"{{ else }}"false"{{ end }}
+            # The same scoping for serving, stateful and group workloads.
+            - name: EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS
+              value: {{ if .Values.drainInstanceScopedWorkloads }}"true"{{ else }}"false"{{ end }}
             - name: EMBERVM_CROSS_NODE_REJOIN
               value: {{ if .Values.crossNodeRejoin }}"true"{{ else }}"false"{{ end }}
             # SpecTrace gate for spec validation (GitHub issue #4770):
