@@ -960,7 +960,10 @@ defmodule Embervm.BaseBuilder do
   # configured yet means we cannot build: record the intent and report it.
   defp reconcile_desc(state, %{name: name} = desc) do
     prev = Map.get(state.workloads, name)
-    node_id = placement(state, prev, Map.get(desc, :mem_mib) || 0, builds?(prev, desc))
+
+    node_id =
+      building_pin(state, prev, desc) ||
+        placement(state, prev, Map.get(desc, :mem_mib) || 0, builds?(prev, desc))
 
     w = merge_desc(prev, desc, node_id)
     state = put_in(state.workloads[name], w)
@@ -2090,6 +2093,20 @@ defmodule Embervm.BaseBuilder do
   defp builds?(prev, desc) do
     w = merge_desc(prev, desc, prev.node_id)
     not (w.built_signature == signature(w) and w.snapshot_ref != nil)
+  end
+
+  # The current pin, when a build of the reconciled signature is already queued
+  # or running there; nil otherwise. A reconcile (WorkloadWatcher re-casts every
+  # Workload each minute) then keeps the pin instead of re-placing: mid-build the
+  # pinned brick carries its own build's claim and the daemon's build ticket, so
+  # it no longer admits the build and placement would move the pin and start a
+  # second BuildBase of the same base. A spec edit changes the signature, so it
+  # still re-places. The same guard retry_workload/2 applies.
+  defp building_pin(_state, nil, _desc), do: nil
+
+  defp building_pin(state, prev, desc) do
+    sig = signature(merge_desc(prev, desc, prev.node_id))
+    if already_targeting?(state, prev.node_id, prev.name, sig), do: prev.node_id
   end
 
   # The scheduler's own predicate (a free slot and admission memory), on the
