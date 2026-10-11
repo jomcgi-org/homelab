@@ -1090,6 +1090,11 @@ defmodule Embervm.Session do
   defp invalidate_channel?(%GRPC.RPCError{} = reason),
     do: Embervm.NodeChannel.transport_dead?(reason)
 
+  # A suspect SessionAssignResponse is a server ANSWER (the daemon reporting its
+  # guest's state is unknown) that rode a healthy channel, so it never tears the
+  # channel down from under every other session multiplexed on it (D-R2.7.2).
+  defp invalidate_channel?(:suspect), do: false
+
   defp invalidate_channel?(_reason), do: true
 
   defp safe_brick_status(state) do

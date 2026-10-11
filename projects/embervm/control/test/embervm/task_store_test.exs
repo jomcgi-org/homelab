@@ -340,6 +340,51 @@ defmodule Embervm.TaskStoreTest do
     assert ets_task.attempt == 3
   end
 
+  test "a :capacity failure is always retryable and never spends the attempt budget", %{path: path} do
+    # The dispatcher fails a task :capacity when every brick it tried refused to
+    # boot a VM under pressure: no guest ran. It must neither dead-letter the
+    # task nor eat into the budget a later real failure is charged against.
+    {_op_log, store} = start_pair(path)
+    {:ok, :created, task_id} = TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-cap"})
+
+    for _ <- 1..4 do
+      {:ok, _} = TaskStore.assign(store, task_id)
+      {:ok, task, backoff} = TaskStore.fail(store, task_id, :capacity)
+      assert task.state == :failed_retryable
+      assert is_integer(backoff) and backoff >= 0
+      {:ok, _} = TaskStore.retry(store, task_id)
+    end
+
+    # attempt keeps counting (it is the epoch fence), the budget does not.
+    {:ok, task} = TaskStore.get(store, task_id)
+    assert task.attempt == 5
+
+    # The full default budget of three real failures is still there.
+    for _ <- 1..2 do
+      {:ok, _} = TaskStore.assign(store, task_id)
+      {:ok, %{state: :failed_retryable}, _} = TaskStore.fail(store, task_id, :transport)
+      {:ok, _} = TaskStore.retry(store, task_id)
+    end
+
+    {:ok, _} = TaskStore.assign(store, task_id)
+    {:ok, task} = TaskStore.fail(store, task_id, :transport)
+    assert task.state == :dead_lettered
+
+    # Redrive starts the budget over, capacity count included.
+    {:ok, redriven} = TaskStore.redrive(store, task_id)
+    assert redriven.attempt == 1
+    refute Map.has_key?(redriven, :capacity_retries)
+  end
+
+  test "the retry classifier always retries :capacity, whatever retry_on and the attempt say" do
+    cfg = %{Embervm.Retry.default_config() | retry_on: [:guest5xx], max_attempts: 1}
+    assert Embervm.Retry.retryable?(:capacity, cfg)
+    assert Embervm.Retry.classify(:capacity, 99, cfg) == :fail_retryable
+    # Unchanged neighbours.
+    refute Embervm.Retry.retryable?(:transport, cfg)
+    assert Embervm.Retry.classify(:transport, 1, cfg) == :fail_permanent
+  end
+
   test "permanent-on-4xx: guest4xx is never retryable, goes straight to dead-lettered", %{path: path} do
     {_op_log, store} = start_pair(path)
 

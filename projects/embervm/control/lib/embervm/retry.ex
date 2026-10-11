@@ -39,14 +39,26 @@ defmodule Embervm.Retry do
   # well-formed HTTP error: the request itself is wrong, so retrying it would
   # just reproduce the same 4xx. That's always permanent regardless of what
   # retry_on says, which is why this check comes before the retry_on lookup.
+  #
+  # :capacity is the opposite: every brick the dispatcher tried refused to boot
+  # a VM under node pressure, so no guest ran and a retry has no side effect.
+  # It is always retryable whatever retry_on says.
   @spec retryable?(reason(), retry_config()) :: boolean()
   def retryable?(:guest4xx, _retry_config), do: false
+  def retryable?(:capacity, _retry_config), do: true
   def retryable?(reason, retry_config), do: reason in retry_config.retry_on
 
   # attempt is the CURRENT attempt count (1-based: the first try is attempt
   # 1). A failure on the attempt that reaches max_attempts has exhausted its
   # budget and is permanent even if the reason class is otherwise retryable.
+  #
+  # A :capacity failure never exhausts the budget: it does not count as an
+  # attempt (TaskStore classifies later failures net of capacity retries). Like a
+  # task held queued for capacity, it waits until its TTL if it has one, and the
+  # backoff below caps its pace.
   @spec classify(reason(), pos_integer(), retry_config()) :: :fail_retryable | :fail_permanent
+  def classify(:capacity, _attempt, _retry_config), do: :fail_retryable
+
   def classify(reason, attempt, retry_config) do
     if retryable?(reason, retry_config) and attempt < retry_config.max_attempts do
       :fail_retryable

@@ -58,6 +58,28 @@ defmodule Embervm.Dispatcher do
   (`facts.updated_at` is `System.monotonic_time(:millisecond)`), so this
   process's `clock` is monotonic too and the subtraction is apples-to-apples.
 
+  ## in-flight claims and node refusals
+
+  A miss commits a NEW VM to a brick before the brick reports it, so the commit
+  claims the workload's memory in the shared in-flight ledger
+  (`Embervm.Scheduler.Inflight`) before the worker can Prime, and the next
+  `pick_node/3` (this drain loop's next task, or any other placer) sees it. The
+  worker claims every brick a reject/retry hop moves to under the same ref,
+  settles the claim on the brick that primed and releases it on every brick that
+  refused or failed. The VM is single-use, so whatever is left of the claim is
+  released when the worker finishes or dies.
+
+  A brick refusing the Prime with RESOURCE_EXHAUSTED is a capacity answer from a
+  healthy daemon, not a transport failure: the shared per-brick channel stays up
+  (only `Embervm.NodeChannel.transport_dead?/1` drops it, D-R2.7.2), the refusal
+  advances to the next candidate (`Embervm.Scheduler.Retry`, behind
+  `EMBERVM_PLACEMENT_RETRY`), and a frontier where every attempted brick refused
+  fails the task as `:capacity`. That outcome records the autoscaler demand once
+  (`note_denial`) and is always retryable without consuming the task's attempt
+  budget (`Embervm.Retry`). Like a task held queued on `:no_capacity`, it waits
+  for capacity until its TTL (`expires_at`) if it has one, at the full-jitter
+  backoff's capped pace of about one Prime a minute.
+
   ## weights are a parameter, not a redesign
 
   Round-robin is the weight-1 case of deficit round-robin: each principal carries
@@ -100,7 +122,7 @@ defmodule Embervm.Dispatcher do
   alias Embervm.{Brick, NodeCapacity, SessionTrace, WorkloadCatalog}
   alias Embervm.PrimedOp
   alias Embervm.Scheduler
-  alias Embervm.Scheduler.Request
+  alias Embervm.Scheduler.{Inflight, Request}
 
   alias Embervm.Node.V1.{
     AssignRequest,
@@ -298,6 +320,10 @@ defmodule Embervm.Dispatcher do
       wall_clock: Keyword.get(opts, :wall_clock, &default_wall/0),
       channel_fun: Keyword.get(opts, :channel_fun, &Embervm.NodeChannel.get/1),
       invalidate_fun: Keyword.get(opts, :invalidate_fun, &Embervm.NodeChannel.invalidate/2),
+      # The in-flight ledger a miss claims against (tests pass a private one) and
+      # the autoscaler demand signal (tests inject a recorder).
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
+      note_denial_fun: Keyword.get(opts, :note_denial_fun, &Embervm.BrickController.note_denial/2),
       assign_fun: Keyword.get(opts, :assign_fun, &default_assign/2),
       prime_fun: Keyword.get(opts, :prime_fun, &default_prime/2),
       get_request_fun:
@@ -328,7 +354,8 @@ defmodule Embervm.Dispatcher do
       inflight_pr: %{},
       workers: %{},
       retry_timers: %{},
-      denials: %{cap: 0, principal_share: 0, stale_capacity: 0, no_capacity: 0, quota: 0},
+      # :pressure counts task misses every attempted brick refused under pressure.
+      denials: %{cap: 0, principal_share: 0, stale_capacity: 0, no_capacity: 0, quota: 0, pressure: 0},
       warm_hits: 0,
       misses: 0,
       adoption_vm_ids: MapSet.new(),
@@ -499,9 +526,23 @@ defmodule Embervm.Dispatcher do
 
   @impl true
   def terminate(_reason, state) do
-    for {pid, _meta} <- state.workers, do: Process.exit(pid, :shutdown)
+    for {pid, meta} <- state.workers do
+      Process.exit(pid, :shutdown)
+      release_claim(state, meta)
+    end
+
     :ok
   end
+
+  # A task VM is single-use: the node destroys it on Assign, so once its worker
+  # is done (or dead) nothing it claimed is still coming. Dropping the claim then
+  # also ends a settled hold early, which keeps a stream of short tasks from
+  # debiting a brick for VMs that are already gone.
+  defp release_claim(state, %{claim_ref: ref}) when not is_nil(ref) do
+    Inflight.release_ref(ref, table: state.inflight_table)
+  end
+
+  defp release_claim(_state, _meta), do: :ok
 
   # -- enqueue ---------------------------------------------------------------
 
@@ -727,7 +768,13 @@ defmodule Embervm.Dispatcher do
             # keeping a flat instance_id sort from before scoring existed, and since
             # the worker Primes the FRONTIER head (retry gate off = exactly one
             # attempt) that stale order was what actually placed. Keep them one value.
-            ordered = Scheduler.place(%Request{bricks: candidates, key: wl, need_mib: need_mib})
+            ordered =
+              Scheduler.place(%Request{
+                bricks: candidates,
+                key: wl,
+                need_mib: need_mib,
+                inflight: state.inflight_table
+              })
 
             case ordered do
               [] ->
@@ -737,7 +784,7 @@ defmodule Embervm.Dispatcher do
                 # deliberately NOT noted: they wait on provisioning or fact
                 # freshness, which a scale-up cannot serve. Async cast; a missing
                 # controller (tests) makes it a silent no-op.
-                Embervm.BrickController.note_denial(wl, need_mib)
+                state.note_denial_fun.(wl, need_mib)
                 {:error, :no_capacity}
 
               [f | _] ->
@@ -746,11 +793,15 @@ defmodule Embervm.Dispatcher do
                 # instance's own :snapshot_ref for the Prime. A bare tuple crashes
                 # Retry's Logger.debug with a BadMapError on the first rejection,
                 # so the map shape is load-bearing, not cosmetic.
+                #
+                # :charge_mib is what the in-flight claim debits on that brick
+                # (the workload's memory plus the brick's per-VM overhead).
                 miss_frontier =
                   Enum.map(ordered, fn brick ->
                     %{
                       instance_id: instance_id_of(brick),
-                      snapshot_ref: snapshot_ref_of(brick, wl)
+                      snapshot_ref: snapshot_ref_of(brick, wl),
+                      charge_mib: Brick.charge_mib(brick, need_mib)
                     }
                   end)
 
@@ -839,6 +890,18 @@ defmodule Embervm.Dispatcher do
 
   defp spawn_assign_worker(state, task_id, pr, wl, node_id, mode, vm_id, snapshot_ref, candidates, entry) do
     owner = self()
+
+    # A miss places a NEW VM: claim its memory on the committed head NOW, before
+    # the worker can Prime, so the drain loop's next pick (and every other placer)
+    # sees it. The worker re-claims each retry hop under the same ref.
+    claim_ref = if mode == :miss, do: {:task, task_id, make_ref()}
+
+    case {claim_ref, candidates} do
+      {nil, _} -> :ok
+      {_, [head | _]} -> Inflight.claim(node_id, claim_ref, Map.get(head, :charge_mib, 0), table: state.inflight_table)
+      {_, []} -> :ok
+    end
+
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
     assign_fun = state.assign_fun
@@ -874,6 +937,8 @@ defmodule Embervm.Dispatcher do
       # attempt). Warm mode carries a single-element list (its VM is already primed
       # on node_id, nothing to retry). Unused by the warm path.
       candidates: candidates,
+      claim_ref: claim_ref,
+      inflight_table: state.inflight_table,
       invoke_path: entry.invoke_path,
       timeout_ms: entry.timeout_ms,
       result_max_bytes: entry.result_max_bytes,
@@ -909,6 +974,8 @@ defmodule Embervm.Dispatcher do
       node_id: node_id,
       mode: mode,
       vm_id: vm_id,
+      claim_ref: claim_ref,
+      need_mib: Map.get(entry, :mem_mib) || 0,
       watchdog_timer_ref: watchdog_ref,
       watchdog_started_at: System.monotonic_time(:millisecond),
       watchdog_ms: watchdog_ms
@@ -1062,7 +1129,10 @@ defmodule Embervm.Dispatcher do
             classify_response(resp, ctx, usage)
 
           {:error, reason} ->
-            _ = invalidate_fun.(node_id, channel)
+            # A server status (DEADLINE_EXCEEDED from a slow guest, UNAVAILABLE
+            # from its round trip, FAILED_PRECONDITION) rode a HEALTHY shared
+            # channel; only a dead transport drops it (maybe_invalidate/4).
+            _ = maybe_invalidate(invalidate_fun, node_id, channel, reason)
             classify_error(reason)
         end
 
@@ -1071,8 +1141,27 @@ defmodule Embervm.Dispatcher do
 
       {:error, :prime_failed, reason} ->
         classify_error(reason)
+
+      {:error, :capacity, reason} ->
+        # Every attempted brick refused under pressure: no guest ran, so this is
+        # a capacity outcome (retryable, no attempt consumed), never a transport
+        # failure. apply_outcome/3 records the autoscaler demand.
+        {:failed, :capacity, {:pressure, pressure_detail(reason)}, nil}
     end
   end
+
+  # D-R2.7.2: only a dead transport (including the Mint-wrapped status-2
+  # "connection is closed") drops the SHARED per-instance channel. A server
+  # status rode a healthy channel; tearing it down closes every session invoke
+  # multiplexed on it, and grpc 1.0.3's disconnect never fails those pending
+  # streams (they block until the 12h invoke watchdog).
+  defp maybe_invalidate(invalidate_fun, node_id, channel, reason) do
+    if Embervm.NodeChannel.transport_dead?(reason), do: invalidate_fun.(node_id, channel)
+    :ok
+  end
+
+  defp pressure_detail({:error, %GRPC.RPCError{message: message}}) when is_binary(message), do: message
+  defp pressure_detail(reason), do: inspect(reason, limit: 10, printable_limit: 200)
 
   # Warm: the VM is already reserved on ctx.node_id; just acquire that node's channel.
   defp acquire_vm(%{mode: :warm, vm_id: vm_id} = ctx, channel_fun, _invalidate_fun, _prime_fun)
@@ -1103,23 +1192,30 @@ defmodule Embervm.Dispatcher do
   # track the brick the VM really lives on (not the committed head), which keeps
   # adopt_inventory and the Assign channel correct after a cross-brick retry.
   defp prime_with_retry(ctx, channel_fun, invalidate_fun, prime_fun) do
-    attempt_fun = fn %{instance_id: dial_id, snapshot_ref: snapshot_ref} ->
+    attempt_fun = fn %{instance_id: dial_id, snapshot_ref: snapshot_ref} = candidate ->
+      # Claim this hop's brick before its Prime (the head re-claims the claim its
+      # commit made, refreshing nothing but the expiry).
+      claim_hop(ctx, candidate)
+
       case channel_fun.(dial_id) do
         {:ok, channel} ->
           case prime_on(ctx, dial_id, channel, snapshot_ref, prime_fun) do
             {:ok, vm_id} ->
+              settle_hop(ctx, dial_id)
               {:ok, {vm_id, dial_id, channel}}
 
             {:reject, reason} ->
-              # Node-pressure RESOURCE_EXHAUSTED: this brick is full; drop its
-              # channel (best-effort) and let Retry try the next candidate.
+              # Node-pressure RESOURCE_EXHAUSTED: this brick is full. The refusal
+              # rode a healthy shared channel, so it stays up (D-R2.7.2); drop
+              # the claim and let Retry try the next candidate.
+              release_hop(ctx, dial_id)
               emit_dispatch_failed(ctx, dial_id, reject_reason(reason), reject_detail(reason))
-              _ = invalidate_fun.(dial_id, channel)
               {:reject, reason}
 
             {:error, reason} ->
+              release_hop(ctx, dial_id)
               emit_dispatch_failed(ctx, dial_id, "prime_failed", reason)
-              _ = invalidate_fun.(dial_id, channel)
+              _ = maybe_invalidate(invalidate_fun, dial_id, channel, reason)
               {:error, {:prime_failed, reason}}
           end
 
@@ -1128,12 +1224,13 @@ defmodule Embervm.Dispatcher do
           # advances to a reachable candidate rather than failing the whole dispatch
           # on one unreachable brick (gate-off degrades to the single committed brick,
           # whose unreachability is the same terminal no-channel as before).
+          release_hop(ctx, dial_id)
           emit_dispatch_failed(ctx, dial_id, "no_channel", reason)
           {:reject, {:no_channel, reason}}
       end
     end
 
-    case Embervm.Scheduler.Retry.run(ctx.candidates, attempt_fun) do
+    case Embervm.Scheduler.Retry.run(ctx.candidates, attempt_fun, return_rejects: true) do
       {:ok, {vm_id, node_id, channel}} ->
         # Instrumentation covers task-lane priming only. Session, serving, and
         # stateful lane priming is not yet instrumented. Append once, after the
@@ -1144,13 +1241,36 @@ defmodule Embervm.Dispatcher do
       {:error, {:prime_failed, reason}} ->
         {:error, :prime_failed, reason}
 
-      # Every candidate rejected (pressure or unreachable), or the gate-off single
-      # attempt rejected: surface as a prime failure so the task retries at-least-once
-      # exactly like a downed node, never a wedge. Carry the last reason shape.
-      {:error, :no_capacity} ->
-        {:error, :prime_failed, {:rpc, :resource_exhausted}}
+      # The frontier is exhausted (or the gate-off single attempt rejected). Any
+      # node that refused under pressure makes it a CAPACITY outcome, carrying the
+      # last refusal; a frontier of bricks that were only unreachable stays the
+      # transport failure it always was, so the task retries at-least-once
+      # exactly like a downed node, never a wedge.
+      {:error, {:no_capacity, rejects}} ->
+        case Enum.filter(rejects, fn {_id, reason} -> pressure_refusal?(reason) end) do
+          [] -> {:error, :no_channel, last_reject(rejects)}
+          refused -> {:error, :capacity, refused |> List.last() |> elem(1)}
+        end
     end
   end
+
+  defp pressure_refusal?({:error, %GRPC.RPCError{status: 8}}), do: true
+  defp pressure_refusal?(_reason), do: false
+
+  defp last_reject([]), do: :no_candidates
+  defp last_reject(rejects), do: rejects |> List.last() |> elem(1)
+
+  defp claim_hop(%{claim_ref: nil}, _candidate), do: :ok
+
+  defp claim_hop(ctx, %{instance_id: dial_id} = candidate) do
+    Inflight.claim(dial_id, ctx.claim_ref, Map.get(candidate, :charge_mib, 0), table: ctx.inflight_table)
+  end
+
+  defp settle_hop(%{claim_ref: nil}, _dial_id), do: :ok
+  defp settle_hop(ctx, dial_id), do: Inflight.settle(dial_id, ctx.claim_ref, table: ctx.inflight_table)
+
+  defp release_hop(%{claim_ref: nil}, _dial_id), do: :ok
+  defp release_hop(ctx, dial_id), do: Inflight.release(dial_id, ctx.claim_ref, table: ctx.inflight_table)
 
   defp reject_reason({:error, %GRPC.RPCError{status: 8}}), do: "resource_exhausted"
   defp reject_reason(_reason), do: "rejected"
@@ -1290,9 +1410,10 @@ defmodule Embervm.Dispatcher do
 
   # A transport/RPC-level failure. DEADLINE_EXCEEDED (the guest did not answer in
   # time) is :timeout; everything else (UNAVAILABLE, FAILED_PRECONDITION for a
-  # vm that vanished, RESOURCE_EXHAUSTED, a raw Mint error) is :transport, so it
-  # retries onto a freshly primed VM. No usage is reported for these (the guest
-  # never answered), so they bill nothing.
+  # vm that vanished, a raw Mint error) is :transport, so it retries onto a
+  # freshly primed VM. A Prime refused under pressure never reaches here: it is
+  # the :capacity outcome (prime_with_retry/4). No usage is reported for these
+  # (the guest never answered), so they bill nothing.
   defp classify_error(%GRPC.RPCError{status: 4}), do: {:failed, :timeout, :deadline_exceeded, nil}
   defp classify_error(%GRPC.RPCError{} = e), do: {:failed, :transport, {:rpc, e.status}, nil}
   defp classify_error(reason), do: {:failed, :transport, reason, nil}
@@ -1319,6 +1440,7 @@ defmodule Embervm.Dispatcher do
         Process.cancel_timer(meta.watchdog_timer_ref)
 
         state = %{state | workers: workers}
+        release_claim(state, meta)
         state = apply_outcome(state, meta, outcome)
 
         state
@@ -1337,6 +1459,24 @@ defmodule Embervm.Dispatcher do
     end
 
     state
+  end
+
+  # Every attempted brick refused the miss under pressure. Record the demand
+  # once per exhausted frontier, then fail the task :capacity, which Embervm.Retry
+  # always retries without consuming an attempt.
+  defp apply_outcome(state, meta, {:failed, :capacity, detail, stats}) do
+    Logger.warning(
+      "embervm task prime refused under node pressure: " <> inspect(detail, limit: 10, printable_limit: 200),
+      task_id: meta.task_id,
+      workload: meta.workload,
+      node_id: meta.node_id
+    )
+
+    _ = safe(fn -> state.note_denial_fun.(meta.workload, Map.get(meta, :need_mib, 0)) end)
+
+    state
+    |> bump_denial(:pressure)
+    |> apply_failure(meta, :capacity, stats)
   end
 
   defp apply_outcome(state, meta, {:failed, reason, _detail, stats}) do
