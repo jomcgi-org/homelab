@@ -1,6 +1,6 @@
 # EmberVM protocol TLA+ specs, checked by TLC in CI (ADR embervm/006).
 #
-# Ten specs, fifty-eight genrules run the //bazel/tla:tlc.sh driver:
+# Eleven specs, sixty-four genrules run the //bazel/tla:tlc.sh driver:
 #   adoption.tla (protocol 1: VM lifecycle + adoption) with four cfgs: rich
 #     safety, positive liveness, and two NEGATIVE modes (expectation "fail") that
 #     prove the model still reproduces a historical bug.
@@ -42,6 +42,12 @@
 #     plus a composite negative disabling both redundant orphan guards,
 #     plus two liveness wedges (bare "fail": Leak breaks EventualAccounting,
 #     SilentFailure breaks RequestsResolve).
+#   admission.tla (memory admission across bricks after the 2026-10-10
+#     OOMKills: noded's atomic ticket ledger and the CP's pending claims) with
+#     six cfgs: a safety config, positive liveness with the frontier walk on
+#     and off, and three NEGATIVE modes reproducing observed admission under
+#     lazy guest growth, a check-then-act double admit, and a single attempt
+#     that strands a request.
 # The driver fails the build if a "fail" mode finds NO violation (the model went
 # blind). Safety and liveness are split across cfgs because exhaustive liveness over
 # the rich safety graph is too slow for CI; see README.md for the cfg matrix.
@@ -1021,6 +1027,114 @@ genrule(
           "\"$(location warmth_gc.tla)\" " +
           "\"$(location warmth_gc_newest_ref.cfg)\" " +
           "\"$@\" fail NewestStatefulRetainedWhileLive",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+# Memory admission across bricks (the 2026-10-10 OOMKills): noded's atomic
+# reserved-model ticket ledger and the control plane's pending claims, placed
+# from stale reports. One safety config, two liveness configs (frontier walk on
+# and off), and one NEGATIVE mode per historical hole. Each negative cfg lists
+# only TypeOK and its intended invariant, so an unrelated earlier violation
+# cannot satisfy expectation fail.
+genrule(
+    name = "tlc_admission",
+    srcs = _JRE_SRCS + [
+        "admission.tla",
+        "admission.cfg",
+    ],
+    outs = ["admission.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location admission.tla)\" " +
+          "\"$(location admission.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_admission_liveness",
+    srcs = _JRE_SRCS + [
+        "admission.tla",
+        "admission_liveness.cfg",
+    ],
+    outs = ["admission_liveness.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location admission.tla)\" " +
+          "\"$(location admission_liveness.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_admission_liveness_no_walk",
+    srcs = _JRE_SRCS + [
+        "admission.tla",
+        "admission_liveness_no_walk.cfg",
+    ],
+    outs = ["admission_liveness_no_walk.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location admission.tla)\" " +
+          "\"$(location admission_liveness_no_walk.cfg)\" " +
+          "\"$@\" pass",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_admission_observed",
+    srcs = _JRE_SRCS + [
+        "admission.tla",
+        "admission_observed.cfg",
+    ],
+    outs = ["admission_observed.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location admission.tla)\" " +
+          "\"$(location admission_observed.cfg)\" " +
+          "\"$@\" fail ResidentWithinBudget",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_admission_check_then_act",
+    srcs = _JRE_SRCS + [
+        "admission.tla",
+        "admission_check_then_act.cfg",
+    ],
+    outs = ["admission_check_then_act.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location admission.tla)\" " +
+          "\"$(location admission_check_then_act.cfg)\" " +
+          "\"$@\" fail NoOvercommit",
+    tags = ["verification"],
+    tools = ["//bazel/tla:tlc.sh"],
+)
+
+genrule(
+    name = "tlc_admission_single_attempt",
+    srcs = _JRE_SRCS + [
+        "admission.tla",
+        "admission_single_attempt.cfg",
+    ],
+    outs = ["admission_single_attempt.tlc.out"],
+    cmd = "$(location //bazel/tla:tlc.sh) " +
+          "\"$(location %s)\" " % _JAVA +
+          "\"$(location %s)\" " % _JAR +
+          "\"$(location admission.tla)\" " +
+          "\"$(location admission_single_attempt.cfg)\" " +
+          "\"$@\" fail NoStrandedRequest",
     tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
