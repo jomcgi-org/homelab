@@ -18,8 +18,11 @@ import (
 // S7 reads GET /v1/capacity before S1 and again after every other scenario,
 // and passes only when every brick reports jailer_armed, no brick's
 // launch_modes.direct_exec or launch_modes.refused moved across the suite, and
-// launch_modes.jailed moved on a brick that was registered at suite start (the
-// guests S1 to S5 booted went through the jailer). A classed brick must also
+// launch_modes.jailed moved on a brick whose counters ran unbroken from suite
+// start (the guests S1 to S5 booted went through the jailer). A brick that
+// registers or restarts mid-suite counts its startup preflight as a jailed
+// launch and has no counts from before, so it credits nothing, and S7 fails
+// when no brick kept its counters across the suite. A classed brick must also
 // report a nonzero budget and its own admission predicate, which is what a
 // jailer cgroup delegation that hid the brick's memory.max would break.
 //
@@ -158,6 +161,9 @@ func evaluateS7(before, after capacityReport) s7Evaluation {
 
 	var failures, pending, summaries []string
 	var jailedDelta uint64
+	// unbroken counts the bricks whose counters ran from suite start to now
+	// without a reset: the only bricks whose jailed launches are the suite's.
+	unbroken := 0
 	for _, instance := range instances {
 		id := instance.InstanceID
 		if !instance.JailerArmed {
@@ -168,12 +174,17 @@ func evaluateS7(before, after capacityReport) s7Evaluation {
 			pending = append(pending, fmt.Sprintf("brick %s reports no launch_modes", id))
 			continue
 		}
-		base, survived := baseline[id]
+		base, present := baseline[id]
 		// A counter below its baseline means the daemon restarted inside the same
-		// pod and counts from zero again.
-		if survived && counterReset(base, instance.LaunchModes) {
+		// pod and counts from zero again. Its new counts still fail S7 on a
+		// direct exec or a refusal, but the launches before the restart are gone,
+		// and its first jailed launch is the restart preflight, which boots no
+		// guest, so it credits nothing to S1 to S5.
+		restarted := present && counterReset(base, instance.LaunchModes)
+		if restarted {
 			base = nil
 		}
+		survived := present && !restarted
 		direct := counterDelta(base, instance.LaunchModes, launchDirectExec)
 		refused := counterDelta(base, instance.LaunchModes, launchRefused)
 		if direct > 0 {
@@ -183,15 +194,17 @@ func evaluateS7(before, after capacityReport) s7Evaluation {
 			failures = append(failures, fmt.Sprintf("brick %s failed a jailed launch closed during the suite (refused +%d)", id, refused))
 		}
 		jailed := counterDelta(base, instance.LaunchModes, launchJailed)
-		// A brick that registered mid-suite counts its startup preflight as a
-		// jailed launch, so only bricks present at suite start credit S1 to S5.
+		// A brick that registered or restarted mid-suite counts its startup
+		// preflight as a jailed launch, so only bricks whose counters ran
+		// unbroken from suite start credit S1 to S5.
 		if survived {
 			jailedDelta += jailed
+			unbroken++
 		}
 		if instance.SizeClass != "" && (instance.MemBudgetMiB <= 0 || !instance.AdmissionReported) {
 			pending = append(pending, fmt.Sprintf("brick %s (class %s) reports mem_budget_mib=%d admission_reported=%t", id, instance.SizeClass, instance.MemBudgetMiB, instance.AdmissionReported))
 		}
-		summaries = append(summaries, instanceSummary(instance, jailed, direct, refused, survived))
+		summaries = append(summaries, instanceSummary(instance, jailed, direct, refused, present, restarted))
 	}
 	if len(failures) > 0 {
 		return s7Evaluation{verdict: verdictFail, detail: strings.Join(failures, "; ")}
@@ -199,8 +212,14 @@ func evaluateS7(before, after capacityReport) s7Evaluation {
 	if len(pending) > 0 {
 		return s7Evaluation{detail: strings.Join(pending, "; ")}
 	}
+	// No later read can bring back a brick's lost counters, so a fleet with no
+	// unbroken brick can never show the suite's launches: fail rather than
+	// wait out the budget or pass on preflight launches alone.
+	if unbroken == 0 {
+		return s7Evaluation{verdict: verdictFail, detail: "no brick kept its launch counters across the suite (every brick registered or restarted mid-suite), so the suite's launches are unobservable; " + strings.Join(summaries, "; ")}
+	}
 	if jailedDelta == 0 {
-		return s7Evaluation{detail: "no jailed launch observed across the suite on a brick registered at its start; " + strings.Join(summaries, "; ")}
+		return s7Evaluation{detail: "no jailed launch observed across the suite on a brick whose counters ran from its start; " + strings.Join(summaries, "; ")}
 	}
 	return s7Evaluation{verdict: verdictPass, detail: fmt.Sprintf("every brick armed; jailed +%d across the suite; %s", jailedDelta, strings.Join(summaries, "; "))}
 }
@@ -218,14 +237,17 @@ func counterDelta(base, current map[string]uint64, key string) uint64 {
 	return current[key] - base[key]
 }
 
-func instanceSummary(instance capacityInstance, jailed, direct, refused uint64, survived bool) string {
+func instanceSummary(instance capacityInstance, jailed, direct, refused uint64, present, restarted bool) string {
 	admittable := "unreported"
 	if instance.AdmittableMiB != nil {
 		admittable = fmt.Sprintf("%dMiB", *instance.AdmittableMiB)
 	}
 	since := "since suite start"
-	if !survived {
+	switch {
+	case !present:
 		since = "since registering mid-suite"
+	case restarted:
+		since = "since restarting mid-suite"
 	}
 	return fmt.Sprintf("%s class=%q jailed+%d direct_exec+%d refused+%d %s admittable=%s refusals=%s",
 		instance.InstanceID, instance.SizeClass, jailed, direct, refused, since, admittable, formatCounts(instance.AdmissionRefusals))

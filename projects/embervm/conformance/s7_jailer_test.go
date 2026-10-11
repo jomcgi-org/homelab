@@ -121,11 +121,20 @@ func TestEvaluateS7(t *testing.T) {
 		},
 		{
 			// The brick replaced mid-suite counts its preflight launch as jailed;
-			// that is not evidence that S1..S5 booted through the jailer.
-			name:   "a brick registered mid-suite credits no jailed launches",
-			before: report(armedBrick("n1/a", 4, 0, 0)),
-			after:  report(armedBrick("n2/b", 7, 0, 0)),
-			detail: "since registering mid-suite",
+			// that is not evidence that S1..S5 booted through the jailer, and with
+			// no brick left from suite start no later read can be.
+			name:    "a fleet replaced mid-suite fails rather than credit preflights",
+			before:  report(armedBrick("n1/a", 4, 0, 0)),
+			after:   report(armedBrick("n2/b", 7, 0, 0)),
+			verdict: verdictFail,
+			detail:  "no brick kept its launch counters across the suite",
+		},
+		{
+			name:    "a brick registered mid-suite credits no jailed launches",
+			before:  report(armedBrick("n1/a", 4, 0, 0)),
+			after:   report(armedBrick("n1/a", 4, 0, 0), armedBrick("n2/b", 7, 0, 0)),
+			verdict: "",
+			detail:  "n2/b class=\"2gi\" jailed+7 direct_exec+0 refused+0 since registering mid-suite",
 		},
 		{
 			name:    "a brick registered mid-suite still fails on a direct exec",
@@ -135,13 +144,29 @@ func TestEvaluateS7(t *testing.T) {
 			detail:  "brick n2/b launched a VMM without the jailer",
 		},
 		{
-			// A daemon restart inside the same pod resets its counters; the new
-			// counts are compared against zero rather than underflowing.
-			name:    "a counter reset compares from zero",
+			// A daemon restart inside the same pod resets its counters, and its
+			// one jailed launch is the restart preflight: the suite's launches
+			// from before the restart are gone, so a lone restarted brick fails.
+			name:    "a lone brick whose counters reset fails rather than credit its preflight",
 			before:  report(armedBrick("n1/a", 40, 0, 0)),
-			after:   report(armedBrick("n1/a", 3, 0, 0)),
+			after:   report(armedBrick("n1/a", 1, 0, 0)),
+			verdict: verdictFail,
+			detail:  "n1/a class=\"2gi\" jailed+1 direct_exec+0 refused+0 since restarting mid-suite",
+		},
+		{
+			// The restarted brick's new counts are compared against zero rather
+			// than underflowing, but only the unbroken brick credits the suite.
+			name:    "an unbroken brick carries the suite beside a restarted one",
+			before:  report(armedBrick("n1/a", 40, 0, 0), armedBrick("n1/b", 2, 0, 0)),
+			after:   report(armedBrick("n1/a", 3, 0, 0), armedBrick("n1/b", 4, 0, 0)),
 			verdict: verdictPass,
-			detail:  "jailed +3",
+			detail:  "jailed +2 across the suite",
+		},
+		{
+			name:   "a restarted brick's preflight does not stand in for the unbroken brick",
+			before: report(armedBrick("n1/a", 40, 0, 0), armedBrick("n1/b", 2, 0, 0)),
+			after:  report(armedBrick("n1/a", 1, 0, 0), armedBrick("n1/b", 2, 0, 0)),
+			detail: "no jailed launch observed",
 		},
 		{
 			name:    "a counter reset that ran a guest unjailed fails",
