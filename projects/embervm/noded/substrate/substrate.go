@@ -66,6 +66,12 @@ type ClaimSpec struct {
 	// restore resumes a snapshot where the shim is already running and never
 	// needed this. Empty for every path that does not cold boot a session.
 	ColdBootHarnessInit string
+	// ColdBootVCPUs and ColdBootMemMib size a volume-forced cold boot at the
+	// workload's declared sizing, the size Prime admitted, instead of the shared
+	// restore driver's own default. Zero for every path that does not cold boot
+	// a session, so the driver's configured sizing still applies there.
+	ColdBootVCPUs  int
+	ColdBootMemMib int
 }
 
 // NICSpec describes the tap network interface a serving-class microVM cold-boots

@@ -141,11 +141,12 @@ func (b *budget) MemBudgetMib() uint64 {
 	return parseMemBudgetMib(string(maxRaw), b.reserveMib)
 }
 
-// MemHeadroomMib returns free schedulable guest memory in MiB. Identical
-// semantics to the retired readMemHeadroomMib, folded in here so the daemon
-// has one cgroup reader instead of two. An unreadable memory.stat falls back
-// to max minus current, which is conservative because it does not subtract
-// any unverified reclaimable cache.
+// MemHeadroomMib returns free schedulable guest memory in MiB. 0 means unknown
+// (unlimited cgroup, or memory.max or memory.current unreadable), never "full":
+// a cgroup whose numeric limit is exhausted reports at least 1 MiB (see
+// parseMemHeadroomMib), so admission can fail open on unknown and closed on
+// exhausted. An unreadable memory.stat falls back to max minus current, which is
+// conservative because it does not subtract any unverified reclaimable cache.
 func (b *budget) MemHeadroomMib() uint64 {
 	dir := cgroupDir()
 	maxRaw, err := os.ReadFile(filepath.Join(dir, "memory.max"))
@@ -175,9 +176,9 @@ func (b *budget) CpuBudgetMillicores() uint64 {
 }
 
 // SlotCeiling returns the configured live-VM backstop unchanged. Memory admission
-// is enforced separately by admitOrReject using measured headroom, the workload's
-// need, and the configured reject floor. A zero or unreadable memory budget does
-// not change the backstop.
+// is enforced separately by admit (pressure.go) from the workload's declared
+// need, the boots in flight, and this reader's headroom and budget. A zero or
+// unreadable memory budget does not change the backstop.
 func (b *budget) SlotCeiling(configured uint64) uint64 {
 	return configured
 }
@@ -267,7 +268,12 @@ func (s *Server) StartBudgetLoop(ctx context.Context) {
 
 // parseMemHeadroomMib computes headroom in MiB from cgroup v2 memory.max,
 // memory.current, and memory.stat contents. "max" (unlimited) or a parse
-// error yields 0. Folded in from the retired free-function readMemHeadroomMib.
+// error yields 0, which means UNKNOWN. Once both numbers parse, the reading is
+// known, and a known result is never 0: non-reclaimable memory at or over
+// memory.max, or less than 1 MiB free, reports 1. That keeps a full cgroup from
+// colliding with the unknown sentinel, which admission fails open on; 1 MiB is
+// always below any need plus the reject floor, so it refuses. Folded in from the
+// retired free-function readMemHeadroomMib.
 func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	maxStr := strings.TrimSpace(maxRaw)
 	if maxStr == "max" || maxStr == "" {
@@ -314,10 +320,11 @@ func parseMemHeadroomMib(maxRaw, curRaw, statRaw string) uint64 {
 	// because the kernel evicts it long before it OOM-kills. shmem is excluded
 	// because it is not reclaimable without swap.
 	// Subtracting only inactive_file was the incomplete earlier fix for #4058.
-	if uint64(maxB) <= nonReclaimableB {
-		return 0
+	var freeMib uint64
+	if uint64(maxB) > nonReclaimableB {
+		freeMib = (uint64(maxB) - nonReclaimableB) / (1 << 20)
 	}
-	return (uint64(maxB) - nonReclaimableB) / (1 << 20)
+	return max(freeMib, 1)
 }
 
 // parseMemBudgetMib computes (max - reserve) in MiB from cgroup v2
