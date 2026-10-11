@@ -14,7 +14,8 @@ defmodule Embervm.DrainCoordinator do
 
   It is deliberately thin: each sweeper owns its own instances, admission, per-node
   bank concurrency, and worker lifecycle, so this coordinator only fans out the four
-  `drain_node/2` calls and records the drain edge in the op-log. Each call returns
+  class drain calls (see "instance scope" below) and records the drain edge in the
+  op-log. Each call returns
   promptly (it starts async bank workers and returns a count); the actual banks
   complete against noded, which holds shutdown until they do or the deadline passes.
   A class whose sweeper is down or raises is logged and skipped: the daemon's own
@@ -24,6 +25,19 @@ defmodule Embervm.DrainCoordinator do
   The `safety_margin_ms` env (EMBERVM_DRAIN_SAFETY_MARGIN_MS, default 15000) is
   recorded on the op so the actual bank wall time can be compared against the
   window; the hard bound lives on noded (it holds until the deadline).
+
+  ## instance scope
+
+  Several brick instances share one node (one per size class), and a drain edge
+  names ONE of them (node + pod_uid): an autoscaler idle drain of an empty brick,
+  or one class's roll. Sessions are always handed the pod_uid and scope
+  themselves (`Embervm.SessionManager.drain_instance/4`, behind its own gate).
+  With `instance_scoped` on (EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS, default
+  off) the stateful, group and serving sweepers are scoped the same way
+  (`drain_instance/3`): they bank only the guests no surviving sibling instance
+  reports, and dial the draining instance for them, whose capacity fact the
+  registry has already dropped. Off, they bank every guest on the node, as
+  before. A drain edge without a pod_uid is always node-wide.
   """
   use GenServer
 
@@ -63,11 +77,18 @@ defmodule Embervm.DrainCoordinator do
       serving: Keyword.get(opts, :serving_sweeper, Embervm.ServingSweeper),
       session: Keyword.get(opts, :session_manager, Embervm.SessionManager),
       group: Keyword.get(opts, :group_sweeper, Embervm.GroupSweeper),
+      # Whether the stateful, group and serving sweepers drain only the draining
+      # brick instance (see the moduledoc). Read from the environment unless given.
+      instance_scoped: Keyword.get_lazy(opts, :instance_scoped, &instance_scoped_enabled?/0),
       # The per-class drain call, seamed for tests. Production dispatches to the
-      # sweeper module's drain_node/2 (a GenServer.call to the named process).
+      # sweeper module's drain_instance/3 for an instance-scoped drain and its
+      # drain_node/2 otherwise (each a GenServer.call to the named process). A
+      # 3-arity fun (node-scoped only) is still accepted.
       drain_fun:
-        Keyword.get(opts, :drain_fun, fn _class, server, node_id ->
-          server.drain_node(server, node_id)
+        Keyword.get(opts, :drain_fun, fn _class, server, node_id, pod_uid ->
+          if pod_uid != "",
+            do: server.drain_instance(server, node_id, pod_uid),
+            else: server.drain_node(server, node_id)
         end),
       # Sessions are drained per INSTANCE (node + pod_uid): several bricks share a
       # node, and an idle drain of an empty brick must not interrupt live turns on
@@ -89,10 +110,10 @@ defmodule Embervm.DrainCoordinator do
   # NodeRegistry sends the drain edge scoped to the INSTANCE (node + pod_uid, R0
   # PR-2): a surge roll drains only the old pod. Several brick instances now share
   # a node (one per size class), so the session class receives the pod_uid and
-  # drains only that instance's sessions (SessionManager.drain_instance/4, gated).
-  # The stateful, group and serving sweepers still force-bank per node. The legacy
-  # 3-tuple (no pod_uid) is still accepted for a NodeRegistry that predates this
-  # change and drains the whole node.
+  # drains only that instance's sessions (SessionManager.drain_instance/4, gated),
+  # and the stateful, group and serving sweepers do the same under instance_scoped.
+  # The legacy 3-tuple (no pod_uid) is still accepted for a NodeRegistry that
+  # predates this change and drains the whole node.
   def handle_info({:node_draining, node_id, pod_uid, deadline_ms}, state) do
     handle_drain(state, node_id, pod_uid, deadline_ms)
     {:noreply, state}
@@ -140,10 +161,10 @@ defmodule Embervm.DrainCoordinator do
       # call is prompt (starts async workers, returns a count); the ordering decides
       # which class's workers are enqueued first, so durable state wins the budget.
       counts = %{
-        stateful: drain_class(state, :stateful, node_id),
-        group: drain_class(state, :group, node_id),
+        stateful: drain_class(state, :stateful, node_id, pod_uid),
+        group: drain_class(state, :group, node_id, pod_uid),
         session: drain_session(state, node_id, pod_uid, deadline_ms),
-        serving: drain_class(state, :serving, node_id)
+        serving: drain_class(state, :serving, node_id, pod_uid)
       }
 
       Tracer.set_attributes(%{
@@ -185,7 +206,22 @@ defmodule Embervm.DrainCoordinator do
     _, _ -> 0
   end
 
-  defp drain_class(state, class, node_id) do
+  # The class drain gets the pod_uid only under instance_scoped; "" asks for the
+  # node-wide drain, the behaviour with the gate off.
+  defp drain_class(%{drain_fun: fun} = state, class, node_id, pod_uid) when is_function(fun, 4) do
+    scoped_pod_uid = if state.instance_scoped and is_binary(pod_uid), do: pod_uid, else: ""
+    fun.(class, Map.fetch!(state, class), node_id, scoped_pod_uid)
+  rescue
+    e ->
+      Logger.warning("embervm drain: class drain raised", class: class, error: inspect(e))
+      0
+  catch
+    kind, reason ->
+      Logger.warning("embervm drain: class drain exited", class: class, reason: inspect({kind, reason}))
+      0
+  end
+
+  defp drain_class(state, class, node_id, _pod_uid) do
     state.drain_fun.(class, Map.fetch!(state, class), node_id)
   rescue
     e ->
@@ -195,6 +231,17 @@ defmodule Embervm.DrainCoordinator do
     kind, reason ->
       Logger.warning("embervm drain: class drain exited", class: class, reason: inspect({kind, reason}))
       0
+  end
+
+  # EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS. UNSET or "0"/"false"/"" (the default)
+  # keeps the node-wide stateful, group and serving drain; "1"/"true" scopes it to
+  # the draining brick instance.
+  @doc false
+  def instance_scoped_enabled? do
+    case System.get_env("EMBERVM_DRAIN_INSTANCE_SCOPED_WORKLOADS") do
+      v when is_binary(v) -> String.trim(v) in ["1", "true", "TRUE", "True"]
+      nil -> false
+    end
   end
 
   defp append_op(state, kind, payload) do

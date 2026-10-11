@@ -236,6 +236,11 @@ defmodule Embervm.ServingSweeper do
     {:reply, count, state}
   end
 
+  def handle_call({:drain_instance, node_id, pod_uid}, _from, state) do
+    {count, state} = drain_bank_node(state, node_id, pod_uid)
+    {:reply, count, state}
+  end
+
   @impl true
   def handle_info(:sweep, state) do
     state = do_sweep(state)
@@ -532,18 +537,34 @@ defmodule Embervm.ServingSweeper do
     GenServer.call(server, {:drain_node, node_id}, :infinity)
   end
 
-  defp drain_bank_node(state, node_id) do
+  @doc """
+  Force-banks the published serving instances on ONE draining brick instance
+  (`node_id/pod_uid`) rather than the whole node: an instance a co-located
+  sibling brick reports is left serving (`Embervm.WakeInstance.drains_with_instance?/6`),
+  and the rest bank through the draining instance, whose capacity fact the
+  registry has already dropped. An empty `pod_uid` is `drain_node/2`.
+  """
+  @spec drain_instance(GenServer.server(), String.t(), String.t()) :: non_neg_integer()
+  def drain_instance(server \\ __MODULE__, node_id, pod_uid) do
+    GenServer.call(server, {:drain_instance, node_id, pod_uid}, :infinity)
+  end
+
+  defp drain_bank_node(state, node_id, pod_uid \\ nil) do
     now = state.clock.()
+    drain_dial = Embervm.WakeInstance.draining_dial(node_id, pod_uid)
 
     instances =
       ServingStore.all(state.store)
       |> Enum.filter(&(&1.state == :published and &1.node_id == node_id))
       |> Enum.reject(&Map.has_key?(state.draining, &1.instance_id))
+      |> Enum.filter(
+        &Embervm.WakeInstance.drains_with_instance?(state.capacity_table, node_id, pod_uid, :serving_vms, :vm_id, &1.vm_id)
+      )
 
     state =
       Enum.reduce(instances, state, fn instance, acc ->
         case serving_cfg(acc, instance.workload) do
-          {:ok, cfg} -> begin_bank_drain(acc, instance, cfg, now)
+          {:ok, cfg} -> begin_bank_drain(acc, instance, cfg, now, drain_dial)
           :error -> acc
         end
       end)
@@ -555,7 +576,10 @@ defmodule Embervm.ServingSweeper do
   # endpoint and, if this empties the cluster, installs the activator atomically; and
   # the drain_reason stamp tells ServingHealth not to republish it), then arm the
   # drainSeconds timer. The StopServing(BANK) itself waits for the timer.
-  defp begin_bank_drain(state, instance, cfg, _now) do
+  #
+  # `drain_dial` is the draining brick instance a scoped drain banks through (nil
+  # otherwise); it rides the draining bookkeeping to the bank worker.
+  defp begin_bank_drain(state, instance, cfg, _now, drain_dial \\ nil) do
     # The `drain` lifecycle span (Task 10): the unpublish + re-push that pulls the
     # endpoint from the fan-out and arms the drainSeconds timer. A ROOT span (idle-
     # bank is timer-driven, no caller trace). ember.drain_ms is the CONFIGURED drain
@@ -563,11 +587,11 @@ defmodule Embervm.ServingSweeper do
     # duration: this call only arms the timer, it does not block for the drain.
     Tracer.with_span "embervm.serving.drain",
                      %{attributes: %{"ember.workload" => instance.workload, "ember.instance_id" => instance.instance_id}} do
-      begin_bank_drain_body(state, instance, cfg)
+      begin_bank_drain_body(state, instance, cfg, drain_dial)
     end
   end
 
-  defp begin_bank_drain_body(state, instance, cfg) do
+  defp begin_bank_drain_body(state, instance, cfg, drain_dial) do
     case ServingStore.unpublish(state.store, instance.instance_id, :bank) do
       {:ok, _} ->
         # Re-derive + re-push so the endpoint leaves the fan-out now (and the activator
@@ -584,7 +608,7 @@ defmodule Embervm.ServingSweeper do
           drain_ms: drain_ms
         )
 
-        put_draining(state, instance)
+        put_draining(state, instance, drain_dial)
 
       {:error, reason} ->
         Logger.warning("embervm serving: bank-drain unpublish failed",
@@ -596,8 +620,8 @@ defmodule Embervm.ServingSweeper do
     end
   end
 
-  defp put_draining(state, instance) do
-    entry = %{node_id: instance.node_id, vm_id: instance.vm_id, workload: instance.workload}
+  defp put_draining(state, instance, drain_dial \\ nil) do
+    entry = %{node_id: instance.node_id, vm_id: instance.vm_id, workload: instance.workload, drain_dial: drain_dial}
     %{state | draining: Map.put(state.draining, instance.instance_id, entry)}
   end
 
@@ -662,8 +686,13 @@ defmodule Embervm.ServingSweeper do
     # vm_id), not the node-name alias (co-location made it point at an arbitrary
     # sibling brick). Falls back to node_id for a legacy/single-instance fact,
     # preserving single-instance behaviour. Resolved on the owner so the worker reads
-    # a settled key.
-    dial_key = dial_for_serving_vm(state, node_id, vm_id)
+    # a settled key. A scoped drain's guest dials the draining instance instead of
+    # that bare-node fallback: its capacity fact is gone, so no owner reports it.
+    dial_key =
+      case dial_for_serving_vm(state, node_id, vm_id) do
+        ^node_id -> get_in(state.draining, [instance_id, :drain_dial]) || node_id
+        owner -> owner
+      end
 
     spawn(fn ->
       # The `bank` lifecycle span (Task 10): a ROOT span in the spawned worker (the
