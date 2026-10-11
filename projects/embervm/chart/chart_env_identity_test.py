@@ -2975,3 +2975,41 @@ def test_brick_classes_carry_the_noded_per_vm_overhead() -> None:
         assert len(declared) == 1, "expected one control-plane brick class environment"
         assert declared[0], "the brick class environment is empty; this test is inert"
         assert {entry["vm_overhead_mib"] for entry in declared[0]} == {int(noded.pop())}
+
+
+def test_brick_classes_count_the_node_floors_pinned_to_each_class() -> None:
+    """BrickController looks for same-class floor pods only where floors exist.
+
+    Each EMBERVM_BRICK_CLASSES entry carries how many bricks.nodeFloors are
+    pinned to its class; a class with none must read 0 so the controller never
+    lists pods for it.
+    """
+
+    def floors(settings: list[str]) -> dict[str, int]:
+        rendered = _render_with_set("brick-floors", ["bricks.enabled=true", *settings])
+        declared = [
+            json.loads(entry["value"])
+            for document in yaml.safe_load_all(rendered)
+            if isinstance(document, dict) and document.get("kind") == "Deployment"
+            for container in document["spec"]["template"]["spec"].get("containers", [])
+            for entry in container.get("env", [])
+            if entry.get("name") == "EMBERVM_BRICK_CLASSES"
+        ]
+        assert len(declared) == 1, "expected one control-plane brick class environment"
+        return {entry["name"]: entry["floors"] for entry in declared[0]}
+
+    unpinned = floors([])
+    assert unpinned, "the brick class environment is empty; this test is inert"
+    assert set(unpinned.values()) == {0}
+
+    pinned = floors(
+        [
+            "bricks.nodeFloors[0].node=node-a",
+            "bricks.nodeFloors[0].class=2gi",
+            "bricks.nodeFloors[1].node=node-b",
+            "bricks.nodeFloors[1].class=2gi",
+            "bricks.nodeFloors[2].node=node-c",
+            "bricks.nodeFloors[2].class=16gi",
+        ]
+    )
+    assert pinned == {name: 0 for name in unpinned} | {"2gi": 2, "16gi": 1}
