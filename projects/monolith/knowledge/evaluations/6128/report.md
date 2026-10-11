@@ -182,3 +182,103 @@ clean measurement the minimum was 5,707 ms, the median 7,748 ms and the maximum
 15,320 ms. The q02 after timestamp was delayed by a refused client-side shell
 command, so its 49,794 ms overstates the call and is excluded from that
 summary. The JSON keeps both the full and the clean summary.
+
+## Scoped rerun for #6956, 2026-10-11
+
+Issue [#6956](https://github.com/jomcgi-org/homelab/issues/6956) asks why the
+scoped rerun for #6713 returned short lists (q01 returned 1 candidate) and
+whether scope is applied after a global top-k. This section records a second
+scoped rerun and the answer. The full record is
+`observations-scoped-6956.json`.
+
+Each query was sent once, in dataset order, with the exact query text,
+`limit=20`, `type=null` and `scope="repo:jomcgi-org/homelab"`; every other flag
+was left at its default. No query was rephrased or rerun and `get_note` was not
+called. The calls ran from 2026-10-11T00:25:59Z through 2026-10-11T00:28:54Z.
+Any query that returned fewer than 20 got one more call with
+`include_history=true` and otherwise identical arguments.
+
+| Query | Default count | `include_history` count | Baseline rank-1 note in default list |
+| --- | ---: | ---: | --- |
+| q01 | 5 | 20 | No (rank 1 of the `include_history` list) |
+| q02 | 20 | not run | No |
+| q03 | 20 | not run | No |
+| q04 | 20 | not run | No |
+| q05 | 20 | not run | No |
+| q06 | 20 | not run | No |
+| q07 | 20 | not run | Not checkable (baseline rank 1 was withheld) |
+| q08 | 20 | not run | No |
+| q09 | 20 | not run | No |
+| q10 | 20 | not run | No |
+
+Every one of the 185 returned candidates carried
+`scope: repo:jomcgi-org/homelab`, so there were 0 off-scope slots and nothing
+to withhold. The #6713 run returned 170
+candidates, with five queries under 20 (q01 1, q04 19, q05 18, q08 15, q10 17).
+Nine of ten queries now fill the budget.
+
+### Scope is a pre-LIMIT predicate
+
+The hypothesis in the issue, that scope filters a global top-k, is false on
+main. In `projects/monolith/knowledge/store.py`, `_rank_search_chunks` adds
+`_scope_predicate` to the grouped notes query as a `WHERE` clause (lines
+357-359), together with the legacy, deployment-observation, invalidated and
+freshness filters, and only then calls `notes_stmt.limit(limit)` (line 381). The
+`MIN_SEARCH_SCORE` cut (0.4) is a `HAVING` clause on the same statement. The new
+PostgreSQL regression test
+`test_scoped_search_returns_top_k_within_scope_not_scoped_subset_of_global_top_k`
+in `exact_search_postgres_test.py` seeds higher-scoring notes in another scope
+and shows that a scoped `limit=3` call returns the three best in-scope notes,
+where a post-filter would return none. No ranking or authorization code
+changed.
+
+### q01 comparison against a client-side filter
+
+The verification step from the issue was run for q01: one unscoped call with
+`limit=50` and default flags, filtered client-side to the repository scope,
+compared with the scoped `limit=20` list. The unscoped call returned only 5
+candidates, all in `repo:jomcgi-org/homelab`, so the scope filter discarded
+nothing and q01 is short with or without it. The two lists hold the same five
+note ids. The order differs by one adjacent swap at ranks 2 and 3
+(`the-report-recommends-staged-activation-or-a-fail-closed-bound-pod-check-before-asserting-node-wide-ownership`
+and `the-dice-tray-rehearsal-had-to-target-the-advantage-radio-after-its-selector-stopped-matching`).
+Their scores were 0.43158 and 0.43137 in the scoped call and 0.43114 and 0.43151
+in the unscoped call, a gap of 0.0002 to 0.0004. Scores for the same notes also
+moved by up to 0.0003 between the two calls. So the lists are equal as sets and differ as ordered sequences by a near-tie. No non-repository
+candidate appeared, so none was withheld.
+
+### Why q01 is short
+
+With `include_history=true`, q01 returned 20 candidates. Rank 1 is
+`mcp-sync-clears-wedged-argocd-operations` (score 0.634, freshness
+`unknown`), the note that ranked first in the 2026-09-20 baseline. All 20
+history candidates have freshness `unknown` and scores from 0.507 to 0.634,
+and none of the five default candidates (scores 0.402 to 0.444) is among them.
+
+The cause is the default freshness filter. The score floor does not explain it. Commit
+ce741ec95 (`feat(knowledge): enforce temporal review deadlines`, 2026-10-03)
+made `current_predicate` in `knowledge/freshness.py` a default filter. It hides
+notes whose `review_after` is NULL, which the API reports as freshness
+`unknown`. That landed after the 2026-09-20 baseline, so older notes with no
+review deadline dropped out of default results. Backfilling `review_after` for
+them is owned by open issue
+[#6812](https://github.com/jomcgi-org/homelab/issues/6812). The 0.4
+`MIN_SEARCH_SCORE` floor is a second, smaller limit: after the freshness filter,
+q01 has only five notes at or above 0.4 anywhere in the corpus, which is why
+the unscoped `limit=50` call also stops at five.
+
+### Result against the acceptance
+
+Eligible means in scope, current freshness, not legacy, not invalidated, not a
+deployment observation, and scoring at least 0.4. Nine queries (q02 to q10)
+returned 20 candidates. q01 returned 5, and the unscoped `limit=50` call shows
+that it has only 5 eligible notes, so it falls outside the set of queries with at least 20
+eligible in-scope notes. Every query with at least 20 eligible in-scope notes
+returned 20, and no query contradicts that. Usefulness and evidence coverage
+were not re-judged.
+
+Latency is approximate client wall time around each MCP call from a factory
+sandbox, including model turn overhead; it is not server processing latency.
+Over the nine calls with a clean measurement (all except q02, whose finish stamp
+was taken after the list was transcribed) the minimum was 3,379 ms, the median
+4,300 ms and the maximum 8,716 ms. The q01 stamps have one-second resolution.
