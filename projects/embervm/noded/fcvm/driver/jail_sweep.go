@@ -16,8 +16,11 @@ import (
 const orphanJailDirName = "jailer"
 
 // procSelfMountinfoPath lists the mounts the sweep must detach before removing
-// a jail tree. A package var so tests can point it at a fixture.
-var procSelfMountinfoPath = "/proc/self/mountinfo"
+// a jail tree. A package var so tests can point it at a fixture. It reads the
+// calling thread's view, not /proc/self: mountinfo paths are relative to the
+// reader's root, and /proc/self is the thread group leader, whose root is not
+// necessarily this thread's.
+var procSelfMountinfoPath = "/proc/thread-self/mountinfo"
 
 // unmountJailPath detaches one bind-mount fallback left inside a jail tree.
 var unmountJailPath = unmountFile
