@@ -142,6 +142,8 @@ defmodule Embervm.CapacityReportTest do
       mem_admittable_mib: 4_000,
       mem_inflight_mib: 1_024,
       inflight_vms: 1,
+      mem_inflight_placed_mib: 1_024,
+      inflight_placed_vms: 1,
       admission_refusals: %{"pressure:mem" => 3},
       jailer_armed: true,
       launch_modes: %{"jailed" => 7, "direct_exec" => 0},
@@ -157,9 +159,14 @@ defmodule Embervm.CapacityReportTest do
 
     assert row.admission_reported
     assert row.admittable_mib == 4_000
-    assert row.pending_mib == 3_264
+    # pending_mib is the debit placement subtracts: the 3_264 MiB claim less the
+    # boot the brick already reports as placed in flight (1_024 + 192 overhead).
+    assert row.pending_mib == 3_264 - (1_024 + 192)
+    assert row.inflight_claims_mib == 3_264
     assert row.mem_inflight_mib == 1_024
     assert row.inflight_vms == 1
+    assert row.mem_inflight_placed_mib == 1_024
+    assert row.inflight_placed_vms == 1
     assert row.admission_refusals == %{"pressure:mem" => 3}
     assert row.jailer_armed
     assert row.launch_modes == %{"jailed" => 7, "direct_exec" => 0}

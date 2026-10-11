@@ -105,6 +105,14 @@ type admissionLedger struct {
 	// booted. The observed term leaves it out, because the cgroup headroom
 	// already charges those guests; the reserved term and the slot count do not.
 	buildResidentMib uint64
+	// placedMib and placedVMs are the part of the in-flight boots that answer a
+	// control-plane placement whose RPC is still open, each at the size the
+	// control plane declared for it. NodeStatus reports them so the control plane
+	// nets its unsettled claims against boots it placed, never against a
+	// node-local wake (the activators) or a boot that outlived its RPC, which no
+	// claim stands behind.
+	placedMib uint64
+	placedVMs int
 	// refusals counts every refusal since daemon start by token
 	// (NodeStatus.admission_refusals).
 	refusals map[rejectReason]uint64
@@ -272,12 +280,19 @@ func (s *Server) admissionFactsLocked() admissionFacts {
 type admissionTicket struct {
 	s       *Server
 	needMib uint64
-	once    sync.Once
-	// resident and released are guarded by s.admission.mu. resident marks a
-	// build ticket whose guest has booted (buildGuestBooted); released marks a
-	// ticket already returned, which can no longer become resident.
+	// placedMib is the declared size the ticket counts toward the placed
+	// in-flight figure while placed is true; 0 for a node-local boot.
+	placedMib uint64
+	// stopPlaced cancels the hook that unplaces the ticket when its RPC ends.
+	stopPlaced func() bool
+	once       sync.Once
+	// resident, released and placed are guarded by s.admission.mu. resident
+	// marks a build ticket whose guest has booted (buildGuestBooted); released
+	// marks a ticket already returned, which can no longer become resident;
+	// placed marks a ticket still counted in the placed in-flight figure.
 	resident bool
 	released bool
+	placed   bool
 }
 
 // release returns the reservation exactly once. Boot paths call it the moment
@@ -296,12 +311,43 @@ func (t *admissionTicket) release() {
 		if t.resident {
 			l.buildResidentMib -= t.needMib
 		}
+		t.unplaceLocked()
 		t.released = true
 		l.mu.Unlock()
+		if t.stopPlaced != nil {
+			t.stopPlaced()
+		}
 		// The released reservation changes mem_admittable_mib: tell the control
 		// plane now rather than at the next liveness tick.
 		t.s.signalChange()
 	})
+}
+
+// unplaceLocked takes the ticket out of the placed in-flight figure, once.
+// Caller holds s.admission.mu.
+func (t *admissionTicket) unplaceLocked() {
+	if !t.placed {
+		return
+	}
+	l := &t.s.admission
+	l.placedMib -= t.placedMib
+	l.placedVMs--
+	t.placed = false
+}
+
+// rpcEnded runs when the placing RPC's context ends while the ticket is still
+// held: the control plane has had its answer (or its deadline) and has settled
+// or released its claim, so a boot that carries on (a build past the client's
+// deadline, say) keeps its reservation but no longer cancels a claim.
+func (t *admissionTicket) rpcEnded() {
+	l := &t.s.admission
+	l.mu.Lock()
+	was := t.placed
+	t.unplaceLocked()
+	l.mu.Unlock()
+	if was {
+		t.s.signalChange()
+	}
 }
 
 // buildGuestBooted is called by a BuildBase once its build guest has booted. It
@@ -354,7 +400,12 @@ func admissionLanded(ctx context.Context) {
 // needMib and one VM slot before unlocking and returns the ticket holding them.
 // On a refusal it counts the token, logs (rate-limited per token) and returns a
 // RESOURCE_EXHAUSTED error. verb names the caller in the log only.
-func (s *Server) admit(verb string, needMib uint64, class pressureClass) (*admissionTicket, error) {
+//
+// placedMib is the size the control plane declared (and claimed) for a boot it
+// placed, or 0 for a node-local boot. A placed ticket also counts toward the
+// placed in-flight figure until it is released or ctx (the placing RPC's
+// context) ends, whichever comes first.
+func (s *Server) admit(ctx context.Context, verb string, needMib, placedMib uint64, class pressureClass) (*admissionTicket, error) {
 	l := &s.admission
 	l.mu.Lock()
 	f := s.admissionFactsLocked()
@@ -374,11 +425,30 @@ func (s *Server) admit(verb string, needMib uint64, class pressureClass) (*admis
 	}
 	l.inflightMib += needMib
 	l.inflightVMs++
+	t := &admissionTicket{s: s, needMib: needMib}
+	if placedMib > 0 {
+		t.placedMib, t.placed = placedMib, true
+		l.placedMib += placedMib
+		l.placedVMs++
+	}
 	l.mu.Unlock()
+	if t.placed && ctx != nil {
+		t.stopPlaced = context.AfterFunc(ctx, t.rpcEnded)
+	}
 	// The reservation changes mem_admittable_mib and inflight_vms: tell the
 	// control plane within milliseconds so its next placement sees it.
 	s.signalChange()
-	return &admissionTicket{s: s, needMib: needMib}, nil
+	return t, nil
+}
+
+// placedShare is the size a control-plane boot counts toward the placed
+// in-flight figure: the size it declared, which is what the control plane
+// claimed, else (no declared size) the whole reservation.
+func placedShare(declaredMib, needMib uint64) uint64 {
+	if declaredMib > 0 {
+		return min(declaredMib, needMib)
+	}
+	return needMib
 }
 
 // refuseIfSlotsExhausted is a non-reserving early check of the live-VM backstop
@@ -446,6 +516,8 @@ type admissionSnapshot struct {
 	reported      bool
 	inflightMib   uint64
 	inflightVMs   int
+	placedMib     uint64
+	placedVMs     int
 	refusals      map[string]uint64
 }
 
@@ -457,7 +529,12 @@ func (s *Server) admissionStatus() admissionSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f := s.admissionFactsLocked()
-	snap := admissionSnapshot{inflightMib: l.inflightMib, inflightVMs: l.inflightVMs}
+	snap := admissionSnapshot{
+		inflightMib: l.inflightMib,
+		inflightVMs: l.inflightVMs,
+		placedMib:   l.placedMib,
+		placedVMs:   l.placedVMs,
+	}
 	snap.admittableMib, snap.reported = f.admittableMib()
 	if !snap.reported {
 		snap.admittableMib = 0

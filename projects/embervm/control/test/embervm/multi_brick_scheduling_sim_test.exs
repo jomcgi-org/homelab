@@ -201,6 +201,39 @@ defmodule Embervm.MultiBrickSchedulingSimTest do
       assert committed > budget
     end
 
+    test "an observed brick keeps a burst's settled claims for the hold, so the burst does not herd" do
+      # Every guest lands and the brick reports after each create, all inside
+      # the settle hold, and nothing faults in: an observed report never charges
+      # the landed guests, so only the held claims keep the third create off
+      # the brick. Dropping them on the next report (as a reserved brick does)
+      # herds the burst onto it (delta review, ledger).
+      {violations, placed, no_capacity} =
+        Sim.with_sim(
+          [
+            seed: 4_186,
+            bricks: [{"8gi", %{}}],
+            class_max: %{"8gi" => 1},
+            brick_defaults: %{model: :observed},
+            on_violation: :collect
+          ],
+          fn sim ->
+            sim =
+              Enum.reduce(1..3, sim, fn _, s ->
+                s
+                |> Sim.step({:create, "claude-runtime"})
+                |> land_all()
+                |> Sim.step(:report_all)
+              end)
+
+            {sim.violations, vms_by_class(sim), sim.stats.no_capacity}
+          end
+        )
+
+      assert Enum.filter(violations, &match?({_, {:no_overcommit, _, _}}, &1)) == []
+      assert placed == [{"8gi", 2}]
+      assert no_capacity == 1
+    end
+
     test "the observed admission model the deploy values still select re-finds the 2026-10-10 OOM" do
       violations =
         Sim.with_sim(

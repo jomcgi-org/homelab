@@ -923,11 +923,18 @@ defmodule Embervm.NodeRegistry do
     rt = state.node_runtime[instance_id]
 
     if rt.health == :healthy and not rt.draining do
-      NodeCapacity.put(state.table, instance_key(rt), facts_from_status(status, rt, state.clock.()))
-      # This report counts every VM that landed before it, so the settled
-      # in-flight debits it follows are dropped (Inflight, "one count per boot").
+      facts = facts_from_status(status, rt, state.clock.())
+      NodeCapacity.put(state.table, instance_key(rt), facts)
+      # A reserved brick's report charges every VM that landed before it, so the
+      # settled in-flight debits it follows are dropped (Inflight, "one count per
+      # boot"). An observed brick's report does not charge a guest until it
+      # faults its memory in, so its settled debits keep their hold.
       dial_id = Embervm.Brick.dial_id(%{instance_id: rt.instance_id, configured_id: rt.configured_id})
-      Inflight.observe_report(dial_id, table: state.inflight_table)
+
+      Inflight.observe_report(dial_id,
+        table: state.inflight_table,
+        counts_landed: Embervm.Brick.reservation?(facts)
+      )
     else
       NodeCapacity.drop(state.table, instance_key(rt))
     end
@@ -1050,6 +1057,13 @@ defmodule Embervm.NodeRegistry do
       mem_admittable_mib: Map.get(s, :mem_admittable_mib, 0),
       mem_inflight_mib: Map.get(s, :mem_inflight_mib, 0),
       inflight_vms: Map.get(s, :inflight_vms, 0),
+      # The part of those in-flight boots that answer a control-plane placement
+      # still awaiting its reply (fields 51-52), at the declared size the control
+      # plane claimed. Embervm.Scheduler.Inflight.debit_mib/3 nets its unsettled
+      # claims against these, never the totals, so an activator wake cannot
+      # cancel a claim.
+      mem_inflight_placed_mib: Map.get(s, :mem_inflight_placed_mib, 0),
+      inflight_placed_vms: Map.get(s, :inflight_placed_vms, 0),
       # Jailer fact (49): the daemon's jailer is armed AND its startup preflight
       # passed (a brick whose preflight fails never registers). The per-mode
       # launch counts (50) ride diagnostic_facts/1. Diagnostic only: placement

@@ -411,6 +411,9 @@ defmodule Embervm.MultiBrickSim.Fleet do
       mem_admittable_mib: if(ledger?, do: Noded.admittable_mib(facts), else: 0),
       mem_inflight_mib: if(ledger?, do: facts.inflight_mib, else: 0),
       inflight_vms: if(ledger?, do: facts.inflight_vms, else: 0),
+      # Every simulated boot answers a control-plane placement.
+      mem_inflight_placed_mib: if(ledger?, do: facts.inflight_mib, else: 0),
+      inflight_placed_vms: if(ledger?, do: facts.inflight_vms, else: 0),
       admission_refusals: brick.refusals,
       jailer_armed: false,
       cpu_headroom_millicores: 4_000,
@@ -434,7 +437,14 @@ defmodule Embervm.MultiBrickSim.Fleet do
       group_member_vms: []
     })
 
-    if st.inflight_table, do: Embervm.Scheduler.Inflight.observe_report(brick.dial, table: st.inflight_table)
+    if st.inflight_table do
+      # As NodeRegistry.refresh_capacity does: only a reserved report charges
+      # the guests that landed before it.
+      Embervm.Scheduler.Inflight.observe_report(brick.dial,
+        table: st.inflight_table,
+        counts_landed: brick.model == :reserved
+      )
+    end
   end
 end
 
