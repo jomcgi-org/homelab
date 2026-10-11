@@ -83,7 +83,9 @@ func (s *Server) startStateful(ctx context.Context, req *nodev1.StartStatefulReq
 	// below. Stateful is tap-bearing, so slots, memory and the tap freelist are
 	// all checked. The ticket rides ctx to the driver call of whichever mode
 	// boots, which releases it; the defer covers every early return in between.
-	ticket, err := s.admit("StartStateful", uint64(req.GetResources().GetMemMib()), classTapBearing)
+	// A RELIGHT is charged at least the banked bundle's recorded size, which is
+	// what the restored VM lands at.
+	ticket, err := s.admit("StartStateful", s.statefulAdmitMib(req), classTapBearing)
 	if err != nil {
 		return nil, err
 	}

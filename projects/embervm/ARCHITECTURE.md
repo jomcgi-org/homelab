@@ -1133,12 +1133,15 @@ reclaimable page cache, less boots in flight, less `memRejectFloorMib`. noded
 evaluates that predicate in one function under one mutex, against an atomic
 ticket ledger: every boot verb, `BuildBase` included, holds a ticket from
 admission until its driver boot call returns, so concurrent boots cannot each
-pass against the same headroom. A refusal is `RESOURCE_EXHAUSTED` with a stable
-token (`pressure:mem`, `pressure:taps`, `slots`), logged and counted in
-`NodeStatus.admission_refusals`. Every `NodeStatus` carries
-`mem_admittable_mib`, the largest `memMib` the brick would admit for one more
-VM at that instant, computed by the same function; it is the one memory
-predicate the control plane trusts.
+pass against the same headroom. A restore (a Prime, or a session, serving,
+stateful or group-member relight) is charged the larger of its declared
+`memMib` and the size recorded with the snapshot it restores, because the live
+map counts the restored VM at the snapshot's size. A refusal is
+`RESOURCE_EXHAUSTED` with a stable token (`pressure:mem`, `pressure:taps`,
+`slots`), logged and counted in `NodeStatus.admission_refusals`. Every
+`NodeStatus` carries `mem_admittable_mib`, the largest `memMib` the brick would
+admit for one more VM at that instant, computed by the same function; it is the
+one memory predicate the control plane trusts.
 
 The control plane keeps its own in-flight ledger (`Embervm.Scheduler.Inflight`).
 Every new-VM placement claims its declared memory on the chosen brick before

@@ -52,8 +52,9 @@ func (s *Server) startServing(ctx context.Context, req *nodev1.StartServingReque
 	// boot below. Serving is tap-bearing, so slots, memory and the tap freelist
 	// are all checked. The ticket rides ctx to the driver call of either mode,
 	// which releases it the moment the VM is booted or has failed; the defer
-	// covers every early return in between.
-	ticket, err := s.admit("StartServing", uint64(req.GetResources().GetMemMib()), classTapBearing)
+	// covers every early return in between. A RELIGHT is charged at least the
+	// banked bundle's recorded size, which is what the restored VM lands at.
+	ticket, err := s.admit("StartServing", s.servingAdmitMib(req), classTapBearing)
 	if err != nil {
 		return nil, err
 	}

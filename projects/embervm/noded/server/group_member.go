@@ -66,8 +66,10 @@ func (s *Server) startGroupMember(ctx context.Context, req *nodev1.StartGroupMem
 	// on-demand"), so this check is slots and memory only: the serving-allocator
 	// tap freelist is the wrong pool for a group member and checking it would
 	// reject on unrelated serving pressure. The ticket rides ctx to the driver
-	// call of either mode, which releases it; the defer covers early returns.
-	ticket, err := s.admit("StartGroupMember", uint64(req.GetResources().GetMemMib()), classMemOnly)
+	// call of either mode, which releases it; the defer covers early returns. A
+	// RELIGHT is charged at least the member bundle's recorded size, which is
+	// what the restored VM lands at.
+	ticket, err := s.admit("StartGroupMember", s.groupMemberAdmitMib(req), classMemOnly)
 	if err != nil {
 		return nil, err
 	}
