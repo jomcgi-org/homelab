@@ -30,8 +30,9 @@ const (
 
 // ErrJailerContainment marks a jailed launch the launcher refused because it
 // could not contain the guest: no unique jail uid, no jail root, no VM cgroup,
-// no PID namespace, or a VMM that did not join its cgroup. An armed jailer never
-// falls back to running the guest unjailed.
+// no PID namespace, a VMM that did not join its cgroup, or a legacy bundle with
+// no jail resource metadata to stage. An armed jailer never falls back to
+// running the guest unjailed.
 var ErrJailerContainment = errors.New("driver: jailer containment unavailable")
 
 // errVMMExitedBeforeSocket reports a VMM (or its jailer) that exited before its
@@ -47,6 +48,9 @@ type LaunchSpec struct {
 	Phase      string
 	MemMib     int
 	Resources  []JailResource
+	// DirectExec marks a legacy bundle whose metadata names no rootfs, so it
+	// can only run without the jailer. A disarmed launcher execs it directly,
+	// as it does every guest; an armed launcher refuses it.
 	DirectExec bool
 	// SerialPath and OnExit are host-owned observation facts, never guest identity.
 	SerialPath string
@@ -112,9 +116,10 @@ type ExecLauncher struct {
 
 // launchModeCounters are cumulative launch outcomes since daemon start, keyed
 // by mode only, never by VM or workload. jailed and directExec count launches
-// that returned a running VMM; refused counts every jailed launch that failed,
-// since none of them falls back to running the guest unjailed. An armed brick
-// whose directExec moves is running an uncontained guest (a legacy bundle).
+// that returned a running VMM; refused counts every launch an armed launcher
+// failed or would not contain, a legacy bundle without jail metadata included,
+// since none of them falls back to running the guest unjailed. directExec
+// therefore moves only on a disarmed brick.
 type launchModeCounters struct {
 	jailed     atomic.Uint64
 	directExec atomic.Uint64
@@ -367,9 +372,18 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	if spec.Phase != guestPhaseInit && spec.Phase != guestPhaseVM {
 		return nil, fmt.Errorf("driver: launch phase must be %q or %q", guestPhaseInit, guestPhaseVM)
 	}
-	jailed := l.JailerEnabled && !spec.DirectExec
-	proc, err := l.launch(ctx, spec, jailed)
 	counters := l.modeCounters()
+	if l.JailerEnabled && spec.DirectExec {
+		// A legacy bundle names no rootfs the jail could stage, so it could only
+		// run direct: root, no chroot, no VM cgroup. An armed brick refuses it
+		// like any other launch it cannot contain, and never execs it.
+		err := fmt.Errorf("%w: legacy bundle without jail resource metadata", ErrJailerContainment)
+		counters.refused.Add(1)
+		slog.Error("driver: refusing jailed launch", "vm", spec.VMID, "workload", spec.Workload, "err", err)
+		return nil, err
+	}
+	jailed := l.JailerEnabled
+	proc, err := l.launch(ctx, spec, jailed)
 	switch {
 	case err != nil && jailed:
 		counters.refused.Add(1)

@@ -386,6 +386,11 @@ func TestExecProcessSpontaneousExitIsReaped(t *testing.T) {
 	}
 }
 
+// TestExecLauncherDirectLaunchCountsDirectExec pins the legacy-bundle rule: a
+// bundle with no jail resource metadata names no rootfs the jail could stage,
+// so it can only run direct. A disarmed launcher execs it like every guest and
+// counts it as direct_exec; an armed launcher refuses it with
+// ErrJailerContainment, counts and logs the refusal, and never execs anything.
 func TestExecLauncherDirectLaunchCountsDirectExec(t *testing.T) {
 	t.Setenv("EMBER_JAILER_HELPER", "1")
 	t.Setenv("EMBER_JAILER_TEST_BINARY", os.Args[0])
@@ -395,30 +400,71 @@ func TestExecLauncherDirectLaunchCountsDirectExec(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	var modes launchModeCounters
-	// An armed launcher still direct-execs a legacy bundle without jail metadata.
-	launcher := &ExecLauncher{
-		Bin:           wrapper,
-		Env:           os.Environ(),
-		Logger:        slog.New(slog.NewJSONHandler(&lockedBuffer{}, nil)),
-		JailerEnabled: true,
-		ReadyTimeout:  2 * time.Second,
-		launchModes:   &modes,
+	launch := func(t *testing.T, armed bool, modes *launchModeCounters) (Process, string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "exec-marker")
+		t.Setenv("EMBER_JAILER_MARKER", marker)
+		launcher := &ExecLauncher{
+			Bin:           wrapper,
+			Env:           os.Environ(),
+			Logger:        slog.New(slog.NewJSONHandler(&lockedBuffer{}, nil)),
+			JailerEnabled: armed,
+			ReadyTimeout:  2 * time.Second,
+			launchModes:   modes,
+		}
+		process, err := launcher.Launch(context.Background(), LaunchSpec{
+			VMID: "legacy", SocketPath: filepath.Join(dir, "api.sock"),
+			Workload: "legacy-workload", Phase: guestPhaseVM, DirectExec: true,
+		})
+		return process, marker, err
 	}
-	process, err := launcher.Launch(context.Background(), LaunchSpec{
-		VMID: "legacy", SocketPath: filepath.Join(tmp, "api.sock"),
-		Workload: "legacy-workload", Phase: guestPhaseVM, DirectExec: true,
+
+	t.Run("disarmed", func(t *testing.T) {
+		var modes launchModeCounters
+		process, marker, err := launch(t, false, &modes)
+		if err != nil {
+			t.Fatalf("Launch: %v", err)
+		}
+		if err := process.Kill(); err != nil {
+			t.Fatalf("Kill: %v", err)
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("disarmed direct launch never execed the VMM: %v", err)
+		}
+		if modes.directExec.Load() != 1 || modes.jailed.Load() != 0 || modes.refused.Load() != 0 {
+			t.Fatalf("launch modes jailed=%d direct=%d refused=%d, want one direct exec",
+				modes.jailed.Load(), modes.directExec.Load(), modes.refused.Load())
+		}
 	})
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
-	if err := process.Kill(); err != nil {
-		t.Fatalf("Kill: %v", err)
-	}
-	if modes.directExec.Load() != 1 || modes.jailed.Load() != 0 || modes.refused.Load() != 0 {
-		t.Fatalf("launch modes jailed=%d direct=%d refused=%d, want one direct exec",
-			modes.jailed.Load(), modes.directExec.Load(), modes.refused.Load())
-	}
+
+	t.Run("armed", func(t *testing.T) {
+		var logs lockedBuffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		var modes launchModeCounters
+		process, marker, err := launch(t, true, &modes)
+		if process != nil || !errors.Is(err, ErrJailerContainment) || !strings.Contains(err.Error(), "legacy bundle without jail resource metadata") {
+			t.Fatalf("armed launch of a legacy bundle = (%v, %v), want an ErrJailerContainment refusal naming the legacy bundle", process, err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("armed launcher execed a legacy bundle it refused: %v", err)
+		}
+		if modes.refused.Load() != 1 || modes.directExec.Load() != 0 || modes.jailed.Load() != 0 {
+			t.Fatalf("launch modes jailed=%d direct=%d refused=%d, want one refusal",
+				modes.jailed.Load(), modes.directExec.Load(), modes.refused.Load())
+		}
+		logged := false
+		for _, record := range decodeLogRecords(t, logs.Bytes()) {
+			if record["msg"] == "driver: refusing jailed launch" && record["vm"] == "legacy" {
+				logged = true
+			}
+		}
+		if !logged {
+			t.Fatalf("refusal was not logged: %s", logs.Bytes())
+		}
+	})
 }
 
 func mustRead(t *testing.T, path string) []byte {
