@@ -24,6 +24,7 @@ defmodule Embervm.BaseBuilderTest do
   alias Embervm.BaseBuilder
   alias Embervm.NodeCapacity
   alias Embervm.Node.V1.BuildBaseResponse
+  alias Embervm.Scheduler.Inflight
 
   @node %{id: "node-4", address: "node-4:9090"}
 
@@ -101,6 +102,10 @@ defmodule Embervm.BaseBuilderTest do
         Enum.each(nodes, &put_instance_fact(table, &1.id))
         Keyword.put(opts, :capacity_table, table)
       end
+
+    # A private in-flight ledger, so a build's memory claim never debits the
+    # application's shared one (a stopped builder would leave it to its TTL).
+    opts = Keyword.put_new_lazy(opts, :inflight_table, &new_inflight_table/0)
 
     {:ok, pid} =
       BaseBuilder.start_link(
@@ -2644,6 +2649,10 @@ defmodule Embervm.BaseBuilderTest do
     table
   end
 
+  defp new_inflight_table do
+    Inflight.create(:"bb_inflight_#{System.unique_integer([:positive])}")
+  end
+
   defp put_brick(table, node_id, pod_uid, opts) do
     NodeCapacity.put(table, {node_id, pod_uid}, %{
       node_id: node_id,
@@ -2653,7 +2662,8 @@ defmodule Embervm.BaseBuilderTest do
       size_class: Keyword.get(opts, :size_class, "8gi"),
       mem_budget_mib: Keyword.get(opts, :mem_budget, 8_192),
       mem_headroom_mib: Keyword.get(opts, :mem_headroom, 8_000),
-      live_vms: 0,
+      mem_reject_floor_mib: Keyword.get(opts, :mem_reject_floor, 0),
+      live_vms: Keyword.get(opts, :live_vms, 0),
       max_live_vms: 8,
       updated_at: 0
     })
@@ -3633,6 +3643,231 @@ defmodule Embervm.BaseBuilderTest do
     assert_eventually(fn ->
       BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid"
     end)
+  end
+
+  # -- build admission: prefer a brick that admits the build, retry refusals ---
+
+  defp busy_and_free_bricks(big_headroom, mid_headroom) do
+    table = new_cap_table()
+
+    put_brick(table, "node-4", "big",
+      size_class: "8gi",
+      mem_budget: 7_936,
+      mem_headroom: big_headroom,
+      mem_reject_floor: 512
+    )
+
+    put_brick(table, "node-4", "mid",
+      size_class: "4gi",
+      mem_budget: 3_840,
+      mem_headroom: mid_headroom,
+      mem_reject_floor: 512
+    )
+
+    table
+  end
+
+  defp two_brick_builder(table, opts) do
+    start_builder(
+      [
+        nodes: [%{id: "node-4/big", address: "a"}, %{id: "node-4/mid", address: "a"}],
+        capacity_table: table
+      ] ++ opts
+    )
+  end
+
+  test "placement prefers a capable instance that admits the build over a larger busy one" do
+    # The 8gi brick is packed with sessions; the 4gi sibling has room for a
+    # 3072 MiB build guest (3800 - 512 >= 3072).
+    table = busy_and_free_bricks(500, 3_800)
+    agent = start_recorder()
+
+    builder =
+      two_brick_builder(table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap-mid")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-mid"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid"
+  end
+
+  test "placement falls back to the largest capable instance when none admits the build" do
+    table = busy_and_free_bricks(100, 100)
+    agent = start_recorder()
+
+    builder =
+      two_brick_builder(table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap-big")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-big"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+  end
+
+  test "build placement reads admission net of in-flight claims" do
+    # On its NodeStatus the 8gi brick has room, but a session create has
+    # already claimed most of it and the daemon has not reported that yet.
+    table = busy_and_free_bricks(7_900, 3_800)
+    inflight = new_inflight_table()
+    Inflight.claim("node-4/big", {:session_create, make_ref()}, 6_000, table: inflight)
+    agent = start_recorder()
+
+    builder =
+      two_brick_builder(table,
+        inflight_table: inflight,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap-mid")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-mid"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/mid"
+  end
+
+  test "a running build claims its guest's memory until the result lands" do
+    table = busy_and_free_bricks(7_900, 3_800)
+    inflight = new_inflight_table()
+    agent = start_recorder()
+    test_pid = self()
+
+    builder =
+      two_brick_builder(table,
+        inflight_table: inflight,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req ->
+          send(test_pid, {:building, self()})
+
+          receive do
+            :finish -> {:ok, resp("snap-claimed")}
+          end
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+    assert_receive {:building, worker}
+    assert Inflight.pending_mib("node-4/big", table: inflight) == 3_072
+
+    send(worker, :finish)
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-claimed"}, latest(agent, "w")) end)
+    assert_eventually(fn -> Inflight.pending_mib("node-4/big", table: inflight) == 0 end)
+  end
+
+  test "a built workload's pin does not chase transient headroom" do
+    table = busy_and_free_bricks(7_900, 3_800)
+    agent = start_recorder()
+
+    builder =
+      two_brick_builder(table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("snap-big")} end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+    assert_eventually(fn -> match?(%{"snapshotRef" => "snap-big"}, latest(agent, "w")) end)
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+
+    # Sessions fill the 8gi brick. The base already serves, so a re-reconcile of
+    # the same spec must not re-home its pin onto the brick with room.
+    put_brick(table, "node-4", "big", size_class: "8gi", mem_budget: 7_936, mem_headroom: 300, mem_reject_floor: 512)
+    :ok = BaseBuilder.reconcile(builder, desc(%{mem_mib: 3_072}))
+    assert BaseBuilder.status(builder).workloads["w"].node_id == "node-4/big"
+  end
+
+  test "a build refused on admission retries later without writing BuildFailed" do
+    agent = start_recorder()
+    test_pid = self()
+
+    refusal = %GRPC.RPCError{
+      status: 8,
+      message: "noded: pressure:mem (need 3072 MiB, admittable 900 MiB, model reserved)"
+    }
+
+    build_fun = fn :fake_channel, _req ->
+      send(test_pid, {:build_attempt, self()})
+      {:error, refusal}
+    end
+
+    builder =
+      start_builder(
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        base_backoff_ms: 60_000,
+        max_backoff_ms: 240_000
+      )
+
+    # Drive the callbacks in this process, as the sibling-build test does, so the
+    # refusal's effect on status, backoff and the retry timer is observable.
+    initial = :sys.get_state(builder)
+    GenServer.stop(builder)
+    {:noreply, building} = BaseBuilder.handle_cast({:reconcile, desc(%{mem_mib: 3_072})}, initial)
+    assert_receive {:build_attempt, worker}
+    assert_receive {:build_result, ^worker, {:error, %GRPC.RPCError{status: 8}} = result}
+    status_before = recorded(agent)
+
+    {:noreply, waiting} = BaseBuilder.handle_info({:build_result, worker, result}, building)
+
+    # No status write at all: the workload stays Building, never BuildFailed.
+    assert recorded(agent) == status_before
+
+    refute Enum.any?(recorded(agent), fn {_ns, _name, status} ->
+             match?(%{"reason" => "BuildFailed"}, condition(status, "BaseBuilt"))
+           end)
+
+    # The ordinary backoff applies (a busy brick is not polled at the base
+    # delay), and a retry is armed.
+    assert waiting.workloads["w"].backoff_ms == 60_000
+    timer = waiting.workloads["w"].retry_timer
+    assert is_integer(Process.read_timer(timer))
+    Process.cancel_timer(timer)
+
+    # The retry re-drives the build.
+    {:noreply, _retrying} = BaseBuilder.handle_info({:retry, "w"}, waiting)
+    assert_receive {:build_attempt, retry_worker}
+    assert retry_worker != worker
+  end
+
+  test "a refused build re-places onto a brick that admits it on retry" do
+    table = busy_and_free_bricks(7_900, 100)
+    agent = start_recorder()
+    test_pid = self()
+
+    build_fun = fn :fake_channel, _req ->
+      send(test_pid, {:build_attempt, self()})
+      {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+    end
+
+    builder =
+      two_brick_builder(table,
+        status_writer: recording_status_writer(agent),
+        build_fun: build_fun,
+        base_backoff_ms: 60_000,
+        max_backoff_ms: 240_000
+      )
+
+    initial = :sys.get_state(builder)
+    GenServer.stop(builder)
+    {:noreply, building} = BaseBuilder.handle_cast({:reconcile, desc(%{mem_mib: 3_072})}, initial)
+    assert building.workloads["w"].node_id == "node-4/big"
+    assert_receive {:build_attempt, worker}
+    assert_receive {:build_result, ^worker, result}
+    {:noreply, waiting} = BaseBuilder.handle_info({:build_result, worker, result}, building)
+    Process.cancel_timer(waiting.workloads["w"].retry_timer)
+
+    # By the retry the 8gi brick has filled and the 4gi sibling has freed up.
+    put_brick(table, "node-4", "big", size_class: "8gi", mem_budget: 7_936, mem_headroom: 300, mem_reject_floor: 512)
+    put_brick(table, "node-4", "mid", size_class: "4gi", mem_budget: 3_840, mem_headroom: 3_800, mem_reject_floor: 512)
+
+    {:noreply, retrying} = BaseBuilder.handle_info({:retry, "w"}, waiting)
+    assert retrying.workloads["w"].node_id == "node-4/mid"
+    assert retrying.nodes["node-4/mid"].building == "w"
+    assert_receive {:build_attempt, _retry_worker}
   end
 
   # -- base export durability (base-durability PR-1) --------------------------

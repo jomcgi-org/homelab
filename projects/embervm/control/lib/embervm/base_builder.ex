@@ -84,6 +84,23 @@ defmodule Embervm.BaseBuilder do
       still recorded -> `Ready=True` (the old base still serves; no dispatch
       gap), `BaseBuilt=False`.
 
+  A brick that refuses the build on admission (`RESOURCE_EXHAUSTED`: no memory
+  for the build guest, or the live-VM cap) has not failed it. The refusal is
+  "retry later": the same backoff, but no `BaseBuilt=False` write, and the retry
+  re-places the build onto a brick that admits it.
+
+  ## build placement and memory
+
+  A build boots a full guest, so it competes with sessions and tasks for brick
+  memory. When a workload is about to build, placement prefers the capable
+  bricks whose admission (`Embervm.Brick.admittable_mib/1`, net of the in-flight
+  ledger `Embervm.Scheduler.Inflight`) fits the build's `memMib` and that have a
+  free slot, and falls back to the largest-budget rule only when none does. A
+  built workload's pin is never moved by headroom: a transient full brick must
+  not re-home a base that already serves. A running build claims its guest's
+  memory in the in-flight ledger until its result lands, so other placers see
+  the brick as busy for the whole build, not only for the daemon's boot window.
+
   `status.snapshotRef` is only ever ADVANCED to a base the daemon has already
   confirmed built, never to an in-progress one. What it NAMES is deliberately
   narrow (#4893): a ref the daemon confirmed BUILT, i.e. it was present on a
@@ -150,9 +167,16 @@ defmodule Embervm.BaseBuilder do
     ZipSource
   }
 
+  alias Embervm.Scheduler.Inflight
+
   # Backoff for a failed build: exponential from 1s, capped at the spec's 10m.
   @base_backoff_ms 1_000
   @max_backoff_ms 600_000
+
+  # A running build's in-flight memory claim outlives the BuildBase call's own
+  # 600s deadline (default_build/2), so a builder that dies mid-build cannot leak
+  # it for longer than noded could still be running the guest.
+  @build_claim_ttl_ms 660_000
 
   # Base-durability PR-1: how often the export reconcile sweeps for a current base
   # that is present-but-unexported and re-issues ExportArtifact. The immediate
@@ -581,6 +605,9 @@ defmodule Embervm.BaseBuilder do
       hydrating: MapSet.new(),
       runtime_images: runtime_images,
       capacity_table: capacity_table,
+      # The in-flight placement ledger: a running build claims its guest's memory
+      # on its brick here, and build placement reads every brick net of it.
+      inflight_table: Keyword.get(opts, :inflight_table, Inflight.table()),
       status_writer: status_writer,
       clock: clock,
       base_backoff_ms: base_backoff,
@@ -933,7 +960,7 @@ defmodule Embervm.BaseBuilder do
   # configured yet means we cannot build: record the intent and report it.
   defp reconcile_desc(state, %{name: name} = desc) do
     prev = Map.get(state.workloads, name)
-    node_id = placement(state, prev, Map.get(desc, :mem_mib) || 0)
+    node_id = placement(state, prev, Map.get(desc, :mem_mib) || 0, builds?(prev, desc))
 
     w = merge_desc(prev, desc, node_id)
     state = put_in(state.workloads[name], w)
@@ -1913,7 +1940,7 @@ defmodule Embervm.BaseBuilder do
   # uses. A workload already placed or already built is left untouched.
   defp redrive_pending_workload(state, name) do
     w = Map.get(state.workloads, name)
-    node_id = placement(state, %{node_id: nil}, (w && w.mem_mib) || 0)
+    node_id = placement(state, %{node_id: nil}, (w && w.mem_mib) || 0, true)
 
     cond do
       w == nil or node_id == nil ->
@@ -2034,15 +2061,42 @@ defmodule Embervm.BaseBuilder do
   # capacity_fact_updated notification re-drives it. `retry_workload/2` clears
   # the pin so a parked workload is held immediately. WorkloadWatcher's periodic
   # catalog resync is now only a slower backstop for edge cases.
-  defp placement(state, prev, need_mib) do
-    case eligible_build_instances(state, need_mib) do
+  #
+  # `build?` says the workload is about to BUILD. Then the pool is first narrowed
+  # to the capable instances that would admit the build guest right now (a free
+  # slot and admission memory for `need_mib`, net of in-flight claims), so a
+  # build does not land on the largest brick only to be refused while a smaller
+  # one has room. Only when none admits it does today's largest-budget rule
+  # apply, and the daemon's refusal then becomes a retry-later. A workload that
+  # is not building keeps the headroom-blind rule: its pin anchors restore-first
+  # and must not chase transient memory.
+  defp placement(state, prev, need_mib, build?) do
+    case capable_build_instances(state, need_mib) do
       [] ->
         nil
 
-      instances ->
+      capable ->
+        admissible = if build?, do: Enum.filter(capable, &admits_build?(state, &1, need_mib)), else: []
+        instances = dedupe_per_node(if admissible == [], do: capable, else: admissible)
         best = Enum.max_by(instances, &build_rank/1)
         keep_or_replace(prev, instances, best)
     end
+  end
+
+  # Whether reconciling `desc` will run a scalar build: a new workload, or a
+  # spec whose signature differs from the recorded base.
+  defp builds?(nil, _desc), do: true
+
+  defp builds?(prev, desc) do
+    w = merge_desc(prev, desc, prev.node_id)
+    not (w.built_signature == signature(w) and w.snapshot_ref != nil)
+  end
+
+  # The scheduler's own predicate (a free slot and admission memory), on the
+  # instance's normalized brick net of what other placers have claimed on it.
+  defp admits_build?(state, instance, need_mib) do
+    pending = Inflight.pending_mib(instance.instance_id, table: state.inflight_table)
+    Embervm.Scheduler.eligible?(Map.put(instance.brick, :pending_mib, pending), need_mib)
   end
 
   # Keep the workload's current pin when it is still an eligible candidate and no
@@ -2063,11 +2117,19 @@ defmodule Embervm.BaseBuilder do
   # Node-shared bases mean we keep at most one instance per node_id (the highest-ranked),
   # so the best pick is naturally one build per node.
   defp eligible_build_instances(state, need_mib) do
+    state
+    |> capable_build_instances(need_mib)
+    |> dedupe_per_node()
+  end
+
+  # Every registered instance that can build `need_mib`, before the one-per-node
+  # dedupe, so build placement can still pick a smaller sibling on a node whose
+  # largest brick is busy.
+  defp capable_build_instances(state, need_mib) do
     state.node_ids
     |> Enum.map(fn iid -> instance_build_facts(state, iid) end)
     |> Enum.reject(&is_nil/1)
     |> Enum.filter(fn i -> build_eligible?(i, need_mib) end)
-    |> dedupe_per_node()
   end
 
   # Compact build-facts for a registered instance_id: its reported size_class /
@@ -2089,7 +2151,10 @@ defmodule Embervm.BaseBuilder do
       node_id: Map.get(fact, :node_id) || instance_id,
       cpu_vendor: cpu_vendor(fact),
       size_class: Map.get(fact, :size_class, ""),
-      mem_budget_mib: Map.get(fact, :mem_budget_mib, 0)
+      mem_budget_mib: Map.get(fact, :mem_budget_mib, 0),
+      # The normalized brick, for the admission preference and the build's
+      # in-flight charge; rank and eligibility read only the fields above.
+      brick: Embervm.Brick.to_brick(fact)
     }
   end
 
@@ -2587,17 +2652,19 @@ defmodule Embervm.BaseBuilder do
   defp start_worker(state, node_id, w) do
     sig = signature(w)
 
-    vendor =
+    fact =
       case find_capacity_fact(state.capacity_table, node_id) do
-        {:ok, fact} -> cpu_vendor(fact)
-        :error -> ""
+        {:ok, fact} -> fact
+        :error -> nil
       end
 
     worker_meta = %{
       node_id: node_id,
       name: w.name,
       signature: sig,
-      cpu_vendor: vendor
+      cpu_vendor: if(fact, do: cpu_vendor(fact), else: ""),
+      claim_ref: {:base_build, w.name, make_ref()},
+      claim_mib: Embervm.Brick.charge_mib(fact || %{}, w.mem_mib || 0)
     }
 
     case Map.get(state.node_addr, node_id) do
@@ -2612,6 +2679,16 @@ defmodule Embervm.BaseBuilder do
         connect_fun = state.connect_fun
         disconnect_fun = state.disconnect_fun
         request = build_request(w, state.runtime_images)
+
+        # The build guest's memory is committed to this brick from now until the
+        # result lands (finish_build releases it); the daemon's own admission
+        # ledger only covers the boot. A builder that dies mid-build leaves the
+        # claim to its TTL, which outlasts the RPC deadline, because the daemon
+        # keeps building after the worker is gone.
+        Inflight.claim(node_id, worker_meta.claim_ref, worker_meta.claim_mib,
+          table: state.inflight_table,
+          ttl_ms: @build_claim_ttl_ms
+        )
 
         {pid, ref} =
           spawn_monitor(fn ->
@@ -2700,6 +2777,13 @@ defmodule Embervm.BaseBuilder do
          %{node_id: node_id, name: name, signature: built_sig} = worker_meta,
          result
        ) do
+    # The build guest is gone whatever the result (a built base is a snapshot,
+    # not a running VM), so its memory claim drops with it.
+    case Map.get(worker_meta, :claim_ref) do
+      nil -> :ok
+      claim_ref -> Inflight.release(node_id, claim_ref, table: state.inflight_table)
+    end
+
     state =
       state
       |> update_in([:workers], &Map.delete(&1, pid))
@@ -4215,6 +4299,25 @@ defmodule Embervm.BaseBuilder do
     put_in(state.workloads[w.name], %{w | retry_timer: timer})
   end
 
+  # The brick refused the build on admission (noded's "pressure:mem" or its
+  # live-VM cap): nothing was built and nothing failed. Retry later on the
+  # ordinary backoff (a busy brick must not be polled at the base delay), but
+  # never write BuildFailed: an existing base keeps serving and a first build
+  # stays Building. The retry re-places through placement/4, which prefers a
+  # brick that admits the build by then.
+  defp apply_result(state, w, %{node_id: node_id}, {:error, %GRPC.RPCError{status: 8, message: message}}) do
+    next_backoff =
+      min((w.backoff_ms || state.base_backoff_ms) * backoff_factor(w), state.max_backoff_ms)
+
+    Logger.info(
+      "embervm base builder: #{node_id} refused BuildBase for #{w.namespace}/#{w.name} " <>
+        "(#{message}); retrying in #{next_backoff}ms"
+    )
+
+    timer = Process.send_after(self(), {:retry, w.name}, next_backoff)
+    put_in(state.workloads[w.name], %{w | backoff_ms: next_backoff, retry_timer: timer})
+  end
+
   # A failed build: keep any existing base (Ready stays True if one is recorded),
   # report the daemon error, and schedule a backed-off retry.
   defp apply_result(state, w, _worker_meta, {:error, reason}) do
@@ -4297,7 +4400,7 @@ defmodule Embervm.BaseBuilder do
             # branch; node addition, capacity updates, and build completion
             # re-drive held workloads), and persist the new pin so stickiness
             # tracks where the rebuild actually ran.
-            node_id = placement(state, w, Map.get(w, :mem_mib) || 0)
+            node_id = placement(state, w, Map.get(w, :mem_mib) || 0, true)
 
             cond do
               node_id == nil ->
