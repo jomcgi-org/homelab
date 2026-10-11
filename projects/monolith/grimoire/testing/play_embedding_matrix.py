@@ -74,6 +74,19 @@ def assert_play_agreement(connection, embeddings, events, notes, predicate):
         for row in note_rows
         if row["deleted_at"] is None
     )
+    copies.extend(
+        {
+            "source_id": row["id"],
+            "embeddable_kind": "fact",
+            "campaign_id": campaign,
+            "audience": row["audience"],
+            "audience_pc_ids": row["audience_pc_ids"],
+            "author_member_id": row["author_member_id"],
+            "dm_readable": None,
+        }
+        for row in rows
+        for campaign in ("ours", "other")
+    )
     for kind in ("entity", "chunk", "unknown"):
         for campaign in (None, "ours", "other"):
             copies.append(
@@ -115,6 +128,17 @@ def assert_play_agreement(connection, embeddings, events, notes, predicate):
             assert {
                 row["source_id"] for row in selected if row["embeddable_kind"] == kind
             } == expected_events
+        expected_facts = {
+            row["id"]
+            for row in rows
+            if viewer is not None
+            and row["audience"] in ("table", "pcs")
+            and row["author_member_id"] is None
+            and row["id"] in expected_events
+        }
+        assert {
+            row["source_id"] for row in selected if row["embeddable_kind"] == "fact"
+        } == expected_facts
         assert {
             row["source_id"] for row in selected if row["embeddable_kind"] == "note"
         } == expected_notes

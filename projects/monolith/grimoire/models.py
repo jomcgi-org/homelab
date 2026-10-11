@@ -8,7 +8,7 @@ classes, sheet, properties, revealed_details).
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from pgvector.sqlalchemy import Vector
@@ -28,7 +28,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import JSON, Field, SQLModel
 
@@ -80,7 +80,7 @@ Temporality = Literal["historical", "present", "future"]
 SourceType = Literal["extracted", "homebrew"]
 MemberRole = Literal["dm", "player"]
 CharacterSheetStatus = Literal["draft", "submitted", "approved", "returned"]
-EmbeddableKind = Literal["entity", "chunk", "transcript", "note", "event"]
+EmbeddableKind = Literal["entity", "chunk", "transcript", "note", "event", "fact"]
 AliasCandidateStatus = Literal["pending", "approved", "rejected", "stale", "merged"]
 SessionStatus = Literal["active", "paused", "ended"]
 EventKind = Literal[
@@ -98,6 +98,7 @@ VerificationStatus = Literal["verified", "corrected", "unverifiable"]
 _UUID = PG_UUID(as_uuid=False).with_variant(String(36), "sqlite")
 # Postgres uses JSONB (matching the migration); SQLite falls back to JSON.
 _JSONB = JSONB().with_variant(JSON(), "sqlite")
+_UUID_ARRAY = ARRAY(PG_UUID(as_uuid=False)).with_variant(JSON(), "sqlite")
 
 
 def _uuid_column(
@@ -191,7 +192,7 @@ class Entity(SQLModel, table=True):
     site: str | None = None
     created_in_session: str | None = Field(default=None, sa_column=_uuid_column())
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -305,7 +306,7 @@ class KnowledgeChunk(SQLModel, table=True):
     # column added in 20260703130000_grimoire_chunk_image_ref.sql.
     image_ref: str | None = None
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -338,7 +339,7 @@ class Book(SQLModel, table=True):
         sa_column=Column(Boolean, nullable=False, server_default=text("true")),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -373,7 +374,7 @@ class Adventure(SQLModel, table=True):
     start_seq: int
     end_seq: int | None = None
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -434,7 +435,7 @@ class ChunkExtraction(SQLModel, table=True):
     )
     status: ExtractionStatus = Field(sa_column=Column(String, nullable=False))
     extracted_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
@@ -468,7 +469,7 @@ class EntityVerification(SQLModel, table=True):
     # chunk ids. Source text is not duplicated here.
     result: dict = Field(default_factory=dict, sa_column=Column(_JSONB, nullable=False))
     verified_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
@@ -515,19 +516,21 @@ class Embedding(SQLModel, table=True):
     __tablename__ = "embedding"
     __table_args__ = (
         CheckConstraint(
-            "embeddable_kind IN ('entity', 'chunk', 'transcript', 'note', 'event')",
+            "embeddable_kind IN ('entity', 'chunk', 'transcript', 'note', 'event', 'fact')",
             name="embedding_embeddable_kind_chk",
         ),
         CheckConstraint(
             "(embeddable_kind IN ('entity', 'chunk') AND campaign_id IS NULL "
             "AND audience IS NULL AND audience_pc_ids IS NULL AND dm_readable IS NULL) OR "
-            "(embeddable_kind IN ('note', 'event', 'transcript') "
+            "(embeddable_kind IN ('note', 'event', 'transcript', 'fact') "
             "AND campaign_id IS NOT NULL AND audience IS NOT NULL "
             "AND audience_pc_ids IS NOT NULL AND "
             "((embeddable_kind = 'note' AND audience IN ('character', 'party') "
             "AND dm_readable IS NOT NULL) OR "
             "(embeddable_kind IN ('event', 'transcript') "
-            "AND audience IN ('table', 'dm', 'pcs'))))",
+            "AND audience IN ('table', 'dm', 'pcs')) OR "
+            "(embeddable_kind = 'fact' AND audience IN ('table', 'pcs') "
+            "AND author_member_id IS NULL AND dm_readable IS NULL)))",
             name="embedding_play_audience_chk",
         ),
         Index(
@@ -638,11 +641,11 @@ class AliasCandidate(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True))
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -671,7 +674,7 @@ class AppUser(SQLModel, table=True):
     subject: str | None = Field(default=None, sa_column=Column(String))
     display_name: str | None = None
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -705,7 +708,7 @@ class CampaignInvitation(SQLModel, table=True):
     )
     status: str = Field(default="pending", sa_column=Column(String, nullable=False))
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -745,7 +748,7 @@ class CampaignJoinLink(SQLModel, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=False)
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
     accepted_by_id: str | None = Field(
@@ -784,7 +787,7 @@ class Campaign(SQLModel, table=True):
         sa_column=_uuid_column(fk="grimoire.app_user.id"),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -918,11 +921,11 @@ class CharacterSheetVersion(SQLModel, table=True):
     decision_comment: str | None = None
     decided_by_email: str | None = None
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -968,7 +971,7 @@ class CampaignMember(SQLModel, table=True):
         sa_column=_uuid_column(fk="grimoire.player_character.id"),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 
@@ -1000,7 +1003,7 @@ class GameSession(SQLModel, table=True):
         default="active", sa_column=Column(String, nullable=False)
     )
     started_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
     ended_at: datetime | None = Field(
@@ -1249,13 +1252,13 @@ class Note(SQLModel, table=True):
         ),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
             DateTime(timezone=True), nullable=False, server_default=func.now()
         ),
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
             DateTime(timezone=True), nullable=False, server_default=func.now()
         ),
@@ -1331,7 +1334,7 @@ class SessionEvent(SQLModel, table=True):
         sa_column=Column(_JSONB, nullable=False, server_default=text("'{}'")),
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
             DateTime(timezone=True),
             nullable=False,
@@ -1340,6 +1343,81 @@ class SessionEvent(SQLModel, table=True):
     )
     retracted_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class CharacterFact(SQLModel, table=True):
+    """Viewer-owned campaign knowledge, never an atom in knowledge tables."""
+
+    __tablename__ = "character_fact"
+    __table_args__ = (
+        CheckConstraint(
+            "(viewer_key = 'party' AND player_character_id IS NULL) OR "
+            "(player_character_id IS NOT NULL AND viewer_key = CAST(player_character_id AS TEXT))",
+            name="character_fact_viewer_chk",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'disputed', 'retracted')",
+            name="character_fact_status_chk",
+        ),
+        CheckConstraint(
+            "cardinality(evidence_event_ids) > 0 AND array_position(evidence_event_ids, NULL) IS NULL",
+            name="character_fact_evidence_chk",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "json_type(evidence_event_ids) = 'array' AND json_array_length(evidence_event_ids) > 0",
+            name="character_fact_evidence_chk",
+        ).ddl_if(dialect="sqlite"),
+        UniqueConstraint(
+            "session_id",
+            "viewer_key",
+            "extraction_version",
+            "statement",
+            name="character_fact_replay_key",
+        ),
+        Index(
+            "character_fact_viewer_status_idx", "campaign_id", "viewer_key", "status"
+        ),
+        Index(
+            "character_fact_evidence_idx", "evidence_event_ids", postgresql_using="gin"
+        ),
+        {"schema": "grimoire", "extend_existing": True},
+    )
+
+    id: str | None = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        sa_column=_uuid_column(primary_key=True),
+    )
+    campaign_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.campaign.id", ondelete="CASCADE"
+        )
+    )
+    session_id: str = Field(
+        sa_column=_uuid_column(
+            nullable=False, fk="grimoire.game_session.id", ondelete="CASCADE"
+        )
+    )
+    player_character_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.player_character.id", ondelete="CASCADE"),
+    )
+    viewer_key: str = Field(sa_column=Column(String, nullable=False))
+    statement: str = Field(sa_column=Column(String, nullable=False))
+    entity_id: str | None = Field(
+        default=None,
+        sa_column=_uuid_column(fk="grimoire.entity.id", ondelete="SET NULL"),
+    )
+    evidence_event_ids: list[str] = Field(sa_column=Column(_UUID_ARRAY, nullable=False))
+    extraction_version: str = Field(sa_column=Column(String, nullable=False))
+    status: Literal["active", "disputed", "retracted"] = Field(
+        default="active", sa_column=Column(String, nullable=False)
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default=func.now()
+        ),
     )
 
 
@@ -1378,7 +1456,7 @@ class KnowledgeGrant(SQLModel, table=True):
     revealed_details: dict | None = Field(default=None, sa_column=Column(_JSONB))
     granted_in_session: str | None = Field(default=None, sa_column=_uuid_column())
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True)),
     )
 

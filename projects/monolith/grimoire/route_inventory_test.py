@@ -573,14 +573,11 @@ def test_scanner_clean_body_and_audience_matrix(harness):
 
 def test_canaries_are_seeded_and_wire_safe(harness):
     tokens = list(harness.canaries)
-    # Main's 240 (eight inventory items add four canaries each) plus six for the
-    # two seeded handouts (id, title and markdown on the live and retracted twin).
-    assert len(tokens) == 246
+    assert len(tokens) == 258  # Inventory, handouts and character fact canaries.
     embeddings = [
         row for key, row in harness.rows.items() if key.startswith("embedding_")
     ]
-    # Main's 25 plus a vectored embedding for each of the two seeded handouts.
-    assert len(embeddings) == 27
+    assert len(embeddings) == 33
     assert all(row.dim == 1024 and len(row.vector) == 1024 for row in embeddings)
     storage = str(harness.snapshot()).casefold()
     for token in tokens:

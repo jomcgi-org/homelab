@@ -65,7 +65,7 @@ def test_play_embedding_migration_constraints_and_campaign_cascade(pg):
                             "readable": readable,
                         },
                     )
-                for kind in ("note", "event", "transcript"):
+                for kind in ("note", "event", "transcript", "fact"):
                     with pytest.raises(
                         IntegrityError, match="embedding_play_audience_chk"
                     ):
