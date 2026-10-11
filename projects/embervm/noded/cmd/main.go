@@ -88,6 +88,14 @@ func run(logger *slog.Logger) error {
 		"removedCount", len(pruned.Removed), "removedSegments", pruned.Removed,
 		"skippedLiveCount", len(pruned.SkippedLive),
 		"skippedUnclaimedCount", len(pruned.SkippedUnclaimed))
+	// A daemon that crashed in this same pod left its VMs' jail trees in our own
+	// warmth root, pinning the snapshot and rootfs inodes they hard-link. No VM
+	// survives its daemon (noded is the container's PID 1), and nothing has
+	// launched yet, so every jail tree here is an orphan.
+	orphanJails := driver.SweepOrphanJails(cfg.WarmthRoot, func(path string, err error) {
+		logger.Warn("startup GC: could not remove orphaned jail tree", "path", path, "err", err)
+	})
+	logger.Info("startup GC: removed orphaned jail trees", "count", len(orphanJails))
 	if cfg.SnapshotRoot != "" && cfg.SizeClass != "" && cfg.PodUID != "" {
 		go func() {
 			ticker := time.NewTicker(cfg.WarmthHeartbeatInterval)
@@ -272,6 +280,15 @@ func run(logger *slog.Logger) error {
 	}
 	// Called only at daemon startup, before any work begins.
 	srv.CleanupStagingDirs()
+	// Prove containment and capacity facts before any work can reach this brick.
+	// A failure exits noded: it never registers, its pod never turns Ready, and a
+	// maxUnavailable=1 roll stops at the first broken brick.
+	if err := startupGate(ctx, cfg, restoreDriver.JailPreflight, srv.ReadyBaseRootfsPaths, srv.BrickMemBudgetMib); err != nil {
+		return err
+	}
+	if cfg.JailerEnabled {
+		logger.Info("jailer preflight passed")
+	}
 	// Report node-local BANKED session snapshots left by a prior incarnation so the
 	// control plane adopts surviving banked sessions (live session VMs died with the
 	// prior daemon; their last banked snapshot, if any, stays restorable).
@@ -462,6 +479,30 @@ func setupTracing(ctx context.Context, logger *slog.Logger) func() {
 			logger.Error("could not shut down tracer provider", "err", err)
 		}
 	}
+}
+
+// startupGate refuses to let a brick register when it cannot contain guests or
+// cannot see its own memory budget. With the jailer armed, preflight launches a
+// jailed Firecracker and opens every READY base rootfs through it, so an input
+// the jail cannot read fails here instead of on every restore. A classed brick
+// whose budget reads zero would be placed as an unbounded wildcard, so it must
+// not register either. The budget is read after the preflight, so it is read
+// from the delegated layout (noded in the jailer's daemon cgroup, a VM leaf
+// launched and reaped) every later guest runs under.
+func startupGate(ctx context.Context, cfg config.Config,
+	preflight func(context.Context, []string) error,
+	readyRootfs func() []string,
+	memBudgetMib func() uint64,
+) error {
+	if cfg.JailerEnabled {
+		if err := preflight(ctx, readyRootfs()); err != nil {
+			return fmt.Errorf("jailer armed but preflight failed; refusing to register (noded.jailer.enabled=false is the escape hatch): %w", err)
+		}
+	}
+	if cfg.SizeClass != "" && memBudgetMib() == 0 {
+		return fmt.Errorf("size class %q brick reads a zero memory budget from its cgroup; refusing to register blind to its capacity", cfg.SizeClass)
+	}
+	return nil
 }
 
 // driverExtras carries the per-driver cold-boot fields (empty for the shared
