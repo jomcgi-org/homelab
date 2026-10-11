@@ -156,6 +156,9 @@ type fakeServingDriver struct {
 	lastWorkload        string
 	lastRestoreWorkload string
 	guestReady          int
+	// onClaim, when set, runs at the start of ClaimServing (outside the lock), so
+	// an admission test can observe the ledger while the boot is in flight.
+	onClaim func()
 }
 
 func newFakeServingDriver(dir string) *fakeServingDriver {
@@ -176,6 +179,12 @@ func writeFile(t *testing.T, path, s string) {
 }
 
 func (f *fakeServingDriver) ClaimServing(_ context.Context, workload, _ string, _ string, _ int, _ int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
+	f.mu.Lock()
+	onClaim := f.onClaim
+	f.mu.Unlock()
+	if onClaim != nil {
+		onClaim()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -387,6 +396,7 @@ const servingHealthPath = "/healthz"
 func startFresh(t *testing.T, s *Server, port uint32) *nodev1.StartServingResponse {
 	t.Helper()
 	resp, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
@@ -434,6 +444,7 @@ func TestStartServingFreshRefusedWhileStale(t *testing.T) {
 	s.registry.mu.Unlock()
 
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
@@ -509,6 +520,7 @@ func TestStartServingFreshImageLaneOmitsHandlerDrive(t *testing.T) {
 	})
 
 	resp, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "image-base"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
@@ -576,6 +588,7 @@ func TestStartServingDNATFailureReaps(t *testing.T) {
 	fsn.failEnsureDNAT = true
 
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
@@ -599,6 +612,7 @@ func TestStartServingFreshUnknownImage(t *testing.T) {
 	_, port := healthServer(t, servingHealthPath)
 	s, _, _ := newServingTestServer(t)
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "nope"}},
 		Port:       port,
 		HealthPath: servingHealthPath,
@@ -614,6 +628,7 @@ func TestStartServingReadinessFailureReapsAndReleases(t *testing.T) {
 	s, fsn, fsd := newServingTestServer(t)
 	s.cfg.BootReadyTimeout = 300 * time.Millisecond
 	_, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: "img-a"}},
 		Port:       1, // nothing listens
 		HealthPath: servingHealthPath,
@@ -671,6 +686,7 @@ func TestServingBankRelightRoundTrip(t *testing.T) {
 
 	// Relight it: the pinned IP must be re-acquired (D-R3.4.1).
 	relit, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Relight{Relight: &nodev1.RelightSource{SnapshotRef: bankResp.GetSnapshotRef()}},
 		Port:       port,
 		HealthPath: servingHealthPath,
@@ -767,6 +783,7 @@ func TestEvictServingSnapshotInUseGuard(t *testing.T) {
 	}
 	ref := bankResp.GetSnapshotRef()
 	if _, err := s.StartServing(context.Background(), &nodev1.StartServingRequest{
+		Resources:  &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Source:     &nodev1.StartServingRequest_Relight{Relight: &nodev1.RelightSource{SnapshotRef: ref}},
 		Port:       port,
 		HealthPath: servingHealthPath,

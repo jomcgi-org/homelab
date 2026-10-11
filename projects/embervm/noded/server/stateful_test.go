@@ -374,6 +374,7 @@ func newStatefulTestServer(t *testing.T) (*Server, *fakeServingNet, *fakeStatefu
 func startFreshStateful(t *testing.T, s *Server, port uint32, workload string) *nodev1.StartStatefulResponse {
 	t.Helper()
 	resp, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:         &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:             &nodev1.Trace{Workload: workload},
 		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:      "img-a",
@@ -418,6 +419,7 @@ func TestStartStatefulFreshRefusedWhileStale(t *testing.T) {
 	s.registry.mu.Unlock()
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:           &nodev1.Trace{Workload: "wl-state"},
 		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:    "img-a",
@@ -482,6 +484,7 @@ func TestStartStatefulFreshWithoutCreateIfMissingRefused(t *testing.T) {
 	port := tcpHealthServer(t)
 	s, _, _ := newStatefulTestServer(t)
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:           &nodev1.Trace{Workload: "wl-state"},
 		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:    "img-a",
@@ -503,6 +506,7 @@ func TestStartStatefulAttachLockRefusesSecondAttach(t *testing.T) {
 	startFreshStateful(t, s, port, "wl-state")
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:    &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:        &nodev1.Trace{Workload: "wl-state"},
 		Mode:         nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a",
@@ -573,6 +577,7 @@ func TestStartStatefulGenerationBumpedBeforeBootAndNotRolledBackOnFailure(t *tes
 	fsd.failClaim = status.Error(codes.Internal, "boom")
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:         &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:             &nodev1.Trace{Workload: "wl-state"},
 		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:      "img-a",
@@ -609,6 +614,7 @@ func TestStartStatefulReadyFailureRetainsAttachWhenReleaseFails(t *testing.T) {
 	fsd.mu.Unlock()
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:         &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:             &nodev1.Trace{Workload: "wl-state"},
 		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:      "img-a",
@@ -631,6 +637,7 @@ func TestStartStatefulReadyFailureRetainsAttachWhenReleaseFails(t *testing.T) {
 		t.Fatalf("released taps = %d want 0 while process cessation is uncertain", got)
 	}
 	if _, retryErr := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:    &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:        &nodev1.Trace{Workload: "wl-state"},
 		Mode:         nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a",
@@ -653,6 +660,7 @@ func TestStartStatefulBlessedGenerationRecordedVerbatim(t *testing.T) {
 	s, _, _ := newStatefulTestServer(t)
 
 	resp, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:         &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:             &nodev1.Trace{Workload: "wl-state"},
 		Mode:              nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:      "img-a",
@@ -686,6 +694,7 @@ func TestStartStatefulUnblessedRejected(t *testing.T) {
 	s, _, _ := newStatefulTestServer(t)
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:       &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:           &nodev1.Trace{Workload: "wl-state"},
 		Mode:            nodev1.StartStatefulMode_START_STATEFUL_MODE_FRESH,
 		BootImageRef:    "img-a",
@@ -727,6 +736,7 @@ func TestStartStatefulRelightMatchedGeneration(t *testing.T) {
 	}
 
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:          &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:              &nodev1.Trace{Workload: "wl-state"},
 		Mode:               nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef:       "img-a",
@@ -776,7 +786,8 @@ func TestStartStatefulRelightGenerationMismatchFallsBackAndEvicts(t *testing.T) 
 	// Advance the ledger past the bundle's stamped generation with an explicit
 	// COLD boot + destroy (no bank), so the bundle is now stale.
 	cold, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	})
 	if err != nil {
@@ -789,6 +800,7 @@ func TestStartStatefulRelightGenerationMismatchFallsBackAndEvicts(t *testing.T) 
 	}
 
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:          &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:              &nodev1.Trace{Workload: "wl-state"},
 		Mode:               nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef:       "img-a",
@@ -830,6 +842,7 @@ func TestStartStatefulRelightNoBundleFallsBack(t *testing.T) {
 	}
 
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:          &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:              &nodev1.Trace{Workload: "wl-state"},
 		Mode:               nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef:       "img-a",
@@ -875,6 +888,7 @@ func TestStartStatefulRelightLedgerUnreadableEvictsBundle(t *testing.T) {
 	}
 
 	_, err = s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
+		Resources:          &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
 		Trace:              &nodev1.Trace{Workload: "wl-state"},
 		Mode:               nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef:       "img-a",
@@ -913,7 +927,8 @@ func TestStopStatefulBankEvictsPriorBundle(t *testing.T) {
 	}
 
 	cold, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	})
 	if err != nil {
@@ -1003,7 +1018,8 @@ func TestStatefulDestroyKeepsOwnershipUntilReleaseCompletes(t *testing.T) {
 	}
 
 	_, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	})
 	if status.Code(err) != codes.FailedPrecondition {
@@ -1028,7 +1044,8 @@ func TestStatefulDestroyKeepsOwnershipUntilReleaseCompletes(t *testing.T) {
 		t.Fatal("destroy did not finish after release")
 	}
 	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	}); err != nil {
 		t.Fatalf("wake after confirmed destroy: %v", err)
@@ -1140,7 +1157,8 @@ func TestStatefulDestroyReleaseFailureRetainsRetryableOwner(t *testing.T) {
 		t.Fatal("failed release detached a volume whose process may still be running")
 	}
 	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("wake after failed release = %v, want FailedPrecondition", err)
@@ -1155,7 +1173,8 @@ func TestStatefulDestroyReleaseFailureRetainsRetryableOwner(t *testing.T) {
 		t.Fatalf("retry destroy = %v, %v", response, err)
 	}
 	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	}); err != nil {
 		t.Fatalf("wake after retry completed: %v", err)
@@ -1177,7 +1196,8 @@ func TestStatefulWakeRetriesDeadOwnerCleanup(t *testing.T) {
 
 	wake := func(generation uint64) (*nodev1.StartStatefulResponse, error) {
 		return s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-			Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+			Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+			Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 			BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: generation,
 		})
 	}
@@ -1217,7 +1237,8 @@ func TestStatefulDestroyAncillaryCleanupRetriesWithoutReleasingTwice(t *testing.
 		t.Fatalf("failed bundle cleanup = %v, %v, want unconfirmed error", response, err)
 	}
 	if _, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_COLD,
 		BootImageRef: "img-a", Port: port, VolumeMount: "/data", BlessedGeneration: 2,
 	}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("wake during incomplete cleanup = %v, want FailedPrecondition", err)
@@ -1370,7 +1391,8 @@ func TestStatefulResolveCommit(t *testing.T) {
 	}
 	// A relight off it succeeds (proves the committed bundle is valid + paired).
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef: "img-a", RelightSnapshotRef: resp.GetSnapshotRef(), Port: port, VolumeMount: "/data",
 		BlessedGeneration: 2,
 	})
@@ -1670,7 +1692,8 @@ func TestStartStatefulRelightRepinsTapIP(t *testing.T) {
 	}
 
 	relit, err := s.StartStateful(context.Background(), &nodev1.StartStatefulRequest{
-		Trace: &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
+		Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 512},
+		Trace:     &nodev1.Trace{Workload: "wl-state"}, Mode: nodev1.StartStatefulMode_START_STATEFUL_MODE_RELIGHT,
 		BootImageRef: "img-a", RelightSnapshotRef: bankResp.GetSnapshotRef(), Port: port, VolumeMount: "/data",
 		BlessedGeneration: 2,
 	})

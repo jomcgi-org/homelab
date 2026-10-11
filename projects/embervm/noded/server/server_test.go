@@ -59,6 +59,13 @@ type fakeDriver struct {
 	failRemoveBundle error
 	releaseStarted   chan struct{}
 	blockRelease     <-chan struct{}
+	// claimStarted / blockClaim hold a Claim "in flight" (admitted, not yet in
+	// the live map) so an admission test can race boots against it; claimMib is
+	// the declared size a successful Claim adds to claimedMib, as the real
+	// driver's live map would.
+	claimStarted chan struct{}
+	blockClaim   <-chan struct{}
+	claimMib     uint64
 	// failSnapshotSession injects a Bank snapshot failure. The real driver tears
 	// the VM down on any snapshot error (a bank is destructive), so the fake
 	// mirrors that by decrementing live before returning the error.
@@ -98,12 +105,25 @@ type fakeDriver struct {
 
 func (f *fakeDriver) Claim(_ context.Context, spec substrate.ClaimSpec) (substrate.Handle, error) {
 	f.mu.Lock()
+	started, blocked := f.claimStarted, f.blockClaim
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if blocked != nil {
+		<-blocked
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
 		return substrate.Handle{}, f.failClaim
 	}
 	f.claims++
 	f.live++
+	f.claimedMib += f.claimMib
 	f.lastClaim = spec
 	return substrate.Handle{ThreadID: spec.ThreadID, ID: "vm-" + spec.ThreadID, Node: "node-4"}, nil
 }
@@ -141,6 +161,9 @@ func (f *fakeDriver) Release(_ context.Context, _ substrate.Handle) error {
 	}
 	if f.live > 0 {
 		f.live--
+	}
+	if f.claimMib > 0 && f.claimedMib >= f.claimMib {
+		f.claimedMib -= f.claimMib
 	}
 	return nil
 }
@@ -2519,7 +2542,7 @@ func TestParseMemHeadroomMib(t *testing.T) {
 	}{
 		{"max\n", "1048576\n", 0},        // unlimited
 		{"2097152\n", "1048576\n", 1},    // 2MiB - 1MiB = 1MiB
-		{"1048576", "2097152", 0},        // current over max
+		{"1048576", "2097152", 1},        // current over max: known exhausted, never the unknown 0
 		{"garbage", "1", 0},              // unparseable
 		{"104857600\n", "4194304\n", 96}, // 100MiB - 4MiB
 	}
