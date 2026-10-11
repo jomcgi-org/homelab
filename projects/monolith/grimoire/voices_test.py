@@ -3,12 +3,13 @@
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import select
 
 from grimoire.models import CampaignVoice, SessionEvent
 from grimoire.testing.leak_harness import sqlite_harness
-from grimoire.voices import speaker_ref
+from grimoire.voices import speaker_ref, validate_speaker_key
 
 
 @pytest.fixture
@@ -108,13 +109,21 @@ def test_invalid_presets_are_rejected_without_mutation(setup, body):
     assert h.snapshot() == before
 
 
-@pytest.mark.parametrize("key", ["ref:opaque", "x" * 65, "bad!label", ".", ".."])
+@pytest.mark.parametrize("key", ["ref:opaque", "x" * 65, "bad!label"])
 def test_invalid_speaker_keys_are_rejected(setup, key):
     client, h = setup
     before = h.snapshot()
     assert client.put(path(h, key), headers=h.headers("dm"), json={}).status_code == 422
     assert client.delete(path(h, key), headers=h.headers("dm")).status_code == 422
     assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("key", [".", "..", "..."])
+def test_dot_only_labels_are_rejected(key):
+    # HTTP clients normalize /voices/.. away before routing, so check directly.
+    with pytest.raises(HTTPException) as error:
+        validate_speaker_key(None, "campaign", key)
+    assert error.value.status_code == 422
 
 
 @pytest.mark.parametrize("key_name", ["foreign", "class"])
